@@ -21,12 +21,14 @@ The install script will:
 | Package | What it configures |
 |---|---|
 | `bash` | `.bashrc` — shell settings, history, aliases, fnm, starship init |
+| `claude` | `.claude/CLAUDE.md` — global baseline instructions for Claude Code |
 | `starship` | `.config/starship.toml` — prompt theme and disabled modules |
 
 To stow individual packages:
 
 ```bash
 stow -v -t "$HOME" bash
+stow -v -t "$HOME" claude
 stow -v -t "$HOME" starship
 ```
 

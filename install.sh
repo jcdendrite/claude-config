@@ -26,6 +26,7 @@ echo "Stowing dotfiles from $DOTFILES_DIR..."
 
 cd "$DOTFILES_DIR"
 stow -v --adopt -t "$HOME" bash
+stow -v --adopt -t "$HOME" claude
 stow -v --adopt -t "$HOME" starship
 
 echo ""
