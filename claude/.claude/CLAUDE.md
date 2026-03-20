@@ -23,6 +23,10 @@
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
 - Use descriptive variable and function names. No generic names.
 
+## Code Review
+
+- After writing or modifying code, run `/code-review` before presenting the code to the user. If the review finds issues, fix them first, then present the final version.
+
 ## Safety
 
 - Never run sudo commands directly.
