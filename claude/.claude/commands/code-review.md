@@ -32,9 +32,9 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 9. **Misleading names** — Do function or variable names promise more or less than they deliver? A function called `validateUser` that only checks one field, or a variable called `allItems` that contains a filtered subset.
 
-### Context
+### Security
 
-10. **Contradicts surrounding code comments** — Does the new code violate guidance written in comments in the same file or adjacent code (e.g., `// IMPORTANT:`, `// NOTE:`, `// TODO:` that the new code should have respected)?
+10. **Test adequacy for security controls** — For code that enforces security invariants (access control, input validation, privilege boundaries), are there tests that verify both the allow and deny paths? This overrides the general "add tests" exclusion — untested security controls are indistinguishable from absent ones. Check: for each security boundary, is there a test that an unauthorized caller is rejected AND an authorized caller succeeds?
 
 ### Scope discipline
 
@@ -44,7 +44,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 - Issues that a linter, typechecker, or compiler would catch (imports, type errors, formatting)
 - Stylistic nitpicks in unchanged code (naming conventions, whitespace, comment style)
-- Generic improvement suggestions ("add tests," "add docs," "improve error messages") not tied to a specific finding from the checklist above
+- Generic improvement suggestions ("add tests," "add docs," "improve error messages") not tied to a specific finding from the checklist above, **except** for security controls (see item 10)
 
 ## Output format
 
