@@ -21,7 +21,7 @@ The install script will:
 | Package | What it configures |
 |---|---|
 | `bash` | `.bashrc` — shell settings, history, aliases, fnm, starship init |
-| `claude` | `.claude/CLAUDE.md` — global baseline instructions for Claude Code |
+| `claude` | `.claude/` — Claude Code global instructions, custom skills, settings, and hooks |
 | `starship` | `.config/starship.toml` — prompt theme and disabled modules |
 
 To stow individual packages:
@@ -31,6 +31,20 @@ stow -v -t "$HOME" bash
 stow -v -t "$HOME" claude
 stow -v -t "$HOME" starship
 ```
+
+## Claude Code package
+
+The `claude` package configures [Claude Code](https://claude.ai/claude-code) globally:
+
+- **`CLAUDE.md`** — baseline engineering instructions applied to all projects (judgment heuristics, working style, safety rules)
+- **`settings.json`** — global settings including a custom statusline and hooks
+- **`hooks/require-code-review.sh`** — PreToolUse hook that gates `git commit` behind `/code-review`, ensuring code is reviewed before committing
+- **`statusline-command.sh`** — custom status bar showing model, context usage, session cost, working directory, and git branch
+- **`commands/code-review.md`** — `/code-review` skill: principal engineer code review checklist (11 items covering correctness, hygiene, clarity, security, and scope)
+- **`commands/respond-pr.md`** — `/respond-pr` skill: fetch and address PR review comments, with `[Claude Code]` attribution on all replies
+- **`commands/read-docx-comments.md`** — `/read-docx-comments` skill: extract comments from .docx files with their anchored text context
+
+Machine-specific Claude Code permissions belong in `~/.claude/settings.local.json` (not tracked).
 
 ## What goes in `.bashrc` vs `.bashrc.local`
 
