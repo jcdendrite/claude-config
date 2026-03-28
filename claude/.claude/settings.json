@@ -3,10 +3,10 @@
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "if": "Bash(git commit*)",
         "hooks": [
           {
             "type": "command",
+            "if": "Bash(git commit*)",
             "command": "~/.claude/hooks/require-code-review.sh",
             "statusMessage": "Checking code review..."
           }
