@@ -100,7 +100,7 @@ When tests run in parallel (pytest-xdist, Jest workers, Go's `t.Parallel()`, JUn
 
 Test names should describe the **scenario** and **expected outcome**, not just the function name:
 - Good: `rejects_expired_token_with_401`, `returns_empty_list_when_no_matches`
-- Bad: `test_refreshToken`, `test_search`, `it_works`
+- Bad: `test_refreshToken`, `test_search`, `it_works` (language-required prefixes like `test_` or `Test` are fine — the problem is having no scenario or expected outcome after the prefix)
 
 A reader should understand what the test verifies without reading its body.
 
