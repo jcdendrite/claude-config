@@ -200,7 +200,7 @@ K2. **Error handling completeness** — Does the plan cover both success and err
 
 ## Domain: Security
 
-Apply when the plan touches auth, authorization, secrets, or data exposure.
+Apply when the plan touches auth, authorization, secrets, tokens, or data exposure.
 
 S1. **Threat model** — Does the plan identify what an attacker could do if the
     implementation has a bug? Plans that add auth or access control should enumerate
@@ -247,7 +247,7 @@ about attack vectors while a backend reviewer thinks about API contracts.
 | Domain | Reviewer role | Focus |
 |--------|--------------|-------|
 | Backend | Staff backend engineer | API contracts, error handling, service boundaries, SDK behavior |
-| Frontend | Staff frontend engineer | React/hooks patterns, state management, query cache invalidation, UX impact |
+| Frontend | Staff frontend engineer | Component patterns, state management, query cache invalidation, UX impact |
 | Security | CISO | Threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth |
 | Data | Staff data engineer | Migration safety, schema design, index coverage, access control on new objects |
 | Infrastructure | Staff DevOps engineer | CI/CD pipelines, IaC, deployment ordering, environment parity, secret provisioning |
