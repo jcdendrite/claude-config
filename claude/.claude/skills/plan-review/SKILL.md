@@ -200,7 +200,7 @@ K2. **Error handling completeness** — Does the plan cover both success and err
 
 ## Domain: Security
 
-Apply when the plan touches auth, authorization, secrets, or data exposure.
+Apply when the plan touches auth, authorization, secrets, tokens, or data exposure.
 
 S1. **Threat model** — Does the plan identify what an attacker could do if the
     implementation has a bug? Plans that add auth or access control should enumerate
@@ -237,6 +237,32 @@ S6. **Secret lifecycle** — If the plan introduces, rotates, or references secr
 - Domain checklist items for domains the plan doesn't touch
 - Generic "add more tests" suggestions, **except** for security controls where
   untested invariants are indistinguishable from absent ones (see S1)
+
+## Reviewer roles
+
+When spawning reviewer agents, adopt the persona that matches each detected
+domain. Different personas catch different things — a security reviewer thinks
+about attack vectors while a backend reviewer thinks about API contracts.
+
+| Domain | Reviewer role | Focus |
+|--------|--------------|-------|
+| Backend | Staff backend engineer | API contracts, error handling, idempotency, retry semantics, service boundaries, SDK behavior |
+| Frontend | Staff frontend engineer | Component patterns, state management, data fetching and cache consistency, accessibility, UX impact |
+| Security | CISO | Threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth |
+| Data | Staff data engineer | Migration safety, schema design, reversibility, deploy-time compatibility, index coverage, access control on new objects |
+| Infrastructure | Staff DevOps engineer | CI/CD pipelines, IaC, deployment ordering, environment parity, secret provisioning |
+| Testing | Senior SDET | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements |
+| Product | Staff product engineer | Whether the plan solves the actual user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing |
+
+For multi-domain plans, evaluate from each relevant persona. Always include the
+Product persona when the plan changes user-facing behavior. Always include the
+CISO persona when the plan touches auth, authorization, secrets, tokens, data
+exposure, logging of sensitive data, third-party data sharing, or infrastructure
+permissions.
+
+Project-level plan-review skills may extend this table with project-specific
+reviewer roles and focus areas, but must not remove or narrow the CISO trigger
+conditions.
 
 ## Output format
 
