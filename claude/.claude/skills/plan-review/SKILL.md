@@ -74,7 +74,8 @@ B5. **Proportionality** — Is the solution proportional to the problem? Flag bo
 
 B6. **Scope creep** — Does the plan include work that isn't required to solve the
    stated problem? Improvements to adjacent code, premature optimizations, or
-   "while we're here" refactors should be flagged as out of scope.
+   "while we're here" refactors should be captured in the **Out of Scope** section
+   of the review output — don't lose the observation, but don't plan for it either.
 
 B7. **Missing scope** — Does the plan omit work that IS required? Common gaps:
    test updates for breaking changes, documentation updates, migration rollback
@@ -246,6 +247,10 @@ For each finding, state:
 3. **What the issue is** (one sentence)
 4. **Why it matters** (one sentence)
 5. **Suggested resolution** (concrete, not "consider improving")
+
+If any items were flagged by B6 (scope creep), include an **Out of Scope** section
+listing them. These are observations worth preserving — the reviewer can decide
+whether to bring them into scope or create follow-up tickets.
 
 End with a verdict: **Approve**, **Approve with changes** (list what), or
 **Request changes** (list blockers).
