@@ -38,8 +38,9 @@ Evaluate the plan against the **Base checklist** first, then each detected
 **Domain checklist**. For multi-phase plans, evaluate each phase against the
 relevant checklists. Reference the specific phase/section when reporting findings.
 
-If a project-specific plan-review skill exists (e.g., in `.claude/skills/plan-review/`),
-apply its additional checks after this global checklist.
+If this project also has a project-level plan-review skill, both skills will
+trigger independently. This skill covers generic plan quality; the project
+skill covers project-specific concerns.
 
 ## Base checklist
 
