@@ -14,6 +14,8 @@ Before reviewing, determine which files were changed (from context, git diff, or
 - **Data**: `**/migrations/**`, `*.sql`, schema definitions
 - **Frontend**: `*.tsx`, `*.jsx`, `*.css`, `src/components/**`, `src/pages/**`
 - **Backend**: edge functions, API routes, server-side utilities, `*.go`, `*.py`
+- **Claude Code config**: `.claude/**`
+- **Lovable config**: `.lovable/**`
 
 Apply the **Base checklist** always. Apply each **Domain checklist** only when at least one changed file matches that domain.
 
@@ -55,8 +57,6 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 ## Domain: Infrastructure
 
-Apply when changed files match `.github/`, `*.tf`, `Dockerfile`, `docker-compose*`, or CI/CD configs.
-
 12. **Concurrency and parallelism scoping** — Do concurrency groups, mutex locks, or job dependencies match their intended scope? A workflow-level concurrency group affects all jobs, including no-op or unrelated ones. Check that cancel-in-progress won't kill an important job due to an unrelated trigger.
 
 13. **Secret exposure** — Are secrets used in contexts that could log them? Check for secrets in `run:` commands that echo or pipe output, in `env:` blocks visible to steps that don't need them, and in artifact uploads. Ensure secrets are not passed as command-line arguments (visible in process lists).
@@ -69,8 +69,6 @@ Apply when changed files match `.github/`, `*.tf`, `Dockerfile`, `docker-compose
 
 ## Domain: Data
 
-Apply when changed files match `**/migrations/**`, `*.sql`, or schema definitions.
-
 17. **Migration reversibility** — Can this migration be rolled back without data loss? Flag destructive operations (`DROP COLUMN`, `DROP TABLE`, type narrowing) that have no corresponding backup or reversal strategy.
 
 18. **Index coverage** — Do new queries or new foreign keys have supporting indexes? Flag new columns used in WHERE, JOIN, or ORDER BY clauses that lack indexes, especially on tables expected to grow.
@@ -81,8 +79,6 @@ Apply when changed files match `**/migrations/**`, `*.sql`, or schema definition
 
 ## Domain: Frontend
 
-Apply when changed files match `*.tsx`, `*.jsx`, `*.css`, `src/components/**`, or `src/pages/**`.
-
 21. **Accessibility** — Do interactive elements have accessible names (aria-label, visible label, alt text)? Are click handlers on non-button elements keyboard-accessible? Check for missing focus management in modals and drawers.
 
 22. **Render performance** — Are there new inline object/array/function literals in JSX props that would cause child re-renders on every parent render? Check for missing `key` props on list items and expensive computations not wrapped in `useMemo`/`useCallback` where the component re-renders frequently.
@@ -91,13 +87,52 @@ Apply when changed files match `*.tsx`, `*.jsx`, `*.css`, `src/components/**`, o
 
 ## Domain: Backend
 
-Apply when changed files match edge functions, API routes, server-side utilities, `*.go`, or `*.py`.
-
 24. **Auth boundary coverage** — Does every new endpoint or RPC have both authentication (who is the caller?) and authorization (can they do this?)? Check that auth checks are not bypassable by hitting the endpoint directly rather than through the expected UI flow.
 
 25. **Input validation at system boundaries** — Is user input validated/sanitized before use in SQL queries, shell commands, file paths, or external API calls? Framework-provided parameterization counts; string concatenation does not.
 
 26. **Error response leakage** — Do error responses expose internal details (stack traces, internal IDs, database error messages, file paths) to the caller? Internal errors should be logged server-side and return a generic message to the client.
+
+## Domain: Claude Code config
+
+27. **Skill trigger accuracy** — Do TRIGGER and DO NOT TRIGGER conditions
+    match the skill's actual purpose? A skill that triggers too broadly wastes
+    context; one that triggers too narrowly gets skipped when needed.
+
+28. **Context budget** — Are skill files, plan files, and settings concise enough
+    to fit within the AI's working context without displacing active task
+    instructions? Long files dilute attention on the actual task. Flag files that
+    could be shortened without losing actionable information.
+
+29. **Permission scope** — Do `permissions.allow` rules in settings.json follow
+    least-privilege? Flag blanket allows (`"Bash"`) where scoped allows
+    (`"Bash(git:*)"`) would suffice.
+
+30. **Hook correctness** — Do PreToolUse/PostToolUse hooks block the right
+    operations without false positives? A hook that blocks legitimate work
+    is worse than no hook — it trains users to bypass the system.
+
+## Domain: Lovable config
+
+Apply when changed files match `.lovable/**`.
+
+31. **Perspective** — Are instructions written from Lovable's perspective
+    (second person, addressed to Lovable)? Knowledge files that read as
+    internal engineering notes will confuse Lovable.
+
+32. **Specificity** — Are instructions specific enough to prevent unintended
+    behavior? Lovable follows instructions literally and may over-apply vague
+    guidance (e.g., "be careful with auth" → Lovable adds auth checks to
+    public endpoints).
+
+33. **Context budget** — Are knowledge files concise enough to fit within
+    Lovable's working context without displacing active task instructions?
+    Same principle as Claude Code skills — long knowledge files dilute
+    attention.
+
+34. **Sync status** — If project-knowledge.md or workspace-knowledge.md
+    changed, does the PR description mention syncing to the Lovable UI?
+    The file is the source of truth, but Lovable reads from the UI field.
 
 ## Exclusions — do NOT flag these
 
