@@ -14,6 +14,8 @@ Before reviewing, determine which files were changed (from context, git diff, or
 - **Data**: `**/migrations/**`, `*.sql`, schema definitions
 - **Frontend**: `*.tsx`, `*.jsx`, `*.css`, `src/components/**`, `src/pages/**`
 - **Backend**: edge functions, API routes, server-side utilities, `*.go`, `*.py`
+- **Claude Code config**: `.claude/skills/**`, `.claude/settings.json`, `.claude/hooks/**`, `.claude/plans/**`
+- **Lovable config**: `.lovable/**`
 
 Apply the **Base checklist** always. Apply each **Domain checklist** only when at least one changed file matches that domain.
 
@@ -98,6 +100,50 @@ Apply when changed files match edge functions, API routes, server-side utilities
 25. **Input validation at system boundaries** — Is user input validated/sanitized before use in SQL queries, shell commands, file paths, or external API calls? Framework-provided parameterization counts; string concatenation does not.
 
 26. **Error response leakage** — Do error responses expose internal details (stack traces, internal IDs, database error messages, file paths) to the caller? Internal errors should be logged server-side and return a generic message to the client.
+
+## Domain: Claude Code config
+
+Apply when changed files match `.claude/skills/**`, `.claude/settings.json`,
+`.claude/hooks/**`, or `.claude/plans/**`.
+
+27. **Skill trigger accuracy** — Do TRIGGER and DO NOT TRIGGER conditions
+    match the skill's actual purpose? A skill that triggers too broadly wastes
+    context; one that triggers too narrowly gets skipped when needed.
+
+28. **Context budget** — Are skill files, plan files, and settings concise enough
+    to fit within the AI's working context without displacing active task
+    instructions? Long files dilute attention on the actual task. Flag files that
+    could be shortened without losing actionable information.
+
+29. **Permission scope** — Do `permissions.allow` rules in settings.json follow
+    least-privilege? Flag blanket allows (`"Bash"`) where scoped allows
+    (`"Bash(git:*)"`) would suffice.
+
+30. **Hook correctness** — Do PreToolUse/PostToolUse hooks block the right
+    operations without false positives? A hook that blocks legitimate work
+    is worse than no hook — it trains users to bypass the system.
+
+## Domain: Lovable config
+
+Apply when changed files match `.lovable/**`.
+
+31. **Perspective** — Are instructions written from Lovable's perspective
+    (second person, addressed to Lovable)? Knowledge files that read as
+    internal engineering notes will confuse Lovable.
+
+32. **Specificity** — Are instructions specific enough to prevent unintended
+    behavior? Lovable follows instructions literally and may over-apply vague
+    guidance (e.g., "be careful with auth" → Lovable adds auth checks to
+    public endpoints).
+
+33. **Context budget** — Are knowledge files concise enough to fit within
+    Lovable's working context without displacing active task instructions?
+    Same principle as Claude Code skills — long knowledge files dilute
+    attention.
+
+34. **Sync status** — If project-knowledge.md or workspace-knowledge.md
+    changed, does the PR description mention syncing to the Lovable UI?
+    The file is the source of truth, but Lovable reads from the UI field.
 
 ## Exclusions — do NOT flag these
 
