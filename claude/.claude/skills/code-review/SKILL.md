@@ -6,16 +6,11 @@ allowed-tools: Read, Grep, Glob
 
 Review the code that was just written or modified. Act as a principal engineer reviewing a junior engineer's work. Be thorough but not pedantic.
 
-**Core principle: review the ripple effects, not just the change.** Code
-changes don't exist in isolation — they affect callers, consumers, and
-adjacent systems. A migration that restricts column access can break
-frontend workflows. A new API response shape can break every consumer.
-A renamed function can break callers in a different domain. Your job is
-to review both the change AND its impact across system boundaries.
-
-The checklist below catches issues within the change. The ripple effect
-triage step (at the end) identifies cross-boundary impacts that need
-specialist follow-up.
+**Core principle: review the ripple effects, not just the change.** The
+checklist below catches issues within the change. The ripple effect triage
+step (at the end) catches cross-boundary impacts — a migration breaking
+frontend workflows, an API shape change breaking consumers, a rename
+breaking callers in another domain.
 
 ## Step 0 — Detect changed domains
 
@@ -175,29 +170,26 @@ boundaries and recommend specialist follow-up reviews. This step is
 **always required** — even if the checklist found no issues, ripple
 effects may exist that only a domain specialist would catch.
 
-Evaluate the change against these cross-boundary patterns:
+Evaluate the change against these cross-boundary patterns. These are
+review *perspectives*, not org chart roles — one person may wear multiple
+hats. Update this table as new patterns emerge.
 
-| Change type | Ripple risk | Recommended reviewer |
-|-------------|------------|---------------------|
-| Restricts database access (RLS, GRANT, triggers, validation) | Frontend workflows may break, edge functions may fail | **Product Engineer** — trace each restriction against actual caller code |
-| Changes API response shape (edge functions, RPCs) | Frontend consumers may break | **Product Engineer** — verify all consumers handle the new shape |
-| Adds/modifies security controls | Tests may be inadequate or at wrong layer | **Senior SDET** — verify test pyramid and coverage |
-| Changes auth model (JWT, roles, permissions) | Multiple systems may be affected | **Security Engineer** — trace all auth paths |
-| Modifies shared utilities (`_shared/`, hooks, contexts) | All importers may be affected | **Backend/Frontend Engineer** — verify all call sites |
-| Changes data model (columns, types, defaults) | Queries, types, and UI may be affected | **Product Engineer** + **Backend Engineer** |
-| Modifies infrastructure (CI, deploy, config) | Build/deploy pipelines may break | **DevOps/Infra Engineer** |
+| Change type | Follow-up |
+|-------------|-----------|
+| Restricts DB access (RLS, GRANT, triggers) | **Product Engineer** — trace restrictions against caller code |
+| Changes API response shape | **Product Engineer** — verify all consumers handle new shape |
+| Adds/modifies security controls | **Senior SDET** — verify test pyramid and coverage |
+| Changes auth model (JWT, roles, permissions) | **Security Engineer** — trace all auth paths |
+| Modifies shared utilities (`_shared/`, hooks) | **Backend/Frontend Engineer** — verify all call sites |
+| Changes data model (columns, types, defaults) | **Product + Backend Engineer** — check queries, types, UI |
+| Modifies infrastructure (CI, deploy, config) | **DevOps/Infra Engineer** — verify pipelines |
 
-**Output format for this section:**
+**Output:** If no impacts, state which boundaries you checked and why none
+are affected. If impacts exist, add a **"Recommended follow-up reviews"**
+section with entries like:
+- **[Reviewer]:** This change [does what] — verify [specific workflows]
+  by tracing [specific code paths].
 
-If no cross-boundary impacts are detected:
-> No cross-boundary ripple effects identified.
-
-If impacts are detected, add a **"Recommended follow-up reviews"** section:
-
-> **Recommended follow-up reviews:**
-> - **Product Engineer:** This change restricts [what] — verify [which workflows] still work by tracing [specific code paths].
-> - **Senior SDET:** This change adds [security controls] — verify test pyramid covers [specific properties].
-
-Be specific about WHAT to check, not just WHO should check it. "PE review
-recommended" is useless; "PE should verify that the counter-offer workflow
-still works after the status restriction" is actionable.
+Be specific about WHAT to check, not just WHO. "PE review recommended" is
+useless; "PE should verify the counter-offer workflow still works after the
+status restriction" is actionable.
