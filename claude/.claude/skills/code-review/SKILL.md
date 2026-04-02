@@ -57,8 +57,6 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 ## Domain: Infrastructure
 
-Apply when changed files match `.github/`, `*.tf`, `Dockerfile`, `docker-compose*`, or CI/CD configs.
-
 12. **Concurrency and parallelism scoping** — Do concurrency groups, mutex locks, or job dependencies match their intended scope? A workflow-level concurrency group affects all jobs, including no-op or unrelated ones. Check that cancel-in-progress won't kill an important job due to an unrelated trigger.
 
 13. **Secret exposure** — Are secrets used in contexts that could log them? Check for secrets in `run:` commands that echo or pipe output, in `env:` blocks visible to steps that don't need them, and in artifact uploads. Ensure secrets are not passed as command-line arguments (visible in process lists).
@@ -71,8 +69,6 @@ Apply when changed files match `.github/`, `*.tf`, `Dockerfile`, `docker-compose
 
 ## Domain: Data
 
-Apply when changed files match `**/migrations/**`, `*.sql`, or schema definitions.
-
 17. **Migration reversibility** — Can this migration be rolled back without data loss? Flag destructive operations (`DROP COLUMN`, `DROP TABLE`, type narrowing) that have no corresponding backup or reversal strategy.
 
 18. **Index coverage** — Do new queries or new foreign keys have supporting indexes? Flag new columns used in WHERE, JOIN, or ORDER BY clauses that lack indexes, especially on tables expected to grow.
@@ -83,8 +79,6 @@ Apply when changed files match `**/migrations/**`, `*.sql`, or schema definition
 
 ## Domain: Frontend
 
-Apply when changed files match `*.tsx`, `*.jsx`, `*.css`, `src/components/**`, or `src/pages/**`.
-
 21. **Accessibility** — Do interactive elements have accessible names (aria-label, visible label, alt text)? Are click handlers on non-button elements keyboard-accessible? Check for missing focus management in modals and drawers.
 
 22. **Render performance** — Are there new inline object/array/function literals in JSX props that would cause child re-renders on every parent render? Check for missing `key` props on list items and expensive computations not wrapped in `useMemo`/`useCallback` where the component re-renders frequently.
@@ -93,8 +87,6 @@ Apply when changed files match `*.tsx`, `*.jsx`, `*.css`, `src/components/**`, o
 
 ## Domain: Backend
 
-Apply when changed files match edge functions, API routes, server-side utilities, `*.go`, or `*.py`.
-
 24. **Auth boundary coverage** — Does every new endpoint or RPC have both authentication (who is the caller?) and authorization (can they do this?)? Check that auth checks are not bypassable by hitting the endpoint directly rather than through the expected UI flow.
 
 25. **Input validation at system boundaries** — Is user input validated/sanitized before use in SQL queries, shell commands, file paths, or external API calls? Framework-provided parameterization counts; string concatenation does not.
@@ -102,8 +94,6 @@ Apply when changed files match edge functions, API routes, server-side utilities
 26. **Error response leakage** — Do error responses expose internal details (stack traces, internal IDs, database error messages, file paths) to the caller? Internal errors should be logged server-side and return a generic message to the client.
 
 ## Domain: Claude Code config
-
-Apply when changed files match `.claude/**`.
 
 27. **Skill trigger accuracy** — Do TRIGGER and DO NOT TRIGGER conditions
     match the skill's actual purpose? A skill that triggers too broadly wastes
