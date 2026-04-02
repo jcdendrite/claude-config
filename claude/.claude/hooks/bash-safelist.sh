@@ -10,20 +10,6 @@ allow() {
   exit 0
 }
 
-ask_with_reason() {
-  echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"$1\"}}"
-  exit 0
-}
-
-# --- Safety net: flag commands with integration/e2e keywords ---
-# Keyword-based catch for explicitly named integration/e2e test runs.
-# This supplements (not replaces) the safelist below, which only auto-allows
-# a narrow set of unit test runners — everything else already falls through to "ask".
-if echo "$COMMAND" | grep -qiE '(^|\s)(npm|npx|jest|vitest|mocha|pytest|python|go|cargo|make)\s' \
-   && echo "$COMMAND" | grep -qiE '(integrat|e2e|end.to.end|test:int|test:e2e)'; then
-  ask_with_reason "This command may run integration/e2e tests against shared resources (DB, APIs). Multiple sessions could conflict — confirm the target environment is safe to use."
-fi
-
 # --- Safelist: read-only and low-risk commands ---
 
 # Extract the first token (the base command, ignoring leading env vars / cd chains)
