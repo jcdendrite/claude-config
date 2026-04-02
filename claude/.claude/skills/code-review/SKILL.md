@@ -14,7 +14,7 @@ Before reviewing, determine which files were changed (from context, git diff, or
 - **Data**: `**/migrations/**`, `*.sql`, schema definitions
 - **Frontend**: `*.tsx`, `*.jsx`, `*.css`, `src/components/**`, `src/pages/**`
 - **Backend**: edge functions, API routes, server-side utilities, `*.go`, `*.py`
-- **Claude Code config**: `.claude/skills/**`, `.claude/settings.json`, `.claude/hooks/**`, `.claude/plans/**`
+- **Claude Code config**: `.claude/**`
 - **Lovable config**: `.lovable/**`
 
 Apply the **Base checklist** always. Apply each **Domain checklist** only when at least one changed file matches that domain.
@@ -103,8 +103,7 @@ Apply when changed files match edge functions, API routes, server-side utilities
 
 ## Domain: Claude Code config
 
-Apply when changed files match `.claude/skills/**`, `.claude/settings.json`,
-`.claude/hooks/**`, or `.claude/plans/**`.
+Apply when changed files match `.claude/**`.
 
 27. **Skill trigger accuracy** — Do TRIGGER and DO NOT TRIGGER conditions
     match the skill's actual purpose? A skill that triggers too broadly wastes
