@@ -42,10 +42,10 @@ case "$BASE_CMD" in
     ;;
 esac
 
-# Process / environment inspection
-# Note: env is excluded — it can execute arbitrary commands (e.g., env bash -c '...')
+# Process / system inspection
+# env and printenv excluded — they dump environment variables which may contain secrets
 case "$BASE_CMD" in
-  echo|printenv|whoami|hostname|date|uname|id|locale|uptime)
+  echo|whoami|hostname|date|uname|id|locale|uptime)
     allow
     ;;
 esac
