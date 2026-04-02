@@ -12,15 +12,14 @@ allow() {
 
 # --- Reject multi-line commands ---
 # Newlines in the command string bypass grep-based checks (grep is line-based).
-# A command like "git status\nrm -rf /" would match the git safelist on line 1.
 if [[ "$COMMAND" == *$'\n'* ]]; then
   exit 0
 fi
 
-# --- Reject compound/chained commands ---
-# Commands with shell metacharacters could chain a dangerous command after
-# a safe-looking prefix (e.g., "ls; rm -rf /"). Fall through to "ask".
-if printf '%s\n' "$COMMAND" | grep -qE '[;|&`]|>[[:space:]]*|<[[:space:]]*|\$[({A-Za-z_]'; then
+# --- Reject compound/chained commands and shell expansion ---
+# Metacharacters could chain dangerous commands after a safe-looking prefix,
+# or expand variables containing secrets. Fall through to "ask".
+if printf '%s\n' "$COMMAND" | grep -qE '[;|&`]|>[[:space:]]*|<[[:space:]]*|\$'; then
   exit 0
 fi
 
@@ -35,9 +34,10 @@ fi
 # Extract the first token as the base command
 BASE_CMD=$(printf '%s\n' "$COMMAND" | awk '{print $1}' | sed 's|.*/||')
 
-# Read-only git subcommands — reject dangerous flags (--output, --ext-diff, --textconv)
-if printf '%s\n' "$COMMAND" | grep -qE '^git (status|log|diff|show|stash list|tag|describe|rev-parse|shortlog|ls-files|ls-tree)( |$)'; then
-  if printf '%s\n' "$COMMAND" | grep -qiE '\-\-(output|ext-diff|textconv|exec|upload-pack)'; then
+# Read-only git subcommands — reject dangerous flags
+if printf '%s\n' "$COMMAND" | grep -qE '^git (status|log|diff|show|stash list|describe|rev-parse|shortlog|ls-files|ls-tree)( |$)'; then
+  # Block flags that write files or execute external programs (including abbreviations)
+  if printf '%s\n' "$COMMAND" | grep -qiE '\-\-(out[a-z]*|ext-d[a-z]*|textc[a-z]*|exec[a-z]*|upload-p[a-z]*)'; then
     exit 0
   fi
   allow
@@ -53,46 +53,52 @@ fi
 
 # Filesystem reads
 case "$BASE_CMD" in
-  ls|pwd|cat|head|tail|wc|file|which|type|stat|readlink|basename|dirname|realpath|tree)
+  ls|pwd|wc|which|type|readlink|basename|dirname|realpath|tree)
+    allow
+    ;;
+esac
+
+# cat, head, tail, file, stat — block reads of sensitive paths
+case "$BASE_CMD" in
+  cat|head|tail|file|stat)
+    if printf '%s\n' "$COMMAND" | grep -qiE '(\.ssh|\.aws|\.gnupg|\.env|\.npmrc|\.pypirc|\.netrc|\.docker|/etc/shadow|/etc/passwd|/proc/|credentials|secret|private|token|password|\.pem|\.key|id_rsa|id_ed25519)'; then
+      exit 0
+    fi
     allow
     ;;
 esac
 
 # Process / system inspection
-# Excluded: env, printenv (secrets), whoami, hostname, id (PII),
-# uname (machine fingerprinting), locale (geographic/language info)
 case "$BASE_CMD" in
-  echo|date|uptime)
+  date|uptime)
     allow
     ;;
 esac
 
-# Version checks (anything ending in --version or -v as sole arg)
-if printf '%s\n' "$COMMAND" | grep -qE '^[a-z0-9._-]+ (--version|-[vV])$'; then
+# Version checks — restricted to known safe binaries only
+if printf '%s\n' "$COMMAND" | grep -qE '^(node|python[0-9.]*|ruby|go|cargo|rustc|gcc|g\+\+|clang|java|javac|dotnet|php|perl|git|docker|kubectl|terraform|helm|deno) (--version|-[vV])$'; then
   allow
 fi
 
-# Dev tool read-only queries
-# npm config list excluded — leaks _authToken from .npmrc
+# Dev tool read-only queries — reject --registry/--index-url (SSRF)
 if printf '%s\n' "$COMMAND" | grep -qE '^(npm list|npm ls|npm outdated|npm view|npm info)( |$)'; then
+  if printf '%s\n' "$COMMAND" | grep -qiE '\-\-registry'; then
+    exit 0
+  fi
   allow
 fi
 if printf '%s\n' "$COMMAND" | grep -qE '^(pip list|pip show|pip freeze|pip check)( |$)'; then
-  allow
-fi
-if printf '%s\n' "$COMMAND" | grep -qE '^(cargo metadata|cargo tree)( |$)'; then
-  allow
-fi
-if printf '%s\n' "$COMMAND" | grep -qE '^(go list|go env|go doc)( |$)'; then
+  if printf '%s\n' "$COMMAND" | grep -qiE '\-\-(index-url|extra-index-url)'; then
+    exit 0
+  fi
   allow
 fi
 
-# Test runners — all excluded. They execute project code (config files, test
-# files, setup scripts) and may hit real dependencies.
+# cargo, go — all excluded. cargo metadata/tree may trigger build.rs;
+# go list/env/doc may trigger module downloads or write persistent config.
 
-# Build commands — all excluded. npm run build/lint execute arbitrary
-# package.json scripts, cargo clippy runs build.rs/proc macros. Same
-# blast radius as test runners.
+# Test runners — all excluded.
+# Build commands — all excluded.
 
 # --- Default: fall through to normal permission prompt ---
 exit 0
