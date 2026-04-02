@@ -10,13 +10,24 @@ allow() {
   exit 0
 }
 
+# --- Reject compound/chained commands ---
+# Commands with shell metacharacters could chain a dangerous command after
+# a safe-looking prefix (e.g., "ls; rm -rf /"). Fall through to "ask".
+if echo "$COMMAND" | grep -qE '[;|&`]|>\s*|>>\s*|<\s*|\$\('; then
+  exit 0
+fi
+
 # --- Safelist: read-only and low-risk commands ---
 
-# Extract the first token (the base command, ignoring leading env vars / cd chains)
-BASE_CMD=$(echo "$COMMAND" | sed 's/^[A-Z_]*=[^ ]* *//' | awk '{print $1}' | sed 's|.*/||')
+# Extract the first token (the base command, stripping all leading KEY=VALUE assignments)
+BASE_CMD=$(echo "$COMMAND" | sed 's/^\([A-Z_]*=[^ ]* *\)*//' | awk '{print $1}' | sed 's|.*/||')
 
 # Read-only git subcommands
-if echo "$COMMAND" | grep -qE '^git (status|log|diff|branch|show|remote|stash list|tag|describe|rev-parse|shortlog|ls-files|ls-tree)'; then
+if echo "$COMMAND" | grep -qE '^git (status|log|diff|show|remote|stash list|tag|describe|rev-parse|shortlog|ls-files|ls-tree)'; then
+  allow
+fi
+# git branch — only listing operations, not -d/-D/--delete/create
+if echo "$COMMAND" | grep -qE '^git branch( -[avr]+| --list| --show-current)?$'; then
   allow
 fi
 
@@ -28,8 +39,9 @@ case "$BASE_CMD" in
 esac
 
 # Process / environment inspection
+# Note: env is excluded — it can execute arbitrary commands (e.g., env bash -c '...')
 case "$BASE_CMD" in
-  echo|env|printenv|whoami|hostname|date|uname|id|locale|uptime)
+  echo|printenv|whoami|hostname|date|uname|id|locale|uptime)
     allow
     ;;
 esac
@@ -46,10 +58,11 @@ fi
 if echo "$COMMAND" | grep -qE '^(pip list|pip show|pip freeze|pip check)'; then
   allow
 fi
-if echo "$COMMAND" | grep -qE '^(cargo metadata|cargo tree|cargo check)'; then
+# cargo check and go vet excluded — they execute project code (build.rs, cgo)
+if echo "$COMMAND" | grep -qE '^(cargo metadata|cargo tree)'; then
   allow
 fi
-if echo "$COMMAND" | grep -qE '^(go list|go env|go doc|go vet)'; then
+if echo "$COMMAND" | grep -qE '^(go list|go env|go doc)'; then
   allow
 fi
 
@@ -63,7 +76,8 @@ if echo "$COMMAND" | grep -qE '^(npx jest|npx vitest|npx mocha)'; then
 fi
 
 # Build commands
-if echo "$COMMAND" | grep -qE '^(npm run build|npm run lint|npx tsc|make |make$|cargo build|cargo clippy|go build)'; then
+# make excluded — Makefiles contain arbitrary shell commands
+if echo "$COMMAND" | grep -qE '^(npm run build|npm run lint|npx tsc|cargo build|cargo clippy|go build)'; then
   allow
 fi
 
