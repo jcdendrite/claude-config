@@ -67,47 +67,52 @@ B4. **Unresolved external dependencies** — Does the plan depend on external se
    hasn't verified? A plan that assumes an API endpoint exists or a service has a
    specific capability without checking is fragile.
 
+B5. **Evidence** — Does the plan cite the source for each finding or assertion
+   about the codebase? "Remove unused variable" should reference which file and
+   line, which tool flagged it, or how it was discovered. Plans that state
+   conclusions without evidence force reviewers to re-derive them.
+
 ### Scope
 
-B5. **Proportionality** — Is the solution proportional to the problem? Flag both
+B6. **Proportionality** — Is the solution proportional to the problem? Flag both
    over-engineering (abstractions for one-time operations, premature extensibility)
    and under-engineering (band-aids that will need immediate follow-up).
 
-B6. **Scope creep** — Does the plan include work that isn't required to solve the
+B7. **Scope creep** — Does the plan include work that isn't required to solve the
    stated problem? Improvements to adjacent code, premature optimizations, or
    "while we're here" refactors should be captured in the **Out of Scope** section
    of the review output — don't lose the observation, but don't plan for it either.
 
-B7. **Missing scope** — Does the plan omit work that IS required? Common gaps:
+B8. **Missing scope** — Does the plan omit work that IS required? Common gaps:
    test updates for breaking changes, documentation updates, migration rollback
    strategy, frontend changes for backend format changes.
 
 ### Risk
 
-B8. **Phase independence** — For multi-phase plans, can each phase be merged and
+B9. **Phase independence** — For multi-phase plans, can each phase be merged and
    deployed independently without breaking the system? Can any phase be reverted
    without reverting all subsequent phases? Are there cross-phase dependencies
    that would leave the system in a broken state if a later phase is delayed?
 
-B9. **Test realism** — Are the planned test assertions realistic given the changes?
+B10. **Test realism** — Are the planned test assertions realistic given the changes?
    Will existing tests actually break as claimed? Are new test scenarios sufficient
    to catch regressions?
 
-B10. **Rollback strategy** — For destructive or hard-to-reverse changes (data
+B11. **Rollback strategy** — For destructive or hard-to-reverse changes (data
    migrations, API format changes, dependency removals), is there a rollback plan?
    Or is the change structured to be safely reversible by default?
 
-B11. **Dependency risk** — Does the plan add, upgrade, or remove dependencies? If so,
+B12. **Dependency risk** — Does the plan add, upgrade, or remove dependencies? If so,
    does it account for transitive dependency conflicts, license implications, and
    the maintenance health of new dependencies?
 
 ### Clarity
 
-B12. **Ambiguous instructions** — Could an implementer misinterpret the plan and
+B13. **Ambiguous instructions** — Could an implementer misinterpret the plan and
     produce the wrong result? Look for instructions that describe the wrong file,
     wrong pattern, or make claims about code structure that don't match reality.
 
-B13. **Missing decision rationale** — Are design choices explained? A plan that says
+B14. **Missing decision rationale** — Are design choices explained? A plan that says
     "use approach X" without explaining why X was chosen over Y leaves the implementer
     unable to make judgment calls when they encounter edge cases.
 
