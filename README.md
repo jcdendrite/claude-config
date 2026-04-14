@@ -6,6 +6,8 @@ Portable [Claude Code](https://claude.ai/claude-code) global configuration: cust
 
 `stow`, `git`, `gh`, `jq`, `sha256sum`. `install.sh` verifies they exist and exits early if any are missing.
 
+**macOS:** `sha256sum` ships in GNU `coreutils`. Install with `brew install coreutils`, then add the gnubin directory to PATH so the unprefixed name resolves: `export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"`.
+
 ## Setup
 
 ```bash
