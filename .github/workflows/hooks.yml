@@ -1,10 +1,12 @@
-# WARNING: The workflow name ("hooks") and job ID ("test") form the status
-# check context string "hooks / test" that is referenced by branch protection.
-# Renaming either silently breaks the required-check match. If you rename,
-# also update the required_status_checks.contexts list via:
+# WARNING: The job id ("hook-tests") is the status check context string
+# referenced by branch protection on main. Renaming the job silently breaks
+# the required-check match. If you rename the job, also update the
+# required_status_checks.contexts list via:
 #   gh api -X PUT repos/jcdendrite/claude-config/branches/main/protection
+# (The workflow-level "name:" does NOT affect the context string for GitHub
+# Actions checks — only the job id does.)
 
-name: hooks
+name: Hook tests
 
 on:
   push:
@@ -19,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  hook-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
