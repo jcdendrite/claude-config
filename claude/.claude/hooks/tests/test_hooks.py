@@ -291,9 +291,9 @@ class TestAskReviewPermissions:
     @pytest.mark.parametrize(
         "tool_input",
         [
-            edit_input("/home/jared/foo/.claude/settings.json"),
-            edit_input("/home/jared/foo/.claude/settings.local.json"),
-            write_input("/home/jared/foo/.claude/settings.json"),
+            edit_input("/some/project/.claude/settings.json"),
+            edit_input("/some/project/.claude/settings.local.json"),
+            write_input("/some/project/.claude/settings.json"),
         ],
         ids=["edit-settings", "edit-settings-local", "write-settings"],
     )
@@ -303,13 +303,13 @@ class TestAskReviewPermissions:
     @pytest.mark.parametrize(
         "path",
         [
-            "/home/jared/foo/package.json",
-            "/home/jared/foo/.claude/CLAUDE.md",
-            "/home/jared/foo/.claude/skills/foo.md",
+            "/some/project/package.json",
+            "/some/project/.claude/CLAUDE.md",
+            "/some/project/.claude/skills/foo.md",
         ],
     )
     def test_non_settings_paths_allowed(self, path):
         assert run_hook(REVIEW_PERMS_HOOK, edit_input(path)) == "allow"
 
     def test_bash_tool_allowed(self):
-        assert run_hook(REVIEW_PERMS_HOOK, bash_input("cat /home/jared/.claude/settings.json")) == "allow"
+        assert run_hook(REVIEW_PERMS_HOOK, bash_input("cat /some/project/.claude/settings.json")) == "allow"
