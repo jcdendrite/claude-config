@@ -1,0 +1,36 @@
+name: hooks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'claude/.claude/hooks/**'
+      - '.github/workflows/hooks.yml'
+  pull_request:
+    paths:
+      - 'claude/.claude/hooks/**'
+      - '.github/workflows/hooks.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hooks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: pip install 'pytest==8.*'
+
+      - name: Run hook tests
+        run: pytest claude/.claude/hooks/tests/ -v

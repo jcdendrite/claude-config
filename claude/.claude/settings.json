@@ -9,6 +9,21 @@
             "if": "Bash(git commit *)",
             "command": "~/.claude/hooks/require-code-review.sh",
             "statusMessage": "Checking code review..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-respond-pr.sh",
+            "statusMessage": "Checking respond-pr gate..."
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ask-review-permissions.sh",
+            "statusMessage": "Checking settings permissions..."
           }
         ]
       }

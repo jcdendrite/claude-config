@@ -38,7 +38,17 @@ The `claude` package configures [Claude Code](https://claude.ai/claude-code) glo
 
 - **`CLAUDE.md`** — baseline engineering instructions applied to all projects (judgment heuristics, working style, safety rules)
 - **`settings.json`** — global settings including a custom statusline and hooks
-- **`hooks/require-code-review.sh`** — PreToolUse hook that gates `git commit` behind `/code-review`, ensuring code is reviewed before committing
+- **`hooks/`** — PreToolUse gates that redirect Claude to the relevant review skill:
+  - `require-code-review.sh` — blocks `git commit` (including chained forms like `git add . && git commit`) until `/code-review` has run on the current staged state. Verified via sha256 marker in `~/.claude/review-markers/<repo-hash>`, which auto-invalidates the moment the staging area changes.
+  - `require-respond-pr.sh` — blocks PR comment reads and posts (`gh api .../pulls|issues/N/{comments,reviews}`, `gh pr comment`, `gh pr review`) and redirects to `/respond-pr`, so all three comment types get fetched and replies carry the `[Claude Code]` attribution prefix. Honors a 60-minute bypass marker at `~/.claude/.respond-pr-active` that the skill sets on entry and removes on exit.
+  - `ask-review-permissions.sh` — asks before `Edit`/`Write`/`MultiEdit` to `.claude/settings*.json`, nudging you to run `/review-permissions` if the edit touches `permissions.allow`.
+- **`hooks/tests/test_hooks.py`** — end-to-end pytest suite for all three hooks. Spins up a temp git repo, feeds each hook realistic JSON input, and verifies the allow/deny/ask decisions (37 cases). Sandboxes `$HOME` per test so it never touches live marker state. Run with:
+
+  ```bash
+  pytest claude/.claude/hooks/tests/
+  ```
+
+  Also runs automatically in CI on every PR that touches the hooks (see `.github/workflows/hooks.yml`).
 - **`statusline-command.sh`** — custom status bar showing model, context usage, session cost, working directory, and git branch
 - **`commands/code-review.md`** — `/code-review` skill: principal engineer code review checklist (11 items covering correctness, hygiene, clarity, security, and scope)
 - **`commands/respond-pr.md`** — `/respond-pr` skill: fetch and address PR review comments, with `[Claude Code]` attribution on all replies
