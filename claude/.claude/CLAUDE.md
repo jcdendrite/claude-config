@@ -27,6 +27,10 @@
 
 - After writing or modifying code, run `/code-review` before presenting the code to the user. If the review finds issues, fix them first, then present the final version.
 
+## Plan Review
+
+- After writing or modifying an implementation plan, run `/plan-review` before presenting the plan to the user. If the review finds issues, address them first, then present the final version.
+
 ## Safety
 
 - Never run sudo commands directly.
