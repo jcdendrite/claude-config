@@ -45,4 +45,32 @@ else
   exit 0
 fi
 
+# Cross-repo bypass: if the command explicitly targets a repo that differs
+# from the current git origin, it is research on an external repo (e.g.
+# reading anthropics/claude-code issues while working in the user's project),
+# not a PR response in the current repo. Two explicit forms are recognized:
+#   gh api repos/OWNER/REPO/...
+#   gh pr <cmd> ... -R OWNER/REPO      (also --repo OWNER/REPO, --repo=OWNER/REPO)
+# Implicit commands (no repo specified) still gate — gh resolves those
+# against the current repo. Caveats: (1) in-repo reads of an actual Issue
+# (not a PR) still false-positive; accepted because the user does not track
+# work in GitHub Issues. (2) the -R/--repo regex scans raw command text, so
+# a flag-shaped substring inside a quoted body could spoof a cross-repo
+# match and bypass the gate — unlikely for Claude-written commands, but
+# worth knowing.
+COMMAND_REPO=$(printf '%s\n' "$COMMAND" | sed -nE 's#.*repos/([^/]+/[^/]+)/(pulls|issues)/[0-9]+/(comments|reviews).*#\1#p' | head -1)
+if [ -z "$COMMAND_REPO" ]; then
+  COMMAND_REPO=$(printf '%s\n' "$COMMAND" | sed -nE 's#.*[[:space:]](-R|--repo)[[:space:]=]+([^[:space:]=]+/[^[:space:]]+).*#\2#p' | head -1)
+fi
+
+if [ -n "$COMMAND_REPO" ]; then
+  CURRENT_URL=$(git config --get remote.origin.url 2>/dev/null)
+  if [ -n "$CURRENT_URL" ]; then
+    CURRENT_REPO=$(printf '%s\n' "$CURRENT_URL" | sed -nE 's#.*[:/]([^/:]+/[^/]+)$#\1#p' | sed 's#\.git$##')
+    if [ -n "$CURRENT_REPO" ] && [ "$COMMAND_REPO" != "$CURRENT_REPO" ]; then
+      exit 0
+    fi
+  fi
+fi
+
 echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"PR comment access blocked by respond-pr gate. Run the /respond-pr skill instead — it fetches inline file comments, top-level review bodies, AND issue-level comments (Claude habitually fetches only the first and misses real feedback), and it enforces the [Claude Code] attribution prefix on replies so comments posted through the GitHub token are clearly labeled as AI-generated. Do not ask the user for permission — run /respond-pr and let it handle this operation."}}'
