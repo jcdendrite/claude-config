@@ -228,6 +228,26 @@ class TestRequireCodeReview:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def current_repo_foo_bar(tmp_path):
+    """Git repo whose origin is https://github.com/foo/bar.git.
+
+    Most respond-pr tests target `foo/bar` in the command URL. The
+    cross-repo bypass compares COMMAND_REPO against the current git origin,
+    so we need the current repo to also be `foo/bar` for the gate to fire
+    as expected on same-repo commands.
+    """
+    repo = tmp_path / "foo-bar-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/foo/bar.git"],
+        cwd=repo,
+        check=True,
+    )
+    return repo
+
+
 class TestRequireRespondPr:
     @pytest.mark.parametrize(
         "command",
@@ -240,8 +260,8 @@ class TestRequireRespondPr:
             "gh api repos/foo/bar/pulls/5/comments -F body=hi",
         ],
     )
-    def test_matching_commands_denied(self, isolated_home, command):
-        assert run_hook(RESPOND_PR_HOOK, bash_input(command)) == "deny"
+    def test_matching_commands_denied(self, isolated_home, current_repo_foo_bar, command):
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "deny"
 
     @pytest.mark.parametrize(
         "command",
@@ -254,8 +274,8 @@ class TestRequireRespondPr:
             "git status",
         ],
     )
-    def test_non_matching_commands_allowed(self, isolated_home, command):
-        assert run_hook(RESPOND_PR_HOOK, bash_input(command)) == "allow"
+    def test_non_matching_commands_allowed(self, isolated_home, current_repo_foo_bar, command):
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
 
     @pytest.mark.parametrize(
         "command",
@@ -264,22 +284,84 @@ class TestRequireRespondPr:
             "gh pr comment 5 --body test",
         ],
     )
-    def test_fresh_bypass_marker_allows(self, isolated_home, command):
+    def test_fresh_bypass_marker_allows(self, isolated_home, current_repo_foo_bar, command):
         (isolated_home / ".claude" / ".respond-pr-active").touch()
-        assert run_hook(RESPOND_PR_HOOK, bash_input(command)) == "allow"
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
 
-    def test_stale_bypass_marker_denies(self, isolated_home):
+    def test_stale_bypass_marker_denies(self, isolated_home, current_repo_foo_bar):
         marker = isolated_home / ".claude" / ".respond-pr-active"
         marker.touch()
         # Backdate 90 minutes — past the hook's 60-minute staleness cutoff.
         ninety_min_ago = time.time() - 90 * 60
         os.utime(marker, (ninety_min_ago, ninety_min_ago))
         assert (
-            run_hook(RESPOND_PR_HOOK, bash_input("gh api repos/foo/bar/pulls/5/comments")) == "deny"
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5/comments"),
+                cwd=current_repo_foo_bar,
+            )
+            == "deny"
         )
 
     def test_non_bash_tool_allowed(self, isolated_home):
         assert run_hook(RESPOND_PR_HOOK, edit_input("/tmp/foo.txt")) == "allow"
+
+    # -- Cross-repo bypass --------------------------------------------------
+    # Regression: the gate originally fired on any `(pulls|issues)/N/...`
+    # URL regardless of repo, which false-positived on cross-repo research
+    # reads like `gh api repos/anthropics/claude-code/issues/12962/comments`
+    # from inside an unrelated project.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api repos/other/repo/pulls/5/comments",
+            "gh api repos/other/repo/pulls/5/reviews",
+            "gh api repos/other/repo/issues/5/comments",
+            "gh pr comment 5 -R other/repo --body test",
+            "gh pr review 5 --repo other/repo --approve",
+            "gh pr comment 5 --repo=other/repo --body test",
+        ],
+    )
+    def test_cross_repo_commands_allowed(self, isolated_home, current_repo_foo_bar, command):
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
+
+    def test_ssh_origin_cross_repo_allowed(self, isolated_home, tmp_path):
+        """SSH-form origin (git@github.com:owner/repo.git) must parse too."""
+        repo = tmp_path / "ssh-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:foo/bar.git"],
+            cwd=repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/other/repo/issues/5/comments"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_ssh_origin_same_repo_denied(self, isolated_home, tmp_path):
+        repo = tmp_path / "ssh-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:foo/bar.git"],
+            cwd=repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/issues/5/comments"),
+                cwd=repo,
+            )
+            == "deny"
+        )
 
 
 # ---------------------------------------------------------------------------
