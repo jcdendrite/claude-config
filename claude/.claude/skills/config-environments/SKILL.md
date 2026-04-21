@@ -198,6 +198,21 @@ app.listen(config.PORT);                             // typed: number
 
 Zod is shown above; `valibot`, `envalid`, `@t3-oss/env-core`, or hand-rolled validation all work. The point is a single validated module, not the library.
 
+### Language equivalents
+
+The examples above are TypeScript / Node because it's the most common backend in many stacks. The `config.ts` *pattern* — one module that reads env, validates, freezes, exports typed config — translates directly:
+
+| Language / stack | Config module | Common validation libraries |
+|---|---|---|
+| TypeScript / Node / Bun | `config.ts` | Zod, valibot, envalid, `@t3-oss/env-core` |
+| Python | `config.py` or `settings.py` | `pydantic-settings`, `dynaconf` |
+| Go | `internal/config/config.go` | `envconfig` (kelseyhightower), `viper`, `koanf` |
+| Ruby / Rails | `config/application.rb` + `config/credentials/<env>.yml.enc` | Built-in `Rails.application.credentials`; `dry-configurable`, `anyway_config` |
+| Java / Kotlin / Spring Boot | `@ConfigurationProperties` class | Built-in `jakarta.validation` (JSR-380) |
+| Rust | `src/config.rs` | `figment`, `envy`, `config` crate + `serde` derives |
+
+Runtime env-access syntax is in the table at the top of this skill. The principles (read once at boot, validate, freeze, export typed, mock-the-module in tests) are the same everywhere — only the library names change.
+
 ## Isolation patterns that actually work
 
 If the goal is **credential isolation across environments** (so a dev leak can't compromise prod), enforce it at **provisioning time**, not in code:
