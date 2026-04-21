@@ -202,14 +202,16 @@ Zod is shown above; `valibot`, `envalid`, `@t3-oss/env-core`, or hand-rolled val
 
 The examples above are TypeScript / Node because it's the most common backend in many stacks. The `config.ts` *pattern* — one module that reads env, validates, freezes, exports typed config — translates directly:
 
-| Language / stack | Config module | Common validation libraries |
+| Language / stack | Config module | Common libraries |
 |---|---|---|
-| TypeScript / Node / Bun | `config.ts` | Zod, valibot, envalid, `@t3-oss/env-core` |
-| Python | `config.py` or `settings.py` | `pydantic-settings`, `dynaconf` |
-| Go | `internal/config/config.go` | `envconfig` (kelseyhightower), `viper`, `koanf` |
-| Ruby / Rails | `config/application.rb` + `config/credentials/<env>.yml.enc` | Built-in `Rails.application.credentials`; `dry-configurable`, `anyway_config` |
-| Java / Kotlin / Spring Boot | `@ConfigurationProperties` class | Built-in `jakarta.validation` (JSR-380) |
-| Rust | `src/config.rs` | `figment`, `envy`, `config` crate + `serde` derives |
+| TypeScript / Node / Bun | `src/config.ts` or `src/env.ts` | Zod, valibot, envalid, `@t3-oss/env-core` |
+| Python | `config.py` or `settings.py` | `pydantic-settings`, `dynaconf`; `django-environ` for Django |
+| Go | `internal/config/config.go` or `config/config.go` | Parsing: `caarlos0/env`, `spf13/viper`, `knadh/koanf` (note: `kelseyhightower/envconfig` is widely used but largely unmaintained). Field validation: `go-playground/validator`. |
+| Ruby / Rails | `config/application.rb` + `config/environments/*.rb` + `config/credentials/<env>.yml.enc` | Built-in `Rails.application.credentials`; `anyway_config`, `dotenv-rails` |
+| Java / Kotlin / Spring Boot | `@ConfigurationProperties` class | Jakarta Bean Validation (Hibernate Validator via `spring-boot-starter-validation`) |
+| Rust | `src/config.rs` | Parsing: `config`, `figment`, or `envy` with `serde` `#[derive(Deserialize)]`. Field validation: `validator` or `garde`. `.env` loading: `dotenvy`. |
+
+A note on the TS/Python rows vs Go/Rust rows: in TypeScript and Python, one library usually handles both parsing and validation (Zod, pydantic-settings). In Go and Rust, they're separate concerns — a config library maps env vars into a struct, and a validator library enforces field constraints. Either way the `config.ts`-style pattern applies: one module reads + validates + freezes at boot. Plain Ruby (Sinatra, scripts) typically uses `ENV.fetch` with manual validation in a `config.rb`.
 
 Runtime env-access syntax is in the table at the top of this skill. The principles (read once at boot, validate, freeze, export typed, mock-the-module in tests) are the same everywhere — only the library names change.
 
