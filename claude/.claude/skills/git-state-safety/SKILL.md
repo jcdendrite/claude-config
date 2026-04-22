@@ -78,6 +78,12 @@ The worst case: the merge commit is already created and pushed, the
 no-force-push rule binds, and the merge tree is wrong (e.g., files
 deleted on the other side are still present on your branch).
 
+This recipe applies **after** the bad merge is already committed —
+`git status` shows a clean tree and the merge commit is in history.
+The fragile-index rules in the sections above apply during the
+*active* merge; once the merge is committed, standard index operations
+(`git rm`, `git checkout <ref> -- <path>`) are safe again.
+
 ### Recipe
 
 1. **Confirm the damage:**
@@ -108,6 +114,21 @@ deleted on the other side are still present on your branch).
    restored files (the upstream content that you did not author). If so,
    request explicit engineer approval before using `--no-verify`;
    skipping hooks without approval is forbidden.
+
+### If GitHub's PR diff still shows restored files after the recovery commit
+
+GitHub's Files-changed view renders `git diff <base>...<head>`
+(three-dot) — the diff from the branch's *merge-base* to its tip, not
+from the upstream's current tip to the branch's tip. Any file modified
+on the branch relative to the merge-base stays in the PR diff even
+after the content now matches current `<upstream>`.
+
+The recovery commit restores content but cannot rewrite history. If
+the clean PR diff matters (visual review scope, CI file-filter
+triggers, reviewer trust), the only clean fix is to **open a fresh
+branch off current upstream containing only the intended changes**,
+then close the original PR and point at the new one. Further commits
+on the corrupted branch do not reduce the set of files GitHub shows.
 
 ## Rule of thumb
 
