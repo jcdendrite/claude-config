@@ -31,9 +31,11 @@ Keeping a feature branch current with `main` has two shapes:
 - **Merge** — `git merge origin/main`. Creates a merge commit on the
   feature branch. Preserves SHAs. No force-push needed.
 
-**Default: rebase on personal feature branches.** Switch to merge when any
+**This skill's default is rebase on personal feature branches** — a
+reasonable and common choice, but not universal (many shops default to
+merge even on personal branches). Switch to merge when any
 *merge-required condition* below applies. Always defer to per-client
-policy if it contradicts this default.
+policy when it contradicts this default.
 
 ## Merge-required conditions
 
@@ -72,19 +74,33 @@ git push --force-with-lease --force-if-includes
 `--force-with-lease` alone has a known gap: a stray `git fetch` updates
 the remote-tracking ref, which makes the lease look held even though you
 haven't integrated the remote's new commits. `--force-if-includes` closes
-that gap. Use both.
+that gap by checking your local reflog against the remote-tracking ref.
+Use both. Note: `--force-if-includes` silently no-ops if reflogs are
+disabled (`core.logAllRefUpdates=false`) — uncommon but seen in some CI
+images.
 
 ## Never-force-push targets
 
 Refuse to force-push to any of these regardless of flavor:
 
-- `main`, `master`, `trunk`, `develop`, or any default branch
-- `release/*`, `hotfix/*`, or any other protected / shared branch
+- `main`, `master`, `trunk`, `develop`, or **the remote's default branch**
+  (check `git symbolic-ref refs/remotes/origin/HEAD` —
+  `init.defaultBranch` is the local default, not authoritative)
+- `release/*`, `hotfix/*`, `staging`, `production`, `qa`, `uat`, or any
+  other shared / environment-tracking branch
+- **Tags** (`refs/tags/*`) — never force-push. Tags are the
+  supply-chain anchor for releases and SBOMs; signed tags especially
+  must never be rewritten.
 - Any branch the user has not explicitly said is personal
 
 For those branches, rebasing the branch itself is also off the table —
 they keep merge history. Bringing `main` into them (when it even makes
 sense) is a merge, not a rebase.
+
+**Do not rely on server-side branch protection** to catch mistakes. On
+GitHub Free private repos the branch-protection API is inaccessible; on
+other repos the rules may simply not be configured. Treat the list above
+as the last line of defense, not the only one.
 
 ## Interaction with PR merge strategy
 
@@ -111,24 +127,40 @@ CLAUDE.md should state the policy.
 Before running `git push --force-with-lease` on a feature branch:
 
 1. Is this branch personal (only you committing)? If no → merge instead.
+   Verify with `git log --format='%ae' origin/<branch> | sort -u` if
+   uncertain — don't rely solely on a "yes it's mine" claim.
 2. Has anyone stacked a branch on this one? If yes → coordinate or merge.
 3. Is PR review in flight where comments anchor to SHAs? If yes → rework
    commits, not rebase.
-4. Is the branch one of `main` / `master` / `develop` / `release/*` /
-   any protected branch? → stop. Force-push is forbidden here.
-5. Using `--force-with-lease --force-if-includes`? → proceed.
+4. Is the branch in the never-force-push list above (default branch,
+   environment branches, tags, shared branches)? → stop. Force-push is
+   forbidden regardless of flavor.
+5. Does the repo require signed commits? Rebase drops signatures.
+   Either (a) ensure `commit.gpgsign=true` so the rebase re-signs, or
+   (b) skip rebase and merge instead. Check `git config commit.gpgsign`
+   and the repo's branch-protection `required_signatures` rule.
+6. Using `--force-with-lease --force-if-includes`? → proceed.
 
 ## Recovery from a bad force-push
 
 `--force-with-lease --force-if-includes` will catch most of these. If
 one slips through and you clobber a teammate's commits:
 
-1. Find the pre-force SHA. Your local `git reflog` has it if you were
-   the one who force-pushed. Otherwise ask the displaced teammate —
-   their local reflog or branch still points at it.
-2. Restore: `git push --force-with-lease origin <recovered-sha>:<branch>`
-3. Coordinate. The teammate may have local work that now needs rebasing
-   onto the restored tip.
+1. Find the pre-force SHA. Your local `git reflog` has it if you
+   force-pushed; any teammate's `git reflog show origin/<branch>` in a
+   recently-fetched clone also has it. If no local reflog survives,
+   `git fsck --lost-found` may surface the dangling commits.
+2. **Pin it immediately**, before doing anything else. Reflog expiry and
+   `git gc` can reap unreachable commits; `gc.reflogExpireUnreachable`
+   defaults to 90 days but teams sometimes tighten it. Create a backup
+   ref: `git branch backup/<branch>-<date> <recovered-sha>`.
+3. **`git fetch origin` before restoring.** Someone may have pushed
+   legitimate reconciliation work on top of the clobbered tip. If so,
+   merge those commits onto the recovered SHA before pushing — do not
+   overwrite reconciliation work.
+4. Restore: `git push --force-with-lease origin <recovered-sha>:<branch>`
+5. Coordinate. The displaced teammate may have local work that now
+   needs rebasing onto the restored tip.
 
 For recovery from a bad *merge* (not force-push) that already landed,
 see `git-state-safety`.
