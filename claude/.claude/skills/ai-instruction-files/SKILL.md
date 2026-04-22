@@ -3,10 +3,14 @@ name: ai-instruction-files
 description: >
   How Claude Code, Lovable, and other AI coding agents load instruction
   files (CLAUDE.md, AGENTS.md, Cursor rules, Copilot instructions, Lovable
-  project/workspace knowledge): precedence, duplication rules, length
-  targets, and the cross-file import pattern Anthropic officially endorses.
+  project/workspace knowledge) and Claude Code auto-memory (MEMORY.md
+  index + topic files): precedence, duplication rules, length targets,
+  the `@AGENTS.md` import pattern Anthropic officially endorses, and the
+  split between user-written instructions and Claude-written memory.
   TRIGGER when: editing CLAUDE.md or AGENTS.md, editing `.lovable/*.md`,
-  creating a new instruction file, evaluating whether rules should be
+  creating a new instruction file, auditing or pruning Claude Code
+  auto-memory in `~/.claude/projects/*/memory/`, deciding whether a rule
+  belongs in CLAUDE.md vs auto-memory, evaluating whether rules should be
   duplicated across files, or debating file length and context budget for
   AI coding agents.
   DO NOT TRIGGER when: editing README.md or other project docs that are
@@ -16,7 +20,7 @@ description: >
 user-invocable: false
 ---
 
-# AI Instruction Files — Architecture
+# AI Instruction & Memory Files — Architecture
 
 The facts below come from primary sources (Anthropic docs, Lovable docs,
 agents.md standard). Treat them as durable context: when CLAUDE.md /
@@ -116,8 +120,67 @@ Claude Code when both files exist. Zero maintenance, single source.
 | CLAUDE.md is over 200 lines — what should I trim? | First: delete content that duplicates AGENTS.md (use `@AGENTS.md` import instead). Then: collapse narrative case studies into one-sentence principles. Leave only Claude-Code-specific project context. |
 | Should I add Lovable-specific guidance to project-knowledge vs AGENTS.md? | project-knowledge for project-specific facts that only apply to Lovable's current project context; AGENTS.md for rules that apply across sessions and repos. |
 | A rule appears in two files — is that OK? | Only if (a) it's critical AND (b) the two files reach different agents / different load paths AND (c) one could silently fail. Otherwise use the import pattern. |
+| Where should this rule live — CLAUDE.md or auto-memory? | Team rule → CLAUDE.md (or AGENTS.md). Personal preference / calibration → memory. If CLAUDE.md, AGENTS.md, or a hook already covers it → **neither**; delete the memory. See §6. |
 
-## 6. Primary sources
+## 6. Claude Code auto-memory (Claude-written, per-user)
+
+Auto-memory at `~/.claude/projects/<project>/memory/` is adjacent to
+CLAUDE.md but serves a different role. It's machine-local and per
+working tree — never a place for team rules. From
+[Claude Code — memory](https://code.claude.com/docs/en/memory):
+
+|                  | CLAUDE.md files                                   | Auto memory                                                      |
+| :--------------- | :------------------------------------------------ | :--------------------------------------------------------------- |
+| Who writes it    | You                                               | Claude                                                           |
+| What it contains | Instructions and rules                            | Learnings and patterns                                           |
+| Scope            | Project, user, or org                             | Per working tree (machine-local)                                 |
+| Loaded into      | Every session                                     | Every session (first 200 lines or 25KB of `MEMORY.md`)           |
+| Use for          | Coding standards, workflows, project architecture | Build commands, debugging insights, preferences Claude discovers |
+
+> "Use CLAUDE.md files when you want to guide Claude's behavior.
+> Auto memory lets Claude learn from your corrections without manual
+> effort."
+
+### `MEMORY.md` is an index, not a memory
+
+> "The first 200 lines of `MEMORY.md`, or the first 25KB, whichever comes
+> first, are loaded at the start of every conversation... Topic files
+> like `debugging.md` or `patterns.md` are not loaded at startup. Claude
+> reads them on demand..."
+
+Index discipline:
+
+- One line per entry, ≤150 characters: `- [title](file.md) — one-line hook`
+- No frontmatter on `MEMORY.md` itself — it's an index, not a memory
+- Substance lives in per-topic files; the index is pure routing
+- Organize semantically, not chronologically
+- Lines past 200 silently don't load — treat 200 as a hard ceiling
+
+### Where does a given rule belong?
+
+| Candidate content                                                | Goes in                                          |
+| :--------------------------------------------------------------- | :----------------------------------------------- |
+| Rule any contributor (or other agent) should follow              | CLAUDE.md, or AGENTS.md via `@AGENTS.md`         |
+| Personal preference or workflow specific to this user            | Auto-memory                                      |
+| Past incident "why" not captured in code, tests, or commit msgs  | Auto-memory (feedback or project type)           |
+| Pointer to external systems (Linear, Grafana, etc.)              | Auto-memory (reference type)                     |
+| Restatement of a rule already in CLAUDE.md / AGENTS.md           | **Nowhere — delete it** (§3 compliance asymmetry)|
+| Rule already enforced by a hook or structural test               | **Nowhere — enforcement is 100%, prose is load** |
+
+### Anti-duplication heuristic
+
+If CLAUDE.md / AGENTS.md already covers a rule, the matching memory is
+pure load: the rule fires every session through the instruction file,
+the index line consumes one of the ~200 loaded lines, and any recall
+reads a topic file that restates content already in context. **Delete
+on contact.**
+
+Memory earns its keep when it captures what the repo *doesn't*: who
+the user is and how they prefer to collaborate, feedback calibration
+(corrections **and** validated judgment calls) with the *why* story,
+time-sensitive project context, and references to external systems.
+
+## 7. Primary sources
 
 - [Claude Code — How Claude remembers your project](https://code.claude.com/docs/en/memory)
 - [Claude Code — Best Practices](https://code.claude.com/docs/en/best-practices)
