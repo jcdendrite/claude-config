@@ -1,16 +1,19 @@
 ---
 name: query-conventions
 description: >
-  Conventions for writing database queries (SQL, PostgREST/Supabase `.from(...)`,
-  ORMs, or raw drivers): pagination / explicit limits, avoiding N+1 from
-  array iteration, explicit column selection, and the AI anti-patterns that
-  silently scale badly.
-  TRIGGER when: writing or modifying a query — adding a `SELECT`/`INSERT`/
-  `UPDATE`/`DELETE`, a `.from(...)` / `.select(...)` / `.update(...)` chain,
-  an ORM call, raw SQL, or data-access helper.
-  DO NOT TRIGGER when: reading existing queries without modification, editing
-  test mocks or fixture seed data, purely-schema migrations (DDL only, no
-  DML), or generated client code.
+  Conventions for writing read-path database queries (SQL, PostgREST/Supabase
+  `.from(...).select(...)`, ORMs, or raw drivers): pagination / explicit
+  limits, avoiding N+1 from array iteration, explicit column selection, and
+  the AI anti-patterns that silently scale badly. Write-path idempotency
+  conventions live in project-level guardrails and in `test-conventions`,
+  not here.
+  TRIGGER when: writing or modifying a read-path query — adding a `SELECT`,
+  a `.from(...)` / `.select(...)` chain, a list-returning ORM call, raw
+  read SQL, or data-access helper; designing query shape or pagination.
+  DO NOT TRIGGER when: writing INSERT/UPDATE/DELETE or other write-path
+  code, reading existing queries without modification, editing test mocks
+  or fixture seed data, purely-schema migrations (DDL only, no DML), or
+  generated client code.
 user-invocable: false
 ---
 
@@ -28,7 +31,6 @@ ceiling in PostgREST; unbounded for raw Postgres).
 
 - If the caller supplies a page size, validate it against a hard max.
 - For "I just want one row" queries, use `.single()` / `LIMIT 1` rather than relying on the table having one row. The implicit assumption rots as data grows.
-- Aggregate endpoints (counts, sums) are the exception — they return one row by shape. Document in a comment that the unbounded shape is intentional.
 
 Why: unbounded queries DoS the database and the caller's memory under
 growth. The bug appears at the scale where it hurts most.
