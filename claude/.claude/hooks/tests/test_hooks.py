@@ -411,19 +411,47 @@ class TestAskReviewPermissions:
 # reference prefixes only (CVE / RFC / PEP / ISO / GH / BUG / IETF).
 
 
+@pytest.fixture
+def claude_config_repo(git_repo):
+    """git_repo with a `claude-config`-shaped origin URL so the scoping
+    check lets the redaction gate run. The hook short-circuits on any
+    repo whose origin URL doesn't contain `claude-config`, so this fixture
+    is required for any test that expects deny behavior."""
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:jcdendrite/claude-config.git"],
+        cwd=git_repo,
+        check=True,
+    )
+    return git_repo
+
+
+@pytest.fixture
+def unrelated_remote_repo(git_repo):
+    """git_repo with an origin URL that does NOT match claude-config.
+    Used to verify the scoping short-circuit: the hook must let commits
+    through in every repo other than claude-config, regardless of diff
+    content or commit message."""
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:someone/unrelated-app.git"],
+        cwd=git_repo,
+        check=True,
+    )
+    return git_repo
+
+
 class TestDenyClientRefs:
-    def test_non_commit_command_allowed(self, git_repo):
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("git status"), cwd=git_repo) == "allow"
+    def test_non_commit_command_allowed(self, claude_config_repo):
+        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("git status"), cwd=claude_config_repo) == "allow"
 
-    def test_non_git_command_allowed(self, git_repo):
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("echo WIDGET-123"), cwd=git_repo) == "allow"
+    def test_non_git_command_allowed(self, claude_config_repo):
+        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("echo WIDGET-123"), cwd=claude_config_repo) == "allow"
 
-    def test_clean_commit_message_allowed(self, git_repo):
+    def test_clean_commit_message_allowed(self, claude_config_repo):
         assert (
             run_hook(
                 DENY_CLIENT_REFS_HOOK,
                 bash_input("git commit -m 'Refactor the parser'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "allow"
         )
@@ -458,57 +486,57 @@ class TestDenyClientRefs:
             "sha", "md", "http", "tls",
         ],
     )
-    def test_allowlisted_references_allowed(self, git_repo, message):
+    def test_allowlisted_references_allowed(self, claude_config_repo, message):
         assert (
-            run_hook(DENY_CLIENT_REFS_HOOK, bash_input(f"git commit -m '{message}'"), cwd=git_repo)
+            run_hook(DENY_CLIENT_REFS_HOOK, bash_input(f"git commit -m '{message}'"), cwd=claude_config_repo)
             == "allow"
         )
 
-    def test_synthetic_tracker_id_in_message_denied(self, git_repo):
+    def test_synthetic_tracker_id_in_message_denied(self, claude_config_repo):
         assert (
             run_hook(
                 DENY_CLIENT_REFS_HOOK,
                 bash_input("git commit -m 'Fix WIDGET-123 regression'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_multiple_tracker_ids_denied(self, git_repo):
+    def test_multiple_tracker_ids_denied(self, claude_config_repo):
         assert (
             run_hook(
                 DENY_CLIENT_REFS_HOOK,
                 bash_input("git commit -m 'Handle FOOCORP-42 and BARCORP-22'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_tracker_id_in_staged_diff_denied(self, git_repo):
+    def test_tracker_id_in_staged_diff_denied(self, claude_config_repo):
         """Hook must scan staged content, not just the command string."""
-        (git_repo / "file.txt").write_text("first\nsecond\n// NULLCLIENT-999 fixed\n")
-        subprocess.run(["git", "add", "file.txt"], cwd=git_repo, check=True)
+        (claude_config_repo / "file.txt").write_text("first\nsecond\n// NULLCLIENT-999 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
                 DENY_CLIENT_REFS_HOOK,
                 bash_input("git commit -m 'Generic refactor'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_mixed_allowed_and_suspect_denied(self, git_repo):
+    def test_mixed_allowed_and_suspect_denied(self, claude_config_repo):
         """A CVE plus a client-looking token: still deny on the client token."""
         assert (
             run_hook(
                 DENY_CLIENT_REFS_HOOK,
                 bash_input("git commit -m 'Fix CVE-2024-1234 via EXAMPLECO-7 changes'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_heredoc_commit_message_scanned(self, git_repo):
+    def test_heredoc_commit_message_scanned(self, claude_config_repo):
         """Heredoc-style commit messages get scanned via the command string."""
         cmd = (
             "git commit -m \"$(cat <<'EOF'\n"
@@ -518,9 +546,9 @@ class TestDenyClientRefs:
             "EOF\n"
             ")\""
         )
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input(cmd), cwd=git_repo) == "deny"
+        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
 
-    def test_lowercase_token_allowed(self, git_repo):
+    def test_lowercase_token_allowed(self, claude_config_repo):
         """Lowercase `widget-123` doesn't match the uppercase-only regex.
 
         Ticket IDs are conventionally uppercase; a lowercase hyphenated
@@ -532,23 +560,23 @@ class TestDenyClientRefs:
             run_hook(
                 DENY_CLIENT_REFS_HOOK,
                 bash_input("git commit -m 'Fix widget-123 styling'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "allow"
         )
 
-    def test_chained_add_commit_with_suspect_token_denied(self, git_repo):
+    def test_chained_add_commit_with_suspect_token_denied(self, claude_config_repo):
         """Chained `git add && git commit` is still gated by this hook."""
         assert (
             run_hook(
                 DENY_CLIENT_REFS_HOOK,
                 bash_input("git add . && git commit -m 'Fix WIDGET-1 issue'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_removing_a_tracker_id_is_allowed(self, git_repo):
+    def test_removing_a_tracker_id_is_allowed(self, claude_config_repo):
         """A redaction commit that *removes* a tracker ID must not be blocked.
 
         If the hook scanned removed lines, the staged deletion of a token
@@ -556,37 +584,175 @@ class TestDenyClientRefs:
         to its own maintenance flow.
         """
         # Seed a committed file that already contains a suspect token.
-        (git_repo / "legacy.txt").write_text("Old notes about WIDGET-999.\n")
-        subprocess.run(["git", "add", "legacy.txt"], cwd=git_repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=git_repo, check=True)
+        (claude_config_repo / "legacy.txt").write_text("Old notes about WIDGET-999.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=claude_config_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=claude_config_repo, check=True)
         # Now stage a deletion of the token — the diff contains `-WIDGET-999`.
-        (git_repo / "legacy.txt").write_text("Old notes.\n")
-        subprocess.run(["git", "add", "legacy.txt"], cwd=git_repo, check=True)
+        (claude_config_repo / "legacy.txt").write_text("Old notes.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
                 DENY_CLIENT_REFS_HOOK,
                 bash_input("git commit -m 'Redact legacy notes'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "allow"
         )
 
-    def test_empty_staged_diff_allows_commit(self, git_repo):
+    def test_empty_staged_diff_allows_commit(self, claude_config_repo):
         """No staged changes — let git decide (empty-commit, amend, etc.).
 
         Even though the command mentions a suspect token, there is no new
         content being introduced; the hook shouldn't block an amend-only
         or --allow-empty flow.
         """
-        subprocess.run(["git", "reset", "HEAD"], cwd=git_repo, check=True)
+        subprocess.run(["git", "reset", "HEAD"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
                 DENY_CLIENT_REFS_HOOK,
                 bash_input("git commit -m 'Refers to WIDGET-123 but nothing staged'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    # -- Scoping ------------------------------------------------------------
+    # Regression: the hook originally had no repo-identity check and fired
+    # on every `git commit` in every repo where the user had this config
+    # installed. It blocked legitimate tracker IDs in the user's own
+    # projects that happened to match `[A-Z]{2,}-\d+`. The gate must only
+    # activate in the claude-config repo, where accidental references to
+    # consulting clients would leak publicly.
+
+    def test_unrelated_remote_suspect_token_allowed(self, unrelated_remote_repo):
+        """A suspect tracker ID in a repo whose origin URL does NOT contain
+        `claude-config` must pass — it's the repo's own legitimate ID."""
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_unrelated_remote_suspect_token_in_diff_allowed(self, unrelated_remote_repo):
+        """Scoping must also short-circuit the staged-diff scan, not just
+        the commit-message scan."""
+        (unrelated_remote_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=unrelated_remote_repo, check=True)
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Fix regression'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_no_remote_suspect_token_allowed(self, git_repo):
+        """A repo with no `origin` remote configured (brand-new `git init`)
+        must short-circuit cleanly via the substring check against an empty
+        string. `git config --get` returns empty (not an error code) on a
+        missing key, so the `*claude-config*` match falls through to exit 0."""
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Fix WIDGET-123 regression'"),
                 cwd=git_repo,
             )
             == "allow"
         )
+
+    def test_claude_config_fork_origin_still_gates(self, git_repo):
+        """Substring match on `claude-config` is deliberately loose: a fork
+        whose URL is `.../someone-else/claude-config.git` should still be
+        gated, because the redaction concerns apply to any clone of this
+        public repo."""
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:forker/claude-config.git"],
+            cwd=git_repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_test_dir_changes_exempt_from_scan(self, claude_config_repo):
+        """The hook's own test directory is excluded from the staged-diff
+        scan. Without this, every commit that adds a new test case to this
+        file would trip the hook on its own synthetic test data — making
+        the hook hostile to its own test-authoring flow.
+
+        Guard scope: exemption applies only to `claude/.claude/hooks/tests/**`,
+        not to any other directory, and not to the commit-message string
+        itself. See test_tracker_id_in_staged_diff_denied for the complement."""
+        test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
+        test_dir.mkdir(parents=True)
+        # A new test case authored inside the hook's own test file, with
+        # a fresh synthetic tracker token that is NOT on the allowlist.
+        (test_dir / "test_new_case.py").write_text(
+            'def test_x():\n'
+            '    bash_input("git commit -m FAKECLIENT-42")\n'
+        )
+        subprocess.run(["git", "add", "claude/.claude/hooks/tests/test_new_case.py"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Add new hook test case'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_test_dir_exemption_does_not_mask_non_test_file(self, claude_config_repo):
+        """The test-dir exemption is narrow: a fake token in a *non-test*
+        file, staged alongside a test-dir change, still blocks the commit.
+        Guard against an accidental over-broad pathspec."""
+        test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
+        test_dir.mkdir(parents=True)
+        (test_dir / "test_new_case.py").write_text('bash_input("FAKECLIENT-42")\n')
+        # Non-test file at repo root with the same synthetic token.
+        (claude_config_repo / "other.txt").write_text("Touches FAKECLIENT-42 unexpectedly\n")
+        subprocess.run(
+            ["git", "add", "claude/.claude/hooks/tests/test_new_case.py", "other.txt"],
+            cwd=claude_config_repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Mixed change'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_scoping_reason_message_still_present_when_blocked(self, claude_config_repo):
+        """The deny reason shown to the user must still reference the
+        `Redact client-identifying content` section so reviewers know where
+        to look. Guard against an accidental message change during scoping
+        refactors."""
+        result = subprocess.run(
+            [str(DENY_CLIENT_REFS_HOOK)],
+            input=json.dumps(bash_input("git commit -m 'Fix WIDGET-123 regression'")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected a deny verdict"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Commit blocked by redaction gate" in reason
+        assert "Redact client-identifying content" in reason
+        assert "WIDGET-123" in reason
 
 
 # ---------------------------------------------------------------------------
