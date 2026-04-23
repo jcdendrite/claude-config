@@ -914,3 +914,74 @@ class TestRequireWorktreeForGitWrites:
     def test_non_bash_tool_allowed(self, opted_in_repo):
         """Edit tool inputs have no .tool_input.command — hook no-ops."""
         assert run_hook(WORKTREE_HOOK, edit_input("/tmp/foo.txt"), cwd=opted_in_repo) == "allow"
+
+    # -- Word-boundary false-positive regression ----------------------------
+    # Regression: the hook originally used `*git*` substring checks that
+    # matched `.github`, `.gitignore`, `github.com`, and similar, blocking
+    # harmless `ls .github/workflows/` reads. The fix requires `git` to
+    # appear as a command word (bounded by non-alnum or string edges),
+    # and each fragment must have a word equal to `git` or ending in
+    # `/git` to be treated as a git invocation.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls .github/workflows/",
+            "cat .gitignore",
+            "grep -r github.com /src",
+            "find . -name '*.git'",
+            "./git-foo",
+            "gitk master",
+        ],
+        ids=[
+            "ls-dotgithub",
+            "cat-dotgitignore",
+            "grep-githubcom",
+            "find-dotgit",
+            "git-foo-extension",
+            "gitk-alnum-trailing",
+        ],
+    )
+    def test_git_substring_in_non_git_command_allowed(self, opted_in_repo, command):
+        """Commands that mention `git` only as a path/URL/prefix substring
+        must not be treated as git invocations. `gitk` pins the regex's
+        both-sides non-alnum requirement — a change that only kept the
+        leading boundary would regress this case."""
+        assert run_hook(WORKTREE_HOOK, bash_input(command), cwd=opted_in_repo) == "allow"
+
+    def test_chained_dotgithub_read_and_git_log_allowed(self, opted_in_repo):
+        """Read-only fragment touching `.github` followed by a read-only
+        git command: both fragments must resolve correctly."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("ls .github/workflows/ && git log --oneline"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_dotgitignore_read_and_git_commit_denied(self, opted_in_repo):
+        """Fragment mentioning `.gitignore` must not mask a real `git
+        commit` in a later fragment."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("cat .gitignore && git commit -m x"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_git_log_with_dotgithub_path_arg_allowed(self, opted_in_repo):
+        """Real read-only git command whose arguments reference a `.github`
+        path must still parse as its subcommand — `git log -- .github/...`
+        is `log`, not denied."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git log -- .github/workflows/hooks.yml"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
