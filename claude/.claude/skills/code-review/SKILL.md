@@ -186,34 +186,40 @@ If no issues are found, say: "No issues found" — do not pad with praise or gen
 ## Ripple effect triage
 
 After the checklist review, identify whether the change crosses system
-boundaries and recommend specialist follow-up reviews. This step is
-**always required** — even if the checklist found no issues, ripple
-effects may exist that only a domain specialist would catch.
+boundaries and spawn specialist reviewer subagents via the Agent tool
+to evaluate the cross-boundary impact. This step is **always required** —
+even if the checklist found no issues, ripple effects may exist that only
+a domain specialist would catch.
 
-Evaluate the change against these cross-boundary patterns. These are
-review *perspectives*, not org chart roles — one person may wear multiple
-hats. Update this table as new patterns emerge.
+Spawn on the CODE, not on this review's output. Each subagent reads the
+diff fresh from its own perspective; passing a summarized review as a
+substitute for the source drops the signal that specialist review is
+designed to catch.
 
-| Change type | Follow-up |
-|-------------|-----------|
-| Restricts DB access (RLS, GRANT, triggers) | **Security + Fullstack Engineer** — trace restrictions against caller code and check for privilege escalation |
-| Changes API response shape | **Product + Fullstack Engineer** — verify all consumers handle new shape |
-| Adds/modifies security controls | **Senior SDET + Security Engineer** — verify test pyramid, coverage, and threat model |
-| Changes auth model (JWT, roles, permissions) | **Security + Backend Engineer** — trace all auth paths including token refresh, session expiry, and error fallbacks |
-| Modifies shared utilities (helpers, hooks, contexts) | **Backend + Frontend Engineer** — verify all call sites and check for behavioral assumptions |
-| Changes data model (columns, types, defaults, migrations) | **Product + Backend Engineer** — verify generated types, check queries and UI for broken nullability/default assumptions, verify migration idempotency |
-| Modifies CI/CD pipelines or deploy config | **DevOps/Infra + Backend Engineer** — verify pipelines and environment consistency |
-| Changes runtime config (env vars, secrets, feature flags) | **Backend + Security Engineer** — verify config is consistent across environments, check for leaked secrets |
+Evaluate the change against these cross-boundary patterns. Update this
+table as new patterns emerge.
 
-**Output:** If no impacts, state which boundaries you checked and why none
-are affected. If impacts exist, add a **"Recommended follow-up reviews"**
-section with entries like:
-- **[Reviewer]:** This change [does what] — verify [specific workflows]
-  by tracing [specific code paths].
+| Change type | Spawn |
+|-------------|-------|
+| Restricts DB access (RLS, GRANT, triggers) | `ciso-reviewer` + `staff-backend-engineer` — trace restrictions against caller code and check for privilege escalation |
+| Changes API response shape | `staff-product-engineer` + `staff-backend-engineer` — verify all consumers handle new shape |
+| Adds/modifies security controls | `senior-sdet` + `ciso-reviewer` — verify test pyramid, coverage, and threat model |
+| Changes auth model (JWT, roles, permissions) | `ciso-reviewer` + `staff-backend-engineer` — trace all auth paths including token refresh, session expiry, and error fallbacks |
+| Modifies shared utilities (helpers, hooks, contexts) | `staff-backend-engineer` + `staff-frontend-engineer` — verify all call sites and check for behavioral assumptions |
+| Changes data model (columns, types, defaults, migrations) | `staff-product-engineer` + `staff-data-engineer` — verify generated types, check queries and UI for broken nullability/default assumptions, verify migration idempotency |
+| Modifies CI/CD pipelines or deploy config | `staff-devops-engineer` + `staff-backend-engineer` — verify pipelines and environment consistency |
+| Changes runtime config (env vars, secrets, feature flags) | `staff-devops-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
 
-Be specific about WHAT to check, not just WHO. "PE review recommended" is
-useless; "PE should verify the checkout flow in CheckoutPage.tsx still works
-after the new validation constraint" is actionable.
+**Output:** If no impacts, state which boundaries you checked and why
+none are affected. If impacts exist, spawn the named subagents in
+parallel against the current diff; each runs in its own context and
+returns findings independently. Reconcile the results and present a
+combined summary.
+
+Be specific about what each reviewer should check. Name the file, flow,
+or function. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer`
+and ask it to verify the checkout flow in CheckoutPage.tsx still
+enforces ownership after the new validation" is actionable.
 
 ## Step — Record review completion
 
