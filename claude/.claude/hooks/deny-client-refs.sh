@@ -33,9 +33,28 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-STAGED_DIFF=$(git diff --cached 2>/dev/null)
+# Scope: this redaction gate exists to protect the claude-config repo,
+# where accidental references to consulting clients would leak publicly.
+# Other repos legitimately reference their own tracker IDs. Short-circuit
+# unless origin.url looks like claude-config. `git config --get` returns
+# empty (not an error exit) when the remote is missing, so the substring
+# check safely handles the no-remote case too.
+REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null)
+if [[ "$REMOTE_URL" != *claude-config* ]]; then
+  exit 0
+fi
+
+# Exclude the hook's own test file from the scan — tests of this hook
+# need synthetic tracker tokens as test data (see the header comment
+# in test_hooks.py listing WIDGET / FOOCORP / NULLCLIENT / EXAMPLECO /
+# BARCORP as invented prefixes). Without this exclusion, every commit
+# that adds a new test case would be blocked by the hook under test.
+# The `:(top,exclude)` pathspec magic is relative to the repo root so
+# this works regardless of the caller's cwd within the repo.
+STAGED_DIFF=$(git diff --cached -- ':(top,exclude)claude/.claude/hooks/tests/**' 2>/dev/null)
 if [ -z "$STAGED_DIFF" ]; then
-  # Amend-message-only, --allow-empty, or nothing staged. Let git decide.
+  # Amend-message-only, --allow-empty, nothing staged, or only changes
+  # under the hook's test directory. Let git decide.
   exit 0
 fi
 
