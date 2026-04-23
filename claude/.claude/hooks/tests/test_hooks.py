@@ -21,6 +21,7 @@ HOOKS_DIR = Path(__file__).resolve().parent.parent
 CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
 RESPOND_PR_HOOK = HOOKS_DIR / "require-respond-pr.sh"
 REVIEW_PERMS_HOOK = HOOKS_DIR / "ask-review-permissions.sh"
+DENY_CLIENT_REFS_HOOK = HOOKS_DIR / "deny-client-refs.sh"
 
 
 def run_hook(hook: Path, tool_input: dict, cwd: Path | None = None) -> str:
@@ -395,3 +396,193 @@ class TestAskReviewPermissions:
 
     def test_bash_tool_allowed(self):
         assert run_hook(REVIEW_PERMS_HOOK, bash_input("cat /some/project/.claude/settings.json")) == "allow"
+
+
+# ---------------------------------------------------------------------------
+# deny-client-refs.sh
+# ---------------------------------------------------------------------------
+#
+# Fake placeholders used in these tests — chosen to be obviously synthetic
+# so the test file itself doesn't violate the rule it's testing:
+#   WIDGET-123, FOOCORP-42, NULLCLIENT-999, EXAMPLECO-7, BARCORP-22
+# All six prefixes are invented; none correspond to a real tracker that
+# any known organization uses. The hook's allowlist matches real OSS
+# reference prefixes only (CVE / RFC / PEP / ISO / GH / BUG / IETF).
+
+
+class TestDenyClientRefs:
+    def test_non_commit_command_allowed(self, git_repo):
+        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("git status"), cwd=git_repo) == "allow"
+
+    def test_non_git_command_allowed(self, git_repo):
+        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("echo WIDGET-123"), cwd=git_repo) == "allow"
+
+    def test_clean_commit_message_allowed(self, git_repo):
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor the parser'"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Fix CVE-2024-12345",
+            "Map to CWE-79",
+            "Apply PEP-8 formatting",
+            "Per RFC-7231 section 6.5",
+            "Address GH-123 from upstream",
+            "Fix BUG-4242 in parser",
+            "Reference ISO-8601 dates",
+            "Per IETF-draft handling",
+            "Conform to W3C-REC",
+            "Map to NIST-800-53",
+            "Per ECMA-262",
+            "Per ANSI-89 spec",
+            "Implement JEP-394",
+            "Fix JDK-12345",
+            "Upstream LLVM-123",
+            "GCC-456 workaround",
+            "Require SHA-256",
+            "Deprecate MD-5",
+            "Support HTTP-2",
+            "Disable TLS-1",
+        ],
+        ids=[
+            "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf",
+            "w3c", "nist", "ecma", "ansi", "jep", "jdk", "llvm", "gcc",
+            "sha", "md", "http", "tls",
+        ],
+    )
+    def test_allowlisted_references_allowed(self, git_repo, message):
+        assert (
+            run_hook(DENY_CLIENT_REFS_HOOK, bash_input(f"git commit -m '{message}'"), cwd=git_repo)
+            == "allow"
+        )
+
+    def test_synthetic_tracker_id_in_message_denied(self, git_repo):
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_multiple_tracker_ids_denied(self, git_repo):
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Handle FOOCORP-42 and BARCORP-22'"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_tracker_id_in_staged_diff_denied(self, git_repo):
+        """Hook must scan staged content, not just the command string."""
+        (git_repo / "file.txt").write_text("first\nsecond\n// NULLCLIENT-999 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=git_repo, check=True)
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Generic refactor'"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_mixed_allowed_and_suspect_denied(self, git_repo):
+        """A CVE plus a client-looking token: still deny on the client token."""
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Fix CVE-2024-1234 via EXAMPLECO-7 changes'"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_heredoc_commit_message_scanned(self, git_repo):
+        """Heredoc-style commit messages get scanned via the command string."""
+        cmd = (
+            "git commit -m \"$(cat <<'EOF'\n"
+            "Subject line\n"
+            "\n"
+            "Body referencing FOOCORP-12 incident\n"
+            "EOF\n"
+            ")\""
+        )
+        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input(cmd), cwd=git_repo) == "deny"
+
+    def test_lowercase_token_allowed(self, git_repo):
+        """Lowercase `widget-123` doesn't match the uppercase-only regex.
+
+        Ticket IDs are conventionally uppercase; a lowercase hyphenated
+        token is more likely to be a package name or slug, not a tracker
+        reference. Explicitly allowed to avoid false positives on common
+        code patterns.
+        """
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Fix widget-123 styling'"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_add_commit_with_suspect_token_denied(self, git_repo):
+        """Chained `git add && git commit` is still gated by this hook."""
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git add . && git commit -m 'Fix WIDGET-1 issue'"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_removing_a_tracker_id_is_allowed(self, git_repo):
+        """A redaction commit that *removes* a tracker ID must not be blocked.
+
+        If the hook scanned removed lines, the staged deletion of a token
+        would match and block the cleanup itself — making the hook hostile
+        to its own maintenance flow.
+        """
+        # Seed a committed file that already contains a suspect token.
+        (git_repo / "legacy.txt").write_text("Old notes about WIDGET-999.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=git_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=git_repo, check=True)
+        # Now stage a deletion of the token — the diff contains `-WIDGET-999`.
+        (git_repo / "legacy.txt").write_text("Old notes.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=git_repo, check=True)
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Redact legacy notes'"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_empty_staged_diff_allows_commit(self, git_repo):
+        """No staged changes — let git decide (empty-commit, amend, etc.).
+
+        Even though the command mentions a suspect token, there is no new
+        content being introduced; the hook shouldn't block an amend-only
+        or --allow-empty flow.
+        """
+        subprocess.run(["git", "reset", "HEAD"], cwd=git_repo, check=True)
+        assert (
+            run_hook(
+                DENY_CLIENT_REFS_HOOK,
+                bash_input("git commit -m 'Refers to WIDGET-123 but nothing staged'"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
