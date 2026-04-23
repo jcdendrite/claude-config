@@ -116,6 +116,14 @@ B14. **Missing decision rationale** — Are design choices explained? A plan tha
     "use approach X" without explaining why X was chosen over Y leaves the implementer
     unable to make judgment calls when they encounter edge cases.
 
+B15. **Effort section reality** — If the plan has an "Estimated Effort" (or
+    similar) section, does it describe **review surface** — file count, domain
+    complexity, risk concentration, what the reviewer needs to look at — rather
+    than **implementation hours**? When Claude writes the code, hour-based
+    estimates anchored in human coding speed mislead the reviewer about where
+    to focus. Flag any effort section that cites hours, days, or "time to
+    implement"; rewrite in review-surface terms.
+
 ## Domain: Infrastructure
 
 Apply when the plan touches CI/CD, workflows, deployment, or config.
