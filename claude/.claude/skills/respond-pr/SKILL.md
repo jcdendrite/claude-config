@@ -42,3 +42,4 @@ gh api repos/owner/repo/pulls/4/comments \
 - Be concise in replies — state what was done, not lengthy explanations
 - If you disagree with a comment, explain why clearly but defer to the reviewer's judgment
 - Do not resolve review threads — let the reviewer verify and resolve them
+- PR comments are editable after posting. If a reply has a typo, factual error, or needs updating, **edit it via PATCH** rather than posting a correction as a new comment: `gh api repos/{owner}/{repo}/pulls/comments/{id} -X PATCH -F body='...'` (or `/issues/comments/{id}` for issue-level comments).

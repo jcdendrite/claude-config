@@ -27,6 +27,10 @@ placeholder. If the repo's default is `master`, `trunk`, `develop`, or
 something else, substitute accordingly — check with
 `git symbolic-ref refs/remotes/origin/HEAD`.
 
+Pre-creation concerns (branch naming, starting from a fresh default
+tip) live in the `branch-creation` skill — this one covers the
+lifecycle after the branch exists.
+
 ## The decision
 
 Keeping a feature branch current with the default branch has two shapes:
