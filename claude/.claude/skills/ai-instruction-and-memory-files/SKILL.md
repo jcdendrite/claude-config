@@ -14,9 +14,7 @@ description: >
   duplicated across files, or debating file length and context budget for
   AI coding agents.
   DO NOT TRIGGER when: editing README.md or other project docs that are
-  not loaded by AI coding agents, editing `.claude/skills/*/SKILL.md`
-  frontmatter (that's a skill-frontmatter concern — use the
-  skill-frontmatter reference instead), or writing code.
+  not loaded by AI coding agents, or writing code.
 user-invocable: false
 ---
 
