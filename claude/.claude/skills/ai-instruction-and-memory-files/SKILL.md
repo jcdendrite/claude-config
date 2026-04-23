@@ -96,6 +96,14 @@ and [Chroma's Context Rot research](https://research.trychroma.com/context-rot):
 - Attention decay hits the **middle** of long files — "lost in the middle." Burying critical rules past line ~150 reduces their effective load.
 - Compliance with prose rules tops out around **70%**. Structural tests and hooks hit 100%. When a rule can be encoded as either, prefer the mechanical enforcement.
 
+### Don't embed PR or ticket refs in always-loaded files
+
+Lines like `Precedent: PR #105` or `See TICKET-123 for context` belong
+in commit messages, PR descriptions, or plan files — not in CLAUDE.md
+or AGENTS.md. They rot the moment the next PR lands, and they cost
+per-session context budget without giving future sessions actionable
+signal. Future readers need the *rule* stated clearly.
+
 ## 4. When to duplicate vs. reference
 
 **Reference via `@AGENTS.md` import (Anthropic pattern):** default for
