@@ -1,5 +1,5 @@
 ---
-name: ai-instruction-files
+name: ai-instruction-and-memory-files
 description: >
   How Claude Code, Lovable, and other AI coding agents load instruction
   files (CLAUDE.md, AGENTS.md, Cursor rules, Copilot instructions, Lovable
