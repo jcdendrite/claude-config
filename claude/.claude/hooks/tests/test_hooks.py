@@ -22,6 +22,7 @@ CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
 RESPOND_PR_HOOK = HOOKS_DIR / "require-respond-pr.sh"
 REVIEW_PERMS_HOOK = HOOKS_DIR / "ask-review-permissions.sh"
 DENY_CLIENT_REFS_HOOK = HOOKS_DIR / "deny-client-refs.sh"
+WORKTREE_HOOK = HOOKS_DIR / "require-worktree-for-git-writes.sh"
 
 
 def run_hook(hook: Path, tool_input: dict, cwd: Path | None = None) -> str:
@@ -586,3 +587,330 @@ class TestDenyClientRefs:
             )
             == "allow"
         )
+
+
+# ---------------------------------------------------------------------------
+# require-worktree-for-git-writes.sh
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def opted_in_repo(tmp_path):
+    """Git repo with .claude/worktree-required committed (opted into
+    worktree enforcement)."""
+    repo = tmp_path / "opted-in"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "worktree-required").write_text("# sentinel\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+@pytest.fixture
+def non_opted_repo(tmp_path):
+    """Git repo without the sentinel — enforcement should be a no-op."""
+    repo = tmp_path / "non-opted"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+@pytest.fixture
+def opted_in_with_worktree(opted_in_repo, tmp_path):
+    """Opted-in repo with a linked worktree at a path that does NOT contain
+    '/worktrees/' — verifies the hook's worktree check reads git-dir rather
+    than pattern-matching the working-tree path."""
+    wt_path = tmp_path / "feature-tree"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feature", str(wt_path)],
+        cwd=opted_in_repo,
+        check=True,
+    )
+    return opted_in_repo, wt_path
+
+
+class TestRequireWorktreeForGitWrites:
+    def test_no_sentinel_allows_commit(self, non_opted_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=non_opted_repo) == "allow"
+
+    def test_no_sentinel_allows_push(self, non_opted_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("git push origin main"), cwd=non_opted_repo) == "allow"
+
+    def test_opted_in_main_tree_denies_commit(self, opted_in_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo) == "deny"
+
+    def test_opted_in_main_tree_denies_push(self, opted_in_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("git push origin main"), cwd=opted_in_repo) == "deny"
+
+    def test_opted_in_main_tree_denies_rebase(self, opted_in_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("git rebase origin/main"), cwd=opted_in_repo) == "deny"
+
+    def test_opted_in_main_tree_denies_reset(self, opted_in_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("git reset --hard HEAD~1"), cwd=opted_in_repo) == "deny"
+
+    def test_opted_in_main_tree_denies_checkout(self, opted_in_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("git checkout main"), cwd=opted_in_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git status",
+            "git log --oneline",
+            "git diff HEAD~1",
+            "git show HEAD",
+            "git fetch origin",
+            "git branch",
+            "git rev-parse --show-toplevel",
+            "git remote -v",
+            "git blame file.txt",
+        ],
+    )
+    def test_opted_in_main_tree_allows_readonly(self, opted_in_repo, command):
+        assert run_hook(WORKTREE_HOOK, bash_input(command), cwd=opted_in_repo) == "allow"
+
+    def test_opted_in_chained_write_denies(self, opted_in_repo):
+        """A read-only fragment followed by a write still denies — the
+        write fragment alone is enough."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git status && git commit -m foo"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_opted_in_chained_readonly_allows(self, opted_in_repo):
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git status && git log --oneline"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_opted_in_worktree_allows_commit(self, opted_in_with_worktree):
+        _, worktree = opted_in_with_worktree
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=worktree) == "allow"
+
+    def test_opted_in_worktree_allows_push(self, opted_in_with_worktree):
+        _, worktree = opted_in_with_worktree
+        assert run_hook(WORKTREE_HOOK, bash_input("git push origin feature"), cwd=worktree) == "allow"
+
+    def test_non_git_command_allowed(self, opted_in_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("ls -la"), cwd=opted_in_repo) == "allow"
+
+    def test_outside_git_repo_allowed(self, tmp_path):
+        """Not in a git repo — nothing to enforce."""
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=non_repo) == "allow"
+
+    def test_git_dash_C_flag_stripped(self, opted_in_repo):
+        """`git -C /tmp commit` should parse as `commit` — flag and path stripped."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git -C /tmp commit -m foo"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_git_no_pager_log_allowed(self, opted_in_repo):
+        """`git --no-pager log` parses as `log` — flag stripped."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git --no-pager log"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_parse_failure_denies(self, opted_in_repo):
+        """Fail-closed: if we can't identify the subcommand, deny with a
+        recognizable reason (distinguishable from an allowlist miss)."""
+        result = subprocess.run(
+            [str(WORKTREE_HOOK)],
+            input=json.dumps(bash_input("git -C /tmp")),
+            capture_output=True,
+            text=True,
+            cwd=opted_in_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected a deny verdict"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "could not determine the git subcommand" in payload["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_worktree_add_allowed_on_main_tree(self, opted_in_repo):
+        """`git worktree add` is the bootstrap for this whole mechanism.
+        Denying it would strand users whose only escape hatch is creating
+        a worktree from the main tree. Explicitly allowlisted."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git worktree add .claude/worktrees/feature -b feature"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_git_config_denied_on_main_tree(self, opted_in_repo):
+        """`git config` can install malicious aliases, pagers, credential
+        helpers that execute arbitrary code on next git invocation. Not
+        safe as 'read-only' even though it doesn't touch the working tree."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git config --get user.email"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_env_prefix_command_denied(self, opted_in_repo):
+        """`env FOO=1 git commit` — after-git strip still yields `commit`."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("env FOO=1 git commit -m foo"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_sudo_prefix_command_denied(self, opted_in_repo):
+        """Sudo prefix doesn't change subcommand extraction."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("sudo git commit -m foo"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_pipe_readonly_allowed(self, opted_in_repo):
+        """Pipe-chained read-only commands pass; each fragment parsed separately."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git log --oneline | grep foo"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_pipe_then_write_denied(self, opted_in_repo):
+        """A write after a pipe+&& is still caught — pipe and && both split."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git status | head && git commit -m x"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_background_write_denied(self, opted_in_repo):
+        """`git push &` — the & isn't split but `push` is still extracted."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git push &"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_empty_command_allowed(self, opted_in_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input(""), cwd=opted_in_repo) == "allow"
+
+    def test_whitespace_only_command_allowed(self, opted_in_repo):
+        assert run_hook(WORKTREE_HOOK, bash_input("   "), cwd=opted_in_repo) == "allow"
+
+    def test_git_dash_c_inline_config_allowed(self, opted_in_repo):
+        """`git -c key=val log` — the -c inline config flag consumes the
+        next word; subcommand `log` is on the allowlist."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git -c user.email=t@t.com log"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_git_dir_flag_allowed(self, opted_in_repo):
+        """`git --git-dir /tmp/.git log` — --git-dir consumes next word."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git --git-dir /tmp/.git log"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_sentinel_as_directory_treated_as_unopted(self, tmp_path):
+        """`-f` is false for directories, so a directory at
+        .claude/worktree-required leaves the repo effectively unopted."""
+        repo = tmp_path / "weird"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "worktree-required").mkdir()
+        (repo / "f.txt").write_text("x\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=repo) == "allow"
+
+    def test_malformed_json_stdin_denies(self, opted_in_repo):
+        """jq parse failure → fail-closed deny. We skip `run_hook` and feed
+        raw non-JSON directly."""
+        result = subprocess.run(
+            [str(WORKTREE_HOOK)],
+            input="this is not JSON at all{",
+            capture_output=True,
+            text=True,
+            cwd=opted_in_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected a deny verdict on malformed JSON"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_git_dir_env_var_does_not_bypass(self, opted_in_repo):
+        """GIT_DIR=/anything/worktrees/x must NOT make the main tree look
+        like a linked worktree. The hook unsets GIT_DIR defensively."""
+        env = {**os.environ, "GIT_DIR": "/tmp/fake/worktrees/spoofed"}
+        result = subprocess.run(
+            [str(WORKTREE_HOOK)],
+            input=json.dumps(bash_input("git commit -m foo")),
+            capture_output=True,
+            text=True,
+            cwd=opted_in_repo,
+            env=env,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected deny despite GIT_DIR spoof"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_non_bash_tool_allowed(self, opted_in_repo):
+        """Edit tool inputs have no .tool_input.command — hook no-ops."""
+        assert run_hook(WORKTREE_HOOK, edit_input("/tmp/foo.txt"), cwd=opted_in_repo) == "allow"

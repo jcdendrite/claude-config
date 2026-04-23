@@ -1,2 +1,9 @@
 __pycache__/
 .pytest_cache/
+
+# Claude Code local state at repo root. The committed .claude/worktree-required
+# sentinel activates worktree enforcement for this repo; everything else in
+# .claude/ is per-machine or per-session and shouldn't be tracked.
+.claude/plans/
+.claude/settings.local.json
+.claude/worktrees/
