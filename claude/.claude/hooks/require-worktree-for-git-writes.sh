@@ -38,10 +38,12 @@ if [ "$JQ_EXIT" -ne 0 ]; then
   exit 0
 fi
 
-# Fast-path: commands that don't mention git are not our concern. Use bash
-# pattern matching instead of grep to avoid locale-dependent behavior on
-# commands containing non-UTF-8 bytes.
-if [[ "$COMMAND" != *git* ]]; then
+# Fast-path: commands that don't mention `git` as a word are not our
+# concern. A plain `*git*` substring check false-positives on `.github`,
+# `.gitignore`, `github.com`, `longitude`, and similar, blocking harmless
+# reads like `ls .github/workflows/`. Require a non-alnum boundary (or
+# string edge) on both sides so `git` fires only as a command word.
+if ! [[ "$COMMAND" =~ (^|[^[:alnum:]])git([^[:alnum:]]|$) ]]; then
   exit 0
 fi
 
@@ -102,6 +104,33 @@ readonly ALLOWED_SUBCMDS=(
 )
 ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
+# Decide whether a fragment actually invokes `git`, not just mentions it
+# as a substring of a path or URL. Scans whitespace-separated words and
+# returns success iff any word equals `git` or ends in `/git` (absolute
+# path form, e.g. `/usr/bin/git`). Env-var prefixes (`FOO=1 git ...`),
+# `env`/`sudo` prefixes, and `git` as the nth word are all handled by
+# walking every word rather than just the first.
+#
+# Rejects: `ls .github/workflows/`, `cat .gitignore`, `grep github.com`,
+# `./git-foo` (not `git` and not `*/git`). Accepts: `git log`, `sudo git
+# commit`, `FOO=1 git push`, `/usr/bin/git status`.
+fragment_invokes_git() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local found=false word
+  for word in $fragment; do
+    if [[ "$word" == "git" || "$word" == */git ]]; then
+      found=true
+      break
+    fi
+  done
+  if [[ "$saved_opts" != *f* ]]; then
+    set +f
+  fi
+  $found
+}
+
 # Extract the git subcommand from a fragment like "git -C path commit -m foo".
 # Strips global flags that consume the next word, skips other flags, returns
 # the first bare word — the subcommand. Empty output means we couldn't find
@@ -143,7 +172,7 @@ FRAGMENTS=$(printf '%s' "$COMMAND" | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s
 
 while IFS= read -r fragment; do
   [ -z "$fragment" ] && continue
-  if [[ "$fragment" != *git* ]]; then
+  if ! fragment_invokes_git "$fragment"; then
     continue
   fi
 
