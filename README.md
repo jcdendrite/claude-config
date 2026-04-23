@@ -50,6 +50,8 @@ Concurrent Claude Code sessions that share a working tree can race: one session'
 
 ### Activating enforcement on a repo
 
+The sentinel coexists with any existing `.claude/` content — `mkdir -p` is a no-op if the directory is already there, and the sentinel is an inert marker file alongside whatever project-level plans, `settings.local.json`, or untracked worktree dirs the repo already holds.
+
 ```bash
 cd path/to/your/repo
 
@@ -60,13 +62,15 @@ cat > .claude/worktree-required <<'EOF'
 # See https://github.com/jcdendrite/claude-config for details.
 EOF
 
-echo '.claude/worktrees/' >> .gitignore
+grep -qxF '.claude/worktrees/' .gitignore 2>/dev/null || echo '.claude/worktrees/' >> .gitignore
 
 git add .claude/worktree-required .gitignore
 git commit -m "Activate Claude Code worktree enforcement"
 ```
 
 ### Working inside a worktree
+
+A [git worktree](https://git-scm.com/docs/git-worktree) is a linked working directory on a separate branch that shares the repo's `.git` object storage with the main clone. `git worktree add <path> -b <branch>` creates one; multiple worktrees of the same repo can have different branches checked out simultaneously, which is what lets concurrent Claude Code sessions stay isolated.
 
 With enforcement active, start sessions for non-trivial work in a worktree instead of the main tree:
 

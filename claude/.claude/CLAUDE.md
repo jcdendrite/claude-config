@@ -31,10 +31,6 @@
 
 - After writing or modifying an implementation plan, run `/plan-review` before presenting the plan to the user. If the review finds issues, address them first, then present the final version.
 
-## Worktree enforcement
-
-- If the worktree-enforcement hook denies a git command, remediate by `cd`-ing into (or creating) a worktree under `.claude/worktrees/` and retrying — full remediation is in the deny message.
-
 ## Safety
 
 - Never run sudo commands directly.
