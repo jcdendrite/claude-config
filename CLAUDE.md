@@ -4,6 +4,13 @@ This repository is **public** — every commit, skill body, commit message,
 and PR description ships to anyone with the URL. The guardrails below
 govern any contribution (human or agent).
 
+## Working in this repo
+
+Worktree enforcement is active. `.claude/worktree-required` is committed, so
+non-read-only git operations must run inside a linked worktree
+(`git worktree add .claude/worktrees/<branch> -b <branch>`) or an agent with
+`isolation: worktree`. See README "Worktree enforcement" for why.
+
 ## Redact client-identifying content
 
 Never commit anything that ties a skill, rule, or example back to a
