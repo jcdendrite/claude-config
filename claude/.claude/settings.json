@@ -20,6 +20,11 @@
             "type": "command",
             "command": "~/.claude/hooks/require-respond-pr.sh",
             "statusMessage": "Checking respond-pr gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-worktree-for-git-writes.sh",
+            "statusMessage": "Checking worktree enforcement..."
           }
         ]
       },

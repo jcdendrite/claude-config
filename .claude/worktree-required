@@ -1,0 +1,14 @@
+# Claude Code worktree enforcement marker.
+#
+# Presence of this file at the repo root activates
+# ~/.claude/hooks/require-worktree-for-git-writes.sh for this repo:
+# non-read-only git operations (commit, push, rebase, reset, etc.)
+# are denied unless the session runs inside a linked worktree.
+#
+# Motivation: concurrent Claude Code sessions on the same working tree
+# can race — one session's `git reset --hard` or `git stash` can
+# silently wipe another's uncommitted edits. Working in linked
+# worktrees (git worktree add) isolates each session's state.
+#
+# To disable enforcement for this repo, delete this file.
+# See claude-config README.md "Worktree enforcement" for details.
