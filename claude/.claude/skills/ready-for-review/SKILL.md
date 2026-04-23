@@ -36,20 +36,14 @@ step 3 on its own output.
 
 ## 2. Verification (halt on fail)
 
-Auto-detect verification commands from repo files — do not invent one.
-
-- `package.json` → run whichever of `scripts.test`, `scripts.lint`,
-  `scripts.typecheck` / `scripts.tsc` exist.
-- `pyproject.toml` / `pytest.ini` / `setup.cfg` with pytest config →
-  `pytest`; add `ruff check .` and/or `mypy` if configured.
-- `go.mod` → `go test ./...` and `go vet ./...`.
-- `Cargo.toml` → `cargo test`, `cargo clippy -- -D warnings`,
-  `cargo fmt --check`.
-- `Makefile` with `test` / `lint` / `check` targets → prefer those
-  over raw commands.
-
 If the repo's CLAUDE.md has an explicit Testing or Verification
-section, that list wins over auto-detection.
+section, run exactly what it specifies.
+
+Otherwise, inspect the repo's config (`package.json` scripts,
+`pyproject.toml`, `go.mod`, `Cargo.toml`, `Makefile`, CI workflow
+files, etc.) and run the test, lint, and typecheck commands the
+project actually defines. Do not invent or guess commands — if the
+project doesn't define a lint step, don't add one.
 
 **Scope exceptions — skip step 2 entirely:** skip when the diff
 contains no executable code — only markdown, plans, or non-executable
