@@ -266,8 +266,8 @@ isolated to its scope and restricts it to read-only tools.
 | Frontend | `staff-frontend-engineer` | Component patterns, state management, data fetching and cache consistency, accessibility, UX impact |
 | Security | `ciso-reviewer` | Threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth |
 | Data | `staff-data-engineer` | Migration safety, schema design, reversibility, deploy-time compatibility, index coverage, access control on new objects |
-| Infrastructure | `staff-devops-engineer` | CI/CD pipelines, IaC, deployment ordering, environment parity, secret provisioning |
-| Testing | `senior-sdet` | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements |
+| Infrastructure | `staff-platform-engineer` | CI/CD, IaC, shell discipline, deployment ordering, secret provisioning; observability coverage, alerting, SLO impact, runbook linkage, load characteristics, cost/operational footprint |
+| Testing | `staff-sdet` | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements |
 | Product | `staff-product-engineer` | Whether the plan solves the actual user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing |
 
 Spawn each relevant reviewer in parallel. Always include

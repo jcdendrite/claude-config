@@ -203,12 +203,12 @@ table as new patterns emerge.
 |-------------|-------|
 | Restricts DB access (RLS, GRANT, triggers) | `ciso-reviewer` + `staff-backend-engineer` — trace restrictions against caller code and check for privilege escalation |
 | Changes API response shape | `staff-product-engineer` + `staff-backend-engineer` — verify all consumers handle new shape |
-| Adds/modifies security controls | `senior-sdet` + `ciso-reviewer` — verify test pyramid, coverage, and threat model |
+| Adds/modifies security controls | `staff-sdet` + `ciso-reviewer` — verify test pyramid, coverage, and threat model |
 | Changes auth model (JWT, roles, permissions) | `ciso-reviewer` + `staff-backend-engineer` — trace all auth paths including token refresh, session expiry, and error fallbacks |
 | Modifies shared utilities (helpers, hooks, contexts) | `staff-backend-engineer` + `staff-frontend-engineer` — verify all call sites and check for behavioral assumptions |
 | Changes data model (columns, types, defaults, migrations) | `staff-product-engineer` + `staff-data-engineer` — verify generated types, check queries and UI for broken nullability/default assumptions, verify migration idempotency |
-| Modifies CI/CD pipelines or deploy config | `staff-devops-engineer` + `staff-backend-engineer` — verify pipelines and environment consistency |
-| Changes runtime config (env vars, secrets, feature flags) | `staff-devops-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
+| Modifies CI/CD pipelines or deploy config | `staff-platform-engineer` + `staff-backend-engineer` — verify pipelines and environment consistency |
+| Changes runtime config (env vars, secrets, feature flags) | `staff-platform-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
 
 **Output:** If no impacts, state which boundaries you checked and why
 none are affected. If impacts exist, spawn the named subagents in
