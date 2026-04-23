@@ -74,3 +74,12 @@ scripts) usually handle this automatically — verify once, then trust.
 If the repo's default branch is `master`, `trunk`, `develop`, or
 anything other than `main`, substitute accordingly. Check with
 `git symbolic-ref refs/remotes/origin/HEAD`.
+
+## Plan files go on the implementation branch
+
+If this branch is for work that has an associated plan file
+(`.claude/plans/<name>.md`), commit the plan to this feature branch.
+Don't open a standalone plan-only branch that can merge independently
+of the implementation — plan and code ship as one PR. Reviewing the
+plan as a PR diff on the feature branch is fine; merging it
+separately from the implementation it plans isn't.

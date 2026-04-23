@@ -29,6 +29,14 @@ Apply the **Base checklist** always. Apply each **Domain checklist** only when a
 
 Evaluate the code against each item. Only flag items where there is a concrete issue — do not flag items just to show you checked them.
 
+**Read every changed file fully, including generated ones.** Generated
+files (Supabase types, OpenAPI clients, GraphQL codegen, etc.) need
+the same scrutiny — tests passing doesn't mean the file is valid;
+runners like Vitest+esbuild strip types without validating, so npm
+warnings or build noise can leak into the file head undetected. Check
+the first few lines (`head -5`) of generated files even when tests
+are green.
+
 ### Correctness
 
 1. **API misuse** — Are libraries, frameworks, and language APIs used as designed? Flag any reliance on accidental or undocumented behavior (e.g., passing invalid arguments that happen to work, using internal methods, relying on side effects of unrelated calls).
