@@ -21,7 +21,7 @@ HOOKS_DIR = Path(__file__).resolve().parent.parent
 CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
 RESPOND_PR_HOOK = HOOKS_DIR / "require-respond-pr.sh"
 REVIEW_PERMS_HOOK = HOOKS_DIR / "ask-review-permissions.sh"
-DENY_CLIENT_REFS_HOOK = HOOKS_DIR / "deny-client-refs.sh"
+DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 WORKTREE_HOOK = HOOKS_DIR / "require-worktree-for-git-writes.sh"
 
 
@@ -400,12 +400,12 @@ class TestAskReviewPermissions:
 
 
 # ---------------------------------------------------------------------------
-# deny-client-refs.sh
+# deny-private-project-refs.sh
 # ---------------------------------------------------------------------------
 #
 # Fake placeholders used in these tests — chosen to be obviously synthetic
 # so the test file itself doesn't violate the rule it's testing:
-#   WIDGET-123, FOOCORP-42, NULLCLIENT-999, EXAMPLECO-7, BARCORP-22
+#   WIDGET-123, FOOCORP-42, NULLPROJ-999, EXAMPLECO-7, BARCORP-22, FAKEPROJ-42
 # All six prefixes are invented; none correspond to a real tracker that
 # any known organization uses. The hook's allowlist matches real OSS
 # reference prefixes only (CVE / RFC / PEP / ISO / GH / BUG / IETF).
@@ -439,17 +439,17 @@ def unrelated_remote_repo(git_repo):
     return git_repo
 
 
-class TestDenyClientRefs:
+class TestDenyPrivateProjectRefs:
     def test_non_commit_command_allowed(self, claude_config_repo):
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("git status"), cwd=claude_config_repo) == "allow"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input("git status"), cwd=claude_config_repo) == "allow"
 
     def test_non_git_command_allowed(self, claude_config_repo):
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("echo WIDGET-123"), cwd=claude_config_repo) == "allow"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input("echo WIDGET-123"), cwd=claude_config_repo) == "allow"
 
     def test_clean_commit_message_allowed(self, claude_config_repo):
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Refactor the parser'"),
                 cwd=claude_config_repo,
             )
@@ -488,14 +488,14 @@ class TestDenyClientRefs:
     )
     def test_allowlisted_references_allowed(self, claude_config_repo, message):
         assert (
-            run_hook(DENY_CLIENT_REFS_HOOK, bash_input(f"git commit -m '{message}'"), cwd=claude_config_repo)
+            run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(f"git commit -m '{message}'"), cwd=claude_config_repo)
             == "allow"
         )
 
     def test_synthetic_tracker_id_in_message_denied(self, claude_config_repo):
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix WIDGET-123 regression'"),
                 cwd=claude_config_repo,
             )
@@ -505,7 +505,7 @@ class TestDenyClientRefs:
     def test_multiple_tracker_ids_denied(self, claude_config_repo):
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Handle FOOCORP-42 and BARCORP-22'"),
                 cwd=claude_config_repo,
             )
@@ -514,11 +514,11 @@ class TestDenyClientRefs:
 
     def test_tracker_id_in_staged_diff_denied(self, claude_config_repo):
         """Hook must scan staged content, not just the command string."""
-        (claude_config_repo / "file.txt").write_text("first\nsecond\n// NULLCLIENT-999 fixed\n")
+        (claude_config_repo / "file.txt").write_text("first\nsecond\n// NULLPROJ-999 fixed\n")
         subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Generic refactor'"),
                 cwd=claude_config_repo,
             )
@@ -526,10 +526,10 @@ class TestDenyClientRefs:
         )
 
     def test_mixed_allowed_and_suspect_denied(self, claude_config_repo):
-        """A CVE plus a client-looking token: still deny on the client token."""
+        """A CVE plus a project-looking token: still deny on the project token."""
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix CVE-2024-1234 via EXAMPLECO-7 changes'"),
                 cwd=claude_config_repo,
             )
@@ -546,7 +546,7 @@ class TestDenyClientRefs:
             "EOF\n"
             ")\""
         )
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
 
     def test_lowercase_token_allowed(self, claude_config_repo):
         """Lowercase `widget-123` doesn't match the uppercase-only regex.
@@ -558,7 +558,7 @@ class TestDenyClientRefs:
         """
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix widget-123 styling'"),
                 cwd=claude_config_repo,
             )
@@ -569,7 +569,7 @@ class TestDenyClientRefs:
         """Chained `git add && git commit` is still gated by this hook."""
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git add . && git commit -m 'Fix WIDGET-1 issue'"),
                 cwd=claude_config_repo,
             )
@@ -592,7 +592,7 @@ class TestDenyClientRefs:
         subprocess.run(["git", "add", "legacy.txt"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Redact legacy notes'"),
                 cwd=claude_config_repo,
             )
@@ -609,7 +609,7 @@ class TestDenyClientRefs:
         subprocess.run(["git", "reset", "HEAD"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Refers to WIDGET-123 but nothing staged'"),
                 cwd=claude_config_repo,
             )
@@ -622,14 +622,14 @@ class TestDenyClientRefs:
     # installed. It blocked legitimate tracker IDs in the user's own
     # projects that happened to match `[A-Z]{2,}-\d+`. The gate must only
     # activate in the claude-config repo, where accidental references to
-    # consulting clients would leak publicly.
+    # private projects would leak publicly.
 
     def test_unrelated_remote_suspect_token_allowed(self, unrelated_remote_repo):
         """A suspect tracker ID in a repo whose origin URL does NOT contain
         `claude-config` must pass — it's the repo's own legitimate ID."""
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix WIDGET-123 regression'"),
                 cwd=unrelated_remote_repo,
             )
@@ -643,7 +643,7 @@ class TestDenyClientRefs:
         subprocess.run(["git", "add", "file.txt"], cwd=unrelated_remote_repo, check=True)
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix regression'"),
                 cwd=unrelated_remote_repo,
             )
@@ -657,7 +657,7 @@ class TestDenyClientRefs:
         missing key, so the `*claude-config*` match falls through to exit 0."""
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix WIDGET-123 regression'"),
                 cwd=git_repo,
             )
@@ -676,7 +676,7 @@ class TestDenyClientRefs:
         )
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix WIDGET-123 regression'"),
                 cwd=git_repo,
             )
@@ -698,12 +698,12 @@ class TestDenyClientRefs:
         # a fresh synthetic tracker token that is NOT on the allowlist.
         (test_dir / "test_new_case.py").write_text(
             'def test_x():\n'
-            '    bash_input("git commit -m FAKECLIENT-42")\n'
+            '    bash_input("git commit -m FAKEPROJ-42")\n'
         )
         subprocess.run(["git", "add", "claude/.claude/hooks/tests/test_new_case.py"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Add new hook test case'"),
                 cwd=claude_config_repo,
             )
@@ -716,9 +716,9 @@ class TestDenyClientRefs:
         Guard against an accidental over-broad pathspec."""
         test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
         test_dir.mkdir(parents=True)
-        (test_dir / "test_new_case.py").write_text('bash_input("FAKECLIENT-42")\n')
+        (test_dir / "test_new_case.py").write_text('bash_input("FAKEPROJ-42")\n')
         # Non-test file at repo root with the same synthetic token.
-        (claude_config_repo / "other.txt").write_text("Touches FAKECLIENT-42 unexpectedly\n")
+        (claude_config_repo / "other.txt").write_text("Touches FAKEPROJ-42 unexpectedly\n")
         subprocess.run(
             ["git", "add", "claude/.claude/hooks/tests/test_new_case.py", "other.txt"],
             cwd=claude_config_repo,
@@ -726,7 +726,7 @@ class TestDenyClientRefs:
         )
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Mixed change'"),
                 cwd=claude_config_repo,
             )
@@ -735,11 +735,11 @@ class TestDenyClientRefs:
 
     def test_scoping_reason_message_still_present_when_blocked(self, claude_config_repo):
         """The deny reason shown to the user must still reference the
-        `Redact client-identifying content` section so reviewers know where
+        `Redact private-project-identifying content` section so reviewers know where
         to look. Guard against an accidental message change during scoping
         refactors."""
         result = subprocess.run(
-            [str(DENY_CLIENT_REFS_HOOK)],
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
             input=json.dumps(bash_input("git commit -m 'Fix WIDGET-123 regression'")),
             capture_output=True,
             text=True,
@@ -751,7 +751,7 @@ class TestDenyClientRefs:
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
         assert "Commit blocked by redaction gate" in reason
-        assert "Redact client-identifying content" in reason
+        assert "Redact private-project-identifying content" in reason
         assert "WIDGET-123" in reason
 
     # -- gh pr create / gh pr edit surfaces --------------------------------
@@ -778,7 +778,7 @@ class TestDenyClientRefs:
         ],
     )
     def test_gh_pr_inline_tracker_denied(self, claude_config_repo, command):
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
     def test_gh_pr_create_body_file_with_tracker_denied(self, claude_config_repo, tmp_path):
         """The canonical leak pattern: --body-file pointing at a file whose
@@ -788,7 +788,7 @@ class TestDenyClientRefs:
         body_file.write_text("## Summary\n\nFixes FOOCORP-42 regression.\n")
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(f"gh pr create --body-file {body_file}"),
                 cwd=claude_config_repo,
             )
@@ -799,10 +799,10 @@ class TestDenyClientRefs:
         """Equals form `--body-file=<path>` must parse identically to the
         space-delimited form."""
         body_file = tmp_path / "pr-body.md"
-        body_file.write_text("Refs NULLCLIENT-999.\n")
+        body_file.write_text("Refs NULLPROJ-999.\n")
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(f"gh pr create --body-file={body_file}"),
                 cwd=claude_config_repo,
             )
@@ -814,7 +814,7 @@ class TestDenyClientRefs:
         body_file.write_text("Updated scope: addresses EXAMPLECO-7.\n")
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(f"gh pr edit 42 --body-file {body_file}"),
                 cwd=claude_config_repo,
             )
@@ -841,7 +841,7 @@ class TestDenyClientRefs:
         ],
     )
     def test_gh_pr_clean_or_allowlisted_allowed(self, claude_config_repo, command):
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
 
     def test_gh_pr_body_file_allowlisted_only_allowed(self, claude_config_repo, tmp_path):
         """A body file that references only allowlisted tokens passes."""
@@ -849,7 +849,7 @@ class TestDenyClientRefs:
         body_file.write_text("Implements RFC-7231 and mitigates CVE-2024-1234.\n")
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(f"gh pr create --body-file {body_file}"),
                 cwd=claude_config_repo,
             )
@@ -862,7 +862,7 @@ class TestDenyClientRefs:
         guards against, so the fail-closed branch is load-bearing."""
         missing = tmp_path / "does-not-exist.md"
         result = subprocess.run(
-            [str(DENY_CLIENT_REFS_HOOK)],
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
             input=json.dumps(bash_input(f"gh pr create --body-file {missing}")),
             capture_output=True,
             text=True,
@@ -882,7 +882,7 @@ class TestDenyClientRefs:
         repo even if they reference a tracker ID."""
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("gh pr create --body 'Fix WIDGET-123 regression'"),
                 cwd=unrelated_remote_repo,
             )
@@ -895,7 +895,7 @@ class TestDenyClientRefs:
         this hook and must pass."""
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("gh pr comment 42 --body 'has WIDGET-123'"),
                 cwd=claude_config_repo,
             )
@@ -920,7 +920,7 @@ class TestDenyClientRefs:
         body_file.write_text("Fixes BARCORP-22.\n")
         separator = "" if flag_form.endswith("=") else " "
         cmd = f"gh pr create {flag_form}{separator}{body_file}"
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
 
     @pytest.mark.parametrize(
         "flag_form",
@@ -929,10 +929,10 @@ class TestDenyClientRefs:
     )
     def test_gh_pr_template_flag_with_tracker_denied(self, claude_config_repo, tmp_path, flag_form):
         template = tmp_path / "pr-template.md"
-        template.write_text("## Starting template\n\nLeaked NULLCLIENT-999 goes here.\n")
+        template.write_text("## Starting template\n\nLeaked NULLPROJ-999 goes here.\n")
         separator = "" if flag_form.endswith("=") else " "
         cmd = f"gh pr create {flag_form}{separator}{template}"
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
 
     def test_gh_pr_template_clean_allowed(self, claude_config_repo, tmp_path):
         """Template flag with only allowlisted refs must pass — the scan
@@ -941,7 +941,7 @@ class TestDenyClientRefs:
         template.write_text("Follows RFC-7231 section 6.5.\n")
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(f"gh pr create --template {template}"),
                 cwd=claude_config_repo,
             )
@@ -962,7 +962,7 @@ class TestDenyClientRefs:
     )
     def test_gh_pr_pseudo_file_body_source_denied(self, claude_config_repo, pseudo_path):
         result = subprocess.run(
-            [str(DENY_CLIENT_REFS_HOOK)],
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
             input=json.dumps(bash_input(f"gh pr create --body-file={pseudo_path}")),
             capture_output=True,
             text=True,
@@ -983,7 +983,7 @@ class TestDenyClientRefs:
 
     def test_malformed_json_stdin_denies(self, claude_config_repo):
         result = subprocess.run(
-            [str(DENY_CLIENT_REFS_HOOK)],
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
             input="not valid json{",
             capture_output=True,
             text=True,
@@ -1007,7 +1007,7 @@ class TestDenyClientRefs:
         body_file.write_text("Refactor parser, no tracker refs.\n")
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(f"gh pr create --body-file={body_file}"),
                 cwd=claude_config_repo,
             )
@@ -1023,7 +1023,7 @@ class TestDenyClientRefs:
         subprocess.run(["git", "reset", "HEAD"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit --amend -m 'Fix WIDGET-123 regression'"),
                 cwd=claude_config_repo,
             )
@@ -1039,7 +1039,7 @@ class TestDenyClientRefs:
         test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
         test_dir.mkdir(parents=True)
         (test_dir / "test_another_case.py").write_text(
-            "# synthetic token for testing: FAKECLIENT-777\n"
+            "# synthetic token for testing: FAKEPROJ-777\n"
         )
         subprocess.run(
             ["git", "add", "claude/.claude/hooks/tests/test_another_case.py"],
@@ -1048,7 +1048,7 @@ class TestDenyClientRefs:
         )
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Add test'"),
                 cwd=claude_config_repo,
             )

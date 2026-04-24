@@ -3,7 +3,8 @@
 # content (staged diff, commit message, PR title/body, or body-source
 # file contents) contains tracker-ID tokens that aren't on the open-
 # source allowlist. Enforces the tracker-ID piece of the repo-root
-# CLAUDE.md redaction rule ("Redact client-identifying content").
+# CLAUDE.md redaction rule ("Redact private-project-identifying
+# content").
 #
 # NOTE — `if`-dispatch is advisory; the real gate is the internal regex
 # at the top of this script. settings.json wires three `if` entries
@@ -14,9 +15,9 @@
 #
 # Scope and limits:
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
-# - Does NOT catch client names, internal tool names, absolute filesystem
-#   paths with client-names, or structural fingerprints. Those require
-#   review discipline.
+# - Does NOT catch private project names, internal tool names, absolute
+#   filesystem paths with private-project names, or structural
+#   fingerprints. Those require review discipline.
 # - Scans the full Bash command string so `git commit -m "..."`,
 #   `gh pr create --body "..."`, `gh pr edit N --title "..."`, and
 #   heredoc variants all get checked without parsing the message out
@@ -42,21 +43,24 @@
 #   `gh pr create --body-file` but is NOT scanned here. Pre-existing
 #   gap, not addressed by this plan.
 #
-# Deliberate non-scope: client-name blocklist.
-# -------------------------------------------
-# A committed list of client names in this public repo *would itself be
-# the leak* — it would hardcode in cleartext the exact strings the rule
-# is trying to prevent from shipping. A local blocklist file sourced at
-# runtime (e.g. ~/.claude/client-blocklist.txt) is technically viable
-# but adds a maintenance surface and a second source of truth that can
-# drift. Client-name defense stays with the repo-root CLAUDE.md "Redact
-# client-identifying content" rule and reviewer discipline on all three
-# surfaces (file content, commit message, PR title/description). Future
-# contributors: do not re-propose a blocklist in this hook without first
-# reading that reasoning.
+# Deliberate non-scope: private-project-name blocklist.
+# ----------------------------------------------------
+# A committed list of private-project names in this public repo *would
+# itself be the leak* — it would hardcode in cleartext the exact
+# strings the rule is trying to prevent from shipping. A local
+# blocklist file sourced at runtime (e.g.
+# ~/.claude/private-project-blocklist.txt) is technically viable but
+# adds a maintenance surface and a second source of truth that can
+# drift. Private-project-name defense stays with the repo-root
+# CLAUDE.md "Redact private-project-identifying content" rule and
+# reviewer discipline on all three surfaces (file content, commit
+# message, PR title/description). Future contributors: do not
+# re-propose a blocklist in this hook without first reading that
+# reasoning.
 #
 # Allowlist extension: append to OSS_ALLOWLIST below if a legitimate
-# open-source prefix is blocked. Do NOT add client-specific prefixes.
+# open-source prefix is blocked. Do NOT add private-project-specific
+# prefixes.
 
 set -uo pipefail
 
@@ -102,7 +106,7 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 
 # Scope: this redaction gate exists to protect the claude-config repo,
-# where accidental references to consulting clients would leak publicly.
+# where accidental references to private projects would leak publicly.
 # Other repos legitimately reference their own tracker IDs. Short-circuit
 # unless origin.url looks like claude-config. `git config --get` returns
 # empty (not an error exit) when the remote is missing, so the substring
@@ -112,8 +116,9 @@ if [[ "$REMOTE_URL" != *claude-config* ]]; then
   exit 0
 fi
 
-# Allowlist: prefixes that are NEVER client tracker IDs. Extend by prefix
-# (no digits). Organized by category so it's obvious what belongs here.
+# Allowlist: prefixes that are NEVER private-project tracker IDs.
+# Extend by prefix (no digits). Organized by category so it's obvious
+# what belongs here.
 #   OSS specs / standards bodies: CVE, CWE, RFC, PEP, ISO, IETF, W3C,
 #                                 NIST, ECMA, ANSI
 #   Public-project trackers:      GH (GitHub shorthand), BUG (bugzilla),
@@ -194,11 +199,11 @@ if [ "$IS_GH_PR" -eq 1 ]; then
     while IFS= read -r body_source_path; do
       [ -z "$body_source_path" ] && continue
       if is_pseudo_file_path "$body_source_path"; then
-        emit_deny "gh pr command passes a body-source flag pointing at a pseudo-file path ('${body_source_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See repo CLAUDE.md section 'Redact client-identifying content'."
+        emit_deny "gh pr command passes a body-source flag pointing at a pseudo-file path ('${body_source_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
       if [ ! -r "$body_source_path" ]; then
-        emit_deny "gh pr command references a body-source file at '${body_source_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable body file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh pr command, inline the content with --body, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact client-identifying content'."
+        emit_deny "gh pr command references a body-source file at '${body_source_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable body file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh pr command, inline the content with --body, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
       BODY_CONTENT=$(cat "$body_source_path" 2>/dev/null || true)
@@ -224,4 +229,4 @@ fi
 # Report the first few offenders to keep the message short.
 HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
 
-emit_deny "Commit blocked by redaction gate: the staged diff, commit message, PR title, PR body, or referenced body-source file contains tracker-ID tokens that may reveal a client or private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact client-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-client-refs.sh. Otherwise rewrite the commit message / staged content / PR body without the tracker ID before retrying."
+emit_deny "Commit blocked by redaction gate: the staged diff, commit message, PR title, PR body, or referenced body-source file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body without the tracker ID before retrying."
