@@ -18,6 +18,18 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/deny-client-refs.sh",
+            "if": "Bash(gh pr create *)",
+            "statusMessage": "Scanning for client-identifying refs..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-client-refs.sh",
+            "if": "Bash(gh pr edit *)",
+            "statusMessage": "Scanning for client-identifying refs..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/require-respond-pr.sh",
             "statusMessage": "Checking respond-pr gate..."
           },
