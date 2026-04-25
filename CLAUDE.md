@@ -14,24 +14,25 @@ non-read-only git operations must run inside a linked worktree
 `claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on
 `git pull` — no re-install needed.
 
-## Redact client-identifying content
+## Redact private-project-identifying content
 
 Never commit anything that ties a skill, rule, or example back to a
-specific client, engagement, or private codebase. Categories:
+specific private project, engagement, or private codebase. Categories:
 
-- **Client / company names** (including the repo owner's own clients).
-- **Project codenames** unique to a client codebase.
+- **Project or organization names** (including the repo owner's own
+  private projects).
+- **Project codenames** unique to a private codebase.
 - **Internal tool or product names** (bespoke CLIs, in-house services)
   beyond those generally known in open source.
-- **Issue or ticket IDs from client trackers** — anything matching
+- **Issue or ticket IDs from private trackers** — anything matching
   `[A-Z]{2,}-\d+` that is *not* on this allowlist of standard
   open-source references: `CVE-`, `RFC-`, `PEP-`, `ISO-`, `GH-`,
   `BUG-` / bugzilla-style, and clearly-public project prefixes.
   Default: if in doubt, strip it.
-- **Internal URLs, hostnames, Slack channels, client domains**.
-- **Absolute filesystem paths** that embed client names
-  (`~/Code/acme-platform/...`, `/home/foo/WorkForClient/...`).
-- **Environment variable names** that encode a client (`ACME_API_URL`,
+- **Internal URLs, hostnames, Slack channels, project domains**.
+- **Absolute filesystem paths** that embed project names
+  (`~/Code/acme-platform/...`, `/home/foo/WorkForProject/...`).
+- **Environment variable names** that encode a project (`ACME_API_URL`,
   `PROD_FOOCO_DB_URL`).
 - **Commit SHAs or PR numbers from private repos** — pastes like
   `see abc1234 in the main repo` are useless publicly and correlatable.
@@ -41,9 +42,9 @@ specific client, engagement, or private codebase. Categories:
 ### Also redact structural fingerprints
 
 Identifiers aren't the only leak. Structural shapes can identify a
-client even without names — a verbatim RLS policy copied from a
-client codebase, a rare column-naming pattern, an unusual error-code
-namespace. When an example would reveal the client via shape alone,
+project even without names — a verbatim RLS policy copied from a
+private codebase, a rare column-naming pattern, an unusual error-code
+namespace. When an example would reveal the project via shape alone,
 generalize the example.
 
 ### Secrets, tokens, credentials
@@ -72,28 +73,30 @@ in this repo; the incident specifics do not.
 - ❌ "Surfaced during the ExampleCo WIDGET-123 review, where the mid-merge
   index was silently corrupted..."
 
-If a draft commit, skill body, or PR description contains a client
-reference, fix it **before** committing — do not let history ship with
-the reference even if the skill body is clean. Rewriting unpushed
-history on a personal branch is the right tool here (see
+If a draft commit, skill body, or PR description contains a private-
+project reference, fix it **before** committing — do not let history
+ship with the reference even if the skill body is clean. Rewriting
+unpushed history on a personal branch is the right tool here (see
 `git-feature-branch-sync`).
 
 ## AI agents
 
 The same rule applies when an AI agent is drafting. If the agent
 proposes a commit message, skill body, or PR description that includes
-a client reference — or an agent's research / memory hands it a
-reference — strip it before committing. The fact that the reference
+a private-project reference — or an agent's research / memory hands it
+a reference — strip it before committing. The fact that the reference
 came from the agent, not a human, is not a defense.
 
 ## Enforcement
 
-The `deny-client-refs.sh` PreToolUse hook (wired in
-`claude/.claude/settings.json`) blocks `git commit` when the staged
-diff or commit message contains a tracker-ID token outside the OSS
-allowlist. Tests live in `claude/.claude/hooks/tests/test_hooks.py`.
+The `deny-private-project-refs.sh` PreToolUse hook (wired in
+`claude/.claude/settings.json`) blocks `git commit`, `gh pr create`,
+and `gh pr edit` when the staged diff, commit message, or PR
+title/body/body-source-file contains a tracker-ID token outside the
+OSS allowlist. Tests live in `claude/.claude/hooks/tests/test_hooks.py`.
 
 The hook catches the mechanical category (tracker IDs). Other
-categories above — client names, internal tool names, structural
-fingerprints — still require review discipline. Extend the hook's
-pattern list if a category becomes repeatable enough to automate.
+categories above — private-project names, internal tool names,
+structural fingerprints — still require review discipline. Extend
+the hook's pattern list if a category becomes repeatable enough to
+automate.

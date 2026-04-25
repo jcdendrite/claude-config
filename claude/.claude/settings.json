@@ -12,9 +12,21 @@
           },
           {
             "type": "command",
-            "command": "~/.claude/hooks/deny-client-refs.sh",
+            "command": "~/.claude/hooks/deny-private-project-refs.sh",
             "if": "Bash(git commit *)",
-            "statusMessage": "Scanning for client-identifying refs..."
+            "statusMessage": "Scanning for private-project refs..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-private-project-refs.sh",
+            "if": "Bash(gh pr create *)",
+            "statusMessage": "Scanning for private-project refs..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-private-project-refs.sh",
+            "if": "Bash(gh pr edit *)",
+            "statusMessage": "Scanning for private-project refs..."
           },
           {
             "type": "command",
