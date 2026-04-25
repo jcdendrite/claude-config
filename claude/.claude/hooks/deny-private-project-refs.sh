@@ -43,20 +43,11 @@
 #   `gh pr create --body-file` but is NOT scanned here. Pre-existing
 #   gap, not addressed by this plan.
 #
-# Deliberate non-scope: private-project-name blocklist.
-# ----------------------------------------------------
-# A committed list of private-project names in this public repo *would
-# itself be the leak* — it would hardcode in cleartext the exact
-# strings the rule is trying to prevent from shipping. A local
-# blocklist file sourced at runtime (e.g.
-# ~/.claude/private-project-blocklist.txt) is technically viable but
-# adds a maintenance surface and a second source of truth that can
-# drift. Private-project-name defense stays with the repo-root
-# CLAUDE.md "Redact private-project-identifying content" rule and
-# reviewer discipline on all three surfaces (file content, commit
-# message, PR title/description). Future contributors: do not
-# re-propose a blocklist in this hook without first reading that
-# reasoning.
+# Deliberate non-scope (this PR): a committed list of project names in
+# this public repo would itself be the leak — hardcoding in cleartext
+# the exact strings the rule is trying to prevent from shipping.
+# Mechanical defense beyond the tracker-ID category is out of scope for
+# this PR; a follow-up may add a non-committed mechanism.
 #
 # Allowlist extension: append to OSS_ALLOWLIST below if a legitimate
 # open-source prefix is blocked. Do NOT add private-project-specific
@@ -162,9 +153,10 @@ SCAN_TARGET=""
 if [ "$IS_GIT_COMMIT" -eq 1 ]; then
   # Exclude the hook's own test file from the scan — tests of this hook
   # need synthetic tracker tokens as test data (see the header comment
-  # in test_hooks.py listing WIDGET / FOOCORP / NULLCLIENT / EXAMPLECO /
-  # BARCORP as invented prefixes). Without this exclusion, every commit
-  # that adds a new test case would be blocked by the hook under test.
+  # in test_hooks.py listing WIDGET / FOOCORP / NULLPROJ / EXAMPLECO /
+  # BARCORP / FAKEPROJ as invented prefixes). Without this exclusion,
+  # every commit that adds a new test case would be blocked by the
+  # hook under test.
   # The `:(top,exclude)` pathspec magic is relative to the repo root so
   # this works regardless of the caller's cwd within the repo.
   STAGED_DIFF=$(git diff --cached -- ':(top,exclude)claude/.claude/hooks/tests/**' 2>/dev/null)
