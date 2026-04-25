@@ -253,29 +253,37 @@ S6. **Secret lifecycle** — If the plan introduces, rotates, or references secr
 
 ## Reviewer roles
 
-When spawning reviewer agents, adopt the persona that matches each detected
-domain. Different personas catch different things — a security reviewer thinks
+For multi-domain plans, spawn the matching reviewer subagents via the
+Agent tool — one per detected domain — and reconcile their findings.
+Different personas catch different things: a security reviewer thinks
 about attack vectors while a backend reviewer thinks about API contracts.
+Spawning real subagents (not in-context role-play) keeps each reviewer
+isolated to its scope and restricts it to read-only tools.
 
-| Domain | Reviewer role | Focus |
-|--------|--------------|-------|
-| Backend | Staff backend engineer | API contracts, error handling, idempotency, retry semantics, service boundaries, SDK behavior |
-| Frontend | Staff frontend engineer | Component patterns, state management, data fetching and cache consistency, accessibility, UX impact |
-| Security | CISO | Threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth |
-| Data | Staff data engineer | Migration safety, schema design, reversibility, deploy-time compatibility, index coverage, access control on new objects |
-| Infrastructure | Staff DevOps engineer | CI/CD pipelines, IaC, deployment ordering, environment parity, secret provisioning |
-| Testing | Senior SDET | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements |
-| Product | Staff product engineer | Whether the plan solves the actual user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing |
+| Domain | Agent | Focus |
+|--------|-------|-------|
+| Backend | `staff-backend-engineer` | API contracts, error handling, idempotency, retry semantics, service boundaries, SDK behavior |
+| Frontend | `staff-frontend-engineer` | Component patterns, state management, data fetching and cache consistency, accessibility, UX impact |
+| Security | `ciso-reviewer` | Threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth |
+| Data | `staff-data-engineer` | Migration safety, schema design, reversibility, deploy-time compatibility, index coverage, access control on new objects |
+| Infrastructure | `staff-platform-engineer` | CI/CD, IaC, shell discipline, deployment ordering, secret provisioning; observability coverage, alerting, SLO impact, runbook linkage, load characteristics, cost/operational footprint |
+| Testing | `staff-sdet` | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements |
+| Product | `staff-product-engineer` | Whether the plan solves the actual user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing |
 
-For multi-domain plans, evaluate from each relevant persona. Always include the
-Product persona when the plan changes user-facing behavior. Always include the
-CISO persona when the plan touches auth, authorization, secrets, tokens, data
-exposure, logging of sensitive data, third-party data sharing, or infrastructure
-permissions.
+Spawn each relevant reviewer in parallel. Always include
+`staff-product-engineer` when the plan changes user-facing behavior.
+Always include `ciso-reviewer` when the plan touches auth, authorization,
+secrets, tokens, data exposure, logging of sensitive data, third-party
+data sharing, or infrastructure permissions.
 
-Project-level plan-review skills may extend this table with project-specific
-reviewer roles and focus areas, but must not remove or narrow the CISO trigger
-conditions.
+When invoking a reviewer, pass the plan scope, the phase or section
+under review, and the domain-relevant checklist items (e.g., S1–S6 for
+`ciso-reviewer`). Each agent returns a findings-only output; reconcile
+the set and present a combined verdict.
+
+Project-level plan-review skills may extend this table with
+project-specific reviewer roles and focus areas, but must not remove or
+narrow the `ciso-reviewer` trigger conditions.
 
 ## Output format
 
