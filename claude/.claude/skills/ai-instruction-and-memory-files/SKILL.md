@@ -8,11 +8,14 @@ description: >
   the `@AGENTS.md` import pattern Anthropic officially endorses, and the
   split between user-written instructions and Claude-written memory.
   TRIGGER when: editing CLAUDE.md or AGENTS.md, editing `.lovable/*.md`,
-  creating a new instruction file, auditing or pruning Claude Code
-  auto-memory in `~/.claude/projects/*/memory/`, deciding whether a rule
-  belongs in CLAUDE.md vs auto-memory, evaluating whether rules should be
-  duplicated across files, or debating file length and context budget for
-  AI coding agents.
+  creating a new instruction file, creating, editing, auditing, or
+  pruning Claude Code auto-memory in `~/.claude/projects/*/memory/`
+  (including new `MEMORY.md` entries — fire BEFORE the write, not
+  after, since the surface choice between CLAUDE.md/AGENTS.md and
+  memory is the failure mode this skill prevents), deciding whether a
+  rule belongs in CLAUDE.md vs auto-memory, evaluating whether rules
+  should be duplicated across files, or debating file length and
+  context budget for AI coding agents.
   DO NOT TRIGGER when: editing README.md or other project docs that are
   not loaded by AI coding agents, or writing code.
 user-invocable: false
