@@ -88,6 +88,14 @@ ship with the reference even if the skill body is clean. Rewriting
 unpushed history on a personal branch is the right tool here (see
 `git-feature-branch-sync`).
 
+## AI agents
+
+The same rule applies when an AI agent is drafting. If the agent
+proposes a commit message, skill body, or PR description that includes
+a private-project reference — or an agent's research / memory hands it
+a reference — strip it before committing. The fact that the reference
+came from the agent, not a human, is not a defense.
+
 ## When editing a skill, run the skill on its own diff
 
 A skill's body states the rules it enforces; an edit can violate
@@ -99,14 +107,6 @@ The common failure mode: an edit adds prose to a skill that argues
 against prose-heavy rules (or a long body to a skill that targets
 brevity, etc.) — exactly the kind of thing the skill would flag if
 applied to its own diff.
-
-## AI agents
-
-The same rule applies when an AI agent is drafting. If the agent
-proposes a commit message, skill body, or PR description that includes
-a private-project reference — or an agent's research / memory hands it
-a reference — strip it before committing. The fact that the reference
-came from the agent, not a human, is not a defense.
 
 ## Enforcement
 
