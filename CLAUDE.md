@@ -14,6 +14,15 @@ non-read-only git operations must run inside a linked worktree
 `claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on
 `git pull` — no re-install needed.
 
+**Footgun: never recommend `>>` writes through stow-symlinked files.**
+Files under `~/.claude/` (like `~/.claude/CLAUDE.md`) are symlinks to
+tracked files in this repo. Telling a user to
+`echo "..." >> ~/.claude/CLAUDE.md` writes through the symlink and
+silently stages changes to the public repo. To add Claude-context for
+a feature, edit the committed file directly via PR. For per-user
+private context, use a non-stowed location like
+`~/.claude/private-projects.md` (opt-in, not part of the stow tree).
+
 ## Redact private-project-identifying content
 
 Never commit anything that ties a skill, rule, or example back to a
