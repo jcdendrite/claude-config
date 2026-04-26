@@ -44,6 +44,23 @@ if [ -f "$SETTINGS_FILE" ]; then
   done < <(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$SETTINGS_FILE")
 fi
 
+check_private_projects_file() {
+  local file="$HOME/.claude/private-projects.md"
+  if [ ! -e "$file" ]; then
+    echo ""
+    echo "TIP: Create ~/.claude/private-projects.md and add \"@private-projects.md\""
+    echo "     to ~/.claude/CLAUDE.md to enable redaction of project names you don't"
+    echo "     want leaking in commits/PRs. See README section 'Private-project redaction'."
+  elif [ -z "$(grep -Ev '^[[:space:]]*(#|$)' "$file" 2>/dev/null)" ]; then
+    echo ""
+    echo "WARNING: ~/.claude/private-projects.md exists but contains no usable entries"
+    echo "         (only comments or blank lines). Either populate it or delete it —"
+    echo "         an empty file is the confusing state."
+  fi
+}
+
+check_private_projects_file
+
 echo ""
 echo "Done. Optional: run the hook test suite:"
 echo "  pytest claude/.claude/hooks/tests/"

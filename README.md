@@ -23,7 +23,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 ### Hooks (PreToolUse gates)
 
 - **`require-code-review.sh`** — blocks `git commit` (including chained forms like `git add . && git commit`) until `/code-review` has run on the current staged state. Verified via sha256 marker in `~/.claude/review-markers/<repo-hash>`, which auto-invalidates the moment the staging area changes.
-- **`deny-private-project-refs.sh`** — blocks `git commit`, `gh pr create`, and `gh pr edit` when the staged diff, commit message, or PR title/body/body-source-file contains tracker-ID tokens (`[A-Z]{2,}-\d+`) outside an OSS-prefix allowlist (`CVE-`, `RFC-`, `GH-`, and similar — see the script for the full list). Enforces the tracker-ID category of the repo-root `CLAUDE.md` redaction rule; other categories (private-project names, internal tool names, structural fingerprints) still require review discipline.
+- **`deny-private-project-refs.sh`** — blocks `git commit`, `gh pr create`, and `gh pr edit` when the staged diff, commit message, or PR title/body/body-source-file contains either (a) tracker-ID tokens (`[A-Z]{2,}-\d+`) outside an OSS-prefix allowlist (`CVE-`, `RFC-`, `GH-`, and similar — see the script for the full list), or (b) a literal substring match against entries in the user's opt-in `~/.claude/private-projects.md` blocklist. Enforces the mechanical categories of the repo-root `CLAUDE.md` redaction rule; structural fingerprints still require review discipline. See [Private-project redaction](#private-project-redaction) below.
 - **`require-respond-pr.sh`** — blocks PR comment reads and posts (`gh api .../pulls|issues/N/{comments,reviews}`, `gh pr comment`, `gh pr review`) and redirects to `/respond-pr`, so all three comment types get fetched and replies carry the `[Claude Code]` attribution prefix. Honors a 60-minute bypass marker at `~/.claude/.respond-pr-active` that the skill sets on entry and removes on exit.
 - **`ask-review-permissions.sh`** — asks before `Edit`/`Write`/`MultiEdit` to `.claude/settings*.json`, nudging toward `/review-permissions` when the edit touches `permissions.allow`.
 - **`require-worktree-for-git-writes.sh`** — opt-in per repo. When active, denies non-read-only git operations unless the session runs in a linked git worktree. Prevents concurrent Claude Code sessions from racing on the same working tree. See [Worktree enforcement](#worktree-enforcement) below for opt-in instructions.
@@ -90,6 +90,68 @@ cd .claude/worktrees/my-feature
 Agents spawned with `isolation: worktree` create their own worktrees under `.claude/worktrees/` automatically.
 
 To opt out, delete `.claude/worktree-required`.
+
+## Private-project redaction
+
+This repo is public, so any project codename, organization name, or tracker-ID that lands in a commit or PR description ships to the world. The repo-root [`CLAUDE.md`](./CLAUDE.md) "Redact private-project-identifying content" rule defines what to keep out; `deny-private-project-refs.sh` is the mechanical enforcement.
+
+Two scans run, in order:
+
+1. **Tracker-ID scan (always on, no setup).** Matches `[A-Z]{2,}-\d+` tokens not on the OSS allowlist.
+2. **Private-projects blocklist (opt-in).** Reads `~/.claude/private-projects.md` at hook runtime and blocks commits/PRs whose content contains any non-comment, non-blank line from the file as a case-insensitive literal substring.
+
+### Opt-in: enable the blocklist
+
+```bash
+touch ~/.claude/private-projects.md
+echo "Acme Corp" >> ~/.claude/private-projects.md
+echo "Project Bluebird" >> ~/.claude/private-projects.md
+
+# Same source of truth for Claude's context — so it self-scrubs while drafting:
+echo "@private-projects.md" >> ~/.claude/CLAUDE.md
+```
+
+### File format
+
+- One project name per line.
+- Lines starting with `#` are comments; ignored.
+- Blank lines ignored.
+- Leading and trailing whitespace stripped.
+- Names can contain spaces.
+- Match is case-insensitive literal substring. No regex. No globs.
+
+### What to put in the file (and what NOT to)
+
+The two scans cover different shapes — understanding the split keeps you from adding entries that backfire:
+
+- **Tracker-ID scan (always on):** automatically catches `[A-Z]{2,}-\d+` patterns. So any `ACME-<n>` tracker reference (where `<n>` is digits) is *already* blocked — you don't need a blocklist entry for them.
+- **Blocklist scan (this file):** catches case-insensitive literal substrings of the entries you list.
+
+**Worked example.** Suppose your private project is `AcmeCorporation` with tracker prefix `ACME`:
+
+✅ **Add `AcmeCorporation`** — catches the bare project name in commits like "Refactor AcmeCorporation auth flow", which the tracker-ID regex doesn't cover. Case-insensitive match handles `acmecorporation`, `ACMECORPORATION`, etc., so you don't need variants.
+
+❌ **Don't add `ACME`** — the tracker-ID regex already catches `ACME-<digits>`. Adding bare `ACME` to the blocklist would false-positive on the substring `acme` inside English words (`acme of clarity`, `Acme Anvil` references in documentation, etc.). For shorter prefixes like `DAY` the false-positive surface is much worse (`today`, `holiday`, `daylight`).
+
+**Rule of thumb:**
+
+- **Tracker prefixes** (`[A-Z]{2,}` + dash + digits): trust the tracker-ID regex; don't blocklist the bare prefix.
+- **Distinctive project names** (full names, codenames): blocklist them.
+- **Generic-word codenames** (`Pulse`, `Atlas`, `Echo`): blocklist with caution — same false-positive risk as bare prefixes. If the name is a common English word, reviewer discipline may be a better tier than mechanical match.
+
+**Multi-word forms** reduce false-positive risk. If your project is referred to as "AC platform" internally and `AC` alone would false-positive everywhere, blocklist `AC platform` instead — the multi-word phrase is much more selective.
+
+### Why user-local, not committed
+
+A committed list of private-project names in this public repo would itself be the leak — it would hardcode in cleartext the exact strings the rule prevents from shipping. The file lives at `~/.claude/private-projects.md` directly, **not** inside `claude-config/claude/.claude/` (which `stow` symlinks into `$HOME/`). Creating it in the wrong place risks accidental commit; the repo-root `.gitignore` has a belt-and-suspenders entry for `claude/.claude/private-projects.md` as a safety net.
+
+### Privacy of the deny message
+
+When the blocklist scan blocks a commit or PR, the deny message **does not name which entry matched**. Echoing a name the user explicitly flagged as sensitive would re-expose it in terminal output, screenshots, CI logs, and Claude's own conversation context — exactly the surfaces the gate exists to protect. The tracker-ID scan does name matched tokens because they're mechanical patterns, not user-flagged secrets.
+
+### For fork contributors
+
+Forks of `claude-config` inherit the same hook (the scoping check passes for any `claude-config` substring in the origin URL). A fork user can drop their own `~/.claude/private-projects.md` and contribute back without their project names ever ending up in a PR they open against the upstream.
 
 ## Tests
 

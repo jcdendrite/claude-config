@@ -92,11 +92,18 @@ came from the agent, not a human, is not a defense.
 The `deny-private-project-refs.sh` PreToolUse hook (wired in
 `claude/.claude/settings.json`) blocks `git commit`, `gh pr create`,
 and `gh pr edit` when the staged diff, commit message, or PR
-title/body/body-source-file contains a tracker-ID token outside the
-OSS allowlist. Tests live in `claude/.claude/hooks/tests/test_hooks.py`.
+title/body/body-source-file contains either:
 
-The hook catches the mechanical category (tracker IDs). Other
-categories above — private-project names, internal tool names,
-structural fingerprints — still require review discipline. Extend
-the hook's pattern list if a category becomes repeatable enough to
-automate.
+1. A tracker-ID token (`[A-Z]{2,}-\d+`) outside the OSS allowlist, or
+2. A literal substring matching an entry in the user's opt-in
+   `~/.claude/private-projects.md` blocklist (case-insensitive).
+
+The blocklist file is user-local and never committed. See README
+"Private-project redaction" for opt-in instructions. Tests live in
+`claude/.claude/hooks/tests/test_hooks.py`.
+
+The hook catches two mechanical categories (tracker IDs always; named
+projects when the user opts in). Other categories above — internal
+tool names, structural fingerprints — still require review
+discipline. Extend the hook's pattern list if a category becomes
+repeatable enough to automate.
