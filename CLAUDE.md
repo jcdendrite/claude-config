@@ -96,6 +96,18 @@ a private-project reference — or an agent's research / memory hands it
 a reference — strip it before committing. The fact that the reference
 came from the agent, not a human, is not a defense.
 
+## When editing a skill, run the skill on its own diff
+
+A skill's body states the rules it enforces; an edit can violate
+those rules unless you re-read the body with the diff in mind.
+Before committing a skill change, load the skill into context and
+check the diff against its sections.
+
+The common failure mode: an edit adds prose to a skill that argues
+against prose-heavy rules (or a long body to a skill that targets
+brevity, etc.) — exactly the kind of thing the skill would flag if
+applied to its own diff.
+
 ## Enforcement
 
 The `deny-private-project-refs.sh` PreToolUse hook (wired in
