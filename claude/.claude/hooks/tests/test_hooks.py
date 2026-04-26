@@ -440,6 +440,40 @@ def unrelated_remote_repo(git_repo):
 
 
 class TestDenyPrivateProjectRefs:
+    @pytest.fixture(autouse=True)
+    def _isolate_home_for_blocklist(self, monkeypatch, tmp_path):
+        """Isolate $HOME for the entire class so the developer's real
+        ~/.claude/private-projects.md never bleeds into tests.
+
+        Without this, a developer with "the parser" or any other
+        generic substring in their real blocklist could fail tests
+        like test_clean_commit_message_allowed nondeterministically.
+        Subprocess inherits this monkeypatched env (run_hook doesn't
+        override it), so the hook reads the isolated $HOME at
+        runtime.
+        """
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    @pytest.fixture
+    def private_projects_file(self, _isolate_home_for_blocklist):
+        """Writer for ~/.claude/private-projects.md inside the
+        isolated $HOME established by the autouse fixture above.
+
+        Returns a function that takes the file's content (a string)
+        and writes it. Tests that don't call this writer get a
+        nonexistent blocklist file (the fail-open path)."""
+        home = _isolate_home_for_blocklist
+        blocklist = home / ".claude" / "private-projects.md"
+
+        def _write(content: str) -> Path:
+            blocklist.write_text(content)
+            return blocklist
+
+        return _write
+
     def test_non_commit_command_allowed(self, claude_config_repo):
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input("git status"), cwd=claude_config_repo) == "allow"
 
@@ -1054,6 +1088,268 @@ class TestDenyPrivateProjectRefs:
             )
             == "allow"
         )
+
+    # -- User-local private-projects blocklist -----------------------------
+    # Second mechanical defense alongside the tracker-ID scan. Reads
+    # ~/.claude/private-projects.md as a literal, case-insensitive
+    # substring blocklist. Fails open if the file is absent or unreadable.
+    # Critical invariant: the deny message NEVER names the matched entry.
+
+    def test_blocklist_match_in_commit_message_denied(self, claude_config_repo, private_projects_file):
+        private_projects_file("Acme Corp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp integration'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_case_insensitive_denied(self, claude_config_repo, private_projects_file):
+        """Blocklist entry `Initech`; commit has lowercase `initech`."""
+        private_projects_file("Initech\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Migrate initech config to new schema'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_multi_word_entry_denied(self, claude_config_repo, private_projects_file):
+        """Multi-word entries match — line-by-line read, not word-split."""
+        private_projects_file("Project Bluebird\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Update project bluebird notes'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_in_gh_pr_inline_body_denied(self, claude_config_repo, private_projects_file):
+        private_projects_file("Acme Corp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr create --body 'Refactor for Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_in_gh_pr_body_file_denied(self, claude_config_repo, private_projects_file, tmp_path):
+        """Blocklist applies to body-file content, not just the inline command."""
+        private_projects_file("Acme Corp\n")
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("## Summary\n\nAcme Corp integration polish.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh pr create --body-file {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_in_staged_diff_denied(self, claude_config_repo, private_projects_file):
+        """Added lines in the staged diff are scanned against the blocklist."""
+        private_projects_file("Acme Corp\n")
+        (claude_config_repo / "file.txt").write_text("first\nsecond\n# Acme Corp section\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Generic refactor'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_comments_and_blanks_ignored(self, claude_config_repo, private_projects_file):
+        """File with `#` comments and blank lines + a real entry must
+        skip the noise and still match on the real entry."""
+        private_projects_file("# Engagements\n\n# More\nAcme Corp\n\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_entry_whitespace_trimmed(self, claude_config_repo, private_projects_file):
+        """Leading/trailing whitespace on a blocklist line is stripped
+        before matching, so a stray indent doesn't silently disable the entry."""
+        private_projects_file("   Acme Corp   \n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_absent_allows(self, claude_config_repo):
+        """No ~/.claude/private-projects.md → fail-open. Existing behavior
+        for users who haven't opted in must be unchanged."""
+        # The autouse fixture leaves $HOME without a blocklist file.
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_only_comments_and_blanks_allows(self, claude_config_repo, private_projects_file):
+        """File exists but has no usable entries → fail-open."""
+        private_projects_file("# Just a header\n\n# Nothing real\n\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_no_match_allows(self, claude_config_repo, private_projects_file):
+        private_projects_file("Acme Corp\nProject Bluebird\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor the parser module'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_unrelated_remote_short_circuits(self, unrelated_remote_repo, private_projects_file):
+        """The blocklist scan must respect the same origin.url short-
+        circuit as the tracker-ID scan. A repo that isn't claude-config
+        gets no scanning at all, even if the content matches a blocklist
+        entry — the user's blocklist is for THEIR private projects, but
+        the gate only fires in this public repo."""
+        private_projects_file("Acme Corp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_removed_line_in_diff_allows(self, claude_config_repo, private_projects_file):
+        """Removing a blocklisted name in the staged diff is the legitimate
+        cleanup flow — the hook must not block it. Mirror of
+        test_removing_a_tracker_id_is_allowed."""
+        private_projects_file("Acme Corp\n")
+        # Seed: file with the name committed.
+        (claude_config_repo / "legacy.txt").write_text("Old notes about Acme Corp.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=claude_config_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=claude_config_repo, check=True)
+        # Stage the removal — diff has `-Old notes about Acme Corp.`
+        # which is NOT in ADDED_LINES, and the commit message is generic.
+        (claude_config_repo / "legacy.txt").write_text("Old notes.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Redact legacy notes'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_substring_within_word_does_not_match(self, claude_config_repo, private_projects_file):
+        """Whole-word match: `Pulse` blocklist entry must NOT match
+        `impulse` in a commit message — `impulse` is one word, no
+        boundary at the `Pulse` substring. This is the load-bearing
+        false-positive avoidance that motivated whole-word matching."""
+        private_projects_file("Pulse\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Add impulse handler for events'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_concatenated_identifier_does_not_match(self, claude_config_repo, private_projects_file):
+        """Whole-word match: `AcmeCorp` does NOT match `AcmeCorpService`.
+        The trailing `S` is a word character so no boundary exists
+        after `AcmeCorp`. Documented behavior — users who need to
+        catch concatenated forms add the concatenated form as its own
+        blocklist entry."""
+        private_projects_file("AcmeCorp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor AcmeCorpService auth flow'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_match_at_punctuation_boundary(self, claude_config_repo, private_projects_file):
+        """Whole-word match: punctuation is a non-word boundary. So
+        `AcmeCorp` matches `AcmeCorp.` (period), `AcmeCorp,` (comma),
+        and `AcmeCorp's` (apostrophe before non-word `s`-content...
+        wait, `'` is non-word so `\\bAcmeCorp\\b` matches before the
+        apostrophe). Verifies the common case where the project name
+        appears at the end of a sentence or in possessive form."""
+        private_projects_file("AcmeCorp\n")
+        for punct_form in ["Working with AcmeCorp.", "AcmeCorp's release notes", "Refactor for AcmeCorp, finally"]:
+            assert (
+                run_hook(
+                    DENY_PRIVATE_PROJECT_REFS_HOOK,
+                    bash_input(f"git commit -m '{punct_form}'"),
+                    cwd=claude_config_repo,
+                )
+                == "deny"
+            ), f"expected deny for {punct_form!r}"
+
+    def test_blocklist_deny_message_does_not_name_entry(self, claude_config_repo, private_projects_file):
+        """LOAD-BEARING: the deny message must NOT echo the matched entry.
+
+        Echoing a name the user explicitly flagged as sensitive would
+        re-expose it in terminal output, screenshots, CI logs, and
+        Claude's own conversation context — exactly the surfaces this
+        gate exists to protect. This invariant is documented in the
+        hook header and must hold across refactors.
+        """
+        private_projects_file("Acme Corp\n")
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input("git commit -m 'Working on Acme Corp release'")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected a deny verdict"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+
+        # Bright-line: no case variant of the matched entry appears.
+        assert "Acme Corp" not in reason
+        assert "acme corp" not in reason.lower()
+
+        # Lock in the explanation so a refactor that drops it fails fast.
+        assert "deliberately does not name which entry matched" in reason
+
+        # Sanity: the user is pointed at their own blocklist file.
+        assert "private-projects.md" in reason
 
 
 # ---------------------------------------------------------------------------

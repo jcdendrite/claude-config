@@ -14,6 +14,15 @@ non-read-only git operations must run inside a linked worktree
 `claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on
 `git pull` — no re-install needed.
 
+**Footgun: never recommend `>>` writes through stow-symlinked files.**
+Files under `~/.claude/` (like `~/.claude/CLAUDE.md`) are symlinks to
+tracked files in this repo. Telling a user to
+`echo "..." >> ~/.claude/CLAUDE.md` writes through the symlink and
+silently stages changes to the public repo. To add Claude-context for
+a feature, edit the committed file directly via PR. For per-user
+private context, use a non-stowed location like
+`~/.claude/private-projects.md` (opt-in, not part of the stow tree).
+
 ## Redact private-project-identifying content
 
 Never commit anything that ties a skill, rule, or example back to a
@@ -92,11 +101,18 @@ came from the agent, not a human, is not a defense.
 The `deny-private-project-refs.sh` PreToolUse hook (wired in
 `claude/.claude/settings.json`) blocks `git commit`, `gh pr create`,
 and `gh pr edit` when the staged diff, commit message, or PR
-title/body/body-source-file contains a tracker-ID token outside the
-OSS allowlist. Tests live in `claude/.claude/hooks/tests/test_hooks.py`.
+title/body/body-source-file contains either:
 
-The hook catches the mechanical category (tracker IDs). Other
-categories above — private-project names, internal tool names,
-structural fingerprints — still require review discipline. Extend
-the hook's pattern list if a category becomes repeatable enough to
-automate.
+1. A tracker-ID token (`[A-Z]{2,}-\d+`) outside the OSS allowlist, or
+2. A case-insensitive whole-word match against an entry in the
+   user's opt-in `~/.claude/private-projects.md` blocklist.
+
+The blocklist file is user-local and never committed. See README
+"Private-project redaction" for opt-in instructions. Tests live in
+`claude/.claude/hooks/tests/test_hooks.py`.
+
+The hook catches two mechanical categories (tracker IDs always; named
+projects when the user opts in). Other categories above — internal
+tool names, structural fingerprints — still require review
+discipline. Extend the hook's pattern list if a category becomes
+repeatable enough to automate.

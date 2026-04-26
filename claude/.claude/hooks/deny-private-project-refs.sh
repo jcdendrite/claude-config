@@ -15,9 +15,13 @@
 #
 # Scope and limits:
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
-# - Does NOT catch private project names, internal tool names, absolute
-#   filesystem paths with private-project names, or structural
-#   fingerprints. Those require review discipline.
+# - Catches a second mechanical category when the user opts in via
+#   ~/.claude/private-projects.md: a literal, case-insensitive
+#   substring scan against entries in that user-local file. See the
+#   "Deliberate scope" section below for the full design.
+# - Does NOT catch internal tool names, absolute filesystem paths with
+#   private-project names, or structural fingerprints. Those require
+#   review discipline.
 # - Scans the full Bash command string so `git commit -m "..."`,
 #   `gh pr create --body "..."`, `gh pr edit N --title "..."`, and
 #   heredoc variants all get checked without parsing the message out
@@ -43,11 +47,35 @@
 #   `gh pr create --body-file` but is NOT scanned here. Pre-existing
 #   gap, not addressed by this plan.
 #
-# Deliberate non-scope (this PR): a committed list of project names in
-# this public repo would itself be the leak — hardcoding in cleartext
-# the exact strings the rule is trying to prevent from shipping.
-# Mechanical defense beyond the tracker-ID category is out of scope for
-# this PR; a follow-up may add a non-committed mechanism.
+# Deliberate scope: user-local private-projects blocklist.
+# ---------------------------------------------------------
+# A *committed* list of project names in this public repo would itself
+# be the leak — hardcoding in cleartext the exact strings the rule
+# prevents from shipping. That objection still stands; do not propose a
+# committed blocklist.
+#
+# A *user-local* list at ~/.claude/private-projects.md is a different
+# artifact: outside any repo, per-machine, never in git. The hook reads
+# it at runtime, fails open if the file is absent or unreadable, and
+# matches case-insensitive whole-word literals against the same
+# SCAN_TARGET the tracker-ID scan inspects. Tracker-ID matches take
+# priority — a commit with both gets the tracker-ID deny message.
+#
+# Whole-word matching (grep -w): the entry must be bordered by non-
+# word characters on each side. So `Acme` matches the standalone word
+# `Acme` (in any casing under -i) but NOT `AcmeCorp` (continuation),
+# `acmebrand` (concatenation), or `acme` inside `today` (substring).
+# The tradeoff vs. plain substring match: lower false-positive rate on
+# common-substring entries, at the cost of missing concatenated
+# identifiers (which the user can blocklist as separate entries if
+# they appear in commit-time content).
+#
+# Invariant: the blocklist scan's deny message does NOT name the
+# matched entry. Echoing a name the user explicitly flagged as
+# sensitive would re-expose it in terminal output, screenshots, CI
+# logs, and Claude's conversation context — exactly the surfaces this
+# gate exists to protect. Generic-message-only is load-bearing and
+# tested.
 #
 # Allowlist extension: append to OSS_ALLOWLIST below if a legitimate
 # open-source prefix is blocked. Do NOT add private-project-specific
@@ -214,11 +242,36 @@ HITS=$(printf '%s' "$SCAN_TARGET" \
   | grep -vE "$OSS_ALLOWLIST" \
   || true)
 
-if [ -z "$HITS" ]; then
+if [ -n "$HITS" ]; then
+  # Report the first few offenders to keep the message short.
+  HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
+  emit_deny "Commit blocked by redaction gate: the staged diff, commit message, PR title, PR body, or referenced body-source file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body without the tracker ID before retrying."
   exit 0
 fi
 
-# Report the first few offenders to keep the message short.
-HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
+# Tracker-ID scan clean. Try the user-local private-projects blocklist.
+# Fail-open: a contributor without the file works normally. The
+# readability gate ([ -r ]) covers both absent and unreadable cases.
+PRIVATE_PROJECTS_FILE="${HOME}/.claude/private-projects.md"
+if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+    # Strip CR (CRLF), then leading/trailing whitespace.
+    line=${raw_line%$'\r'}
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    # Skip blanks and `#` comments.
+    [ -z "$line" ] && continue
+    case "$line" in '#'*) continue ;; esac
 
-emit_deny "Commit blocked by redaction gate: the staged diff, commit message, PR title, PR body, or referenced body-source file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body without the tracker ID before retrying."
+    # `-F` is literal-match (no regex foot-guns), `-i` case-insensitive,
+    # `-w` whole-word boundaries, `--` guards entries that happen to
+    # start with `-`. See header "Whole-word matching" note for the
+    # tradeoff rationale.
+    if printf '%s' "$SCAN_TARGET" | grep -qiw -F -- "$line"; then
+      # Generic message — see header "Invariant" note. The matched
+      # entry is intentionally NOT named.
+      emit_deny "Blocked by redaction gate: the staged diff, commit message, PR title, PR body, or referenced body-source file contains an entry from your ~/.claude/private-projects.md blocklist. Review the content and remove the project name before retrying. (The hook deliberately does not name which entry matched — printing it would re-expose the value in terminal output, CI logs, and Claude's conversation context, which is exactly what this gate exists to prevent.) See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      exit 0
+    fi
+  done < "$PRIVATE_PROJECTS_FILE"
+fi
