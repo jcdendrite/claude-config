@@ -88,6 +88,18 @@ ship with the reference even if the skill body is clean. Rewriting
 unpushed history on a personal branch is the right tool here (see
 `git-feature-branch-sync`).
 
+## When editing a skill, run the skill on its own diff
+
+A skill's body states the rules it enforces; an edit can violate
+those rules unless you re-read the body with the diff in mind.
+Before committing a skill change, load the skill into context and
+check the diff against its sections.
+
+The common failure mode: an edit adds prose to a skill that argues
+against prose-heavy rules (or a long body to a skill that targets
+brevity, etc.) — exactly the kind of thing the skill would flag if
+applied to its own diff.
+
 ## AI agents
 
 The same rule applies when an AI agent is drafting. If the agent
