@@ -103,13 +103,21 @@ Two scans run, in order:
 ### Opt-in: enable the blocklist
 
 ```bash
-touch ~/.claude/private-projects.md
+# Create the file with a header explaining its purpose (the hook
+# ignores `#` lines, so headers don't affect matching):
+cat > ~/.claude/private-projects.md <<'EOF'
+# Project names listed below are blocked from appearing in any commit
+# message, PR description, or staged content in this repo. Read by
+# ~/.claude/hooks/deny-private-project-refs.sh as a literal blocklist.
+
+EOF
+
+# Append your project names, one per line:
 echo "Acme Corp" >> ~/.claude/private-projects.md
 echo "Project Bluebird" >> ~/.claude/private-projects.md
-
-# Same source of truth for Claude's context — so it self-scrubs while drafting:
-echo "@private-projects.md" >> ~/.claude/CLAUDE.md
 ```
+
+The hook is the load-bearing defense — when it blocks, you (or Claude) sees the deny message and revises before retrying. There's no need to also import the file into `~/.claude/CLAUDE.md`: that would write through the stow symlink to the tracked repo file, which is a footgun without a real defensive payoff.
 
 ### File format
 
