@@ -23,6 +23,18 @@ a feature, edit the committed file directly via PR. For per-user
 private context, use a non-stowed location like
 `~/.claude/private-projects.md` (opt-in, not part of the stow tree).
 
+## When editing a skill, run the skill on its own diff
+
+A skill's body states the rules it enforces; an edit can violate
+those rules unless you re-read the body with the diff in mind.
+Before committing a skill change, load the skill into context and
+check the diff against its sections.
+
+The common failure mode: an edit adds prose to a skill that argues
+against prose-heavy rules (or a long body to a skill that targets
+brevity, etc.) — exactly the kind of thing the skill would flag if
+applied to its own diff.
+
 ## Redact private-project-identifying content
 
 Never commit anything that ties a skill, rule, or example back to a
@@ -63,14 +75,14 @@ OAuth tokens, service-role keys, `.env` contents, database URLs with
 credentials, private-key material. The repo has no legitimate use for
 any of these. If one ever lands, rotate it *then* rewrite history.
 
-## Check all three surfaces before committing
+### Check all three surfaces before committing
 
 1. **File content** being committed.
 2. **Commit message body** — the most common leak site, because it's
    where motivation-context gets narrated.
 3. **PR title and description**.
 
-## When a skill is surfaced by real-world work, abstract first
+### When a skill is surfaced by real-world work, abstract first
 
 Skills are often motivated by a concrete incident. The insight belongs
 in this repo; the incident specifics do not.
@@ -88,27 +100,15 @@ ship with the reference even if the skill body is clean. Rewriting
 unpushed history on a personal branch is the right tool here (see
 `git-feature-branch-sync`).
 
-## AI agents
+### AI agents
 
-The same rule applies when an AI agent is drafting. If the agent
+The same redaction rule applies when an AI agent is drafting. If the agent
 proposes a commit message, skill body, or PR description that includes
 a private-project reference — or an agent's research / memory hands it
 a reference — strip it before committing. The fact that the reference
 came from the agent, not a human, is not a defense.
 
-## When editing a skill, run the skill on its own diff
-
-A skill's body states the rules it enforces; an edit can violate
-those rules unless you re-read the body with the diff in mind.
-Before committing a skill change, load the skill into context and
-check the diff against its sections.
-
-The common failure mode: an edit adds prose to a skill that argues
-against prose-heavy rules (or a long body to a skill that targets
-brevity, etc.) — exactly the kind of thing the skill would flag if
-applied to its own diff.
-
-## Enforcement
+### Enforcement
 
 The `deny-private-project-refs.sh` PreToolUse hook (wired in
 `claude/.claude/settings.json`) blocks `git commit`, `gh pr create`,
