@@ -1269,6 +1269,55 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
+    def test_blocklist_substring_within_word_does_not_match(self, claude_config_repo, private_projects_file):
+        """Whole-word match: `Pulse` blocklist entry must NOT match
+        `impulse` in a commit message — `impulse` is one word, no
+        boundary at the `Pulse` substring. This is the load-bearing
+        false-positive avoidance that motivated whole-word matching."""
+        private_projects_file("Pulse\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Add impulse handler for events'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_concatenated_identifier_does_not_match(self, claude_config_repo, private_projects_file):
+        """Whole-word match: `AcmeCorp` does NOT match `AcmeCorpService`.
+        The trailing `S` is a word character so no boundary exists
+        after `AcmeCorp`. Documented behavior — users who need to
+        catch concatenated forms add the concatenated form as its own
+        blocklist entry."""
+        private_projects_file("AcmeCorp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor AcmeCorpService auth flow'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_match_at_punctuation_boundary(self, claude_config_repo, private_projects_file):
+        """Whole-word match: punctuation is a non-word boundary. So
+        `AcmeCorp` matches `AcmeCorp.` (period), `AcmeCorp,` (comma),
+        and `AcmeCorp's` (apostrophe before non-word `s`-content...
+        wait, `'` is non-word so `\\bAcmeCorp\\b` matches before the
+        apostrophe). Verifies the common case where the project name
+        appears at the end of a sentence or in possessive form."""
+        private_projects_file("AcmeCorp\n")
+        for punct_form in ["Working with AcmeCorp.", "AcmeCorp's release notes", "Refactor for AcmeCorp, finally"]:
+            assert (
+                run_hook(
+                    DENY_PRIVATE_PROJECT_REFS_HOOK,
+                    bash_input(f"git commit -m '{punct_form}'"),
+                    cwd=claude_config_repo,
+                )
+                == "deny"
+            ), f"expected deny for {punct_form!r}"
+
     def test_blocklist_deny_message_does_not_name_entry(self, claude_config_repo, private_projects_file):
         """LOAD-BEARING: the deny message must NOT echo the matched entry.
 

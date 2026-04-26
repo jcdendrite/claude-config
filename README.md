@@ -98,17 +98,19 @@ This repo is public, so any project codename, organization name, or tracker-ID t
 Two scans run, in order:
 
 1. **Tracker-ID scan (always on, no setup).** Matches `[A-Z]{2,}-\d+` tokens not on the OSS allowlist.
-2. **Private-projects blocklist (opt-in).** Reads `~/.claude/private-projects.md` at hook runtime and blocks commits/PRs whose content contains any non-comment, non-blank line from the file as a case-insensitive literal substring.
+2. **Private-projects blocklist (opt-in).** Reads `~/.claude/private-projects.md` at hook runtime and blocks commits/PRs whose content contains any non-comment, non-blank line from the file as a case-insensitive whole-word match.
 
 ### Opt-in: enable the blocklist
 
 ```bash
-# Create the file with a header explaining its purpose (the hook
-# ignores `#` lines, so headers don't affect matching):
+# Create the file with a header pointing at this section for usage
+# rules (the hook ignores `#` lines, so the header doesn't affect
+# matching):
 cat > ~/.claude/private-projects.md <<'EOF'
-# Project names listed below are blocked from appearing in any commit
-# message, PR description, or staged content in this repo. Read by
-# ~/.claude/hooks/deny-private-project-refs.sh as a literal blocklist.
+# Project names blocked from commits / PR titles / PR bodies in
+# claude-config (and forks). Match semantics + what to put in this
+# file: see README.md "Private-project redaction" in the
+# claude-config repo.
 
 EOF
 
@@ -117,8 +119,6 @@ echo "Acme Corp" >> ~/.claude/private-projects.md
 echo "Project Bluebird" >> ~/.claude/private-projects.md
 ```
 
-The hook is the load-bearing defense — when it blocks, you (or Claude) sees the deny message and revises before retrying. There's no need to also import the file into `~/.claude/CLAUDE.md`: that would write through the stow symlink to the tracked repo file, which is a footgun without a real defensive payoff.
-
 ### File format
 
 - One project name per line.
@@ -126,28 +126,25 @@ The hook is the load-bearing defense — when it blocks, you (or Claude) sees th
 - Blank lines ignored.
 - Leading and trailing whitespace stripped.
 - Names can contain spaces.
-- Match is case-insensitive literal substring. No regex. No globs.
+- Match is case-insensitive whole-word literal. No regex. No globs.
 
 ### What to put in the file (and what NOT to)
 
-The two scans cover different shapes — understanding the split keeps you from adding entries that backfire:
-
-- **Tracker-ID scan (always on):** automatically catches `[A-Z]{2,}-\d+` patterns. So any `ACME-<n>` tracker reference (where `<n>` is digits) is *already* blocked — you don't need a blocklist entry for them.
-- **Blocklist scan (this file):** catches case-insensitive literal substrings of the entries you list.
+The match is **case-insensitive whole-word**, which is narrower than substring match — `AcmeCorp` matches `AcmeCorp`, `acmecorp`, `ACMECORP` (any casing as a standalone word), but NOT `AcmeCorpService` (concatenated — `S` is a word character so the boundary fails), and NOT `acme` inside `acmebrand` (substring within a word).
 
 **Worked example.** Suppose your private project is `AcmeCorporation` with tracker prefix `ACME`:
 
-✅ **Add `AcmeCorporation`** — catches the bare project name in commits like "Refactor AcmeCorporation auth flow", which the tracker-ID regex doesn't cover. Case-insensitive match handles `acmecorporation`, `ACMECORPORATION`, etc., so you don't need variants.
+✅ **Add `AcmeCorporation`** — catches the project name as a standalone word in commits, PR bodies, or added diff lines. Case variants (`acmecorporation`, `ACMECORPORATION`) match too — you don't need separate entries.
 
-❌ **Don't add `ACME`** — the tracker-ID regex already catches `ACME-<digits>`. Adding bare `ACME` to the blocklist would false-positive on the substring `acme` inside English words (`acme of clarity`, `Acme Anvil` references in documentation, etc.). For shorter prefixes like `DAY` the false-positive surface is much worse (`today`, `holiday`, `daylight`).
+❌ **Don't add `ACME` alone** — the tracker-ID regex already catches `ACME-<digits>` patterns automatically; bare `ACME` adds nothing the regex doesn't already cover, while introducing a small false-positive surface for legitimate standalone uses of the word.
+
+❌ **Avoid very short or common-word codenames as bare entries.** Whole-word matching shrinks the false-positive surface compared to substring match, but a 3-letter codename like `ART` would still match commits mentioning the word `art` or `ART` standalone (`ART department review`, `the art of war`). If your codename is a common standalone word, use a multi-word form (`ART pipeline` instead of `ART` alone) — the longer phrase is more selective — or rely on reviewer discipline instead of mechanical match.
 
 **Rule of thumb:**
 
 - **Tracker prefixes** (`[A-Z]{2,}` + dash + digits): trust the tracker-ID regex; don't blocklist the bare prefix.
-- **Distinctive project names** (full names, codenames): blocklist them.
-- **Generic-word codenames** (`Pulse`, `Atlas`, `Echo`): blocklist with caution — same false-positive risk as bare prefixes. If the name is a common English word, reviewer discipline may be a better tier than mechanical match.
-
-**Multi-word forms** reduce false-positive risk. If your project is referred to as "AC platform" internally and `AC` alone would false-positive everywhere, blocklist `AC platform` instead — the multi-word phrase is much more selective.
+- **Distinctive project names** (full names, codenames ≥ 5 chars and not common English words): blocklist them. Whole-word + case-insensitive handles casing variants automatically.
+- **Concatenated identifiers** (`AcmeCorpService`, `acmecorp_client`, `acme-corp-api`): NOT caught by whole-word match against `AcmeCorp`. If a project name commonly appears concatenated AND the concatenated form is sensitive to leak, add the concatenated form as its own entry.
 
 ### Why user-local, not committed
 

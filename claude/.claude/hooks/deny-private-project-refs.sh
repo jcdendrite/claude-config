@@ -57,9 +57,18 @@
 # A *user-local* list at ~/.claude/private-projects.md is a different
 # artifact: outside any repo, per-machine, never in git. The hook reads
 # it at runtime, fails open if the file is absent or unreadable, and
-# matches case-insensitive literal substrings against the same
+# matches case-insensitive whole-word literals against the same
 # SCAN_TARGET the tracker-ID scan inspects. Tracker-ID matches take
 # priority — a commit with both gets the tracker-ID deny message.
+#
+# Whole-word matching (grep -w): the entry must be bordered by non-
+# word characters on each side. So `Acme` matches the standalone word
+# `Acme` (in any casing under -i) but NOT `AcmeCorp` (continuation),
+# `acmebrand` (concatenation), or `acme` inside `today` (substring).
+# The tradeoff vs. plain substring match: lower false-positive rate on
+# common-substring entries, at the cost of missing concatenated
+# identifiers (which the user can blocklist as separate entries if
+# they appear in commit-time content).
 #
 # Invariant: the blocklist scan's deny message does NOT name the
 # matched entry. Echoing a name the user explicitly flagged as
@@ -255,8 +264,10 @@ if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
     case "$line" in '#'*) continue ;; esac
 
     # `-F` is literal-match (no regex foot-guns), `-i` case-insensitive,
-    # `--` guards entries that happen to start with `-`.
-    if printf '%s' "$SCAN_TARGET" | grep -qi -F -- "$line"; then
+    # `-w` whole-word boundaries, `--` guards entries that happen to
+    # start with `-`. See header "Whole-word matching" note for the
+    # tradeoff rationale.
+    if printf '%s' "$SCAN_TARGET" | grep -qiw -F -- "$line"; then
       # Generic message — see header "Invariant" note. The matched
       # entry is intentionally NOT named.
       emit_deny "Blocked by redaction gate: the staged diff, commit message, PR title, PR body, or referenced body-source file contains an entry from your ~/.claude/private-projects.md blocklist. Review the content and remove the project name before retrying. (The hook deliberately does not name which entry matched — printing it would re-expose the value in terminal output, CI logs, and Claude's conversation context, which is exactly what this gate exists to prevent.) See repo CLAUDE.md section 'Redact private-project-identifying content'."

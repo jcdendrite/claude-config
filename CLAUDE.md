@@ -95,8 +95,8 @@ and `gh pr edit` when the staged diff, commit message, or PR
 title/body/body-source-file contains either:
 
 1. A tracker-ID token (`[A-Z]{2,}-\d+`) outside the OSS allowlist, or
-2. A literal substring matching an entry in the user's opt-in
-   `~/.claude/private-projects.md` blocklist (case-insensitive).
+2. A case-insensitive whole-word match against an entry in the
+   user's opt-in `~/.claude/private-projects.md` blocklist.
 
 The blocklist file is user-local and never committed. See README
 "Private-project redaction" for opt-in instructions. Tests live in
