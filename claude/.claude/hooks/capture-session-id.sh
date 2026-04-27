@@ -19,21 +19,40 @@
 #   that shim, not claude. claude is the shim's parent. POSIX
 #   `ps -o ppid= -p $PPID` walks up one level. Works on Linux, macOS, WSL.
 #
-# Failure mode: every step exits 0 silently. If session_id or claude_pid
-# can't be determined, the lookup file isn't written; the skill will then
-# fail loudly when it tries to read it. A SessionStart hook must never
-# block session startup, even on internal error.
+# Failure mode: every step exits 0 (a SessionStart hook that fails-closed
+# would block session startup, which is worse than a delayed Step 0
+# failure in the skill). Each failure path emits a one-line diagnostic to
+# stderr — visible in the user's terminal, not added to Claude's context
+# (which is stdout). When the lookup file isn't written, the /respond-pr
+# skill's Step 0 fails loudly with a clear message; the stderr trail here
+# is the upstream signal explaining why.
 
 INPUT=$(cat 2>/dev/null)
-[ -z "$INPUT" ] && exit 0
+if [ -z "$INPUT" ]; then
+  echo "[capture-session-id] empty stdin; lookup file not written; respond-pr skill will fail at Step 0" >&2
+  exit 0
+fi
 
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
-[ -z "$SESSION_ID" ] && exit 0
+if [ -z "$SESSION_ID" ]; then
+  echo "[capture-session-id] no session_id in payload; respond-pr skill will fail at Step 0" >&2
+  exit 0
+fi
 
 CLAUDE_PID=$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
-[ -z "$CLAUDE_PID" ] && exit 0
+if [ -z "$CLAUDE_PID" ]; then
+  echo "[capture-session-id] could not resolve claude PID via 'ps -o ppid= -p $PPID'; respond-pr skill will fail at Step 0" >&2
+  exit 0
+fi
 
-mkdir -p "$HOME/.claude/sessions" 2>/dev/null || exit 0
-printf '%s\n' "$SESSION_ID" > "$HOME/.claude/sessions/$CLAUDE_PID" 2>/dev/null
+if ! mkdir -p "$HOME/.claude/sessions" 2>/dev/null; then
+  echo "[capture-session-id] could not create $HOME/.claude/sessions; respond-pr skill will fail at Step 0" >&2
+  exit 0
+fi
+
+if ! printf '%s\n' "$SESSION_ID" > "$HOME/.claude/sessions/$CLAUDE_PID" 2>/dev/null; then
+  echo "[capture-session-id] could not write lookup file $HOME/.claude/sessions/$CLAUDE_PID; respond-pr skill will fail at Step 0" >&2
+  exit 0
+fi
 
 exit 0

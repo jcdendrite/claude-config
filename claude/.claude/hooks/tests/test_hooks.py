@@ -490,38 +490,57 @@ class TestCaptureSessionId:
         # but it must be a positive integer.
         assert files[0].name.isdigit() and int(files[0].name) > 0
 
-    def test_empty_session_id_writes_nothing(self, isolated_home):
-        run_hook(CAPTURE_SESSION_ID_HOOK, {"session_id": ""})
-        assert self._sessions_files(isolated_home) == []
-
-    def test_missing_session_id_field_writes_nothing(self, isolated_home):
-        run_hook(CAPTURE_SESSION_ID_HOOK, {"some_other_field": "value"})
-        assert self._sessions_files(isolated_home) == []
-
-    def test_empty_stdin_does_not_block_or_write(self, isolated_home):
-        """Empty payload must not block session start."""
-        result = subprocess.run(
+    def _run_capturing_stderr(self, payload: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
             [str(CAPTURE_SESSION_ID_HOOK)],
-            input="",
+            input=payload,
             capture_output=True,
             text=True,
             check=False,
         )
+
+    def test_empty_session_id_writes_nothing_with_stderr_diagnostic(self, isolated_home):
+        result = self._run_capturing_stderr(json.dumps({"session_id": ""}))
         assert result.returncode == 0
         assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert "no session_id" in result.stderr
 
-    def test_malformed_json_does_not_block(self, isolated_home):
+    def test_missing_session_id_field_writes_nothing_with_stderr_diagnostic(self, isolated_home):
+        result = self._run_capturing_stderr(json.dumps({"some_other_field": "value"}))
+        assert result.returncode == 0
+        assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert "no session_id" in result.stderr
+
+    def test_empty_stdin_does_not_block_and_emits_stderr(self, isolated_home):
+        """Empty payload must not block session start, but must leave a
+        diagnostic trail on stderr (not stdout — stdout would pollute
+        Claude's context)."""
+        result = self._run_capturing_stderr("")
+        assert result.returncode == 0
+        assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert "empty stdin" in result.stderr
+        assert result.stdout == ""
+
+    def test_malformed_json_does_not_block_and_emits_stderr(self, isolated_home):
         """SessionStart hook must never fail-closed on payload corruption —
-        a broken hook would prevent the session from starting."""
-        result = subprocess.run(
-            [str(CAPTURE_SESSION_ID_HOOK)],
-            input="not valid json {{",
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        a broken hook would prevent the session from starting. Malformed
+        JSON is treated as missing session_id."""
+        result = self._run_capturing_stderr("not valid json {{")
         assert result.returncode == 0
         assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert result.stdout == ""
+
+    def test_happy_path_emits_no_stderr(self, isolated_home):
+        """Successful runs must be silent — stderr noise on every session
+        start would condition the user to ignore it."""
+        result = self._run_capturing_stderr(json.dumps({"session_id": "abc-123"}))
+        assert result.returncode == 0
+        assert len(self._sessions_files(isolated_home)) == 1
+        assert result.stderr == ""
 
 
 # ---------------------------------------------------------------------------
