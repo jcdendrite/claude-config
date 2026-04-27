@@ -98,7 +98,7 @@ This repo is public, so any project codename, organization name, or tracker-ID t
 
 Two scans run, in order:
 
-1. **Tracker-ID scan (always on, no setup).** Matches `[A-Z]{2,}-\d+` tokens not on the OSS allowlist.
+1. **Tracker-ID scan (always on, no setup).** Matches `[A-Z]{2,}-\d+` tokens not on the OSS allowlist. The allowlist also reserves two placeholder prefixes — `PROJ-` and `TICKET-` — so skill examples and commit messages can use a realistic-looking tracker shape (`PROJ-<digits>`, `TICKET-<digits>`) without obfuscating the digits to defeat the scan.
 2. **Private-projects blocklist (opt-in).** Reads `~/.claude/private-projects.md` at hook runtime and blocks commits/PRs whose content contains any non-comment, non-blank line from the file as a case-insensitive whole-word match.
 
 ### Opt-in: enable the blocklist

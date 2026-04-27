@@ -690,11 +690,14 @@ class TestDenyPrivateProjectRefs:
             "Deprecate MD-5",
             "Support HTTP-2",
             "Disable TLS-1",
+            "See PROJ-123 for the placeholder convention",
+            "See TICKET-456 for the placeholder convention",
         ],
         ids=[
             "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf",
             "w3c", "nist", "ecma", "ansi", "jep", "jdk", "llvm", "gcc",
             "sha", "md", "http", "tls",
+            "proj_placeholder", "ticket_placeholder",
         ],
     )
     def test_allowlisted_references_allowed(self, claude_config_repo, message):
@@ -708,6 +711,29 @@ class TestDenyPrivateProjectRefs:
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Fix MYPROJ-7 regression",
+            "Address SUPERTICKET-1 review",
+            "Bump BIGPROJ-99 dep",
+            "Land OURTICKET-42 follow-up",
+        ],
+        ids=["myproj", "superticket", "bigproj", "ourticket"],
+    )
+    def test_placeholder_prefix_substring_still_denied(self, claude_config_repo, message):
+        """Anchor (`^`) on OSS_ALLOWLIST must keep prefixes that *contain*
+        but don't *equal* PROJ / TICKET in the deny path. Without this
+        test, a refactor that drops the anchor would pass CI silently."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m '{message}'"),
                 cwd=claude_config_repo,
             )
             == "deny"

@@ -49,7 +49,10 @@ specific private project, engagement, or private codebase. Categories:
   `[A-Z]{2,}-\d+` that is *not* on this allowlist of standard
   open-source references: `CVE-`, `RFC-`, `PEP-`, `ISO-`, `GH-`,
   `BUG-` / bugzilla-style, and clearly-public project prefixes.
-  Default: if in doubt, strip it.
+  Default: if in doubt, strip it. When an example or commit message
+  needs a tracker-ID-shaped placeholder, use `PROJ-<digits>` or
+  `TICKET-<digits>` — both prefixes are reserved as placeholders
+  and pass the allowlist with any digit suffix.
 - **Internal URLs, hostnames, Slack channels, project domains**.
 - **Absolute filesystem paths** that embed project names
   (`~/Code/acme-platform/...`, `/home/foo/WorkForProject/...`).
