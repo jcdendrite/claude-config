@@ -23,6 +23,14 @@ a feature, edit the committed file directly via PR. For per-user
 private context, use a non-stowed location like
 `~/.claude/private-projects.md` (opt-in, not part of the stow tree).
 
+## AI agents: don't merge your own PRs
+
+In this repo, an AI agent that opens a PR does not also merge it.
+CI passing is necessary but not sufficient — wait for the user's
+explicit "merge it" before running `gh pr merge`. Open-ended verbs
+like "handle" or "do the swap" cover writing the change and opening
+the PR, not landing it.
+
 ## When editing a skill, run the skill on its own diff
 
 A skill's body states the rules it enforces; an edit can violate
