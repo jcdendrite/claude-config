@@ -21,7 +21,7 @@ HOOKS_DIR = Path(__file__).resolve().parent.parent
 CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
 RESPOND_PR_HOOK = HOOKS_DIR / "require-respond-pr.sh"
 REVIEW_PERMS_HOOK = HOOKS_DIR / "ask-review-permissions.sh"
-DENY_CLIENT_REFS_HOOK = HOOKS_DIR / "deny-client-refs.sh"
+DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 WORKTREE_HOOK = HOOKS_DIR / "require-worktree-for-git-writes.sh"
 
 
@@ -400,30 +400,92 @@ class TestAskReviewPermissions:
 
 
 # ---------------------------------------------------------------------------
-# deny-client-refs.sh
+# deny-private-project-refs.sh
 # ---------------------------------------------------------------------------
 #
 # Fake placeholders used in these tests — chosen to be obviously synthetic
 # so the test file itself doesn't violate the rule it's testing:
-#   WIDGET-123, FOOCORP-42, NULLCLIENT-999, EXAMPLECO-7, BARCORP-22
+#   WIDGET-123, FOOCORP-42, NULLPROJ-999, EXAMPLECO-7, BARCORP-22, FAKEPROJ-42
 # All six prefixes are invented; none correspond to a real tracker that
 # any known organization uses. The hook's allowlist matches real OSS
 # reference prefixes only (CVE / RFC / PEP / ISO / GH / BUG / IETF).
 
 
-class TestDenyClientRefs:
-    def test_non_commit_command_allowed(self, git_repo):
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("git status"), cwd=git_repo) == "allow"
+@pytest.fixture
+def claude_config_repo(git_repo):
+    """git_repo with a `claude-config`-shaped origin URL so the scoping
+    check lets the redaction gate run. The hook short-circuits on any
+    repo whose origin URL doesn't contain `claude-config`, so this fixture
+    is required for any test that expects deny behavior."""
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:jcdendrite/claude-config.git"],
+        cwd=git_repo,
+        check=True,
+    )
+    return git_repo
 
-    def test_non_git_command_allowed(self, git_repo):
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input("echo WIDGET-123"), cwd=git_repo) == "allow"
 
-    def test_clean_commit_message_allowed(self, git_repo):
+@pytest.fixture
+def unrelated_remote_repo(git_repo):
+    """git_repo with an origin URL that does NOT match claude-config.
+    Used to verify the scoping short-circuit: the hook must let commits
+    through in every repo other than claude-config, regardless of diff
+    content or commit message."""
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:someone/unrelated-app.git"],
+        cwd=git_repo,
+        check=True,
+    )
+    return git_repo
+
+
+class TestDenyPrivateProjectRefs:
+    @pytest.fixture(autouse=True)
+    def _isolate_home_for_blocklist(self, monkeypatch, tmp_path):
+        """Isolate $HOME for the entire class so the developer's real
+        ~/.claude/private-projects.md never bleeds into tests.
+
+        Without this, a developer with "the parser" or any other
+        generic substring in their real blocklist could fail tests
+        like test_clean_commit_message_allowed nondeterministically.
+        Subprocess inherits this monkeypatched env (run_hook doesn't
+        override it), so the hook reads the isolated $HOME at
+        runtime.
+        """
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    @pytest.fixture
+    def private_projects_file(self, _isolate_home_for_blocklist):
+        """Writer for ~/.claude/private-projects.md inside the
+        isolated $HOME established by the autouse fixture above.
+
+        Returns a function that takes the file's content (a string)
+        and writes it. Tests that don't call this writer get a
+        nonexistent blocklist file (the fail-open path)."""
+        home = _isolate_home_for_blocklist
+        blocklist = home / ".claude" / "private-projects.md"
+
+        def _write(content: str) -> Path:
+            blocklist.write_text(content)
+            return blocklist
+
+        return _write
+
+    def test_non_commit_command_allowed(self, claude_config_repo):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input("git status"), cwd=claude_config_repo) == "allow"
+
+    def test_non_git_command_allowed(self, claude_config_repo):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input("echo WIDGET-123"), cwd=claude_config_repo) == "allow"
+
+    def test_clean_commit_message_allowed(self, claude_config_repo):
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Refactor the parser'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "allow"
         )
@@ -458,57 +520,57 @@ class TestDenyClientRefs:
             "sha", "md", "http", "tls",
         ],
     )
-    def test_allowlisted_references_allowed(self, git_repo, message):
+    def test_allowlisted_references_allowed(self, claude_config_repo, message):
         assert (
-            run_hook(DENY_CLIENT_REFS_HOOK, bash_input(f"git commit -m '{message}'"), cwd=git_repo)
+            run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(f"git commit -m '{message}'"), cwd=claude_config_repo)
             == "allow"
         )
 
-    def test_synthetic_tracker_id_in_message_denied(self, git_repo):
+    def test_synthetic_tracker_id_in_message_denied(self, claude_config_repo):
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix WIDGET-123 regression'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_multiple_tracker_ids_denied(self, git_repo):
+    def test_multiple_tracker_ids_denied(self, claude_config_repo):
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Handle FOOCORP-42 and BARCORP-22'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_tracker_id_in_staged_diff_denied(self, git_repo):
+    def test_tracker_id_in_staged_diff_denied(self, claude_config_repo):
         """Hook must scan staged content, not just the command string."""
-        (git_repo / "file.txt").write_text("first\nsecond\n// NULLCLIENT-999 fixed\n")
-        subprocess.run(["git", "add", "file.txt"], cwd=git_repo, check=True)
+        (claude_config_repo / "file.txt").write_text("first\nsecond\n// NULLPROJ-999 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Generic refactor'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_mixed_allowed_and_suspect_denied(self, git_repo):
-        """A CVE plus a client-looking token: still deny on the client token."""
+    def test_mixed_allowed_and_suspect_denied(self, claude_config_repo):
+        """A CVE plus a project-looking token: still deny on the project token."""
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix CVE-2024-1234 via EXAMPLECO-7 changes'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_heredoc_commit_message_scanned(self, git_repo):
+    def test_heredoc_commit_message_scanned(self, claude_config_repo):
         """Heredoc-style commit messages get scanned via the command string."""
         cmd = (
             "git commit -m \"$(cat <<'EOF'\n"
@@ -518,9 +580,9 @@ class TestDenyClientRefs:
             "EOF\n"
             ")\""
         )
-        assert run_hook(DENY_CLIENT_REFS_HOOK, bash_input(cmd), cwd=git_repo) == "deny"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
 
-    def test_lowercase_token_allowed(self, git_repo):
+    def test_lowercase_token_allowed(self, claude_config_repo):
         """Lowercase `widget-123` doesn't match the uppercase-only regex.
 
         Ticket IDs are conventionally uppercase; a lowercase hyphenated
@@ -530,25 +592,25 @@ class TestDenyClientRefs:
         """
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Fix widget-123 styling'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "allow"
         )
 
-    def test_chained_add_commit_with_suspect_token_denied(self, git_repo):
+    def test_chained_add_commit_with_suspect_token_denied(self, claude_config_repo):
         """Chained `git add && git commit` is still gated by this hook."""
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git add . && git commit -m 'Fix WIDGET-1 issue'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "deny"
         )
 
-    def test_removing_a_tracker_id_is_allowed(self, git_repo):
+    def test_removing_a_tracker_id_is_allowed(self, claude_config_repo):
         """A redaction commit that *removes* a tracker ID must not be blocked.
 
         If the hook scanned removed lines, the staged deletion of a token
@@ -556,37 +618,738 @@ class TestDenyClientRefs:
         to its own maintenance flow.
         """
         # Seed a committed file that already contains a suspect token.
-        (git_repo / "legacy.txt").write_text("Old notes about WIDGET-999.\n")
-        subprocess.run(["git", "add", "legacy.txt"], cwd=git_repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=git_repo, check=True)
+        (claude_config_repo / "legacy.txt").write_text("Old notes about WIDGET-999.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=claude_config_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=claude_config_repo, check=True)
         # Now stage a deletion of the token — the diff contains `-WIDGET-999`.
-        (git_repo / "legacy.txt").write_text("Old notes.\n")
-        subprocess.run(["git", "add", "legacy.txt"], cwd=git_repo, check=True)
+        (claude_config_repo / "legacy.txt").write_text("Old notes.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Redact legacy notes'"),
-                cwd=git_repo,
+                cwd=claude_config_repo,
             )
             == "allow"
         )
 
-    def test_empty_staged_diff_allows_commit(self, git_repo):
+    def test_empty_staged_diff_allows_commit(self, claude_config_repo):
         """No staged changes — let git decide (empty-commit, amend, etc.).
 
         Even though the command mentions a suspect token, there is no new
         content being introduced; the hook shouldn't block an amend-only
         or --allow-empty flow.
         """
-        subprocess.run(["git", "reset", "HEAD"], cwd=git_repo, check=True)
+        subprocess.run(["git", "reset", "HEAD"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(
-                DENY_CLIENT_REFS_HOOK,
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'Refers to WIDGET-123 but nothing staged'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    # -- Scoping ------------------------------------------------------------
+    # Regression: the hook originally had no repo-identity check and fired
+    # on every `git commit` in every repo where the user had this config
+    # installed. It blocked legitimate tracker IDs in the user's own
+    # projects that happened to match `[A-Z]{2,}-\d+`. The gate must only
+    # activate in the claude-config repo, where accidental references to
+    # private projects would leak publicly.
+
+    def test_unrelated_remote_suspect_token_allowed(self, unrelated_remote_repo):
+        """A suspect tracker ID in a repo whose origin URL does NOT contain
+        `claude-config` must pass — it's the repo's own legitimate ID."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_unrelated_remote_suspect_token_in_diff_allowed(self, unrelated_remote_repo):
+        """Scoping must also short-circuit the staged-diff scan, not just
+        the commit-message scan."""
+        (unrelated_remote_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=unrelated_remote_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Fix regression'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_no_remote_suspect_token_allowed(self, git_repo):
+        """A repo with no `origin` remote configured (brand-new `git init`)
+        must short-circuit cleanly via the substring check against an empty
+        string. `git config --get` returns empty (not an error code) on a
+        missing key, so the `*claude-config*` match falls through to exit 0."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Fix WIDGET-123 regression'"),
                 cwd=git_repo,
             )
             == "allow"
         )
+
+    def test_claude_config_fork_origin_still_gates(self, git_repo):
+        """Substring match on `claude-config` is deliberately loose: a fork
+        whose URL is `.../someone-else/claude-config.git` should still be
+        gated, because the redaction concerns apply to any clone of this
+        public repo."""
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:forker/claude-config.git"],
+            cwd=git_repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Fix WIDGET-123 regression'"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_test_dir_changes_exempt_from_scan(self, claude_config_repo):
+        """The hook's own test directory is excluded from the staged-diff
+        scan. Without this, every commit that adds a new test case to this
+        file would trip the hook on its own synthetic test data — making
+        the hook hostile to its own test-authoring flow.
+
+        Guard scope: exemption applies only to `claude/.claude/hooks/tests/**`,
+        not to any other directory, and not to the commit-message string
+        itself. See test_tracker_id_in_staged_diff_denied for the complement."""
+        test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
+        test_dir.mkdir(parents=True)
+        # A new test case authored inside the hook's own test file, with
+        # a fresh synthetic tracker token that is NOT on the allowlist.
+        (test_dir / "test_new_case.py").write_text(
+            'def test_x():\n'
+            '    bash_input("git commit -m FAKEPROJ-42")\n'
+        )
+        subprocess.run(["git", "add", "claude/.claude/hooks/tests/test_new_case.py"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Add new hook test case'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_test_dir_exemption_does_not_mask_non_test_file(self, claude_config_repo):
+        """The test-dir exemption is narrow: a fake token in a *non-test*
+        file, staged alongside a test-dir change, still blocks the commit.
+        Guard against an accidental over-broad pathspec."""
+        test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
+        test_dir.mkdir(parents=True)
+        (test_dir / "test_new_case.py").write_text('bash_input("FAKEPROJ-42")\n')
+        # Non-test file at repo root with the same synthetic token.
+        (claude_config_repo / "other.txt").write_text("Touches FAKEPROJ-42 unexpectedly\n")
+        subprocess.run(
+            ["git", "add", "claude/.claude/hooks/tests/test_new_case.py", "other.txt"],
+            cwd=claude_config_repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Mixed change'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_scoping_reason_message_still_present_when_blocked(self, claude_config_repo):
+        """The deny reason shown to the user must still reference the
+        `Redact private-project-identifying content` section so reviewers know where
+        to look. Guard against an accidental message change during scoping
+        refactors."""
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input("git commit -m 'Fix WIDGET-123 regression'")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected a deny verdict"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Commit blocked by redaction gate" in reason
+        assert "Redact private-project-identifying content" in reason
+        assert "WIDGET-123" in reason
+
+    # -- gh pr create / gh pr edit surfaces --------------------------------
+    # Regression: a prior PR in this repo leaked a tracker ID via
+    # `gh pr create --body-file` because the hook originally gated only
+    # `git commit`. PR bodies, titles, and body-file contents are now
+    # in scope too.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr create --body 'Fixes WIDGET-123'",
+            "gh pr create --title 'Fix WIDGET-123'",
+            "gh pr edit 42 --title 'Fix WIDGET-123'",
+            "gh pr edit 42 --body 'Fixes WIDGET-123'",
+            "echo prep && gh pr create --body 'has WIDGET-123'",
+        ],
+        ids=[
+            "create-body-inline",
+            "create-title-inline",
+            "edit-title-inline",
+            "edit-body-inline",
+            "chained-after-echo",
+        ],
+    )
+    def test_gh_pr_inline_tracker_denied(self, claude_config_repo, command):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_gh_pr_create_body_file_with_tracker_denied(self, claude_config_repo, tmp_path):
+        """The canonical leak pattern: --body-file pointing at a file whose
+        contents never appear in the command string. The hook must read
+        and scan the file, not just the command."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("## Summary\n\nFixes FOOCORP-42 regression.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh pr create --body-file {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_pr_create_body_file_equals_form_denied(self, claude_config_repo, tmp_path):
+        """Equals form `--body-file=<path>` must parse identically to the
+        space-delimited form."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("Refs NULLPROJ-999.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh pr create --body-file={body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_pr_edit_body_file_with_tracker_denied(self, claude_config_repo, tmp_path):
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("Updated scope: addresses EXAMPLECO-7.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh pr edit 42 --body-file {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr create --body 'Fixes CVE-2024-9999'",
+            "gh pr create --body 'Clean body, no refs at all'",
+            "gh pr create --title 'Refactor parser'",
+            "gh pr edit 42 --state merged",
+            "gh pr edit 42 --add-label needs-review",
+            "gh pr edit 42 --add-reviewer alice",
+        ],
+        ids=[
+            "create-body-cve-allowlisted",
+            "create-body-clean",
+            "create-title-clean",
+            "edit-state-flag",
+            "edit-label-flag",
+            "edit-reviewer-flag",
+        ],
+    )
+    def test_gh_pr_clean_or_allowlisted_allowed(self, claude_config_repo, command):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    def test_gh_pr_body_file_allowlisted_only_allowed(self, claude_config_repo, tmp_path):
+        """A body file that references only allowlisted tokens passes."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("Implements RFC-7231 and mitigates CVE-2024-1234.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh pr create --body-file {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_pr_body_file_missing_fails_closed(self, claude_config_repo, tmp_path):
+        """Nonexistent --body-file path: hook must deny, not silently treat
+        as empty. Unscanned content is exactly the leak vector this hook
+        guards against, so the fail-closed branch is load-bearing."""
+        missing = tmp_path / "does-not-exist.md"
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(f"gh pr create --body-file {missing}")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected a deny verdict on unreadable body-file"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "body-source file" in reason
+        assert str(missing) in reason
+
+    def test_gh_pr_unrelated_remote_allowed(self, unrelated_remote_repo):
+        """Scoping short-circuit (origin URL doesn't contain `claude-config`)
+        must apply to gh pr too — the hook must not block PRs in any other
+        repo even if they reference a tracker ID."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr create --body 'Fix WIDGET-123 regression'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_non_gated_gh_subcommand_allowed(self, claude_config_repo):
+        """Only `gh pr create` and `gh pr edit` are gated. Other gh subcommands
+        that might carry text (e.g., `gh pr comment`) are out of scope for
+        this hook and must pass."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr comment 42 --body 'has WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    # -- Short-form and template body sources ------------------------------
+    # Regression: the initial implementation only handled the long-form
+    # --body-file flag. `gh pr create -F <path>` is documented as the short
+    # form of --body-file and is the exact same leak vector. `--template`
+    # / `-T` is a separate gh-documented body-text source that also needs
+    # scanning. Missing any of these means the plan's stated goal (close
+    # PR-body leak vectors in gh pr create/edit) is not actually met.
+
+    @pytest.mark.parametrize(
+        "flag_form",
+        ["-F", "-F="],
+        ids=["dash-F-space", "dash-F-equals"],
+    )
+    def test_gh_pr_short_F_flag_with_tracker_denied(self, claude_config_repo, tmp_path, flag_form):
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("Fixes BARCORP-22.\n")
+        separator = "" if flag_form.endswith("=") else " "
+        cmd = f"gh pr create {flag_form}{separator}{body_file}"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "flag_form",
+        ["--template", "--template=", "-T", "-T="],
+        ids=["long-space", "long-equals", "short-space", "short-equals"],
+    )
+    def test_gh_pr_template_flag_with_tracker_denied(self, claude_config_repo, tmp_path, flag_form):
+        template = tmp_path / "pr-template.md"
+        template.write_text("## Starting template\n\nLeaked NULLPROJ-999 goes here.\n")
+        separator = "" if flag_form.endswith("=") else " "
+        cmd = f"gh pr create {flag_form}{separator}{template}"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
+
+    def test_gh_pr_template_clean_allowed(self, claude_config_repo, tmp_path):
+        """Template flag with only allowlisted refs must pass — the scan
+        treats template content identically to --body-file content."""
+        template = tmp_path / "pr-template.md"
+        template.write_text("Follows RFC-7231 section 6.5.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh pr create --template {template}"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    # -- Pseudo-file paths fail closed -------------------------------------
+    # `--body-file=/dev/stdin` / `--body-file=-` would cause the hook's
+    # `cat` to read the hook's OWN stdin (the tool-input JSON), while gh
+    # would read its own different stdin at invocation time. The mismatch
+    # is a bypass. Same for `/dev/fd/N` and `/proc/*/fd/N` — process-local
+    # fd references that the hook cannot resolve to gh's future state.
+
+    @pytest.mark.parametrize(
+        "pseudo_path",
+        ["-", "/dev/stdin", "/dev/fd/1", "/proc/self/fd/0"],
+        ids=["bare-dash", "dev-stdin", "dev-fd", "proc-fd"],
+    )
+    def test_gh_pr_pseudo_file_body_source_denied(self, claude_config_repo, pseudo_path):
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(f"gh pr create --body-file={pseudo_path}")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), f"expected deny on pseudo-file path {pseudo_path}"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "pseudo-file" in reason.lower()
+
+    # -- Fail-closed on malformed input ------------------------------------
+    # jq parse failure must deny, not silently allow. Without this, a
+    # broken jq binary (or malformed JSON from the harness) would disable
+    # the gate entirely — the worst possible failure mode for a hook
+    # whose purpose is to prevent a leak.
+
+    def test_malformed_json_stdin_denies(self, claude_config_repo):
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input="not valid json{",
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected deny on malformed JSON input"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # -- Allow-path lock-ins for load-bearing existing behaviors -----------
+    # The refactor that added gh pr coverage also restructured the git-
+    # commit branch. These tests lock in the behaviors that must survive
+    # future refactors: equals-form body-file passes when clean, amend-
+    # message-only passes even with a tracker in the message (historical
+    # exit-0 on empty staged diff), and the test-dir pathspec exclusion
+    # holds on the added side of the diff.
+
+    def test_gh_pr_equals_form_clean_body_file_allowed(self, claude_config_repo, tmp_path):
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("Refactor parser, no tracker refs.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh pr create --body-file={body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_amend_message_only_with_tracker_allowed(self, claude_config_repo):
+        """Historical behavior: empty staged diff + tracker in message -> allow.
+        Reason at lines 119-123 of the hook: `--amend` / `--allow-empty` /
+        nothing staged has no new content, so the gate lets git decide.
+        A refactor that reorders the staged-diff check and the command-
+        string scan must not regress this."""
+        subprocess.run(["git", "reset", "HEAD"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit --amend -m 'Fix WIDGET-123 regression'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_test_dir_pathspec_exclusion_allow_path_locked_in(self, claude_config_repo):
+        """Mirror of test_test_dir_changes_exempt_from_scan, framed as the
+        allow-path pair for the exclusion behavior. Adding a synthetic
+        tracker inside the hook's own test tree must pass; without the
+        pathspec exclusion, every new test case commit would be blocked
+        by the hook under test — hostile to its own maintenance flow."""
+        test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
+        test_dir.mkdir(parents=True)
+        (test_dir / "test_another_case.py").write_text(
+            "# synthetic token for testing: FAKEPROJ-777\n"
+        )
+        subprocess.run(
+            ["git", "add", "claude/.claude/hooks/tests/test_another_case.py"],
+            cwd=claude_config_repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Add test'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    # -- User-local private-projects blocklist -----------------------------
+    # Second mechanical defense alongside the tracker-ID scan. Reads
+    # ~/.claude/private-projects.md as a literal, case-insensitive
+    # substring blocklist. Fails open if the file is absent or unreadable.
+    # Critical invariant: the deny message NEVER names the matched entry.
+
+    def test_blocklist_match_in_commit_message_denied(self, claude_config_repo, private_projects_file):
+        private_projects_file("Acme Corp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp integration'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_case_insensitive_denied(self, claude_config_repo, private_projects_file):
+        """Blocklist entry `Initech`; commit has lowercase `initech`."""
+        private_projects_file("Initech\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Migrate initech config to new schema'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_multi_word_entry_denied(self, claude_config_repo, private_projects_file):
+        """Multi-word entries match — line-by-line read, not word-split."""
+        private_projects_file("Project Bluebird\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Update project bluebird notes'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_in_gh_pr_inline_body_denied(self, claude_config_repo, private_projects_file):
+        private_projects_file("Acme Corp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr create --body 'Refactor for Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_in_gh_pr_body_file_denied(self, claude_config_repo, private_projects_file, tmp_path):
+        """Blocklist applies to body-file content, not just the inline command."""
+        private_projects_file("Acme Corp\n")
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("## Summary\n\nAcme Corp integration polish.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh pr create --body-file {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_match_in_staged_diff_denied(self, claude_config_repo, private_projects_file):
+        """Added lines in the staged diff are scanned against the blocklist."""
+        private_projects_file("Acme Corp\n")
+        (claude_config_repo / "file.txt").write_text("first\nsecond\n# Acme Corp section\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Generic refactor'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_comments_and_blanks_ignored(self, claude_config_repo, private_projects_file):
+        """File with `#` comments and blank lines + a real entry must
+        skip the noise and still match on the real entry."""
+        private_projects_file("# Engagements\n\n# More\nAcme Corp\n\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_entry_whitespace_trimmed(self, claude_config_repo, private_projects_file):
+        """Leading/trailing whitespace on a blocklist line is stripped
+        before matching, so a stray indent doesn't silently disable the entry."""
+        private_projects_file("   Acme Corp   \n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_absent_allows(self, claude_config_repo):
+        """No ~/.claude/private-projects.md → fail-open. Existing behavior
+        for users who haven't opted in must be unchanged."""
+        # The autouse fixture leaves $HOME without a blocklist file.
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_only_comments_and_blanks_allows(self, claude_config_repo, private_projects_file):
+        """File exists but has no usable entries → fail-open."""
+        private_projects_file("# Just a header\n\n# Nothing real\n\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_no_match_allows(self, claude_config_repo, private_projects_file):
+        private_projects_file("Acme Corp\nProject Bluebird\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor the parser module'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_unrelated_remote_short_circuits(self, unrelated_remote_repo, private_projects_file):
+        """The blocklist scan must respect the same origin.url short-
+        circuit as the tracker-ID scan. A repo that isn't claude-config
+        gets no scanning at all, even if the content matches a blocklist
+        entry — the user's blocklist is for THEIR private projects, but
+        the gate only fires in this public repo."""
+        private_projects_file("Acme Corp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp release'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_removed_line_in_diff_allows(self, claude_config_repo, private_projects_file):
+        """Removing a blocklisted name in the staged diff is the legitimate
+        cleanup flow — the hook must not block it. Mirror of
+        test_removing_a_tracker_id_is_allowed."""
+        private_projects_file("Acme Corp\n")
+        # Seed: file with the name committed.
+        (claude_config_repo / "legacy.txt").write_text("Old notes about Acme Corp.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=claude_config_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=claude_config_repo, check=True)
+        # Stage the removal — diff has `-Old notes about Acme Corp.`
+        # which is NOT in ADDED_LINES, and the commit message is generic.
+        (claude_config_repo / "legacy.txt").write_text("Old notes.\n")
+        subprocess.run(["git", "add", "legacy.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Redact legacy notes'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_substring_within_word_does_not_match(self, claude_config_repo, private_projects_file):
+        """Whole-word match: `Pulse` blocklist entry must NOT match
+        `impulse` in a commit message — `impulse` is one word, no
+        boundary at the `Pulse` substring. This is the load-bearing
+        false-positive avoidance that motivated whole-word matching."""
+        private_projects_file("Pulse\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Add impulse handler for events'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_concatenated_identifier_does_not_match(self, claude_config_repo, private_projects_file):
+        """Whole-word match: `AcmeCorp` does NOT match `AcmeCorpService`.
+        The trailing `S` is a word character so no boundary exists
+        after `AcmeCorp`. Documented behavior — users who need to
+        catch concatenated forms add the concatenated form as its own
+        blocklist entry."""
+        private_projects_file("AcmeCorp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor AcmeCorpService auth flow'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_blocklist_match_at_punctuation_boundary(self, claude_config_repo, private_projects_file):
+        """Whole-word match: punctuation is a non-word boundary. So
+        `AcmeCorp` matches `AcmeCorp.` (period), `AcmeCorp,` (comma),
+        and `AcmeCorp's` (apostrophe before non-word `s`-content...
+        wait, `'` is non-word so `\\bAcmeCorp\\b` matches before the
+        apostrophe). Verifies the common case where the project name
+        appears at the end of a sentence or in possessive form."""
+        private_projects_file("AcmeCorp\n")
+        for punct_form in ["Working with AcmeCorp.", "AcmeCorp's release notes", "Refactor for AcmeCorp, finally"]:
+            assert (
+                run_hook(
+                    DENY_PRIVATE_PROJECT_REFS_HOOK,
+                    bash_input(f"git commit -m '{punct_form}'"),
+                    cwd=claude_config_repo,
+                )
+                == "deny"
+            ), f"expected deny for {punct_form!r}"
+
+    def test_blocklist_deny_message_does_not_name_entry(self, claude_config_repo, private_projects_file):
+        """LOAD-BEARING: the deny message must NOT echo the matched entry.
+
+        Echoing a name the user explicitly flagged as sensitive would
+        re-expose it in terminal output, screenshots, CI logs, and
+        Claude's own conversation context — exactly the surfaces this
+        gate exists to protect. This invariant is documented in the
+        hook header and must hold across refactors.
+        """
+        private_projects_file("Acme Corp\n")
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input("git commit -m 'Working on Acme Corp release'")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected a deny verdict"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+
+        # Bright-line: no case variant of the matched entry appears.
+        assert "Acme Corp" not in reason
+        assert "acme corp" not in reason.lower()
+
+        # Lock in the explanation so a refactor that drops it fails fast.
+        assert "deliberately does not name which entry matched" in reason
+
+        # Sanity: the user is pointed at their own blocklist file.
+        assert "private-projects.md" in reason
 
 
 # ---------------------------------------------------------------------------
@@ -914,3 +1677,74 @@ class TestRequireWorktreeForGitWrites:
     def test_non_bash_tool_allowed(self, opted_in_repo):
         """Edit tool inputs have no .tool_input.command — hook no-ops."""
         assert run_hook(WORKTREE_HOOK, edit_input("/tmp/foo.txt"), cwd=opted_in_repo) == "allow"
+
+    # -- Word-boundary false-positive regression ----------------------------
+    # Regression: the hook originally used `*git*` substring checks that
+    # matched `.github`, `.gitignore`, `github.com`, and similar, blocking
+    # harmless `ls .github/workflows/` reads. The fix requires `git` to
+    # appear as a command word (bounded by non-alnum or string edges),
+    # and each fragment must have a word equal to `git` or ending in
+    # `/git` to be treated as a git invocation.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls .github/workflows/",
+            "cat .gitignore",
+            "grep -r github.com /src",
+            "find . -name '*.git'",
+            "./git-foo",
+            "gitk master",
+        ],
+        ids=[
+            "ls-dotgithub",
+            "cat-dotgitignore",
+            "grep-githubcom",
+            "find-dotgit",
+            "git-foo-extension",
+            "gitk-alnum-trailing",
+        ],
+    )
+    def test_git_substring_in_non_git_command_allowed(self, opted_in_repo, command):
+        """Commands that mention `git` only as a path/URL/prefix substring
+        must not be treated as git invocations. `gitk` pins the regex's
+        both-sides non-alnum requirement — a change that only kept the
+        leading boundary would regress this case."""
+        assert run_hook(WORKTREE_HOOK, bash_input(command), cwd=opted_in_repo) == "allow"
+
+    def test_chained_dotgithub_read_and_git_log_allowed(self, opted_in_repo):
+        """Read-only fragment touching `.github` followed by a read-only
+        git command: both fragments must resolve correctly."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("ls .github/workflows/ && git log --oneline"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_dotgitignore_read_and_git_commit_denied(self, opted_in_repo):
+        """Fragment mentioning `.gitignore` must not mask a real `git
+        commit` in a later fragment."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("cat .gitignore && git commit -m x"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_git_log_with_dotgithub_path_arg_allowed(self, opted_in_repo):
+        """Real read-only git command whose arguments reference a `.github`
+        path must still parse as its subcommand — `git log -- .github/...`
+        is `log`, not denied."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git log -- .github/workflows/hooks.yml"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )

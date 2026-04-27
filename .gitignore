@@ -7,3 +7,10 @@ __pycache__/
 .claude/plans/
 .claude/settings.local.json
 .claude/worktrees/
+
+# Belt-and-suspenders: the user-local private-projects blocklist read by
+# deny-private-project-refs.sh lives at ~/.claude/private-projects.md
+# directly, NOT inside the stowed claude/ subdir. If a user accidentally
+# creates the file in this tree, this prevents it from ever landing in
+# git history. See claude/.claude/hooks/deny-private-project-refs.sh.
+claude/.claude/private-projects.md

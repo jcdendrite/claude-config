@@ -6,15 +6,27 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git commit *)",
             "command": "~/.claude/hooks/require-code-review.sh",
+            "if": "Bash(git commit *)",
             "statusMessage": "Checking code review..."
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/deny-private-project-refs.sh",
             "if": "Bash(git commit *)",
-            "command": "~/.claude/hooks/deny-client-refs.sh",
-            "statusMessage": "Scanning for client-identifying refs..."
+            "statusMessage": "Scanning for private-project refs..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-private-project-refs.sh",
+            "if": "Bash(gh pr create *)",
+            "statusMessage": "Scanning for private-project refs..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-private-project-refs.sh",
+            "if": "Bash(gh pr edit *)",
+            "statusMessage": "Scanning for private-project refs..."
           },
           {
             "type": "command",
@@ -44,6 +56,11 @@
     "type": "command",
     "command": "bash ~/.claude/statusline-command.sh"
   },
+  "enabledPlugins": {
+    "skill-creator@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true
+  },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
       "source": {
@@ -51,10 +68,5 @@
         "repo": "anthropics/claude-plugins-official"
       }
     }
-  },
-  "enabledPlugins": {
-    "skill-creator@claude-plugins-official": true,
-    "claude-md-management@claude-plugins-official": true,
-    "claude-code-setup@claude-plugins-official": true
   }
 }
