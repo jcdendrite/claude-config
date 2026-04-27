@@ -23,6 +23,7 @@ RESPOND_PR_HOOK = HOOKS_DIR / "require-respond-pr.sh"
 REVIEW_PERMS_HOOK = HOOKS_DIR / "ask-review-permissions.sh"
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 WORKTREE_HOOK = HOOKS_DIR / "require-worktree-for-git-writes.sh"
+CAPTURE_SESSION_ID_HOOK = HOOKS_DIR / "capture-session-id.sh"
 
 
 def run_hook(hook: Path, tool_input: dict, cwd: Path | None = None) -> str:
@@ -45,8 +46,11 @@ def run_hook(hook: Path, tool_input: dict, cwd: Path | None = None) -> str:
     return payload["hookSpecificOutput"]["permissionDecision"]
 
 
-def bash_input(command: str) -> dict:
-    return {"tool_name": "Bash", "tool_input": {"command": command}}
+def bash_input(command: str, session_id: str | None = None) -> dict:
+    payload: dict = {"tool_name": "Bash", "tool_input": {"command": command}}
+    if session_id is not None:
+        payload["session_id"] = session_id
+    return payload
 
 
 def edit_input(file_path: str) -> dict:
@@ -279,6 +283,15 @@ class TestRequireRespondPr:
     def test_non_matching_commands_allowed(self, isolated_home, current_repo_foo_bar, command):
         assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
 
+    # -- Bypass-marker behavior --------------------------------------------
+    # Marker layout: ~/.claude/.respond-pr-active.d/<session_id>. The skill
+    # writes one file per session at entry; the hook checks the file matching
+    # THIS request's session_id (from JSON payload). Per-session keying
+    # prevents two failure modes the prior singleton path had:
+    #   (1) Cleanup thrash — session A's `rm -f` deleting B's marker.
+    #   (2) Bypass leak — session A's marker silently authorizing B's
+    #       gh calls even though B never ran /respond-pr.
+
     @pytest.mark.parametrize(
         "command",
         [
@@ -287,11 +300,20 @@ class TestRequireRespondPr:
         ],
     )
     def test_fresh_bypass_marker_allows(self, isolated_home, current_repo_foo_bar, command):
-        (isolated_home / ".claude" / ".respond-pr-active").touch()
-        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
+        sid = "test-session-fresh"
+        marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        assert (
+            run_hook(RESPOND_PR_HOOK, bash_input(command, session_id=sid), cwd=current_repo_foo_bar)
+            == "allow"
+        )
 
     def test_stale_bypass_marker_denies(self, isolated_home, current_repo_foo_bar):
-        marker = isolated_home / ".claude" / ".respond-pr-active"
+        sid = "test-session-stale"
+        marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
         marker.touch()
         # Backdate 90 minutes — past the hook's 60-minute staleness cutoff.
         ninety_min_ago = time.time() - 90 * 60
@@ -299,10 +321,81 @@ class TestRequireRespondPr:
         assert (
             run_hook(
                 RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5/comments", session_id=sid),
+                cwd=current_repo_foo_bar,
+            )
+            == "deny"
+        )
+
+    def test_other_sessions_marker_does_not_leak_bypass(self, isolated_home, current_repo_foo_bar):
+        """Regression: a marker for session A must NOT bypass session B's
+        gated calls. This is the silent failure mode of the prior singleton
+        design — while any session held the marker, every other session's
+        matching gh calls bypassed the gate."""
+        marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / "session-A").touch()
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5/comments", session_id="session-B"),
+                cwd=current_repo_foo_bar,
+            )
+            == "deny"
+        )
+
+    def test_no_session_id_in_input_denies(self, isolated_home, current_repo_foo_bar):
+        """Without session_id in the hook payload, bypass is impossible —
+        deny even if a marker file exists in the dir."""
+        marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / "any-session").touch()
+        # bash_input() with session_id=None omits the field entirely.
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
                 bash_input("gh api repos/foo/bar/pulls/5/comments"),
                 cwd=current_repo_foo_bar,
             )
             == "deny"
+        )
+
+    def test_marker_dir_missing_denies(self, isolated_home, current_repo_foo_bar):
+        """Sessions dir entirely absent (e.g., capture-session-id.sh never
+        ran) → deny. The skill is responsible for failing loudly in that
+        case; the hook just denies safely."""
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5/comments", session_id="some-session"),
+                cwd=current_repo_foo_bar,
+            )
+            == "deny"
+        )
+
+    def test_bypass_refreshes_marker_mtime(self, isolated_home, current_repo_foo_bar):
+        """Long-running skill mitigation: the hook touches the marker on
+        each bypass so a respond-pr session approaching the 60-minute
+        staleness cutoff doesn't get blocked mid-execution."""
+        sid = "long-run-session"
+        marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.touch()
+        fifty_min_ago = time.time() - 50 * 60
+        os.utime(marker, (fifty_min_ago, fifty_min_ago))
+        pre_mtime = marker.stat().st_mtime
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5/comments", session_id=sid),
+                cwd=current_repo_foo_bar,
+            )
+            == "allow"
+        )
+        post_mtime = marker.stat().st_mtime
+        assert post_mtime > pre_mtime, (
+            "marker mtime must be refreshed on bypass to keep long skill runs alive"
         )
 
     def test_non_bash_tool_allowed(self, isolated_home):
@@ -364,6 +457,90 @@ class TestRequireRespondPr:
             )
             == "deny"
         )
+
+
+# ---------------------------------------------------------------------------
+# capture-session-id.sh
+# ---------------------------------------------------------------------------
+
+
+class TestCaptureSessionId:
+    """SessionStart hook that bootstraps the session_id ↔ claude-PID
+    lookup file. Skill bodies running as Bash tool calls don't see the
+    hook payload; they read ~/.claude/sessions/$PPID to learn their own
+    session_id (where $PPID is the claude main process PID).
+
+    The hook must never block session startup, so every error path exits 0.
+    """
+
+    def _sessions_files(self, home: Path) -> list[Path]:
+        sessions_dir = home / ".claude" / "sessions"
+        if not sessions_dir.exists():
+            return []
+        return list(sessions_dir.iterdir())
+
+    def test_valid_input_writes_lookup_file(self, isolated_home):
+        sid = "abc-123-session"
+        run_hook(CAPTURE_SESSION_ID_HOOK, {"session_id": sid})
+        files = self._sessions_files(isolated_home)
+        assert len(files) == 1, f"expected one lookup file, got {files}"
+        assert files[0].read_text().strip() == sid
+        # Filename is the claude_pid the hook resolved via `ps -o ppid=`.
+        # We don't pin the exact value (depends on test runner topology),
+        # but it must be a positive integer.
+        assert files[0].name.isdigit() and int(files[0].name) > 0
+
+    def _run_capturing_stderr(self, payload: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(CAPTURE_SESSION_ID_HOOK)],
+            input=payload,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_empty_session_id_writes_nothing_with_stderr_diagnostic(self, isolated_home):
+        result = self._run_capturing_stderr(json.dumps({"session_id": ""}))
+        assert result.returncode == 0
+        assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert "no session_id" in result.stderr
+
+    def test_missing_session_id_field_writes_nothing_with_stderr_diagnostic(self, isolated_home):
+        result = self._run_capturing_stderr(json.dumps({"some_other_field": "value"}))
+        assert result.returncode == 0
+        assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert "no session_id" in result.stderr
+
+    def test_empty_stdin_does_not_block_and_emits_stderr(self, isolated_home):
+        """Empty payload must not block session start, but must leave a
+        diagnostic trail on stderr (not stdout — stdout would pollute
+        Claude's context)."""
+        result = self._run_capturing_stderr("")
+        assert result.returncode == 0
+        assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert "empty stdin" in result.stderr
+        assert result.stdout == ""
+
+    def test_malformed_json_does_not_block_and_emits_stderr(self, isolated_home):
+        """SessionStart hook must never fail-closed on payload corruption —
+        a broken hook would prevent the session from starting. Malformed
+        JSON is treated as missing session_id."""
+        result = self._run_capturing_stderr("not valid json {{")
+        assert result.returncode == 0
+        assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert result.stdout == ""
+
+    def test_happy_path_emits_no_stderr(self, isolated_home):
+        """Successful runs must be silent — stderr noise on every session
+        start would condition the user to ignore it."""
+        result = self._run_capturing_stderr(json.dumps({"session_id": "abc-123"}))
+        assert result.returncode == 0
+        assert len(self._sessions_files(isolated_home)) == 1
+        assert result.stderr == ""
 
 
 # ---------------------------------------------------------------------------
