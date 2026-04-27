@@ -99,7 +99,7 @@ and [Chroma's Context Rot research](https://research.trychroma.com/context-rot):
 
 ### Don't embed PR or ticket refs in always-loaded files
 
-`Precedent: PR #105` and `See TICKET-NNN` rot the moment the next PR
+`Precedent: PR #105` and `See TICKET-123` rot the moment the next PR
 lands and cost per-session context budget. Put them in commit messages,
 PR descriptions, or plan files — state the rule, not the precedent.
 
