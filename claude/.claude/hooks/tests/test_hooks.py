@@ -101,9 +101,12 @@ def git_toplevel(repo: Path) -> str:
     ).stdout.strip()
 
 
-def marker_path(home: Path, repo: Path) -> Path:
+DEFAULT_TEST_SESSION_ID = "test-session-default"
+
+
+def marker_path(home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID) -> Path:
     repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
-    return home / ".claude" / "review-markers" / repo_hash
+    return home / ".claude" / "review-markers" / f"{repo_hash}.{session_id}"
 
 
 def staged_diff_hash(repo: Path) -> str:
@@ -113,8 +116,13 @@ def staged_diff_hash(repo: Path) -> str:
     return hashlib.sha256(diff).hexdigest()
 
 
-def write_marker(home: Path, repo: Path, diff_hash: str) -> Path:
-    marker = marker_path(home, repo)
+def write_marker(
+    home: Path,
+    repo: Path,
+    diff_hash: str,
+    session_id: str = DEFAULT_TEST_SESSION_ID,
+) -> Path:
+    marker = marker_path(home, repo, session_id)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(diff_hash + "\n")
     return marker
@@ -126,23 +134,55 @@ def write_marker(home: Path, repo: Path, diff_hash: str) -> Path:
 
 
 class TestRequireCodeReview:
+    # The marker layout is ~/.claude/review-markers/<repo-hash>.<session_id>.
+    # The hook reads session_id from its JSON payload and checks the
+    # matching session's marker. Tests below thread session_id through
+    # `bash_input` and `write_marker` for paths that exercise the marker
+    # check. Tests that exit early (non-bash tool, non-commit command,
+    # outside-repo, empty staged diff) don't need session_id — the hook
+    # returns before reaching the marker logic.
+
     def test_no_marker_denies_commit(self, isolated_home, git_repo):
-        assert run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo) == "deny"
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
 
     def test_wrong_hash_marker_denies(self, isolated_home, git_repo):
         write_marker(isolated_home, git_repo, "0" * 64)
-        assert run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo) == "deny"
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
 
     def test_correct_hash_marker_allows(self, isolated_home, git_repo):
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo))
-        assert run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo) == "allow"
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
 
     def test_chained_add_commit_allowed_when_marker_current(self, isolated_home, git_repo):
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo))
         assert (
             run_hook(
                 CODE_REVIEW_HOOK,
-                bash_input("git add file.txt && git commit -m foo"),
+                bash_input(
+                    "git add file.txt && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
                 cwd=git_repo,
             )
             == "allow"
@@ -152,7 +192,14 @@ class TestRequireCodeReview:
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo))
         (git_repo / "file.txt").write_text("first\nsecond\nthird\n")
         subprocess.run(["git", "add", "file.txt"], cwd=git_repo, check=True)
-        assert run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo) == "deny"
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
 
     def test_chained_add_commit_denied_when_marker_stale(self, isolated_home, git_repo):
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo))
@@ -161,7 +208,10 @@ class TestRequireCodeReview:
         assert (
             run_hook(
                 CODE_REVIEW_HOOK,
-                bash_input("git add file.txt && git commit -m foo"),
+                bash_input(
+                    "git add file.txt && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
                 cwd=git_repo,
             )
             == "deny"
@@ -171,22 +221,77 @@ class TestRequireCodeReview:
         (git_repo / "file.txt").write_text("first\nsecond\nthird\n")
         subprocess.run(["git", "add", "file.txt"], cwd=git_repo, check=True)
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo))
-        assert run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo) == "allow"
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_other_sessions_marker_does_not_authorize_commit(self, isolated_home, git_repo):
+        """Regression: session A's marker must NOT authorize session B's
+        commit, even when B's staged diff has the same hash as A's reviewed
+        diff. The gate's bypass requires THIS session's marker — review is
+        per-session, not per-diff.
+
+        This is the load-bearing safety property of session-keyed markers.
+        Without it, a future refactor that "simplifies" by accepting any
+        matching hash would silently re-introduce cross-session leakage,
+        the failure mode that motivated this design."""
+        diff_hash = staged_diff_hash(git_repo)
+        write_marker(isolated_home, git_repo, diff_hash, session_id="session-A")
+        # Session B's commit, same staged diff, but B has no marker.
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id="session-B"),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_no_session_id_in_input_denies(self, isolated_home, git_repo):
+        """Without session_id in the hook payload, no per-session marker can
+        be keyed — deny even if a marker file happens to exist on disk.
+        Older Claude Code versions or payload-schema drift land here; the
+        gate fail-closes rather than silently bypassing."""
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo))
+        # bash_input() with session_id=None omits the field entirely.
+        assert (
+            run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo)
+            == "deny"
+        )
 
     def test_skill_marker_write_command_matches_hook_path(self, isolated_home, git_repo):
-        """Regression guard for the trailing-newline drift bug.
+        """Regression guard against the SKILL command and HOOK getting out
+        of sync on path derivation.
 
-        Runs the exact shell pipeline from code-review SKILL.md that writes the
-        marker, then verifies the hook accepts it. If SKILL.md and the hook
-        ever disagree on how they derive the repo-hash path, this fails.
+        Runs the exact shell pipeline from code-review SKILL.md that writes
+        the marker (including the session_id lookup), then verifies the
+        hook accepts the result.
         """
+        sid = "test-session-skill-cmd"
+        # Set up the session_id lookup file at the path the skill reads.
+        # The skill computes its filename from $PPID inside the bash
+        # subshell; subprocess.run spawns bash as a child of this pytest
+        # process, so $PPID resolves to os.getpid().
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / str(os.getpid())).write_text(sid)
+
         markers_dir = isolated_home / ".claude" / "review-markers"
-        for f in markers_dir.glob("*"):
-            f.unlink()
+        if markers_dir.exists():
+            for f in markers_dir.glob("*"):
+                f.unlink()
         skill_command = (
+            'SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && '
+            '[ -n "$SESSION_ID" ] && '
             'mkdir -p "$HOME/.claude/review-markers" && '
+            "REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\\n' | sha256sum | awk '{print $1}') && "
             "git diff --cached | sha256sum | awk '{print $1}' > "
-            '"$HOME/.claude/review-markers/$(git rev-parse --show-toplevel | tr -d \'\\n\' | sha256sum | awk \'{print $1}\')"'
+            '"$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"'
         )
         subprocess.run(
             ["bash", "-c", skill_command],
@@ -194,7 +299,14 @@ class TestRequireCodeReview:
             env={**os.environ, "HOME": str(isolated_home)},
             check=True,
         )
-        assert run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo) == "allow"
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=sid),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
 
     def test_empty_staged_diff_allows(self, isolated_home, git_repo):
         """Amend-message, --allow-empty, or nothing-to-commit has no new content."""

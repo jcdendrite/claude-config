@@ -7,13 +7,21 @@
 # The internal grep is the actual gate. The "if" field is a hint only.
 #
 # How it works:
-# - The /code-review skill writes ~/.claude/review-markers/<repo-hash> with
-#   the sha256 hash of `git diff --cached` when the review is clean. The
-#   marker lives under $HOME (not inside the repo) so it never pollutes
-#   `git status` or risks being accidentally committed.
-# - This hook recomputes `git diff --cached | sha256sum` at commit time
-#   and compares. Match = the staged state was reviewed, allow the commit.
-#   Mismatch/missing = deny and redirect Claude to run /code-review.
+# - The /code-review skill writes
+#   ~/.claude/review-markers/<repo-hash>.<session_id> with the sha256 hash of
+#   `git diff --cached` when the review is clean. The marker lives under
+#   $HOME (not inside the repo) so it never pollutes `git status` or risks
+#   being accidentally committed.
+# - This hook reads session_id from its JSON payload, recomputes
+#   `git diff --cached | sha256sum` at commit time, and compares against
+#   THIS session's marker. Match = the staged state was reviewed by this
+#   session, allow the commit. Mismatch/missing = deny and redirect Claude
+#   to run /code-review.
+# - Per-session keying (vs. a singleton path keyed only by repo-hash)
+#   prevents two parallel sessions in the same worktree from overwriting
+#   each other's markers when they stage different diffs. Each session
+#   writes its own marker; the gate checks the calling session's marker
+#   specifically.
 # - The marker auto-invalidates as soon as the staging area changes, so
 #   re-staging after review correctly forces a re-review.
 
@@ -42,14 +50,19 @@ if [ -z "$(git diff --cached 2>/dev/null)" ]; then
 fi
 
 REPO_HASH=$(printf '%s' "$REPO_ROOT" | sha256sum | awk '{print $1}')
-MARKER="$HOME/.claude/review-markers/$REPO_HASH"
+SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 CURRENT_HASH=$(git diff --cached | sha256sum | awk '{print $1}')
 
-if [ -f "$MARKER" ]; then
-  MARKER_HASH=$(tr -d '[:space:]' < "$MARKER")
-  if [ "$MARKER_HASH" = "$CURRENT_HASH" ]; then
-    # Marker hash matches currently staged diff — review is current, allow.
-    exit 0
+# Empty session_id (older Claude Code versions or payload-schema drift) can't
+# key a per-session marker — fall through to deny.
+if [ -n "$SESSION_ID" ]; then
+  MARKER="$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"
+  if [ -f "$MARKER" ]; then
+    MARKER_HASH=$(tr -d '[:space:]' < "$MARKER")
+    if [ "$MARKER_HASH" = "$CURRENT_HASH" ]; then
+      # Marker hash matches currently staged diff — review is current, allow.
+      exit 0
+    fi
   fi
 fi
 

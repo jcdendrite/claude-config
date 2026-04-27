@@ -302,17 +302,23 @@ and you reviewed the currently staged changes), record it by running this
 command exactly once:
 
 ```
-mkdir -p "$HOME/.claude/review-markers" && git diff --cached | sha256sum | awk '{print $1}' > "$HOME/.claude/review-markers/$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}')"
+SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/review-markers" && REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}') && git diff --cached | sha256sum | awk '{print $1}' > "$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"
 ```
 
 The `tr -d '\n'` is load-bearing: `git rev-parse` adds a trailing newline, and
 the hook computes the repo hash without it (`printf '%s' "$REPO_ROOT"`). Without
 `tr`, the marker lands at a path the hook never checks.
 
-This writes the hash of the currently staged diff into a user-global marker
-keyed by the repo's top-level path. The pre-commit hook recomputes the
-staged-diff hash at commit time and compares — match means the commit is
-allowed through. Re-staging any change invalidates the marker automatically.
+This writes the hash of the currently staged diff into a per-session marker
+keyed by `<repo-hash>.<session-id>`. The pre-commit hook reads the same
+session-id from its JSON payload and compares the staged-diff hash against
+THIS session's marker — match means the commit is allowed through. Per-session
+keying prevents two parallel sessions in the same worktree from overwriting
+each other's markers. Re-staging any change invalidates the marker automatically.
+
+If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh`
+SessionStart hook didn't run — abort and report; do not proceed without the
+marker, since `git commit` will be blocked by the gate.
 
 **Do NOT write the marker if:**
 
