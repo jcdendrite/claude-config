@@ -207,15 +207,15 @@ Decision tree, in order:
 
 Splits and spawns must come with explicit ownership-line updates in adjacent personas — every co-ownership line touching the changed persona is a candidate edit.
 
-### Known gaps in the persona roster
+### Roles intentionally not in the roster
 
-The current roster targets small-to-mid orgs and intentionally collapses some specialties that exist as dedicated roles in larger organizations:
+For an AI-driven code-review system, the right criterion for adding a persona is **distinct review heuristics that an AI reviewer can act on from a diff** — not industry-headcount-mimicry. Some industry-recognized roles are deliberately absent because the part of their work that survives translation to AI review is already covered, or because their distinctive value depends on signals an AI reviewer doesn't have:
 
-- **Database Reliability Engineer (DBRE)** — migration safety review is three-way co-owned across `staff-backend-engineer` (writes the migration), `staff-data-engineer` (pipeline / lineage impact, DDL execution shape), and `staff-platform-engineer` (deploy-window ordering, lock-budget). At larger scale this is a dedicated DBRE role; we collapse it across the three.
-- **Data platform engineer** — warehouse infrastructure, orchestration tooling (Airflow / Dagster), catalog tooling itself. Currently absorbed into `staff-data-engineer`. Defensible at small scale; flag the conflation if scope drifts.
-- **Data steward / governance** — PII tagging, downstream-consumer policy, data-contract enforcement. `staff-data-engineer` flags catalog candidates conditionally rather than asserting governance policy.
+- **Database Reliability Engineer (DBRE)** — distinctive value in human teams is *live-system observability*: production metrics in real time, replication-lag trends, query plan stability post-migration, buffer-cache impact, page-size effects at scale. None of that is available to an AI reviewer working from a diff. The static heuristics that survive — DDL execution shape, lock-cost, deploy-window ordering — are already covered by `staff-data-engineer` (DDL form authority) and `staff-platform-engineer` (deploy-window, lock-budget). A separate DBRE persona would just rename a slice of those without adding a paradigm an AI can apply.
+- **Data platform engineer** — warehouse infrastructure ownership, orchestration tooling operation (Airflow / Dagster runtime), catalog tooling operation. Currently absorbed into `staff-data-engineer` (pipeline transport / observability) and `staff-platform-engineer` (orchestration as ops surface). Splitting it out would help only at scales where the warehouse infra is its own engineering domain with reviews distinct from app-side data engineering.
+- **Data steward / governance** — PII tagging policy, downstream-consumer contracts, data-contract enforcement. Largely a non-engineering function in most orgs (legal / compliance / data-governance). `staff-data-engineer` flags PII-shaped column candidates conditionally rather than asserting governance policy; the policy itself stays human-owned.
 
-If a project consistently surfaces gaps in these areas during review, the right response is to **spawn** (per the decision tree above) — not to overload an existing persona.
+If a project's review pattern consistently surfaces gaps in these areas — and the AI can act on signals visible in the diff — the right response is to **spawn** (per the decision tree above) with explicit ownership-line updates in adjacent personas. Don't overload an existing persona just because the work is "data-shaped."
 
 ## Machine-specific overrides
 

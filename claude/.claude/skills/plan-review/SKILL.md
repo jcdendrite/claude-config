@@ -293,69 +293,56 @@ Project-level plan-review skills may extend this table with
 project-specific reviewer roles and focus areas, but must not remove or
 narrow the `ciso-reviewer` trigger conditions.
 
-## Trigger discipline — avoiding three-persona fire on trivial diffs
-
-Schema-change plans nominally route to backend + data + analytics
-(three-way). Without discipline, every additive column wakes three
-agents and reviewers learn to ignore them. Filter:
-
-- **Backend** fires on any application schema change.
-- **Data infrastructure** fires when the change touches: a table named
-  in a CDC / replication / ETL manifest if one exists; or files
-  matching event / audit / outbox / `events_*` / `audit_*` /
-  warehouse-source patterns; or any rename, drop, or type-narrowing
-  (lineage-break candidates regardless of pipeline manifest).
-- **Analytics modeling** fires when the change touches: dbt sources or
-  models, semantic-layer files, scheduled queries; or a backend
-  schema-changing table that looks warehouse-bound (`events_*`,
-  `orders_*`, `users_*`, audit logs); or any rename or drop on a data
-  layer (lineage-break candidates).
-
-For trivial additive changes to an internal-only table not in any
-manifest, only Backend fires. The three-way pattern is reserved for
-changes with downstream pipeline / warehouse signal.
-
 ## Item ownership
 
-Source of truth for which reviewer subagent is spawned for each
-checklist item. When in doubt, this table wins over inline mentions
-elsewhere. **Primary owner** is the reviewer expected to file findings
-on the item; **co-owners** are spawned where the item touches their
-turf.
+Routes each Base checklist item and each Domain checklist item to the
+reviewer subagent(s) that file findings on it. The checklists above
+define **what to look for**; this table defines **who looks**. Bold
+shorthands match the item title in the body; IDs are the dispatcher's
+primary key.
+
+When in doubt, this table wins over inline mentions elsewhere.
+**Primary owner** is the reviewer expected to file findings on the
+item; **co-owners** are spawned where the item touches their turf.
+
+The dispatcher's job is coarse — fire the relevant reviewers based on
+which domains the plan touches. Each agent self-scopes against the
+plan content and returns early ("No X concerns") when the work is out
+of its lane. Trust the agents; don't second-guess at the dispatcher.
 
 | Item | Primary owner | Co-owners |
 |------|---------------|-----------|
-| B1 | `staff-backend-engineer` (runtime / SDK assumptions) | `staff-platform-engineer` (CI / build tools) |
-| B2 | `staff-backend-engineer` (API consumers) | `staff-frontend-engineer`, `staff-product-engineer`, `staff-data-engineer` (per consumer type) |
-| B3 | `staff-backend-engineer`, `staff-data-engineer` | `staff-platform-engineer` (deploy-window) |
-| B4 | `staff-backend-engineer` | — |
-| B5 | judgment (any reviewer) | — |
-| B6 | judgment (any reviewer) | — |
-| B7 | judgment (any reviewer) | — |
-| B8 | `staff-product-engineer` (user-facing gaps), `staff-sdet` (test gaps) | `staff-data-engineer`, `staff-platform-engineer` (ops gaps) |
-| B9 | `staff-platform-engineer` | `staff-backend-engineer` |
-| B10 | `staff-sdet` | `staff-product-engineer` (user-flow realism) |
-| B11 | `staff-data-engineer`, `staff-platform-engineer`, `staff-backend-engineer` | `staff-sdet` (testability of rollback) |
-| B12 | `staff-backend-engineer` (runtime deps), `staff-platform-engineer` (CI / build deps) | — |
-| B13 | judgment (any reviewer) | — |
-| B14 | `staff-product-engineer` (user-impact decisions) | judgment (others) |
-| B15 | judgment (any reviewer) | — |
-| I1–I4 | `staff-platform-engineer` | `staff-data-engineer` (I2 migration-level idempotency); `ciso-reviewer` (I4 secret threat framing) |
-| D1 | `staff-data-engineer` (pipeline impact, DDL form) | `staff-backend-engineer` (correctness), `staff-platform-engineer` (deploy-window, lock-budget) |
-| D2 | `staff-data-engineer` | `staff-backend-engineer` |
-| D3 | `staff-data-engineer` | `staff-backend-engineer`, `staff-platform-engineer` |
-| D4 | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
-| D5 | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
-| F1 | `staff-frontend-engineer` | `staff-product-engineer` |
-| F2 | `staff-frontend-engineer` | — |
-| F3 | `staff-frontend-engineer` | `staff-backend-engineer`, `staff-product-engineer` (user-visible drift) |
-| F4 | `staff-frontend-engineer` (implementation) | `staff-product-engineer` (UX-matches-spec), `staff-sdet` (per-state coverage) |
-| F5 | `staff-frontend-engineer` | `staff-product-engineer`, `ciso-reviewer` (auth state security) |
-| K1 | `staff-backend-engineer` | `staff-frontend-engineer` (client adaptation) |
-| K2 | `staff-backend-engineer` | `staff-sdet` (error-path tests), `staff-frontend-engineer` (UI surfacing) |
-| S1–S2 | `ciso-reviewer` | — |
-| S3–S5 | `ciso-reviewer` | `staff-backend-engineer` |
-| S6 | `ciso-reviewer` | `staff-platform-engineer` (provisioning) |
+| **B1. Unstated assumptions** | `staff-backend-engineer` (runtime / SDK assumptions) | `staff-platform-engineer` (CI / build tools) |
+| **B2. Missing consumer analysis** | `staff-backend-engineer` (API consumers) | `staff-frontend-engineer`, `staff-product-engineer`, `staff-data-engineer` (per consumer type) |
+| **B3. Breaking intermediate states** | `staff-backend-engineer`, `staff-data-engineer` | `staff-platform-engineer` (deploy-window) |
+| **B4. Unresolved external dependencies** | `staff-backend-engineer` | — |
+| **B5. Evidence** | judgment (any reviewer) | — |
+| **B6. Proportionality** | judgment (any reviewer) | — |
+| **B7. Scope creep** | judgment (any reviewer) | — |
+| **B8. Missing scope** | `staff-product-engineer` (user-facing gaps), `staff-sdet` (test gaps) | `staff-data-engineer`, `staff-platform-engineer` (ops gaps) |
+| **B9. Phase independence** | `staff-platform-engineer` | `staff-backend-engineer` |
+| **B10. Test realism** | `staff-sdet` | `staff-product-engineer` (user-flow realism) |
+| **B11. Rollback strategy** | `staff-data-engineer`, `staff-platform-engineer`, `staff-backend-engineer` | `staff-sdet` (testability of rollback) |
+| **B12. Dependency risk** | `staff-backend-engineer` (runtime deps), `staff-platform-engineer` (CI / build deps) | — |
+| **B13. Ambiguous instructions** | judgment (any reviewer) | — |
+| **B14. Missing decision rationale** | `staff-product-engineer` (user-impact decisions) | judgment (others) |
+| **B15. Effort section reality** | judgment (any reviewer) | — |
+| **I1–I4. Infrastructure** (env parity, idempotency, deployment ordering, secret/config provisioning) | `staff-platform-engineer` | `staff-data-engineer` (I2 migration-level idempotency); `ciso-reviewer` (I4 secret threat framing) |
+| **D1. Migration safety** | `staff-data-engineer` (pipeline impact, DDL form) | `staff-backend-engineer` (correctness), `staff-platform-engineer` (deploy-window, lock-budget) |
+| **D2. Migration reversibility** | `staff-data-engineer` | `staff-backend-engineer` |
+| **D3. Deploy-time compatibility** | `staff-data-engineer` | `staff-backend-engineer`, `staff-platform-engineer` |
+| **D4. Access control on new objects** | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
+| **D5. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
+| **F1. User-facing impact** | `staff-frontend-engineer` | `staff-product-engineer` |
+| **F2. State management** | `staff-frontend-engineer` | — |
+| **F3. Query contract mapping** | `staff-frontend-engineer` | `staff-backend-engineer`, `staff-product-engineer` (user-visible drift) |
+| **F4. Loading / error / empty states** | `staff-frontend-engineer` (implementation) | `staff-product-engineer` (UX-matches-spec), `staff-sdet` (per-state coverage) |
+| **F5. Auth state transitions** | `staff-frontend-engineer` | `staff-product-engineer`, `ciso-reviewer` (auth state security) |
+| **K1. Contract compatibility** | `staff-backend-engineer` | `staff-frontend-engineer` (client adaptation) |
+| **K2. Error handling completeness** | `staff-backend-engineer` | `staff-sdet` (error-path tests), `staff-frontend-engineer` (UI surfacing) |
+| **S1–S2. Threat model + defense in depth** | `ciso-reviewer` | — |
+| **S3–S5. Auth boundary, privilege escalation, data minimization** | `ciso-reviewer` | `staff-backend-engineer` |
+| **S6. Secret lifecycle** | `ciso-reviewer` | `staff-platform-engineer` (provisioning) |
 
 ## Output format
 
