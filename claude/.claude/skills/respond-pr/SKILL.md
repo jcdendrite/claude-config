@@ -12,10 +12,10 @@ Fetch all review comments on the current branch's open pull request and address 
 
 0. **Enable hook bypass.** Run `mkdir -p ~/.claude && touch ~/.claude/.respond-pr-active`. The `require-respond-pr.sh` PreToolUse hook checks for this marker and lets this skill's own `gh` commands through while the marker is fresh (<60 minutes old). Without this step, every `gh api` call below will be blocked by the very gate that redirected you here.
 1. Identify the PR number for the current branch: `gh pr view --json number -q '.number'`
-2. Fetch **all three** types of comments (Claude commonly fetches only the first and misses real feedback):
-   - **Inline file comments:** `gh api repos/{owner}/{repo}/pulls/{number}/comments`
-   - **Top-level review comments:** `gh api repos/{owner}/{repo}/pulls/{number}/reviews --jq '.[] | select(.body != "")'`
-   - **Issue-level comments:** `gh api repos/{owner}/{repo}/issues/{number}/comments`
+2. Fetch **all three** types of comments. Two failure modes Claude commonly hits: (a) fetching only the first type and missing the other two; (b) fetching without `--paginate` and silently truncating at 30 results per type. Both produce reviews that look complete but miss real feedback.
+   - **Inline file comments:** `gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate`
+   - **Top-level review comments:** `gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate --jq '.[] | select(.body != "")'`
+   - **Issue-level comments:** `gh api repos/{owner}/{repo}/issues/{number}/comments --paginate`
 3. For each unresolved comment:
    - Read the referenced file and line to understand the context
    - Determine if it requires a code change, a reply, or both
