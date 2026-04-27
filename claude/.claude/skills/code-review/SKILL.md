@@ -17,13 +17,20 @@ breaking callers in another domain.
 Before reviewing, determine which files were changed (from context, git diff, or the conversation). Classify each changed file into one or more domains:
 
 - **Infrastructure**: `.github/`, `*.tf`, `Dockerfile`, `docker-compose*`, CI/CD configs
-- **Data**: `**/migrations/**`, `*.sql`, schema definitions
+- **Data infrastructure**: `**/migrations/**`, `*.sql` (outside warehouse-model paths), schema definitions, CDC / change-stream config, ETL/ELT pipeline code, warehouse ingestion connector configs
+- **Analytics modeling**: `models/**/*.sql`, `models/**/*.yml`, `dbt_project.yml`, `macros/**`, `tests/**` (dbt-style), `seeds/**`, scheduled-query / view definitions in warehouse-config repos, semantic-layer files
 - **Frontend**: `*.tsx`, `*.jsx`, `*.css`, `src/components/**`, `src/pages/**`
-- **Backend**: edge functions, API routes, server-side utilities, `*.go`, `*.py`
+- **Backend**: edge functions, API routes, server-side utilities, `*.go`, `*.py`, NoSQL access-pattern code, schema design files (Prisma, ORM models, NoSQL ODM models)
 - **Claude Code config**: `.claude/**`
 - **Lovable config**: `.lovable/**`
 
 Apply the **Base checklist** always. Apply each **Domain checklist** only when at least one changed file matches that domain.
+
+Schema-touching diffs nominally route three ways: backend (designs the
+schema), data infrastructure (operational / pipeline impact, DDL execution
+shape), analytics modeling (ELT-readiness review). See **Trigger
+discipline** in the Item ownership section to avoid waking three agents
+on every additive column change.
 
 ## Base checklist
 
@@ -206,7 +213,9 @@ table as new patterns emerge.
 | Adds/modifies security controls | `staff-sdet` + `ciso-reviewer` — verify test pyramid, coverage, and threat model |
 | Changes auth model (JWT, roles, permissions) | `ciso-reviewer` + `staff-backend-engineer` — trace all auth paths including token refresh, session expiry, and error fallbacks |
 | Modifies shared utilities (helpers, hooks, contexts) | `staff-backend-engineer` + `staff-frontend-engineer` — verify all call sites and check for behavioral assumptions |
-| Changes data model (columns, types, defaults, migrations) | `staff-product-engineer` + `staff-data-engineer` — verify generated types, check queries and UI for broken nullability/default assumptions, verify migration idempotency |
+| Changes data model (columns, types, defaults, migrations) | `staff-backend-engineer` + `staff-data-engineer` + `staff-analytics-engineer` (three-way schema review — backend designs, data reviews pipeline / DDL impact, analytics reviews ELT-readiness); add `staff-product-engineer` if user-visible. Apply trigger discipline (see Item ownership) to avoid three-persona fire on trivial additive diffs. |
+| Adds or changes warehouse models / dbt transformations / semantic-layer files | `staff-analytics-engineer` (modeling, transformation correctness, materialization, test coverage) |
+| Adds or changes CDC / change-stream / ETL/ELT pipeline / warehouse ingestion connector | `staff-data-engineer` (transport, schema-drift, observability) + `staff-platform-engineer` (operational footprint) |
 | Modifies CI/CD pipelines or deploy config | `staff-platform-engineer` + `staff-backend-engineer` — verify pipelines and environment consistency |
 | Changes runtime config (env vars, secrets, feature flags) | `staff-platform-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
 
@@ -220,6 +229,70 @@ Be specific about what each reviewer should check. Name the file, flow,
 or function. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer`
 and ask it to verify the checkout flow in CheckoutPage.tsx still
 enforces ownership after the new validation" is actionable.
+
+## Item ownership
+
+Source of truth for which reviewer subagent is spawned for each
+checklist item. When in doubt, this table wins over inline mentions
+elsewhere. **Primary owner** is the reviewer expected to file findings
+on the item; **co-owners** are spawned where the item touches their
+turf.
+
+| Item | Primary owner | Co-owners |
+|------|---------------|-----------|
+| 1 | `staff-backend-engineer` (server-side library / SDK use) | `staff-platform-engineer` (build / CI tools), `staff-frontend-engineer` (client-side library use) |
+| 2 | `staff-backend-engineer` (server error paths), `staff-frontend-engineer` (client UX) | `ciso-reviewer` (sensitive-data leak), `staff-sdet` (catch-branch coverage) |
+| 3 | `staff-backend-engineer` | — |
+| 4 | `staff-backend-engineer`, `staff-platform-engineer` (infra / test code) | — |
+| 5 | `staff-product-engineer` (default-off semantics) | `staff-platform-engineer` (rollout) |
+| 6–8 | judgment (any reviewer) | — |
+| 9 | `staff-product-engineer` (user-visible limitations) | judgment (others) |
+| 10 | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
+| 11 | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
+| 12 | judgment (any reviewer) | — |
+| 13–17 | `staff-platform-engineer` | `ciso-reviewer` (14, 15) |
+| 18 | `staff-data-engineer` (rollback safety, pipeline impact) | `staff-backend-engineer` |
+| 19 | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
+| 20 | `staff-data-engineer` (DDL execution shape, pipeline impact) | `staff-platform-engineer` (deploy-window, lock-budget) |
+| 21 | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
+| 22 | `staff-frontend-engineer` (technical a11y) | `staff-product-engineer` (a11y as spec fidelity) |
+| 23 | `staff-frontend-engineer` | — |
+| 24 | `staff-frontend-engineer` | `staff-platform-engineer` (build tooling) |
+| 25 | `staff-frontend-engineer` (branch implementation) | `staff-sdet` (test coverage), `staff-product-engineer` (right branches for spec) |
+| 26 | `staff-backend-engineer` | `ciso-reviewer` |
+| 27 | `staff-backend-engineer` | `ciso-reviewer` |
+| 28 | `staff-backend-engineer` | `ciso-reviewer` |
+| 29 | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (CI / build deps) |
+| 30 | `staff-backend-engineer` | `ciso-reviewer` (credential scoping) |
+| 31 | `staff-backend-engineer` | `ciso-reviewer` |
+| 32 | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
+| 33 | judgment (any reviewer) | — |
+| 34 | judgment (any reviewer) | — |
+| 35 | `ciso-reviewer` | — |
+| 36 | `staff-platform-engineer` | `ciso-reviewer` |
+| 37–40 | judgment (any reviewer) | — |
+
+## Trigger discipline — avoiding three-persona fire on trivial diffs
+
+Schema-change diffs nominally route to backend + data + analytics
+(three-way). Without discipline, every additive column wakes three
+agents and reviewers learn to ignore them. Filter:
+
+- **Backend** fires on any application schema change.
+- **Data infrastructure** fires when the change touches: a table named
+  in a CDC / replication / ETL manifest if one exists; or files
+  matching event / audit / outbox / `events_*` / `audit_*` /
+  warehouse-source patterns; or any rename, drop, or type-narrowing
+  (lineage-break candidates regardless of pipeline manifest).
+- **Analytics modeling** fires when the change touches: dbt sources or
+  models, semantic-layer files, scheduled queries; or a backend
+  schema-changing table that looks warehouse-bound (`events_*`,
+  `orders_*`, `users_*`, audit logs); or any rename or drop on a data
+  layer (lineage-break candidates).
+
+For trivial additive changes to an internal-only table not in any
+manifest, only Backend fires. The three-way pattern is reserved for
+changes with downstream pipeline / warehouse signal.
 
 ## Step — Record review completion
 

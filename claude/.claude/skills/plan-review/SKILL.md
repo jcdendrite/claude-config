@@ -27,10 +27,12 @@ Find the plan to review. Check, in order:
 Read the plan and classify which domains it touches:
 
 - **Infrastructure**: CI/CD, workflows, deployment, hosting, config files
-- **Data**: Database migrations, schema changes, indexes, RLS policies
-- **Frontend**: React components, hooks, client-side state, UI behavior
-- **Backend**: Edge functions, API routes, server-side logic, shared modules
-- **Security**: Auth, authorization, token handling, secret management, data exposure
+- **Data infrastructure**: Database migrations, schema DDL, RLS policies, CDC / change-stream config, ETL/ELT pipelines, warehouse ingestion connectors, raw landing schemas, schema-drift handling
+- **Application data**: Application schema design (relational tables, NoSQL document/item shape, partition keys, GSI/LSI design, application access patterns) — this routes through Backend
+- **Analytics modeling**: Warehouse-side modeling (fact/dim, SCD, partitioning, materialization, dbt-shape transformations, semantic layer, scheduled queries) — and source-schema review for ELT-readiness when backend schema changes feed the warehouse
+- **Frontend**: Client components, hooks, client-side state, UI behavior, routing, forms, optimistic mutations
+- **Backend**: Server-side code (HTTP/RPC handlers, edge functions, background jobs, queue consumers, SDK integrations, shared utilities) AND application data-store schema design
+- **Security**: Authentication or authorization, token handling, secret management, data exposure, RLS / RBAC / ACL changes
 
 ## Step 2 — Evaluate
 
@@ -148,7 +150,12 @@ I4. **Secret and config provisioning** — Does the plan introduce new secrets,
 
 ## Domain: Data
 
-Apply when the plan touches database schema, migrations, or data.
+Apply when the plan touches database schema, migrations, pipelines, or warehouse
+modeling. Schema-change plans are reviewed three ways: `staff-backend-engineer`
+owns the design, `staff-data-engineer` owns the operational / pipeline impact and
+DDL execution shape, and `staff-analytics-engineer` reviews the change for
+ELT-readiness when the schema feeds the warehouse. See **Item ownership** below
+for per-item routing.
 
 D1. **Migration safety** — Can the migration run on a live database without downtime?
     Flag schema changes that take locks on large tables, backfills that run inside
@@ -262,28 +269,93 @@ isolated to its scope and restricts it to read-only tools.
 
 | Domain | Agent | Focus |
 |--------|-------|-------|
-| Backend | `staff-backend-engineer` | API contracts, error handling, idempotency, retry semantics, service boundaries, SDK behavior |
-| Frontend | `staff-frontend-engineer` | Component patterns, state management, data fetching and cache consistency, accessibility, UX impact |
+| Backend | `staff-backend-engineer` | API contracts, error handling, idempotency, retry semantics, service boundaries, SDK behavior, application data-store schema design (relational + NoSQL) |
+| Frontend | `staff-frontend-engineer` | Component patterns, state management, data fetching and cache consistency, accessibility, i18n, UX impact |
 | Security | `ciso-reviewer` | Threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth |
-| Data | `staff-data-engineer` | Migration safety, schema design, reversibility, deploy-time compatibility, index coverage, access control on new objects |
-| Infrastructure | `staff-platform-engineer` | CI/CD, IaC, shell discipline, deployment ordering, secret provisioning; observability coverage, alerting, SLO impact, runbook linkage, load characteristics, cost/operational footprint |
-| Testing | `staff-sdet` | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements |
-| Product | `staff-product-engineer` | Whether the plan solves the actual user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing |
+| Data infrastructure | `staff-data-engineer` | Migration pipeline impact, DDL execution shape, CDC / change-stream config, ETL/ELT pipelines, warehouse ingestion transport, schema-drift detection, catalog / lineage tracking |
+| Analytics modeling | `staff-analytics-engineer` | Warehouse-side modeling (fact/dim, SCD, partitioning, materialization), transformation correctness, source-schema review for ELT-readiness |
+| Infrastructure | `staff-platform-engineer` | CI/CD, IaC, shell discipline, deployment ordering, secret provisioning; observability coverage, alerting, SLO impact, runbook linkage, load characteristics, cost / operational footprint; deploy-window ordering and lock-budget for migrations |
+| Testing | `staff-sdet` | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements; production code with non-trivial logic that lacks tests |
+| Product | `staff-product-engineer` | Whether the plan solves the actual user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing, telemetry event semantics |
 
 Spawn each relevant reviewer in parallel. Always include
 `staff-product-engineer` when the plan changes user-facing behavior.
-Always include `ciso-reviewer` when the plan touches auth, authorization,
-secrets, tokens, data exposure, logging of sensitive data, third-party
-data sharing, or infrastructure permissions.
+Always include `ciso-reviewer` when the plan touches authentication or
+authorization, secrets, tokens, data exposure, logging of sensitive
+data, third-party data sharing, or infrastructure permissions.
 
 When invoking a reviewer, pass the plan scope, the phase or section
-under review, and the domain-relevant checklist items (e.g., S1–S6 for
-`ciso-reviewer`). Each agent returns a findings-only output; reconcile
-the set and present a combined verdict.
+under review, and the items routed to that reviewer per the **Item
+ownership** table below. Each agent returns a findings-only output;
+reconcile the set and present a combined verdict.
 
 Project-level plan-review skills may extend this table with
 project-specific reviewer roles and focus areas, but must not remove or
 narrow the `ciso-reviewer` trigger conditions.
+
+## Trigger discipline — avoiding three-persona fire on trivial diffs
+
+Schema-change plans nominally route to backend + data + analytics
+(three-way). Without discipline, every additive column wakes three
+agents and reviewers learn to ignore them. Filter:
+
+- **Backend** fires on any application schema change.
+- **Data infrastructure** fires when the change touches: a table named
+  in a CDC / replication / ETL manifest if one exists; or files
+  matching event / audit / outbox / `events_*` / `audit_*` /
+  warehouse-source patterns; or any rename, drop, or type-narrowing
+  (lineage-break candidates regardless of pipeline manifest).
+- **Analytics modeling** fires when the change touches: dbt sources or
+  models, semantic-layer files, scheduled queries; or a backend
+  schema-changing table that looks warehouse-bound (`events_*`,
+  `orders_*`, `users_*`, audit logs); or any rename or drop on a data
+  layer (lineage-break candidates).
+
+For trivial additive changes to an internal-only table not in any
+manifest, only Backend fires. The three-way pattern is reserved for
+changes with downstream pipeline / warehouse signal.
+
+## Item ownership
+
+Source of truth for which reviewer subagent is spawned for each
+checklist item. When in doubt, this table wins over inline mentions
+elsewhere. **Primary owner** is the reviewer expected to file findings
+on the item; **co-owners** are spawned where the item touches their
+turf.
+
+| Item | Primary owner | Co-owners |
+|------|---------------|-----------|
+| B1 | `staff-backend-engineer` (runtime / SDK assumptions) | `staff-platform-engineer` (CI / build tools) |
+| B2 | `staff-backend-engineer` (API consumers) | `staff-frontend-engineer`, `staff-product-engineer`, `staff-data-engineer` (per consumer type) |
+| B3 | `staff-backend-engineer`, `staff-data-engineer` | `staff-platform-engineer` (deploy-window) |
+| B4 | `staff-backend-engineer` | — |
+| B5 | judgment (any reviewer) | — |
+| B6 | judgment (any reviewer) | — |
+| B7 | judgment (any reviewer) | — |
+| B8 | `staff-product-engineer` (user-facing gaps), `staff-sdet` (test gaps) | `staff-data-engineer`, `staff-platform-engineer` (ops gaps) |
+| B9 | `staff-platform-engineer` | `staff-backend-engineer` |
+| B10 | `staff-sdet` | `staff-product-engineer` (user-flow realism) |
+| B11 | `staff-data-engineer`, `staff-platform-engineer`, `staff-backend-engineer` | `staff-sdet` (testability of rollback) |
+| B12 | `staff-backend-engineer` (runtime deps), `staff-platform-engineer` (CI / build deps) | — |
+| B13 | judgment (any reviewer) | — |
+| B14 | `staff-product-engineer` (user-impact decisions) | judgment (others) |
+| B15 | judgment (any reviewer) | — |
+| I1–I4 | `staff-platform-engineer` | `staff-data-engineer` (I2 migration-level idempotency); `ciso-reviewer` (I4 secret threat framing) |
+| D1 | `staff-data-engineer` (pipeline impact, DDL form) | `staff-backend-engineer` (correctness), `staff-platform-engineer` (deploy-window, lock-budget) |
+| D2 | `staff-data-engineer` | `staff-backend-engineer` |
+| D3 | `staff-data-engineer` | `staff-backend-engineer`, `staff-platform-engineer` |
+| D4 | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
+| D5 | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
+| F1 | `staff-frontend-engineer` | `staff-product-engineer` |
+| F2 | `staff-frontend-engineer` | — |
+| F3 | `staff-frontend-engineer` | `staff-backend-engineer`, `staff-product-engineer` (user-visible drift) |
+| F4 | `staff-frontend-engineer` (implementation) | `staff-product-engineer` (UX-matches-spec), `staff-sdet` (per-state coverage) |
+| F5 | `staff-frontend-engineer` | `staff-product-engineer`, `ciso-reviewer` (auth state security) |
+| K1 | `staff-backend-engineer` | `staff-frontend-engineer` (client adaptation) |
+| K2 | `staff-backend-engineer` | `staff-sdet` (error-path tests), `staff-frontend-engineer` (UI surfacing) |
+| S1–S2 | `ciso-reviewer` | — |
+| S3–S5 | `ciso-reviewer` | `staff-backend-engineer` |
+| S6 | `ciso-reviewer` | `staff-platform-engineer` (provisioning) |
 
 ## Output format
 
