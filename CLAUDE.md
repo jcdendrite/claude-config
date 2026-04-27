@@ -52,9 +52,7 @@ specific private project, engagement, or private codebase. Categories:
   Default: if in doubt, strip it. When an example or commit message
   needs a tracker-ID-shaped placeholder, use `PROJ-<digits>` or
   `TICKET-<digits>` — both prefixes are reserved as placeholders
-  and pass the allowlist with any digit suffix. Don't obfuscate
-  the digits (e.g. to `NNN`); the placeholder is supposed to show
-  the shape of a real tracker ID, which obfuscation hides.
+  and pass the allowlist with any digit suffix.
 - **Internal URLs, hostnames, Slack channels, project domains**.
 - **Absolute filesystem paths** that embed project names
   (`~/Code/acme-platform/...`, `/home/foo/WorkForProject/...`).
