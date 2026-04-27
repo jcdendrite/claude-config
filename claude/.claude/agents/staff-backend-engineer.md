@@ -48,6 +48,8 @@ If the diff is purely frontend, purely infra config with no behavior change, or 
 
 **Server-side event emission** — cron jobs, webhooks, batch flows emitting product analytics events (subscription renewal, system-initiated flows) or APM events. Verify emission is present, fires on success AND retry paths, and matches the product event contract. Product event SEMANTICS are owned by `staff-product-engineer`; you own emission correctness at server callsites.
 
+**Per-request work shape** — inside request handlers and per-item loop bodies, flag DB / network calls invoked per element, synchronous blocking calls on async paths, and unbounded inputs without a server-side cap.
+
 **Application data-store schema design** — for every changed or new schema:
 - **Relational**: column type choice (`text` vs `varchar(n)` is engine-specific — Postgres treats them as equivalent and prefers `text`; MySQL / SQL Server differ; pick per the project's engine), `timestamp` vs `timestamptz` (default `timestamptz` unless a specific reason), `numeric` precision/scale on money, `uuid` vs `bigint` PK tradeoffs, `jsonb` vs dedicated columns, enum vs lookup table; constraint design (uniqueness, FK actions, check constraints); index coverage for application hot queries.
 - **NoSQL** (DynamoDB, Mongo, Cassandra, Cosmos, Firestore, etc.): partition-key choice and write-heat distribution, GSI / LSI design and write-cost economics, single-table vs multi-table tradeoffs, document-shape evolution and version-field discipline, secondary-index access patterns.

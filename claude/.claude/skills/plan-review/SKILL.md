@@ -160,9 +160,9 @@ D1. **Migration safety** — Does the plan describe how the migration runs on a 
 D2. **Migration reversibility** — Does the plan name a backup or reversal path for
     destructive operations (`DROP COLUMN`, `DROP TABLE`, type narrowing)?
 
-D3. **Deploy-time compatibility** — Does the plan account for the deploy window when
-    old code runs against new schema (or vice versa) — column renames, premature
-    `NOT NULL` constraints?
+D3. **Deploy-time compatibility** — Does the plan account for failures users hit
+    mid-deploy when old code runs against new schema (or vice versa) — column
+    renames, premature `NOT NULL` constraints?
 
 D4. **Access control on new objects** — Does the plan declare row security / grants
     on new tables, views, and functions exposed via auto-generated APIs?
