@@ -83,8 +83,8 @@ All four are loaded every session. Lovable docs warn that in very long
 conversations instructions can drift; the "always read" guarantee for
 AGENTS.md is the defense-in-depth.
 
-**`.lovable/*.md` is NOT loaded by Lovable** — these are repo-tracked
-notes for humans; visible knowledge comes only via the UI editor (source 1 above).
+**`.lovable/*.md` is NOT loaded by Lovable** — these files are repo-tracked
+copies of what's set in the UI editor (source 1 above); only the UI version loads.
 
 ## 3. Length targets
 
