@@ -83,6 +83,9 @@ All four are loaded every session. Lovable docs warn that in very long
 conversations instructions can drift; the "always read" guarantee for
 AGENTS.md is the defense-in-depth.
 
+**`.lovable/*.md` is NOT loaded by Lovable** — these files are repo-tracked
+copies of what's set in the UI editor (source 1 above); only the UI version loads.
+
 ## 3. Length targets
 
 Per [Claude Code Best Practices](https://code.claude.com/docs/en/best-practices),
@@ -96,11 +99,9 @@ and [Chroma's Context Rot research](https://research.trychroma.com/context-rot):
 
 ### Don't embed PR or ticket refs in always-loaded files
 
-Lines like `Precedent: PR #105` or `See TICKET-123 for context` belong
-in commit messages, PR descriptions, or plan files — not in CLAUDE.md
-or AGENTS.md. They rot the moment the next PR lands, and they cost
-per-session context budget without giving future sessions actionable
-signal. Future readers need the *rule* stated clearly.
+`Precedent: PR #105` and `See TICKET-NNN` rot the moment the next PR
+lands and cost per-session context budget. Put them in commit messages,
+PR descriptions, or plan files — state the rule, not the precedent.
 
 ## 4. When to duplicate vs. reference
 
