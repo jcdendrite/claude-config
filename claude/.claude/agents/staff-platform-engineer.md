@@ -16,21 +16,19 @@ If the diff is pure application logic with no operational surface delta, or a co
 
 ## Review angles — pipelines, IaC, shell
 
-**Environment parity** — change works the same on dev machines, CI runners, and production. OS, shell version, installed tools, case sensitivity, PATH.
+**Environment parity** — pipeline behavior differs across local / CI / staging / prod (OS, shell version, tools, PATH).
 
-**Trigger scope** — for CI workflows, do triggers (branch, path, actor, event) match job purpose? "Lint on PR" firing on bot commits wastes minutes; "deploy on push to main" firing on draft PRs is dangerous.
+**Trigger scope and concurrency** — workflow triggers (branch, path, actor, event) match job purpose; concurrency groups with `cancel-in-progress: true` don't kill unrelated important jobs via too-broad keys.
 
-**Concurrency groups** — workflow-level concurrency with `cancel-in-progress: true` can kill important running jobs. Check the group key scope.
+**Secret scoping** — secrets in `run:` echo, broad `env:` blocks, artifact uploads, command-line args (visible in `ps`); scope to the step that needs it.
 
-**Secret handling** — secrets in `run:` commands that echo, broad `env:` blocks, artifact uploads, command-line arguments (visible in `ps`). Scope to the step that needs it.
+**Workflow idempotency** — safe to re-run after partial failure (no unconditional creates, atomic state, cleanup on retry).
 
 **Artifact and action pinning** — third-party Actions pinned to commit SHA, not `@main`/`@v3` (mutable). `pull_request_target` misuse with PR-head checkout. Mutable container tags (`:latest` in production).
 
 **Runner trust** — self-hosted runners on public repos, `pull_request_target` + untrusted code, forks accessing secrets.
 
 **Terraform state** — remote backend configured, state locking, access control, `terraform apply` without plan review.
-
-**Idempotency of scripts/workflows** — safe to re-run after partial failure? Unconditional creates, non-atomic state updates, missing cleanup on retry.
 
 **Timeouts and resource limits** — `timeout-minutes` on jobs, unbounded retries, runaway bash `while` loops.
 

@@ -20,11 +20,13 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 
 **Optimistic mutation lifecycle (universal invariant)** — optimistic writes must: (a) cancel in-flight refetches first, (b) snapshot current state, (c) apply optimistic update, (d) on error, restore from snapshot — not a try/catch branch, (e) on settled, invalidate relevant queries, (f) the mutation function must throw on error so rollback fires. Ad-hoc optimistic writes outside a mutation lifecycle are a bug class. TanStack Query's `onMutate`/`onError`/`onSettled` is one canonical implementation; SWR, Apollo, custom reducers must express the same invariants.
 
-**Query contract mapping** — when the backend shape changes, do the client selector, type, and cache key all match? Co-owned with backend.
+**Query contract mapping** — when backend response shape changes, do client selectors, types, AND cache keys all match? Co-owned with backend.
 
-**Auth state transitions** — logged-in ↔ logged-out, token refresh, session expiry: does the UI handle transitions explicitly or show stale user data for a render before the redirect?
+**Auth state transitions** — logged-in ↔ logged-out, token refresh, session expiry — handle the transition explicitly or risk a stale-user-data render before the redirect.
 
-**Loading, error, empty (code-level)** — for every new or changed data-fetching path, are all three states handled, or only the happy path?
+**Per-state coverage on data-fetching paths** — loading, error, empty, success: all four states handled, not just the happy path.
+
+**Render stability and bundle hygiene** — inline literals in JSX props re-rendering children, missing list `key`s, un-memoized hot work; full-library imports where tree-shaking would suffice; unlazy-loaded images without intrinsic dimensions.
 
 **Routing and navigation** — route guards, scroll restoration, deep-linkable state, 404/unauthorized routes, programmatic vs declarative nav, back-button after mutation.
 
@@ -34,15 +36,11 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 
 **SSR / hydration** (where applicable) — hydration mismatches, client-only guards, server-safe imports, flash-of-unauthorized-content.
 
-**Accessibility (code-level)** — interactive elements with accessible names, keyboard operation for non-button click handlers, focus management in modals/drawers (focus trap, return-focus-on-close), skip links, live regions for async status, ARIA on the right role, `prefers-reduced-motion`, focus-visible, color contrast.
+**Accessibility beyond the obvious** — focus management in modals/drawers (focus trap, return-focus-on-close), skip links, live regions for async status, `prefers-reduced-motion`, focus-visible. The skill checklist covers named-element basics; this angle is the patterns assistive-technology users hit that authors miss.
 
 **Internationalization and typography** — hardcoded strings where i18n exists, date / number / currency formatting, `dir` for RTL, truncation on long strings, locale-specific input formats (postal codes, phone numbers).
 
 **Web Vitals** — LCP (largest contentful paint), CLS (layout shift — intrinsic image dimensions, reserve space), INP (interaction to next paint — main-thread work during user input).
-
-**Bundle and asset hygiene** — full-library imports where tree-shaking would suffice, large deps for one helper, unlazy-loaded images, missing `loading="lazy"` and intrinsic dimensions.
-
-**Render stability** — new inline object/array/function literals in JSX props forcing child re-renders, missing `key` on list items, expensive work not memoized in frequently-rendering components.
 
 **Client-side PII and token leakage** — tokens in `localStorage`, PII in analytics/Sentry breadcrumbs, sensitive data in URL query strings.
 

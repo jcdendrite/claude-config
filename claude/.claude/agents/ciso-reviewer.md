@@ -36,9 +36,7 @@ If the change is bounded to cosmetic-only edits (typo fixes, formatting, copy po
 
 **Secret lifecycle** — new tokens/keys: provisioning, rotation, revocation. Logged anywhere (full request bodies, error payloads, audit tables)?
 
-**Defense in depth** — more than one layer of enforcement. "The policy handles it" without an in-code check is single-layer.
-
-**Error messages** — leak internal IDs, stack traces, query text, existence-of-record signals an attacker could enumerate.
+**Defense in depth** — flag single-layer designs even when the one layer is correct. "RLS handles it" without an in-code check, or an in-code check without a policy backstop, is a finding regardless of whether the layer present is sound.
 
 **Audit log integrity** — for security-relevant events (privileged actions, access grants, secret changes): log entry written, immutable, tamper-evident.
 

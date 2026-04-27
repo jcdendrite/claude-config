@@ -130,23 +130,18 @@ B15. **Effort section reality** — If the plan has an "Estimated Effort" (or
 
 Apply when the plan touches CI/CD, workflows, deployment, or config.
 
-I1. **Environment parity** — Will the change work in all environments (local dev,
-    CI, staging, production)? Plans that work locally but fail in CI (different OS,
-    missing tools, permission differences) are common.
+I1. **Environment parity** — Does the plan work the same across local, CI, staging,
+    and production (OS, installed tools, permissions)?
 
-I2. **Idempotency** — Can the infrastructure change be applied multiple times safely?
-    Migrations, deployments, and config changes should not fail on re-run.
+I2. **Idempotency** — Can each infrastructure change be applied multiple times
+    safely (migrations, deployments, config rollouts)?
 
-I3. **Deployment ordering** — Does the plan require infrastructure changes to be
-    deployed in a specific order relative to application changes? A backend that
-    expects a new env var before it's provisioned, or a migration that must run
-    before new code reads the column, are ordering dependencies that the plan
-    should make explicit.
+I3. **Deployment ordering** — Does the plan make infrastructure ordering explicit
+    when application changes depend on it (env var provisioned before code reads it,
+    migration before new column access)?
 
-I4. **Secret and config provisioning** — Does the plan introduce new secrets,
-    environment variables, or config values? If so, does it specify where and how
-    they are provisioned in each environment? Missing a secret in production while
-    it works locally is a common deployment failure.
+I4. **Secret and config provisioning** — Does the plan specify where and how new
+    secrets / env vars / config values are provisioned in each environment?
 
 ## Domain: Data
 
@@ -157,28 +152,24 @@ DDL execution shape, and `staff-analytics-engineer` reviews the change for
 ELT-readiness when the schema feeds the warehouse. See **Item ownership** below
 for per-item routing.
 
-D1. **Migration safety** — Can the migration run on a live database without downtime?
-    Flag schema changes that take locks on large tables, backfills that run inside
-    transactions, or destructive operations without backup strategy. Also flag
-    `NOT NULL` additions without defaults, column type changes that require rewrites,
-    and `CREATE INDEX` without `CONCURRENTLY` on large tables.
+D1. **Migration safety** — Does the plan describe how the migration runs on a live
+    database without downtime — avoiding long-locking ALTERs, in-transaction
+    backfills, rewrite-triggering type changes, and `CREATE INDEX` without
+    `CONCURRENTLY` on large tables?
 
-D2. **Migration reversibility** — Can this migration be rolled back without data loss?
-    Flag destructive operations (`DROP COLUMN`, `DROP TABLE`, type narrowing) that
-    have no corresponding backup or reversal strategy.
+D2. **Migration reversibility** — Does the plan name a backup or reversal path for
+    destructive operations (`DROP COLUMN`, `DROP TABLE`, type narrowing)?
 
-D3. **Deploy-time compatibility** — During deployment, old code may run against the
-    new schema (or vice versa). Does the plan account for this? Renaming a column
-    that old code still references, or adding a `NOT NULL` constraint before new code
-    populates the column, will cause failures during the deploy window.
+D3. **Deploy-time compatibility** — Does the plan account for the deploy window when
+    old code runs against new schema (or vice versa) — column renames, premature
+    `NOT NULL` constraints?
 
-D4. **Access control on new objects** — Do new tables, views, or functions have
-    appropriate access control? A new table without RLS is accessible to any
-    authenticated user.
+D4. **Access control on new objects** — Does the plan declare row security / grants
+    on new tables, views, and functions exposed via auto-generated APIs?
 
-D5. **Index coverage** — Do new queries, new foreign keys, or new filter patterns
-    have supporting indexes? Flag new columns used in `WHERE`, `JOIN`, or
-    `ORDER BY` clauses that lack indexes, especially on tables expected to grow.
+D5. **Index coverage** — Does the plan provide indexes for new query patterns
+    (`WHERE` / `JOIN` / `ORDER BY` columns, foreign keys), especially on growing
+    tables?
 
 ## Domain: Frontend
 
@@ -230,24 +221,17 @@ S2. **Defense in depth** — Does the plan rely on a single control, or are ther
     layered defenses? A plan that says "RLS will handle it" without in-code checks
     is single-layer.
 
-S3. **Auth boundary coverage** — Does every new endpoint, RPC, or data path have
-    both authentication (who is the caller?) and authorization (can they do this
-    specific action on this specific resource)? Plans that mention "add auth" without
-    specifying both layers leave gaps.
+S3. **Auth boundary coverage** — Does the plan specify both authentication (who)
+    and authorization (can they) on every new endpoint, RPC, or data path?
 
-S4. **Privilege escalation paths** — Could a user exploit the planned changes to
-    gain access to another user's data or perform actions beyond their role? Check
-    for IDOR vectors, role-check gaps, and cases where user-supplied IDs are trusted
-    without ownership verification.
+S4. **Privilege escalation paths** — Does the plan close IDOR vectors, role-check
+    gaps, and ownership-verification gaps for user-supplied IDs?
 
-S5. **Data minimization** — Does the plan expose more data than necessary in API
-    responses, logs, or error messages? Check for full object returns where only
-    specific fields are needed, and for internal details (stack traces, query text,
-    internal IDs) leaking to callers.
+S5. **Data minimization** — Does the plan minimize exposure in API responses, logs,
+    and error payloads (full-object returns, stack traces, internal IDs)?
 
-S6. **Secret lifecycle** — If the plan introduces, rotates, or references secrets
-    (API keys, tokens, credentials), does it account for how they are provisioned,
-    where they are stored, and what happens when they expire or are compromised?
+S6. **Secret lifecycle** — Does the plan describe provisioning, storage, rotation,
+    and revocation for secrets it introduces or references?
 
 ## Exclusions — do NOT flag these
 
