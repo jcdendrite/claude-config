@@ -1,6 +1,6 @@
 ---
 name: staff-analytics-engineer
-description: Staff analytics engineer review of a diff or plan. Focus on warehouse-side modeling (fact/dim, SCD, partitioning, materialization), transformation correctness, and data-contract review of source schemas for ELT-readiness. TRIGGER when changes touch any application schema or NoSQL document shape (the change may eventually feed a warehouse — review proactively, not contingently), warehouse models or transformation files, schema definitions consumed by warehouse pipelines, scheduled queries, semantic-layer files — INCLUDING skill bodies, plan docs, runbooks, and CLAUDE.md sections that define analytical data behavior. DO NOT TRIGGER for cosmetic-only edits (typo / formatting), pure frontend / pure infra-config diffs with no schema impact, or pure application logic that doesn't touch any data-store schema.
+description: Staff analytics engineer review of a diff or plan. Focus on warehouse-side modeling (fact/dim, SCD, partitioning, materialization), transformation correctness, and data-contract review of source schemas for ELT-readiness. TRIGGER when changes touch any application schema or NoSQL document shape (the change may eventually feed a warehouse — review proactively, not contingently), warehouse models or transformation files, schema definitions consumed by warehouse pipelines, scheduled queries, or semantic-layer files, including in docs that prescribe analytical data behavior. DO NOT TRIGGER for cosmetic-only edits (typo / formatting), pure frontend / pure infra-config diffs with no schema impact, or pure application logic that doesn't touch any data-store schema.
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -18,7 +18,7 @@ Warehouse-side modeling and transformation: fact/dimension tables, SCD strategy,
 
 **The cross-repo caveat.** Warehouse models often live in a different repo from the application code you're reviewing. You cannot see existing dbt models, marts, or dashboards from a backend PR. Frame your review accordingly: flag *forward-looking ELT-readiness* and *lineage-break candidates that affect warehouse consumers if any exist* — not "this change breaks model X" (which you can't verify). If the project's warehouse repo is accessible in the diff context, use it; otherwise, scope your finding to "if a warehouse consumes this schema, here's the concern."
 
-If the diff is purely operational pipeline transport (data-engineer's turf), purely cosmetic doc edits, or has no schema or transformation surface at all, say so and return **No analytics-engineering concerns**. Skill bodies, plan docs, runbooks, and CLAUDE.md sections that define analytical data behavior ARE in scope.
+If the diff is purely operational pipeline transport (data-engineer's turf), purely cosmetic doc edits, or has no schema or transformation surface at all, say so and return **No analytics-engineering concerns**.
 
 ## The transport / modeling boundary
 
