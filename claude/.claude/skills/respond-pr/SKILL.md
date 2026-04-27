@@ -10,7 +10,11 @@ Fetch all review comments on the current branch's open pull request and address 
 
 ## Steps
 
-0. **Enable hook bypass.** Run `mkdir -p ~/.claude && touch ~/.claude/.respond-pr-active`. The `require-respond-pr.sh` PreToolUse hook checks for this marker and lets this skill's own `gh` commands through while the marker is fresh (<60 minutes old). Without this step, every `gh api` call below will be blocked by the very gate that redirected you here.
+0. **Enable hook bypass.** Run:
+   ```
+   SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/.respond-pr-active.d" && touch "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
+   ```
+   The `require-respond-pr.sh` PreToolUse hook bypasses while THIS session's marker is fresh (<60 min) and refreshes its mtime on each bypass so long runs don't hit the staleness cutoff. Per-session keying prevents parallel respond-pr sessions from thrashing on cleanup or leaking bypass to unrelated sessions. If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; do not proceed without the marker, since every gated `gh` call below will be blocked.
 1. Identify the PR number for the current branch: `gh pr view --json number -q '.number'`
 2. Fetch **all three** types of comments. Two failure modes Claude commonly hits: (a) fetching only the first type and missing the other two; (b) fetching without `--paginate` and silently truncating at 30 results per type. Both produce reviews that look complete but miss real feedback.
    - **Inline file comments:** `gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate`
@@ -23,7 +27,11 @@ Fetch all review comments on the current branch's open pull request and address 
    - If it's a question or discussion point, draft a clear response
 4. Post replies using the GitHub API with `in_reply_to` (use `-F` for integer IDs)
 5. Commit and push any code changes in a single commit
-6. **Remove the hook bypass marker:** `rm -f ~/.claude/.respond-pr-active`. If the skill errors out before reaching this step, don't manually clean up — the hook's 60-minute staleness cutoff handles orphaned markers automatically.
+6. **Remove this session's hook bypass marker:**
+   ```
+   SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
+   ```
+   Removes only this session's file. If the skill errors out before reaching this step, don't manually clean up — the hook's 60-minute staleness cutoff handles the orphan automatically.
 
 ## Attribution
 

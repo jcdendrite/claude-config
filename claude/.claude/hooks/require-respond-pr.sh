@@ -7,12 +7,19 @@
 # skill fetches all three AND enforces the [Claude Code] attribution prefix
 # on replies.
 #
-# Bypass: the /respond-pr skill touches ~/.claude/.respond-pr-active at its
-# start and removes it at the end. While the marker exists AND is fresh
-# (<60 min old), this hook lets gh commands through so the skill itself
-# doesn't recurse into its own gate. The 60-minute staleness cutoff
-# prevents an orphaned marker from permanently disabling the gate if the
-# skill errored out mid-execution.
+# Bypass: the /respond-pr skill writes a marker at
+# ~/.claude/.respond-pr-active.d/<session_id> at its start and removes it at
+# the end. While THIS session's marker exists AND is fresh (<60 min old),
+# this hook lets gh commands through so the skill itself doesn't recurse
+# into its own gate. Per-session keying (vs. a singleton path) prevents two
+# parallel respond-pr sessions from thrashing on cleanup, and prevents one
+# session's marker from leaking bypass to unrelated parallel sessions —
+# both of which the singleton design did not handle.
+#
+# The hook refreshes the marker's mtime on each bypass so a long-running
+# skill invocation (large PR, many comments) doesn't hit the 60-min
+# staleness cutoff mid-run. The cutoff still applies to genuinely orphaned
+# markers from a session that errored before reaching the cleanup step.
 
 INPUT=$(cat)
 TOOL=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
@@ -24,11 +31,16 @@ fi
 
 COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
 
-# Bypass: fresh marker from the /respond-pr skill means we're already inside
-# the skill and should let its own gh commands through.
-MARKER="$HOME/.claude/.respond-pr-active"
-if [ -f "$MARKER" ] && [ -n "$(find "$MARKER" -mmin -60 2>/dev/null)" ]; then
-  exit 0
+# Bypass: fresh marker for THIS session's session_id means we're inside the
+# skill and should let its own gh commands through. Empty session_id (older
+# Claude Code versions, payload-schema drift) falls through to the gate.
+SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
+if [ -n "$SESSION_ID" ]; then
+  MARKER="$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
+  if [ -f "$MARKER" ] && [ -n "$(find "$MARKER" -mmin -60 2>/dev/null)" ]; then
+    touch "$MARKER" 2>/dev/null
+    exit 0
+  fi
 fi
 
 # Match PR comment read/write patterns. Three forms:
