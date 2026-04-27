@@ -205,6 +205,18 @@ diff fresh from its own perspective; passing a summarized review as a
 substitute for the source drops the signal that specialist review is
 designed to catch.
 
+The Change type column keys on what the change *does for an operator
+or consumer*, not on which file types changed. A markdown-only diff
+can still cross a runtime-config or CI/CD boundary if it establishes,
+documents, restructures, or formalizes the taxonomy operators use to
+provision secrets, identify deploy targets, or reason about config
+layering. When a row's trigger language is plausibly in scope but the
+file types don't make it obvious, default to firing the named
+reviewers — they self-scope against the diff and return early when the
+change is out of their lane. The cost is one subagent turn returning
+"no concerns"; the upside is catching impacts the dispatcher can't
+see from file paths alone.
+
 Evaluate the change against these cross-boundary patterns. Update this
 table as new patterns emerge.
 
