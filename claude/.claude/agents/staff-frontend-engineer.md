@@ -20,6 +20,8 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 
 **Optimistic mutation lifecycle (universal invariant)** — optimistic writes must: (a) cancel in-flight refetches first, (b) snapshot current state, (c) apply optimistic update, (d) on error, restore from snapshot — not a try/catch branch, (e) on settled, invalidate relevant queries, (f) the mutation function must throw on error so rollback fires. Ad-hoc optimistic writes outside a mutation lifecycle are a bug class. TanStack Query's `onMutate`/`onError`/`onSettled` is one canonical implementation; SWR, Apollo, custom reducers must express the same invariants.
 
+**Async cancellation and effect lifecycle** — `useEffect` cleanup must abort or no-op pending work to avoid stale-closure writes / setState-on-unmounted; user-initiated requests need an `AbortController` so a faster keystroke doesn't lose to a slower stale response (request race); long-running effects need a cancellation token that the cleanup actually triggers.
+
 **Query contract mapping** — when backend response shape changes, do client selectors, types, AND cache keys all match? Co-owned with backend.
 
 **Auth state transitions** — logged-in ↔ logged-out, token refresh, session expiry — handle the transition explicitly or risk a stale-user-data render before the redirect.
