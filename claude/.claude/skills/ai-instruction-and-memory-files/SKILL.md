@@ -7,8 +7,9 @@ description: >
   index + topic files): precedence, duplication rules, length targets,
   the `@AGENTS.md` import pattern Anthropic officially endorses, and the
   split between user-written instructions and Claude-written memory.
-  TRIGGER when: editing CLAUDE.md or AGENTS.md, editing `.lovable/*.md`,
-  creating a new instruction file, creating, editing, auditing, or
+  TRIGGER when: editing CLAUDE.md or AGENTS.md, editing `.lovable/*.md`
+  (NOT auto-loaded by Lovable — see §2), creating a new instruction file,
+  creating, editing, auditing, or
   pruning Claude Code auto-memory in `~/.claude/projects/*/memory/`,
   deciding whether a rule belongs in CLAUDE.md vs auto-memory,
   evaluating whether rules should be duplicated across files, or
@@ -82,6 +83,14 @@ Effective order:
 All four are loaded every session. Lovable docs warn that in very long
 conversations instructions can drift; the "always read" guarantee for
 AGENTS.md is the defense-in-depth.
+
+**`.lovable/*.md` is NOT in this loaded set.** Despite the directory
+name, files under `.lovable/` are version-controlled human reference
+only — Lovable does not auto-load them. Knowledge becomes visible per
+session only by adding it through the Lovable UI's project-knowledge
+editor (source 1 above). Don't design guardrails that rely on
+`.lovable/*.md` being loaded — for guardrail placement see §4 (when to
+duplicate across surfaces) and §5 (decision flow).
 
 ## 3. Length targets
 
