@@ -27,10 +27,12 @@ Find the plan to review. Check, in order:
 Read the plan and classify which domains it touches:
 
 - **Infrastructure**: CI/CD, workflows, deployment, hosting, config files
-- **Data**: Database migrations, schema changes, indexes, RLS policies
-- **Frontend**: React components, hooks, client-side state, UI behavior
-- **Backend**: Edge functions, API routes, server-side logic, shared modules
-- **Security**: Auth, authorization, token handling, secret management, data exposure
+- **Data infrastructure**: Database migrations, schema DDL, RLS policies, CDC / change-stream config, ETL/ELT pipelines, warehouse ingestion connectors, raw landing schemas, schema-drift handling
+- **Application data**: Application schema design (relational tables, NoSQL document/item shape, partition keys, GSI/LSI design, application access patterns) — this routes through Backend
+- **Analytics modeling**: Warehouse-side modeling (fact/dim, SCD, partitioning, materialization, dbt-shape transformations, semantic layer, scheduled queries) — and source-schema review for ELT-readiness when backend schema changes feed the warehouse
+- **Frontend**: Client components, hooks, client-side state, UI behavior, routing, forms, optimistic mutations
+- **Backend**: Server-side code (HTTP/RPC handlers, edge functions, background jobs, queue consumers, SDK integrations, shared utilities) AND application data-store schema design
+- **Security**: Authentication or authorization, token handling, secret management, data exposure, RLS / RBAC / ACL changes
 
 ## Step 2 — Evaluate
 
@@ -148,7 +150,12 @@ I4. **Secret and config provisioning** — Does the plan introduce new secrets,
 
 ## Domain: Data
 
-Apply when the plan touches database schema, migrations, or data.
+Apply when the plan touches database schema, migrations, pipelines, or warehouse
+modeling. Schema-change plans are reviewed three ways: `staff-backend-engineer`
+owns the design, `staff-data-engineer` owns the operational / pipeline impact and
+DDL execution shape, and `staff-analytics-engineer` reviews the change for
+ELT-readiness when the schema feeds the warehouse. See **Item ownership** below
+for per-item routing.
 
 D1. **Migration safety** — Can the migration run on a live database without downtime?
     Flag schema changes that take locks on large tables, backfills that run inside
@@ -253,29 +260,89 @@ S6. **Secret lifecycle** — If the plan introduces, rotates, or references secr
 
 ## Reviewer roles
 
-When spawning reviewer agents, adopt the persona that matches each detected
-domain. Different personas catch different things — a security reviewer thinks
+For multi-domain plans, spawn the matching reviewer subagents via the
+Agent tool — one per detected domain — and reconcile their findings.
+Different personas catch different things: a security reviewer thinks
 about attack vectors while a backend reviewer thinks about API contracts.
+Spawning real subagents (not in-context role-play) keeps each reviewer
+isolated to its scope and restricts it to read-only tools.
 
-| Domain | Reviewer role | Focus |
-|--------|--------------|-------|
-| Backend | Staff backend engineer | API contracts, error handling, idempotency, retry semantics, service boundaries, SDK behavior |
-| Frontend | Staff frontend engineer | Component patterns, state management, data fetching and cache consistency, accessibility, UX impact |
-| Security | CISO | Threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth |
-| Data | Staff data engineer | Migration safety, schema design, reversibility, deploy-time compatibility, index coverage, access control on new objects |
-| Infrastructure | Staff DevOps engineer | CI/CD pipelines, IaC, deployment ordering, environment parity, secret provisioning |
-| Testing | Senior SDET | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements |
-| Product | Staff product engineer | Whether the plan solves the actual user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing |
+| Domain | Agent | Focus |
+|--------|-------|-------|
+| Backend | `staff-backend-engineer` | API contracts, error handling, idempotency, retry semantics, service boundaries, SDK behavior, application data-store schema design (relational + NoSQL) |
+| Frontend | `staff-frontend-engineer` | Component patterns, state management, data fetching and cache consistency, accessibility, i18n, UX impact |
+| Security | `ciso-reviewer` | Threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth |
+| Data infrastructure | `staff-data-engineer` | Migration pipeline impact, DDL execution shape, CDC / change-stream config, ETL/ELT pipelines, warehouse ingestion transport, schema-drift detection, catalog / lineage tracking |
+| Analytics modeling | `staff-analytics-engineer` | Warehouse-side modeling (fact/dim, SCD, partitioning, materialization), transformation correctness, source-schema review for ELT-readiness |
+| Infrastructure | `staff-platform-engineer` | CI/CD, IaC, shell discipline, deployment ordering, secret provisioning; observability coverage, alerting, SLO impact, runbook linkage, load characteristics, cost / operational footprint; deploy-window ordering and lock-budget for migrations |
+| Testing | `staff-sdet` | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements; production code with non-trivial logic that lacks tests |
+| Product | `staff-product-engineer` | Whether the plan solves the actual user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing, telemetry event semantics |
 
-For multi-domain plans, evaluate from each relevant persona. Always include the
-Product persona when the plan changes user-facing behavior. Always include the
-CISO persona when the plan touches auth, authorization, secrets, tokens, data
-exposure, logging of sensitive data, third-party data sharing, or infrastructure
-permissions.
+Spawn each relevant reviewer in parallel. Always include
+`staff-product-engineer` when the plan changes user-facing behavior.
+Always include `ciso-reviewer` when the plan touches authentication or
+authorization, secrets, tokens, data exposure, logging of sensitive
+data, third-party data sharing, or infrastructure permissions.
 
-Project-level plan-review skills may extend this table with project-specific
-reviewer roles and focus areas, but must not remove or narrow the CISO trigger
-conditions.
+When invoking a reviewer, pass the plan scope, the phase or section
+under review, and the items routed to that reviewer per the **Item
+ownership** table below. Each agent returns a findings-only output;
+reconcile the set and present a combined verdict.
+
+Project-level plan-review skills may extend this table with
+project-specific reviewer roles and focus areas, but must not remove or
+narrow the `ciso-reviewer` trigger conditions.
+
+## Item ownership
+
+Routes each Base checklist item and each Domain checklist item to the
+reviewer subagent(s) that file findings on it. The checklists above
+define **what to look for**; this table defines **who looks**. Bold
+shorthands match the item title in the body; IDs are the dispatcher's
+primary key.
+
+When in doubt, this table wins over inline mentions elsewhere.
+**Primary owner** is the reviewer expected to file findings on the
+item; **co-owners** are spawned where the item touches their turf.
+
+The dispatcher's job is coarse — fire the relevant reviewers based on
+which domains the plan touches. Each agent self-scopes against the
+plan content and returns early ("No X concerns") when the work is out
+of its lane. Trust the agents; don't second-guess at the dispatcher.
+
+| Item | Primary owner | Co-owners |
+|------|---------------|-----------|
+| **B1. Unstated assumptions** | `staff-backend-engineer` (runtime / SDK assumptions) | `staff-platform-engineer` (CI / build tools) |
+| **B2. Missing consumer analysis** | `staff-backend-engineer` (API consumers) | `staff-frontend-engineer`, `staff-product-engineer`, `staff-data-engineer` (per consumer type) |
+| **B3. Breaking intermediate states** | `staff-backend-engineer`, `staff-data-engineer` | `staff-platform-engineer` (deploy-window) |
+| **B4. Unresolved external dependencies** | `staff-backend-engineer` | — |
+| **B5. Evidence** | judgment (any reviewer) | — |
+| **B6. Proportionality** | judgment (any reviewer) | — |
+| **B7. Scope creep** | judgment (any reviewer) | — |
+| **B8. Missing scope** | `staff-product-engineer` (user-facing gaps), `staff-sdet` (test gaps) | `staff-data-engineer`, `staff-platform-engineer` (ops gaps) |
+| **B9. Phase independence** | `staff-platform-engineer` | `staff-backend-engineer` |
+| **B10. Test realism** | `staff-sdet` | `staff-product-engineer` (user-flow realism) |
+| **B11. Rollback strategy** | `staff-data-engineer`, `staff-platform-engineer`, `staff-backend-engineer` | `staff-sdet` (testability of rollback) |
+| **B12. Dependency risk** | `staff-backend-engineer` (runtime deps), `staff-platform-engineer` (CI / build deps) | — |
+| **B13. Ambiguous instructions** | judgment (any reviewer) | — |
+| **B14. Missing decision rationale** | `staff-product-engineer` (user-impact decisions) | judgment (others) |
+| **B15. Effort section reality** | judgment (any reviewer) | — |
+| **I1–I4. Infrastructure** (env parity, idempotency, deployment ordering, secret/config provisioning) | `staff-platform-engineer` | `staff-data-engineer` (I2 migration-level idempotency); `ciso-reviewer` (I4 secret threat framing) |
+| **D1. Migration safety** | `staff-data-engineer` (pipeline impact, DDL form) | `staff-backend-engineer` (correctness), `staff-platform-engineer` (deploy-window, lock-budget) |
+| **D2. Migration reversibility** | `staff-data-engineer` | `staff-backend-engineer` |
+| **D3. Deploy-time compatibility** | `staff-data-engineer` | `staff-backend-engineer`, `staff-platform-engineer` |
+| **D4. Access control on new objects** | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
+| **D5. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
+| **F1. User-facing impact** | `staff-frontend-engineer` | `staff-product-engineer` |
+| **F2. State management** | `staff-frontend-engineer` | — |
+| **F3. Query contract mapping** | `staff-frontend-engineer` | `staff-backend-engineer`, `staff-product-engineer` (user-visible drift) |
+| **F4. Loading / error / empty states** | `staff-frontend-engineer` (implementation) | `staff-product-engineer` (UX-matches-spec), `staff-sdet` (per-state coverage) |
+| **F5. Auth state transitions** | `staff-frontend-engineer` | `staff-product-engineer`, `ciso-reviewer` (auth state security) |
+| **K1. Contract compatibility** | `staff-backend-engineer` | `staff-frontend-engineer` (client adaptation) |
+| **K2. Error handling completeness** | `staff-backend-engineer` | `staff-sdet` (error-path tests), `staff-frontend-engineer` (UI surfacing) |
+| **S1–S2. Threat model + defense in depth** | `ciso-reviewer` | — |
+| **S3–S5. Auth boundary, privilege escalation, data minimization** | `ciso-reviewer` | `staff-backend-engineer` |
+| **S6. Secret lifecycle** | `ciso-reviewer` | `staff-platform-engineer` (provisioning) |
 
 ## Output format
 

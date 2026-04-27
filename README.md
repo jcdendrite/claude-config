@@ -44,6 +44,21 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **`/ai-instruction-and-memory-files`** — how AI coding agents load instruction files (CLAUDE.md, AGENTS.md, Cursor rules, Lovable knowledge) and Claude Code auto-memory: precedence, duplication rules, length targets, import patterns.
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context.
 
+### Reviewer subagents
+
+Eight stack-agnostic reviewer personas in `claude/.claude/agents/`, spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`).
+
+- **`ciso-reviewer`** — threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth.
+- **`staff-backend-engineer`** — API contracts, error handling, idempotency, retry semantics, service boundaries; AND application data-store schema design (relational + NoSQL): partition keys, GSI/LSI, document shape, single-table vs multi-table, index coverage for app queries.
+- **`staff-frontend-engineer`** — components, state, data fetching, cache consistency, routing, forms, accessibility, Web Vitals, i18n, client-side analytics emission.
+- **`staff-data-engineer`** — operational data infrastructure across all stores: migration pipeline impact, DDL execution shape, CDC / change-stream config, ETL/ELT pipelines, warehouse ingestion transport, schema-drift detection, catalog / lineage tracking.
+- **`staff-analytics-engineer`** — warehouse-side modeling (fact/dim, SCD, partitioning, materialization), transformation correctness, source-schema review for ELT-readiness from a data-contract consumer perspective.
+- **`staff-platform-engineer`** — CI/CD, IaC, shell, deployment ordering, secret provisioning; observability coverage, alerting, SLO impact, runbook linkage, load, cost; deploy-window ordering and lock-budget on migrations.
+- **`staff-product-engineer`** — spec-to-user-problem fidelity, critical spec reading, telemetry semantics, adjacent-regression, backward compat, accessibility-as-spec-fidelity.
+- **`staff-sdet`** — testability of the design, pyramid shape, edge cases, mock design, fixture realism, security-invariant coverage, production code that lacks tests.
+
+Schema-change diffs nominally route three ways — `staff-backend-engineer` (designs), `staff-data-engineer` (operational / pipeline impact, DDL shape), `staff-analytics-engineer` (ELT-readiness). Trigger discipline in the skill bodies prevents three-persona fire on trivial additive changes.
+
 ### Other
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
@@ -168,6 +183,40 @@ pytest claude/.claude/hooks/tests/
 ```
 
 CI runs this on every PR and main push via `.github/workflows/hooks.yml`.
+
+## Designing reviewer personas
+
+Three operations on the persona roster, with different decision criteria. **Bias against spawn.** Persona count grows linearly; co-ownership cross-references grow combinatorially.
+
+**Extend** — add review angles to an existing persona. Cheap. Default move.
+- *When*: the new angles align with the persona's existing mental model and the persona has room (file under context budget, ownership lines uncluttered).
+- *Example*: adding NoSQL document-shape and partition-key design to `staff-backend-engineer`. Backend already thinks about access patterns and query shape — partition keys are adjacent.
+
+**Split** — carve a slice out of an existing persona into a new one.
+- *When*: the persona has two genuinely distinct mental models crammed in, OR file is exceeding context budget, OR co-ownership lines are tangled because one persona owns too much.
+- *Cost*: ownership lines redrawn, persona files reshaped, dispatcher wiring updated, co-ownership clauses across other personas may shift.
+- *Example*: carving warehouse modeling out of `staff-data-engineer` into `staff-analytics-engineer`. OLTP migration-safety reasoning and dimensional modeling are different muscle memory.
+
+**Spawn from scratch** — create a persona for a domain none of the existing ones cover.
+- *When*: the gap is chronic (diffs in this category consistently go un-reviewed), the new domain has its own canonical body of failure modes, AND extending an existing persona would dilute that persona's mental model.
+- *Cost*: full new persona file, dispatcher entry, co-ownership lines woven into adjacent personas. Higher than split because there's no pre-existing scope to inherit.
+
+Decision tree, in order:
+1. **Can an existing persona's scope absorb this without diluting?** If yes → extend.
+2. **Is this a slice of an existing persona that has grown two distinct mental models?** If yes → split.
+3. **Is this a chronic gap that no existing persona covers, with its own canonical failure-mode body?** If yes → spawn.
+
+Splits and spawns must come with explicit ownership-line updates in adjacent personas — every co-ownership line touching the changed persona is a candidate edit.
+
+### Roles intentionally not in the roster
+
+For an AI-driven code-review system, the right criterion for adding a persona is **distinct review heuristics that an AI reviewer can act on from a diff** — not industry-headcount-mimicry. Some industry-recognized roles are deliberately absent because the part of their work that survives translation to AI review is already covered, or because their distinctive value depends on signals an AI reviewer doesn't have:
+
+- **Database Reliability Engineer (DBRE)** — distinctive value in human teams is *live-system observability*: production metrics in real time, replication-lag trends, query plan stability post-migration, buffer-cache impact, page-size effects at scale. None of that is available to an AI reviewer working from a diff. The static heuristics that survive — DDL execution shape, lock-cost, deploy-window ordering — are already covered by `staff-data-engineer` (DDL form authority) and `staff-platform-engineer` (deploy-window, lock-budget). A separate DBRE persona would just rename a slice of those without adding a paradigm an AI can apply.
+- **Data platform engineer** — warehouse infrastructure ownership, orchestration tooling operation (Airflow / Dagster runtime), catalog tooling operation. Currently absorbed into `staff-data-engineer` (pipeline transport / observability) and `staff-platform-engineer` (orchestration as ops surface). Splitting it out would help only at scales where the warehouse infra is its own engineering domain with reviews distinct from app-side data engineering.
+- **Data steward / governance** — PII tagging policy, downstream-consumer contracts, data-contract enforcement. Largely a non-engineering function in most orgs (legal / compliance / data-governance). `staff-data-engineer` flags PII-shaped column candidates conditionally rather than asserting governance policy; the policy itself stays human-owned.
+
+If a project's review pattern consistently surfaces gaps in these areas — and the AI can act on signals visible in the diff — the right response is to **spawn** (per the decision tree above) with explicit ownership-line updates in adjacent personas. Don't overload an existing persona just because the work is "data-shaped."
 
 ## Machine-specific overrides
 
