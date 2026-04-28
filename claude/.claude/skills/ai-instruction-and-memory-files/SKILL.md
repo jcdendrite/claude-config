@@ -97,6 +97,14 @@ and [Chroma's Context Rot research](https://research.trychroma.com/context-rot):
 - Attention decay hits the **middle** of long files — "lost in the middle." Burying critical rules past line ~150 reduces their effective load.
 - Compliance with prose rules tops out around **70%**. Structural tests and hooks hit 100%. When a rule can be encoded as either, prefer the mechanical enforcement.
 
+### The behavior test
+
+Every line should change Claude's behavior on at least one realistic
+input. If removing the line wouldn't change any behavior, cut it.
+Specific incident references, editorial meta-commentary, and narrative
+case studies almost always fail this test; rationale that arms Claude
+for an unenumerated edge case almost always passes.
+
 ### Don't embed PR or ticket refs in always-loaded files
 
 `Precedent: PR #105` and `See TICKET-123` rot the moment the next PR
