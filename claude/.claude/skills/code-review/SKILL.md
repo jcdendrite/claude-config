@@ -94,13 +94,13 @@ are green.
 
 ## Domain: Data
 
-18. **Migration reversibility** — Can this migration be rolled back without data loss? Flag destructive operations (`DROP COLUMN`, `DROP TABLE`, type narrowing) that have no corresponding backup or reversal strategy.
+18. **Migration reversibility** — Destructive operations (`DROP COLUMN`, type narrowing, table drops) need a backup or reversal path.
 
-19. **Index coverage** — Do new queries or new foreign keys have supporting indexes? Flag new columns used in WHERE, JOIN, or ORDER BY clauses that lack indexes, especially on tables expected to grow.
+19. **Index coverage** — New `WHERE` / `JOIN` / `ORDER BY` columns and foreign keys need supporting indexes, especially on growing tables.
 
-20. **Lock safety** — Could this migration take a long-running lock on a large table? `ALTER TABLE` with defaults, `CREATE INDEX` without `CONCURRENTLY`, and backfills inside the migration are suspects.
+20. **Lock safety** — Flag long-locking DDL on large tables — `ALTER` with defaults, `CREATE INDEX` without `CONCURRENTLY`, in-migration backfills.
 
-21. **RLS and access control on new tables** — Do new tables have RLS enabled and appropriate policies? A new table with no RLS is accessible to any authenticated user via the PostgREST API.
+21. **RLS and access control on new tables** — New tables exposed via auto-generated APIs (PostgREST, Hasura, generated resolvers) need row-security enabled with policies.
 
 ## Domain: Frontend
 
@@ -114,11 +114,11 @@ are green.
 
 ## Domain: Backend
 
-26. **Auth boundary coverage** — Does every new endpoint or RPC have both authentication (who is the caller?) and authorization (can they do this?)? Check that auth checks are not bypassable by hitting the endpoint directly rather than through the expected UI flow.
+26. **Auth boundary coverage** — Every new endpoint or RPC needs both authentication (who) and authorization (can they) — and the check must not be bypassable by hitting the endpoint outside the UI flow.
 
-27. **Input validation at system boundaries** — Is user input validated/sanitized before use in SQL queries, shell commands, file paths, or external API calls? Framework-provided parameterization counts; string concatenation does not.
+27. **Input validation at system boundaries** — Validate/sanitize user input before SQL, shell, file paths, or outbound API calls — framework parameterization counts, string concatenation does not.
 
-28. **Error response leakage** — Do error responses expose internal details (stack traces, internal IDs, database error messages, file paths) to the caller? Internal errors should be logged server-side and return a generic message to the client.
+28. **Error response leakage** — Error responses must not expose internal details (stack traces, internal IDs, DB error text, file paths) — log server-side, return generic to the client.
 
 29. **Dependency upgrades** — Does the change upgrade a runtime or build dependency? Read the changelog for breaking changes and behavioral differences. Check for peer dependency conflicts and, for frontend dependencies, bundle size regression.
 

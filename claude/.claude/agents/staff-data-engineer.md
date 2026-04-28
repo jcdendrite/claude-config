@@ -42,8 +42,6 @@ Migration safety is **three-way co-owned** with `staff-backend-engineer` (writes
 
 **PII column candidates** — flag new columns shaped like PII (email, phone, address, government-ID-shaped, free-text-likely-to-contain-PII) for the team to evaluate tagging or field-level encryption. Do not assert what the catalog or governance policy must do — flag the candidate.
 
-**RLS / row-security policy coverage** — new tables without row security are accessible to any authenticated client via auto-exposed APIs (PostgREST, Hasura, generated resolvers). Flag missing policies. Co-owned with `ciso-reviewer` (you own enforceability; they own threat framing).
-
 **Type co-review carve-out** — backend owns column type choice, but you flag three categories with downstream pipeline implications:
 - `timestamptz` vs `timestamp` (CDC and replication correctness footgun)
 - `numeric` precision/scale on money columns (downstream warehouse cast pain)
