@@ -40,6 +40,18 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/require-stow-reminder.sh",
+            "if": "Bash(gh pr create *)",
+            "statusMessage": "Checking stow reminder..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-stow-reminder.sh",
+            "if": "Bash(gh pr edit *)",
+            "statusMessage": "Checking stow reminder..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/require-respond-pr.sh",
             "statusMessage": "Checking respond-pr gate..."
           },
