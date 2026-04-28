@@ -225,25 +225,31 @@ After the implementation-fitness gate and the checklist review,
 consider whether the change crosses system boundaries in a way that
 exceeds your own judgment depth.
 
-You are the principal-engineer-generalist running this skill. The
-specialist subagents below have narrower lane depth, not broader
-context. **Form your own ripple judgment first** using the table as
-a reference for what boundaries exist in the change.
+You are the principal-engineer-generalist running this skill. Code
+review is the last gate before changes ship — a specialist miss is
+a regression in production. Be more conservative about self-judging
+than at plan-review, where misses are recoverable.
 
-Spawn a specialist only when at least one applies:
+**Form your own ripple judgment first** using the table as a reference
+for what boundaries exist. Spawn a specialist only when one of these
+applies (same escalation logic as plan-review's Reviewer roles —
+repeated because skills load on demand, not because the rule differs):
 
-- **Below-staff-level depth in a specific domain.** Specialized kernels
-  of expertise — query-planner internals, cryptography primitives,
-  fine-grained accessibility, kernel-level concurrency — not "general
-  knowledge in domain X."
-- **High-stakes domain boundary.** RLS, auth, billing, payment, data
-  migration, privileged operations. A specialist's second pair of eyes
-  is worth the spawn even at staff generalist depth.
-- **Holistic-reasoning overload.** Multi-domain ripple where you
-  genuinely can't hold all the lanes in working memory at once.
-- **Convergence-as-design-tell** from a prior round (see Reconciliation
-  below).
-- **Explicit user request** for specialist review.
+- **Below-staff-level depth** in a specialized kernel (cryptography,
+  query-planner internals, fine-grained accessibility, kernel-level
+  concurrency, etc. — not "general domain knowledge").
+- **High-stakes domain boundary**: RLS, auth, billing, payment, data
+  migration, privileged operations.
+- **Holistic-reasoning overload** across multiple domains.
+- **Convergence-as-design-tell** from a prior round (see Reconciliation).
+- **Explicit user request**.
+
+Always spawn `ciso-reviewer` when the change touches authentication or
+authorization, secrets, tokens, data exposure, logging of sensitive
+data, third-party data sharing, or infrastructure permissions —
+high-stakes-boundary case is non-optional at the last gate. Always
+spawn `staff-product-engineer` when the change alters user-facing
+behavior.
 
 Spawn per question, not per file-path domain — "change touches
 `.github/`" isn't enough; the question needs a specific shape.
@@ -289,6 +295,9 @@ to verify the checkout flow in CheckoutPage.tsx still enforces
 ownership after the new validation" is actionable.
 
 ## Reconciliation
+
+*Same logic as plan-review's Reconciliation — repeated because skills
+load on demand.*
 
 After spawned reviewers return findings, pause if findings concentrate
 on a single surface — the same feature, implementation detail, or
