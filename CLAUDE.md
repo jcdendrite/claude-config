@@ -15,13 +15,10 @@ non-read-only git operations must run inside a linked worktree
 `git pull` — no re-install needed.
 
 **Footgun: never recommend `>>` writes through stow-symlinked files.**
-Files under `~/.claude/` (like `~/.claude/CLAUDE.md`) are symlinks to
-tracked files in this repo. Telling a user to
-`echo "..." >> ~/.claude/CLAUDE.md` writes through the symlink and
-silently stages changes to the public repo. To add Claude-context for
-a feature, edit the committed file directly via PR. For per-user
-private context, use a non-stowed location like
-`~/.claude/private-projects.md` (opt-in, not part of the stow tree).
+Files under `~/.claude/` (e.g. `~/.claude/CLAUDE.md`) are symlinks to
+tracked files in this repo — appending via `>>` writes through the
+symlink and silently stages changes to the public repo. Edit the
+committed file directly via PR.
 
 ## AI agents: don't merge your own PRs
 
@@ -34,14 +31,11 @@ the PR, not landing it.
 ## When editing a skill, run the skill on its own diff
 
 A skill's body states the rules it enforces; an edit can violate
-those rules unless you re-read the body with the diff in mind.
-Before committing a skill change, load the skill into context and
-check the diff against its sections.
-
-The common failure mode: an edit adds prose to a skill that argues
-against prose-heavy rules (or a long body to a skill that targets
-brevity, etc.) — exactly the kind of thing the skill would flag if
-applied to its own diff.
+those rules unless you re-read the body with the diff in mind. Before
+committing a skill change, load the skill into context and check the
+diff against its sections — e.g. an edit adding prose to a skill that
+argues for brevity is the kind of thing the skill would flag against
+itself.
 
 ## Redact private-project-identifying content
 
@@ -86,13 +80,6 @@ OAuth tokens, service-role keys, `.env` contents, database URLs with
 credentials, private-key material. The repo has no legitimate use for
 any of these. If one ever lands, rotate it *then* rewrite history.
 
-### Check all three surfaces before committing
-
-1. **File content** being committed.
-2. **Commit message body** — the most common leak site, because it's
-   where motivation-context gets narrated.
-3. **PR title and description**.
-
 ### When a skill is surfaced by real-world work, abstract first
 
 Skills are often motivated by a concrete incident. The insight belongs
@@ -105,37 +92,12 @@ in this repo; the incident specifics do not.
 - ❌ "Surfaced during the ExampleCo WIDGET-123 review, where the mid-merge
   index was silently corrupted..."
 
-If a draft commit, skill body, or PR description contains a private-
-project reference, fix it **before** committing — do not let history
-ship with the reference even if the skill body is clean. Rewriting
-unpushed history on a personal branch is the right tool here (see
-`git-feature-branch-sync`).
-
-### AI agents
-
-The same redaction rule applies when an AI agent is drafting. If the agent
-proposes a commit message, skill body, or PR description that includes
-a private-project reference — or an agent's research / memory hands it
-a reference — strip it before committing. The fact that the reference
-came from the agent, not a human, is not a defense.
-
 ### Enforcement
 
-The `deny-private-project-refs.sh` PreToolUse hook (wired in
-`claude/.claude/settings.json`) blocks `git commit`, `gh pr create`,
-and `gh pr edit` when the staged diff, commit message, or PR
-title/body/body-source-file contains either:
-
-1. A tracker-ID token (`[A-Z]{2,}-\d+`) outside the OSS allowlist, or
-2. A case-insensitive whole-word match against an entry in the
-   user's opt-in `~/.claude/private-projects.md` blocklist.
-
-The blocklist file is user-local and never committed. See README
-"Private-project redaction" for opt-in instructions. Tests live in
-`claude/.claude/hooks/tests/test_hooks.py`.
-
-The hook catches two mechanical categories (tracker IDs always; named
-projects when the user opts in). Other categories above — internal
-tool names, structural fingerprints — still require review
-discipline. Extend the hook's pattern list if a category becomes
-repeatable enough to automate.
+The mechanical categories above — tracker IDs always, named projects
+when the user opts in via `~/.claude/private-projects.md` — are
+enforced by the `deny-private-project-refs.sh` PreToolUse hook on
+`git commit`, `gh pr create`, and `gh pr edit`. Other categories
+(internal tool names, structural fingerprints) still require review
+discipline. See README "Private-project redaction" for full hook
+behavior, opt-in instructions, and test location.
