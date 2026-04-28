@@ -232,6 +232,7 @@ table as new patterns emerge.
 | Adds or changes CDC / change-stream / ETL/ELT pipeline / warehouse ingestion connector | `staff-data-engineer` (transport, schema-drift, observability) + `staff-platform-engineer` (operational footprint) |
 | Modifies CI/CD pipelines or deploy config | `staff-platform-engineer` + `staff-backend-engineer` — verify pipelines and environment consistency |
 | Changes runtime config (env vars, secrets, feature flags) | `staff-platform-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
+| Reshapes reviewer ownership (substantive edits to plan-review/code-review skill routing tables, or scope language in `agents/*.md`) | Spawn every persona named in the pre- or post-edit table — each evaluates whether their row (or its removal) is accurate, scoped, and not bleeding into another lane. The pre/post union ensures a row deletion still spawns the affected persona. For an `agents/*.md` edit, spawn the edited persona plus their Item-ownership co-owners. Skip whitespace / typo / copy-edit-only diffs. File-path domain detection cannot infer this; the personas can. |
 
 **Output:** If no impacts, state which boundaries you checked and why
 none are affected. If impacts exist, spawn the named subagents in
