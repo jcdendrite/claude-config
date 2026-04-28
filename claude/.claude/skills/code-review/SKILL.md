@@ -34,6 +34,31 @@ returns early when the change is out of its lane. Trust the agents'
 self-scoping rather than gating at the dispatcher — agents have the diff
 content; the dispatcher only has paths.
 
+## Step 1 — Implementation-fitness gate
+
+Before reviewing for gaps, answer: **is the implementation appropriately
+sized for what the change needed to accomplish?** Gap-finding on an
+over-elaborate change elaborates it further, and the checklist won't
+surface "the whole implementation is the wrong shape."
+
+Markers of over-elaboration:
+
+- Captured outputs / artifacts / fields with no reader downstream.
+- Layers that duplicate a higher-level abstraction already running
+  the same work.
+- Defensive paths against attack scenarios that haven't been observed.
+- Granularity exceeding the actual consumer's need.
+- Conditional logic for future phases that may not arrive.
+
+If over-elaborated: stop. Surface the simpler implementation as the
+primary review output before any checklist item.
+
+Otherwise (fit, or under-elaborated): proceed to the checklist;
+gap-finding will surface what's missing.
+
+Question implementation choices, not feature scope. Feature scope is
+fixed by the ticket; implementation choice is reviewer-tunable.
+
 ## Base checklist
 
 Evaluate the code against each item. Only flag items where there is a concrete issue — do not flag items just to show you checked them.
@@ -196,31 +221,53 @@ If no issues are found, say: "No issues found" — do not pad with praise or gen
 
 ## Ripple effect triage
 
-After the checklist review, identify whether the change crosses system
-boundaries and spawn specialist reviewer subagents via the Agent tool
-to evaluate the cross-boundary impact. This step is **always required** —
-even if the checklist found no issues, ripple effects may exist that only
-a domain specialist would catch.
+After the implementation-fitness gate and the checklist review,
+consider whether the change crosses system boundaries in a way that
+exceeds your own judgment depth.
 
-Spawn on the CODE, not on this review's output. Each subagent reads the
-diff fresh from its own perspective; passing a summarized review as a
-substitute for the source drops the signal that specialist review is
-designed to catch.
+You are the principal-engineer-generalist running this skill. The
+specialist subagents below have narrower lane depth, not broader
+context. **Form your own ripple judgment first** using the table as
+a reference for what boundaries exist in the change.
 
-The Change type column keys on what the change *does for an operator
-or consumer*, not on which file types changed. A markdown-only diff
-can still cross a runtime-config or CI/CD boundary if it establishes,
-documents, restructures, or formalizes the taxonomy operators use to
-provision secrets, identify deploy targets, or reason about config
-layering. When a row's trigger language is plausibly in scope but the
-file types don't make it obvious, default to firing the named
-reviewers — they self-scope against the diff and return early when the
-change is out of their lane. The cost is one subagent turn returning
-"no concerns"; the upside is catching impacts the dispatcher can't
-see from file paths alone.
+Spawn a specialist only when at least one applies:
 
-Evaluate the change against these cross-boundary patterns. Update this
-table as new patterns emerge.
+- **Below-staff-level depth in a specific domain.** Specialized kernels
+  of expertise — query-planner internals, cryptography primitives,
+  fine-grained accessibility, kernel-level concurrency — not "general
+  knowledge in domain X."
+- **High-stakes domain boundary.** RLS, auth, billing, payment, data
+  migration, privileged operations. A specialist's second pair of eyes
+  is worth the spawn even at staff generalist depth.
+- **Holistic-reasoning overload.** Multi-domain ripple where you
+  genuinely can't hold all the lanes in working memory at once.
+- **Convergence-as-design-tell** from a prior round (see Reconciliation
+  below).
+- **Explicit user request** for specialist review.
+
+Always spawn `ciso-reviewer` when the change touches authentication or
+authorization, secrets, tokens, data exposure, logging of sensitive
+data, third-party data sharing, or infrastructure permissions —
+high-stakes-boundary case is non-optional. Always spawn
+`staff-product-engineer` when the change alters user-facing behavior.
+
+Spawn per question, not per file-path domain — "change touches
+`.github/`" isn't enough; the question needs a specific shape.
+
+When you spawn: spawn on the CODE, not on this review's output (each
+subagent reads the diff fresh); pick the specific specialist that
+serves the question (table is reference, not roster); pass the diff
+scope, the specific question, AND — for re-review rounds — the prior
+round's findings + what's been applied since. Reviewers without prior
+context re-discover; that's wasted spawn.
+
+The Change type column below keys on what the change *does for an
+operator or consumer*, not on which file types changed. A markdown-only
+diff can still cross a runtime-config or CI/CD boundary if it
+restructures the taxonomy operators use to provision secrets, identify
+deploy targets, or reason about config layering. Use the table as a
+checklist of boundaries to *consider* during your own review; it is no
+longer a default-fire trigger.
 
 | Change type | Spawn |
 |-------------|-------|
@@ -236,16 +283,34 @@ table as new patterns emerge.
 | Changes runtime config (env vars, secrets, feature flags) | `staff-platform-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
 | Reshapes reviewer ownership (substantive edits to plan-review/code-review skill routing tables, or scope language in `agents/*.md`) | Spawn every persona named in the pre- or post-edit table — each evaluates whether their row (or its removal) is accurate, scoped, and not bleeding into another lane. The pre/post union ensures a row deletion still spawns the affected persona. For an `agents/*.md` edit, spawn the edited persona plus their Item-ownership co-owners. Skip whitespace / typo / copy-edit-only diffs. File-path domain detection cannot infer this; the personas can. |
 
-**Output:** If no impacts, state which boundaries you checked and why
-none are affected. If impacts exist, spawn the named subagents in
-parallel against the current diff; each runs in its own context and
-returns findings independently. Reconcile the results and present a
-combined summary.
+**Output:** State which boundaries you considered and what your
+generalist judgment was on each. If you escalated, list which
+specialists and why; if you didn't, name the boundary and your read.
+Empty findings on a boundary you considered is a valid result — write
+the read, don't omit it.
 
-Be specific about what each reviewer should check. Name the file, flow,
-or function. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer`
-and ask it to verify the checkout flow in CheckoutPage.tsx still
-enforces ownership after the new validation" is actionable.
+When you do spawn a specialist, be specific about what to check.
+"Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer` and ask it
+to verify the checkout flow in CheckoutPage.tsx still enforces
+ownership after the new validation" is actionable.
+
+## Reconciliation
+
+After spawned reviewers return findings, pause if findings concentrate
+on a single surface — the same feature, implementation detail, or
+design choice attracting multiple gaps. Two readings:
+
+- **Implementation-wrong-shape.** The surface is the wrong abstraction;
+  gaps will keep multiplying as you patch. Replace, don't patch-by-patch.
+- **Prompt-overlap artifact.** Reviewers given similar prompts produce
+  N voices of the same observation. Convergence looks like signal but
+  is framing-induced.
+
+You judge which applies. Don't treat convergence as automatic authority
+for "patch each gap." If implementation-wrong-shape, replace the
+surface and re-run Step 1. If prompt-overlap, apply the underlying
+finding once, skip duplicates, and note the overlap so the next spawn
+uses tighter prompts.
 
 ## Item ownership
 
