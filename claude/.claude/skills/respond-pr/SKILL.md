@@ -11,6 +11,7 @@ Fetch all review comments on the current branch's open pull request and address 
 ## Steps
 
 0. **Enable hook bypass.** Run:
+   <!-- HOOK_TEST_FIXTURE: enable-bypass — the hook-alignment test suite reads this exact fenced block to verify it creates the marker layout require-respond-pr.sh expects. Do not duplicate elsewhere; the test re-reads it from here. -->
    ```
    SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/.respond-pr-active.d" && touch "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
    ```
@@ -28,6 +29,7 @@ Fetch all review comments on the current branch's open pull request and address 
 4. Post replies using the GitHub API with `in_reply_to` (use `-F` for integer IDs)
 5. Commit and push any code changes in a single commit
 6. **Remove this session's hook bypass marker:**
+   <!-- HOOK_TEST_FIXTURE: disable-bypass — the hook-alignment test suite reads this exact fenced block to verify it removes the marker the enable step created. Do not duplicate elsewhere; the test re-reads it from here. -->
    ```
    SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
    ```
