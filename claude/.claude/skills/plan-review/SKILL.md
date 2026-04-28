@@ -36,15 +36,10 @@ Read the plan and classify which domains it touches:
 
 ## Step 2 — Design-fitness gate
 
-Before evaluating gaps, answer one question: **is the design appropriately
-sized for the ticket scope?**
-
-A plan can have zero gap-level findings and still be the wrong artifact —
-gold-plated, defensively over-elaborated, carrying machinery that serves
-no ticket-scoped feature. Gap-finding on an over-elaborate design
-elaborates it further: each finding closes a gap by adding more
-machinery. The gate runs first because the checklist won't surface
-"this whole design is the wrong shape."
+Before evaluating gaps, answer: **is the design appropriately sized for
+the ticket scope?** Gap-finding on an over-elaborate design elaborates
+it further (each finding closes a gap by adding more machinery), and
+the checklist won't surface "this whole design is the wrong shape."
 
 Markers of over-elaboration:
 
@@ -54,21 +49,16 @@ Markers of over-elaboration:
 - Granularity exceeding any concrete consumer's need.
 - Captured outputs / fields with no reader downstream.
 
-Three answers:
+If over-elaborated: stop. Surface the simpler design as the primary
+review output before any checklist findings.
 
-- **Yes, fit for scope.** Proceed to Step 3.
-- **No, over-elaborated.** Stop. Surface the simpler design as the
-  primary review output before any checklist findings. Gap-finding on
-  the over-elaborate version drives elaboration further; the simpler
-  design must be considered first.
-- **No, under-elaborated.** Proceed to Step 3 — the gap-finding will
-  surface what's missing.
+Otherwise (fit, or under-elaborated): proceed to Step 3 — gap-finding
+will surface what's missing.
 
-Question implementation choices (how the feature is built), not feature
-scope (what the ticket asks for). A ticket says "implement X"; whether
-X is built with one layer or three is a plan choice the gate inspects.
-A gap-finding pass is not the place to question the ticket itself — that
-goes back to the author.
+Question implementation choices, not feature scope. A ticket says
+"implement X"; whether X is built with one layer or three is the gate's
+inspection. The ticket itself isn't reviewed here — that goes back to
+the author.
 
 ## Step 3 — Evaluate
 
@@ -112,12 +102,9 @@ B5. **Evidence** — Does the plan cite the source for each finding or assertion
 
 ### Scope
 
-B6. **Proportionality** — Whole-design proportionality is the design-fitness
-   gate's job (Step 2). At checklist time, focus on local proportionality:
-   a single helper that's overkill for its caller, a comment block that's too
-   long for the invariant it explains, an abstraction introduced for one
-   call site. If the whole plan reads as over-elaborated, the gate caught
-   it; don't double-flag here.
+B6. **Proportionality** — Whole-design proportionality belongs to the gate
+   (Step 2). At checklist time, flag local issues only: a helper that's
+   overkill for one caller, an abstraction at a single call site.
 
 B7. **Scope creep** — Does the plan include work that isn't required to solve the
    stated problem? Improvements to adjacent code, premature optimizations, or
@@ -311,21 +298,15 @@ data, third-party data sharing, or infrastructure permissions —
 high-stakes-boundary case is non-optional. Always spawn
 `staff-product-engineer` when the plan changes user-facing behavior.
 
-Spawn per question, not per file-path domain. "The plan touches
-backend" is not enough; "the plan changes the idempotency contract on
-the order-creation endpoint and I want a specialist read on retry
-semantics under load" is.
+Spawn per question, not per file-path domain — "plan touches backend"
+isn't enough; the question needs a specific shape.
 
-When you do spawn:
-
-- Pick the specific specialist that serves your question (table below
-  is reference, not roster).
-- Pass the plan scope, the section under review, the specific question
-  you're escalating, the items routed to that specialist per **Item
-  ownership**, AND — for re-review rounds — the prior round's findings
-  plus what's been applied since. Reviewers without prior context
-  re-discover; that's wasted spawn.
-- Each agent returns findings-only; reconcile per Reconciliation below.
+When you spawn, pick the specific specialist that serves the question
+(table below is reference, not roster) and pass: the plan scope, the
+section under review, the specific question, the items routed per
+**Item ownership**, AND — for re-review rounds — the prior round's
+findings + what's been applied since. Reviewers without prior context
+re-discover; that's wasted spawn.
 
 | Domain | Agent | Focus |
 |--------|-------|-------|
@@ -344,30 +325,21 @@ narrow the `ciso-reviewer` trigger conditions.
 
 ## Reconciliation
 
-After spawned reviewers return findings, before applying anything,
-pause if findings concentrate on a single surface — the same feature,
-implementation detail, or design choice attracting multiple gaps from
-different reviewers. Concentration is a tell, but the tell has two
-readings:
+After spawned reviewers return findings, pause if findings concentrate
+on a single surface — the same feature, implementation detail, or
+design choice attracting multiple gaps. Two readings:
 
 - **Design-wrong-shape.** The surface is the wrong abstraction; gaps
-  will keep multiplying as you patch, because each patch closes one
-  gap by adding machinery that opens another. Replacement, not
-  patch-by-patch closure, is the fix.
-- **Prompt-overlap artifact.** The reviewers were given similar
-  prompts and produced N voices of the same observation. Convergence
-  looks like signal but is framing-induced repetition.
+  will keep multiplying as you patch. Replace, don't patch-by-patch.
+- **Prompt-overlap artifact.** Reviewers given similar prompts produce
+  N voices of the same observation. Convergence looks like signal but
+  is framing-induced.
 
-You judge which reading applies. Both happen. The wrong move is to
-treat convergence as automatic authority for "patch each gap" — that's
-how an over-elaborate design accumulates more elaboration until the
-PR doubles in size.
-
-If the reading is design-wrong-shape, replace the surface and re-review
-(send the simpler design back through Step 2). If it's prompt-overlap,
-apply the underlying finding once and skip the redundant copies; note
-the overlap so you write tighter, less-overlapping prompts on the next
-spawn.
+You judge which applies. Don't treat convergence as automatic authority
+for "patch each gap." If design-wrong-shape, replace the surface and
+re-run Step 2. If prompt-overlap, apply the underlying finding once,
+skip duplicates, and note the overlap so the next spawn uses tighter
+prompts.
 
 ## Item ownership
 

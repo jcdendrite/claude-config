@@ -36,35 +36,28 @@ content; the dispatcher only has paths.
 
 ## Step 1 — Implementation-fitness gate
 
-Before reviewing for gaps in the change, answer one question: **is the
-implementation appropriately sized for what the change needed to
-accomplish?**
-
-A change can pass every checklist item and still be the wrong artifact —
-adding machinery, layers, or instrumentation that serve no consumer.
-Gap-finding on an over-elaborate change elaborates it further; the
-checklist won't surface "the whole implementation is the wrong shape."
+Before reviewing for gaps, answer: **is the implementation appropriately
+sized for what the change needed to accomplish?** Gap-finding on an
+over-elaborate change elaborates it further, and the checklist won't
+surface "the whole implementation is the wrong shape."
 
 Markers of over-elaboration:
 
 - Captured outputs / artifacts / fields with no reader downstream.
-- Layers that duplicate a higher-level abstraction that already runs
+- Layers that duplicate a higher-level abstraction already running
   the same work.
 - Defensive paths against attack scenarios that haven't been observed.
 - Granularity exceeding the actual consumer's need.
 - Conditional logic for future phases that may not arrive.
 
-If the implementation is over-elaborated: stop. Surface the simpler
-implementation as the primary review output before any checklist
-item. Gap-finding on the over-elaborate version drives elaboration
-further; the simpler implementation must be considered first.
+If over-elaborated: stop. Surface the simpler implementation as the
+primary review output before any checklist item.
 
-If under-elaborated (missing required handling): proceed to the
-checklist; gap-finding will surface what's missing.
+Otherwise (fit, or under-elaborated): proceed to the checklist;
+gap-finding will surface what's missing.
 
-Question implementation choices (how the change is built), not feature
-scope (what the change is required to do). Feature scope is fixed by
-the ticket; implementation choice is reviewer-tunable.
+Question implementation choices, not feature scope. Feature scope is
+fixed by the ticket; implementation choice is reviewer-tunable.
 
 ## Base checklist
 
@@ -252,23 +245,15 @@ Spawn a specialist only when at least one applies:
   below).
 - **Explicit user request** for specialist review.
 
-Spawn per question, not per file-path domain. "The change touches
-`.github/`" is not enough to spawn `staff-platform-engineer`; "the
-change introduces a deploy-window-sensitive migration in the workflow
-and I want a specialist read on lock-budget under load" is.
+Spawn per question, not per file-path domain — "change touches
+`.github/`" isn't enough; the question needs a specific shape.
 
-When you do spawn:
-
-- Spawn on the CODE, not on this review's output. Each subagent reads
-  the diff fresh; passing a summarized review as a substitute for the
-  source drops the signal specialist review is designed to catch.
-- Pick the specific specialist that serves your question (table is
-  reference, not roster).
-- Pass the diff scope, the specific question you're escalating, AND —
-  for re-review rounds — the prior round's findings plus what's been
-  applied since. Reviewers without prior context re-discover; that's
-  wasted spawn.
-- Each agent returns findings-only; reconcile per Reconciliation below.
+When you spawn: spawn on the CODE, not on this review's output (each
+subagent reads the diff fresh); pick the specific specialist that
+serves the question (table is reference, not roster); pass the diff
+scope, the specific question, AND — for re-review rounds — the prior
+round's findings + what's been applied since. Reviewers without prior
+context re-discover; that's wasted spawn.
 
 The Change type column below keys on what the change *does for an
 operator or consumer*, not on which file types changed. A markdown-only
@@ -293,12 +278,10 @@ longer a default-fire trigger.
 | Reshapes reviewer ownership (substantive edits to plan-review/code-review skill routing tables, or scope language in `agents/*.md`) | Spawn every persona named in the pre- or post-edit table — each evaluates whether their row (or its removal) is accurate, scoped, and not bleeding into another lane. The pre/post union ensures a row deletion still spawns the affected persona. For an `agents/*.md` edit, spawn the edited persona plus their Item-ownership co-owners. Skip whitespace / typo / copy-edit-only diffs. File-path domain detection cannot infer this; the personas can. |
 
 **Output:** State which boundaries you considered and what your
-generalist judgment was on each. If you escalated to specialists,
-list which ones and why; if you didn't, name the boundary and your
-read. Empty findings on a boundary you considered is a valid result —
-"considered DB-access boundary; the change touches RLS but only adds
-a deny-by-default policy on a new admin-only table, no escalation
-path I can't evaluate" — write that, don't omit it.
+generalist judgment was on each. If you escalated, list which
+specialists and why; if you didn't, name the boundary and your read.
+Empty findings on a boundary you considered is a valid result — write
+the read, don't omit it.
 
 When you do spawn a specialist, be specific about what to check.
 "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer` and ask it
@@ -307,30 +290,21 @@ ownership after the new validation" is actionable.
 
 ## Reconciliation
 
-After spawned reviewers return findings, before applying anything,
-pause if findings concentrate on a single surface — the same feature,
-implementation detail, or design choice attracting multiple gaps from
-different reviewers. Concentration is a tell, but the tell has two
-readings:
+After spawned reviewers return findings, pause if findings concentrate
+on a single surface — the same feature, implementation detail, or
+design choice attracting multiple gaps. Two readings:
 
 - **Implementation-wrong-shape.** The surface is the wrong abstraction;
-  gaps will keep multiplying as you patch, because each patch closes
-  one gap by adding machinery that opens another. Replacement, not
-  patch-by-patch closure, is the fix.
-- **Prompt-overlap artifact.** The reviewers were given similar prompts
-  and produced N voices of the same observation. Convergence looks
-  like signal but is framing-induced repetition.
+  gaps will keep multiplying as you patch. Replace, don't patch-by-patch.
+- **Prompt-overlap artifact.** Reviewers given similar prompts produce
+  N voices of the same observation. Convergence looks like signal but
+  is framing-induced.
 
-You judge which reading applies. Both happen. The wrong move is to
-treat convergence as automatic authority for "patch each gap" — that's
-how an over-elaborate change accumulates more elaboration until the
-diff doubles in size.
-
-If the reading is implementation-wrong-shape, replace the surface and
-re-run the implementation-fitness gate. If it's prompt-overlap, apply
-the underlying finding once and skip the redundant copies; note the
-overlap so you write tighter, less-overlapping prompts on the next
-spawn.
+You judge which applies. Don't treat convergence as automatic authority
+for "patch each gap." If implementation-wrong-shape, replace the
+surface and re-run Step 1. If prompt-overlap, apply the underlying
+finding once, skip duplicates, and note the overlap so the next spawn
+uses tighter prompts.
 
 ## Item ownership
 
