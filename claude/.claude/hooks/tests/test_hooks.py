@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -24,6 +25,48 @@ REVIEW_PERMS_HOOK = HOOKS_DIR / "ask-review-permissions.sh"
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 WORKTREE_HOOK = HOOKS_DIR / "require-worktree-for-git-writes.sh"
 CAPTURE_SESSION_ID_HOOK = HOOKS_DIR / "capture-session-id.sh"
+
+SKILLS_DIR = HOOKS_DIR.parent / "skills"
+CODE_REVIEW_SKILL = SKILLS_DIR / "code-review" / "SKILL.md"
+RESPOND_PR_SKILL = SKILLS_DIR / "respond-pr" / "SKILL.md"
+
+# SKILL.md fences may be indented when the fixture sits inside a
+# numbered list (e.g. respond-pr's "0. **Enable hook bypass.**"). The
+# closing-fence match has to tolerate the same leading whitespace as
+# the opening, otherwise the non-greedy body capture runs past every
+# indented fence until it finds an unindented one elsewhere in the file.
+_SKILL_FIXTURE_RE = re.compile(
+    r"<!--\s*HOOK_TEST_FIXTURE:\s*(?P<id>[A-Za-z0-9_-]+)\b[^>]*-->\s*"
+    r"```[a-z]*\n(?P<body>.*?)\n[ \t]*```",
+    re.DOTALL,
+)
+
+
+def extract_skill_command(skill_path: Path, fixture_id: str) -> str:
+    """Return the body of the fenced code block tagged with `fixture_id`.
+
+    SKILL.md files mark hook-alignment fixtures with
+    `<!-- HOOK_TEST_FIXTURE: <id> -->` immediately followed by a fenced
+    code block. Reading the recipe from SKILL.md at test time (rather
+    than embedding a hardcoded copy in the test source) makes SKILL.md
+    the single source of truth — drift between the documented recipe
+    and what the test executes can't happen silently.
+    """
+    text = skill_path.read_text()
+    matches = [m for m in _SKILL_FIXTURE_RE.finditer(text) if m.group("id") == fixture_id]
+    if not matches:
+        raise AssertionError(
+            f"HOOK_TEST_FIXTURE '{fixture_id}' not found in {skill_path} — "
+            "either the marker was removed or the immediately-following "
+            "fenced block is missing."
+        )
+    if len(matches) > 1:
+        raise AssertionError(
+            f"HOOK_TEST_FIXTURE '{fixture_id}' appears {len(matches)} times in "
+            f"{skill_path} — fixture ids must be unique so the test runs the "
+            "intended block."
+        )
+    return matches[0].group("body").strip()
 
 
 def run_hook(hook: Path, tool_input: dict, cwd: Path | None = None) -> str:
@@ -268,9 +311,10 @@ class TestRequireCodeReview:
         """Regression guard against the SKILL command and HOOK getting out
         of sync on path derivation.
 
-        Runs the exact shell pipeline from code-review SKILL.md that writes
-        the marker (including the session_id lookup), then verifies the
-        hook accepts the result.
+        Reads the marker-write recipe directly from code-review SKILL.md
+        via the HOOK_TEST_FIXTURE marker, executes it, and verifies the
+        hook accepts the result. SKILL.md is the source of truth — if
+        the recipe drifts from what the hook expects, this test fails.
         """
         sid = "test-session-skill-cmd"
         # Set up the session_id lookup file at the path the skill reads.
@@ -285,19 +329,18 @@ class TestRequireCodeReview:
         if markers_dir.exists():
             for f in markers_dir.glob("*"):
                 f.unlink()
-        skill_command = (
-            'SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && '
-            '[ -n "$SESSION_ID" ] && '
-            'mkdir -p "$HOME/.claude/review-markers" && '
-            "REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\\n' | sha256sum | awk '{print $1}') && "
-            "git diff --cached | sha256sum | awk '{print $1}' > "
-            '"$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"'
-        )
+
+        skill_command = extract_skill_command(CODE_REVIEW_SKILL, "marker-write")
         subprocess.run(
             ["bash", "-c", skill_command],
             cwd=git_repo,
             env={**os.environ, "HOME": str(isolated_home)},
             check=True,
+        )
+        # Sanity check: the recipe wrote a marker at the path the hook checks.
+        assert marker_path(isolated_home, git_repo, session_id=sid).exists(), (
+            "SKILL.md marker-write recipe ran but no marker landed at the "
+            "path the hook computes — the skill and hook disagree on layout."
         )
         assert (
             run_hook(
@@ -566,6 +609,94 @@ class TestRequireRespondPr:
                 RESPOND_PR_HOOK,
                 bash_input("gh api repos/foo/bar/issues/5/comments"),
                 cwd=repo,
+            )
+            == "deny"
+        )
+
+    # -- Skill ↔ hook alignment -------------------------------------------
+    # These execute the enable/disable bypass recipes verbatim from
+    # respond-pr SKILL.md. If the skill body drifts from the marker layout
+    # require-respond-pr.sh expects, these fail.
+
+    def test_skill_enable_command_creates_bypass_marker(
+        self, isolated_home, current_repo_foo_bar
+    ):
+        """Run the SKILL.md enable-bypass recipe and verify the resulting
+        marker authorizes a previously-gated gh command."""
+        sid = "test-session-respond-pr-enable"
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / str(os.getpid())).write_text(sid)
+
+        gated_command = "gh api repos/foo/bar/pulls/5/comments"
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(gated_command, session_id=sid),
+                cwd=current_repo_foo_bar,
+            )
+            == "deny"
+        ), "precondition: gh comment fetch must be gated before bypass is enabled"
+
+        enable_command = extract_skill_command(RESPOND_PR_SKILL, "enable-bypass")
+        subprocess.run(
+            ["bash", "-c", enable_command],
+            cwd=current_repo_foo_bar,
+            env={**os.environ, "HOME": str(isolated_home)},
+            check=True,
+        )
+
+        marker = isolated_home / ".claude" / ".respond-pr-active.d" / sid
+        assert marker.exists(), (
+            "SKILL.md enable-bypass recipe ran but no marker landed at the "
+            "path the hook checks — the skill and hook disagree on layout."
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(gated_command, session_id=sid),
+                cwd=current_repo_foo_bar,
+            )
+            == "allow"
+        )
+
+    def test_skill_disable_command_removes_bypass_marker(
+        self, isolated_home, current_repo_foo_bar
+    ):
+        """Run enable then disable from SKILL.md; verify the disable recipe
+        removes the marker and the hook re-gates."""
+        sid = "test-session-respond-pr-disable"
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / str(os.getpid())).write_text(sid)
+
+        enable_command = extract_skill_command(RESPOND_PR_SKILL, "enable-bypass")
+        subprocess.run(
+            ["bash", "-c", enable_command],
+            cwd=current_repo_foo_bar,
+            env={**os.environ, "HOME": str(isolated_home)},
+            check=True,
+        )
+        marker = isolated_home / ".claude" / ".respond-pr-active.d" / sid
+        assert marker.exists(), "enable-bypass setup did not create the marker"
+
+        disable_command = extract_skill_command(RESPOND_PR_SKILL, "disable-bypass")
+        subprocess.run(
+            ["bash", "-c", disable_command],
+            cwd=current_repo_foo_bar,
+            env={**os.environ, "HOME": str(isolated_home)},
+            check=True,
+        )
+
+        assert not marker.exists(), (
+            "SKILL.md disable-bypass recipe ran but the marker is still "
+            "present — the skill and hook disagree on the marker path."
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5/comments", session_id=sid),
+                cwd=current_repo_foo_bar,
             )
             == "deny"
         )

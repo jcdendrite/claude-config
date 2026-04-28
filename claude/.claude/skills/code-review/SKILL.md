@@ -301,6 +301,7 @@ If the review is **clean** (no blockers, no unresolved critical findings,
 and you reviewed the currently staged changes), record it by running this
 command exactly once:
 
+<!-- HOOK_TEST_FIXTURE: marker-write — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/code-review/SKILL.md) to verify it matches require-code-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
 SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/review-markers" && REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}') && git diff --cached | sha256sum | awk '{print $1}' > "$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"
 ```
