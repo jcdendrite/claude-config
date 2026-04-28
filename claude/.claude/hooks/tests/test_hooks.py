@@ -90,6 +90,24 @@ def run_hook(hook: Path, tool_input: dict, cwd: Path | None = None) -> str:
     return payload["hookSpecificOutput"]["permissionDecision"]
 
 
+def run_hook_reason(hook: Path, tool_input: dict, cwd: Path | None = None) -> str | None:
+    """Like `run_hook` but returns the deny `permissionDecisionReason` string
+    (or `None` if the hook allowed silently). Used by tests that need to
+    assert on the contents of the deny message, not just the decision."""
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        check=False,
+    )
+    if not result.stdout.strip():
+        return None
+    payload = json.loads(result.stdout)
+    return payload["hookSpecificOutput"].get("permissionDecisionReason")
+
+
 def bash_input(command: str, session_id: str | None = None) -> dict:
     payload: dict = {"tool_name": "Bash", "tool_input": {"command": command}}
     if session_id is not None:
@@ -2195,6 +2213,69 @@ class TestRequireWorktreeForGitWrites:
             )
             == "allow"
         )
+
+    # The cwd-anchor note is appended to the deny reason ONLY when the
+    # command shows a `cd ... && git ...` (or `;` / `||`) pattern. This
+    # is the precise failure mode where the agent expected its inline cd
+    # to put it in a worktree, but the hook reads cwd from the JSON
+    # tool_input — Claude Code's persisted bash cwd from prior calls,
+    # not the cwd the inline cd would produce after this hook returns.
+    # Tests cover three positive cases (each chain operator) and a
+    # negative case (no chained cd → no note appended).
+
+    def test_chained_cd_amp_git_appends_anchor_note(self, opted_in_repo):
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("cd /tmp && git commit -m foo"),
+            cwd=opted_in_repo,
+        )
+        assert reason is not None
+        assert "session-persisted" in reason
+        assert "Anchor cwd" in reason
+
+    def test_chained_cd_semicolon_git_appends_anchor_note(self, opted_in_repo):
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("cd /tmp; git commit -m foo"),
+            cwd=opted_in_repo,
+        )
+        assert reason is not None
+        assert "session-persisted" in reason
+
+    def test_chained_cd_or_git_appends_anchor_note(self, opted_in_repo):
+        """`||` chain (run-if-fail) is unusual but parses the same way —
+        cwd note still appended so the agent gets the hint."""
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("cd /tmp || git commit -m foo"),
+            cwd=opted_in_repo,
+        )
+        assert reason is not None
+        assert "session-persisted" in reason
+
+    def test_plain_git_no_anchor_note(self, opted_in_repo):
+        """No chained cd → cwd note not appended; deny message stays
+        short for the common case."""
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=opted_in_repo,
+        )
+        assert reason is not None
+        assert "session-persisted" not in reason
+        assert "Anchor cwd" not in reason
+
+    def test_cd_after_git_no_anchor_note(self, opted_in_repo):
+        """`git ... && cd ...` is the reverse of the trigger pattern —
+        the cd is AFTER the git, not before. The note targets the
+        chained-cd-before-git mistake, so this case must NOT match."""
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("git commit -m foo && cd /tmp"),
+            cwd=opted_in_repo,
+        )
+        assert reason is not None
+        assert "session-persisted" not in reason
 
 
 # --- require-stow-reminder.sh ----------------------------------------
