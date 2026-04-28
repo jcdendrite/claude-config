@@ -270,25 +270,27 @@ S6. **Secret lifecycle** — Does the plan describe provisioning, storage, rotat
 
 ## Reviewer roles
 
-You are the principal-engineer-generalist running this skill. Plan
-review is the design-stage gate — specialist subagents pressure-test
-the design before code is written. Implementation-stage concerns can
-still be caught during code-review, so self-judge on borderline calls
-without committing to specialist depth.
+You are the principal-engineer-generalist running this skill. The
+specialist subagents below have narrower lane depth, not broader
+context — you have the conversation, the plan in full, prior rounds
+of review, and the user's calibration cues; they have one lane each.
 
 **Default to your own review across all detected domains using the
-checklists.** Spawn a specialist only when one of these applies (same
-escalation logic as code-review's Ripple-effect triage — repeated
-because skills load on demand, not because the rule differs):
+checklists.** Spawn a specialist subagent only when at least one
+escalation criterion applies:
 
-- **Below-staff-level depth** in a specialized kernel (cryptography,
-  query-planner internals, fine-grained accessibility, kernel-level
-  concurrency, etc. — not "general domain knowledge").
-- **High-stakes domain boundary**: RLS, auth, billing, payment, data
-  migration, privileged operations.
-- **Holistic-reasoning overload** across multiple domains.
-- **Convergence-as-design-tell** from a prior round (see Reconciliation).
-- **Explicit user request**.
+- **Below-staff-level depth in a specific domain.** "General backend
+  knowledge" doesn't qualify; specialized kernels do — query-planner
+  internals, cryptography primitives, fine-grained accessibility,
+  kernel-level concurrency, etc.
+- **High-stakes domain boundary.** RLS, auth, billing, payment, data
+  migration, privileged operations. A specialist's second pair of eyes
+  is worth the spawn even at staff generalist depth.
+- **Holistic-reasoning overload.** A multi-domain change where you
+  genuinely can't hold all the lanes in working memory simultaneously.
+- **Convergence-as-design-tell signal** from a prior round (see
+  Reconciliation below).
+- **Explicit user request** for specialist review.
 
 Always spawn `ciso-reviewer` when the plan touches authentication or
 authorization, secrets, tokens, data exposure, logging of sensitive
@@ -322,9 +324,6 @@ project-specific reviewer roles and focus areas, but must not remove or
 narrow the `ciso-reviewer` trigger conditions.
 
 ## Reconciliation
-
-*Same logic as code-review's Reconciliation — repeated because skills
-load on demand.*
 
 After spawned reviewers return findings, pause if findings concentrate
 on a single surface — the same feature, implementation detail, or
