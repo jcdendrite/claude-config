@@ -34,7 +34,43 @@ Read the plan and classify which domains it touches:
 - **Backend**: Server-side code (HTTP/RPC handlers, edge functions, background jobs, queue consumers, SDK integrations, shared utilities) AND application data-store schema design
 - **Security**: Authentication or authorization, token handling, secret management, data exposure, RLS / RBAC / ACL changes
 
-## Step 2 — Evaluate
+## Step 2 — Design-fitness gate
+
+Before evaluating gaps, answer one question: **is the design appropriately
+sized for the ticket scope?**
+
+A plan can have zero gap-level findings and still be the wrong artifact —
+gold-plated, defensively over-elaborated, carrying machinery that serves
+no ticket-scoped feature. Gap-finding on an over-elaborate design
+elaborates it further: each finding closes a gap by adding more
+machinery. The gate runs first because the checklist won't surface
+"this whole design is the wrong shape."
+
+Markers of over-elaboration:
+
+- Conditional logic for future phases that may not arrive.
+- Defensive paths against attack scenarios that haven't been observed.
+- Layers that duplicate a higher-level abstraction.
+- Granularity exceeding any concrete consumer's need.
+- Captured outputs / fields with no reader downstream.
+
+Three answers:
+
+- **Yes, fit for scope.** Proceed to Step 3.
+- **No, over-elaborated.** Stop. Surface the simpler design as the
+  primary review output before any checklist findings. Gap-finding on
+  the over-elaborate version drives elaboration further; the simpler
+  design must be considered first.
+- **No, under-elaborated.** Proceed to Step 3 — the gap-finding will
+  surface what's missing.
+
+Question implementation choices (how the feature is built), not feature
+scope (what the ticket asks for). A ticket says "implement X"; whether
+X is built with one layer or three is a plan choice the gate inspects.
+A gap-finding pass is not the place to question the ticket itself — that
+goes back to the author.
+
+## Step 3 — Evaluate
 
 Evaluate the plan against the **Base checklist** first, then each detected
 **Domain checklist**. For multi-phase plans, evaluate each phase against the
@@ -76,9 +112,12 @@ B5. **Evidence** — Does the plan cite the source for each finding or assertion
 
 ### Scope
 
-B6. **Proportionality** — Is the solution proportional to the problem? Flag both
-   over-engineering (abstractions for one-time operations, premature extensibility)
-   and under-engineering (band-aids that will need immediate follow-up).
+B6. **Proportionality** — Whole-design proportionality is the design-fitness
+   gate's job (Step 2). At checklist time, focus on local proportionality:
+   a single helper that's overkill for its caller, a comment block that's too
+   long for the invariant it explains, an abstraction introduced for one
+   call site. If the whole plan reads as over-elaborated, the gate caught
+   it; don't double-flag here.
 
 B7. **Scope creep** — Does the plan include work that isn't required to solve the
    stated problem? Improvements to adjacent code, premature optimizations, or
@@ -244,12 +283,49 @@ S6. **Secret lifecycle** — Does the plan describe provisioning, storage, rotat
 
 ## Reviewer roles
 
-For multi-domain plans, spawn the matching reviewer subagents via the
-Agent tool — one per detected domain — and reconcile their findings.
-Different personas catch different things: a security reviewer thinks
-about attack vectors while a backend reviewer thinks about API contracts.
-Spawning real subagents (not in-context role-play) keeps each reviewer
-isolated to its scope and restricts it to read-only tools.
+You are the principal-engineer-generalist running this skill. The
+specialist subagents below have narrower lane depth, not broader
+context — you have the conversation, the plan in full, prior rounds
+of review, and the user's calibration cues; they have one lane each.
+
+**Default to your own review across all detected domains using the
+checklists.** Spawn a specialist subagent only when at least one
+escalation criterion applies:
+
+- **Below-staff-level depth in a specific domain.** "General backend
+  knowledge" doesn't qualify; specialized kernels do — query-planner
+  internals, cryptography primitives, fine-grained accessibility,
+  kernel-level concurrency, etc.
+- **High-stakes domain boundary.** RLS, auth, billing, payment, data
+  migration, privileged operations. A specialist's second pair of eyes
+  is worth the spawn even at staff generalist depth.
+- **Holistic-reasoning overload.** A multi-domain change where you
+  genuinely can't hold all the lanes in working memory simultaneously.
+- **Convergence-as-design-tell signal** from a prior round (see
+  Reconciliation below).
+- **Explicit user request** for specialist review.
+
+Always spawn `ciso-reviewer` when the plan touches authentication or
+authorization, secrets, tokens, data exposure, logging of sensitive
+data, third-party data sharing, or infrastructure permissions —
+high-stakes-boundary case is non-optional. Always spawn
+`staff-product-engineer` when the plan changes user-facing behavior.
+
+Spawn per question, not per file-path domain. "The plan touches
+backend" is not enough; "the plan changes the idempotency contract on
+the order-creation endpoint and I want a specialist read on retry
+semantics under load" is.
+
+When you do spawn:
+
+- Pick the specific specialist that serves your question (table below
+  is reference, not roster).
+- Pass the plan scope, the section under review, the specific question
+  you're escalating, the items routed to that specialist per **Item
+  ownership**, AND — for re-review rounds — the prior round's findings
+  plus what's been applied since. Reviewers without prior context
+  re-discover; that's wasted spawn.
+- Each agent returns findings-only; reconcile per Reconciliation below.
 
 | Domain | Agent | Focus |
 |--------|-------|-------|
@@ -262,20 +338,36 @@ isolated to its scope and restricts it to read-only tools.
 | Testing | `staff-sdet` | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data requirements; production code with non-trivial logic that lacks tests |
 | Product | `staff-product-engineer` | Whether the plan solves the actual user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing, telemetry event semantics |
 
-Spawn each relevant reviewer in parallel. Always include
-`staff-product-engineer` when the plan changes user-facing behavior.
-Always include `ciso-reviewer` when the plan touches authentication or
-authorization, secrets, tokens, data exposure, logging of sensitive
-data, third-party data sharing, or infrastructure permissions.
-
-When invoking a reviewer, pass the plan scope, the phase or section
-under review, and the items routed to that reviewer per the **Item
-ownership** table below. Each agent returns a findings-only output;
-reconcile the set and present a combined verdict.
-
 Project-level plan-review skills may extend this table with
 project-specific reviewer roles and focus areas, but must not remove or
 narrow the `ciso-reviewer` trigger conditions.
+
+## Reconciliation
+
+After spawned reviewers return findings, before applying anything,
+pause if findings concentrate on a single surface — the same feature,
+implementation detail, or design choice attracting multiple gaps from
+different reviewers. Concentration is a tell, but the tell has two
+readings:
+
+- **Design-wrong-shape.** The surface is the wrong abstraction; gaps
+  will keep multiplying as you patch, because each patch closes one
+  gap by adding machinery that opens another. Replacement, not
+  patch-by-patch closure, is the fix.
+- **Prompt-overlap artifact.** The reviewers were given similar
+  prompts and produced N voices of the same observation. Convergence
+  looks like signal but is framing-induced repetition.
+
+You judge which reading applies. Both happen. The wrong move is to
+treat convergence as automatic authority for "patch each gap" — that's
+how an over-elaborate design accumulates more elaboration until the
+PR doubles in size.
+
+If the reading is design-wrong-shape, replace the surface and re-review
+(send the simpler design back through Step 2). If it's prompt-overlap,
+apply the underlying finding once and skip the redundant copies; note
+the overlap so you write tighter, less-overlapping prompts on the next
+spawn.
 
 ## Item ownership
 
