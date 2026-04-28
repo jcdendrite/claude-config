@@ -25,6 +25,29 @@
 # - The marker auto-invalidates as soon as the staging area changes, so
 #   re-staging after review correctly forces a re-review.
 
+# When the command shows a redirect (`>`) into a path containing
+# `review-markers` chained before `git commit`, the agent likely
+# chained the marker-seed with their commit in a single Bash call.
+# PreToolUse:Bash hooks evaluate at command-submission time, BEFORE
+# the chained subshell runs, so this hook reads the marker file from
+# disk before the chained marker-write executes — denying a chain
+# that would have worked if its commands ran in sequence outside the
+# hook. Returns a self-correction note for the agent when this pattern
+# is detected; empty otherwise.
+#
+# Pattern requires `>` redirect, then `review-markers` in the path,
+# then a chain operator, then `git commit`. Single-line commands only
+# — multi-line bash with `\` continuations between the redirect and
+# `git commit` won't match (the regex uses `[^&|;]*`, which excludes
+# newlines under default ERE behavior). In practice agents submit
+# single-line bash to the tool; multi-line is rare enough to leave
+# uncovered.
+marker_chain_note_if_detected() {
+  if printf '%s' "$1" | grep -qE '>[^&|;]*review-markers[^&|;]*(&&|\|\||;)[^&|;]*git[[:space:]]+commit'; then
+    printf '%s' " If you just chained a marker-write to '~/.claude/review-markers/...' before 'git commit' in a single Bash call: PreToolUse hooks evaluate at command-submission time, BEFORE the chained subshell runs. The hook hashed your staged diff (correct) but read the marker file from disk before your chain could write it. Whether the marker was missing entirely or held a prior review's hash, the chained marker-write hadn't executed yet. Submit the marker-seed as its own Bash call first, then run 'git commit' in a separate call."
+  fi
+}
+
 INPUT=$(cat)
 COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
 
@@ -67,4 +90,9 @@ if [ -n "$SESSION_ID" ]; then
 fi
 
 # No marker, or marker hash does not match the current staged state.
-echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Commit blocked by code-review gate: the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit."}}'
+# Build the reason as a bash variable so the conditional marker-chain
+# note can be interpolated; jq -Rs handles JSON-encoding safely
+# regardless of what characters appear in the appended note.
+REASON="Commit blocked by code-review gate: the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit.$(marker_chain_note_if_detected "$COMMAND")"
+REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
