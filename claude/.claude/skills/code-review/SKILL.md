@@ -182,6 +182,8 @@ Apply when changed files match `.lovable/**`.
 
 Start with a one-line summary of which domains were detected (e.g., "Domains: Infrastructure, Backend").
 
+If ripple-effect subagents were spawned, follow with a `Consulted:` line listing every persona by name, comma-separated and case-exact (e.g., "Consulted: ciso-reviewer, staff-backend-engineer"). Omit the line entirely when no subagents were spawned. The fixed prefix `Consulted: ` makes the spawn grep-able post hoc.
+
 For each finding, state:
 
 1. **Which checklist item** (by number and name)
