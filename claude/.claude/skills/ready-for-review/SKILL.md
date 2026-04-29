@@ -14,8 +14,9 @@ description: >
   has just pushed (or is about to push) commits to a branch that
   already has an open PR and is wrapping up rather than continuing to
   iterate; (c) before spawning a multi-persona ripple review (CISO +
-  multiple staff-* engineers) via the Agent tool on a PR-stage diff,
-  or before invoking /ultrareview.
+  multiple staff-* engineers) via the Agent tool on a PR-stage diff
+  outside an active /ready-for-review or /pre-merge flow, or before
+  invoking /ultrareview.
   DO NOT TRIGGER when: work is still being iterated (more commits
   planned before handoff); only a diff review or single verification
   step was requested; on the default branch; or when a project-specific
