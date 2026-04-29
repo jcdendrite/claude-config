@@ -103,24 +103,24 @@ The PR description is for the reviewer, not for posterity. Compare
 the body against branch state:
 
 - `gh pr view <n> --json body,title`
+- `git log <base>..HEAD --oneline`
 - `git diff <base>..HEAD --name-only`
 
 Flag and fix:
 
 - **Per-commit narratives** ("Commit X did Y, Commit Z did W").
   Reorganize "What shipped" by surface the reviewer maps to (schema /
-  handler / tests / invariants / migration-deploy notes) so they can
-  find files; `git log` already has the chronology.
-- **Reviewer-action items Claude can answer itself.** Strip items
+  handler / tests / invariants / migration-deploy notes); `git log`
+  already has the chronology.
+- **Reviewer-action items Claude can answer itself.** Strip claims
   you can verify ("all migrations match precedent" — confirm and
-  remove), test-pass claims ("977/977 pass" belongs in the commit
-  message, not the reviewer's checklist), and CI-status placeholders
-  (step 5 covers those). Legitimate items: deploy coordination,
-  security-invariant catalog approval, architectural sign-off.
-- Stale prose left behind by code changes — a guard removed in
-  commit N must also disappear from migration-ordering notes, the
-  test plan, "remaining concerns" lists, and any line counts or
-  screenshots referencing it.
+  remove), test counts (those belong in the commit message), and
+  CI placeholders (step 5 covers those). Keep items requiring
+  reviewer judgment: deploy coordination, security-invariant catalog
+  approval, architectural sign-off.
+- Stale prose left behind by code changes — a removed guard, an
+  abandoned approach, a deleted file must also disappear from the
+  migration-ordering note, test plan, and "remaining concerns" list.
 - `TBD` / `pending` / "to be updated" markers still in the body.
 - Files listed in the body that are no longer in the diff, or files
   in the diff absent from the body.
