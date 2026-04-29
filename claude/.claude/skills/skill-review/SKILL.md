@@ -2,10 +2,9 @@
 name: skill-review
 description: >
   How to review and audit Claude Code skill files
-  (`.claude/skills/**/SKILL.md`): frontmatter conventions, TRIGGER /
-  DO NOT TRIGGER design, voice, length targets, the
-  operational-vs-narrative content test, and the cross-reference vs
-  duplication framework.
+  (`.claude/skills/**/SKILL.md`): frontmatter conventions, trigger
+  design, voice, length targets, the operational-vs-narrative content
+  test, and the cross-reference vs duplication framework.
   TRIGGER when: editing or reviewing `.claude/skills/**/SKILL.md`;
   auditing trigger accuracy across a skill set; restructuring or
   pruning skills.
