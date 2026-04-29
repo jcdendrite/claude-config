@@ -130,9 +130,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 ## Domain: Claude Code config
 
-33. **Skill trigger accuracy** — Do TRIGGER and DO NOT TRIGGER conditions match the skill's actual purpose? Too broad wastes context; too narrow gets skipped when needed.
-
-34. **Context budget** — Are skill files, plan files, and settings concise enough to fit within working context without displacing active task instructions? Long files dilute attention. Flag files that could be shortened without losing actionable information.
+For `.claude/skills/**/SKILL.md` review (frontmatter, trigger design, voice, length, behavior test, cross-reference vs duplication), see the `skill-review` skill.
 
 35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
@@ -235,7 +233,7 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **9. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **10. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
 | **11. Test adequacy for security controls** | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
-| **12, 33, 34. Judgment items** (pre-existing issues, skill trigger accuracy, context budget) | judgment (any reviewer) | — |
+| **12. Pre-existing issues in unchanged code** | judgment (any reviewer) | — |
 | **13–17. Infrastructure** (concurrency scoping, secret exposure, least-privilege, idempotency, trigger alignment) | `staff-platform-engineer` | `ciso-reviewer` (14 secret exposure, 15 least-privilege) |
 | **18. Migration reversibility** | `staff-data-engineer` (rollback safety, pipeline impact) | `staff-backend-engineer` |
 | **19. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
