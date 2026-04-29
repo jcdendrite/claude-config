@@ -140,15 +140,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 ## Domain: Lovable config
 
-Apply when changed files match `.lovable/**`.
-
-37. **Perspective** — Are instructions written from Lovable's perspective (second person, addressed to Lovable)? Knowledge files reading as internal engineering notes will confuse Lovable.
-
-38. **Specificity** — Are instructions specific enough to prevent unintended behavior? Lovable follows literally and may over-apply vague guidance ("be careful with auth" → adds auth checks to public endpoints).
-
-39. **Context budget** — Are knowledge files concise enough to fit Lovable's working context without displacing active task instructions? Same principle as Claude Code skills.
-
-40. **Sync status** — If project-knowledge.md or workspace-knowledge.md changed, does the PR description mention syncing to the Lovable UI? The file is source of truth, but Lovable reads from the UI field.
+Apply when changed files match `.lovable/**`. See the `lovable-knowledge` skill for the review checklist (perspective, specificity, scope split between project/workspace knowledge, char budget, sync status).
 
 ## Exclusions — do NOT flag these
 
@@ -262,7 +254,6 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **32. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
 | **35. Permission scope** | `ciso-reviewer` | — |
 | **36. Hook correctness** | `staff-platform-engineer` | `ciso-reviewer` |
-| **37–40. Lovable config** (perspective, specificity, context budget, sync status) | judgment (any reviewer) | — |
 
 ## Step — Record review completion
 
