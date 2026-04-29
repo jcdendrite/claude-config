@@ -18,10 +18,9 @@ user-invocable: false
 
 # Skill Review — Architecture & Checklist
 
-Complements `skill-creator` (scaffolds new skills). Reuses framing
-from `ai-instruction-and-memory-files` §2 (length / behavior test)
-and §3 (duplication rules) — point at those sections rather than
-restating them.
+Complements `skill-creator` (scaffolds new skills, runs evals, tunes
+description text). This skill applies a review checklist to skill-file
+diffs.
 
 ## 1. What makes a skill load
 
@@ -91,11 +90,17 @@ brand-new-skill scaffolding turns where `skill-creator` should own.
 
 ## 4. Length and the behavior test
 
-`ai-instruction-and-memory-files` §2 sets the targets — 200 lines per
-file, attention decay in the middle, structural enforcement beats
-prose. Apply those targets here without restating them.
+**Length targets:**
 
-Apply the **behavior test** to every line: does removing this line
+- Target under **200 lines per file**. Diminishing returns past 300.
+- Attention decay hits the **middle** of long files ("lost in the
+  middle"). Burying critical rules past line ~150 reduces their
+  effective load.
+- Prose-rule compliance tops out around ~70%. Structural tests and
+  hooks hit 100%. When a rule can be encoded mechanically, prefer
+  the mechanical enforcement.
+
+**The behavior test.** For every line: does removing this line
 change Claude's behavior on at least one realistic input? If no, cut.
 
 **Lines that almost always pass the test:**
@@ -131,9 +136,6 @@ document for a human reader. Replace narrative with imperative.
 
 ## 6. Cross-references vs duplication
 
-`ai-instruction-and-memory-files` §3 sets the duplication framework
-for instruction files; the same logic applies to skills.
-
 **Cross-reference (default)** when another skill's triggers already
 cover the file path or situation being edited. Example: `code-review`
 points at `skill-review` for `.claude/skills/**/SKILL.md` review
@@ -166,9 +168,8 @@ When reviewing a PR that touches `claude/.claude/skills/**/SKILL.md`:
 4. **DO NOT TRIGGER coverage** — adjacent-skill surfaces are named
    explicitly. Audit by listing every nearby skill in the same
    domain and asking whether DO NOT TRIGGER says "use that one."
-5. **Length** — under the 200-line target from
-   `ai-instruction-and-memory-files` §2. Flag anything that drifts
-   past that without a load-bearing reason.
+5. **Length** — under the 200-line target. Flag anything that drifts
+   past 200 (and especially past 300) without a load-bearing reason.
 6. **Behavior test per line** — every line should change Claude's
    behavior on at least one realistic input. Cut narrative,
    editorial meta-commentary, and incident retellings.
