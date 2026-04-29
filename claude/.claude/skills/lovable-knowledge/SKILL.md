@@ -110,22 +110,7 @@ When reviewing a PR that touches `.lovable/*.md`:
    bumped in the same PR? Does the PR description note that the human
    needs to paste the merged content into the Lovable UI?
 
-## 6. Sandbox-vs-`origin/main` drift
-
-Lovable's working sandbox at `/dev-server` can desync from `origin/main`
-without producing a git commit (e.g., in-product checkpoint rollbacks
-bypass git). The rendered preview serves from the sandbox, not from
-`main`. Symptom: a user reports "X was reverted," "X came back after I
-removed it," or "the change isn't showing in the preview."
-
-The fix is to merge a one-line no-op PR to `main` (e.g., a trailing
-newline in `.gitignore`). Lovable's automation resyncs the sandbox to
-`main` HEAD on the new commit. Surface this in chat when drift is
-suspected; do not re-apply edits from a stale sandbox base — diffs are
-computed against the rolled-back state and silently revert intervening
-`main` history.
-
-## 7. Primary sources
+## 6. Primary sources
 
 - [Lovable Docs — Knowledge](https://docs.lovable.dev/features/knowledge)
 - [agents.md standard](https://agents.md) (cross-agent AGENTS.md context)
