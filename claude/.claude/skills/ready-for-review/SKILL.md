@@ -31,6 +31,22 @@ Run steps in order. Halt on failures unless the step is marked **warn
 only**. After fixes produced by step 3, re-run step 2 — do not re-run
 step 3 on its own output.
 
+## 0. Activate gate session
+
+Write the active-session marker so this skill's own iteration pushes
+(step 3 fix → push → loop back to step 2) are not self-blocked by
+the `require-ready-for-review.sh` hook:
+
+<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/ready-for-review/SKILL.md) to verify it matches require-ready-for-review.sh's active-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```
+SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/.ready-for-review-active.d" && touch "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
+```
+
+If the chain fails (empty `SESSION_ID`, etc.), the
+`capture-session-id.sh` SessionStart hook didn't run — abort and
+report; do not proceed without the marker, since the gate would
+block iteration pushes.
+
 ## 1. Preconditions (halt on fail)
 
 - Current branch is not the default branch (`main` / `master` / `develop`).
@@ -153,6 +169,35 @@ If the branch has no PR and no remote tracking, surface this: the
 human can't review what isn't pushed. A project-specific pre-merge or
 PR-creation skill should handle the actual open; this skill does not
 create PRs.
+
+## 7. Record gate completion + deactivate session
+
+If every halt-on-fail step above passed, record the completed gate
+and remove the active-session marker:
+
+<!-- HOOK_TEST_FIXTURE: record-completion — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/ready-for-review/SKILL.md) to verify it matches require-ready-for-review.sh's completion-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```
+SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/ready-for-review-markers" && REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}') && git rev-parse HEAD > "$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
+```
+
+Then remove the active-session marker:
+
+<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/ready-for-review/SKILL.md) to verify it matches require-ready-for-review.sh's active-marker cleanup. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```
+SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
+```
+
+Removes only this session's file. If the skill errors out before
+reaching this step, don't manually clean up — the hook's 60-minute
+staleness cutoff handles the orphan automatically.
+
+**Do NOT write the completion marker if:**
+
+- Any halt-on-fail step (1, 2, 3, 6) produced findings that weren't
+  fixed in this session.
+- The user asked you to present findings without finishing the gate.
+- You are not in a git repository.
+- The branch has no PR and no remote tracking (nothing to gate).
 
 ## Completion
 

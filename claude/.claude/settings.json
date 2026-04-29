@@ -57,6 +57,18 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/require-ready-for-review.sh",
+            "if": "Bash(git push *)",
+            "statusMessage": "Checking ready-for-review gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-ready-for-review.sh",
+            "if": "Bash(gh pr ready *)",
+            "statusMessage": "Checking ready-for-review gate..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/require-worktree-for-git-writes.sh",
             "statusMessage": "Checking worktree enforcement..."
           }
