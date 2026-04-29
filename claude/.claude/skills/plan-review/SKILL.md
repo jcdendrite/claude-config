@@ -221,7 +221,7 @@ The dispatcher fires reviewers per touched domain. Each agent self-scopes agains
 | Item | Primary owner | Co-owners |
 |------|---------------|-----------|
 | **B1. Unstated assumptions** | `staff-backend-engineer` (runtime / SDK assumptions) | `staff-platform-engineer` (CI / build tools) |
-| **B2. Missing consumer analysis** | `staff-backend-engineer` (API consumers) | `staff-frontend-engineer`, `staff-product-engineer`, `staff-data-engineer` (per consumer type) |
+| **B2. Missing consumer analysis** | `staff-backend-engineer` (API consumers) | `staff-frontend-engineer`, `staff-product-engineer`, `staff-data-engineer` (per consumer type), `staff-analytics-engineer` (warehouse-consumer fitness — source shape suits modeling) |
 | **B3. Breaking intermediate states** | `staff-backend-engineer`, `staff-data-engineer` | `staff-platform-engineer` (deploy-window) |
 | **B4. Unresolved external dependencies** | `staff-backend-engineer` | — |
 | **B5, B6, B7, B13, B15. Judgment items** (evidence, proportionality, scope creep, ambiguous instructions, effort section) | judgment (any reviewer) | — |
