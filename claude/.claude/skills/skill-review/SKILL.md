@@ -5,11 +5,12 @@ description: >
   (`.claude/skills/**/SKILL.md`): frontmatter conventions, trigger
   design, voice, length targets, the operational-vs-narrative content
   test, and the cross-reference vs duplication framework.
-  TRIGGER when: editing or reviewing `.claude/skills/**/SKILL.md`;
-  auditing trigger accuracy across a skill set; restructuring or
-  pruning skills.
-  DO NOT TRIGGER when: creating a brand-new skill from scratch (use
-  `skill-creator`); editing CLAUDE.md or AGENTS.md (use
+  TRIGGER when: reviewing a `.claude/skills/**/SKILL.md` change
+  (PR / diff / pre-commit audit); auditing trigger accuracy across a
+  skill set; restructuring or pruning skills.
+  DO NOT TRIGGER when: authoring, iterating on, or optimizing a skill
+  (use `skill-creator` for scaffolding, eval / benchmark loops, and
+  description tuning); editing CLAUDE.md or AGENTS.md (use
   `ai-instruction-and-memory-files`); editing `.lovable/*.md` (use
   `lovable-knowledge`); reviewing code that isn't a skill file.
 user-invocable: false
@@ -17,9 +18,12 @@ user-invocable: false
 
 # Skill Review — Architecture & Checklist
 
-Complements `skill-creator` (scaffolds new skills, runs evals, tunes
-description text). This skill applies a review checklist to skill-file
-diffs.
+Fires in **review and audit** contexts (applying a checklist to a
+skill-file change). `skill-creator` covers the authoring loop —
+scaffolding, evals, benchmarking, description tuning. The lane split
+is by context, not by output type: skill-review stays out of authoring
+turns to avoid dual-firing with `skill-creator`'s broad "edit existing
+skill" claim.
 
 ## 1. What makes a skill load
 
@@ -64,13 +68,13 @@ DO NOT TRIGGER when: <obvious misfire>; <adjacent skill's surface>; <out of scop
 **Tradeoff.** Over-broad triggers load the skill's body into
 unrelated turns and steal context from the active task. Over-narrow
 triggers leave the skill dormant when it should fire and the user
-ends up restating what the skill already knows. Both fail; tune by
-sampling real recent transcripts where the skill should have fired.
+ends up restating what the skill already knows.
 
 **DO NOT TRIGGER carries equal weight.** Name the adjacent skills
-whose surfaces overlap. A `skill-review` description that says only
-"editing skill files" without naming `skill-creator` will fire on
-brand-new-skill scaffolding turns where `skill-creator` should own.
+whose surfaces overlap. A `skill-review` description that doesn't
+list `skill-creator` under DO NOT TRIGGER will dual-fire on every
+authoring turn `skill-creator` claims to own — costing context
+budget without adding marginal value.
 
 ## 3. Voice and structure
 
