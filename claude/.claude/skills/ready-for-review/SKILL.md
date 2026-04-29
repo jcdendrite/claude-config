@@ -99,7 +99,8 @@ same pass.
 
 ## 4. Sync PR description (warn + fix; skip if no PR)
 
-Compare the PR body against branch state:
+The PR description is for the reviewer, not for posterity. Compare
+the body against branch state:
 
 - `gh pr view <n> --json body,title`
 - `git log <base>..HEAD --oneline`
@@ -107,12 +108,22 @@ Compare the PR body against branch state:
 
 Flag and fix:
 
+- **Per-commit narratives** ("Commit X did Y, Commit Z did W").
+  Reorganize "What shipped" by surface the reviewer maps to (schema /
+  handler / tests / invariants / migration-deploy notes); `git log`
+  already has the chronology.
+- **Reviewer-action items Claude can answer itself.** Strip claims
+  you can verify ("all migrations match precedent" — confirm and
+  remove), test counts (those belong in the commit message), and
+  CI placeholders (step 5 covers those). Keep items requiring
+  reviewer judgment: deploy coordination, security-invariant catalog
+  approval, architectural sign-off.
+- Stale prose left behind by code changes — a removed guard, an
+  abandoned approach, a deleted file must also disappear from the
+  migration-ordering note, test plan, and "remaining concerns" list.
 - `TBD` / `pending` / "to be updated" markers still in the body.
-- Commits on the branch not reflected in the Summary section.
 - Files listed in the body that are no longer in the diff, or files
   in the diff absent from the body.
-- Stale line counts, screenshots of removed UI, references to approaches
-  that were abandoned during iteration.
 
 Propose an updated body and apply with `gh pr edit <n> --body`. Keep
 the project's template structure intact — refresh content inside
