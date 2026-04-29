@@ -134,7 +134,7 @@ For `.claude/skills/**/SKILL.md` review (frontmatter, trigger design, voice, len
 
 35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
-36. **Hook correctness** — Do PreToolUse/PostToolUse hooks block the right operations without false positives? A hook that blocks legitimate work is worse than no hook — it trains users to bypass the system.
+For hook reviews (`claude/.claude/hooks/*.sh`, hook entries in `settings.json`), see the `hook-review` skill.
 
 ## Domain: Lovable config
 
@@ -251,7 +251,7 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **31. Sensitive data in logs** | `staff-backend-engineer` | `ciso-reviewer` |
 | **32. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
 | **35. Permission scope** | `ciso-reviewer` | — |
-| **36. Hook correctness** | `staff-platform-engineer` | `ciso-reviewer` |
+| **36. Hook correctness** — reviewed via `hook-review` skill | `staff-platform-engineer` | `ciso-reviewer` |
 
 ## Step — Record review completion
 
