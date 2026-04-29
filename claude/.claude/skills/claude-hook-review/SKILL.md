@@ -1,5 +1,5 @@
 ---
-name: hook-review
+name: claude-hook-review
 description: >
   How to review Claude Code hook scripts (`claude/.claude/hooks/*.sh`)
   and hook entries in `settings.json` (PreToolUse, PostToolUse,
