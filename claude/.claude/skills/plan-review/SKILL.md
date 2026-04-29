@@ -36,11 +36,9 @@ Read the plan and classify which domains it touches:
 
 Before evaluating gaps, answer two questions in order:
 
-1. **What user surface does this serve?** Production users, internal-only (engineers / admins), dev-only (CI / test harness / IDE preview), or mixed (name the path each surface takes). The threat model follows from the surface — a dev-only smoke-test flow has no external attacker; an internal-only admin tool has no anonymous attacker. Persona reviewers must scope findings to the declared surface, not default to the worst-case external-attacker model.
+1. **What user surface and threat model does this serve?** A line or two — production users, internal-only, dev-only, or whatever framing fits. Persona reviewers must scope findings to the declared surface, not default to a worst-case external-attacker model.
 
 2. **Is the design appropriately sized for the user pain it solves on that surface?** Gap-finding on an over-elaborate design elaborates it further (each finding closes a gap by adding more machinery), and the checklist won't surface "this whole design is the wrong shape."
-
-If the plan doesn't declare a surface, demand one before proceeding — "an internal-only DX fix" or "production users never reach this code path" is a valid one-line declaration. Without it, persona reviewers default to worst-case threat models and inflate plan size for changes that don't warrant it.
 
 Markers of over-elaboration:
 
