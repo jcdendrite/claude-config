@@ -42,13 +42,10 @@ the `require-ready-for-review.sh` hook:
 SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/.ready-for-review-active.d" && touch "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
 ```
 
-The hook bypasses while THIS session's marker is fresh (<60 min) and
-refreshes its mtime on each bypass so long runs don't hit the staleness
-cutoff. Per-session keying prevents parallel skill sessions from
-thrashing on cleanup or leaking bypass to unrelated sessions. If the
-chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh`
-SessionStart hook didn't run — abort and report; do not proceed
-without the marker, since the gate would block iteration pushes.
+If the chain fails (empty `SESSION_ID`, etc.), the
+`capture-session-id.sh` SessionStart hook didn't run — abort and
+report; do not proceed without the marker, since the gate would
+block iteration pushes.
 
 ## 1. Preconditions (halt on fail)
 
@@ -171,12 +168,6 @@ and remove the active-session marker:
 ```
 SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/ready-for-review-markers" && REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}') && git rev-parse HEAD > "$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
 ```
-
-The completion marker holds the local HEAD SHA. The gate hook compares
-it against the HEAD of the branch about to be pushed (or marked
-ready-for-review): match means the gate ran on this artifact, allow.
-Any new commit invalidates the marker automatically (HEAD moves), so
-"fix one more thing then push" forces a re-run.
 
 Then remove the active-session marker:
 
