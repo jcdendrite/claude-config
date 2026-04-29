@@ -66,7 +66,7 @@ Schema-change diffs nominally route three ways — `staff-backend-engineer` (des
 ### Other
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
-- **`settings.json`** — global settings wiring up the hooks and statusline. Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
+- **`settings.json`** — global settings wiring up the hooks and statusline. Configured with **opusplan** as the default model (cost-effective and [recommended by Anthropic](https://support.claude.com/en/articles/14552983-models-usage-and-limits-in-claude-code)). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 - **`statusline-command.sh`** — status bar showing model, context usage, session cost, working directory, and git branch.
 
 ## Worktree enforcement
