@@ -34,15 +34,20 @@ Read the plan and classify which domains it touches:
 
 ## Step 2 — Design-fitness gate
 
-Before evaluating gaps, answer: **is the design appropriately sized for the ticket scope?** Gap-finding on an over-elaborate design elaborates it further (each finding closes a gap by adding more machinery), and the checklist won't surface "this whole design is the wrong shape."
+Before evaluating gaps, answer two questions in order:
+
+1. **What user surface and threat model does this serve?** A line or two — production users, internal-only, dev-only, or whatever framing fits. Persona reviewers must scope findings to the declared surface, not default to a worst-case external-attacker model.
+
+2. **Is the design appropriately sized for the user pain it solves on that surface?** Gap-finding on an over-elaborate design elaborates it further (each finding closes a gap by adding more machinery), and the checklist won't surface "this whole design is the wrong shape."
 
 Markers of over-elaboration:
 
+- Defensive layers stacked beyond what the declared user surface and threat model justify.
 - Conditional logic for future phases that may not arrive.
-- Defensive paths against attack scenarios that haven't been observed.
 - Layers that duplicate a higher-level abstraction.
 - Granularity exceeding any concrete consumer's need.
 - Captured outputs / fields with no reader downstream.
+- "Could be done in N lines" stays a valid challenge even after persona reviewers have shaped the plan — persona-shaped is not persona-locked.
 
 If over-elaborated: stop. Surface the simpler design as the primary review output before any checklist findings. Otherwise proceed to Step 3 — gap-finding will surface what's missing.
 
@@ -182,7 +187,7 @@ This is the design-stage gate. Specialist misses here are recoverable in code-re
 - **Convergence-as-design-tell** from a prior round (see Reconciliation).
 - **Explicit user request.**
 
-Always spawn `ciso-reviewer` when the plan touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional. Always spawn `staff-product-engineer` when the plan changes user-facing behavior.
+Always spawn `ciso-reviewer` when the plan touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the Step 2 user-surface declaration puts the change outside `ciso-reviewer`'s threat model (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. Always spawn `staff-product-engineer` when the plan changes user-facing behavior.
 
 Spawn per question (not per file-path domain) — "plan touches backend" isn't enough; the question needs a specific shape.
 
