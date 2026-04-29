@@ -2,20 +2,26 @@
 name: ready-for-review
 description: >
   Pre-handoff gate run before a human reviewer looks at an open PR:
-  verifies tests/lint/typecheck, runs /code-review, syncs PR description
-  against branch state, checks CI, and confirms tree hygiene.
-  TRIGGER when: the user signals work is ready for their review ("ready
-  for review", "ready for human review", "ready for your review", "ship
-  it"); OR Claude is about to emit a handoff line such as "Ready for
-  your review.", "PR #N is ready for your review", "PR #N is ready for
-  merge", "the branch is ready for handoff", or "take a look when you're
-  back" — run this skill first and do not emit the handoff line until
-  it passes; OR before invoking /ultrareview or inviting external
-  reviewers on a PR.
-  DO NOT TRIGGER when: work is still being iterated, only a diff review
-  or a single verification step was requested, on the default branch,
-  or when a project-specific pre-merge-style skill already wraps these
-  checks (let that skill delegate here instead).
+  verifies tests/lint/typecheck, runs /code-review against the
+  cumulative PR-vs-default-branch diff, syncs PR description against
+  branch state, checks CI, and confirms tree hygiene.
+  TRIGGER when: (a) the user signals work is reviewer-ready, OR Claude
+  is about to summarize what landed and implicitly hand back — fire on
+  the *intent* (work-is-done-for-now-and-the-user-is-the-next-actor),
+  not on specific phrases. Examples that should fire: "ready for
+  review", "ship it", "PR is up", "take a look", "your turn", "PR is
+  now full-scope X", "implementation pushed and reviewable"; (b) Claude
+  has just pushed (or is about to push) commits to a branch that
+  already has an open PR and is wrapping up rather than continuing to
+  iterate; (c) before spawning a multi-persona ripple review (CISO +
+  multiple staff-* engineers) via the Agent tool on a PR-stage diff
+  outside an active /ready-for-review or /pre-merge flow, or before
+  invoking /ultrareview.
+  DO NOT TRIGGER when: work is still being iterated (more commits
+  planned before handoff); only a diff review or single verification
+  step was requested; on the default branch; or when a project-specific
+  pre-merge-style skill already wraps these checks (let that skill
+  delegate here instead).
 argument-hint: "[optional scope note]"
 ---
 
@@ -65,10 +71,31 @@ genuinely changed.
 
 ## 3. Code review (halt on findings)
 
-Run `/code-review` over the full branch diff. Unskippable — markdown,
-skill, and config diffs benefit from the same pass. Fix all findings,
-then return to step 2 and re-run fast checks on the fixes. Do not
-re-run `/code-review` on its own output (loop risk).
+Run `/code-review` against the **cumulative** PR-vs-default-branch
+diff — not staged changes, not per-commit deltas:
+
+```bash
+BASE_REF=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main)
+git diff $(git merge-base origin/$BASE_REF HEAD)...HEAD
+```
+
+The squash-merge artifact reviewers ultimately see is this diff.
+Cumulative review surfaces cross-commit findings — defense-in-depth
+gaps spanning two commits, deprecations exposed only when a new test
+exercises an unmodified call site, idempotency-key shape mismatches
+across modules — that per-commit review misses. Per-commit
+`/code-review` during iteration remains valuable for fast feedback;
+treat its findings as inputs here, not substitutes.
+
+Because the reviewed diff is not the staged diff, do NOT write the
+review-completion marker (per `/code-review`'s own rule). If findings
+are produced, fix them in a new commit; that commit goes through the
+normal staged-diff `/code-review` + marker gate, then return to
+step 2 and re-run fast checks. Do not re-run `/code-review` on its
+own output (loop risk).
+
+Unskippable — markdown, skill, and config diffs benefit from the
+same pass.
 
 ## 4. Sync PR description (warn + fix; skip if no PR)
 
