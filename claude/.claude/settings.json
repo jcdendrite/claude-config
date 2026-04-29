@@ -102,5 +102,6 @@
         "repo": "anthropics/claude-plugins-official"
       }
     }
-  }
+  },
+  "model": "opusplan"
 }
