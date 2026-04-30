@@ -3163,6 +3163,67 @@ class TestRequireWorktreeForGitWrites:
         assert reason is not None
         assert "session-persisted" not in reason
 
+    # Tests for git_C_note_if_present: the corrective note appended when
+    # the agent used `git -C <path> <write-op>` from the main tree and
+    # expected the -C path to be treated as the working directory.
+    # Assertion phrases:
+    #   chained-cd note (existing) → unique substring: "chained 'cd"
+    #   -C note (new)              → unique substring: "-C path"
+
+    def test_git_dash_C_write_appends_C_note(self, opted_in_repo):
+        """`git -C /tmp commit` → denied; -C note appended."""
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("git -C /tmp commit -m foo"),
+            cwd=opted_in_repo,
+        )
+        assert reason is not None
+        assert "-C path" in reason
+
+    def test_git_dash_C_readonly_no_C_note(self, opted_in_repo):
+        """`git -C /tmp log` is read-only → allowed; no deny reason."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git -C /tmp log"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_plain_git_no_C_note(self, opted_in_repo):
+        """Plain `git commit` without -C → denied; -C note NOT appended."""
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=opted_in_repo,
+        )
+        assert reason is not None
+        assert "-C path" not in reason
+
+    def test_subcommand_dash_C_no_C_note(self, opted_in_repo):
+        """`git commit -C HEAD` uses -C as commit's reuse-message flag,
+        not as the global working-dir flag. The note must NOT fire —
+        the hint about working directories doesn't apply here."""
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("git commit -C HEAD"),
+            cwd=opted_in_repo,
+        )
+        assert reason is not None
+        assert "-C path" not in reason
+
+    def test_chained_cd_and_git_C_appends_both_notes(self, opted_in_repo):
+        """Command with both patterns → both notes appended independently."""
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("cd /tmp && git -C /tmp commit -m foo"),
+            cwd=opted_in_repo,
+        )
+        assert reason is not None
+        assert "chained 'cd" in reason   # chained-cd note
+        assert "-C path" in reason        # -C note
+
 
 # --- require-stow-reminder.sh ----------------------------------------
 #

@@ -48,6 +48,54 @@ cwd_anchor_note_if_chained() {
   fi
 }
 
+# When the command uses `git -C <path> <write-op>` from the main tree,
+# the agent likely expected the -C path to be treated as the working
+# tree. The hook checks the session-persisted CWD (from the tool input
+# JSON) — not the -C path — so the op is blocked even when -C points at
+# a linked worktree. Returns a self-correction note for the agent when
+# this pattern is detected; empty otherwise.
+#
+# Detection is scoped to `-C` in the GLOBAL flag position only —
+# subcommand-level uses (`git commit -C HEAD`, `git diff -C`, etc.)
+# do not trigger the note, since the hint would not apply there.
+# Mirrors the flag-skip table in extract_git_subcmd so both parsers
+# stay consistent. Globbing is disabled around the loop so that an
+# input like "git * -C foo" can't glob against cwd contents.
+git_C_note_if_present() {
+  local command="$1"
+  fragment_invokes_git "$command" || return
+  local after_git="${command#*git}"
+  local saved_opts=$-
+  set -f
+  local skip_next=false found=false
+  for word in $after_git; do
+    if $skip_next; then
+      skip_next=false
+      continue
+    fi
+    case "$word" in
+      -C)
+        found=true
+        break ;;
+      -c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+        skip_next=true ;;
+      -*)
+        ;;
+      *)
+        break ;;  # subcommand reached; any -C past here is subcommand-scoped
+    esac
+  done
+  # Note: detects -C in the first git invocation only. A command like
+  # `git status && git -C ...` won't trigger — the loop stops at the
+  # first git's subcommand and never reaches the second git's flags.
+  if [[ "$saved_opts" != *f* ]]; then
+    set +f
+  fi
+  if $found; then
+    printf '%s' " If you used 'git -C <path>' expecting the -C path to be treated as the working tree: this hook reads cwd from Claude Code's session-persisted bash state (set by prior Bash calls), not from the -C path, because -C only retargets git's own working directory and doesn't change the session cwd. Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call."
+  fi
+}
+
 # Fail-closed on malformed input: if jq couldn't parse the stdin JSON, we
 # can't tell what Claude is about to run, so deny rather than silently allow.
 if [ "$JQ_EXIT" -ne 0 ]; then
@@ -195,12 +243,12 @@ while IFS= read -r fragment; do
 
   subcmd=$(extract_git_subcmd "$fragment")
   if [ -z "$subcmd" ]; then
-    emit_deny "Blocked by worktree-enforcement hook: could not determine the git subcommand in '$fragment'. This repo has opted into worktree discipline (.claude/worktree-required is committed). Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree.$(cwd_anchor_note_if_chained "$COMMAND")"
+    emit_deny "Blocked by worktree-enforcement hook: could not determine the git subcommand in '$fragment'. This repo has opted into worktree discipline (.claude/worktree-required is committed). Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree.$(cwd_anchor_note_if_chained "$COMMAND")$(git_C_note_if_present "$COMMAND")"
     exit 0
   fi
 
   if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
-    emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this session is running in the main working tree of a repo that has opted into worktree discipline (.claude/worktree-required is committed). Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(cwd_anchor_note_if_chained "$COMMAND")"
+    emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this session is running in the main working tree of a repo that has opted into worktree discipline (.claude/worktree-required is committed). Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(cwd_anchor_note_if_chained "$COMMAND")$(git_C_note_if_present "$COMMAND")"
     exit 0
   fi
 done <<< "$FRAGMENTS"
