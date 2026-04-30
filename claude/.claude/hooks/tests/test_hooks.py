@@ -1884,6 +1884,824 @@ class TestDenyPrivateProjectRefs:
         # Sanity: the user is pointed at their own blocklist file.
         assert "private-projects.md" in reason
 
+    # -- git commit -F / --file commit-message-source files ----------------
+    # Parallel to gh pr's --body-file: the commit-message file's contents
+    # never appear in the command string. Without this scan, a tracker
+    # token in the file slips through the same way it slipped through
+    # gh pr --body-file before that hole was closed.
+
+    def test_git_commit_F_flag_with_tracker_denied(self, claude_config_repo, tmp_path):
+        """The canonical -F leak pattern: -F pointing at a file whose
+        contents never appear in the command string. The hook must read
+        and scan the file, not just the command."""
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text("Subject\n\nBody mentioning WIDGET-123 incident.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -F {msg_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_git_commit_F_flag_clean_message_allowed(self, claude_config_repo, tmp_path):
+        """Tracker-clean -F file: scan reads the file, finds nothing,
+        passes. Lock-in for the allow path."""
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text("Refactor parser to use streaming reads.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -F {msg_file}"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_git_commit_long_file_form_with_tracker_denied(self, claude_config_repo, tmp_path):
+        """Long form `--file=<path>` parses identically to `-F`."""
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text("Land FOOCORP-42 follow-up.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit --file={msg_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_git_commit_m_clean_F_with_tracker_still_denied(self, claude_config_repo, tmp_path):
+        """`git commit -m "msg" -F <file>` — git concatenates both as
+        the commit message. A clean -m must NOT mask a tracker in the
+        -F file."""
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text("Trailing reference: NULLPROJ-999.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m 'Subject is clean' -F {msg_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "pseudo_path",
+        ["-", "/dev/stdin", "/dev/fd/1", "/proc/self/fd/0"],
+        ids=["bare-dash", "dev-stdin", "dev-fd", "proc-fd"],
+    )
+    def test_git_commit_F_pseudo_file_denied(self, claude_config_repo, pseudo_path):
+        """Pseudo-file paths can't be statically scanned: '-' / '/dev/stdin'
+        / '/dev/fd/*' / '/proc/*/fd/*' resolve to the hook's stdin or a
+        process-specific fd, not git's future stdin. Same fail-closed
+        posture as gh pr's pseudo-file branch."""
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(f"git commit -F {pseudo_path}")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), f"expected deny on pseudo-file path {pseudo_path}"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "pseudo-file" in reason.lower()
+
+    def test_git_commit_F_unreadable_path_fails_closed(self, claude_config_repo, tmp_path):
+        """Nonexistent -F path: hook denies with a recognizable reason.
+        Unscanned content is exactly the leak vector this hook guards
+        against, so fail-closed is load-bearing."""
+        missing = tmp_path / "does-not-exist.txt"
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(f"git commit -F {missing}")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected deny on unreadable -F path"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "message-source file" in reason
+        assert str(missing) in reason
+
+    def test_git_commit_F_allowlisted_token_passes(self, claude_config_repo, tmp_path):
+        """OSS_ALLOWLIST tokens (CVE / RFC / etc.) in a -F file pass.
+        Cross-cutting check that the new scan path inherits the same
+        allowlist, not a parallel hardcoded one."""
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text("Implements RFC-9110 section 9.3.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -F {msg_file}"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_git_commit_F_blocklist_match_denied_with_generic_message(
+        self, claude_config_repo, private_projects_file, tmp_path,
+    ):
+        """User-local blocklist must apply to -F file content. Deny
+        message must NOT name the matched entry — the generic-message-
+        only invariant is load-bearing on the new scan path too."""
+        private_projects_file("Acme Corp\n")
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text("Polish Acme Corp release flow.\n")
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(f"git commit -F {msg_file}")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected deny on blocklist match in -F file"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Acme Corp" not in reason
+        assert "acme corp" not in reason.lower()
+        assert "deliberately does not name which entry matched" in reason
+
+    # -- gh api mutating-call surfaces -------------------------------------
+    # `gh api repos/.../pulls/N/comments`, `.../comments/M/replies`,
+    # `.../issues/N/comments`, etc. carry user-authored bodies via
+    # `-f body=` / `-F body=` field flags or via `--input <path>`. None
+    # of these were previously dispatched to this hook because the
+    # dispatcher only matched `gh pr (create|edit)`. Defaults-to-GET
+    # reads are not gated; only POST / PATCH / PUT / DELETE.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api repos/x/y/pulls/1/comments -X POST -f body='Fixes WIDGET-123'",
+            "gh api repos/x/y/pulls/1/comments/2/replies -X POST -f body='Fixes WIDGET-123'",
+            "gh api repos/x/y/issues/1/comments -X POST -f body='Fixes WIDGET-123'",
+            "gh api repos/x/y/pulls/1/reviews -X POST -f body='Fixes WIDGET-123'",
+            "gh api repos/x/y/pulls/1 -X PATCH -f body='Fixes WIDGET-123'",
+            "gh api repos/x/y/pulls/1 -X PUT -f body='Fixes WIDGET-123'",
+            "gh api repos/x/y/pulls/1/comments/2 -X DELETE -f body='Trailing WIDGET-123 in audit log'",
+        ],
+        ids=[
+            "post-pr-review-comment",
+            "post-review-thread-reply",
+            "post-issue-comment",
+            "post-pr-review",
+            "patch-pr",
+            "put-pr",
+            "delete-with-body",
+        ],
+    )
+    def test_gh_api_mutating_inline_body_with_tracker_denied(self, claude_config_repo, command):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_gh_api_method_long_form_with_tracker_denied(self, claude_config_repo):
+        """`--method POST` is the long form of `-X POST`; the dispatch
+        must match both."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/pulls/1/comments --method POST -f body='Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_method_equals_form_with_tracker_denied(self, claude_config_repo):
+        """`--method=POST` (equals form) parses identically."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/pulls/1/comments --method=POST -f body='Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_X_equals_form_with_tracker_denied(self, claude_config_repo):
+        """`-X=POST` (equals form on short flag) parses identically."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/pulls/1/comments -X=POST -f body='Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_default_get_not_dispatched(self, claude_config_repo):
+        """Default method is GET — read-only calls don't carry user
+        content and are intentionally not gated. Without this allow,
+        every `gh api repos/...` read would pay the hook cost."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/pulls/1/comments"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_explicit_get_with_tracker_in_query_allowed(self, claude_config_repo):
+        """An explicit `-X GET` is still a read; not gated. A tracker
+        token appearing in the URL or query string of a GET passes,
+        because GET requests don't author content into anything the
+        receiver re-publishes."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api 'repos/x/y/issues?labels=WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_post_clean_body_allowed(self, claude_config_repo):
+        """Mutating call with a clean body: dispatch fires, scan finds
+        nothing, allow. Lock-in for the allow path on the new branch."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/pulls/1/comments -X POST -f body='Looks good, shipping.'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_post_input_file_with_tracker_denied(self, claude_config_repo, tmp_path):
+        """`--input <path>` reads a JSON body from a file. The hook
+        must read the file and scan it, not just the command string."""
+        body_file = tmp_path / "comment.json"
+        body_file.write_text('{"body": "Fixes EXAMPLECO-7 incident"}\n')
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST --input {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_post_input_equals_form_with_tracker_denied(self, claude_config_repo, tmp_path):
+        """`--input=<path>` (equals form) parses identically."""
+        body_file = tmp_path / "comment.json"
+        body_file.write_text('{"body": "Fixes BARCORP-22"}\n')
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST --input={body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_post_input_file_clean_allowed(self, claude_config_repo, tmp_path):
+        """Tracker-clean --input file passes."""
+        body_file = tmp_path / "comment.json"
+        body_file.write_text('{"body": "Looks good."}\n')
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST --input {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_post_input_allowlisted_token_passes(self, claude_config_repo, tmp_path):
+        """OSS_ALLOWLIST tokens in --input file content pass — the new
+        scan path inherits the same allowlist."""
+        body_file = tmp_path / "comment.json"
+        body_file.write_text('{"body": "Implements RFC-7231 section 6.5"}\n')
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST --input {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "pseudo_path",
+        ["-", "/dev/stdin", "/dev/fd/1", "/proc/self/fd/0"],
+        ids=["bare-dash", "dev-stdin", "dev-fd", "proc-fd"],
+    )
+    def test_gh_api_post_input_pseudo_file_denied(self, claude_config_repo, pseudo_path):
+        """Pseudo-file --input paths fail closed, same posture as the
+        gh-pr body-source pseudo-file branch."""
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST --input={pseudo_path}")
+            ),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), f"expected deny on pseudo-file path {pseudo_path}"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "pseudo-file" in reason.lower()
+
+    def test_gh_api_post_input_unreadable_path_fails_closed(self, claude_config_repo, tmp_path):
+        """Nonexistent --input path: deny with recognizable reason."""
+        missing = tmp_path / "does-not-exist.json"
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST --input {missing}")
+            ),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected deny on unreadable --input path"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "--input file" in reason
+        assert str(missing) in reason
+
+    def test_gh_api_unrelated_remote_allowed(self, unrelated_remote_repo):
+        """Scoping short-circuit applies to gh api too — the hook must
+        not block API calls in any other repo even on mutating writes."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/pulls/1/comments -X POST -f body='Fixes WIDGET-123'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_blocklist_match_in_input_file_denied_with_generic_message(
+        self, claude_config_repo, private_projects_file, tmp_path,
+    ):
+        """User-local blocklist applies to --input file content too,
+        with the generic-message-only invariant preserved."""
+        private_projects_file("Acme Corp\n")
+        body_file = tmp_path / "comment.json"
+        body_file.write_text('{"body": "Acme Corp release polish"}\n')
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST --input {body_file}")
+            ),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected deny on blocklist match in --input file"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Acme Corp" not in reason
+        assert "acme corp" not in reason.lower()
+        assert "deliberately does not name which entry matched" in reason
+
+    # -- gh api implicit POST and `@<path>` field-from-file bypass paths ---
+    # Two bypasses surfaced in security review: (1) `gh api` auto-promotes
+    # to POST whenever any -f / -F / --field / --raw-field / --input flag
+    # is supplied, so requiring an explicit -X POST in dispatch let
+    # `gh api foo -f body=WIDGET-123` ship unscanned; (2) the `key=@<path>`
+    # field-value form reads file contents at gh-invocation time, so
+    # `-F body=@/tmp/leak.txt` carried tracker tokens into the request
+    # body without ever appearing in the command string.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # No -X at all — gh auto-POSTs because -f is present.
+            "gh api repos/x/y/issues/1/comments -f body='Fixes WIDGET-123'",
+            "gh api repos/x/y/pulls/1/comments -F body='Fixes WIDGET-123'",
+            "gh api repos/x/y/pulls/1/comments --field body='Fixes WIDGET-123'",
+            "gh api repos/x/y/pulls/1/comments --raw-field body='Fixes WIDGET-123'",
+            # --input alone (no -X) also auto-POSTs.
+            "gh api repos/x/y/pulls/1/comments --input /dev/null && gh api repos/x/y/pulls/1/comments -f body='WIDGET-123'",
+        ],
+        ids=[
+            "implicit-post-via-f",
+            "implicit-post-via-F",
+            "implicit-post-via-long-field",
+            "implicit-post-via-raw-field",
+            "implicit-post-chained",
+        ],
+    )
+    def test_gh_api_implicit_post_with_tracker_denied(self, claude_config_repo, command):
+        """gh api auto-POSTs when any field flag is present even
+        without -X. The dispatch must catch this — explicit-method
+        gating alone leaves a real bypass."""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_gh_api_implicit_post_clean_body_allowed(self, claude_config_repo):
+        """Implicit-POST dispatch fires, scan finds nothing, allow.
+        Lock-in for the allow path on the implicit-POST branch."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/pulls/1/comments -f body='Looks good, shipping.'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_XPOST_concatenated_with_tracker_denied(self, claude_config_repo):
+        """gh accepts `-XPOST` with no separator (cobra/pflag short-flag
+        concatenation). Dispatch must match this form too — requiring
+        `-X` followed by space or `=` leaves a documented-form bypass."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/pulls/1/comments -XPOST -f body='Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "flag",
+        ["-f", "-F", "--field", "--raw-field"],
+        ids=["short-f", "short-F", "long-field", "long-raw-field"],
+    )
+    def test_gh_api_field_at_path_with_tracker_denied(
+        self, claude_config_repo, tmp_path, flag,
+    ):
+        """`-f key=@<path>` and friends read the field value from a
+        file at gh-invocation time. Without scanning the file, the
+        literal `body=@/tmp/leak.txt` in the command string passes
+        the tracker scan trivially while the file content ships."""
+        leak_file = tmp_path / "leak.txt"
+        leak_file.write_text("Trailing reference: WIDGET-123.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST {flag} body=@{leak_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_field_at_path_clean_allowed(self, claude_config_repo, tmp_path):
+        """A tracker-clean @<path> field-file passes."""
+        body_file = tmp_path / "body.txt"
+        body_file.write_text("Looks good.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST -F body=@{body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "pseudo_path",
+        ["-", "/dev/stdin", "/dev/fd/1", "/proc/self/fd/0"],
+        ids=["bare-dash", "dev-stdin", "dev-fd", "proc-fd"],
+    )
+    def test_gh_api_field_at_pseudo_file_denied(self, claude_config_repo, pseudo_path):
+        """`-F body=@-` reads from gh's stdin, which the hook cannot
+        statically verify. Same fail-closed posture as --input."""
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST -F body=@{pseudo_path}")
+            ),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), f"expected deny on pseudo-file path {pseudo_path}"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "pseudo-file" in reason.lower()
+
+    def test_gh_api_field_at_unreadable_path_fails_closed(self, claude_config_repo, tmp_path):
+        """Nonexistent @<path>: deny with recognizable reason."""
+        missing = tmp_path / "does-not-exist.txt"
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(
+                bash_input(f"gh api repos/x/y/pulls/1/comments -X POST -F body=@{missing}")
+            ),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected deny on unreadable @<path>"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "field-value file" in reason
+        assert str(missing) in reason
+
+    def test_gh_api_chained_after_other_command_with_tracker_denied(self, claude_config_repo):
+        """Regression-pin: dispatcher's chain-prefix alternation
+        (`(^|&&?|;|\\|\\|?)`) must let `gh api` after a leading echo or
+        any other command still fire. A refactor narrowing dispatch to
+        `^\\s*gh api` would silently bypass chained mutating calls."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("echo prep && gh api repos/x/y/pulls/1/comments -X POST -f body='Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    # -- Tracker-vs-blocklist priority -------------------------------------
+    # Header invariant (hook lines 83-84): "Tracker-ID matches take
+    # priority — a commit with both gets the tracker-ID deny message."
+    # Without a test pinning this, a refactor reordering the two scans
+    # could silently swap which deny message ships, including potentially
+    # leaking the matched blocklist entry name from the tracker-ID code
+    # path's HIT_LIST echo.
+
+    def test_tracker_id_takes_priority_over_blocklist_match(
+        self, claude_config_repo, private_projects_file,
+    ):
+        """A commit message containing BOTH a tracker token AND a
+        blocklist entry must surface the tracker-ID deny message. The
+        blocklist entry must NOT appear in the deny output — preserves
+        both the documented priority order AND the generic-message-only
+        invariant on the blocklist code path."""
+        private_projects_file("Acme Corp\n")
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(
+                bash_input("git commit -m 'Fix WIDGET-123 in Acme Corp module'")
+            ),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected deny verdict"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        # Tracker-ID branch fired (priority): its specific marker phrase.
+        assert "Commit blocked by redaction gate" in reason
+        assert "WIDGET-123" in reason
+        # Blocklist entry must NOT appear — preserves generic-message
+        # invariant even when both scans would have matched.
+        assert "Acme Corp" not in reason
+        assert "acme corp" not in reason.lower()
+
+    # --- Quote-aware flag extraction: false-positive locks ---
+
+    def test_body_source_fp_flag_in_title_allowed(self, claude_config_repo):
+        """extract_body_source_paths must not false-positive on '-F' that
+        appears inside a quoted --title value. Without the quote-stripping
+        fix, this command was blocked by the hook with 'body-source file at
+        and'."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "gh pr create"
+                    " --title \"close git commit -F and gh api scan gaps\""
+                    " --body \"no tracker IDs here\""
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_body_source_file_with_tracker_id_still_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Positive control: quote-stripping must not disable extraction of a
+        real --body-file flag. A body file containing a tracker token must
+        still be caught after the fix."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("See WIDGET-123 for context.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f"gh pr create --title \"ordinary title\""
+                    f" --body-file {body_file}"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_commit_msg_source_fp_flag_in_message_allowed(self, claude_config_repo):
+        """extract_commit_message_source_paths must not false-positive on
+        '-F' that appears inside a quoted -m message value. A clean file is
+        staged so the diff-gated branch that calls the extractor is entered."""
+        (claude_config_repo / "clean.txt").write_text("some content\n")
+        subprocess.run(["git", "add", "clean.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m \"refactor: use -F flag for config files\""
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_input_fp_flag_in_field_value_allowed(self, claude_config_repo):
+        """extract_gh_api_input_paths must not false-positive on '--input'
+        that appears inside a quoted field value. Without quote-stripping,
+        the hook would extract the next token after '--input' as a file
+        path and fail-close on it."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "gh api -X POST"
+                    " -f body=\"see --input flag in the api docs\""
+                    " repos/owner/repo/issues"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_field_at_fp_path_in_field_value_allowed(self, claude_config_repo):
+        """extract_gh_api_field_at_paths must not false-positive on a
+        'key=@path' pattern that appears inside a quoted field value. Without
+        quote-stripping, the '-F query=@./schema.json' substring inside the
+        body value would be extracted, then the hook would deny because the
+        path doesn't exist (fail-closed on unreadable path)."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "gh api -X POST"
+                    " -f body=\"pass -F query=@./schema.json for reference\""
+                    " repos/owner/repo/issues"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_body_source_file_clean_still_allowed(self, claude_config_repo, tmp_path):
+        """Positive control: a legitimate --body-file with clean content must
+        still be extracted and allowed after the quote-stripping fix (i.e.
+        the strip does not disable extraction of real flags outside quotes)."""
+        body_file = tmp_path / "clean-body.md"
+        body_file.write_text("This PR fixes the login flow. No tracker IDs.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f"gh pr create --title \"see -F flag\""
+                    f" --body-file {body_file}"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_body_source_quoted_path_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted file-path argument must still be extracted and scanned. A
+        body file referenced as --body-file "/path/file.md" (outer quotes
+        present) containing a tracker token must be caught — the xargs
+        tokenizer strips outer quotes and emits the bare path, so the file
+        is read and scanned identically to the unquoted form."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("See WIDGET-123 for context.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh pr create --title "ordinary title"'
+                    f' --body-file "{body_file}"'
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_body_source_quoted_path_clean_allowed(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted file-path argument with clean content must be allowed.
+        Mirrors test_body_source_quoted_path_with_tracker_denied but
+        with no tracker token — confirms the quoted-path extraction does
+        not introduce false denials when the file content is clean."""
+        body_file = tmp_path / "clean-body.md"
+        body_file.write_text("This PR fixes the login flow. No tracker IDs.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh pr create --title "ordinary title"'
+                    f' --body-file "{body_file}"'
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_body_source_equals_form_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """The =form (--body-file=path) routes through a distinct awk branch
+        from the space-separated form and must also extract and scan the file.
+        A body file referenced via --body-file=/path containing a tracker
+        token must be caught."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("See WIDGET-123 for context.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh pr create --title "ordinary title"'
+                    f' --body-file={body_file}'
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_commit_msg_source_quoted_path_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted file-path argument to git commit -F must still be extracted
+        and scanned. A commit-message file referenced as -F "/path/msg.txt"
+        (outer quotes present) containing a tracker token must be caught.
+        A clean file is staged so the diff-gated branch that calls the
+        extractor is entered."""
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text("See WIDGET-123 for context.\n")
+        (claude_config_repo / "clean.txt").write_text("some content\n")
+        subprocess.run(["git", "add", "clean.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f'git commit -F "{msg_file}"'),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_input_quoted_path_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted file-path argument to gh api --input must still be extracted
+        and scanned. A request body file referenced as --input "/path/body.json"
+        (outer quotes present) containing a tracker token must be caught."""
+        input_file = tmp_path / "body.json"
+        input_file.write_text('{"body": "See WIDGET-123 for context."}\n')
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh api -X POST --input "{input_file}"'
+                    f" repos/owner/repo/issues"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_field_at_quoted_path_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted path in a gh api field-at expression (-f body=@"/path")
+        must still be extracted and scanned. The outer quotes around the
+        path are stripped by xargs tokenization, so the bare path is
+        extracted and the file is read and scanned."""
+        field_file = tmp_path / "field-value.txt"
+        field_file.write_text("See WIDGET-123 for context.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh api -X POST -f body=@"{field_file}"'
+                    f" repos/owner/repo/issues"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
 
 # ---------------------------------------------------------------------------
 # require-worktree-for-git-writes.sh
