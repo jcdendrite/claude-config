@@ -214,33 +214,43 @@ OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|GH|BUG|JEP|JDK|LLVM
 #   -F <path>             -F=<path>
 #   --template <path>     --template=<path>
 #   -T <path>             -T=<path>
-# One path per output line. Strips matching outer single or double
-# quotes. Does NOT handle paths containing whitespace — such a path is
-# silently truncated at the first space, fails the readability check
-# below, and the hook fail-closes with a clear message.
+# One path per output line. Uses xargs tokenization so flag-like text
+# inside a quoted argument value (e.g. a PR title containing "-F") is
+# part of a multi-word token and is never matched as a standalone flag.
+# xargs strips outer quotes from real file-path arguments, so quoted
+# paths (e.g. --body-file "/path/body.md") are extracted correctly.
+# Paths containing whitespace are not supported — xargs emits them as
+# multiple tokens; the resulting path fails the readability check below
+# and the hook fail-closes with a clear message. xargs failure is
+# suppressed; returns empty on error (fail-open for unparseable input,
+# consistent with the documented shell-expansion gap).
 extract_body_source_paths() {
   local cmd="$1"
-  printf '%s\n' "$cmd" \
-    | grep -oE '(--body-file|--template|-F|-T)(=|[[:space:]]+)[^[:space:];&|]+' \
-    | sed -E 's/^(--body-file|--template|-F|-T)(=|[[:space:]]+)//' \
-    | sed -E "s/^['\"](.*)['\"]$/\\1/"
+  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
+    BEGIN { cap = 0 }
+    cap { print; cap = 0; next }
+    /^(--body-file|--template|-F|-T)$/ { cap = 1; next }
+    /^(--body-file=|--template=|-F=|-T=)/ { sub(/^[^=]*=/, ""); print }
+  '
 }
 
 # Extract paths passed to any git-commit message-source flag. Covers:
 #   -F <path>             -F=<path>
 #   --file <path>         --file=<path>
-# Same whitespace / quote behavior as extract_body_source_paths. Note
-# that `git commit -F` and `gh pr create -F` both use the `-F` short
-# form for "file with text" — they refer to different files, but the
-# union of both flag sets is what each scan path needs to read; in a
-# chained command the same path may appear via both extractors and
-# get scanned twice (cheap, harmless).
+# Same tokenization behavior as extract_body_source_paths. Note that
+# `git commit -F` and `gh pr create -F` both use the `-F` short form
+# for "file with text" — they refer to different files, but the union
+# of both flag sets is what each scan path needs to read; in a chained
+# command the same path may appear via both extractors and get scanned
+# twice (cheap, harmless).
 extract_commit_message_source_paths() {
   local cmd="$1"
-  printf '%s\n' "$cmd" \
-    | grep -oE '(--file|-F)(=|[[:space:]]+)[^[:space:];&|]+' \
-    | sed -E 's/^(--file|-F)(=|[[:space:]]+)//' \
-    | sed -E "s/^['\"](.*)['\"]$/\\1/"
+  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
+    BEGIN { cap = 0 }
+    cap { print; cap = 0; next }
+    /^(--file|-F)$/ { cap = 1; next }
+    /^(--file=|-F=)/ { sub(/^[^=]*=/, ""); print }
+  '
 }
 
 # Extract paths passed to gh-api request-body-source flag. Covers:
@@ -250,13 +260,16 @@ extract_commit_message_source_paths() {
 # COMMAND step in the gh-api branch. The separate `@<path>` form
 # (`-f body=@<path>` / `-F body=@<path>`) is a different surface — gh
 # resolves the file at invocation time — and is extracted by
-# extract_gh_api_field_at_paths below.
+# extract_gh_api_field_at_paths below. Same xargs tokenization behavior
+# as extract_body_source_paths.
 extract_gh_api_input_paths() {
   local cmd="$1"
-  printf '%s\n' "$cmd" \
-    | grep -oE '(--input)(=|[[:space:]]+)[^[:space:];&|]+' \
-    | sed -E 's/^(--input)(=|[[:space:]]+)//' \
-    | sed -E "s/^['\"](.*)['\"]$/\\1/"
+  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
+    BEGIN { cap = 0 }
+    cap { print; cap = 0; next }
+    /^--input$/ { cap = 1; next }
+    /^--input=/ { sub(/^--input=/, ""); print }
+  '
 }
 
 # Extract paths passed via the `@<path>` field-value form on gh-api
@@ -270,13 +283,23 @@ extract_gh_api_input_paths() {
 # body identically to inline `-f key="..."`. The pseudo-file form
 # `@-` reads stdin (rejected by is_pseudo_file_path).
 # Field key must start with letter or underscore; whitespace inside
-# the path truncates the same way as the other extractors.
+# the path truncates the same way as the other extractors. Same
+# xargs tokenization behavior as extract_body_source_paths prevents
+# false positives from `key=@`-shaped text inside quoted field values.
 extract_gh_api_field_at_paths() {
   local cmd="$1"
-  printf '%s\n' "$cmd" \
-    | grep -oE '(-f|-F|--field|--raw-field)(=|[[:space:]]+)[A-Za-z_][A-Za-z0-9_]*=@[^[:space:];&|]+' \
-    | sed -E 's/^.*=@//' \
-    | sed -E "s/^['\"](.*)['\"]$/\\1/"
+  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
+    BEGIN { cap = 0 }
+    cap {
+      if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=@/) { sub(/^[^@]*@/, ""); print }
+      cap = 0; next
+    }
+    /^(-f|-F|--field|--raw-field)$/ { cap = 1; next }
+    /^(-f|-F|--field|--raw-field)=/ {
+      val = $0; sub(/^[^=]*=/, "", val)
+      if (val ~ /^[A-Za-z_][A-Za-z0-9_]*=@/) { sub(/^[^@]*@/, "", val); print val }
+    }
+  '
 }
 
 # Pseudo-file paths whose contents the hook cannot meaningfully scan:

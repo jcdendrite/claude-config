@@ -2464,6 +2464,244 @@ class TestDenyPrivateProjectRefs:
         assert "Acme Corp" not in reason
         assert "acme corp" not in reason.lower()
 
+    # --- Quote-aware flag extraction: false-positive locks ---
+
+    def test_body_source_fp_flag_in_title_allowed(self, claude_config_repo):
+        """extract_body_source_paths must not false-positive on '-F' that
+        appears inside a quoted --title value. Without the quote-stripping
+        fix, this command was blocked by the hook with 'body-source file at
+        and'."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "gh pr create"
+                    " --title \"close git commit -F and gh api scan gaps\""
+                    " --body \"no tracker IDs here\""
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_body_source_file_with_tracker_id_still_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Positive control: quote-stripping must not disable extraction of a
+        real --body-file flag. A body file containing a tracker token must
+        still be caught after the fix."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("See WIDGET-123 for context.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f"gh pr create --title \"ordinary title\""
+                    f" --body-file {body_file}"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_commit_msg_source_fp_flag_in_message_allowed(self, claude_config_repo):
+        """extract_commit_message_source_paths must not false-positive on
+        '-F' that appears inside a quoted -m message value. A clean file is
+        staged so the diff-gated branch that calls the extractor is entered."""
+        (claude_config_repo / "clean.txt").write_text("some content\n")
+        subprocess.run(["git", "add", "clean.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m \"refactor: use -F flag for config files\""
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_input_fp_flag_in_field_value_allowed(self, claude_config_repo):
+        """extract_gh_api_input_paths must not false-positive on '--input'
+        that appears inside a quoted field value. Without quote-stripping,
+        the hook would extract the next token after '--input' as a file
+        path and fail-close on it."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "gh api -X POST"
+                    " -f body=\"see --input flag in the api docs\""
+                    " repos/owner/repo/issues"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_api_field_at_fp_path_in_field_value_allowed(self, claude_config_repo):
+        """extract_gh_api_field_at_paths must not false-positive on a
+        'key=@path' pattern that appears inside a quoted field value. Without
+        quote-stripping, the '-F query=@./schema.json' substring inside the
+        body value would be extracted, then the hook would deny because the
+        path doesn't exist (fail-closed on unreadable path)."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "gh api -X POST"
+                    " -f body=\"pass -F query=@./schema.json for reference\""
+                    " repos/owner/repo/issues"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_body_source_file_clean_still_allowed(self, claude_config_repo, tmp_path):
+        """Positive control: a legitimate --body-file with clean content must
+        still be extracted and allowed after the quote-stripping fix (i.e.
+        the strip does not disable extraction of real flags outside quotes)."""
+        body_file = tmp_path / "clean-body.md"
+        body_file.write_text("This PR fixes the login flow. No tracker IDs.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f"gh pr create --title \"see -F flag\""
+                    f" --body-file {body_file}"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_body_source_quoted_path_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted file-path argument must still be extracted and scanned. A
+        body file referenced as --body-file "/path/file.md" (outer quotes
+        present) containing a tracker token must be caught — the xargs
+        tokenizer strips outer quotes and emits the bare path, so the file
+        is read and scanned identically to the unquoted form."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("See WIDGET-123 for context.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh pr create --title "ordinary title"'
+                    f' --body-file "{body_file}"'
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_body_source_quoted_path_clean_allowed(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted file-path argument with clean content must be allowed.
+        Mirrors test_body_source_quoted_path_with_tracker_denied but
+        with no tracker token — confirms the quoted-path extraction does
+        not introduce false denials when the file content is clean."""
+        body_file = tmp_path / "clean-body.md"
+        body_file.write_text("This PR fixes the login flow. No tracker IDs.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh pr create --title "ordinary title"'
+                    f' --body-file "{body_file}"'
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_body_source_equals_form_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """The =form (--body-file=path) routes through a distinct awk branch
+        from the space-separated form and must also extract and scan the file.
+        A body file referenced via --body-file=/path containing a tracker
+        token must be caught."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("See WIDGET-123 for context.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh pr create --title "ordinary title"'
+                    f' --body-file={body_file}'
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_commit_msg_source_quoted_path_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted file-path argument to git commit -F must still be extracted
+        and scanned. A commit-message file referenced as -F "/path/msg.txt"
+        (outer quotes present) containing a tracker token must be caught.
+        A clean file is staged so the diff-gated branch that calls the
+        extractor is entered."""
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text("See WIDGET-123 for context.\n")
+        (claude_config_repo / "clean.txt").write_text("some content\n")
+        subprocess.run(["git", "add", "clean.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f'git commit -F "{msg_file}"'),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_input_quoted_path_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted file-path argument to gh api --input must still be extracted
+        and scanned. A request body file referenced as --input "/path/body.json"
+        (outer quotes present) containing a tracker token must be caught."""
+        input_file = tmp_path / "body.json"
+        input_file.write_text('{"body": "See WIDGET-123 for context."}\n')
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh api -X POST --input "{input_file}"'
+                    f" repos/owner/repo/issues"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_field_at_quoted_path_with_tracker_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """Quoted path in a gh api field-at expression (-f body=@"/path")
+        must still be extracted and scanned. The outer quotes around the
+        path are stripped by xargs tokenization, so the bare path is
+        extracted and the file is read and scanned."""
+        field_file = tmp_path / "field-value.txt"
+        field_file.write_text("See WIDGET-123 for context.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    f'gh api -X POST -f body=@"{field_file}"'
+                    f" repos/owner/repo/issues"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
 
 # ---------------------------------------------------------------------------
 # require-worktree-for-git-writes.sh
