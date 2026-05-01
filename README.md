@@ -238,7 +238,7 @@ To customize response tone, formatting, and communication style, create `~/.clau
 ```markdown
 # Output preferences
 
+- Tone: direct and confident; skip hedging phrases like "it seems" or "you might want to consider".
 - Avoid emoji unless explicitly asked.
 - Prefer plain prose over bullet lists when the answer is a single concept.
-- Use British English spelling.
 ```
