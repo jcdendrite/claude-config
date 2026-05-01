@@ -26,12 +26,26 @@ constraints shape every step:
   reads the session's prior CWD, not the inline `cd`. Run `cd` as its
   own Bash call, then the git op in a follow-up call.
 
+## Before you begin — anchor CWD
+
+Run this as the very first Bash call, using the absolute repo root path
+you know from context. CWD may point to a deleted worktree directory
+left over from earlier in the session; any git command will fail with
+`getcwd: cannot access parent directories` until you re-anchor:
+
+```bash
+cd <ABSOLUTE_REPO_ROOT>
+```
+
+If the path isn't obvious, check recent tool output — a `git worktree list`
+result, a file path the model wrote, or the skill invocation directory.
+
 ## 0. Resolve branch name
 
 Use the argument if provided. Otherwise detect the most recently merged PR:
 
 ```bash
-gh pr list --state merged --limit 1 --json headRefName --jq .headRefName
+gh pr list --state merged --limit 1 --json headRefName --jq '.[0].headRefName'
 ```
 
 Confirm with the user if unsure which branch to clean up.
