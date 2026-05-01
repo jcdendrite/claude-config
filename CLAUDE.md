@@ -4,7 +4,18 @@ This repository is **public** — every commit, skill body, commit message,
 and PR description ships to anyone with the URL. The guardrails below
 govern any contribution (human or agent).
 
+## Commands
+
+```bash
+./install.sh                        # first-time setup (stow + plugin registration)
+pytest claude/.claude/hooks/tests/  # hook test suite
+```
+
 ## Working in this repo
+
+**Repo layout:** `claude/` is the stow package — `claude/.claude/` maps 1:1 to `~/.claude/`. Skills, hooks, and reviewer agents live under `claude/.claude/skills/`, `claude/.claude/hooks/`, and `claude/.claude/agents/` respectively.
+
+**Two CLAUDE.md files:** This file (repo root) governs contributor workflow. `claude/.claude/CLAUDE.md` contains the global engineering instructions (judgment heuristics, working style, safety rules) — it is stowed to `~/.claude/CLAUDE.md` and applies to all Claude Code sessions on this machine.
 
 Worktree enforcement is active. `.claude/worktree-required` is committed, so
 non-read-only git operations must run inside a linked worktree

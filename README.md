@@ -29,6 +29,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **`deny-private-project-refs.sh`** — blocks `git commit`, `gh pr create`, and `gh pr edit` when the staged diff, commit message, or PR title/body/body-source-file contains either (a) tracker-ID tokens (`[A-Z]{2,}-\d+`) outside an OSS-prefix allowlist (`CVE-`, `RFC-`, `GH-`, and similar — see the script for the full list), or (b) a literal substring match against entries in the user's opt-in `~/.claude/private-projects.md` blocklist. Enforces the mechanical categories of the repo-root `CLAUDE.md` redaction rule; structural fingerprints still require review discipline. See [Private-project redaction](#private-project-redaction) below.
 - **`require-stow-reminder.sh`** — scoped to the claude-config repo. Blocks `gh pr create` and `gh pr edit` (when the edit changes the body) if the PR adds a new immediate child of `claude/.claude/` (file or directory) and neither the inline command, a referenced `--body-file`/`--template`, nor any `--fill`-sourced commit message mentions `install.sh` or `stow` (case-insensitive). Reason: GNU Stow links each top-level child of `claude/.claude/` individually, so a brand-new child only appears in `~/.claude/` after re-running `install.sh` — `git pull` alone won't materialize the symlink. The reminder lands in the PR body so the post-merge stow step doesn't get forgotten at merge time.
 - **`require-respond-pr.sh`** — blocks PR comment reads and posts (`gh api .../pulls|issues/N/{comments,reviews}`, `gh pr comment`, `gh pr review`) and redirects to `/respond-pr`, so all three comment types get fetched and replies carry the `[Claude Code]` attribution prefix. Honors a per-session bypass marker at `~/.claude/.respond-pr-active.d/<session_id>` that the skill sets on entry and removes on exit; the hook refreshes the marker's mtime on each bypass so long skill runs don't hit the 60-minute staleness cutoff. Per-session keying (rather than a singleton path) keeps parallel Claude sessions from thrashing on cleanup or leaking bypass to unrelated sessions.
+- **`require-ready-for-review.sh`** — gates `git push` and `gh pr ready` on branches with an open PR. Requires `/ready-for-review` to have run and passed since the last commit. Verified via a per-session marker keyed by HEAD SHA — a new commit invalidates the marker automatically and forces a re-run. An active-skill bypass marker (`~/.claude/.ready-for-review-active.d/<session_id>`) prevents the skill's own iteration pushes (fix → push → loop) from self-denying.
 - **`capture-session-id.sh`** (SessionStart) — at session start, writes the session's `session_id` to `~/.claude/sessions/<claude-pid>` so skills running as Bash tool calls (which don't see the hook payload) can look up their own session id via the bash tool's `$PPID`. Used by both `/respond-pr` and `/code-review` to compute per-session marker filenames.
 - **`ask-review-permissions.sh`** — asks before `Edit`/`Write`/`MultiEdit` to `.claude/settings*.json`, nudging toward `/review-permissions` when the edit touches `permissions.allow`.
 - **`require-worktree-for-git-writes.sh`** — opt-in per repo. When active, denies non-read-only git operations unless the session runs in a linked git worktree. Prevents concurrent Claude Code sessions from racing on the same working tree. See [Worktree enforcement](#worktree-enforcement) below for opt-in instructions.
@@ -225,3 +226,20 @@ If a project's review pattern consistently surfaces gaps in these areas — and 
 ## Machine-specific overrides
 
 Machine-local Claude Code permissions belong in `~/.claude/settings.local.json` (not tracked).
+
+## Output preferences
+
+To customize response tone, formatting, and communication style, create `~/.claude/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Output Preferences" section.
+
+**Cap:** keep it under 50 lines — content beyond that competes with project context for the 200-line CLAUDE.md budget. Avoid duplicating rules already in the global CLAUDE.md — they apply regardless, and duplicate entries waste context budget.
+
+**Template:**
+
+```markdown
+# Output preferences
+
+- Tone: direct and calibrated — state things plainly; match certainty to evidence (no overclaiming, no hedging filler).
+- Length: concise. Include the why when non-obvious; skip narration of internal process.
+- Avoid emoji unless explicitly asked.
+- Prefer plain prose over bullet lists when the answer is a single concept.
+```
