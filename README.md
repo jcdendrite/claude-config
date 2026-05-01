@@ -238,7 +238,8 @@ To customize response tone, formatting, and communication style, create `~/.clau
 ```markdown
 # Output preferences
 
-- Tone: direct and confident; skip hedging phrases like "it seems" or "you might want to consider".
+- Tone: direct and calibrated — state things plainly; match certainty to evidence (no overclaiming, no hedging filler).
+- Length: concise. Include the why when non-obvious; skip narration of internal process.
 - Avoid emoji unless explicitly asked.
 - Prefer plain prose over bullet lists when the answer is a single concept.
 ```
