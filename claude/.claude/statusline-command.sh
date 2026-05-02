@@ -59,8 +59,8 @@ rate_color() {
 }
 
 if [ -n "$rate_5h" ] || [ -n "$rate_7d" ]; then
-    h_pct="${rate_5h:-0}"
-    d_pct="${rate_7d:-0}"
+    h_pct=$(printf "%.0f" "${rate_5h:-0}")
+    d_pct=$(printf "%.0f" "${rate_7d:-0}")
     h_color=$(rate_color "$h_pct")
     d_color=$(rate_color "$d_pct")
     rate_display=$(printf "${h_color}5h:${h_pct}%%${RESET} ${d_color}7d:${d_pct}%%${RESET}")
@@ -80,9 +80,13 @@ if [ -n "$cwd" ] && [ -d "$cwd" ]; then
     fi
 fi
 
-# --- Working directory (shorten home) ---
+# --- Working directory (shorten home, truncate long paths) ---
 home_dir="$HOME"
 short_cwd="${cwd/#$home_dir/~}"
+max_path_len=25
+if [ "${#short_cwd}" -gt "$max_path_len" ]; then
+    short_cwd="…${short_cwd: -$((max_path_len - 1))}"
+fi
 
 # --- Assemble status line ---
 echo -e "${CYAN}${model}${RESET}  ${ctx_display}  ${rate_display}  ${YELLOW}${cost_display}${RESET}  ${BLUE}${short_cwd}${RESET}${git_branch}"
