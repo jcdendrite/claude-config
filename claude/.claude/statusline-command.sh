@@ -76,6 +76,9 @@ git_branch=""
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
     branch=$(git -C "$cwd" --no-optional-locks symbolic-ref --short HEAD 2>/dev/null)
     if [ -n "$branch" ]; then
+        if [ "${#branch}" -gt 13 ]; then
+            branch="${branch:0:12}…"
+        fi
         git_branch=$(printf " ${MAGENTA}(%s)${RESET}" "$branch")
     fi
 fi
@@ -83,7 +86,7 @@ fi
 # --- Working directory (shorten home, truncate long paths) ---
 home_dir="$HOME"
 short_cwd="${cwd/#$home_dir/~}"
-max_path_len=25
+max_path_len=15
 if [ "${#short_cwd}" -gt "$max_path_len" ]; then
     short_cwd="…${short_cwd: -$((max_path_len - 1))}"
 fi
