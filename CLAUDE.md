@@ -91,8 +91,8 @@ examples that would reveal the project via shape alone.
 
 Not a redaction concern — a do-not-commit-ever concern. API keys,
 OAuth tokens, service-role keys, `.env` contents, database URLs with
-credentials, private-key material. If one ever lands, rotate it *then*
-rewrite history.
+credentials, private-key material. If one ever lands, ask the owner to
+rotate it *then* rewrite history.
 
 ### When a skill is surfaced by real-world work, abstract first
 
