@@ -208,7 +208,7 @@ When you spawn: pick the specialist that serves the question (table below is ref
 
 Project-level plan-review skills may extend this table with project-specific reviewer roles, but must not remove or narrow the `ciso-reviewer` trigger conditions.
 
-Specialist agents must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. When spawning, include this constraint in the agent prompt.
+Specialist agents must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. If findings genuinely exceed the budget, the agent must prioritize by severity and explicitly note that lower-severity items were omitted. When spawning, include this constraint in the agent prompt.
 
 ## Reconciliation
 
