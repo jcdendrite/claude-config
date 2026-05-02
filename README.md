@@ -25,6 +25,43 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 
 ## What this installs
 
+### Workflow
+
+The skills form a sequential pipeline that covers the full contribution lifecycle. Hooks enforce the transitions so steps cannot be skipped.
+
+```mermaid
+flowchart LR
+    A([Write plan]) --> B[/plan-review/]
+    B -->|"require-plan-review.sh\ngates Write/Edit while plan exists"| C([Write code])
+    C --> D[/code-review/]
+    D -->|"require-code-review.sh\ngates git commit"| E([git commit])
+    E --> F[/ready-for-review/]
+    F -->|"require-ready-for-review.sh\ngates git push"| G([git push / PR open])
+    G --> H([Review comments arrive])
+    H --> I[/respond-pr/]
+    I -->|"require-respond-pr.sh\ngates gh api comment reads/posts"| J([PR replies posted])
+
+    K([Session start]) -->|"capture-session-id.sh\nwrites session-id for marker lookup"| D
+    K --> F
+```
+
+**Skills in the pipeline:**
+
+- **`/plan-review`** — review an implementation plan against domain checklists before presenting it to a human; required before writing code when a plan file exists in `.claude/plans/`.
+- **`/code-review`** — principal-engineer code review with ripple-effect triage and domain-specific audits; required before `git commit`.
+- **`/ready-for-review`** — pre-handoff gate that verifies tests/lint/typecheck and reviews the cumulative PR diff; required before `git push` on a branch with an open PR.
+- **`/respond-pr`** — fetch all PR review comments (inline, top-level, review summaries) and post replies with `[Claude Code]` attribution; required before reading or posting PR comments via `gh api`.
+
+**Hook transitions:**
+
+| Hook | Gates | Cleared by |
+|---|---|---|
+| `require-plan-review.sh` | `Write`/`Edit` while a plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
+| `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
+| `require-ready-for-review.sh` | `git push`, `gh pr ready` | `/ready-for-review` run since last commit |
+| `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
+| `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
+
 ### Hooks
 
 - **`require-code-review.sh`** — blocks `git commit` (including chained forms like `git add . && git commit`) until `/code-review` has run on the current staged state. Verified via per-session sha256 marker in `~/.claude/review-markers/<repo-hash>.<session-id>`, which auto-invalidates the moment the staging area changes. Per-session keying prevents two parallel sessions in the same worktree from overwriting each other's markers when staging different diffs.
@@ -53,6 +90,13 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **`/cleanup-merged-branch`** — removes the local worktree and branch, prunes remote tracking refs, and fast-forwards the default branch after a PR is merged. Handles squash-merge branch detection and CWD anchoring for worktree-enforced repos.
 
 Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain a `REFERENCES.md` — canonical references (URLs, key quotes, framework notes) that informed the skill's rules. `REFERENCES.md` is not loaded during skill execution; consult it when editing a skill to verify a rule still holds or to add new guidance.
+
+#### Skill architecture notes
+
+- **`SKILL.md` is self-contained.** Bundled reference files (`REFERENCES.md`) are read on demand via Bash/Read tool calls, not loaded automatically at skill runtime.
+- **Frontmatter has no inclusion fields.** There are no `includes:`, `import:`, or `extends:` frontmatter keys — skills do not support partial inclusion.
+- **`@path` import syntax is for `CLAUDE.md` only.** The `@path/to/file` import pattern that works in `CLAUDE.md` files is not supported in `SKILL.md`.
+- **Duplicate rule text across skills intentionally.** When two skills need the same rule, copy it into both — do not extract it into a `_shared/` partial or similar abstraction. Duplication is deliberate: it keeps each skill independently readable and avoids brittle cross-skill coupling. If you find yourself wanting a shared partial, that is a signal to reconsider whether the skills should be merged, not a signal to add an include mechanism.
 
 ### Reviewer subagents
 
