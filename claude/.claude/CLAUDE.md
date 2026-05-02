@@ -29,6 +29,12 @@
 - When spawning sub-agents with `isolation: "worktree"`, do NOT include an explicit `Working directory: /path/to/repo` line. The harness sets the agent's CWD to the isolated worktree automatically; naming the main repo path causes the agent to use `git -C <main-path>` operations that bypass isolation and mutate the main working tree directly.
 - Before delegating execution to a sub-agent from a session that has been in plan mode, call `ExitPlanMode` in the parent first. Sub-agents inherit harness-enforced plan-mode state and will refuse to execute — returning a plan file even when the prompt says "execute, do not plan" — until the parent exits plan mode. Symptom: the sub-agent cites a "plan-mode system-reminder" as harness-enforced and asks the user to exit plan mode.
 
+## Model Routing
+
+- **Opus:** judgment-heavy reasoning, plan-mode planning, and parent-dispatcher orchestration.
+- **Sonnet (default):** all code reading, code writing, and specialist reviewer agents. Enforced via `model: sonnet` frontmatter in each agent file.
+- **Haiku:** narrow, deterministic skills only (e.g. `/cleanup-merged-branch`). Never for code authoring or judgment.
+
 ## Safety
 
 - Never run sudo commands directly.
