@@ -73,8 +73,8 @@ cost_display=$(printf "\$%.4f" "$total_cost")
 
 # --- Dynamic truncation limits based on terminal width ---
 # Fixed visible chars: model(~12) + separators(~8) + bar([10 wide]=15) + rates(12) + cost(7) ≈ 54
-_terminal_cols=$(tput cols 2>/dev/null)
-[[ "$_terminal_cols" =~ ^[0-9]+$ ]] || _terminal_cols=${COLUMNS:-120}
+_terminal_cols=$(stty size </dev/tty 2>/dev/null | awk '{print $2}')
+[[ "$_terminal_cols" =~ ^[0-9]+$ ]] || _terminal_cols=${COLUMNS:-80}
 _available=$(( _terminal_cols - 54 ))
 [ "$_available" -lt 20 ] && _available=20
 max_path_len=$(( _available * 55 / 100 ))
