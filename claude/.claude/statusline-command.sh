@@ -24,7 +24,7 @@ RED='\033[31m'
 # --- Context progress bar ---
 build_bar() {
     local pct="${1:-0}"
-    local width=20
+    local width=10
     local filled=$(( pct * width / 100 ))
     local empty=$(( width - filled ))
     local bar=""
@@ -46,7 +46,7 @@ if [ -n "$used_pct" ]; then
     fi
     ctx_display=$(printf "${bar_color}[${bar}]${RESET} ${used_int}%%")
 else
-    ctx_display=$(printf "${DIM}[--------------------] --%${RESET}")
+    ctx_display=$(printf "${DIM}[----------] --%${RESET}")
 fi
 
 # --- Rate limit display (5h / 7d) ---
@@ -71,22 +71,32 @@ fi
 # --- Session cost ---
 cost_display=$(printf "\$%.4f" "$total_cost")
 
+# --- Dynamic truncation limits based on terminal width ---
+# Fixed visible chars: model(~12) + separators(~8) + bar([10 wide]=15) + rates(12) + cost(7) ≈ 54
+_terminal_cols=$(tput cols 2>/dev/null)
+[[ "$_terminal_cols" =~ ^[0-9]+$ ]] || _terminal_cols=${COLUMNS:-120}
+_available=$(( _terminal_cols - 54 ))
+[ "$_available" -lt 20 ] && _available=20
+max_path_len=$(( _available * 55 / 100 ))
+_max_branch_name=$(( _available * 45 / 100 - 3 ))
+[ "$max_path_len" -lt 8 ] && max_path_len=8
+[ "$_max_branch_name" -lt 4 ] && _max_branch_name=4
+
 # --- Git branch ---
 git_branch=""
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
     branch=$(git -C "$cwd" --no-optional-locks symbolic-ref --short HEAD 2>/dev/null)
     if [ -n "$branch" ]; then
-        if [ "${#branch}" -gt 13 ]; then
-            branch="${branch:0:12}…"
+        if [ "${#branch}" -gt "$_max_branch_name" ]; then
+            branch="${branch:0:$((_max_branch_name - 1))}…"
         fi
         git_branch=$(printf " ${MAGENTA}(%s)${RESET}" "$branch")
     fi
 fi
 
-# --- Working directory (shorten home, truncate long paths) ---
+# --- Working directory (shorten home, truncate to fit terminal) ---
 home_dir="$HOME"
 short_cwd="${cwd/#$home_dir/~}"
-max_path_len=15
 if [ "${#short_cwd}" -gt "$max_path_len" ]; then
     short_cwd="…${short_cwd: -$((max_path_len - 1))}"
 fi
