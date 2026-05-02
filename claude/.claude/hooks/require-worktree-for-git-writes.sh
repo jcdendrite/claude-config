@@ -142,6 +142,10 @@ readonly ALLOWED_SUBCMDS=(
   blame
   branch          # "git branch" lists; creating/deleting takes flags
   cat-file
+  check-attr      # read-only attribute lookup
+  check-ignore    # read-only gitignore query
+  check-mailmap   # read-only mailmap lookup
+  check-ref-format # read-only ref name validation
   count-objects
   describe
   diff
@@ -162,6 +166,7 @@ readonly ALLOWED_SUBCMDS=(
   show
   status
   tag             # "git tag" lists; creating takes flags — acceptable risk
+  var             # read-only git variable lookup
   verify-commit
   verify-tag
   version
