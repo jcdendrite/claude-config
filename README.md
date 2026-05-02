@@ -52,7 +52,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context.
 - **`/cleanup-merged-branch`** — removes the local worktree and branch, prunes remote tracking refs, and fast-forwards the default branch after a PR is merged. Handles squash-merge branch detection and CWD anchoring for worktree-enforced repos.
 
-Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain a `SOURCES.md` — canonical references (URLs, key quotes, framework notes) that informed the skill's rules. `SOURCES.md` is not loaded during skill execution; consult it when editing a skill to verify a rule still holds or to add new guidance.
+Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain a `REFERENCES.md` — canonical references (URLs, key quotes, framework notes) that informed the skill's rules. `REFERENCES.md` is not loaded during skill execution; consult it when editing a skill to verify a rule still holds or to add new guidance.
 
 ### Reviewer subagents
 

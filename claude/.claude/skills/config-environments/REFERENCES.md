@@ -1,4 +1,4 @@
-# Sources — config-environments
+# References — config-environments
 
 Reference material that informed this skill. Not loaded during skill execution — consult when editing the skill to verify a rule still holds or to add new guidance.
 
