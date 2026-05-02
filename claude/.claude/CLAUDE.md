@@ -15,6 +15,7 @@
 - Always prefer minimal, targeted changes. Do not refactor entire files or expand scope beyond what was asked. If you see an opportunity for a broader improvement, mention it separately — do not bundle it in.
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
 - Use descriptive variable and function names. No generic names.
+- When a session crosses ~300K output tokens or ~3 hours of wallclock time, proactively suggest a handoff. Write `/tmp/<task>-handoff.md` summarizing current state and what's next, then start a fresh session that reads it.
 
 ## Code Review
 
