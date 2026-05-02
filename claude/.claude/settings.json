@@ -108,6 +108,11 @@
             "type": "command",
             "command": "~/.claude/hooks/require-plan-review.sh",
             "statusMessage": "Checking plan-review gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-worktree-for-file-writes.sh",
+            "statusMessage": "Checking worktree enforcement..."
           }
         ]
       }
