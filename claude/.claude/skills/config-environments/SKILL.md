@@ -84,7 +84,7 @@ function getStripeKey() {
 }
 ```
 
-✅ **Recommended pattern:** the prod deploy populates `STRIPE_SECRET_KEY` with the live key; the dev `.env` populates it with the test key. Stripe's `sk_live_…` vs `sk_test_…` value prefix encodes the mode inside the *value* — no code branch needed.
+**Recommended pattern:** the prod deploy populates `STRIPE_SECRET_KEY` with the live key; the dev `.env` populates it with the test key. Stripe's `sk_live_…` vs `sk_test_…` value prefix encodes the mode inside the *value* — no code branch needed.
 
 ### 3. Sentinel-value defaults that silently leak production-shaped state
 
