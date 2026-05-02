@@ -7,6 +7,8 @@ model=$(echo "$input" | jq -r '.model.display_name // "Unknown Model"')
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 total_cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
+rate_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+rate_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
 
 # ANSI color codes (dim-friendly)
 RESET='\033[0m'
@@ -47,6 +49,25 @@ else
     ctx_display=$(printf "${DIM}[--------------------] --%${RESET}")
 fi
 
+# --- Rate limit display (5h / 7d) ---
+rate_color() {
+    local pct="${1:-0}"
+    if [ "$pct" -ge 85 ]; then echo "$RED"
+    elif [ "$pct" -ge 60 ]; then echo "$YELLOW"
+    else echo "$GREEN"
+    fi
+}
+
+if [ -n "$rate_5h" ] || [ -n "$rate_7d" ]; then
+    h_pct="${rate_5h:-0}"
+    d_pct="${rate_7d:-0}"
+    h_color=$(rate_color "$h_pct")
+    d_color=$(rate_color "$d_pct")
+    rate_display=$(printf "${h_color}5h:${h_pct}%%${RESET} ${d_color}7d:${d_pct}%%${RESET}")
+else
+    rate_display=$(printf "${DIM}5h:--  7d:--${RESET}")
+fi
+
 # --- Session cost ---
 cost_display=$(printf "\$%.4f" "$total_cost")
 
@@ -64,4 +85,4 @@ home_dir="$HOME"
 short_cwd="${cwd/#$home_dir/~}"
 
 # --- Assemble status line ---
-echo -e "${CYAN}${model}${RESET}  ${ctx_display}  ${YELLOW}${cost_display}${RESET}  ${BLUE}${short_cwd}${RESET}${git_branch}"
+echo -e "${CYAN}${model}${RESET}  ${ctx_display}  ${rate_display}  ${YELLOW}${cost_display}${RESET}  ${BLUE}${short_cwd}${RESET}${git_branch}"
