@@ -508,6 +508,10 @@ class TestRequireRespondPr:
             "gh pr comment 5 --body test",
             "gh pr review 5 --approve",
             "gh api repos/foo/bar/pulls/5/comments -F body=hi",
+            "gh api repos/foo/bar/pulls/comments/12345 -X PATCH -F body=oops",
+            "gh api repos/foo/bar/issues/comments/12345 -X PATCH -F body=oops",
+            "gh api repos/foo/bar/pulls/comments/12345",
+            "gh api repos/foo/bar/pulls/comments/12345 -X DELETE",
         ],
     )
     def test_matching_commands_denied(self, isolated_home, current_repo_foo_bar, command):
@@ -522,6 +526,9 @@ class TestRequireRespondPr:
             "gh pr checkout 5",
             "echo foo",
             "git status",
+            "gh api repos/foo/bar/pulls/5",
+            "gh api repos/foo/bar/pulls/comments",
+            "gh api repos/foo/bar/contents/comments/12345",
         ],
     )
     def test_non_matching_commands_allowed(self, isolated_home, current_repo_foo_bar, command):
@@ -541,6 +548,8 @@ class TestRequireRespondPr:
         [
             "gh api repos/foo/bar/pulls/5/comments",
             "gh pr comment 5 --body test",
+            "gh api repos/foo/bar/pulls/comments/12345 -X PATCH -F body=oops",
+            "gh api repos/foo/bar/issues/comments/12345 -X PATCH -F body=oops",
         ],
     )
     def test_fresh_bypass_marker_allows(self, isolated_home, current_repo_foo_bar, command):
@@ -660,6 +669,8 @@ class TestRequireRespondPr:
             "gh pr comment 5 -R other/repo --body test",
             "gh pr review 5 --repo other/repo --approve",
             "gh pr comment 5 --repo=other/repo --body test",
+            "gh api repos/other/repo/pulls/comments/12345 -X PATCH -F body=hi",
+            "gh api repos/other/repo/issues/comments/12345 -X PATCH -F body=hi",
         ],
     )
     def test_cross_repo_commands_allowed(self, isolated_home, current_repo_foo_bar, command):

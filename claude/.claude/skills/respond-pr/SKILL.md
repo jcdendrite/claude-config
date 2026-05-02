@@ -28,7 +28,25 @@ Fetch all review comments on the current branch's open pull request and address 
    - Determine if it requires a code change, a reply, or both
    - If a code change is needed, make the change and note it in the reply
    - If it's a question or discussion point, draft a clear response
-4. Post replies using the GitHub API with `in_reply_to` (use `-F` for integer IDs)
+4. Post replies using the appropriate endpoint for each comment type — do **not** use `gh api .../pulls/comments/{id}` with `-F body=...`; that endpoint PATCHes the target comment in place and silently overwrites the author's text.
+
+   - **Inline file comments** (fetched from `pulls/{n}/comments`) — reply via the `/replies` sub-resource:
+     ```
+     gh api repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies \
+       -F body='**[Claude Code]** ...reply text...'
+     ```
+
+   - **Top-level review bodies** (fetched from `pulls/{n}/reviews`) — no `/replies` primitive exists; post a new top-level comment in the conversation tab:
+     ```
+     gh api repos/{owner}/{repo}/issues/{number}/comments \
+       -F body='**[Claude Code]** ...reply text...'
+     ```
+
+   - **Issue-level comments** (fetched from `issues/{n}/comments`) — same path; no `/replies` sub-resource:
+     ```
+     gh api repos/{owner}/{repo}/issues/{number}/comments \
+       -F body='**[Claude Code]** ...reply text...'
+     ```
 5. Commit and push any code changes in a single commit
 6. **Remove this session's hook bypass marker:**
    <!-- HOOK_TEST_FIXTURE: disable-bypass — the hook-alignment test suite reads this exact fenced block to verify it removes the marker the enable step created. Do not duplicate elsewhere; the test re-reads it from here. -->
@@ -43,9 +61,8 @@ Fetch all review comments on the current branch's open pull request and address 
 
 Example:
 ```
-gh api repos/owner/repo/pulls/4/comments \
-  -F body='**[Claude Code]** Moved the utility functions to the shared module as suggested.' \
-  -F in_reply_to=12345678
+gh api repos/owner/repo/pulls/4/comments/12345678/replies \
+  -F body='**[Claude Code]** Moved the utility functions to the shared module as suggested.'
 ```
 
 ## Guidelines
@@ -54,4 +71,8 @@ gh api repos/owner/repo/pulls/4/comments \
 - Be concise in replies — state what was done, not lengthy explanations
 - If you disagree with a comment, explain why clearly but defer to the reviewer's judgment
 - Do not resolve review threads — let the reviewer verify and resolve them
-- PR comments are editable after posting. If a reply has a typo, factual error, or needs updating, **edit it via PATCH** rather than posting a correction as a new comment: `gh api repos/{owner}/{repo}/pulls/comments/{id} -X PATCH -F body='...'` (or `/issues/comments/{id}` for issue-level comments).
+- PR comments are editable after posting. If a reply **you authored** in this session has a typo or factual error, edit it in place rather than posting a correction. **Use PATCH only against comment IDs you authored — confusing the target ID with the user's comment ID overwrites their text irrecoverably and cannot be undone.** Before running PATCH, verify the target ID's `user.login` from the prior comment fetch matches the account replies are posted under; if it doesn't, use the `/replies` form from Step 4 instead:
+  ```
+  gh api repos/{owner}/{repo}/pulls/comments/{id} -X PATCH -F body='**[Claude Code]** ...corrected text...'
+  ```
+  (or `/issues/comments/{id}` for issue-level comments)
