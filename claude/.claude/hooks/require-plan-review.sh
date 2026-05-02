@@ -1,10 +1,11 @@
 #!/bin/bash
-# PreToolUse hook: block Write/Edit on implementation files when a plan file
-# exists in .claude/plans/ without a current plan-review marker for this session.
+# PreToolUse hook: block Write/Edit when a plan file exists in .claude/plans/
+# without a current plan-review marker for this session.
 #
-# Opt-in: only active when CLAUDE_REQUIRE_PLAN_REVIEW=1 is set OR a
-# .claude/require-plan-review sentinel file exists in the repo root.
-# This prevents non-claude-config projects from being forced into the gate.
+# Globally applied (no opt-in), consistent with require-code-review.sh,
+# require-ready-for-review.sh, and require-respond-pr.sh.
+# Projects without a .claude/plans/ directory or with no plan files pass
+# through silently — the plan-existence check is the built-in filter.
 #
 # Marker layout:
 #   ~/.claude/plan-review-markers/<repo-hash>.<session_id>
@@ -27,21 +28,8 @@ if [ "$TOOL_NAME" != "Write" ] && [ "$TOOL_NAME" != "Edit" ]; then
   exit 0
 fi
 
-# Check opt-in: env var or sentinel file.
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-
-OPT_IN=0
-if [ "${CLAUDE_REQUIRE_PLAN_REVIEW:-}" = "1" ]; then
-  OPT_IN=1
-elif [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/.claude/require-plan-review" ]; then
-  OPT_IN=1
-fi
-
-if [ "$OPT_IN" -eq 0 ]; then
-  exit 0
-fi
-
 # Not in a git repo — can't check for plan files or key the marker.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi

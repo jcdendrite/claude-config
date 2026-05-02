@@ -4178,10 +4178,10 @@ class TestGuardSettingsModelEffort:
 
 
 @pytest.fixture
-def plan_review_repo(tmp_path, monkeypatch):
-    """Git repo with .claude/plans/ populated and CLAUDE_REQUIRE_PLAN_REVIEW=1 set.
+def plan_review_repo(tmp_path):
+    """Git repo with .claude/plans/ populated.
 
-    The opt-in env var activates the gate without needing the sentinel file.
+    The gate is globally applied — no opt-in required.
     """
     repo = tmp_path / "plan-repo"
     repo.mkdir()
@@ -4191,7 +4191,6 @@ def plan_review_repo(tmp_path, monkeypatch):
     plans_dir = repo / ".claude" / "plans"
     plans_dir.mkdir(parents=True)
     (plans_dir / "impl-plan.md").write_text("# Implementation plan\n\nStep 1...\n")
-    monkeypatch.setenv("CLAUDE_REQUIRE_PLAN_REVIEW", "1")
     return repo
 
 
@@ -4271,14 +4270,13 @@ class TestRequirePlanReview:
             == "deny"
         )
 
-    def test_no_plans_dir_allows(self, tmp_path, monkeypatch):
-        """No .claude/plans/ directory → gate is inactive regardless of opt-in."""
+    def test_no_plans_dir_allows(self, tmp_path):
+        """No .claude/plans/ directory → gate is inactive."""
         repo = tmp_path / "no-plans"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-        monkeypatch.setenv("CLAUDE_REQUIRE_PLAN_REVIEW", "1")
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
@@ -4288,7 +4286,7 @@ class TestRequirePlanReview:
             == "allow"
         )
 
-    def test_empty_plans_dir_allows(self, tmp_path, monkeypatch):
+    def test_empty_plans_dir_allows(self, tmp_path):
         """Empty .claude/plans/ directory → no plans present, gate inactive."""
         repo = tmp_path / "empty-plans"
         repo.mkdir()
@@ -4296,7 +4294,6 @@ class TestRequirePlanReview:
         subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         (repo / ".claude" / "plans").mkdir(parents=True)
-        monkeypatch.setenv("CLAUDE_REQUIRE_PLAN_REVIEW", "1")
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
@@ -4305,56 +4302,6 @@ class TestRequirePlanReview:
             )
             == "allow"
         )
-
-    def test_no_opt_in_env_allows_even_with_plan(self, tmp_path):
-        """Without CLAUDE_REQUIRE_PLAN_REVIEW=1 or sentinel file, gate is inactive."""
-        repo = tmp_path / "no-opt-in"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-        (repo / ".claude" / "plans").mkdir(parents=True)
-        (repo / ".claude" / "plans" / "plan.md").write_text("# plan\n")
-        # Deliberately do NOT set CLAUDE_REQUIRE_PLAN_REVIEW env var.
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_REQUIRE_PLAN_REVIEW"}
-        result = subprocess.run(
-            [str(REQUIRE_PLAN_REVIEW_HOOK)],
-            input=json.dumps(write_input("/tmp/foo.py")),
-            capture_output=True,
-            text=True,
-            cwd=repo,
-            env=env,
-            check=False,
-        )
-        assert result.returncode == 0
-        assert not result.stdout.strip(), "hook should be silent (allow) with no opt-in"
-
-    def test_sentinel_file_activates_gate(self, tmp_path):
-        """A .claude/require-plan-review sentinel file activates the gate
-        without the env var — repo-level opt-in."""
-        repo = tmp_path / "sentinel-repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-        (repo / ".claude").mkdir()
-        (repo / ".claude" / "require-plan-review").write_text("")
-        (repo / ".claude" / "plans").mkdir()
-        (repo / ".claude" / "plans" / "plan.md").write_text("# plan\n")
-        # Unset the env var so activation comes from sentinel only.
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_REQUIRE_PLAN_REVIEW"}
-        result = subprocess.run(
-            [str(REQUIRE_PLAN_REVIEW_HOOK)],
-            input=json.dumps({**write_input("/tmp/foo.py"), "session_id": "test-sid"}),
-            capture_output=True,
-            text=True,
-            cwd=repo,
-            env=env,
-            check=False,
-        )
-        assert result.stdout.strip(), "expected deny via sentinel file opt-in"
-        payload = json.loads(result.stdout)
-        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     def test_bash_tool_allows_always(self, plan_review_repo):
         """Bash tool calls are not gated — only Write and Edit."""
@@ -4367,11 +4314,10 @@ class TestRequirePlanReview:
             == "allow"
         )
 
-    def test_outside_git_repo_allows(self, tmp_path, monkeypatch):
+    def test_outside_git_repo_allows(self, tmp_path):
         """Outside a git repo, the hook cannot key a marker — allow through."""
         non_repo = tmp_path / "not-a-repo"
         non_repo.mkdir()
-        monkeypatch.setenv("CLAUDE_REQUIRE_PLAN_REVIEW", "1")
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
