@@ -42,6 +42,8 @@ name and matcher; do not rely solely on settings.json `if` conditions.
 **Plugin config:** `enabledPlugins` only takes effect in
 `settings.json`, not `settings.local.json`.
 
+**Skill files are self-contained — no shared partials.** `SKILL.md` frontmatter has no `includes:`, `import:`, or `extends:` fields; the `@path` import syntax works in `CLAUDE.md` only, not in `SKILL.md`. When two skills need the same rule text, duplicate it into both skill files intentionally — do not extract it into a `_shared/` directory or similar abstraction. Duplication keeps each skill independently readable and prevents brittle cross-skill coupling. If shared text feels necessary, reconsider whether the skills should be merged instead. See README "Skill architecture notes" for the full rationale.
+
 ## Plans in this repo affect all stow users
 
 `claude/` is stowed into `$HOME` — changes ship to every user who clones and stows this repo, not only to the session owner. When reviewing a plan for claude-config, evaluate with that audience in mind. Files under `claude/` are not personal config; they are distributed to all stow users on `git pull`. Surface this when declaring the user surface in Step 2 of plan-review, and weight finding severity accordingly.
@@ -62,6 +64,10 @@ committing a skill change, invoke the skill via the `Skill` tool and
 check the diff against its output — e.g. an edit adding prose to a
 skill that argues for brevity is the kind of thing the skill would
 flag against itself.
+
+`/plan-review` and `/code-review` are mandatory pipeline steps before
+PR handoff — both are hook-enforced (see README "Workflow" for the full
+skill invocation order and which hook gates each transition).
 
 ## Redact private-project-identifying content
 
