@@ -10,6 +10,16 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/capture-session-id.sh"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -19,6 +29,12 @@
             "command": "~/.claude/hooks/require-code-review.sh",
             "if": "Bash(git commit *)",
             "statusMessage": "Checking code review..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/guard-settings-model-effort.sh",
+            "if": "Bash(git commit *)",
+            "statusMessage": "Checking settings.json model/effort..."
           },
           {
             "type": "command",
@@ -87,6 +103,11 @@
             "type": "command",
             "command": "~/.claude/hooks/ask-review-permissions.sh",
             "statusMessage": "Checking settings permissions..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-plan-review.sh",
+            "statusMessage": "Checking plan-review gate..."
           }
         ]
       }

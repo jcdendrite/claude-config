@@ -27,6 +27,8 @@ DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
 WORKTREE_HOOK = HOOKS_DIR / "require-worktree-for-git-writes.sh"
 CAPTURE_SESSION_ID_HOOK = HOOKS_DIR / "capture-session-id.sh"
+GUARD_SETTINGS_MODEL_EFFORT_HOOK = HOOKS_DIR / "guard-settings-model-effort.sh"
+REQUIRE_PLAN_REVIEW_HOOK = HOOKS_DIR / "require-plan-review.sh"
 
 SKILLS_DIR = HOOKS_DIR.parent / "skills"
 CODE_REVIEW_SKILL = SKILLS_DIR / "code-review" / "SKILL.md"
@@ -3982,3 +3984,429 @@ class TestRequireReadyForReview:
             "SKILL.md deactivate-gate recipe ran but the marker is still "
             "present — skill and hook disagree on the marker path."
         )
+
+
+# ---------------------------------------------------------------------------
+# guard-settings-model-effort.sh
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def settings_repo(tmp_path):
+    """Git repo with a main branch and a staged settings.json change.
+
+    Mirrors the structure the hook sees at commit time: a committed
+    baseline on `main`, then a staged modification in the working tree.
+    The repo path matches `claude/.claude/settings.json` — the exact
+    path the hook checks for.
+    """
+    repo = tmp_path / "settings-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "checkout", "-b", "main"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    # Create the settings.json at the repo-relative path the hook checks.
+    settings_dir = repo / "claude" / ".claude"
+    settings_dir.mkdir(parents=True)
+    settings_file = settings_dir / "settings.json"
+    settings_file.write_text('{"model": "sonnet", "effortLevel": "normal"}\n')
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo, settings_file
+
+
+def stage_settings(repo: Path, settings_file: Path, content: str) -> None:
+    """Write `content` to `settings_file` and stage it."""
+    settings_file.write_text(content)
+    subprocess.run(
+        ["git", "add", "claude/.claude/settings.json"],
+        cwd=repo, check=True,
+    )
+
+
+class TestGuardSettingsModelEffort:
+    def test_model_change_denies_commit(self, settings_repo):
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git commit -m 'update settings'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_effort_level_change_denies_commit(self, settings_repo):
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "sonnet", "effortLevel": "high"}\n')
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git commit -m 'update settings'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_both_changed_denies_commit(self, settings_repo):
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "high"}\n')
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git commit -m 'routing change'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_unrelated_settings_change_allows(self, settings_repo):
+        """Changing a key other than model/effortLevel must not block."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "sonnet", "effortLevel": "normal", "theme": "dark"}\n')
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git commit -m 'add theme'"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_settings_not_staged_allows(self, settings_repo):
+        """If settings.json is not staged, the hook has no opinion."""
+        repo, settings_file = settings_repo
+        # Stage a different file, not settings.json.
+        other = repo / "other.txt"
+        other.write_text("change\n")
+        subprocess.run(["git", "add", "other.txt"], cwd=repo, check=True)
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git commit -m 'other change'"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_non_commit_command_allows(self, settings_repo):
+        """Hook only fires on git commit; other commands pass through."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus"}\n')
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git status"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_non_bash_tool_allows(self, settings_repo):
+        """Edit/Write tool calls pass through — hook is Bash-only."""
+        repo, settings_file = settings_repo
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                edit_input(str(settings_file)),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_deny_message_mentions_settings_json(self, settings_repo):
+        """Deny reason must reference settings.json so the agent knows what to unstage."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        reason = run_hook_reason(
+            GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+            bash_input("git commit -m 'update settings'"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "settings.json" in reason
+        assert "model" in reason or "effortLevel" in reason
+
+    def test_outside_git_repo_allows(self, tmp_path):
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=non_repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_add_commit_with_model_change_denies(self, settings_repo):
+        """Chained `git add ... && git commit` is still gated."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "haiku", "effortLevel": "normal"}\n')
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git add . && git commit -m update"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_empty_staged_diff_allows(self, settings_repo):
+        """No staged changes → let git decide (nothing staged case)."""
+        repo, settings_file = settings_repo
+        # Ensure nothing is staged.
+        subprocess.run(["git", "reset", "HEAD", "--", "."], cwd=repo, check=True)
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+
+# ---------------------------------------------------------------------------
+# require-plan-review.sh
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def plan_review_repo(tmp_path, monkeypatch):
+    """Git repo with .claude/plans/ populated and CLAUDE_REQUIRE_PLAN_REVIEW=1 set.
+
+    The opt-in env var activates the gate without needing the sentinel file.
+    """
+    repo = tmp_path / "plan-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    plans_dir = repo / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "impl-plan.md").write_text("# Implementation plan\n\nStep 1...\n")
+    monkeypatch.setenv("CLAUDE_REQUIRE_PLAN_REVIEW", "1")
+    return repo
+
+
+@pytest.fixture
+def plan_review_home(isolated_home):
+    """Isolated $HOME with the plan-review-markers directory pre-created."""
+    (isolated_home / ".claude" / "plan-review-markers").mkdir(parents=True, exist_ok=True)
+    return isolated_home
+
+
+def plan_review_marker_path(home: Path, repo: Path, session_id: str) -> Path:
+    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+    return home / ".claude" / "plan-review-markers" / f"{repo_hash}.{session_id}"
+
+
+def write_plan_review_marker(home: Path, repo: Path, session_id: str) -> Path:
+    marker = plan_review_marker_path(home, repo, session_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("reviewed\n")
+    return marker
+
+
+class TestRequirePlanReview:
+    def test_plan_exists_no_marker_denies_write(self, plan_review_repo, plan_review_home):
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input("/tmp/foo.py"), "session_id": "test-session-prt"},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_plan_exists_no_marker_denies_edit(self, plan_review_repo, plan_review_home):
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**edit_input("/tmp/foo.py"), "session_id": "test-session-prt"},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_plan_exists_with_marker_allows_write(self, plan_review_repo, plan_review_home):
+        sid = "test-session-prt-allowed"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input("/tmp/foo.py"), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_plan_exists_with_marker_allows_edit(self, plan_review_repo, plan_review_home):
+        sid = "test-session-prt-allowed-edit"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**edit_input("/tmp/foo.py"), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_other_sessions_marker_does_not_authorize(self, plan_review_repo, plan_review_home):
+        """Marker for session A must NOT bypass session B's gate."""
+        write_plan_review_marker(plan_review_home, plan_review_repo, "session-A")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input("/tmp/foo.py"), "session_id": "session-B"},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_no_plans_dir_allows(self, tmp_path, monkeypatch):
+        """No .claude/plans/ directory → gate is inactive regardless of opt-in."""
+        repo = tmp_path / "no-plans"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        monkeypatch.setenv("CLAUDE_REQUIRE_PLAN_REVIEW", "1")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                write_input("/tmp/foo.py"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_empty_plans_dir_allows(self, tmp_path, monkeypatch):
+        """Empty .claude/plans/ directory → no plans present, gate inactive."""
+        repo = tmp_path / "empty-plans"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / ".claude" / "plans").mkdir(parents=True)
+        monkeypatch.setenv("CLAUDE_REQUIRE_PLAN_REVIEW", "1")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                write_input("/tmp/foo.py"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_no_opt_in_env_allows_even_with_plan(self, tmp_path):
+        """Without CLAUDE_REQUIRE_PLAN_REVIEW=1 or sentinel file, gate is inactive."""
+        repo = tmp_path / "no-opt-in"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / ".claude" / "plans").mkdir(parents=True)
+        (repo / ".claude" / "plans" / "plan.md").write_text("# plan\n")
+        # Deliberately do NOT set CLAUDE_REQUIRE_PLAN_REVIEW env var.
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_REQUIRE_PLAN_REVIEW"}
+        result = subprocess.run(
+            [str(REQUIRE_PLAN_REVIEW_HOOK)],
+            input=json.dumps(write_input("/tmp/foo.py")),
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert not result.stdout.strip(), "hook should be silent (allow) with no opt-in"
+
+    def test_sentinel_file_activates_gate(self, tmp_path):
+        """A .claude/require-plan-review sentinel file activates the gate
+        without the env var — repo-level opt-in."""
+        repo = tmp_path / "sentinel-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "require-plan-review").write_text("")
+        (repo / ".claude" / "plans").mkdir()
+        (repo / ".claude" / "plans" / "plan.md").write_text("# plan\n")
+        # Unset the env var so activation comes from sentinel only.
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_REQUIRE_PLAN_REVIEW"}
+        result = subprocess.run(
+            [str(REQUIRE_PLAN_REVIEW_HOOK)],
+            input=json.dumps({**write_input("/tmp/foo.py"), "session_id": "test-sid"}),
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            env=env,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected deny via sentinel file opt-in"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_bash_tool_allows_always(self, plan_review_repo):
+        """Bash tool calls are not gated — only Write and Edit."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_outside_git_repo_allows(self, tmp_path, monkeypatch):
+        """Outside a git repo, the hook cannot key a marker — allow through."""
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        monkeypatch.setenv("CLAUDE_REQUIRE_PLAN_REVIEW", "1")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                write_input("/tmp/foo.py"),
+                cwd=non_repo,
+            )
+            == "allow"
+        )
+
+    def test_no_session_id_in_input_denies(self, plan_review_repo, plan_review_home):
+        """Without session_id in the hook payload, no per-session marker can be
+        keyed — deny even if a marker directory exists. Mirrors the same invariant
+        in require-code-review.sh and require-respond-pr.sh: missing session_id
+        must fail-closed, not silently allow. This is a load-bearing safety
+        property of the per-session marker design."""
+        # Write a marker for a known session so the marker dir exists, but the
+        # payload has no session_id — the hook must not accept the existing marker.
+        write_plan_review_marker(plan_review_home, plan_review_repo, "some-other-session")
+        # write_input() uses no session_id field.
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                write_input("/tmp/foo.py"),
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_deny_message_mentions_plan_review(self, plan_review_repo, plan_review_home):
+        """Deny reason must reference /plan-review so the agent knows what to run."""
+        reason = run_hook_reason(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**write_input("/tmp/foo.py"), "session_id": "session-for-reason"},
+            cwd=plan_review_repo,
+        )
+        assert reason is not None
+        assert "/plan-review" in reason
+        assert "plan-review-markers" in reason
