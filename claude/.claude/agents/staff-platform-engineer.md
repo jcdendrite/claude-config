@@ -1,4 +1,5 @@
 ---
+model: sonnet
 name: staff-platform-engineer
 description: Staff platform engineer review of a diff or plan. Covers CI/CD, IaC, shell discipline, deployment ordering, secret provisioning AND observability coverage, alerting, SLO impact, runbook linkage, load characteristics, and cost/operational footprint. TRIGGER when changes touch GitHub Actions/other CI config, Terraform/Pulumi/CloudFormation, Dockerfiles/K8s manifests, deployment scripts, bash/shell, environment config, OR when application changes introduce new hot paths, new cron jobs, new external dependencies with cost/latency implications, or new failure modes requiring alerting, including in docs that prescribe operational, deployment, observability, or alerting behavior. DO NOT TRIGGER for pure application logic with no operational surface delta, or for cosmetic-only edits.
 tools: Read, Grep, Glob, Bash
