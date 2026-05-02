@@ -1,4 +1,5 @@
 ---
+model: sonnet
 name: staff-sdet
 description: Staff SDET review of a diff or plan. Focus on testability of the design, test-pyramid shape, edge cases the plan omits, mock design, fixture realism, and security invariant coverage. TRIGGER when the change adds / modifies test code, changes a module's testability (new side effects, new dependencies, new mocking surface), proposes test strategy in a plan, OR adds production code with non-trivial logic (business logic, error paths, security boundaries, state machines) that lacks corresponding test coverage, including in docs that prescribe testing behavior. DO NOT TRIGGER for cosmetic-only edits (typo fixes, formatting, copy polish, CSS color or font tweaks with no behavioral or interactive change).
 tools: Read, Grep, Glob, Bash

@@ -1,4 +1,5 @@
 ---
+model: sonnet
 name: staff-frontend-engineer
 description: Staff frontend engineer review of a diff or plan. Focus on component patterns, state management, data fetching and cache consistency, routing, forms, accessibility, Web Vitals, internationalization, and client-side analytics emission. TRIGGER when changes touch client-side code — components, hooks, client state, routing, forms, data fetching, optimistic mutations, bundle composition, SSR — OR when server-side changes alter an API contract that the frontend consumes (response shape, status codes, headers, error taxonomy), including in docs that prescribe client-side behavior or UX. DO NOT TRIGGER for pure server-side changes that don't affect a frontend-consumed contract, or for cosmetic-only edits (typo fixes, formatting) with no behavioral delta.
 tools: Read, Grep, Glob, Bash
