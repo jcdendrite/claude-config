@@ -477,6 +477,53 @@ class TestRequireCodeReview:
         assert reason is not None
         assert "PreToolUse hooks evaluate" in reason
 
+    # -- WIP opt-out (F-10) ------------------------------------------------
+    # Commits whose message starts with `wip:`, `fixup!`, or `[skip-review]`
+    # bypass the per-commit review gate. The cumulative /ready-for-review pass
+    # still fires before PR handoff — the per-commit gate is the only thing
+    # skipped. Case-sensitive: `WIP:` is NOT an opt-out prefix.
+
+    @pytest.mark.parametrize(
+        "commit_msg",
+        [
+            "wip: incomplete feature",
+            "fixup! previous commit",
+            "[skip-review] trivial typo fix",
+        ],
+    )
+    def test_wip_prefix_allows_without_marker(self, isolated_home, git_repo, commit_msg):
+        """WIP-prefixed commits are allowed through even without a review marker."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(f'git commit -m "{commit_msg}"', session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_non_wip_commit_still_blocked_without_marker(self, isolated_home, git_repo):
+        """A non-WIP commit with the same staged diff is blocked without a review marker."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input('git commit -m "feat: add new feature"', session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_wip_prefix_case_sensitive_uppercase_blocked(self, isolated_home, git_repo):
+        """WIP opt-out is case-sensitive; `WIP:` (uppercase) is not an opt-out prefix."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input('git commit -m "WIP: not an opt-out"', session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
 
 # ---------------------------------------------------------------------------
 # require-respond-pr.sh
