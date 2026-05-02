@@ -1,10 +1,3 @@
-<!--
-  Global Claude Code instructions for Cordova Strategy.
-  These encode engineering judgment heuristics developed through
-  real-world fractional CTO engagements.
-  https://cordovastrategy.com
--->
-
 # Global Instructions
 
 ## Engineering Judgment
