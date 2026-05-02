@@ -54,7 +54,7 @@ Don't mix idioms across modules in the same runtime — it makes scattered reads
 
 ## Why
 
-- **12-Factor §III Config** (<https://12factor.net/config>) explicitly rejects environment-named variables: *"env vars are granular controls, each fully orthogonal to other env vars. They are never grouped together as 'environments'."*
+- **12-Factor §III Config** explicitly rejects environment-named variables: *"env vars are granular controls, each fully orthogonal to other env vars. They are never grouped together as 'environments'."*
 - **Suffix patterns duplicate logic.** The "which environment am I?" decision is already encoded in which config source loaded. Adding `_DEV` / `_PROD` to variable names fans that decision out to runtime code that branches on `NODE_ENV`, requiring both values to be present where only one is ever read, leaking the env selector into every consumer.
 - **Rotation is cheaper with canonical names.** Rotating `STRIPE_SECRET_KEY` means updating one name in the prod store; rotating `STRIPE_SECRET_KEY_PROD` requires remembering which suffix prod reads and leaves a `_DEV` variant easy to update by mistake.
 - **Mainstream frameworks resolve per-env config by file/store selection, not renaming:** Next.js lookup order, Rails per-env credentials, Kubernetes Kustomize overlays, Docker Compose `--env-file` — all load different sources for the same variable name.
@@ -84,7 +84,7 @@ function getStripeKey() {
 }
 ```
 
-The prod deploy populates `STRIPE_SECRET_KEY` with the live key; the dev `.env` populates it with the test key. Stripe's `sk_live_…` vs `sk_test_…` value prefix encodes the mode inside the *value* — no code branch needed.
+✅ **Recommended pattern:** the prod deploy populates `STRIPE_SECRET_KEY` with the live key; the dev `.env` populates it with the test key. Stripe's `sk_live_…` vs `sk_test_…` value prefix encodes the mode inside the *value* — no code branch needed.
 
 ### 3. Sentinel-value defaults that silently leak production-shaped state
 
