@@ -72,18 +72,6 @@ if [ -z "$(git diff --cached 2>/dev/null)" ]; then
   exit 0
 fi
 
-# WIP opt-out: commits prefixed with `wip:`, `fixup!`, or `[skip-review]`
-# skip the per-commit review pass. The cumulative /ready-for-review gate
-# still runs before PR handoff and catches everything.
-# Extract the first word of the commit message from the -m/--message flag.
-COMMIT_MSG_FIRST_WORD=$(printf '%s' "$COMMAND" \
-  | grep -oE '(-m |--message[= ])[[:space:]]*['"'"'"]?[^[:space:]'"'"'"]+' \
-  | head -1 \
-  | sed 's/^-m[[:space:]]*//;s/^--message[=[:space:]]//;s/^['"'"'"]//;s/['"'"'"]$//')
-if printf '%s' "$COMMIT_MSG_FIRST_WORD" | grep -qE '^(wip:|fixup!|\[skip-review\])'; then
-  exit 0
-fi
-
 REPO_HASH=$(printf '%s' "$REPO_ROOT" | sha256sum | awk '{print $1}')
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 CURRENT_HASH=$(git diff --cached | sha256sum | awk '{print $1}')

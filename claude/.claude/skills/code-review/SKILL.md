@@ -10,10 +10,6 @@ Review the code that was just written or modified. Act as a principal engineer r
 
 ## Step 0 — Detect changed domains
 
-**WIP opt-out:** When the staged commit message starts with `wip:`, `fixup!`, or `[skip-review]` (case-sensitive), skip the per-commit code-review pass. The cumulative pass at `/ready-for-review` still runs before PR handoff and catches everything.
-
-**Small-diff fast-path:** When the diff is <50 lines AND touches only one file, run only items 1–10 of the Base checklist (Correctness items 1–5, Hygiene items 6–8, Clarity items 9–10). Skip all domain checklists and ripple-effect triage. The threshold is 50 diff lines; the reduced item set is items 1–10 only — nothing else from the Base checklist, no domain checklists, no ripple-effect step.
-
 Before reviewing, determine which files were changed (from context, git diff, or the conversation). Classify each changed file into one or more domains:
 
 - **Infrastructure**: `.github/`, `*.tf`, `Dockerfile`, `docker-compose*`, CI/CD configs
