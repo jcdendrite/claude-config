@@ -209,7 +209,7 @@ The Change type column keys on what the change *does* for an operator or consume
 
 When you do spawn a specialist, be specific. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer` and ask it to verify the checkout flow in CheckoutPage.tsx still enforces ownership after the new validation" is actionable.
 
-Specialist agents must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. When spawning, include this constraint in the agent prompt.
+Specialist agents must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. If findings genuinely exceed the budget, the agent must prioritize by severity and explicitly note that lower-severity items were omitted. When spawning, include this constraint in the agent prompt.
 
 ## Reconciliation
 
