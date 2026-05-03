@@ -71,8 +71,13 @@ gh api repos/owner/repo/pulls/4/comments/12345678/replies \
 - Be concise in replies — state what was done, not lengthy explanations
 - If you disagree with a comment, explain why clearly but defer to the reviewer's judgment
 - Do not resolve review threads — let the reviewer verify and resolve them
-- PR comments are editable after posting. If a reply **you authored** in this session has a typo or factual error, edit it in place rather than posting a correction. **Use PATCH only against comment IDs you authored — confusing the target ID with the user's comment ID overwrites their text irrecoverably and cannot be undone.** Before running PATCH, verify the target ID's `user.login` from the prior comment fetch matches the account replies are posted under; if it doesn't, use the `/replies` form from Step 4 instead:
+- PR comments are editable after posting. If a reply **you authored** in this session has a typo or factual error, edit it in place rather than posting a correction. **Use PATCH only against comments you authored — confusing the target ID with the user's comment ID overwrites their text irrecoverably and cannot be undone.** A `user.login` check is *not* sufficient: GitHub's PATCH endpoint authorizes by comment author, and Claude posts under the user's own token, so a PATCH against the user's own comment will succeed and overwrite it. The reliable check is the attribution prefix: every reply Claude posts starts with `**[Claude Code]**`, and the user's comments do not. Before any PATCH, fetch the target body and verify it starts with that prefix; abort to the `/replies` form (Step 4) on any mismatch:
   ```
-  gh api repos/{owner}/{repo}/pulls/comments/{id} -X PATCH -F body='**[Claude Code]** ...corrected text...'
+  TARGET_BODY=$(gh api repos/{owner}/{repo}/pulls/comments/{id} --jq '.body')
+  case "$TARGET_BODY" in
+    '**[Claude Code]**'*) gh api repos/{owner}/{repo}/pulls/comments/{id} -X PATCH \
+                            -F body='**[Claude Code]** ...corrected text...' ;;
+    *) echo "ABORT: target is not Claude-authored; reply via /replies instead" >&2; exit 1 ;;
+  esac
   ```
   (or `/issues/comments/{id}` for issue-level comments)
