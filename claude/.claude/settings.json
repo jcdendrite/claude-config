@@ -135,5 +135,14 @@
       }
     }
   },
-  "model": "opusplan"
+  "model": "opusplan",
+  "permissions": {
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(sudo)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/credentials.json)"
+    ]
+  }
 }
