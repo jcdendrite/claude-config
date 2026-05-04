@@ -51,11 +51,29 @@ Markers of over-elaboration:
 - Captured outputs / fields with no reader downstream.
 - "Could be done in N lines" stays a valid challenge even after persona reviewers have shaped the plan — persona-shaped is not persona-locked.
 
-If over-elaborated: stop. Surface the simpler design as the primary review output before any checklist findings. Otherwise proceed to Step 3 — gap-finding will surface what's missing.
+If over-elaborated: stop. Surface the simpler design as the primary review output before any checklist findings. Otherwise proceed to Step 4 — gap-finding will surface what's missing.
 
 Question implementation choices, not feature scope — the ticket itself isn't reviewed here, that goes back to the author.
 
-## Step 3 — Evaluate
+## Step 3 — Plan structure requirements
+
+A plan that passes the design-fitness gate can still be unexecutable if its steps are underspecified. Check the plan against three structural requirements before moving to the gap-finding checklist.
+
+**No placeholders.** Every step must contain the actual content needed to execute it: file paths, function names, change descriptions. Flag any step containing "TBD", "based on findings", "implement later", "see above", or similar deferral language. Placeholders shift decisions to execution time, which is exactly when context is thinnest and errors are most expensive to diagnose.
+
+*How to check:* Read each step in isolation. If an implementer must scroll up or search elsewhere to understand what the step requires, it has a placeholder gap.
+
+**Bite-sized steps.** Each step is one action — roughly 2-5 minutes of work. Steps that embed multiple decisions ("implement X, then refactor Y, then update tests") hide subtasks that require their own judgment calls; the executing agent loses track of which subtask it's on and makes assumptions to fill the gap.
+
+*How to check:* Steps containing "then", "and also", "additionally", or "while you're at it" almost always need to be split.
+
+**Context-complete steps.** Each step contains everything needed to execute it without reading the surrounding document: the file path, the before/after change or precise description, and the reason for the change. A plan reader — human or agent, on first read or returning after context loss — should never have to reconstruct context from earlier steps to execute a later one.
+
+*How to check:* Pick a step from the middle of the plan. Without reading adjacent steps, could an implementer execute it correctly? If not, it lacks context.
+
+If a plan has structural failures: flag them as blockers in the output. A plan that passes Step 2 but fails Step 3 is not ready to execute.
+
+## Step 4 — Evaluate
 
 Evaluate the plan against the **Base checklist** first, then each detected **Domain checklist**. For multi-phase plans, evaluate each phase against the relevant checklists. Reference the specific phase/section when reporting findings.
 

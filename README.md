@@ -4,6 +4,12 @@ Portable [Claude Code](https://claude.ai/claude-code) global configuration: cust
 
 Maintained by [Cordova Strategy](https://cordovastrategy.com).
 
+Claude Code without enforcement will claim code is done before tests pass, skip the review step when it judges a change "too small," write to the main worktree when a concurrent session is already staged there, and paste client codenames directly into commit messages and PR bodies. claude-config makes these mistakes structurally impossible rather than relying on prompt instructions.
+
+A CLAUDE.md instruction says "you should run code-review before committing." A PreToolUse hook says "the commit is denied until code-review ran on this exact diff in this session." This distinction is the core design choice: enforce at the tool-call boundary, not at the prompt layer, because prompt-layer instructions are advisory — the model can rationalize past them on any change it judges simple enough not to need review.
+
+claude-config is a **workflow-enforcement layer** — it sits at the review/gate layer and complements skill-shaping plugins like [superpowers](https://github.com/obra/superpowers). You'd use both: superpowers shapes how Claude develops (brainstorming first, TDD discipline, anti-rationalization scaffolding); claude-config enforces what Claude must prove before it ships (review ran, identifiers are clean, worktree is isolated). claude-config already enables `skill-creator`, `claude-md-management`, and `claude-code-setup` from `anthropics/claude-plugins-official`; those ship additional skills, claude-config ships the enforcement harness. Most hand-rolled `~/.claude/` configs improvise the patterns claude-config systematizes: per-session marker keying, specialist reviewer routing, and three-tier redaction.
+
 ## Requirements
 
 - **Operating system:** Linux, macOS, or WSL2. Native Windows (PowerShell / cmd.exe) is not supported — every hook is a bash script and `install.sh` uses GNU `stow` with symlinks. If you're on Windows, install inside [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) instead.
@@ -237,6 +243,12 @@ pytest claude/.claude/hooks/tests/
 ```
 
 CI runs this on every PR and main push via `.github/workflows/hooks.yml`.
+
+## Threat model
+
+The hook system protects against three failure modes: committing client identifiers to a public repo (the tracker-ID regex and private-projects blocklist run before every `git commit` and PR create/edit); claiming work is done before tests pass or code review ran (the require-code-review and require-ready-for-review hooks deny the commit or push until the review marker exists for the current staged state); and two concurrent Claude sessions racing on the same working tree (require-worktree-for-git-writes denies write-path git operations unless the session is inside a linked worktree).
+
+The hook system does not protect against a skill or hook script itself being malicious — if an attacker can write to `claude/.claude/`, they can ship a hook that exfiltrates secrets before denying the command. It does not protect against an attacker with write access to `~/.claude/`: the marker directory, session files, and hook scripts all live there, and tampering with any of them can bypass or forge gate checks. It does not protect against a model that quotes sensitive tool output back to the user in chat — the hooks gate tool calls, not what the model says; if Claude reads a secret from an allowed path and repeats it in conversation, no hook fires.
 
 ## Designing reviewer personas
 

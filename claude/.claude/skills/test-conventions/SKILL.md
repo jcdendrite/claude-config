@@ -28,7 +28,26 @@ user-invocable: false
 **E2E tests** verify complete user journeys across the full stack. 
 **Smoke tests** are lightweight post-deploy checks that verify critical paths are functional — they answer "is it up?" not "does every flow work?"
 
-## 2. Design for testability
+## 2. Test-first invariant
+
+```
+PRODUCTION CODE REQUIRES A FAILING TEST FIRST.
+If the test wasn't written before the production code, it wasn't written first.
+```
+
+Write the test. Watch it fail. Write the production code to make it pass. In that order.
+
+**Why this order matters:** A test written after production code tends to pass on first run — which means it wasn't testing the code, it was describing it. A test that can only fail when something breaks is the only kind worth having. Writing the test first forces the failure condition to exist before the fix; that's what proves the test actually exercises the behavior.
+
+**What "failing first" means:** Run the test after writing it. Confirm it fails with the expected failure (not a compile error, not a wrong assertion — the actual scenario failing). Then write the production code. Watch the test go from red to green.
+
+**If you wrote production code before the test:** Delete the production code. Write the test. Watch it fail. Write the production back to make it pass. This isn't punitive — it closes the gap that lets tests silently describe broken behavior.
+
+**Escape hatch:** Refactors of already-tested surfaces don't require a new failing test if the existing tests cover the behavior being restructured. The invariant applies to new behavior, not to moving code around.
+
+This is canonical TDD discipline (Kent Beck, *Test-Driven Development: By Example*, 2002, and the broader xUnit literature).
+
+## 3. Design for testability
 
 ### Dependency injection over internal construction
 Functions should accept their dependencies as parameters, not create them internally. A function that constructs its own client internally cannot be tested without hitting the real service. Accepting the client as a parameter lets callers pass a test double.
@@ -53,7 +72,7 @@ Use the narrowest double that covers the test's intent. Prefer stubs for unit te
 - **Env vars / config:** Set and restore in setup/teardown blocks
 - **Time:** Inject timestamps as parameters rather than relying on the system clock
 
-## 3. Test isolation
+## 4. Test isolation
 
 ### Avoid global state in tests when possible
 Prefer designs that pass dependencies explicitly rather than relying on global state. When global state is unavoidable, follow the rules below.
@@ -81,7 +100,7 @@ Whether running locally or in CI, parallel test runners (pytest-xdist, Jest work
 - When sharing a test database, use per-test schemas or transaction rollback isolation
 - If a test mutates module-level state, it cannot safely run in parallel — document this constraint explicitly
 
-## 4. Test naming and structure
+## 5. Test naming and structure
 
 Test names should describe the **scenario** and **expected outcome**, not just the function name:
 - Good: `rejects_expired_token_with_401`, `returns_empty_list_when_no_matches`
@@ -101,7 +120,7 @@ Each test should follow the **Arrange / Act / Assert** (or Given / When / Then) 
 ### Regression test intent
 For tests that guard against a specific past bug, include a comment or docstring referencing the issue. This prevents future developers from deleting a test that looks redundant but guards against a known failure.
 
-## 5. Test data
+## 6. Test data
 
 - Use **factory/builder helpers** that supply sensible defaults; tests override only the fields relevant to the scenario
 - **Avoid magic values** — if a test uses `status: 3`, name the constant or comment why 3 matters
@@ -109,7 +128,7 @@ For tests that guard against a specific past bug, include a comment or docstring
 - **Shared fixtures** are appropriate for expensive setup (DB schemas, server instances), not for simple data objects
 - For tests against shared databases, use unique prefixes/suffixes (run ID, timestamp) so parallel runs and stale data don't collide
 
-## 6. Coverage judgment
+## 7. Coverage judgment
 
 ### What each test layer should verify
 
@@ -157,7 +176,7 @@ For endpoints or functions that handle concurrent writes:
 - The function handles partial failure (test one item failing in a batch)
 - The function has opt-out/preference logic (test opted-out path)
 
-## 7. Mock design principles
+## 8. Mock design principles
 
 ### Stub/mock fidelity
 - Test doubles should behave like the real thing for the patterns actually used
@@ -176,7 +195,7 @@ If an assertion checks a value that was set up directly in the test double rathe
 
 **Good (tests real logic):** stub `getUser` to return `{name: "Alice", role: "admin"}`, then assert the formatted display string equals `"Alice (Admin)"`. This tests the formatting/transformation logic the code actually performs.
 
-## 8. Common authoring mistakes
+## 9. Common authoring mistakes
 
 Avoid these when writing new tests:
 
