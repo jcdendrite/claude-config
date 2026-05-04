@@ -14,7 +14,7 @@ A silent regression (dropping a surface glob or an adjacent-skill exclusion
 from the description) means the skill either stops firing on its surface or
 dual-fires with a neighbor. These tests catch that at CI time.
 
-Run with: pytest claude/.claude/hooks/tests/test_skills.py
+Run with: pytest claude/.claude/
 """
 from __future__ import annotations
 
