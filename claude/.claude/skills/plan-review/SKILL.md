@@ -22,7 +22,7 @@ Find the plan to review. Check, in order:
 
 ## Step 1 — Detect domains
 
-Read the plan and classify which domains it touches:
+Read the plan and classify which domains it touches. When using an agent to explore the codebase for plan context, use `general-purpose` — not `Explore`. The `Explore` agent reads excerpts and is not suitable for design-doc auditing or cross-file consistency checks; it misses content past its read window.
 
 - **Infrastructure**: CI/CD, workflows, deployment, hosting, config files
 - **Data infrastructure**: Database migrations, schema DDL, RLS policies, CDC / change-stream config, ETL/ELT pipelines, warehouse ingestion connectors, raw landing schemas, schema-drift handling
@@ -31,6 +31,8 @@ Read the plan and classify which domains it touches:
 - **Frontend**: Client components, hooks, client-side state, UI behavior, routing, forms, optimistic mutations
 - **Backend**: Server-side code (HTTP/RPC handlers, edge functions, background jobs, queue consumers, SDK integrations, shared utilities) AND application data-store schema design
 - **Security**: Authentication or authorization, token handling, secret management, data exposure, RLS / RBAC / ACL changes
+
+**Schema change routing:** Route schema changes by change type: new nullable column, index, or view → `staff-backend-engineer` only; new table → `staff-backend-engineer` + `staff-analytics-engineer`; rename, drop, type change, NOT NULL constraint added, partition key, or RLS policy → `staff-backend-engineer` + `staff-data-engineer` + `staff-analytics-engineer`. Add `staff-product-engineer` if user-visible.
 
 ## Step 2 — Design-fitness gate
 
@@ -206,11 +208,13 @@ When you spawn: pick the specialist that serves the question (table below is ref
 
 Project-level plan-review skills may extend this table with project-specific reviewer roles, but must not remove or narrow the `ciso-reviewer` trigger conditions.
 
+Specialist agents must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. If findings genuinely exceed the budget, the agent must prioritize by severity and explicitly note that lower-severity items were omitted. When spawning, include this constraint in the agent prompt.
+
 ## Reconciliation
 
 Same logic as code-review's Reconciliation — repeated because skills load on demand.
 
-After spawned reviewers return findings, pause if findings concentrate on a single surface — the same feature, implementation detail, or design choice attracting multiple gaps. Two readings:
+After spawned reviewers return findings, pause if findings concentrate on a single surface — the same feature, implementation detail, or design choice attracting multiple gaps. If two specialists flag the same `file:line` with the same root cause, present the finding once with both reviewer attributions rather than as duplicate findings. Two readings:
 
 - **Design-wrong-shape.** The surface is the wrong abstraction; gaps will keep multiplying as you patch. Replace, don't patch-by-patch.
 - **Prompt-overlap artifact.** Reviewers given similar prompts produce N voices of the same observation. Convergence looks like signal but is framing-induced.
