@@ -116,6 +116,7 @@ Claude Code when both files exist. Zero maintenance, single source.
 | Question | Answer |
 |---|---|
 | Am I adding a new guardrail? | Put it in AGENTS.md (canonical, cross-agent). Claude Code gets it via `@AGENTS.md` import; other AGENTS.md-aware agents (Codex, Cursor, Aider, Gemini CLI, Windsurf, Amp, Lovable) read it natively. |
+| The rule applies only when a specific skill is running (e.g., "write backticks literally when constructing a PR body via heredoc")? | Edit that skill's SKILL.md, not CLAUDE.md. CLAUDE.md is loaded every session — a context-specific rule there costs a global line of attention budget on every session that doesn't need it. The skill file is read at the exact moment the rule applies. |
 | The repo has CLAUDE.md but no AGENTS.md — should I add AGENTS.md? | Only if a non-Claude AGENTS.md-aware agent (Lovable, Cursor, Codex, Aider, etc.) is also using the repo. Otherwise CLAUDE.md alone is fine. |
 | CLAUDE.md is over 200 lines — what should I trim? | First: delete content that duplicates AGENTS.md (use `@AGENTS.md` import instead). Then: collapse narrative case studies into one-sentence principles. Leave only Claude-Code-specific project context. |
 | A rule appears in two files — is that OK? | Only if (a) it's critical AND (b) the two files reach different agents / different load paths AND (c) one could silently fail. Otherwise use the import pattern. |
@@ -161,6 +162,7 @@ Index discipline:
 | :--------------------------------------------------------------- | :----------------------------------------------- |
 | Rule any contributor (or other agent) should follow              | CLAUDE.md, or AGENTS.md via `@AGENTS.md`         |
 | Personal preference or workflow specific to this user            | Auto-memory                                      |
+| Rule that fires only inside a specific skill's flow              | That skill's SKILL.md (not CLAUDE.md, not auto-memory) |
 | Past incident "why" not captured in code, tests, or commit msgs  | Auto-memory (feedback or project type)           |
 | Pointer to external systems (Linear, Grafana, etc.)              | Auto-memory (reference type)                     |
 | Restatement of a rule already in CLAUDE.md / AGENTS.md           | **Nowhere — delete it** (§3 compliance asymmetry)|
