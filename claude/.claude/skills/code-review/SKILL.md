@@ -130,7 +130,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 ## Domain: Claude Code config
 
-For `.claude/skills/**/SKILL.md` review (frontmatter, trigger design, voice, length, behavior test, cross-reference vs duplication), see the `skill-review` skill.
+For `.claude/skills/**/SKILL.md` review (frontmatter, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions), see the `skill-review` skill — do not assert behavioral equivalence on prose compressions yourself; that audit is `skill-review`'s job.
 
 35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 

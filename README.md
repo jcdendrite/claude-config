@@ -55,6 +55,7 @@ flowchart LR
 
 - **`/plan-review`** — review an implementation plan against domain checklists before presenting it to a human; required before writing code when a plan file exists in `.claude/plans/`.
 - **`/code-review`** — principal-engineer code review with ripple-effect triage and domain-specific audits; required before `git commit`.
+- **`/skill-review`** — behavioral-equivalence audit for `SKILL.md` changes; required before `git commit` when staged changes include a SKILL.md. Produces an explicit table verifying that every removed or shortened line's behavior is preserved.
 - **`/ready-for-review`** — pre-handoff gate that verifies tests/lint/typecheck and reviews the cumulative PR diff; required before `git push` on a branch with an open PR.
 - **`/respond-pr`** — fetch all PR review comments (inline, top-level, review summaries) and post replies with `[Claude Code]` attribution; required before reading or posting PR comments via `gh api`.
 
@@ -64,6 +65,7 @@ flowchart LR
 |---|---|---|
 | `require-plan-review.sh` | `Write`/`Edit` while a plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
+| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | `/skill-review` behavioral-equivalence audit |
 | `require-ready-for-review.sh` | `git push`, `gh pr ready` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
@@ -71,6 +73,7 @@ flowchart LR
 ### Hooks
 
 - **`require-code-review.sh`** — blocks `git commit` (including chained forms like `git add . && git commit`) until `/code-review` has run on the current staged state. Verified via per-session sha256 marker in `~/.claude/review-markers/<repo-hash>.<session-id>`, which auto-invalidates the moment the staging area changes. Per-session keying prevents two parallel sessions in the same worktree from overwriting each other's markers when staging different diffs.
+- **`require-skill-review.sh`** — blocks `git commit` only when staged changes include a `SKILL.md`. Requires `/skill-review` to have produced a behavioral-equivalence audit for any removed or shortened lines. Marker is keyed to the SKILL.md-scoped diff (not the full staged diff), so re-staging non-skill files after a clean review does not invalidate the marker.
 - **`deny-private-project-refs.sh`** — blocks `git commit`, `gh pr create`, and `gh pr edit` when the staged diff, commit message, or PR title/body/body-source-file contains either (a) tracker-ID tokens (`[A-Z]{2,}-\d+`) outside an OSS-prefix allowlist (`CVE-`, `RFC-`, `GH-`, and similar — see the script for the full list), or (b) a literal substring match against entries in the user's opt-in `~/.claude/private-projects.md` blocklist. Enforces the mechanical categories of the repo-root `CLAUDE.md` redaction rule; structural fingerprints still require review discipline. See [Private-project redaction](#private-project-redaction) below.
 - **`require-stow-reminder.sh`** — scoped to the claude-config repo. Blocks `gh pr create` and `gh pr edit` (when the edit changes the body) if the PR adds a new immediate child of `claude/.claude/` (file or directory) and neither the inline command, a referenced `--body-file`/`--template`, nor any `--fill`-sourced commit message mentions `install.sh` or `stow` (case-insensitive). Reason: GNU Stow links each top-level child of `claude/.claude/` individually, so a brand-new child only appears in `~/.claude/` after re-running `install.sh` — `git pull` alone won't materialize the symlink. The reminder lands in the PR body so the post-merge stow step doesn't get forgotten at merge time.
 - **`require-respond-pr.sh`** — blocks PR comment reads and posts (`gh api .../pulls|issues/N/{comments,reviews}`, `gh pr comment`, `gh pr review`) and redirects to `/respond-pr`, so all three comment types get fetched and replies carry the `[Claude Code]` attribution prefix. Honors a per-session bypass marker at `~/.claude/.respond-pr-active.d/<session_id>` that the skill sets on entry and removes on exit; the hook refreshes the marker's mtime on each bypass so long skill runs don't hit the 60-minute staleness cutoff. Per-session keying (rather than a singleton path) keeps parallel Claude sessions from thrashing on cleanup or leaking bypass to unrelated sessions.
