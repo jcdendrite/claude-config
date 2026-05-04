@@ -86,7 +86,7 @@ B3. **Breaking intermediate states** — During phased migrations, is there a wi
 
 B4. **Unresolved external dependencies** — Does the plan depend on external services, APIs, or tools whose availability, rate limits, or behavior the author hasn't verified?
 
-B5. **Evidence** — Does the plan cite a source for each finding/assertion (file:line, tool that flagged it, or how it was discovered)? Conclusions without evidence force reviewers to re-derive them.
+B5. **Evidence and verification** — Does the plan cite a source for each finding/assertion (file:line, tool that flagged it, or how it was discovered)? When the plan asserts a specific code shape (function signature, exact line number, type field, import path), verify the cited source actually matches — citation alone is insufficient if the assertion misquotes it. Conclusions without evidence force reviewers to re-derive them; misquoted citations produce phantom code-review findings when the implementer correctly diverges.
 
 ### Scope
 
@@ -251,7 +251,7 @@ The dispatcher fires reviewers per touched domain. Each agent self-scopes agains
 | **B2. Missing consumer analysis** | `staff-backend-engineer` (API consumers) | `staff-frontend-engineer`, `staff-product-engineer`, `staff-data-engineer` (per consumer type), `staff-analytics-engineer` (warehouse-consumer fitness — source shape suits modeling) |
 | **B3. Breaking intermediate states** | `staff-backend-engineer`, `staff-data-engineer` | `staff-platform-engineer` (deploy-window) |
 | **B4. Unresolved external dependencies** | `staff-backend-engineer` | — |
-| **B5, B6, B7, B13, B15. Judgment items** (evidence, proportionality, scope creep, ambiguous instructions, effort section) | judgment (any reviewer) | — |
+| **B5, B6, B7, B13, B15. Judgment items** (evidence and verification, proportionality, scope creep, ambiguous instructions, effort section) | judgment (any reviewer) | — |
 | **B8. Missing scope** | `staff-product-engineer` (user-facing gaps), `staff-sdet` (test gaps) | `staff-data-engineer`, `staff-platform-engineer` (ops gaps) |
 | **B9. Phase independence** | `staff-platform-engineer` | `staff-backend-engineer` |
 | **B10. Test realism** | `staff-sdet` | `staff-product-engineer` (user-flow realism) |
