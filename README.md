@@ -125,6 +125,39 @@ Schema-change diffs nominally route three ways — `staff-backend-engineer` (des
 - **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo` and secret-file reads (see [Auto mode](#auto-mode)). Configured with **opusplan** as the default model (cost-effective and [recommended by Anthropic](https://support.claude.com/en/articles/14552983-models-usage-and-limits-in-claude-code)). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 - **`statusline-command.sh`** — status bar showing model, context usage, session cost, working directory, and git branch.
 
+### Scripts
+
+Utility scripts in `claude/.claude/scripts/` (stowed to `~/.claude/scripts/`).
+
+**First-time setup:** after pulling this repo for the first time, make scripts executable:
+
+```bash
+chmod +x ~/.claude/scripts/*.py
+```
+
+- **`analyze-context.py`** — inspect context window growth for a Claude Code session. Reads `~/.claude/projects/<project>/<session>.jsonl` and `~/.claude/usage-data/session-meta/` locally; no network calls, no writes.
+
+  ```bash
+  # Latest session in current project (run from project root)
+  ~/.claude/scripts/analyze-context.py
+
+  # Heaviest sessions across all projects
+  ~/.claude/scripts/analyze-context.py --top
+  ~/.claude/scripts/analyze-context.py --top 20
+
+  # Specific session
+  ~/.claude/scripts/analyze-context.py <session-id>
+  ```
+
+  The per-session view reports start/peak/end token counts, a growth curve
+  (context window size per turn), and the ten turns with the largest single-step
+  jumps — useful for identifying which tool results or subagent returns are
+  expanding the context most.
+
+  The `--top` view ranks sessions by direct token usage (input + output; cache
+  reads excluded) from session metadata, and prints the session ID so you can
+  drill in with the per-session view.
+
 ## Worktree enforcement
 
 Concurrent Claude Code sessions that share a working tree can race: one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
