@@ -43,6 +43,14 @@
 - Never commit secrets, credentials, API keys, or large binary assets to repositories.
 - Never use the Read tool on files likely to contain secrets (`.env`, `.claude.json`, `credentials.json`, similar). Reading pulls the secret into the conversation context. When you need to inspect such a file, give the user a shell command (`cat`, `grep`, `jq`) to run via `!` instead.
 
+## Code Comments
+
+Comments must be readable by a future coder who has not read the PR description, commit message, or planning document. In particular:
+
+- **No PR-defined terminology** in code comments (e.g., "Defense A", "Action 6", "Pattern C"). If a label is meaningful it must be defined in code (constant name, function name, type name) — not in a comment that depends on context outside the file.
+- **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message or PR body.
+- **Self-test:** if you can't write the comment such that it survives the PR being merged and the description being lost, don't write the comment. Move the rationale to the commit message instead.
+
 ## Output Preferences
 
 If `~/.claude/output-preferences.md` exists, read it at session start and apply those preferences for response tone and formatting. Cap at 50 lines.
