@@ -103,6 +103,13 @@ B14. **Missing decision rationale** — Are design choices explained? "Use appro
 
 B15. **Effort section reality** — If the plan has an "Estimated Effort" section, does it describe **review surface** (file count, domain complexity, risk concentration) rather than **implementation hours**? Hour-based estimates anchored in human coding speed mislead when Claude writes the code. Flag any effort section citing hours/days; rewrite in review-surface terms.
 
+B16. **Tech-debt intersection** — Does the plan touch, expand, or work around an existing tech-debt mechanism (grandfathered-violations list, legacy shim, `// TODO: refactor` marker, dual code path that exists for migration reasons)? If yes, the plan must explicitly choose between:
+
+- **(a) Expand the workaround for now** — with rationale (typically "the surgical fix is out-of-scope and would dilate the PR").
+- **(b) Include a surgical fix in this PR** — and adjust scope accordingly.
+
+Don't silently expand. The choice between (a) and (b) is calibrated to team size and PR-scope discipline — surface the intersection here, not after the fact in code-review. Flag as **missing scope (B8)** if the plan touches a tech-debt mechanism without acknowledging it.
+
 ## Domain: Infrastructure
 
 Apply when the plan touches CI/CD, workflows, deployment, or config.
@@ -240,6 +247,7 @@ The dispatcher fires reviewers per touched domain. Each agent self-scopes agains
 | **B11. Rollback strategy** | `staff-data-engineer`, `staff-platform-engineer`, `staff-backend-engineer` | `staff-sdet` (testability of rollback) |
 | **B12. Dependency risk** | `staff-backend-engineer` (runtime deps), `staff-platform-engineer` (CI / build deps) | — |
 | **B14. Missing decision rationale** | `staff-product-engineer` (user-impact decisions) | judgment (others) |
+| **B16. Tech-debt intersection** | `staff-product-engineer` (scope decision: fix now vs. defer) | domain reviewer for the affected area — whichever of `staff-backend-engineer`, `staff-frontend-engineer`, `staff-data-engineer`, or `staff-platform-engineer` owns the subsystem the tech debt lives in (surgical-fix feasibility) |
 | **I1–I4. Infrastructure** (env parity, idempotency, deployment ordering, secret/config provisioning) | `staff-platform-engineer` | `staff-data-engineer` (I2 migration-level idempotency); `ciso-reviewer` (I4 secret threat framing) |
 | **D1. Migration safety** | `staff-data-engineer` (pipeline impact, DDL form) | `staff-backend-engineer` (correctness), `staff-platform-engineer` (deploy-window, lock-budget) |
 | **D2. Migration reversibility** | `staff-data-engineer` | `staff-backend-engineer` |
