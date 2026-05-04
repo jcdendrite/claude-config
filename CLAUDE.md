@@ -67,9 +67,10 @@ check the diff against its output — e.g. an edit adding prose to a
 skill that argues for brevity is the kind of thing the skill would
 flag against itself.
 
-`/plan-review` and `/code-review` are mandatory pipeline steps before
-PR handoff — both are hook-enforced (see README "Workflow" for the full
-skill invocation order and which hook gates each transition).
+`/plan-review`, `/code-review`, and `/skill-review` are mandatory pipeline
+steps before PR handoff — all three are hook-enforced (see README "Workflow"
+for the full skill invocation order and which hook gates each transition).
+`/skill-review`'s gate fires only when staged changes include a SKILL.md.
 
 ## Redact private-project-identifying content
 

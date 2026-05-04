@@ -42,9 +42,8 @@ Optional frontmatter:
   menu but keeps it auto-triggerable from the description.
 
 The harness loads only the description at startup; the body is fetched
-on demand when triggers match. This means description text is
-always-loaded context budget, body text is conditional. Frontmatter
-overspend hurts more than body overspend.
+on demand. Description text is always-loaded context budget; body
+text is conditional. Frontmatter overspend hurts more than body overspend.
 
 ## 2. Trigger design
 
@@ -65,16 +64,11 @@ DO NOT TRIGGER when: <obvious misfire>; <adjacent skill's surface>; <out of scop
 3. **Context cues** (deciding which file a rule belongs in, debating
    length) — weakest; only fire when the verbs aren't enough.
 
-**Tradeoff.** Over-broad triggers load the skill's body into
-unrelated turns and steal context from the active task. Over-narrow
-triggers leave the skill dormant when it should fire and the user
-ends up restating what the skill already knows.
-
-**DO NOT TRIGGER carries equal weight.** Name the adjacent skills
-whose surfaces overlap. A `skill-review` description that doesn't
-list `skill-creator` under DO NOT TRIGGER will dual-fire on every
-authoring turn `skill-creator` claims to own — costing context
-budget without adding marginal value.
+**DO NOT TRIGGER carries equal weight.** Over-broad triggers load
+skill body into unrelated turns; over-narrow leave it dormant. Name
+the adjacent skills whose surfaces overlap — a `skill-review`
+description that doesn't list `skill-creator` under DO NOT TRIGGER
+will dual-fire on every authoring turn.
 
 ## 3. Voice and structure
 
@@ -85,23 +79,17 @@ budget without adding marginal value.
   ownership table).
 - **Section headers are domain or step labels** ("Trigger design,"
   "Review checklist") — never "Introduction," "Background,"
-  "Conclusion." The headers are skim navigation; padding headers add
-  load without a routing payoff.
+  "Conclusion."
 - **Tables for matrices, prose for narratives, bullets for parallel
   options.** A four-column comparison wants a table; a two-step
   decision wants prose.
 
 ## 4. Length and the behavior test
 
-**Length targets:**
-
-- Target under **200 lines per file**. Diminishing returns past 300.
-- Attention decay hits the **middle** of long files ("lost in the
-  middle"). Burying critical rules past line ~150 reduces their
-  effective load.
-- Prose-rule compliance tops out around ~70%. Structural tests and
-  hooks hit 100%. When a rule can be encoded mechanically, prefer
-  the mechanical enforcement.
+Target under **200 lines per file** (diminishing returns past 300).
+Prose-rule compliance tops out around ~70%; structural tests and
+hooks hit 100%. When a rule can be encoded mechanically, prefer
+mechanical enforcement.
 
 **The behavior test.** For every line: does removing this line
 change Claude's behavior on at least one realistic input? If no, cut.
@@ -120,15 +108,9 @@ change Claude's behavior on at least one realistic input? If no, cut.
 - Narrative case studies that retell a past PR.
 - Audience-persuasion language ("It's important to remember that...").
 
-When a skill is surfaced by a real incident, keep the failure mode
-and the fix in the skill body; drop the incident's identity. (Repo
-`CLAUDE.md` "When a skill is surfaced by real-world work, abstract
-first" governs this for the public claude-config repo specifically.)
-
 ## 5. Operational vs narrative content
 
-A skill body is operational instructions for Claude, not a design
-document for a human reader. Replace narrative with imperative.
+Replace narrative with imperative. Skill bodies are operational instructions for Claude, not design documents.
 
 | Tone marker | Operational | Narrative (cut) |
 |---|---|---|
@@ -152,12 +134,9 @@ rather than restating the skill-review checklist inline.
 3. One path could silently fail (skill not triggered, file not loaded
    for a particular file type, etc.).
 
-Otherwise, point at the canonical source. Two copies of the same rule
-drift; one will go stale and the contradiction surfaces during review.
+If not all three hold, point at the canonical source.
 
 ## 7. Review checklist
-
-When reviewing a PR that touches `claude/.claude/skills/**/SKILL.md`:
 
 1. **Frontmatter** — `name` matches directory; `description` present
    and contains both `TRIGGER when:` and `DO NOT TRIGGER when:`
@@ -169,8 +148,7 @@ When reviewing a PR that touches `claude/.claude/skills/**/SKILL.md`:
    action verbs, not vague context cues alone. A skill that triggers
    on "thinking about X" is too soft to fire reliably.
 4. **DO NOT TRIGGER coverage** — adjacent-skill surfaces are named
-   explicitly. Audit by listing every nearby skill in the same
-   domain and asking whether DO NOT TRIGGER says "use that one."
+   explicitly; verify every domain-adjacent skill appears.
 5. **Length** — under the 200-line target. Flag anything that drifts
    past 200 (and especially past 300) without a load-bearing reason.
 6. **Behavior test per line** — every line should change Claude's
@@ -188,3 +166,35 @@ When reviewing a PR that touches `claude/.claude/skills/**/SKILL.md`:
     private-tracker-ID references in examples or rationale. Use
     `PROJ-<digits>` or `TICKET-<digits>` for tracker-shaped
     placeholders. (Repo-specific; see repo-root `CLAUDE.md`.)
+11. **Behavioral-equivalence audit (compression diffs)** — for any
+    diff that removes or shortens lines, before declaring the review
+    complete:
+
+    | Removed/shortened text | Surviving line | Behavior-preserving? |
+    |---|---|---|
+    | (quote) | (cite) | Y — (quote surviving line) / N — (what is lost) |
+
+    Y requires citing the specific surviving line that carries the
+    same instruction. "The meaning is the same" is not sufficient.
+    Any N is a finding; restore the instruction.
+
+    Compression that drops a forbidden-action callout ("do not X"),
+    an imperative directive, an escape-hatch exception, or a
+    verification command fails this audit even when the summary reads
+    as equivalent.
+
+## Step — Record review completion
+
+If the review is clean (table above has no N rows, no other
+blockers), record completion by running this command exactly once:
+
+<!-- HOOK_TEST_FIXTURE: skill-review-marker-write — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/skill-review/SKILL.md) to verify it matches require-skill-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```
+SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/skill-review-markers" && REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}') && git diff --cached -- 'claude/.claude/skills/**/SKILL.md' | sha256sum | awk '{print $1}' > "$HOME/.claude/skill-review-markers/$REPO_HASH.$SESSION_ID"
+```
+
+The `tr -d '\n'` is load-bearing: `git rev-parse` adds a trailing
+newline, and the hook computes the repo hash without it. The pathspec
+`'claude/.claude/skills/**/SKILL.md'` is also load-bearing — it
+scopes the hash to skill diffs so non-skill re-staging does not
+invalidate a clean review.

@@ -185,6 +185,27 @@ def write_plan_review_marker(home: Path, repo: Path, session_id: str) -> Path:
     return marker
 
 
+def skill_review_marker_path(home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID) -> Path:
+    repo_hash = subprocess.run(
+        ["sha256sum"],
+        input=git_toplevel(repo).encode(),
+        capture_output=True,
+    ).stdout.decode().split()[0]
+    return home / ".claude" / "skill-review-markers" / f"{repo_hash}.{session_id}"
+
+
+def write_skill_review_marker(home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID) -> None:
+    diff = subprocess.run(
+        ["git", "diff", "--cached", "--", "claude/.claude/skills/**/SKILL.md"],
+        capture_output=True,
+        cwd=repo,
+    ).stdout
+    diff_hash = hashlib.sha256(diff).hexdigest()
+    marker = skill_review_marker_path(home, repo, session_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(diff_hash + "\n")
+
+
 def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     """Run a SKILL.md-extracted bash command in a sandboxed $HOME."""
     subprocess.run(
