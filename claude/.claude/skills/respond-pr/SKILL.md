@@ -32,7 +32,7 @@ Fetch all review comments on the current branch's open pull request and address 
    - **`OUT-OF-SCOPE`** — the comment identifies a real issue but it belongs in a separate PR.
      Required fields: `acknowledgment` (confirm the issue is real), `where-tracked` (ticket or backlog), `link-or-ticket` (URL or "will create").
    - **`DEFERRED`** — the change is valid but intentionally left for a follow-up.
-     Required fields: `acknowledgment`, `deferral-reason`, `follow-up-ticket`.
+     Required fields: `acknowledgment`, `deferral-reason`, `follow-up-ticket` (URL to an existing ticket, or `"will create: <one-line summary>"` if none exists yet — but the ticket must be created before the skill session ends).
    - **`AGREE-NO-CHANGE`** — the reviewer is right but the code already handles it, or the suggestion is a matter of preference and no change is warranted.
      Required fields: `acknowledgment`, `rationale`.
 

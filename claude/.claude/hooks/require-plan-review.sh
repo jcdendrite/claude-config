@@ -29,10 +29,11 @@
 INPUT=$(cat)
 TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
 
-# Only gate Write and Edit tool calls.
-if [ "$TOOL_NAME" != "Write" ] && [ "$TOOL_NAME" != "Edit" ]; then
-  exit 0
-fi
+# Only gate Write, Edit, and MultiEdit tool calls.
+case "$TOOL_NAME" in
+  Write|Edit|MultiEdit) ;;
+  *) exit 0 ;;
+esac
 
 # Not in a git repo — can't check for plan files or key the marker.
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)

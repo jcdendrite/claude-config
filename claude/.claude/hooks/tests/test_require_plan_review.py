@@ -12,6 +12,7 @@ from helpers import (
     bash_input,
     edit_input,
     extract_skill_command,
+    multiedit_input,
     plan_review_marker_path,
     run_hook,
     run_hook_reason,
@@ -226,6 +227,32 @@ class TestRequirePlanReview:
                 cwd=plan_review_repo,
             )
             == "allow"
+        )
+
+    def test_fresh_active_marker_allows_multiedit(self, plan_review_repo, plan_review_home):
+        sid = "session-active-multiedit"
+        marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**multiedit_input("/tmp/foo.py"), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_plan_exists_no_marker_denies_multiedit(
+        self, plan_review_repo, plan_review_home
+    ):
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**multiedit_input("/tmp/foo.py"), "session_id": "test-session-prt"},
+                cwd=plan_review_repo,
+            )
+            == "deny"
         )
 
     def test_stale_active_marker_falls_through_to_deny(
