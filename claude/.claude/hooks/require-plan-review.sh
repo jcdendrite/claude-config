@@ -7,10 +7,16 @@
 # Projects without a .claude/plans/ directory or with no plan files pass
 # through silently — the plan-existence check is the built-in filter.
 #
-# Marker layout:
-#   ~/.claude/plan-review-markers/<repo-hash>.<session_id>
-# Written by the /plan-review skill when a clean review completes.
-# The marker is keyed per-session (not a singleton) to prevent parallel
+# Two-marker pattern:
+# - Active marker (~/.claude/.plan-review-active.d/<session_id>):
+#   presence-only, fresh mtime <60 min. Written by /plan-review at step 0;
+#   removed at the deactivation step. Bypasses the gate so the skill's own
+#   Write/Edit calls during review don't self-deny. mtime refreshed on each
+#   bypass to handle long reviews.
+# - Completion marker (~/.claude/plan-review-markers/<repo-hash>.<session_id>):
+#   written by /plan-review when the review is clean. Existence-checked;
+#   allows Write/Edit until the next session.
+# The markers are keyed per-session (not singletons) to prevent parallel
 # sessions from overwriting each other's markers.
 #
 # Defense-in-depth: the hook filters its own input by tool name; do not
@@ -23,10 +29,11 @@
 INPUT=$(cat)
 TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
 
-# Only gate Write and Edit tool calls.
-if [ "$TOOL_NAME" != "Write" ] && [ "$TOOL_NAME" != "Edit" ]; then
-  exit 0
-fi
+# Only gate Write, Edit, and MultiEdit tool calls.
+case "$TOOL_NAME" in
+  Write|Edit|MultiEdit) ;;
+  *) exit 0 ;;
+esac
 
 # Not in a git repo — can't check for plan files or key the marker.
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
@@ -50,6 +57,14 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 
 # Without session_id, we cannot key a per-session marker — block.
 if [ -n "$SESSION_ID" ]; then
+  # Active-marker bypass: the /plan-review skill is currently running.
+  ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+  if [ -f "$ACTIVE_MARKER" ] && [ -n "$(find "$ACTIVE_MARKER" -mmin -60 2>/dev/null)" ]; then
+    touch "$ACTIVE_MARKER" 2>/dev/null
+    exit 0
+  fi
+
+  # Completion-marker check.
   REPO_HASH=$(printf '%s' "$REPO_ROOT" | sha256sum | awk '{print $1}')
   MARKER="$HOME/.claude/plan-review-markers/$REPO_HASH.$SESSION_ID"
   if [ -f "$MARKER" ]; then
