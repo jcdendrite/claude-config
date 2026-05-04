@@ -478,6 +478,7 @@ class TestRequireCodeReview:
         assert "PreToolUse hooks evaluate" in reason
 
 
+
 # ---------------------------------------------------------------------------
 # require-respond-pr.sh
 # ---------------------------------------------------------------------------
