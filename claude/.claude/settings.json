@@ -137,6 +137,9 @@
   },
   "model": "opusplan",
   "permissions": {
+    "allow": [
+      "Bash(_f04_probe_cmd)"
+    ],
     "deny": [
       "Bash(sudo *)",
       "Bash(sudo)",
