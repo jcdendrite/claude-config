@@ -178,6 +178,18 @@ class TestCheckSkillLength:
             == "allow"
         )
 
+    def test_staged_deletion_of_skill_allows(self, isolated_home, skill_repo):
+        """git rm-staged SKILL.md: git show ":$f" produces empty output → new=0, 0 > 200 is false → allow."""
+        subprocess.run(["git", "rm", "-q", SKILL_PATH], cwd=skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+            )
+            == "allow"
+        )
+
     def test_deny_message_includes_filename_and_counts(self, isolated_home, skill_repo):
         """Deny reason must name the file, new line count, old line count, and limit."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))

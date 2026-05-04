@@ -22,8 +22,8 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 FAIL=0
 MESSAGES=""
 while IFS= read -r f; do
-  new=$(git show ":$f" 2>/dev/null | wc -l) || continue
-  old=$(git show "HEAD:$f" 2>/dev/null | wc -l || echo 0)
+  new=$(git show ":$f" 2>/dev/null | awk 'END{print NR}')
+  old=$(git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
   if [ "$new" -gt 200 ] && [ "$new" -gt "$old" ]; then
     MESSAGES="${MESSAGES}  $f: $new lines (was $old, limit 200)\n"
     FAIL=1
