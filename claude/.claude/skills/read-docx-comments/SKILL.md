@@ -1,6 +1,14 @@
 ---
 name: read-docx-comments
-description: Extract comments from a .docx file and show them with their anchored text context
+description: >
+  Extract comments from a .docx file and show them with their anchored
+  text context.
+  TRIGGER when: the user provides or references a .docx file and wants
+  to read, review, or act on comments embedded in it.
+  DO NOT TRIGGER when: the file is not a .docx (PDF, plain text, Google
+  Doc link without an exported .docx); the user wants to edit the
+  document rather than read its comments; or no .docx file is present
+  or referenced.
 argument-hint: "<path/to/file.docx>"
 ---
 

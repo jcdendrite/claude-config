@@ -9,7 +9,8 @@ description: >
   Project Knowledge or Workspace Knowledge; deciding which Lovable
   knowledge field a given rule belongs in; reviewing `.lovable/**`
   changes in a PR.
-  DO NOT TRIGGER when: editing CLAUDE.md or AGENTS.md (use
+  DO NOT TRIGGER when: the project-level CLAUDE.md does not identify
+  this as a Lovable project; editing CLAUDE.md or AGENTS.md (use
   `ai-instruction-and-memory-files`); editing agent-specific rules files
   like `.cursorrules` or `.github/copilot-instructions.md` (out of
   current scope); or writing code.
