@@ -20,6 +20,10 @@
 # skill invocation (large PR, many comments) doesn't hit the 60-min
 # staleness cutoff mid-run. The cutoff still applies to genuinely orphaned
 # markers from a session that errored before reaching the cleanup step.
+# The gate also covers `repos/{o}/{r}/(pulls|issues)/comments/{id}` (no
+# PR/issue-number segment) — the destructive PATCH endpoint that overwrites
+# a comment in place; gating it forces any edit to flow through
+# /respond-pr's verified-author guidance.
 
 INPUT=$(cat)
 TOOL=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
@@ -51,6 +55,8 @@ fi
 #   gh pr review ...                  (post a review)
 if printf '%s\n' "$COMMAND" | grep -qE 'gh\s+api\s+[^|&;]*(pulls|issues)/[0-9]+/(comments|reviews)'; then
   :
+elif printf '%s\n' "$COMMAND" | grep -qE 'gh\s+api\s+[^|&;]*repos/[^/[:space:]]+/[^/[:space:]]+/(pulls|issues)/comments/[0-9]+'; then
+  :
 elif printf '%s\n' "$COMMAND" | grep -qE 'gh\s+pr\s+(comment|review)(\s|$)'; then
   :
 else
@@ -70,7 +76,7 @@ fi
 # a flag-shaped substring inside a quoted body could spoof a cross-repo
 # match and bypass the gate — unlikely for Claude-written commands, but
 # worth knowing.
-COMMAND_REPO=$(printf '%s\n' "$COMMAND" | sed -nE 's#.*repos/([^/]+/[^/]+)/(pulls|issues)/[0-9]+/(comments|reviews).*#\1#p' | head -1)
+COMMAND_REPO=$(printf '%s\n' "$COMMAND" | sed -nE 's#.*repos/([^/]+/[^/]+)/(pulls|issues)/[0-9]+/(comments|reviews).*#\1#p;s#.*repos/([^/]+/[^/]+)/(pulls|issues)/comments/[0-9]+.*#\1#p' | head -1)
 if [ -z "$COMMAND_REPO" ]; then
   COMMAND_REPO=$(printf '%s\n' "$COMMAND" | sed -nE 's#.*[[:space:]](-R|--repo)[[:space:]=]+([^[:space:]=]+/[^[:space:]]+).*#\2#p' | head -1)
 fi
