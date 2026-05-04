@@ -478,13 +478,110 @@ class TestRequireWorktreeForGitWrites:
         assert reason is not None
         assert "-C path" not in reason
 
-    def test_chained_cd_and_git_C_appends_both_notes(self, opted_in_repo):
-        """Command with both patterns → both notes appended independently."""
+    def test_chained_cd_and_git_C_only_cd_chain_deny(self, opted_in_repo):
+        """Command with both cd chain and -C: the cd-chain deny fires before
+        the fragment loop, so the -C note is never appended."""
         reason = run_hook_reason(
             WORKTREE_HOOK,
             bash_input("cd /tmp && git -C /tmp commit -m foo"),
             cwd=opted_in_repo,
         )
         assert reason is not None
-        assert "chained 'cd" in reason   # chained-cd note
-        assert "-C path" in reason        # -C note
+        assert "chains 'cd" in reason    # cd-chain deny fires first
+        assert "-C path" not in reason   # -C note never reached
+
+    # -- Worktree-cwd bypass: chained cd to main tree from worktree session --
+    # Regression: a session whose persisted cwd is a linked worktree could run
+    # `cd /main-repo && git merge ...` and bypass the hook — the hook read the
+    # persisted cwd (worktree shape → exit 0) before ever inspecting the
+    # fragments. The fix denies all chained `cd ... && git ...` commands
+    # regardless of the persisted cwd, since the effective cwd at the time
+    # git runs cannot be determined from the tool-input JSON alone.
+
+    def test_worktree_cwd_chained_cd_to_main_merge_denied(self, opted_in_with_worktree):
+        """Bug regression: persisted cwd = worktree, `cd /main && git merge`
+        must be denied — the hook cannot tell the git op runs on the main tree."""
+        opted_in_repo, worktree = opted_in_with_worktree
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"cd {str(opted_in_repo)} && git merge feature"),
+                cwd=worktree,
+            )
+            == "deny"
+        )
+
+    def test_worktree_cwd_chained_cd_to_main_push_denied(self, opted_in_with_worktree):
+        """Persisted cwd = worktree, `cd /main && git push` → denied."""
+        opted_in_repo, worktree = opted_in_with_worktree
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"cd {str(opted_in_repo)} && git push origin main"),
+                cwd=worktree,
+            )
+            == "deny"
+        )
+
+    def test_worktree_cwd_chained_cd_semicolon_denied(self, opted_in_with_worktree):
+        """`;` chain operator — same bypass shape, same denial."""
+        opted_in_repo, worktree = opted_in_with_worktree
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"cd {str(opted_in_repo)}; git merge feature"),
+                cwd=worktree,
+            )
+            == "deny"
+        )
+
+    def test_worktree_cwd_chained_cd_or_denied(self, opted_in_with_worktree):
+        """`||` chain operator — same bypass shape, same denial."""
+        opted_in_repo, worktree = opted_in_with_worktree
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"cd {str(opted_in_repo)} || git merge feature"),
+                cwd=worktree,
+            )
+            == "deny"
+        )
+
+    def test_worktree_cwd_chained_cd_readonly_also_denied(self, opted_in_with_worktree):
+        """Chained cd+git is denied regardless of subcommand — the hook
+        cannot determine which cwd the git op runs against, so it refuses
+        to evaluate rather than guess."""
+        opted_in_repo, worktree = opted_in_with_worktree
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"cd {str(opted_in_repo)} && git status"),
+                cwd=worktree,
+            )
+            == "deny"
+        )
+
+    def test_worktree_cwd_plain_git_still_allowed(self, opted_in_with_worktree):
+        """No inline cd — hook reads the worktree-persisted cwd and allows."""
+        _, worktree = opted_in_with_worktree
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git merge feature"),
+                cwd=worktree,
+            )
+            == "allow"
+        )
+
+    def test_worktree_cwd_chain_without_cd_still_allowed(self, opted_in_with_worktree):
+        """Non-cd chain from worktree — no inline cd, so hook reads persisted
+        cwd (worktree) and allows."""
+        _, worktree = opted_in_with_worktree
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git status && git log --oneline"),
+                cwd=worktree,
+            )
+            == "allow"
+        )
