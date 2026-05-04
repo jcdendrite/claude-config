@@ -145,6 +145,15 @@ Propose an updated body and apply with `gh pr edit <n> --body`. Keep
 the project's template structure intact — refresh content inside
 existing sections, don't restructure.
 
+**Backtick hygiene.** When constructing the new body via
+`gh pr edit <n> --body "$(cat <<'EOF' … EOF )"`, write backticks
+literally inside the heredoc. Do NOT write `\``. The single-quoted
+delimiter (`'EOF'`) tells bash to preserve every character verbatim —
+no expansion, no escape processing — so `\`` survives into the body and
+breaks GitHub markdown code-span rendering. Backslash-escape backticks
+only inside double-quoted strings or unquoted (`<<EOF`) heredocs where
+they would otherwise trigger command substitution.
+
 ## 5. CI status (warn only; skip if no PR)
 
 Run `gh pr checks <n>`.
