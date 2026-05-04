@@ -42,7 +42,7 @@ the `require-ready-for-review.sh` hook:
 SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/.ready-for-review-active.d" && touch "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
 ```
 
-If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStart hook didn't run — abort; the gate will block iteration pushes without this marker.
+If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; the gate will block iteration pushes without this marker.
 
 ## 1. Preconditions (halt on fail)
 
@@ -71,9 +71,11 @@ config. Examples: skill bodies under `.claude/skills/**`, plans under
 `*.md`, `docs/**`. If the diff touches scripts, hooks, tests, or
 application source — even alongside docs — run step 2.
 
-**Pre-existing failures:** if a step fails on code unrelated to this diff, open a separate branch rather than bundling the fix. Rebase once the default branch is green.
+**Pre-existing failures:** if a step fails on code unrelated to this diff, confirm it's
+unrelated (`git log -- <file>`, `git diff origin/<base> -- <file>`), then either wait for
+the existing owner or open a separate branch. Rebase once the default branch is green.
 
-**Test-to-fit is forbidden:** fix the code, not the test.
+**Test-to-fit is forbidden:** fix the code, not the test — unless the product requirement genuinely changed.
 
 ## 3. Code review (halt on findings)
 
@@ -94,8 +96,7 @@ normal staged-diff `/code-review` + marker gate, then return to
 step 2 and re-run fast checks. Do not re-run `/code-review` on its
 own output (loop risk).
 
-Unskippable — markdown, skill, and config diffs benefit from the
-same pass.
+Unskippable — markdown, skill, and config diffs benefit from the same pass.
 
 ## 4. Sync PR description (warn + fix; skip if no PR)
 
@@ -143,8 +144,7 @@ they would otherwise trigger command substitution.
 Run `gh pr checks <n>`.
 
 - All green → continue.
-- Still running → note the in-flight checks; user decides whether to
-  wait.
+- Still running → note the in-flight checks; user decides whether to wait.
 - Red → surface failing check names with a one-line summary of each.
   Do not auto-halt — sometimes the human reviewer wants to see the
   failure themselves — but make the failure explicit before handoff.
@@ -177,7 +177,7 @@ Then remove the active-session marker:
 SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
 ```
 
-Removes only this session's file; the hook's 60-minute staleness cutoff handles orphans if the skill errors before this step.
+Removes only this session's file; if the skill errors before this step, do not manually clean up — the hook's 60-minute staleness cutoff handles orphans.
 
 **Do NOT write the completion marker if:**
 
