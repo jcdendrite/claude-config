@@ -42,10 +42,7 @@ the `require-ready-for-review.sh` hook:
 SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/.ready-for-review-active.d" && touch "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
 ```
 
-If the chain fails (empty `SESSION_ID`, etc.), the
-`capture-session-id.sh` SessionStart hook didn't run — abort and
-report; do not proceed without the marker, since the gate would
-block iteration pushes.
+If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStart hook didn't run — abort; the gate will block iteration pushes without this marker.
 
 ## 1. Preconditions (halt on fail)
 
@@ -74,16 +71,9 @@ config. Examples: skill bodies under `.claude/skills/**`, plans under
 `*.md`, `docs/**`. If the diff touches scripts, hooks, tests, or
 application source — even alongside docs — run step 2.
 
-**Pre-existing failures on the default branch.** If a verification
-step fails with issues unrelated to this branch's diff, do not bundle
-the fix. Confirm it's unrelated (`git log -- <file>` and
-`git diff origin/<default> -- <file>`), then either wait for the
-existing owner or open a separate branch + PR for the fix. Rebase this
-branch once the default branch is green again.
+**Pre-existing failures:** if a step fails on code unrelated to this diff, open a separate branch rather than bundling the fix. Rebase once the default branch is green.
 
-**Test-to-fit is forbidden.** If a test fails because of this branch's
-change, fix the code — not the test — unless the product requirement
-genuinely changed.
+**Test-to-fit is forbidden:** fix the code, not the test.
 
 ## 3. Code review (halt on findings)
 
@@ -95,13 +85,7 @@ BASE_REF=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo m
 git diff $(git merge-base origin/$BASE_REF HEAD)...HEAD
 ```
 
-The squash-merge artifact reviewers ultimately see is this diff.
-Cumulative review surfaces cross-commit findings — defense-in-depth
-gaps spanning two commits, deprecations exposed only when a new test
-exercises an unmodified call site, idempotency-key shape mismatches
-across modules — that per-commit review misses. Per-commit
-`/code-review` during iteration remains valuable for fast feedback;
-treat its findings as inputs here, not substitutes.
+The squash-merge artifact reviewers see is this diff; cumulative review surfaces cross-commit findings that per-commit review misses. Per-commit `/code-review` during iteration remains valuable — treat its findings as inputs here, not substitutes.
 
 Because the reviewed diff is not the staged diff, do NOT write the
 review-completion marker (per `/code-review`'s own rule). If findings
@@ -174,10 +158,7 @@ Steps 3 and 4 may have produced new commits or body edits. Reconfirm:
   with `origin/<branch>`, not ahead.
 - PR body edit (if any) landed — re-fetch with `gh pr view` and confirm.
 
-If the branch has no PR and no remote tracking, surface this: the
-human can't review what isn't pushed. A project-specific pre-merge or
-PR-creation skill should handle the actual open; this skill does not
-create PRs.
+If the branch has no PR and no remote tracking, surface this — a project-specific pre-merge skill should open the PR; this skill does not.
 
 ## 7. Record gate completion + deactivate session
 
@@ -196,9 +177,7 @@ Then remove the active-session marker:
 SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
 ```
 
-Removes only this session's file. If the skill errors out before
-reaching this step, don't manually clean up — the hook's 60-minute
-staleness cutoff handles the orphan automatically.
+Removes only this session's file; the hook's 60-minute staleness cutoff handles orphans if the skill errors before this step.
 
 **Do NOT write the completion marker if:**
 

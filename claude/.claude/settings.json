@@ -79,6 +79,12 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/check-skill-length.sh",
+            "if": "Bash(git commit *)",
+            "statusMessage": "Checking skill length..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/require-ready-for-review.sh",
             "if": "Bash(git push *)",
             "statusMessage": "Checking ready-for-review gate..."
