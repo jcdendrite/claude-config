@@ -4,7 +4,7 @@ Seven non-obvious choices and the reasoning behind them.
 
 ## 1. Hook-enforced gates over advisory instructions
 
-A CLAUDE.md instruction is advisory: the model reads it, weighs it against context, and can decide that "this change is too trivial to need a review." A PreToolUse hook is a denial: the commit doesn't happen until the condition is met, regardless of what the model thinks about the change's complexity. The model will rationalize past advisory rules on simple changes — it happens reliably, not occasionally. A hook can't be talked out of it; it either finds the marker or it doesn't. The enforcement lives at the tool-call boundary where the model has no agency to override it.
+A CLAUDE.md instruction is advisory: the model reads it, weighs it against context, and can decide that "this change is too trivial to need a review." A PreToolUse hook is a denial: the commit doesn't happen until the condition is met, regardless of what the model thinks about the change's complexity. The model decides advisory rules don't apply on simple changes — it happens reliably, not occasionally. A hook can't be talked out of it; it either finds the marker or it doesn't. The enforcement lives at the tool-call boundary where the model has no agency to override it.
 
 ## 2. Per-session marker keyed on diff sha256
 
