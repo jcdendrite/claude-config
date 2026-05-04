@@ -9,8 +9,8 @@ govern any contribution (human or agent).
 ```bash
 ./install.sh                            # first-time setup (stow + plugin registration)
 pip install 'ruff==0.6.*'              # one-time linter install
-pytest claude/.claude/hooks/tests/     # hook test suite
-ruff check claude/.claude/hooks/tests/ # lint
+pytest claude/.claude/                  # test suite (hooks + skills)
+ruff check claude/.claude/              # lint
 ```
 
 ## Working in this repo
