@@ -44,6 +44,8 @@ name and matcher; do not rely solely on settings.json `if` conditions.
 
 **Skill files are self-contained — no shared partials.** `SKILL.md` frontmatter has no `includes:`, `import:`, or `extends:` fields; the `@path` import syntax works in `CLAUDE.md` only, not in `SKILL.md`. When two skills need the same rule text, duplicate it into both skill files intentionally — do not extract it into a `_shared/` directory or similar abstraction. Duplication keeps each skill independently readable and prevents brittle cross-skill coupling. If shared text feels necessary, reconsider whether the skills should be merged instead. See README "Skill architecture notes" for the full rationale.
 
+**`REFERENCES.md` is the co-located reference file for a skill.** A skill directory may contain a `REFERENCES.md` alongside `SKILL.md` — use it for canonical URLs, key quotes, and framework notes that informed the skill's rules. `REFERENCES.md` is not loaded at skill runtime; read it manually (via Read or Bash) when editing a skill to verify a rule still holds or to add new guidance. Do not embed this reference material directly in `SKILL.md`.
+
 ## Plans in this repo affect all stow users
 
 `claude/` is stowed into `$HOME` — changes ship to every user who clones and stows this repo, not only to the session owner. When reviewing a plan for claude-config, evaluate with that audience in mind. Files under `claude/` are not personal config; they are distributed to all stow users on `git pull`. Surface this when declaring the user surface in Step 2 of plan-review, and weight finding severity accordingly.
