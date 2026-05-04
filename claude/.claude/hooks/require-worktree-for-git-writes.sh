@@ -31,19 +31,23 @@ emit_deny() {
     "$reason_json"
 }
 
+# Returns success when the command chains `cd ... <op> ... git ...`. The
+# hook reads cwd from Claude Code's session-persisted bash state (set by
+# prior Bash calls), not from the inline cd in the current command, because
+# the hook fires before the subshell runs. When this shape is detected the
+# effective cwd at the time git runs cannot be determined from the tool-input
+# JSON alone. Pattern requires `cd` as a word, then a chain operator, then
+# `git` somewhere later — avoids false positives on paths containing `cd`.
+command_chains_cd_then_git() {
+  printf '%s' "$1" | grep -qE '(^|[[:space:]])cd[[:space:]].*(&&|\|\||;).*git'
+}
+
 # When the command chains `cd ... <op> ... git ...`, the agent likely
-# expected the inline `cd` to land inside a worktree. This hook reads
-# CWD from the JSON tool_input — which reflects Claude Code's bash
-# tool's *persisted* cwd from prior calls, not the cwd produced by the
-# inline `cd` in the current command. The hook fires before the
-# subshell runs, so the inline `cd` hasn't taken effect yet. Returns a
+# expected the inline `cd` to land inside a worktree. Returns a
 # self-correction note for the agent when this pattern is detected;
-# empty otherwise. Pattern requires `cd` as a word, then a chain
-# operator, then `git` somewhere later — this targets the precise
-# failure mode (`cd /worktree && git ...`) and avoids false positives
-# on path strings containing `cd` as a substring.
+# empty otherwise.
 cwd_anchor_note_if_chained() {
-  if printf '%s' "$1" | grep -qE '(^|[[:space:]])cd[[:space:]].*(&&|\|\||;).*git'; then
+  if command_chains_cd_then_git "$1"; then
     printf '%s' " If you just chained 'cd /path/to/worktree && git ...' and expected the inline cd to land you in the worktree: this hook reads cwd from Claude Code's session-persisted bash state (set by prior Bash calls), not from your inline cd, because the hook fires before the subshell runs. Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call."
   fi
 }
@@ -120,6 +124,17 @@ fi
 
 # Per-repo opt-in: only enforce if the repo has committed the sentinel.
 if [ ! -f "$REPO_ROOT/.claude/worktree-required" ]; then
+  exit 0
+fi
+
+# A chained `cd ... && git ...` makes the effective cwd at the time git
+# runs unknowable from the tool-input JSON alone — the hook reads the
+# session-persisted cwd from prior Bash calls, not the cwd the inline cd
+# would produce. Deny regardless of the persisted cwd so that the hook's
+# decision is never based on stale state. The agent fix is to anchor cwd
+# with a standalone Bash call before the git op.
+if command_chains_cd_then_git "$COMMAND"; then
+  emit_deny "Blocked by worktree-enforcement hook: the command chains 'cd ... && git ...' and this hook cannot determine the effective cwd at the time git runs — it reads the session-persisted cwd (from prior Bash calls), not the cwd produced by the inline cd, because the hook fires before the subshell runs. This repo has opted into worktree discipline (.claude/worktree-required is committed). Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call."
   exit 0
 fi
 
