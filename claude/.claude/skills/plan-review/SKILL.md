@@ -13,14 +13,25 @@ user-invocable: true
 
 Review an implementation plan. Act as a review board evaluating a proposal before engineering effort is committed. Be thorough but practical — flag real risks, not hypothetical ones.
 
-## Step 0 — Identify the plan
+## Step 0 — Activate gate session
+
+Write the active-session marker so this skill's own Write/Edit operations are not blocked by the `require-plan-review.sh` hook while the review is in progress:
+
+<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's active-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```
+SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/.plan-review-active.d" && touch "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+```
+
+If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; do not proceed without the marker, since the hook would block any Write/Edit during the review.
+
+## Step 1 — Identify the plan
 
 Find the plan to review. Check, in order:
 1. If a plan file path was provided as an argument, read it
 2. If a plan was just written in `.claude/plans/`, read the most recent one
 3. If a plan exists in the current conversation context, use that
 
-## Step 1 — Detect domains
+## Step 2 — Detect domains
 
 Read the plan and classify which domains it touches. When using an agent to explore the codebase for plan context, use `general-purpose` — not `Explore`. The `Explore` agent reads excerpts and is not suitable for design-doc auditing or cross-file consistency checks; it misses content past its read window.
 
@@ -34,7 +45,7 @@ Read the plan and classify which domains it touches. When using an agent to expl
 
 **Schema change routing:** Route schema changes by change type: new nullable column, index, or view → `staff-backend-engineer` only; new table → `staff-backend-engineer` + `staff-analytics-engineer`; rename, drop, type change, NOT NULL constraint added, partition key, or RLS policy → `staff-backend-engineer` + `staff-data-engineer` + `staff-analytics-engineer`. Add `staff-product-engineer` if user-visible.
 
-## Step 2 — Design-fitness gate
+## Step 3 — Design-fitness gate
 
 Before evaluating gaps, answer two questions in order:
 
@@ -51,11 +62,11 @@ Markers of over-elaboration:
 - Captured outputs / fields with no reader downstream.
 - "Could be done in N lines" stays a valid challenge even after persona reviewers have shaped the plan — persona-shaped is not persona-locked.
 
-If over-elaborated: stop. Surface the simpler design as the primary review output before any checklist findings. Otherwise proceed to Step 3 — gap-finding will surface what's missing.
+If over-elaborated: stop. Surface the simpler design as the primary review output before any checklist findings. Otherwise proceed to Step 4 — gap-finding will surface what's missing.
 
 Question implementation choices, not feature scope — the ticket itself isn't reviewed here, that goes back to the author.
 
-## Step 3 — Evaluate
+## Step 4 — Evaluate
 
 Evaluate the plan against the **Base checklist** first, then each detected **Domain checklist**. For multi-phase plans, evaluate each phase against the relevant checklists. Reference the specific phase/section when reporting findings.
 
@@ -79,7 +90,7 @@ B5. **Evidence** — Does the plan cite a source for each finding/assertion (fil
 
 ### Scope
 
-B6. **Proportionality** — Whole-design proportionality belongs to Step 2's gate. At checklist time, flag local issues only: a helper overkill for one caller, an abstraction at a single call site.
+B6. **Proportionality** — Whole-design proportionality belongs to Step 3's gate. At checklist time, flag local issues only: a helper overkill for one caller, an abstraction at a single call site.
 
 B7. **Scope creep** — Does the plan include work not required to solve the stated problem (adjacent improvements, premature optimization, "while we're here" refactors)? Capture these in **Out of Scope** — don't lose the observation, don't plan for it either.
 
@@ -196,7 +207,7 @@ This is the design-stage gate. Specialist misses here are recoverable in code-re
 - **Convergence-as-design-tell** from a prior round (see Reconciliation).
 - **Explicit user request.**
 
-Always spawn `ciso-reviewer` when the plan touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the Step 2 user-surface declaration puts the change outside `ciso-reviewer`'s threat model (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. Always spawn `staff-product-engineer` when the plan changes user-facing behavior.
+Always spawn `ciso-reviewer` when the plan touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the Step 3 user-surface declaration puts the change outside `ciso-reviewer`'s threat model (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. Always spawn `staff-product-engineer` when the plan changes user-facing behavior.
 
 Spawn per question (not per file-path domain) — "plan touches backend" isn't enough; the question needs a specific shape.
 
@@ -226,7 +237,7 @@ After spawned reviewers return findings, pause if findings concentrate on a sing
 - **Design-wrong-shape.** The surface is the wrong abstraction; gaps will keep multiplying as you patch. Replace, don't patch-by-patch.
 - **Prompt-overlap artifact.** Reviewers given similar prompts produce N voices of the same observation. Convergence looks like signal but is framing-induced.
 
-You judge which applies. Don't treat convergence as automatic authority for "patch each gap." If design-wrong-shape, replace the surface and re-run Step 2. If prompt-overlap, apply the underlying finding once, skip duplicates, and note the overlap so the next spawn uses tighter prompts.
+You judge which applies. Don't treat convergence as automatic authority for "patch each gap." If design-wrong-shape, replace the surface and re-run Step 3. If prompt-overlap, apply the underlying finding once, skip duplicates, and note the overlap so the next spawn uses tighter prompts.
 
 ## Item ownership
 
@@ -279,3 +290,23 @@ For each finding, state:
 If any items were flagged by B7 (scope creep), include an **Out of Scope** section listing them. The reviewer can decide whether to bring them into scope or create follow-up tickets.
 
 End with a verdict: **Approve**, **Approve with changes** (list what), or **Request changes** (list blockers).
+
+## Record review completion + deactivate
+
+After delivering the verdict, write the completion marker and remove the active-session marker.
+
+Write the completion marker only when the verdict is **Approve** or **Approve with changes** and all required changes have been applied to the plan. Do not write it on **Request changes** — write it only after the plan author revises the plan and a clean re-review completes.
+
+<!-- HOOK_TEST_FIXTURE: record-completion — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's completion-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```
+SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/plan-review-markers" && REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}') && printf 'reviewed\n' > "$HOME/.claude/plan-review-markers/$REPO_HASH.$SESSION_ID"
+```
+
+Then remove the active-session marker:
+
+<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's active-marker cleanup. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```
+SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+```
+
+Removes only this session's file. If the skill errors out before reaching this step, don't manually clean up — the hook's 60-minute staleness cutoff handles the orphan automatically.
