@@ -110,10 +110,9 @@ class TestSessionMarkerDashboard:
             (marker_dir / sid).touch()
         result = _run_dashboard({"session_id": sid}, isolated_home)
         assert result.returncode == 0
-        assert "plan-review-active" in result.stdout
-        assert "ready-for-review-active" in result.stdout
-        assert "respond-pr-active" in result.stdout
-        assert result.stdout.count("present") == 3
+        assert "plan-review-active: present" in result.stdout
+        assert "ready-for-review-active: present" in result.stdout
+        assert "respond-pr-active: present" in result.stdout
 
     def test_exit_0_always(self, isolated_home):
         """Hook must always exit 0 to avoid blocking session startup."""

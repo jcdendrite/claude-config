@@ -1,16 +1,20 @@
 #!/bin/bash
-# SessionStart hook: display active-marker state so post-compaction sessions
-# can see which gate-bypass markers are already present on disk.
+# SessionStart hook: surface active gate-bypass marker state to the resuming
+# Claude session.
 #
-# Output goes to stdout as plain text, which the harness injects into
-# Claude's conversation context at session start. Only emits when at least
-# one active marker is present or stale — all-absent (the normal fresh-session
-# state) produces no output so routine session starts stay noise-free.
+# Audience: Claude (the agent), not humans. The harness injects plain-text
+# stdout from SessionStart hooks directly into the agent's conversation context
+# at session start. This lets a new session — after compaction or restart —
+# see which review-skill gates are already bypassed without having to rediscover
+# the on-disk state itself.
 #
-# Active markers are session-scoped (keyed by session_id, not repo hash) so
-# they can always be checked here regardless of which git repo the session
-# opens in. Completion markers are repo-scoped and checked lazily by the
-# PreToolUse hooks instead.
+# Emits output only when at least one active marker is present or stale.
+# All-absent (normal fresh-session state) produces no output, keeping routine
+# session starts noise-free.
+#
+# Active markers are session-scoped (keyed by session_id) so they can be
+# checked here regardless of which git repo the session opens in. Completion
+# markers are repo-scoped and checked lazily by the PreToolUse hooks.
 #
 # Exit 0 always — this hook must not block session startup.
 
@@ -51,7 +55,7 @@ if [ "$PLAN_REVIEW_STATUS" = "absent" ] \
   exit 0
 fi
 
-printf "Session marker state (active review markers from a prior session or interrupted review):\n"
+printf "Active review-skill gate markers detected for this session. Each line below shows one skill's bypass state — \"present\" means the gate is bypassed (skill is mid-run or was interrupted); \"stale\" (>60 min old) means the bypass has expired and the gate is back in force.\n"
 printf "  plan-review-active: %s\n" "$PLAN_REVIEW_STATUS"
 printf "  ready-for-review-active: %s\n" "$READY_FOR_REVIEW_STATUS"
 printf "  respond-pr-active: %s\n" "$RESPOND_PR_STATUS"
