@@ -50,7 +50,7 @@ jobs:
             exit 0
           fi
 
-          if git diff --name-only "$BASE" "$HEAD" | grep -qE '^(claude/\.claude/hooks/|\.github/workflows/hooks\.yml|pyproject\.toml)'; then
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE '^(claude/\.claude/(hooks|skills/tests)/|\.github/workflows/hooks\.yml|pyproject\.toml)'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -69,10 +69,10 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         run: pip install 'pytest==8.*' 'ruff==0.6.*'
 
-      - name: Run hook tests
+      - name: Run tests
         if: steps.detect.outputs.changed == 'true'
-        run: pytest claude/.claude/hooks/tests/ -v
+        run: pytest claude/.claude/ -v
 
       - name: Lint
         if: steps.detect.outputs.changed == 'true'
-        run: ruff check claude/.claude/hooks/tests/
+        run: ruff check claude/.claude/
