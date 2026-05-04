@@ -41,21 +41,40 @@ def _skill_description(skill_name: str) -> str:
     return content[3:closing]
 
 
-class TestSpecialistSkillTriggerContracts:
-    """TRIGGER / DO NOT TRIGGER contract tests for the five specialist skills.
+def _specialist_skills() -> list[str]:
+    """Discover non-user-invocable skills from the skills directory.
 
-    Specialist skills are non-user-invocable; they fire via description-based
-    auto-trigger. The description is the only thing the harness sees before
-    deciding to load the body, so these contracts are load-bearing.
+    Any skill with user-invocable: false in its frontmatter is expected to
+    fire via description-based auto-trigger and must carry TRIGGER when: /
+    DO NOT TRIGGER when: blocks. New skills automatically get structural
+    coverage without a code change here.
+    """
+    skills = []
+    for skill_dir in sorted(SKILLS_DIR.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        if not (skill_dir / "SKILL.md").exists():
+            continue
+        frontmatter = _skill_description(skill_dir.name)
+        if frontmatter and "user-invocable: false" in frontmatter:
+            skills.append(skill_dir.name)
+    return skills
+
+
+class TestSpecialistSkillTriggerContracts:
+    """TRIGGER / DO NOT TRIGGER contract tests for non-user-invocable skills.
+
+    Structural tests (trigger/do-not-trigger block presence) auto-discover
+    every skill with user-invocable: false in its frontmatter. New specialist
+    skills get structural coverage automatically.
+
+    Semantic tests (designated surface, adjacent-skill exclusion) are
+    explicitly registered per-skill — they encode the routing contract for
+    skills whose surfaces overlap. Add an entry to each parametrize list when
+    a new specialist skill is introduced.
     """
 
-    SPECIALIST_SKILLS = [
-        "claude-hook-review",
-        "skill-review",
-        "review-permissions",
-        "test-conventions",
-        "test-evaluation",
-    ]
+    SPECIALIST_SKILLS = _specialist_skills()
 
     @pytest.mark.parametrize("skill_name", SPECIALIST_SKILLS)
     def test_description_has_trigger_block(self, skill_name):
