@@ -1,0 +1,230 @@
+"""Tests for check-skill-length.sh."""
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+from helpers import (
+    HOOKS_DIR,
+    bash_input,
+    edit_input,
+    run_hook,
+    run_hook_reason,
+)
+
+CHECK_SKILL_LENGTH_HOOK = HOOKS_DIR / "check-skill-length.sh"
+SKILL_PATH = "claude/.claude/skills/my-skill/SKILL.md"
+
+
+def make_skill_content(n: int, prefix: str = "line") -> str:
+    """Return content with exactly n newline-terminated lines."""
+    return "\n".join(f"{prefix} {i + 1}" for i in range(n)) + "\n"
+
+
+def make_repo_with_skill(tmp_path: Path, head_lines: int) -> Path:
+    """Git repo with SKILL.md committed at `head_lines` lines."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    skill_dir = repo / "claude" / ".claude" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (repo / SKILL_PATH).write_text(make_skill_content(head_lines))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+@pytest.fixture
+def skill_repo(tmp_path):
+    """Git repo with SKILL.md committed at 190 lines."""
+    return make_repo_with_skill(tmp_path, 190)
+
+
+@pytest.fixture
+def new_skill_repo(tmp_path):
+    """Git repo with no committed SKILL.md — SKILL.md will be a new staged file."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("hello\n")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    (repo / "claude" / ".claude" / "skills" / "my-skill").mkdir(parents=True)
+    return repo
+
+
+class TestCheckSkillLength:
+    def test_non_commit_command_allows(self, isolated_home, skill_repo):
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git status"), cwd=skill_repo)
+            == "allow"
+        )
+
+    def test_non_bash_tool_allows(self, isolated_home, skill_repo):
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, edit_input("/tmp/foo.txt"), cwd=skill_repo)
+            == "allow"
+        )
+
+    def test_outside_git_repo_allows(self, isolated_home, tmp_path):
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=non_repo,
+            )
+            == "allow"
+        )
+
+    def test_no_staged_skill_files_allows(self, isolated_home, skill_repo):
+        (skill_repo / "other.txt").write_text("something\n")
+        subprocess.run(["git", "add", "other.txt"], cwd=skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+            )
+            == "allow"
+        )
+
+    def test_skill_at_exactly_200_allows(self, isolated_home, skill_repo):
+        """200 lines is at the limit — the gate is `> 200`, so 200 passes."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(200))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+            )
+            == "allow"
+        )
+
+    def test_skill_growing_to_201_denies(self, isolated_home, skill_repo):
+        """HEAD at 190, staged at 201: new > 200 and new > old → deny."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+            )
+            == "deny"
+        )
+
+    def test_new_skill_over_limit_denies(self, isolated_home, new_skill_repo):
+        """New file with no HEAD version staged at 201 lines — old defaults to 0 → deny."""
+        (new_skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=new_skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=new_skill_repo,
+            )
+            == "deny"
+        )
+
+    def test_already_over_limit_growing_denies(self, isolated_home, tmp_path):
+        """HEAD at 210, staged at 215: growing while over limit → deny."""
+        repo = make_repo_with_skill(tmp_path, 210)
+        (repo / SKILL_PATH).write_text(make_skill_content(215))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_already_over_limit_reducing_allows(self, isolated_home, tmp_path):
+        """HEAD at 210, staged at 205: reducing while over limit → allow."""
+        repo = make_repo_with_skill(tmp_path, 210)
+        (repo / SKILL_PATH).write_text(make_skill_content(205))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_already_over_limit_same_size_allows(self, isolated_home, tmp_path):
+        """HEAD at 210, staged at 210 (different content, same count): not growing → allow."""
+        repo = make_repo_with_skill(tmp_path, 210)
+        (repo / SKILL_PATH).write_text(make_skill_content(210, prefix="row"))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_staged_deletion_of_skill_allows(self, isolated_home, skill_repo):
+        """git rm-staged SKILL.md: git show ":$f" produces empty output → new=0, 0 > 200 is false → allow."""
+        subprocess.run(["git", "rm", "-q", SKILL_PATH], cwd=skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+            )
+            == "allow"
+        )
+
+    def test_deny_message_includes_filename_and_counts(self, isolated_home, skill_repo):
+        """Deny reason must name the file, new line count, old line count, and limit."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        reason = run_hook_reason(
+            CHECK_SKILL_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=skill_repo,
+        )
+        assert reason is not None
+        assert SKILL_PATH in reason
+        assert "201" in reason
+        assert "190" in reason
+        assert "200" in reason
+
+    def test_cwd_not_repo_root_does_not_cause_false_negative(
+        self, isolated_home, skill_repo
+    ):
+        """Hook run from a repo subdirectory must still catch over-limit SKILL.md.
+
+        Regression test: `git diff --cached --name-only` emits repo-root-relative
+        paths. An earlier version had `[ -f "$f" ] || continue` which resolved
+        those paths against CWD — if CWD was a subdirectory the check failed
+        and the file was silently skipped (false negative, bloated skill slips
+        through). The guard was removed; `git show ":$f"` reads from the index
+        directly and doesn't depend on CWD.
+        """
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        subdir = skill_repo / "claude"
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=subdir,
+            )
+            == "deny"
+        )
