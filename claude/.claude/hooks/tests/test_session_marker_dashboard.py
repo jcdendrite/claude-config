@@ -16,7 +16,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import pytest
 from helpers import HOOKS_DIR
 
 SESSION_MARKER_DASHBOARD_HOOK = HOOKS_DIR / "session-marker-dashboard.sh"
