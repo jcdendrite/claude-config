@@ -130,15 +130,15 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 ## Domain: Claude Code config
 
-For `.claude/skills/**/SKILL.md` review (frontmatter, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions), see the `skill-review` skill — do not assert behavioral equivalence on prose compressions yourself; that audit is `skill-review`'s job.
+For `.claude/skills/**/SKILL.md` review (frontmatter, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions), invoke the `skill-review` skill — do not assert behavioral equivalence on prose compressions yourself; that audit is `skill-review`'s job.
 
-35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
+33. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
-For hook reviews (`claude/.claude/hooks/*.sh`, hook entries in `settings.json`), see the `claude-hook-review` skill.
+For hook reviews (`claude/.claude/hooks/*.sh`, hook entries in `settings.json`), invoke the `claude-hook-review` skill.
 
 ## Domain: Lovable config
 
-Apply when changed files match `.lovable/**`. See the `lovable-knowledge` skill for the review checklist (perspective, specificity, scope split between project/workspace knowledge, char budget, sync status).
+Apply when changed files match `.lovable/**`. Invoke the `lovable-knowledge` skill for the review checklist (perspective, specificity, scope split between project/workspace knowledge, char budget, sync status).
 
 ## Exclusions — do NOT flag these
 
@@ -252,8 +252,8 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **30. Third-party API integration** | `staff-backend-engineer` | `ciso-reviewer` (credential scoping) |
 | **31. Sensitive data in logs** | `staff-backend-engineer` | `ciso-reviewer` |
 | **32. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
-| **35. Permission scope** | `ciso-reviewer` | — |
-| **36. Hook correctness** — reviewed via `claude-hook-review` skill | `staff-platform-engineer` | `ciso-reviewer` |
+| **33. Permission scope** | `ciso-reviewer` | — |
+| **34. Hook correctness** — reviewed via `claude-hook-review` skill | `staff-platform-engineer` | `ciso-reviewer` |
 
 ## Step — Record review completion
 

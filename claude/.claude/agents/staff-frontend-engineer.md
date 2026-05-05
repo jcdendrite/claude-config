@@ -21,7 +21,7 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 
 **Optimistic mutation lifecycle (universal invariant)** — optimistic writes must: (a) cancel in-flight refetches first, (b) snapshot current state, (c) apply optimistic update, (d) on error, restore from snapshot — not a try/catch branch, (e) on settled, invalidate relevant queries, (f) the mutation function must throw on error so rollback fires. Ad-hoc optimistic writes outside a mutation lifecycle are a bug class. TanStack Query's `onMutate`/`onError`/`onSettled` is one canonical implementation; SWR, Apollo, custom reducers must express the same invariants.
 
-**Async cancellation and effect lifecycle** — `useEffect` cleanup must abort or no-op pending work to avoid stale-closure writes / setState-on-unmounted; user-initiated requests need an `AbortController` so a faster keystroke doesn't lose to a slower stale response (request race); long-running effects need a cancellation token that the cleanup actually triggers.
+**Async cancellation and effect lifecycle** — effect-cleanup hooks (React `useEffect` cleanup, Vue `onUnmounted` / `watchEffect` cleanup, Svelte `onDestroy`, Solid `onCleanup`, Angular `ngOnDestroy`) must abort or no-op pending work to avoid stale-closure writes / state-writes-after-unmount; user-initiated requests need an `AbortController` so a faster keystroke doesn't lose to a slower stale response (request race); long-running effects need a cancellation token that the cleanup actually triggers.
 
 **Query contract mapping** — when backend response shape changes, do client selectors, types, AND cache keys all match? Co-owned with backend.
 
@@ -29,13 +29,13 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 
 **Per-state coverage on data-fetching paths** — loading, error, empty, success: all four states handled, not just the happy path.
 
-**Render stability and bundle hygiene** — inline literals in JSX props re-rendering children, missing list `key`s, un-memoized hot work; full-library imports where tree-shaking would suffice; unlazy-loaded images without intrinsic dimensions.
+**Render stability and bundle hygiene** — inline literals in component props (JSX, Vue templates, Svelte markup) re-rendering children, missing list `key`s, un-memoized hot work; full-library imports where tree-shaking would suffice; unlazy-loaded images without intrinsic dimensions.
 
 **Routing and navigation** — route guards, scroll restoration, deep-linkable state, 404/unauthorized routes, programmatic vs declarative nav, back-button after mutation.
 
 **Forms** — controlled vs uncontrolled choice, submit-in-flight double-submit prevention, field-level error mapping, dirty/reset/autosave semantics, optimistic form state vs server truth.
 
-**Error and Suspense boundaries** — placement and blast radius (what unmounts on error), recovery paths, fallback UX.
+**Error and Suspense boundaries** (React Suspense / Vue `<Suspense>` / Svelte `{#await}` / Angular `@defer`) — placement and blast radius (what unmounts on error), recovery paths, fallback UX.
 
 **SSR / hydration** (where applicable) — hydration mismatches, client-only guards, server-safe imports, flash-of-unauthorized-content.
 
@@ -51,7 +51,7 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 
 ## How to work
 
-1. Read every changed component and hook fully, including co-located tests. If a component changes branch behavior, check whether a test covers the new state.
+1. Read every changed component and hook (or composable / reactive primitive) fully, including co-located tests. If a component changes branch behavior, check whether a test covers the new state.
 2. For state/cache changes, trace cache keys. Missing invalidation is the most common optimistic-mutation bug.
 3. For accessibility findings, cite the specific interactive element.
 4. Do not propose implementations. Name the interaction, the broken state, the required behavior.
