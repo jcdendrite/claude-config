@@ -65,12 +65,10 @@ Before evaluating gaps, answer two questions in order:
 
 Markers of over-elaboration:
 
-- Defensive layers stacked beyond what the declared user surface and threat model justify.
-- Conditional logic for future phases that may not arrive.
-- Layers that duplicate a higher-level abstraction.
-- Granularity exceeding any concrete consumer's need.
-- Captured outputs / fields with no reader downstream.
-- "Could be done in N lines" stays a valid challenge even after persona reviewers have shaped the plan — persona-shaped is not persona-locked.
+- Defensive layers beyond the declared user surface and threat model; conditional logic for phases that may not arrive.
+- Layers duplicating an existing abstraction; granularity exceeding any consumer's need.
+- Captured outputs / fields with no downstream reader.
+- "Could be done in N lines" stays valid even after personas shaped the plan.
 
 If over-elaborated: stop. Surface the simpler design as the primary review output before any checklist findings. Otherwise proceed to Step 5 — gap-finding will surface what's missing.
 
@@ -79,8 +77,6 @@ Question implementation choices, not feature scope — the ticket itself isn't r
 ## Step 5 — Evaluate
 
 Evaluate the plan against the **Base checklist** first, then each detected **Domain checklist**. For multi-phase plans, evaluate each phase against the relevant checklists. Reference the specific phase/section when reporting findings.
-
-If this project also has a project-level plan-review skill, both skills will trigger independently. This skill covers generic plan quality; the project skill covers project-specific concerns.
 
 ## Base checklist
 
@@ -124,12 +120,7 @@ B14. **Missing decision rationale** — Are design choices explained? "Use appro
 
 B15. **Effort section reality** — If the plan has an "Estimated Effort" section, does it describe **review surface** (file count, domain complexity, risk concentration) rather than **implementation hours**? Hour-based estimates anchored in human coding speed mislead when Claude writes the code. Flag any effort section citing hours/days; rewrite in review-surface terms.
 
-B16. **Tech-debt intersection** — Does the plan touch, expand, or work around an existing tech-debt mechanism (grandfathered-violations list, legacy shim, `// TODO: refactor` marker, dual code path that exists for migration reasons)? If yes, the plan must explicitly choose between:
-
-- **(a) Expand the workaround for now** — with rationale (typically "the surgical fix is out-of-scope and would dilate the PR").
-- **(b) Include a surgical fix in this PR** — and adjust scope accordingly.
-
-Don't silently expand. The choice between (a) and (b) is calibrated to team size and PR-scope discipline — surface the intersection here, not after the fact in code-review. Flag as **missing scope (B8)** if the plan touches a tech-debt mechanism without acknowledging it.
+B16. **Tech-debt intersection** — Does the plan touch or expand an existing tech-debt mechanism (grandfathered-violations list, legacy shim, `// TODO: refactor` marker, dual code path)? If yes, the plan must explicitly choose: expand for now with rationale (e.g. "surgical fix out-of-scope"), or surgical fix in this PR. Don't silently expand; flag as **missing scope (B8)** if unacknowledged.
 
 ## Domain: Infrastructure
 
@@ -209,7 +200,12 @@ Read `~/.claude/skills/plan-review/ROUTING.md` before any spawn decision.
 
 ## Output format
 
-Start with which domains were detected and which plan sections/phases were reviewed.
+Start with which domains were detected and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs (from ROUTING.md's Item ownership table):
+
+> - staff-data-engineer: D1 (migration safety), D4 (RLS enforceability)
+> - ciso-reviewer: S1 (threat model), S3–S5 (auth/IDOR/data minimization), D4 co-ownership
+
+If none spawned: "No specialists spawned — generalist review only."
 
 For each finding, state:
 1. **Which checklist item** (ID and name, e.g., "B3 — Breaking intermediate states")
@@ -237,7 +233,7 @@ Then remove the active-session marker:
 
 <!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's active-marker cleanup. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
-SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.plan-review-active.d/$SESSION_ID" && rm -f "$HOME/.claude/.plan-review-routing-read.d/$SESSION_ID"
 ```
 
-Removes only this session's file. If the skill errors out before reaching this step, don't manually clean up — the hook's 60-minute staleness cutoff handles the orphan automatically.
+Removes only this session's files. Don't manually clean up if the skill errors before this step — the hook's 60-minute staleness cutoff handles orphans.

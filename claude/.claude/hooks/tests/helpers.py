@@ -115,6 +115,23 @@ def multiedit_input(file_path: str) -> dict:
     return {"tool_name": "MultiEdit", "tool_input": {"file_path": file_path, "edits": []}}
 
 
+def read_input(file_path: str, session_id: str | None = None) -> dict:
+    payload: dict = {"tool_name": "Read", "tool_input": {"file_path": file_path}}
+    if session_id is not None:
+        payload["session_id"] = session_id
+    return payload
+
+
+def agent_input(session_id: str | None = None) -> dict:
+    payload: dict = {
+        "tool_name": "Agent",
+        "tool_input": {"description": "test", "prompt": "test"},
+    }
+    if session_id is not None:
+        payload["session_id"] = session_id
+    return payload
+
+
 def git_toplevel(repo: Path) -> str:
     """Return what `git rev-parse --show-toplevel` sees — this is what the
     hook hashes, and it may differ from `str(repo)` when /tmp is a symlink."""
@@ -204,6 +221,28 @@ def write_skill_review_marker(home: Path, repo: Path, session_id: str = DEFAULT_
     marker = skill_review_marker_path(home, repo, session_id)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(diff_hash + "\n")
+
+
+def plan_review_active_marker_path(home: Path, session_id: str) -> Path:
+    return home / ".claude" / ".plan-review-active.d" / session_id
+
+
+def write_plan_review_active_marker(home: Path, session_id: str) -> Path:
+    marker = plan_review_active_marker_path(home, session_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    return marker
+
+
+def plan_review_routing_read_marker_path(home: Path, session_id: str) -> Path:
+    return home / ".claude" / ".plan-review-routing-read.d" / session_id
+
+
+def write_plan_review_routing_read_marker(home: Path, session_id: str) -> Path:
+    marker = plan_review_routing_read_marker_path(home, session_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    return marker
 
 
 def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
