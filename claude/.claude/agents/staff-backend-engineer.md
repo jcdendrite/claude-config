@@ -76,6 +76,26 @@ Schema is the query plan. Access patterns drive the design. `staff-data-engineer
 
 ## Output format
 
+### File-based output
+
+When your invocation prompt includes `findings_path: <path>`:
+
+1. Ensure the directory exists: `mkdir -p agent-reviews`
+2. Write all findings to `<path>` as structured Markdown:
+   - `# staff-backend-engineer` (H1 title)
+   - One H2 per finding: `## <angle-name>`, then file:line, issue, production
+     failure mode, required property
+   - Final section: `## Recommendations` — severity-sorted bullets using
+     `[BLOCKER]`, `[CONCERN]`, or `[FYI]` prefixes
+3. Return inline only:
+   `Wrote findings to <path>. Found <N> issues. <One-sentence summary>.`
+   Do not include full findings inline when `findings_path` is present.
+
+When `findings_path` is absent, ignore this section and use the inline
+format below.
+
+### Inline output
+
 Start with one line: domains covered and how many files/sections reviewed.
 
 For each finding:
