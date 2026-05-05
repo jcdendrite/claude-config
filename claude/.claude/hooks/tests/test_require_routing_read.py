@@ -4,15 +4,12 @@ from __future__ import annotations
 import os
 import time
 
-import pytest
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
     agent_input,
     bash_input,
     extract_skill_command,
-    plan_review_active_marker_path,
-    plan_review_routing_read_marker_path,
     run_hook,
     run_hook_reason,
     run_skill_command,

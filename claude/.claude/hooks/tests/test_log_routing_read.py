@@ -4,7 +4,6 @@ from __future__ import annotations
 from helpers import (
     HOOKS_DIR,
     agent_input,
-    plan_review_active_marker_path,
     plan_review_routing_read_marker_path,
     read_input,
     run_hook,
