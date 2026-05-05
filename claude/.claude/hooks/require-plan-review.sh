@@ -72,6 +72,18 @@ if [ -n "$SESSION_ID" ]; then
   fi
 fi
 
+# Scope the deny to writes inside this repo. Writes targeting user-home
+# directories (~/.claude/plans/), /tmp, or other repos are outside the gate's
+# intent — the gate guards this repo's code, not all files on disk.
+TARGET_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty')
+if [ -n "$TARGET_PATH" ]; then
+  REAL_REPO=$(realpath -m "$REPO_ROOT")
+  REAL_TARGET=$(realpath -m "$TARGET_PATH")
+  if [[ "$REAL_TARGET" != "$REAL_REPO/"* ]]; then
+    exit 0
+  fi
+fi
+
 REASON="Write/Edit blocked by plan-review gate: a plan file exists in .claude/plans/ but no plan-review marker was found for this session. Run the /plan-review skill now. When the review is clean, the skill will record the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry."
 REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"

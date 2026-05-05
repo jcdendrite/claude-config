@@ -55,7 +55,7 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input("/tmp/foo.py"), "session_id": "test-session-prt"},
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "test-session-prt"},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -65,7 +65,7 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**edit_input("/tmp/foo.py"), "session_id": "test-session-prt"},
+                {**edit_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "test-session-prt"},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -101,7 +101,7 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input("/tmp/foo.py"), "session_id": "session-B"},
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "session-B"},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -177,17 +177,26 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                write_input("/tmp/foo.py"),
+                write_input(str(plan_review_repo / "src" / "foo.py")),
                 cwd=plan_review_repo,
             )
             == "deny"
+        )
+
+    def test_missing_file_path_denies(self, plan_review_repo, plan_review_home):
+        """Missing file_path in the hook payload cannot be resolved — fail-closed
+        and deny. Parallel to test_no_session_id_in_input_denies: security controls
+        must not silently allow on parse failure."""
+        payload = {"tool_name": "Write", "tool_input": {}, "session_id": "session-no-path"}
+        assert (
+            run_hook(REQUIRE_PLAN_REVIEW_HOOK, payload, cwd=plan_review_repo) == "deny"
         )
 
     def test_deny_message_mentions_plan_review(self, plan_review_repo, plan_review_home):
         """Deny reason must reference /plan-review so the agent knows what to run."""
         reason = run_hook_reason(
             REQUIRE_PLAN_REVIEW_HOOK,
-            {**write_input("/tmp/foo.py"), "session_id": "session-for-reason"},
+            {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "session-for-reason"},
             cwd=plan_review_repo,
         )
         assert reason is not None
@@ -249,7 +258,7 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**multiedit_input("/tmp/foo.py"), "session_id": "test-session-prt"},
+                {**multiedit_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "test-session-prt"},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -269,7 +278,7 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input("/tmp/foo.py"), "session_id": sid},
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -285,7 +294,7 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input("/tmp/foo.py"), "session_id": "session-B"},
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "session-B"},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -331,7 +340,7 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input("/tmp/foo.py"), "session_id": sid},
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -387,7 +396,7 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input("/tmp/foo.py"), "session_id": sid},
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -406,7 +415,7 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input("/tmp/foo.py"), "session_id": sid},
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -427,6 +436,67 @@ class TestRequirePlanReview:
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
                 {**write_input("/tmp/foo.py"), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    # -- Write-target scope filter ------------------------------------------
+    # The gate applies only to writes inside the current repo's working tree.
+    # User-home and other out-of-repo writes pass through so that plan-mode
+    # can author its scratch plan file at ~/.claude/plans/<slug>.md without
+    # needing a bypass marker.
+
+    def test_home_dir_plan_write_passes_through(
+        self, plan_review_repo, plan_review_home
+    ):
+        """Write to ~/.claude/plans/ passes through even when gate is armed.
+        Mirrors the plan-mode case where the harness directs the plan file to
+        ~/.claude/plans/<session-slug>.md."""
+        home_plan_path = str(plan_review_home / ".claude" / "plans" / "session-plan.md")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(home_plan_path), "session_id": "session-scope-home"},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_outside_repo_write_passes_through(self, plan_review_repo, plan_review_home):
+        """Write to an arbitrary out-of-repo path passes through when gate is armed."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input("/tmp/scratch/foo.py"), "session_id": "session-scope-tmp"},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_in_repo_write_still_denies(self, plan_review_repo, plan_review_home):
+        """Write to a path inside the repo is still denied when gate is armed and
+        no marker exists — positive control for the scope filter."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "main.py")), "session_id": "session-scope-deny"},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_sibling_repo_path_not_treated_as_in_repo(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """A path whose prefix shares the repo root name but with extra characters
+        (e.g. /tmp/x/plan-repo-sibling/...) must not be mistaken for an in-repo
+        path. Guards the trailing-slash prefix match."""
+        sibling_path = str(tmp_path / (plan_review_repo.name + "-sibling") / "foo.py")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(sibling_path), "session_id": "session-scope-sibling"},
                 cwd=plan_review_repo,
             )
             == "allow"
