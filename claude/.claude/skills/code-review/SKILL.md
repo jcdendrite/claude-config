@@ -205,11 +205,11 @@ The Change type column keys on what the change *does* for an operator or consume
 
 When you do spawn a specialist, be specific. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer` and ask it to verify the checkout flow in CheckoutPage.tsx still enforces ownership after the new validation" is actionable.
 
-Specialist agents must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. If findings genuinely exceed the budget, the agent must prioritize by severity and explicitly note that lower-severity items were omitted. When spawning, include this constraint in the agent prompt.
+When spawning `staff-backend-engineer`, pass `findings_path: agent-reviews/staff-backend-engineer-<epoch>-<slug>.md` in the prompt, where epoch = `$(date +%s)` and slug = `$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | cut -c1-20)`. The agent writes structured Markdown findings to that path and returns inline only: path, one-sentence summary, finding count. After it returns, `Read` the findings file — Recommendations section first, full file when count > 0. Before the first spawn, add `agent-reviews/` to `$(git rev-parse --git-dir)/info/exclude` idempotently (grep-check before appending) so findings files can't be accidentally staged; cleanup is automatic with the worktree.
+
+Other spawned specialists must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose; if they exceed the budget, prioritize by severity and explicitly note that lower-severity items were omitted. Include this constraint in each agent's prompt.
 
 ## Reconciliation
-
-Same logic as plan-review's Reconciliation — repeated because skills load on demand.
 
 After spawned reviewers return findings, pause if findings concentrate on a single surface — the same feature, implementation detail, or design choice attracting multiple gaps. If two specialists flag the same `file:line` with the same root cause, present the finding once with both reviewer attributions rather than as duplicate findings. Two readings:
 
