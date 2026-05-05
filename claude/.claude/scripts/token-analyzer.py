@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """token-analyzer.py — per-model token breakdown across Claude Code sessions. No network; no writes."""
+import argparse
 import json
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -8,6 +10,7 @@ PROJECTS_DIR = Path.home() / ".claude" / "projects"
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 _fam = lambda m: "opus" if "opus" in m else "sonnet" if "sonnet" in m else "haiku" if "haiku" in m else "other"
 _pct = lambda n, d: f"{100 * n / d:.0f}%" if d else "—"
+
 
 def _content_text(content):
     if isinstance(content, str):
@@ -17,10 +20,12 @@ def _content_text(content):
     return ""
 
 
-def _walk():
+def _walk(since: float | None = None):
     family_totals = defaultdict(lambda: {"n": 0, "inp": 0, "out": 0, "cc": 0, "cr": 0})
     sessions = []
     for jsonl in sorted(PROJECTS_DIR.glob("*/*.jsonl")):
+        if since is not None and jsonl.stat().st_mtime < since:
+            continue
         proj = jsonl.parent.name.lstrip("-").replace("-", "/", 2).split("/", 2)[-1]
         fam_out, tot = defaultdict(int), {"inp": 0, "out": 0, "cc": 0, "cr": 0}
         plan, edits = False, False
@@ -62,9 +67,22 @@ def _walk():
 
 
 def main():
-    ft, sessions = _walk()
+    parser = argparse.ArgumentParser(description="Per-model token breakdown across Claude Code sessions.")
+    parser.add_argument("--since", metavar="Nd", help="Limit to sessions whose file was modified within N days (e.g. 2d, 7d)")
+    args = parser.parse_args()
 
-    print("## Per-model token summary\n")
+    since = None
+    if args.since:
+        try:
+            days = float(args.since.rstrip("d"))
+            since = time.time() - days * 86400
+        except ValueError:
+            parser.error(f"--since: expected a number of days like '2d' or '7', got {args.since!r}")
+
+    label = f" (last {args.since})" if args.since else ""
+    ft, sessions = _walk(since)
+
+    print(f"## Per-model token summary{label}\n")
     print(f"{'Model':<8} {'Sessions':>8} {'Input':>12} {'Output':>12} {'CacheCreate':>12} {'CacheRead':>12} {'HitRate':>8}")
     print("-" * 78)
     for fam in ("opus", "sonnet", "haiku", "other"):
@@ -75,7 +93,7 @@ def main():
               f"{_pct(t['cr'], t['cr'] + t['inp']):>8}")
 
     top = sorted(sessions, key=lambda s: s["out"], reverse=True)[:10]
-    print(f"\n## Top 10 sessions by output tokens\n")
+    print(f"\n## Top 10 sessions by output tokens{label}\n")
     print(f"{'Session':>12}  {'Model':<8}  {'Output':>10}  {'Input':>10}  Plan  Edits  Project")
     print("-" * 78)
     for s in top:

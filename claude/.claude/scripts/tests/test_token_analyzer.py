@@ -1,7 +1,8 @@
 """Smoke tests for token-analyzer.py."""
 import importlib.util
 import json
-import sys
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -116,3 +117,24 @@ def test_edit_tool_excludes_candidate(fake_projects):
     _, sessions = _mod._walk()
     cands = [s for s in sessions if s["fam"] == "opus" and not s["plan"] and not s["edits"] and s["out"] >= 500]
     assert len(cands) == 0
+
+
+def test_since_filter(fake_projects):
+    session_a, session_b = fake_projects
+    old_file = session_a / "old_sess.jsonl"
+    new_file = session_b / "new_sess.jsonl"
+
+    _write_jsonl(old_file, [_make_assistant("claude-opus-4-7", inp=10, out=100, cc=0, cr=0)])
+    _write_jsonl(new_file, [_make_assistant("claude-sonnet-4-6", inp=10, out=200, cc=0, cr=0)])
+
+    # Back-date the old file to 10 days ago
+    old_mtime = time.time() - 10 * 86400
+    os.utime(old_file, (old_mtime, old_mtime))
+
+    # --since 2d should include new_file only
+    cutoff = time.time() - 2 * 86400
+    ft, sessions = _mod._walk(since=cutoff)
+
+    assert len(sessions) == 1
+    assert sessions[0]["fam"] == "sonnet"
+    assert ft.get("opus") is None or ft["opus"]["n"] == 0
