@@ -21,6 +21,6 @@ Post-extraction smoke test to verify ROUTING.md is reachable and substantively c
 3. Reconciliation logic collapsed a duplicate `WITH CHECK` RLS finding from two agents into one attributed finding — reconciliation prose is only in ROUTING.md.
 4. "Spawn per question, not per file-path domain" shaped agent prompt framing — only in ROUTING.md.
 
-**What would invalidate this:** A future test where agents skip the Read directive and make spawn decisions using only the inline Routing section — which would lose items 1–4 above. If that is observed, the inline section needs to replicate the critical spawn criteria rather than relying on the Read directive.
+**What would invalidate this:** A future test where the model skips the Read directive entirely and makes spawn decisions without reading ROUTING.md — all always-spawn rules (including ciso-reviewer and staff-product-engineer) now live exclusively in ROUTING.md, so a missed Read means no principled routing at all. If that is observed, consider moving ROUTING.md content back inline.
 
 **What this does not prove:** That the architecture is correct in general. It is evidence the extraction didn't break agent spawning on one realistic test case. Re-run this test when SKILL.md's Routing section is edited or when ROUTING.md content is modified.

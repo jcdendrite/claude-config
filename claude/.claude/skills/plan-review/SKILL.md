@@ -49,7 +49,7 @@ Read the plan and classify which domains it touches. When using an agent to expl
 
 **NO PLACEHOLDERS.** Every step must name the actual file, function, or change. "TBD," "based on findings," and "implement later" defer decisions to execution time — when context is thinnest. Check: no conditional language in action items.
 
-**BITE-SIZED STEPS.** Each step is one action, executable in roughly 2-5 minutes. Larger steps hide subtasks that need separate decisions. Check: each step names one target and one change.
+**BITE-SIZED STEPS.** Each step is one target, one change, one decision — if you'd need to pause and re-plan mid-execution, split it. Check: each step names one target and one change.
 
 **CONTEXT-COMPLETE STEPS.** Each step contains file path, before/after description, and why the change is needed. Check: no step requires scrolling up for context.
 
@@ -203,11 +203,9 @@ S6. **Secret lifecycle** — Does the plan describe provisioning, storage, rotat
 - Domain checklist items for domains the plan doesn't touch
 - Generic "add more tests" suggestions, **except** for security controls where untested invariants are indistinguishable from absent ones (see S1)
 
-## Routing
+## Reviewer routing
 
-**Always spawn `ciso-reviewer`** when the plan touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions. Skip only when the Step 4 user-surface declaration puts the change outside `ciso-reviewer`'s threat model — name the surface if skipping. **Always spawn `staff-product-engineer`** when the plan changes user-facing behavior.
-
-For all other spawn decisions, reconciliation logic, and item-to-reviewer assignments, use the Read tool on `~/.claude/skills/plan-review/ROUTING.md` before spawning.
+Read `~/.claude/skills/plan-review/ROUTING.md` before any spawn decision.
 
 ## Output format
 
