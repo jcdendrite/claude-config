@@ -161,6 +161,13 @@ chmod +x ~/.claude/scripts/*.py
   reads excluded) from session metadata, and prints the session ID so you can
   drill in with the per-session view.
 
+- **`token-analyzer.py`** — cross-session per-model token breakdown (Opus / Sonnet / Haiku) with cache-hit rates, plus a list of Opus sessions that likely could have run on Sonnet (no plan-mode reasoning, no code edits). Reads `~/.claude/projects/*/*.jsonl`; no network calls, no writes.
+
+  ```bash
+  ~/.claude/scripts/token-analyzer.py             # all-time
+  ~/.claude/scripts/token-analyzer.py --since 7d  # rolling window (e.g. 2d, 7d)
+  ```
+
 ## Worktree enforcement
 
 Concurrent Claude Code sessions that share a working tree can race: one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
