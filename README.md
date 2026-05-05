@@ -161,11 +161,11 @@ chmod +x ~/.claude/scripts/*.py
   reads excluded) from session metadata, and prints the session ID so you can
   drill in with the per-session view.
 
-- **`token-analyzer.py`** — cross-session per-model token breakdown (Opus / Sonnet / Haiku) with cache-hit rates, plus a list of Opus sessions that likely could have run on Sonnet (no plan-mode reasoning, no code edits). Reads `~/.claude/projects/*/*.jsonl`; no network calls, no writes.
+- **`token-analyzer.py`** — cross-session per-model token breakdown (Opus / Sonnet / Haiku) with cache-hit rates, plus a list of Opus sessions that likely could have run on Sonnet (no plan-mode, no edits, no sub-agent dispatch, no extended thinking, no judgment-skill invocations). Reads `~/.claude/projects/*/*.jsonl`; no network calls, no writes.
 
   ```bash
   ~/.claude/scripts/token-analyzer.py             # all-time
-  ~/.claude/scripts/token-analyzer.py --since 7d  # rolling window (e.g. 2d, 7d)
+  ~/.claude/scripts/token-analyzer.py --since 7d  # include token activity from the last N days (e.g. 2d, 7d)
   ```
 
 ## Worktree enforcement
