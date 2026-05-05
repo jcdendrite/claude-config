@@ -84,26 +84,29 @@ Skip if step 2 showed the remote was already pruned.
 
 `git push --delete` is blocked from the main tree — it must run from
 inside a linked worktree. Run `git worktree list` and pick any path
-that is not the main repo root. If none exists, create a temporary one:
+that is not the main repo root. If none exists, create a temporary one.
+Pick a unique `<SUFFIX>` now (e.g. current epoch seconds: `date +%s`)
+and reuse the same literal value in every command below — shell
+variables don't persist across separate Bash tool calls.
 
 ```bash
-git worktree add --detach .claude/worktrees/_cleanup-tmp
+git worktree add --detach .claude/worktrees/_cleanup-tmp-<SUFFIX>
 ```
 
 Then anchor and delete in two separate Bash calls:
 
 ```bash
 # Call 1 — anchor CWD:
-cd <worktree-path>
+cd .claude/worktrees/_cleanup-tmp-<SUFFIX>
 
 # Call 2 — delete remote:
 git push origin --delete <BRANCH>
 ```
 
-If you created `_cleanup-tmp`, remove it when done:
+If you created `_cleanup-tmp-<SUFFIX>`, remove it when done:
 
 ```bash
-git worktree remove .claude/worktrees/_cleanup-tmp
+git worktree remove .claude/worktrees/_cleanup-tmp-<SUFFIX>
 ```
 
 ## 5. Fast-forward default branch
