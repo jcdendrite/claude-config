@@ -40,7 +40,7 @@ List every underspecified decision (edge cases, error handling, scope boundaries
 Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, and `verify-primary-sources` if their domains are implicated. Write the plan with these sections:
 
 1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
-2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (1-2 sentences, not a separate section)
+2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block)
 3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement)
 4. **Verification** — how to test end-to-end
 5. **Out of scope** — only if scope creep was observed
