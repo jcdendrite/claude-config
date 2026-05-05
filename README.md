@@ -164,7 +164,8 @@ chmod +x ~/.claude/scripts/*.py
 - **`token-analyzer.py`** — cross-session per-model token breakdown (Opus / Sonnet / Haiku) with cache-hit rates, plus a list of Opus sessions that likely could have run on Sonnet (no plan-mode reasoning, no code edits). Reads `~/.claude/projects/*/*.jsonl`; no network calls, no writes.
 
   ```bash
-  ~/.claude/scripts/token-analyzer.py
+  ~/.claude/scripts/token-analyzer.py             # all-time
+  ~/.claude/scripts/token-analyzer.py --since 7d  # rolling window (e.g. 2d, 7d)
   ```
 
 ## Worktree enforcement
