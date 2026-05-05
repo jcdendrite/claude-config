@@ -59,6 +59,8 @@ class TestLogRoutingRead:
 
     def test_missing_session_id_is_noop(self, isolated_home):
         run_hook(LOG_ROUTING_READ_HOOK, {"tool_name": "Read", "tool_input": {"file_path": ROUTING_MD_PATH}})
+        routing_read_dir = isolated_home / ".claude" / ".plan-review-routing-read.d"
+        assert not routing_read_dir.exists() or not any(routing_read_dir.iterdir())
 
     def test_hook_always_exits_allow(self, isolated_home):
         sid = "session-always-allow"
