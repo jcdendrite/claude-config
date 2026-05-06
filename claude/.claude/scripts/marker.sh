@@ -41,6 +41,11 @@ _resolve_repo_hash() {
   git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}'
 }
 
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  usage
+  exit 0
+fi
+
 if [ $# -ne 2 ]; then
   usage
   exit 2
@@ -129,10 +134,6 @@ case "$SUBCOMMAND" in
         exit 2
         ;;
     esac
-    ;;
-  --help|-h)
-    usage
-    exit 0
     ;;
   *)
     printf "marker.sh: unknown subcommand '%s'\n" "$SUBCOMMAND" >&2
