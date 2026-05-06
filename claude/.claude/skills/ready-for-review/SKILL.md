@@ -55,14 +55,14 @@ If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStar
 
 ## 2. Verification (halt on fail)
 
-If the repo's CLAUDE.md has an explicit Testing or Verification
-section, run exactly what it specifies.
+If the repo's CLAUDE.md has a Testing or Verification section, use those
+commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
+`go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
+test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
-Otherwise, inspect the repo's config (`package.json` scripts,
-`pyproject.toml`, `go.mod`, `Cargo.toml`, `Makefile`, CI workflow
-files, etc.) and run the test, lint, and typecheck commands the
-project actually defines. Do not invent or guess commands — if the
-project doesn't define a lint step, don't add one.
+**Run the commands via the `Agent` tool with `subagent_type: general-purpose`** — not inline Bash. Suite-level output displaces parent working state and invalidates the prompt cache; fork is worse (inherits parent context). Report: per-command name/exit code/pass-fail, smallest failure excerpt (last ~50 lines or runner summary), overall PASS or FAIL. For more diagnosis, spawn a follow-up subagent — do not re-run inline.
+
+**Inline exception.** Run a command directly only when scoped to a single test file or test name — e.g. `npx vitest run src/components/X.test.tsx` or `pytest -k test_y`. Suite-level runs always go through the subagent.
 
 **Scope exceptions — skip step 2 entirely:** skip when the diff
 contains no executable code — only markdown, plans, or non-executable
