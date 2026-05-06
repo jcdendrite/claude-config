@@ -200,7 +200,7 @@ Read `~/.claude/skills/plan-review/ROUTING.md` before any spawn decision.
 
 ## Output format
 
-Start with which domains were detected and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs (from ROUTING.md's Item ownership table):
+Start with which domains were detected and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs (from ROUTING.md's Item ownership table), e.g.:
 
 > - staff-data-engineer: D1 (migration safety), D4 (RLS enforceability)
 > - ciso-reviewer: S1 (threat model), S3–S5 (auth/IDOR/data minimization), D4 co-ownership
