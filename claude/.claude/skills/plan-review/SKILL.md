@@ -45,6 +45,12 @@ Read the plan and classify which domains it touches. When using an agent to expl
 
 **Schema change routing:** Route schema changes by change type: new nullable column, index, or view → `staff-backend-engineer` only; new table → `staff-backend-engineer` + `staff-analytics-engineer`; rename, drop, type change, NOT NULL constraint added, partition key, or RLS policy → `staff-backend-engineer` + `staff-data-engineer` + `staff-analytics-engineer`. Add `staff-product-engineer` if user-visible.
 
+## Step 2.5 — Load project-specific layer
+
+If a project-specific layer exists for this skill, invoke it now and merge its checklist into the items below. Glob for `.claude/skills/plan-review-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, invoke it via the Skill tool. If multiple match, list them and stop — that's a config error in the project, not a review you can resolve. If none match, proceed without a layer.
+
+Why this is here: description-based auto-trigger does not fire from inside a running skill (see `code-review/REFERENCES.md` F-04). Without an explicit invocation, the project layer's items — including security-critical ones (RLS weakening, auth-tier flips, admin-only-table access) — are silently skipped.
+
 ## Step 3 — Plan structure requirements
 
 **NO PLACEHOLDERS.** Every step must name the actual file, function, or change. "TBD," "based on findings," and "implement later" defer decisions to execution time — when context is thinnest. Check: no conditional language in action items.
@@ -120,7 +126,11 @@ B14. **Missing decision rationale** — Are design choices explained? "Use appro
 
 B15. **Effort section reality** — If the plan has an "Estimated Effort" section, does it describe **review surface** (file count, domain complexity, risk concentration) rather than **implementation hours**? Hour-based estimates anchored in human coding speed mislead when Claude writes the code. Flag any effort section citing hours/days; rewrite in review-surface terms.
 
-B16. **Tech-debt intersection** — Does the plan touch or expand an existing tech-debt mechanism (grandfathered-violations list, legacy shim, `// TODO: refactor` marker, dual code path)? If yes, the plan must explicitly choose: expand for now with rationale (e.g. "surgical fix out-of-scope"), or surgical fix in this PR. Don't silently expand; flag as **missing scope (B8)** if unacknowledged.
+B16. **Tech-debt intersection** — Does the plan touch or expand an existing tech-debt mechanism (grandfathered-violations list, legacy shim, `// TODO: refactor` marker, dual code path)? If yes, the plan must explicitly choose: expand for now with rationale (e.g. "surgical fix out-of-scope"), or surgical fix in this PR. Don't silently expand; flag as **missing scope (B8)** if unacknowledged. At solo-engineer or near-solo team scale, default to the surgical fix — follow-up tickets rarely land without sprint ceremony to pull them back in.
+
+### PR packaging
+
+B17. **Plan and implementation in sync** — If the plan lives in `.claude/plans/`, are the plan files included in the same PR as the implementation? A plan that ships in a separate branch creates orphaned plan files and makes reviewers evaluate the plan without seeing what it produced. Exception: a standalone plan PR opened *before* implementation begins (for pre-implementation review) is fine — flag only when implementation is underway and the plan is in a separate branch.
 
 ## Domain: Infrastructure
 

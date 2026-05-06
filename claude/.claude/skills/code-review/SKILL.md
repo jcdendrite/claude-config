@@ -24,6 +24,12 @@ Apply the **Base checklist** always. Apply each **Domain checklist** only when a
 
 Schema-touching diffs route three ways in parallel — backend (designs the schema), data infrastructure (operational / pipeline impact, DDL execution shape), analytics modeling (ELT-readiness review). Each agent self-scopes against the diff and returns early when out of lane.
 
+## Step 0.5 — Load project-specific layer
+
+If a project-specific layer exists for this skill, invoke it now and merge its checklist into the items below. Glob for `.claude/skills/code-review-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, invoke it via the Skill tool. If multiple match, list them and stop — that's a config error in the project, not a review you can resolve. If none match, proceed without a layer.
+
+Why this is here: description-based auto-trigger does not fire from inside a running skill (see `REFERENCES.md` F-04). Without an explicit invocation, the project layer's items — including any project-specific security checks — are silently skipped.
+
 ## Step 1 — Implementation-fitness gate
 
 Before reviewing for gaps, answer: **is the implementation appropriately sized for what the change needed to accomplish?** Gap-finding on an over-elaborate change elaborates it further, and the checklist won't surface "the whole implementation is the wrong shape."
@@ -66,73 +72,75 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 8. **Inline business logic where a library method exists** — Is there hand-rolled logic (regex parsing, string manipulation, date math, data structure ops) where the project's existing dependencies already provide a tested function for the same thing?
 
+9. **Repeated in-house logic that should be extracted** — Is the same non-trivial logic block (≥~5 lines, or any block with semantic identity beyond formatting) repeated in three or more sites in this codebase, where a single shared helper would carry the same behavior? The default threshold is three instances, but it's a default, not a rule: a 2-instance extraction can be right when the logic is obviously a single domain concept (Stripe error shaping, retry with backoff, auth-error mapping) and a 5-instance repetition can be wrong to extract when the bodies are coincidentally similar but semantically distinct (each one will diverge under its own pressure). Suggest the extraction site (`_shared/<helper>.ts`, `lib/<helper>.ts`, or the codebase's established shared-utility location) and name what the helper should encapsulate, not just "DRY this up." Carve-out: production code is DRY; **test code is DAMP** — repeated arrange/assert blocks in tests often aid readability over abstraction, so do not flag test-file duplication unless the repeated block is large enough to obscure the test's intent.
+
 ### Clarity
 
-9. **Undocumented limitations** — Does the code make assumptions or have known constraints invisible to future readers (only handling the first element, assuming single-tenant, ignoring edge cases by design)?
+10. **Undocumented limitations** — Does the code make assumptions or have known constraints invisible to future readers (only handling the first element, assuming single-tenant, ignoring edge cases by design)?
 
-10. **Misleading names** — Do function or variable names promise more or less than they deliver? A `validateUser` that only checks one field, an `allItems` that holds a filtered subset.
+11. **Misleading names** — Do function or variable names promise more or less than they deliver? A `validateUser` that only checks one field, an `allItems` that holds a filtered subset.
 
 ### Security
 
-11. **Test adequacy for security controls** — For code enforcing security invariants (access control, input validation, privilege boundaries), are there tests for both allow and deny paths? This overrides the general "add tests" exclusion — untested security controls are indistinguishable from absent ones. Check: for each boundary, is the unauthorized caller rejected AND the authorized caller accepted?
+12. **Test adequacy for security controls** — For code enforcing security invariants (access control, input validation, privilege boundaries), are there tests for both allow and deny paths? This overrides the general "add tests" exclusion — untested security controls are indistinguishable from absent ones. Check: for each boundary, is the unauthorized caller rejected AND the authorized caller accepted?
 
 ### Scope discipline
 
-12. **Pre-existing issues in unchanged code** — If you notice issues in code NOT written or modified in this change, flag them in a separate "Pre-existing issues" section. Do NOT fix them — informational only, out of scope.
+13. **Pre-existing issues in unchanged code** — If you notice issues in code NOT written or modified in this change, flag them in a separate "Pre-existing issues" section. Do NOT fix them — informational only, out of scope.
 
 ## Domain: Infrastructure
 
-13. **Concurrency and parallelism scoping** — Do concurrency groups, mutex locks, or job dependencies match their intended scope? A workflow-level concurrency group affects all jobs, including no-op or unrelated ones — check that cancel-in-progress won't kill an important job due to an unrelated trigger.
+14. **Concurrency and parallelism scoping** — Do concurrency groups, mutex locks, or job dependencies match their intended scope? A workflow-level concurrency group affects all jobs, including no-op or unrelated ones — check that cancel-in-progress won't kill an important job due to an unrelated trigger.
 
-14. **Secret exposure** — Are secrets used in contexts that could log them? Check for secrets in `run:` commands that echo or pipe output, in `env:` blocks visible to steps that don't need them, and in artifact uploads. Ensure secrets are not passed as command-line arguments (visible in process lists).
+15. **Secret exposure** — Are secrets used in contexts that could log them? Check for secrets in `run:` commands that echo or pipe output, in `env:` blocks visible to steps that don't need them, and in artifact uploads. Ensure secrets are not passed as command-line arguments (visible in process lists).
 
-15. **Permissions least privilege** — Are workflow permissions, IAM roles, or service accounts scoped to what's actually needed? Flag `contents: write` when only `read` is required, `admin` when `write` suffices, or wildcard permissions.
+16. **Permissions least privilege** — Are workflow permissions, IAM roles, or service accounts scoped to what's actually needed? Flag `contents: write` when only `read` is required, `admin` when `write` suffices, or wildcard permissions.
 
-16. **Idempotency** — Is the workflow/script safe to re-run? Check for unconditional creates (without "if not exists"), non-atomic operations that leave partial state on failure, and missing cleanup on retry.
+17. **Idempotency** — Is the workflow/script safe to re-run? Check for unconditional creates (without "if not exists"), non-atomic operations that leave partial state on failure, and missing cleanup on retry.
 
-17. **Trigger-condition alignment** — Do trigger filters (branch, path, actor, event type) match the job's purpose? A job intended only for bot commits but triggered on all pushes is a mismatch even if individual steps have `if` guards.
+18. **Trigger-condition alignment** — Do trigger filters (branch, path, actor, event type) match the job's purpose? A job intended only for bot commits but triggered on all pushes is a mismatch even if individual steps have `if` guards.
 
 ## Domain: Data
 
-18. **Migration reversibility** — Destructive operations (`DROP COLUMN`, type narrowing, table drops) need a backup or reversal path.
+19. **Migration reversibility** — Destructive operations (`DROP COLUMN`, type narrowing, table drops) need a backup or reversal path.
 
-19. **Index coverage** — New `WHERE`/`JOIN`/`ORDER BY` columns and foreign keys need supporting indexes, especially on growing tables.
+20. **Index coverage** — New `WHERE`/`JOIN`/`ORDER BY` columns and foreign keys need supporting indexes, especially on growing tables.
 
-20. **Lock safety** — Flag long-locking DDL on large tables — `ALTER` with defaults, `CREATE INDEX` without `CONCURRENTLY`, in-migration backfills.
+21. **Lock safety** — Flag long-locking DDL on large tables — `ALTER` with defaults, `CREATE INDEX` without `CONCURRENTLY`, in-migration backfills.
 
-21. **RLS and access control on new tables** — New tables exposed via auto-generated APIs (PostgREST, Hasura, generated resolvers) need row-security enabled with policies.
+22. **RLS and access control on new tables** — New tables exposed via auto-generated APIs (PostgREST, Hasura, generated resolvers) need row-security enabled with policies.
 
 ## Domain: Frontend
 
-22. **Accessibility** — Do interactive elements have accessible names (aria-label, visible label, alt text)? Are click handlers on non-button elements keyboard-accessible? Check for missing focus management in modals and drawers.
+23. **Accessibility** — Do interactive elements have accessible names (aria-label, visible label, alt text)? Are click handlers on non-button elements keyboard-accessible? Check for missing focus management in modals and drawers.
 
-23. **Render performance** — Are there new inline object/array/function literals in JSX props that would cause child re-renders on every parent render? Check for missing `key` props on list items and expensive computations not wrapped in `useMemo`/`useCallback` where the component re-renders frequently.
+24. **Render performance** — Are there new inline object/array/function literals in JSX props that would cause child re-renders on every parent render? Check for missing `key` props on list items and expensive computations not wrapped in `useMemo`/`useCallback` where the component re-renders frequently.
 
-24. **Bundle impact** — Does the change add a large new dependency where a smaller alternative or existing utility exists? Flag full-library imports (e.g., all of lodash) when only one function is used.
+25. **Bundle impact** — Does the change add a large new dependency where a smaller alternative or existing utility exists? Flag full-library imports (e.g., all of lodash) when only one function is used.
 
-25. **State-dependent rendering coverage** — Does the change modify which UI state a component enters (conditional branches, state machines, context-driven rendering)? If so, check whether tests verify the affected states render correctly. For each new or changed condition, is there a test that the component renders the expected output for each branch?
+26. **State-dependent rendering coverage** — Does the change modify which UI state a component enters (conditional branches, state machines, context-driven rendering)? If so, check whether tests verify the affected states render correctly. For each new or changed condition, is there a test that the component renders the expected output for each branch?
 
 ## Domain: Backend
 
-26. **Auth boundary coverage** — Every new endpoint or RPC needs both authentication (who) and authorization (can they) — and the check must not be bypassable by hitting the endpoint outside the UI flow.
+27. **Auth boundary coverage** — Every new endpoint or RPC needs both authentication (who) and authorization (can they) — and the check must not be bypassable by hitting the endpoint outside the UI flow.
 
-27. **Input validation at system boundaries** — Validate/sanitize user input before SQL, shell, file paths, or outbound API calls — framework parameterization counts, string concatenation does not.
+28. **Input validation at system boundaries** — Validate/sanitize user input before SQL, shell, file paths, or outbound API calls — framework parameterization counts, string concatenation does not.
 
-28. **Error response leakage** — Error responses must not expose internal details (stack traces, internal IDs, DB error text, file paths) — log server-side, return generic to the client.
+29. **Error response leakage** — Error responses must not expose internal details (stack traces, internal IDs, DB error text, file paths) — log server-side, return generic to the client.
 
-29. **Dependency upgrades** — Does the change upgrade a runtime or build dependency? Read the changelog for breaking changes. Check for peer dependency conflicts and, for frontend deps, bundle size regression.
+30. **Dependency upgrades** — Does the change upgrade a runtime or build dependency? Read the changelog for breaking changes. Check for peer dependency conflicts and, for frontend deps, bundle size regression.
 
-30. **Third-party API integration** — Does the change add or modify a third-party API call? Verify retry/timeout behavior, credential scoping (least-privilege keys), and failure modes (API down, unexpected data).
+31. **Third-party API integration** — Does the change add or modify a third-party API call? Verify retry/timeout behavior, credential scoping (least-privilege keys), and failure modes (API down, unexpected data).
 
-31. **Sensitive data in logs** — Does the change add or modify logging? Verify logs do not include tokens, credentials, PII, or full API responses from auth/OAuth endpoints. Extract only the fields needed for debugging.
+32. **Sensitive data in logs** — Does the change add or modify logging? Verify logs do not include tokens, credentials, PII, or full API responses from auth/OAuth endpoints. Extract only the fields needed for debugging.
 
-32. **Performance-sensitive code paths** — Does the change modify a hot path (queries in loops, N+1, cache read/write, large list ops)? Verify with representative data volumes, not just test fixtures.
+33. **Performance-sensitive code paths** — Does the change modify a hot path (queries in loops, N+1, cache read/write, large list ops)? Verify with representative data volumes, not just test fixtures.
 
 ## Domain: Claude Code config
 
 For `.claude/skills/**/SKILL.md` review (frontmatter, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions), invoke the `skill-review` skill — do not assert behavioral equivalence on prose compressions yourself; that audit is `skill-review`'s job.
 
-33. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
+34. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
 For hook reviews (`claude/.claude/hooks/*.sh`, hook entries in `settings.json`), invoke the `claude-hook-review` skill.
 
@@ -144,7 +152,7 @@ Apply when changed files match `.lovable/**`. Invoke the `lovable-knowledge` ski
 
 - Issues that a linter, typechecker, or compiler would catch (imports, type errors, formatting)
 - Stylistic nitpicks in unchanged code (naming conventions, whitespace, comment style)
-- Generic improvement suggestions ("add tests," "add docs," "improve error messages") not tied to a specific finding from the checklist above, **except** for security controls (see item 11)
+- Generic improvement suggestions ("add tests," "add docs," "improve error messages") not tied to a specific finding from the checklist above, **except** for security controls (see item 12)
 - Domain checklist items for domains where no files were changed
 
 ## Output format
@@ -231,29 +239,29 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **3. Race conditions** | `staff-backend-engineer` | — |
 | **4. Silent defaults** | `staff-backend-engineer`, `staff-platform-engineer` (infra / test code) | — |
 | **5. Feature flag coverage** | `staff-product-engineer` (default-off semantics) | `staff-platform-engineer` (rollout) |
-| **6–8. Hygiene** (dead exports, unnecessary wrappers, inline business logic) | judgment (any reviewer) | — |
-| **9. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
-| **10. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
-| **11. Test adequacy for security controls** | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
-| **12. Pre-existing issues in unchanged code** | judgment (any reviewer) | — |
-| **13–17. Infrastructure** (concurrency scoping, secret exposure, least-privilege, idempotency, trigger alignment) | `staff-platform-engineer` | `ciso-reviewer` (14 secret exposure, 15 least-privilege) |
-| **18. Migration reversibility** | `staff-data-engineer` (rollback safety, pipeline impact) | `staff-backend-engineer` |
-| **19. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
-| **20. Lock safety** | `staff-data-engineer` (DDL execution shape, pipeline impact) | `staff-platform-engineer` (deploy-window, lock-budget) |
-| **21. RLS / access control on new tables** | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
-| **22. Accessibility** | `staff-frontend-engineer` (technical a11y) | `staff-product-engineer` (a11y as spec fidelity) |
-| **23. Render performance** | `staff-frontend-engineer` | — |
-| **24. Bundle impact** | `staff-frontend-engineer` | `staff-platform-engineer` (build tooling) |
-| **25. State-dependent rendering coverage** | `staff-frontend-engineer` (branch implementation) | `staff-sdet` (test coverage), `staff-product-engineer` (right branches for spec) |
-| **26. Auth boundary coverage** | `staff-backend-engineer` | `ciso-reviewer` |
-| **27. Input validation at boundaries** | `staff-backend-engineer` | `ciso-reviewer` |
-| **28. Error response leakage** | `staff-backend-engineer` | `ciso-reviewer` |
-| **29. Dependency upgrades** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (CI / build deps) |
-| **30. Third-party API integration** | `staff-backend-engineer` | `ciso-reviewer` (credential scoping) |
-| **31. Sensitive data in logs** | `staff-backend-engineer` | `ciso-reviewer` |
-| **32. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
-| **33. Permission scope** | `ciso-reviewer` | — |
-| **34. Hook correctness** — reviewed via `claude-hook-review` skill | `staff-platform-engineer` | `ciso-reviewer` |
+| **6–9. Hygiene** (dead exports, unnecessary wrappers, inline business logic, repeated in-house logic) | judgment (any reviewer) | — |
+| **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
+| **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
+| **12. Test adequacy for security controls** | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
+| **13. Pre-existing issues in unchanged code** | judgment (any reviewer) | — |
+| **14–18. Infrastructure** (concurrency scoping, secret exposure, least-privilege, idempotency, trigger alignment) | `staff-platform-engineer` | `ciso-reviewer` (15 secret exposure, 16 least-privilege) |
+| **19. Migration reversibility** | `staff-data-engineer` (rollback safety, pipeline impact) | `staff-backend-engineer` |
+| **20. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
+| **21. Lock safety** | `staff-data-engineer` (DDL execution shape, pipeline impact) | `staff-platform-engineer` (deploy-window, lock-budget) |
+| **22. RLS / access control on new tables** | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
+| **23. Accessibility** | `staff-frontend-engineer` (technical a11y) | `staff-product-engineer` (a11y as spec fidelity) |
+| **24. Render performance** | `staff-frontend-engineer` | — |
+| **25. Bundle impact** | `staff-frontend-engineer` | `staff-platform-engineer` (build tooling) |
+| **26. State-dependent rendering coverage** | `staff-frontend-engineer` (branch implementation) | `staff-sdet` (test coverage), `staff-product-engineer` (right branches for spec) |
+| **27. Auth boundary coverage** | `staff-backend-engineer` | `ciso-reviewer` |
+| **28. Input validation at boundaries** | `staff-backend-engineer` | `ciso-reviewer` |
+| **29. Error response leakage** | `staff-backend-engineer` | `ciso-reviewer` |
+| **30. Dependency upgrades** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (CI / build deps) |
+| **31. Third-party API integration** | `staff-backend-engineer` | `ciso-reviewer` (credential scoping) |
+| **32. Sensitive data in logs** | `staff-backend-engineer` | `ciso-reviewer` |
+| **33. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
+| **34. Permission scope** | `ciso-reviewer` | — |
+| **35. Hook correctness** — reviewed via `claude-hook-review` skill | `staff-platform-engineer` | `ciso-reviewer` |
 
 ## Step — Record review completion
 
