@@ -37,7 +37,7 @@ The skills form a sequential pipeline that covers the full contribution lifecycl
 
 ```mermaid
 flowchart LR
-    A([Write plan]) --> B[/plan-review/]
+    A[/plan-it/] --> B[/plan-review/]
     B -->|"require-plan-review.sh\ngates Write/Edit while plan exists"| C([Write code])
     C --> D[/code-review/]
     D -->|"require-code-review.sh\ngates git commit"| E([git commit])
@@ -53,6 +53,7 @@ flowchart LR
 
 **Skills in the pipeline:**
 
+- **`/plan-it`** — produce an implementation plan in `.claude/plans/<topic-slug>.md` through discovery, codebase exploration, clarifying questions, and architecture design; hands off to `/plan-review`.
 - **`/plan-review`** — review an implementation plan against domain checklists before presenting it to a human; required before writing code when a plan file exists in `.claude/plans/`.
 - **`/code-review`** — principal-engineer code review with ripple-effect triage and domain-specific audits; required before `git commit`.
 - **`/skill-review`** — behavioral-equivalence audit for `SKILL.md` changes; required before `git commit` when staged changes include a SKILL.md. Produces an explicit table verifying that every removed or shortened line's behavior is preserved.
@@ -81,13 +82,21 @@ flowchart LR
 - **`capture-session-id.sh`** (SessionStart) — at session start, writes the session's `session_id` to `~/.claude/sessions/<claude-pid>` so skills running as Bash tool calls (which don't see the hook payload) can look up their own session id via the bash tool's `$PPID`. Used by both `/respond-pr` and `/code-review` to compute per-session marker filenames.
 - **`ask-review-permissions.sh`** — asks before `Edit`/`Write`/`MultiEdit` to `.claude/settings*.json`, nudging toward `/review-permissions` when the edit touches `permissions.allow`.
 - **`require-worktree-for-git-writes.sh`** — opt-in per repo. When active, denies non-read-only git operations unless the session runs in a linked git worktree. Prevents concurrent Claude Code sessions from racing on the same working tree. See [Worktree enforcement](#worktree-enforcement) below for opt-in instructions.
+- **`require-worktree-for-file-writes.sh`** — opt-in per repo (same `.claude/worktree-required` sentinel). When active, denies `Edit`/`Write`/`MultiEdit` on paths in the main working tree; all file edits must land in a linked worktree.
+- **`guard-settings-model-effort.sh`** — blocks `git commit` when `claude/.claude/settings.json` has staged changes to `model` or `effortLevel`. Per-session overrides should not be committed; use `ANTHROPIC_MODEL`/`CLAUDE_CODE_EFFORT_LEVEL` env vars or `/effort max` mid-session instead.
+- **`check-skill-length.sh`** — blocks `git commit` when a staged `SKILL.md` exceeds 200 lines and grew vs HEAD. Nudges toward splitting a growing skill or moving reference material to a co-located `REFERENCES.md`.
+- **`session-marker-dashboard.sh`** (SessionStart) — at session start, emits a summary of any active bypass markers (`/respond-pr`, `/ready-for-review`) into the resumed session's context so stale bypasses are visible.
 
 ### Skills (slash commands)
 
-- **`/code-review`** — principal engineer code review checklist with ripple-effect triage and domain-specific audits (backend, frontend, security, infrastructure, data).
+- **`/plan-it`** — produce an implementation plan in `.claude/plans/<topic-slug>.md` through discovery, codebase exploration, clarifying questions, and architecture design; hands off to `/plan-review`.
 - **`/plan-review`** — review implementation plans before presenting, with domain-specific reviewer roles.
+- **`/code-review`** — principal engineer code review checklist with ripple-effect triage and domain-specific audits (backend, frontend, security, infrastructure, data).
+- **`/skill-review`** — behavioral-equivalence audit for `SKILL.md` changes; required before `git commit` when staged changes include a SKILL.md. Produces an explicit table verifying every removed or shortened line's behavior is preserved.
+- **`/ready-for-review`** — pre-handoff gate: verifies tests/lint/typecheck, runs `/code-review` against the cumulative PR diff (all commits vs default branch), and syncs the PR description; required before `git push` on a branch with an open PR.
 - **`/review-permissions`** — security audit of `permissions.allow` rules with a 21-item checklist.
 - **`/respond-pr`** — fetch and address PR review comments, with `[Claude Code]` attribution on all replies.
+- **`/claude-hook-review`** — review playbook for `claude/.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, defense-in-depth filtering within the script body, exit-code contracts.
 - **`/branch-creation`** — naming conventions (`<TICKET-ID>/<topic-slug>` for ticketed projects, `<topic-slug>` alone otherwise), anti-patterns to reject (tracker `<user>/` defaults), and branching from a fresh default-branch tip.
 - **`/git-feature-branch-sync`** — decision framework for keeping a feature branch current with the default branch: when to rebase-and-force-push vs merge-in, and how to force-push safely (`--force-with-lease` vs `--force-if-includes`).
 - **`/git-state-safety`** — safely inspecting other branches when the working tree is in a fragile state (mid-merge, mid-rebase, mid-cherry-pick), avoiding the silently-corrupted-index failure mode where a diagnostic `git checkout <ref> -- <path>` overwrites a partially-resolved merge, and recovering from bad merges that were already committed.
@@ -95,6 +104,8 @@ flowchart LR
 - **`/config-environments`** — designing configuration that differs across environments (dev, staging, production): env var naming, credential isolation, secrets provisioning, and the anti-patterns that reintroduce tight coupling.
 - **`/sql-query-conventions`** — read-path conventions for SQL and PostgREST/Supabase queries: pagination, limits, N+1 avoidance, batch-size ceilings, explicit column selection.
 - **`/ai-instruction-and-memory-files`** — how AI coding agents load instruction files (CLAUDE.md, AGENTS.md, Cursor rules, Lovable knowledge) and Claude Code auto-memory: precedence, duplication rules, length targets, import patterns.
+- **`/lovable-knowledge`** — Lovable Project Knowledge vs Workspace Knowledge fields, the `.lovable/*.md` repo-mirror workflow, content scope split, precedence, and character limits.
+- **`/verify-primary-sources`** — when web research informs a code or design decision, read the primary documentation directly rather than trusting agent summaries or secondary sources.
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context.
 - **`/cleanup-merged-branch`** — removes the local worktree and branch, prunes remote tracking refs, and fast-forwards the default branch after a PR is merged. Handles squash-merge branch detection and CWD anchoring for worktree-enforced repos.
 
