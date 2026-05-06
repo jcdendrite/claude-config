@@ -56,7 +56,7 @@ The dispatcher fires reviewers per touched domain. Each agent self-scopes agains
 | **B2. Missing consumer analysis** | `staff-backend-engineer` (API consumers) | `staff-frontend-engineer`, `staff-product-engineer`, `staff-data-engineer` (per consumer type), `staff-analytics-engineer` (warehouse-consumer fitness — source shape suits modeling) |
 | **B3. Breaking intermediate states** | `staff-backend-engineer`, `staff-data-engineer` | `staff-platform-engineer` (deploy-window) |
 | **B4. Unresolved external dependencies** | `staff-backend-engineer` | — |
-| **B5, B6, B7, B13, B15. Judgment items** (evidence and verification, proportionality, scope creep, ambiguous instructions, effort section) | judgment (any reviewer) | — |
+| **B5, B6, B7, B13, B15, B17. Judgment items** (evidence and verification, proportionality, scope creep, ambiguous instructions, effort section, plan-file inclusion) | judgment (any reviewer) | — |
 | **B8. Missing scope** | `staff-product-engineer` (user-facing gaps), `staff-sdet` (test gaps) | `staff-data-engineer`, `staff-platform-engineer` (ops gaps) |
 | **B9. Phase independence** | `staff-platform-engineer` | `staff-backend-engineer` |
 | **B10. Test realism** | `staff-sdet` | `staff-product-engineer` (user-flow realism) |
