@@ -19,7 +19,7 @@ Write the active-session marker so this skill's own Write/Edit operations are no
 
 <!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's active-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
-SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/.plan-review-active.d" && touch "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+~/.claude/scripts/marker.sh activate plan-review
 ```
 
 If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; do not proceed without the marker, since the hook would block any Write/Edit during the review.
@@ -232,12 +232,12 @@ Write the completion marker only when the verdict is **Approve** or **Approve wi
 
 <!-- HOOK_TEST_FIXTURE: record-completion — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's completion-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
-SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/plan-review-markers" && REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}') && printf 'reviewed\n' > "$HOME/.claude/plan-review-markers/$REPO_HASH.$SESSION_ID"
+~/.claude/scripts/marker.sh write plan-review
 ```
 
 Then remove the active-session marker:
 
 <!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's active-marker cleanup. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
-SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.plan-review-active.d/$SESSION_ID" && rm -f "$HOME/.claude/.plan-review-routing-read.d/$SESSION_ID"
+~/.claude/scripts/marker.sh deactivate plan-review
 ```

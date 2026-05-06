@@ -163,7 +163,7 @@ Utility scripts in `claude/.claude/scripts/` (stowed to `~/.claude/scripts/`).
 **First-time setup:** after pulling this repo for the first time, make scripts executable:
 
 ```bash
-chmod +x ~/.claude/scripts/*.py
+chmod +x ~/.claude/scripts/*
 ```
 
 - **`analyze-context.py`** — inspect context window growth for a Claude Code session. Reads `~/.claude/projects/<project>/<session>.jsonl` and `~/.claude/usage-data/session-meta/` locally; no network calls, no writes.
@@ -195,6 +195,8 @@ chmod +x ~/.claude/scripts/*.py
   ~/.claude/scripts/token-analyzer.py             # all-time
   ~/.claude/scripts/token-analyzer.py --since 7d  # include token activity from the last N days (e.g. 2d, 7d)
   ```
+
+- **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, and `/respond-pr` write review markers via `~/.claude/scripts/marker.sh`. The 10 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval. A companion `enforce-marker-script-shape.sh` hook denies any other invocation (chains, env-var prefixes, redirects) to prevent prompt-injection escalation via the allowlist.
 
 ## Worktree enforcement
 

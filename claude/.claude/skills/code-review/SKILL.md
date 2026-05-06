@@ -261,10 +261,8 @@ If the review is **clean** (no blockers, no unresolved critical findings, and yo
 
 <!-- HOOK_TEST_FIXTURE: marker-write — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/code-review/SKILL.md) to verify it matches require-code-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
-SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/review-markers" && REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}') && git diff --cached | sha256sum | awk '{print $1}' > "$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"
+~/.claude/scripts/marker.sh write code-review
 ```
-
-The `tr -d '\n'` is load-bearing: `git rev-parse` adds a trailing newline, and the hook computes the repo hash without it (`printf '%s' "$REPO_ROOT"`). Without `tr`, the marker lands at a path the hook never checks.
 
 This writes the hash of the currently staged diff into a per-session marker keyed by `<repo-hash>.<session-id>`. The pre-commit hook reads the same session-id from its JSON payload and compares the staged-diff hash against THIS session's marker — match means the commit is allowed through. Per-session keying prevents two parallel sessions in the same worktree from overwriting each other's markers. Re-staging any change invalidates the marker automatically.
 

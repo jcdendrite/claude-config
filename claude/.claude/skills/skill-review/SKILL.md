@@ -190,11 +190,7 @@ blockers), record completion by running this command exactly once:
 
 <!-- HOOK_TEST_FIXTURE: skill-review-marker-write — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/skill-review/SKILL.md) to verify it matches require-skill-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
-SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/skill-review-markers" && REPO_HASH=$(git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}') && git diff --cached -- 'claude/.claude/skills/**/SKILL.md' | sha256sum | awk '{print $1}' > "$HOME/.claude/skill-review-markers/$REPO_HASH.$SESSION_ID"
+~/.claude/scripts/marker.sh write skill-review
 ```
 
-The `tr -d '\n'` is load-bearing: `git rev-parse` adds a trailing
-newline, and the hook computes the repo hash without it. The pathspec
-`'claude/.claude/skills/**/SKILL.md'` is also load-bearing — it
-scopes the hash to skill diffs so non-skill re-staging does not
-invalidate a clean review.
+The pathspec `claude/.claude/skills/**/SKILL.md` is encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks.
