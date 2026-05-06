@@ -1,4 +1,4 @@
-"""Pure helpers and path constants shared across hook test files.
+"""Pure helpers and path constants shared across hook and script test files.
 
 No pytest decorators here — this is a plain Python module. Import
 explicitly from each test file that needs these symbols.
@@ -12,10 +12,11 @@ import re
 import subprocess
 from pathlib import Path
 
-HOOKS_DIR = Path(__file__).resolve().parent.parent
+CLAUDE_DIR = Path(__file__).resolve().parent.parent
 
-SKILLS_DIR = HOOKS_DIR.parent / "skills"
-SCRIPTS_DIR = HOOKS_DIR.parent / "scripts"
+HOOKS_DIR = CLAUDE_DIR / "hooks"
+SKILLS_DIR = CLAUDE_DIR / "skills"
+SCRIPTS_DIR = CLAUDE_DIR / "scripts"
 
 # SKILL.md fences may be indented when the fixture sits inside a
 # numbered list (e.g. respond-pr's "0. **Enable hook bypass.**"). The
