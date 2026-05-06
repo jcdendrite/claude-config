@@ -7,6 +7,8 @@ description: >
   TRIGGER when: the user asks for a plan, design doc, or implementation
   strategy for non-trivial work; before starting a feature branch where
   the change spans multiple files or domains.
+  Triggers in plan mode too — compose with plan mode per Steps 1 and 6
+  rather than following plan mode's built-in workflow.
   DO NOT TRIGGER when: the change is a one-line config tweak, a
   single-file refactor with obvious shape, or the user explicitly said
   "just implement it"; on the default branch with no intent to branch;
@@ -19,7 +21,9 @@ argument-hint: "[optional topic or ticket id]"
 
 ## Step 1 — Branch + plan file
 
-If on the default branch, invoke the `branch-creation` skill to pick a slug and start from a fresh default tip. If already on a feature branch, keep it and derive the slug from the branch name — if the branch name contains `/` (e.g. `GH-42/add-auth`), use only the portion after the last `/`. Plan path is `.claude/plans/<topic-slug>.md` on the implementation branch (per `branch-creation`'s "plan files go on the implementation branch" rule).
+**If plan mode is active:** write the plan to the harness-provided plan path (named in the plan-mode system-reminder). Skip branch creation here — plan mode would block it. Resume the branch-creation flow only after `ExitPlanMode` is approved: derive the slug, run `branch-creation`, and move the plan file to `.claude/plans/<topic-slug>.md` on the new branch.
+
+**Otherwise:** if on the default branch, invoke the `branch-creation` skill to pick a slug and start from a fresh default tip. If already on a feature branch, keep it and derive the slug from the branch name — if the branch name contains `/` (e.g. `GH-42/add-auth`), use only the portion after the last `/`. Plan path is `.claude/plans/<topic-slug>.md` on the implementation branch (per `branch-creation`'s "plan files go on the implementation branch" rule).
 
 If `.claude/plans/<topic-slug>.md` already exists, open it for revision in place rather than scaffolding a new file.
 
@@ -50,3 +54,5 @@ Effort sections optional; if present, describe review surface (file count, domai
 ## Step 6 — Hand off to /plan-review
 
 Invoke `/plan-review` against the written plan file. Address any findings before presenting the plan to the user.
+
+**If plan mode is active:** after `/plan-review` is clean and findings are addressed, call `ExitPlanMode` to request approval. The harness shows the plan file's contents in the approval UI; do not also ask conversationally.
