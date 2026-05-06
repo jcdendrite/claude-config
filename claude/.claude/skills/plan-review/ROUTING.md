@@ -1,0 +1,82 @@
+# Routing — plan-review
+
+Load-on-demand routing reference. Read this file when selecting a specialist agent, handling reconciliation, or looking up item-to-reviewer assignments.
+
+## Reviewer roles
+
+You are the principal-engineer-generalist running this skill; specialists below have narrower lane depth, not broader context — you have the conversation, the plan, prior rounds, and the user's calibration cues.
+
+This is the design-stage gate. Specialist misses here are recoverable in code-review, so self-judge on borderline calls — committing to specialist depth at design-stage adds delay without the safety it adds at the last gate. **Default to your own review across all detected domains using the checklists.** Spawn a specialist only when at least one criterion applies:
+
+- **Below-staff-level depth.** Specialized kernels (query-planner internals, cryptography primitives, fine-grained a11y, kernel-level concurrency) — not "general knowledge in domain X."
+- **High-stakes boundary.** RLS, auth, billing, payment, data migration, privileged ops — a specialist's eyes are worth it even at generalist depth.
+- **Holistic-reasoning overload.** Multi-domain change you can't hold in working memory at once.
+- **Convergence-as-design-tell** from a prior round (see Reconciliation).
+- **Explicit user request.**
+
+Always spawn `ciso-reviewer` when the plan touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the Step 4 user-surface declaration puts the change outside `ciso-reviewer`'s threat model (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. Always spawn `staff-product-engineer` when the plan changes user-facing behavior.
+
+Spawn per question (not per file-path domain) — "plan touches backend" isn't enough; the question needs a specific shape.
+
+When you spawn: pick the specialist that serves the question (table below is reference, not roster) and pass plan scope, section, specific question, **Item ownership** routing, AND — for re-review rounds — prior findings + what's been applied. Reviewers without prior context re-discover; that's wasted spawn.
+
+| Domain | Agent | Focus |
+|--------|-------|-------|
+| Backend | `staff-backend-engineer` | API contracts, error handling, idempotency, retry semantics, service boundaries, SDK behavior, application data-store schema design (relational + NoSQL) |
+| Frontend | `staff-frontend-engineer` | Component patterns, state management, data fetching and cache consistency, accessibility, i18n, UX impact |
+| Security | `ciso-reviewer` | Threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth |
+| Data infrastructure | `staff-data-engineer` | Migration pipeline impact, DDL execution shape, CDC / change-stream config, ETL/ELT pipelines, warehouse ingestion transport, schema-drift detection, catalog / lineage tracking |
+| Analytics modeling | `staff-analytics-engineer` | Warehouse-side modeling (fact/dim, SCD, partitioning, materialization), transformation correctness, source-schema review for ELT-readiness |
+| Infrastructure | `staff-platform-engineer` | CI/CD, IaC, shell, deployment ordering, secret provisioning, observability/alerting/SLO, runbook linkage, load characteristics, cost / operational footprint, deploy-window and lock-budget for migrations |
+| Testing | `staff-sdet` | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data; production code with non-trivial logic that lacks tests |
+| Product | `staff-product-engineer` | Whether the plan solves the user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing, telemetry semantics |
+
+Project-level plan-review skills may extend this table with project-specific reviewer roles, but must not remove or narrow the `ciso-reviewer` trigger conditions.
+
+Specialist agents must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. If findings genuinely exceed the budget, the agent must prioritize by severity and explicitly note that lower-severity items were omitted. When spawning, include this constraint in the agent prompt.
+
+## Reconciliation
+
+After spawned reviewers return findings, pause if findings concentrate on a single surface — the same feature, implementation detail, or design choice attracting multiple gaps. If two specialists flag the same `file:line` with the same root cause, present the finding once with both reviewer attributions rather than as duplicate findings. Two readings:
+
+- **Design-wrong-shape.** The surface is the wrong abstraction; gaps will keep multiplying as you patch. Replace, don't patch-by-patch.
+- **Prompt-overlap artifact.** Reviewers given similar prompts produce N voices of the same observation. Convergence looks like signal but is framing-induced.
+
+You judge which applies. Don't treat convergence as automatic authority for "patch each gap." If design-wrong-shape, replace the surface and re-run Step 4. If prompt-overlap, apply the underlying finding once, skip duplicates, and note the overlap so the next spawn uses tighter prompts.
+
+## Item ownership
+
+Routes each checklist item to the reviewer subagent(s) that file findings on it. Bold shorthands match titles above; IDs are the dispatcher's primary key. **Primary owner** files findings; **co-owners** are spawned where the item touches their turf. When in doubt, this table wins over inline mentions.
+
+The dispatcher fires reviewers per touched domain. Each agent self-scopes against the plan and returns early ("No X concerns") when out of lane.
+
+| Item | Primary owner | Co-owners |
+|------|---------------|-----------|
+| **B1. Unstated assumptions** | `staff-backend-engineer` (runtime / SDK assumptions) | `staff-platform-engineer` (CI / build tools) |
+| **B2. Missing consumer analysis** | `staff-backend-engineer` (API consumers) | `staff-frontend-engineer`, `staff-product-engineer`, `staff-data-engineer` (per consumer type), `staff-analytics-engineer` (warehouse-consumer fitness — source shape suits modeling) |
+| **B3. Breaking intermediate states** | `staff-backend-engineer`, `staff-data-engineer` | `staff-platform-engineer` (deploy-window) |
+| **B4. Unresolved external dependencies** | `staff-backend-engineer` | — |
+| **B5, B6, B7, B13, B15. Judgment items** (evidence and verification, proportionality, scope creep, ambiguous instructions, effort section) | judgment (any reviewer) | — |
+| **B8. Missing scope** | `staff-product-engineer` (user-facing gaps), `staff-sdet` (test gaps) | `staff-data-engineer`, `staff-platform-engineer` (ops gaps) |
+| **B9. Phase independence** | `staff-platform-engineer` | `staff-backend-engineer` |
+| **B10. Test realism** | `staff-sdet` | `staff-product-engineer` (user-flow realism) |
+| **B11. Rollback strategy** | `staff-data-engineer`, `staff-platform-engineer`, `staff-backend-engineer` | `staff-sdet` (testability of rollback) |
+| **B12. Dependency risk** | `staff-backend-engineer` (runtime deps), `staff-platform-engineer` (CI / build deps) | — |
+| **B14. Missing decision rationale** | `staff-product-engineer` (user-impact decisions) | judgment (others) |
+| **B16. Tech-debt intersection** | `staff-product-engineer` (scope decision: fix now vs. defer) | domain reviewer for the affected area — whichever of `staff-backend-engineer`, `staff-frontend-engineer`, `staff-data-engineer`, or `staff-platform-engineer` owns the subsystem the tech debt lives in (surgical-fix feasibility) |
+| **I1–I4. Infrastructure** (env parity, idempotency, deployment ordering, secret/config provisioning) | `staff-platform-engineer` | `staff-data-engineer` (I2 migration-level idempotency); `ciso-reviewer` (I4 secret threat framing) |
+| **D1. Migration safety** | `staff-data-engineer` (pipeline impact, DDL form) | `staff-backend-engineer` (correctness), `staff-platform-engineer` (deploy-window, lock-budget) |
+| **D2. Migration reversibility** | `staff-data-engineer` | `staff-backend-engineer` |
+| **D3. Deploy-time compatibility** | `staff-data-engineer` | `staff-backend-engineer`, `staff-platform-engineer` |
+| **D4. Access control on new objects** | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
+| **D5. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
+| **F1. User-facing impact** | `staff-frontend-engineer` | `staff-product-engineer` |
+| **F2. State management** | `staff-frontend-engineer` | — |
+| **F3. Query contract mapping** | `staff-frontend-engineer` | `staff-backend-engineer`, `staff-product-engineer` (user-visible drift) |
+| **F4. Loading / error / empty states** | `staff-frontend-engineer` (implementation) | `staff-product-engineer` (UX-matches-spec), `staff-sdet` (per-state coverage) |
+| **F5. Auth state transitions** | `staff-frontend-engineer` | `staff-product-engineer`, `ciso-reviewer` (auth state security) |
+| **K1. Contract compatibility** | `staff-backend-engineer` | `staff-frontend-engineer` (client adaptation) |
+| **K2. Error handling completeness** | `staff-backend-engineer` | `staff-sdet` (error-path tests), `staff-frontend-engineer` (UI surfacing) |
+| **S1–S2. Threat model + defense in depth** | `ciso-reviewer` | — |
+| **S3–S5. Auth boundary, privilege escalation, data minimization** | `ciso-reviewer` | `staff-backend-engineer` |
+| **S6. Secret lifecycle** | `ciso-reviewer` | `staff-platform-engineer` (provisioning) |

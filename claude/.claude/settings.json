@@ -131,6 +131,27 @@
             "statusMessage": "Checking worktree enforcement..."
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-routing-read.sh",
+            "statusMessage": "Checking routing-read gate..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/log-routing-read.sh"
+          }
+        ]
       }
     ]
   },
