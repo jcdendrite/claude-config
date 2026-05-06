@@ -58,15 +58,15 @@ case "$SUBCOMMAND" in
   write)
     case "$SKILL" in
       code-review)
-        SESSION_ID=$(_resolve_session_id)
-        REPO_HASH=$(_resolve_repo_hash)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        REPO_HASH=$(_resolve_repo_hash) || exit 2
         mkdir -p "$HOME/.claude/review-markers"
         git diff --cached | sha256sum | awk '{print $1}' \
           > "$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       skill-review)
-        SESSION_ID=$(_resolve_session_id)
-        REPO_HASH=$(_resolve_repo_hash)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        REPO_HASH=$(_resolve_repo_hash) || exit 2
         mkdir -p "$HOME/.claude/skill-review-markers"
         # The pathspec is load-bearing: scopes the hash to SKILL.md diffs only,
         # matching what require-skill-review.sh checks at commit time.
@@ -74,14 +74,14 @@ case "$SUBCOMMAND" in
           > "$HOME/.claude/skill-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       plan-review)
-        SESSION_ID=$(_resolve_session_id)
-        REPO_HASH=$(_resolve_repo_hash)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        REPO_HASH=$(_resolve_repo_hash) || exit 2
         mkdir -p "$HOME/.claude/plan-review-markers"
         printf 'reviewed\n' > "$HOME/.claude/plan-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       ready-for-review)
-        SESSION_ID=$(_resolve_session_id)
-        REPO_HASH=$(_resolve_repo_hash)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        REPO_HASH=$(_resolve_repo_hash) || exit 2
         mkdir -p "$HOME/.claude/ready-for-review-markers"
         git rev-parse HEAD > "$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
@@ -94,17 +94,17 @@ case "$SUBCOMMAND" in
   activate)
     case "$SKILL" in
       plan-review)
-        SESSION_ID=$(_resolve_session_id)
+        SESSION_ID=$(_resolve_session_id) || exit 2
         mkdir -p "$HOME/.claude/.plan-review-active.d"
         touch "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
         ;;
       ready-for-review)
-        SESSION_ID=$(_resolve_session_id)
+        SESSION_ID=$(_resolve_session_id) || exit 2
         mkdir -p "$HOME/.claude/.ready-for-review-active.d"
         touch "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
         ;;
       respond-pr)
-        SESSION_ID=$(_resolve_session_id)
+        SESSION_ID=$(_resolve_session_id) || exit 2
         mkdir -p "$HOME/.claude/.respond-pr-active.d"
         touch "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
         ;;
@@ -117,16 +117,16 @@ case "$SUBCOMMAND" in
   deactivate)
     case "$SKILL" in
       plan-review)
-        SESSION_ID=$(_resolve_session_id)
+        SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
         rm -f "$HOME/.claude/.plan-review-routing-read.d/$SESSION_ID"
         ;;
       ready-for-review)
-        SESSION_ID=$(_resolve_session_id)
+        SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
         ;;
       respond-pr)
-        SESSION_ID=$(_resolve_session_id)
+        SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
         ;;
       *)
