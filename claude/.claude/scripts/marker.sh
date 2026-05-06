@@ -21,13 +21,22 @@ EOF
 }
 
 _resolve_session_id() {
-  local sid
-  sid=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null)
-  if [ -z "$sid" ]; then
-    printf 'marker.sh: SESSION_ID empty — capture-session-id.sh SessionStart hook did not run. Abort without writing a marker.\n' >&2
-    exit 2
-  fi
-  printf '%s' "$sid"
+  local sid pid
+  # Walk up the process ancestor chain looking for a session file. Direct
+  # invocation resolves in one step ($PPID = Claude Code PID). Script
+  # invocation from the Bash tool resolves in two steps ($PPID = Bash tool
+  # shell, grandparent = Claude Code PID). The loop handles any depth.
+  pid=$PPID
+  while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
+    sid=$(cat "$HOME/.claude/sessions/$pid" 2>/dev/null)
+    if [ -n "$sid" ]; then
+      printf '%s' "$sid"
+      return 0
+    fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' \t')
+  done
+  printf 'marker.sh: SESSION_ID empty — capture-session-id.sh SessionStart hook did not run. Abort without writing a marker.\n' >&2
+  exit 2
 }
 
 _resolve_repo_hash() {
