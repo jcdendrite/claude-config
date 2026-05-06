@@ -37,19 +37,11 @@ explicitly rejects in favor of imperative second-person. Keeping it
 enabled would present contradictory authoring guidance every time a
 skill was edited.
 
-This decision mirrors the reasoning behind the no-CI-eval-harness
-policy recorded in `feedback_ci_eval_harness_tradeoffs.md` — the same
-`claude -p` evaluation loop shape was rejected for CI on security,
-budget, and flakiness grounds. The local equivalent shares those
-tradeoffs.
-
 **Mechanism:** the `skill-creator@claude-plugins-official` entry is
 removed from `enabledPlugins` in `settings.json` entirely — not set to
 `false`. In this repo, `false` entries are quick-flip handles for
 plugins the user might want to enable for an occasional session;
 removing the entry means there's no foreseeable re-enable use case.
-`claude-md-management` and `claude-code-setup` retain their `false`
-entries as flip handles. If a future contribution to a broadly-shipped
-skill requires quantified trigger-accuracy work, add
-`"skill-creator@claude-plugins-official": true` back to `enabledPlugins`
-for that session.
+If a future contribution to a broadly-shipped skill requires quantified
+trigger-accuracy work, add `"skill-creator@claude-plugins-official": true`
+back to `enabledPlugins` for that session.
