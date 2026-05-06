@@ -118,6 +118,14 @@ Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill direc
 - **`@path` import syntax is for `CLAUDE.md` only.** The `@path/to/file` import pattern that works in `CLAUDE.md` files is not supported in `SKILL.md`.
 - **Duplicate rule text across skills intentionally.** When two skills need the same rule, copy it into both — do not extract it into a `_shared/` partial or similar abstraction. Duplication is deliberate: it keeps each skill independently readable and avoids brittle cross-skill coupling. If you find yourself wanting a shared partial, that is a signal to reconsider whether the skills should be merged, not a signal to add an include mechanism.
 
+#### Project-specific layers
+
+`/plan-review` and `/code-review` auto-load a project-specific layer if one exists in the consuming repo — so a project can extend the base checklist without forking the public skill body.
+
+- **Location:** `.claude/skills/code-review-<project>/SKILL.md` or `.claude/skills/plan-review-<project>/SKILL.md`, placed in the consuming repo. The `<project>` token is freeform; only the prefix (`code-review-` or `plan-review-`) is load-bearing.
+- **Frontmatter:** match the shape of any skill in `claude/.claude/skills/` (`name`, `description`, `user-invocable`). The parent invokes the layer via the Skill tool — not via description-based auto-trigger, which doesn't fire from inside a running skill (design rationale in [`docs/design-decisions.md`](docs/design-decisions.md)).
+- **Behavior:** glob runs from the repo root (`git rev-parse --show-toplevel`). Single match → invoked and merged into the base checklist. Multiple matches → review stops — that's a config error in the consuming project, not a review item the skill resolves. Zero matches → proceeds without a layer.
+
 ### Reviewer subagents
 
 Eight stack-agnostic reviewer personas in `claude/.claude/agents/`, spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`).

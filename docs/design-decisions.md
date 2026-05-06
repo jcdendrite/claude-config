@@ -1,6 +1,6 @@
 # Design Decisions
 
-Seven non-obvious choices and the reasoning behind them.
+Eight non-obvious choices and the reasoning behind them.
 
 ## 1. Hook-enforced gates over advisory instructions
 
@@ -29,3 +29,7 @@ Tier 1 is always on and requires no setup: a regex blocks `[A-Z]{2,}-\d+` tokens
 ## 7. Worktree-required as a per-project sentinel
 
 Worktree enforcement is activated per-repo by committing a `.claude/worktree-required` file. It is not a global setting because not every repo needs isolation: a small personal script with one developer has no concurrent-session race condition to guard against, and requiring worktrees there just adds friction. A multi-session feature branch with parallel Claude Code instances does need the guard. The committed sentinel means the enforcement decision lives in source control alongside the code it protects — the same `git pull` that brings the sentinel to a new machine activates enforcement there too, without any per-machine configuration.
+
+## 8. Project-layer composition via prose-pointer + glob
+
+`/code-review` and `/plan-review` each check for a project-specific layer at skill start, using an explicit prose pointer that globs for `.claude/skills/<parent>-*/SKILL.md` from the repo root and invokes a single match via the Skill tool. The mechanism is a prose pointer rather than a description-based auto-trigger because an empirical test (documented in `claude/.claude/skills/code-review/REFERENCES.md`) confirmed that auto-trigger does not fire from inside a running skill — a project-specific layer depending on description-based triggering would silently skip on every review. The glob convention generalizes across projects without editing the public skill body on each onboarding; hardcoding project names in the base skill was rejected because it would require public-repo edits to add each new project, and config-file indirection was rejected because it adds no value over the established naming convention. The tradeoff: the consuming repo must follow the `<parent>-<project>/SKILL.md` naming convention exactly — a typo produces a zero-match silent skip rather than a load error.
