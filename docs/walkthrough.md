@@ -8,9 +8,9 @@ This transcript shows a realistic contribution cycle enforced by claude-config h
 
 **User:** Add a rate limit to the user export endpoint — 10 requests per minute per org, return 429 with Retry-After.
 
-**Claude:** I'll write a plan before touching any code.
+**Claude:** I'll run `/plan-it` before touching any code.
 
-*Claude writes `.claude/plans/rate-limit-export.md` with concrete steps: identify the export handler in `src/routes/exports.ts`, add a Redis-backed rate limiter using the existing `createRateLimiter` factory, wire the 429 response with `Retry-After`, add unit tests for the deny path.*
+*`/plan-it` walks through Discovery, Codebase Exploration, Clarifying Questions, and Architecture Design, then writes `.claude/plans/rate-limit-export.md` with concrete steps: identify the export handler in `src/routes/exports.ts`, add a Redis-backed rate limiter using the existing `createRateLimiter` factory, wire the 429 response with `Retry-After`, add unit tests for the deny path.*
 
 *`require-plan-review.sh` fires on the next `Edit` call.*
 
