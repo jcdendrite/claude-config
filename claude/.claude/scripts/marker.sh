@@ -15,8 +15,8 @@ Subcommands:
 
 Valid (subcommand, skill) combinations:
   write       code-review | skill-review | plan-review | ready-for-review
-  activate    plan-review | ready-for-review | respond-pr
-  deactivate  plan-review | ready-for-review | respond-pr
+  activate    plan-review | ready-for-review | respond-pr | memory-skill
+  deactivate  plan-review | ready-for-review | respond-pr | memory-skill
 EOF
 }
 
@@ -117,8 +117,13 @@ case "$SUBCOMMAND" in
         mkdir -p "$HOME/.claude/.respond-pr-active.d"
         touch "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
         ;;
+      memory-skill)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        mkdir -p "$HOME/.claude/.memory-skill-active.d"
+        touch "$HOME/.claude/.memory-skill-active.d/$SESSION_ID"
+        ;;
       *)
-        printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr\n" "$SKILL" >&2
+        printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -138,8 +143,12 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
         ;;
+      memory-skill)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        rm -f "$HOME/.claude/.memory-skill-active.d/$SESSION_ID"
+        ;;
       *)
-        printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr\n" "$SKILL" >&2
+        printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr, memory-skill\n" "$SKILL" >&2
         exit 2
         ;;
     esac

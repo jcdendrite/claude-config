@@ -38,9 +38,11 @@ class TestMarkerScriptSessionMissing:
             ["activate", "plan-review"],
             ["activate", "ready-for-review"],
             ["activate", "respond-pr"],
+            ["activate", "memory-skill"],
             ["deactivate", "plan-review"],
             ["deactivate", "ready-for-review"],
             ["deactivate", "respond-pr"],
+            ["deactivate", "memory-skill"],
         ],
     )
     def test_exits_2_when_session_file_missing(self, isolated_home, git_repo, args):
@@ -92,6 +94,22 @@ class TestMarkerScriptHappyPath:
         active_dir.mkdir(parents=True)
         (active_dir / sid).touch()
         result = _run(["deactivate", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert not (active_dir / sid).exists()
+
+    def test_activate_memory_skill_creates_active_marker(self, isolated_home, git_repo):
+        sid = self._seed_session(isolated_home)
+        result = _run(["activate", "memory-skill"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        active_file = isolated_home / ".claude" / ".memory-skill-active.d" / sid
+        assert active_file.exists()
+
+    def test_deactivate_memory_skill_removes_active_marker(self, isolated_home, git_repo):
+        sid = self._seed_session(isolated_home)
+        active_dir = isolated_home / ".claude" / ".memory-skill-active.d"
+        active_dir.mkdir(parents=True)
+        (active_dir / sid).touch()
+        result = _run(["deactivate", "memory-skill"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert not (active_dir / sid).exists()
 

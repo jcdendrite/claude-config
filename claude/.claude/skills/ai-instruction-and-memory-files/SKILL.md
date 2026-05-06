@@ -21,11 +21,20 @@ description: >
 user-invocable: false
 ---
 
+## Step 0 — Activate gate session
+
+<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md to verify it matches require-memory-skill.sh's active-marker layout. Do not duplicate elsewhere; the test re-reads it from here. -->
+```
+~/.claude/scripts/marker.sh activate memory-skill
+```
+
+While active, `require-memory-skill.sh` bypasses for this session (<60 min freshness; mtime refreshed on each pass). If the command fails (empty `SESSION_ID`), abort — `capture-session-id.sh` SessionStart hook did not run, and every gated memory write below will be blocked.
+
 # AI Instruction & Memory Files — Architecture
 
-The facts below come from primary sources (Anthropic docs, agents.md
-standard). Treat them as durable context: when CLAUDE.md / AGENTS.md
-questions come up, start here rather than re-researching.
+The facts below come from primary sources (URLs in co-located REFERENCES.md).
+When CLAUDE.md / AGENTS.md questions arise, start here; open REFERENCES.md
+only to verify a specific URL or quote.
 
 ## 1. Claude Code loads CLAUDE.md only — NOT AGENTS.md
 
@@ -181,11 +190,11 @@ the user is and how they prefer to collaborate, feedback calibration
 (corrections **and** validated judgment calls) with the *why* story,
 time-sensitive project context, and references to external systems.
 
-## 6. Primary sources
+## Final step — Deactivate gate session
 
-- [Claude Code — How Claude remembers your project](https://code.claude.com/docs/en/memory)
-- [Claude Code — Best Practices](https://code.claude.com/docs/en/best-practices)
-- [claude-code CHANGELOG.md](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)
-- [agents.md standard](https://agents.md)
-- [Context Rot — Chroma Research](https://research.trychroma.com/context-rot)
-- [Writing a good CLAUDE.md — HumanLayer](https://www.humanlayer.dev/blog/writing-a-good-claude-md)
+<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md to verify it matches require-memory-skill.sh's active-marker cleanup. Do not duplicate elsewhere; the test re-reads it from here. -->
+```
+~/.claude/scripts/marker.sh deactivate memory-skill
+```
+
+Removes this session's bypass marker. Orphaned markers (if the skill errors before reaching this step) expire automatically after 60 minutes.

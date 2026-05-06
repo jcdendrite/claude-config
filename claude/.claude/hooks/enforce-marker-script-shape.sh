@@ -8,7 +8,7 @@
 # to fire this hook on ALL Bash commands. The internal grep is the actual
 # gate. The "if" field is a hint only.
 #
-# Any Bash command containing "marker.sh" must be one of the 10 valid
+# Any Bash command containing "marker.sh" must be one of the 12 valid
 # invocation shapes exactly. No chains, no env-var prefixes, no redirects,
 # no bash wrappers, no extra args. This prevents prompt-injection attacks
 # that chain marker.sh invocations with malicious commands and rely on the
@@ -48,7 +48,7 @@ fi
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
 # No bash wrapper, no env-var prefix, no chain operator, no redirect, no
 # extra args after the skill name.
-VALID_PATTERN='^(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr))[[:space:]]*$'
+VALID_PATTERN='^(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill))[[:space:]]*$'
 
 if printf '%s' "$TRIMMED" | grep -qE "$VALID_PATTERN"; then
   exit 0
@@ -66,9 +66,11 @@ Valid shapes:
   ~/.claude/scripts/marker.sh activate plan-review
   ~/.claude/scripts/marker.sh activate ready-for-review
   ~/.claude/scripts/marker.sh activate respond-pr
+  ~/.claude/scripts/marker.sh activate memory-skill
   ~/.claude/scripts/marker.sh deactivate plan-review
   ~/.claude/scripts/marker.sh deactivate ready-for-review
   ~/.claude/scripts/marker.sh deactivate respond-pr
+  ~/.claude/scripts/marker.sh deactivate memory-skill
 
 No chains (&&, ||, ;), env-var prefixes, bash wrappers, redirects, or extra args."
 REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
