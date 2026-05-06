@@ -57,10 +57,19 @@ Confirm with the user if unsure which branch to clean up.
 ## 1. Remove worktree (if present)
 
 `git worktree` is on the main-tree allowlist, so this runs without CWD
-anchoring:
+anchoring.
+
+Do not construct the path from the branch name — slashes in branch names
+become directory separators, not dashes. Look up the actual path:
 
 ```bash
-git worktree remove .claude/worktrees/<BRANCH> --force 2>/dev/null || true
+git worktree list | grep -F "[<BRANCH>]" | awk '{print $1}'
+```
+
+If that returns a path, remove it:
+
+```bash
+git worktree remove <WORKTREE_PATH> --force 2>/dev/null || true
 ```
 
 `--force` handles the case where files are open or uncommitted changes
