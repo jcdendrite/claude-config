@@ -346,6 +346,41 @@ class TestDefaultBranchFastForward:
         assert result.returncode == 0
         assert "fast-forwarded" in result.stdout or "already current" in result.stdout
 
+    def test_fast_forwards_while_on_feature_branch(self, tmp_path, fake_gh):
+        """ff-update must not touch the currently checked-out feature branch."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/ff-from-feature")
+        subprocess.run(["git", "branch", "-D", "feat/ff-from-feature"], cwd=bare, check=True)
+
+        # Advance the remote default branch
+        bare_clone = tmp_path / "clone"
+        subprocess.run(["git", "clone", "-q", str(bare), str(bare_clone)], check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=bare_clone, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=bare_clone, check=True)
+        _commit(bare_clone, "advance remote")
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=bare_clone, check=True)
+
+        # Stay on an unrelated feature branch (simulates the common real-world invocation)
+        subprocess.run(["git", "checkout", "-b", "feat/still-open"], cwd=local, check=True)
+        _commit(local, "open branch commit")
+        open_sha_before = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=local, capture_output=True, text=True
+        ).stdout.strip()
+
+        env = fake_gh({"feat/ff-from-feature": {"number": 61, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        # Default branch was advanced
+        assert "fast-forwarded" in result.stdout or "already current" in result.stdout
+        # The currently checked-out branch was NOT moved
+        open_sha_after = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=local, capture_output=True, text=True
+        ).stdout.strip()
+        assert open_sha_before == open_sha_after, (
+            "fast-forward must not mutate the currently checked-out branch"
+        )
+
 
 class TestCurrentlyOnCandidateBranch:
     """Case 9: currently checked-out branch is a candidate — skipped; others proceed."""

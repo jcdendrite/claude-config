@@ -211,11 +211,13 @@ for BRANCH in "${MERGED_BRANCHES[@]}"; do
     echo "    worktree:       not found"
   fi
 
-  # Step 2: Fetch and prune — detect auto-deleted remote branches
+  # Step 2: Fetch and prune — detect auto-deleted remote branches.
+  # After --prune, check the tracking ref directly; substring grep on fetch output
+  # can't distinguish "origin/feat/foo" from "origin/feat/foo-v2".
   FETCH_OUTPUT=$(git fetch --prune 2>&1 || true)
   REMOTE_AUTO_PRUNED=0
   if echo "$FETCH_OUTPUT" | grep -qF "[deleted]" && \
-     echo "$FETCH_OUTPUT" | grep -qF "origin/${BRANCH}"; then
+     ! git rev-parse --verify "refs/remotes/origin/${BRANCH}" &>/dev/null; then
     REMOTE_AUTO_PRUNED=1
   fi
 
@@ -259,7 +261,16 @@ elif [ "$LOCAL_DEFAULT_SHA" = "$REMOTE_DEFAULT_SHA" ]; then
   echo "Default branch: already current"
 else
   COMMIT_COUNT=$(git rev-list --count "${DEFAULT_BRANCH}..origin/${DEFAULT_BRANCH}" 2>/dev/null || echo 0)
-  if git merge --ff-only "origin/${DEFAULT_BRANCH}" -q 2>/dev/null; then
+  # When on the default branch, merge --ff-only updates both the ref and the working tree.
+  # When on a feature branch, use a fetch refspec to update the default branch ref
+  # without touching the currently checked-out branch.
+  CURRENT_HEAD_FOR_FF=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  if [ "$CURRENT_HEAD_FOR_FF" = "$DEFAULT_BRANCH" ]; then
+    FF_CMD=(git merge --ff-only "origin/${DEFAULT_BRANCH}" -q)
+  else
+    FF_CMD=(git fetch origin "${DEFAULT_BRANCH}:${DEFAULT_BRANCH}" -q)
+  fi
+  if "${FF_CMD[@]}" 2>/dev/null; then
     echo "Default branch: fast-forwarded ${COMMIT_COUNT} commit(s)"
   else
     echo "Default branch: could not fast-forward (manual pull needed)"
