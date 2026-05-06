@@ -49,8 +49,6 @@ Read the plan and classify which domains it touches. When using an agent to expl
 
 If a project-specific layer exists for this skill, invoke it now and merge its checklist into the items below. Glob for `.claude/skills/plan-review-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, invoke it via the Skill tool. If multiple match, list them and stop — that's a config error in the project, not a review you can resolve. If none match, proceed without a layer.
 
-Why this is here: description-based auto-trigger does not fire from inside a running skill (see `code-review/REFERENCES.md` F-04). Without an explicit invocation, the project layer's items — including security-critical ones (RLS weakening, auth-tier flips, admin-only-table access) — are silently skipped.
-
 ## Step 3 — Plan structure requirements
 
 **NO PLACEHOLDERS.** Every step must name the actual file, function, or change. "TBD," "based on findings," and "implement later" defer decisions to execution time — when context is thinnest. Check: no conditional language in action items.
@@ -230,8 +228,6 @@ End with a verdict: **Approve**, **Approve with changes** (list what), or **Requ
 
 ## Record review completion + deactivate
 
-After delivering the verdict, write the completion marker and remove the active-session marker.
-
 Write the completion marker only when the verdict is **Approve** or **Approve with changes** and all required changes have been applied to the plan. Do not write it on **Request changes** — write it only after the plan author revises the plan and a clean re-review completes.
 
 <!-- HOOK_TEST_FIXTURE: record-completion — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's completion-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
@@ -245,5 +241,3 @@ Then remove the active-session marker:
 ```
 SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.plan-review-active.d/$SESSION_ID" && rm -f "$HOME/.claude/.plan-review-routing-read.d/$SESSION_ID"
 ```
-
-Removes only this session's files. Don't manually clean up if the skill errors before this step — the hook's 60-minute staleness cutoff handles orphans.

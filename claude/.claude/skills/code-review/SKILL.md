@@ -6,8 +6,6 @@ allowed-tools: Read, Grep, Glob, Bash
 
 Review the code that was just written or modified. Act as a principal engineer reviewing a junior engineer's work. Be thorough but not pedantic.
 
-**Core principle: review the ripple effects, not just the change.** The checklist catches in-change issues; the ripple-effect triage step (end) catches cross-boundary impacts — a migration breaking frontend workflows, an API shape change breaking consumers, a rename breaking callers in another domain.
-
 ## Step 0 — Detect changed domains
 
 Before reviewing, determine which files were changed (from context, git diff, or the conversation). Classify each changed file into one or more domains:
@@ -22,13 +20,9 @@ Before reviewing, determine which files were changed (from context, git diff, or
 
 Apply the **Base checklist** always. Apply each **Domain checklist** only when at least one changed file matches that domain.
 
-Schema-touching diffs route three ways in parallel — backend (designs the schema), data infrastructure (operational / pipeline impact, DDL execution shape), analytics modeling (ELT-readiness review). Each agent self-scopes against the diff and returns early when out of lane.
-
 ## Step 0.5 — Load project-specific layer
 
 If a project-specific layer exists for this skill, invoke it now and merge its checklist into the items below. Glob for `.claude/skills/code-review-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, invoke it via the Skill tool. If multiple match, list them and stop — that's a config error in the project, not a review you can resolve. If none match, proceed without a layer.
-
-Why this is here: description-based auto-trigger does not fire from inside a running skill (see `REFERENCES.md` F-04). Without an explicit invocation, the project layer's items — including any project-specific security checks — are silently skipped.
 
 ## Step 1 — Implementation-fitness gate
 
@@ -172,8 +166,6 @@ For each finding, state:
 If no issues are found, say: "No issues found" — do not pad with praise or generic observations.
 
 ## Ripple effect triage
-
-Same escalation logic as plan-review's Reviewer roles — repeated because skills load on demand, not because the rule differs.
 
 After the implementation-fitness gate and the checklist review, consider whether the change crosses system boundaries in a way that exceeds your own judgment depth.
 
