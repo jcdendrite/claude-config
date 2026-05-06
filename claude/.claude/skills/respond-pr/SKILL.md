@@ -13,7 +13,7 @@ Fetch all review comments on the current branch's open pull request and address 
 0. **Enable hook bypass.** Run:
    <!-- HOOK_TEST_FIXTURE: enable-bypass — the hook-alignment test suite reads this exact fenced block to verify it creates the marker layout require-respond-pr.sh expects. Do not duplicate elsewhere; the test re-reads it from here. -->
    ```
-   SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID") && [ -n "$SESSION_ID" ] && mkdir -p "$HOME/.claude/.respond-pr-active.d" && touch "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
+   ~/.claude/scripts/marker.sh activate respond-pr
    ```
    The `require-respond-pr.sh` PreToolUse hook bypasses while THIS session's marker is fresh (<60 min) and refreshes its mtime on each bypass so long runs don't hit the staleness cutoff. Per-session keying prevents parallel respond-pr sessions from thrashing on cleanup or leaking bypass to unrelated sessions. If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; do not proceed without the marker, since every gated `gh` call below will be blocked.
 
@@ -72,7 +72,7 @@ Fetch all review comments on the current branch's open pull request and address 
 7. **Remove this session's hook bypass marker:**
    <!-- HOOK_TEST_FIXTURE: disable-bypass — the hook-alignment test suite reads this exact fenced block to verify it removes the marker the enable step created. Do not duplicate elsewhere; the test re-reads it from here. -->
    ```
-   SESSION_ID=$(cat "$HOME/.claude/sessions/$PPID" 2>/dev/null) && [ -n "$SESSION_ID" ] && rm -f "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
+   ~/.claude/scripts/marker.sh deactivate respond-pr
    ```
    Removes only this session's file. If the skill errors out before reaching this step, don't manually clean up — the hook's 60-minute staleness cutoff handles the orphan automatically.
 

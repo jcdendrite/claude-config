@@ -14,7 +14,6 @@ from helpers import (
     extract_skill_command,
     marker_path,
     run_hook,
-    run_hook_reason,
     run_skill_command,
     staged_diff_hash,
     write_marker,
@@ -226,68 +225,3 @@ class TestRequireCodeReview:
         non_repo.mkdir()
         assert run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=non_repo) == "allow"
 
-    # The marker-chain note is appended to the deny reason ONLY when
-    # the command shows a redirect into ~/.claude/review-markers/...
-    # chained before `git commit`. This is the precise failure mode
-    # where the agent chains marker-seed && git commit in one Bash
-    # call: PreToolUse hooks fire before the chained subshell runs,
-    # so the hook reads the marker file from disk before the chained
-    # marker-write executes. Three positive cases (each chain
-    # operator), two negative cases (plain commit, and commit message
-    # mentioning `review-markers` literally), and one realistic case
-    # using the canonical marker-recipe shape from SKILL.md.
-
-    def test_chained_marker_amp_commit_appends_note(self, isolated_home, git_repo):
-        cmd = "echo abc > ~/.claude/review-markers/foo.bar && git commit -m work"
-        reason = run_hook_reason(CODE_REVIEW_HOOK, bash_input(cmd), cwd=git_repo)
-        assert reason is not None
-        assert "PreToolUse hooks evaluate" in reason
-        assert "Submit the marker-seed as its own Bash call" in reason
-
-    def test_chained_marker_semicolon_commit_appends_note(self, isolated_home, git_repo):
-        cmd = "echo abc > ~/.claude/review-markers/foo.bar ; git commit -m work"
-        reason = run_hook_reason(CODE_REVIEW_HOOK, bash_input(cmd), cwd=git_repo)
-        assert reason is not None
-        assert "PreToolUse hooks evaluate" in reason
-
-    def test_chained_marker_or_commit_appends_note(self, isolated_home, git_repo):
-        """`||` chain (run-if-fail) is unusual but parses the same way —
-        note still appended so the agent gets the hint."""
-        cmd = "echo abc > ~/.claude/review-markers/foo.bar || git commit -m work"
-        reason = run_hook_reason(CODE_REVIEW_HOOK, bash_input(cmd), cwd=git_repo)
-        assert reason is not None
-        assert "PreToolUse hooks evaluate" in reason
-
-    def test_plain_commit_no_marker_chain_note(self, isolated_home, git_repo):
-        """No chained redirect → note not appended; deny stays compact."""
-        reason = run_hook_reason(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo)
-        assert reason is not None
-        assert "PreToolUse hooks evaluate" not in reason
-        assert "Submit the marker-seed" not in reason
-
-    def test_review_markers_in_commit_message_no_note(self, isolated_home, git_repo):
-        """Commit message mentioning `review-markers` literally must NOT
-        trigger the note — pattern requires `>` redirect *before* git commit,
-        which this command doesn't have. Critical false-positive guard."""
-        cmd = 'git commit -m "fix review-markers leak"'
-        reason = run_hook_reason(CODE_REVIEW_HOOK, bash_input(cmd), cwd=git_repo)
-        assert reason is not None
-        assert "PreToolUse hooks evaluate" not in reason
-
-    def test_canonical_marker_recipe_chained_with_commit_appends_note(self, isolated_home, git_repo):
-        """Realistic positive case: the actual canonical marker-seed recipe
-        from SKILL.md (multi-step pipeline ending in a redirect to a
-        review-markers path) chained to `git commit`. This mirrors the
-        exact shape an agent would produce by following the documented
-        recipe and then chaining their commit, which is the failure
-        mode the gate exists to teach against."""
-        cmd = (
-            'SESSION_ID=abc && mkdir -p ~/.claude/review-markers && '
-            'REPO_HASH=$(git rev-parse --show-toplevel | tr -d "\\n" | sha256sum | awk \'{print $1}\') && '
-            'git diff --cached | sha256sum | awk \'{print $1}\' '
-            '> ~/.claude/review-markers/$REPO_HASH.$SESSION_ID && '
-            'git commit -m "work"'
-        )
-        reason = run_hook_reason(CODE_REVIEW_HOOK, bash_input(cmd), cwd=git_repo)
-        assert reason is not None
-        assert "PreToolUse hooks evaluate" in reason

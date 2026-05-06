@@ -107,6 +107,11 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/enforce-marker-script-shape.sh",
+            "statusMessage": "Checking marker.sh invocation shape..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/require-worktree-for-git-writes.sh",
             "statusMessage": "Checking worktree enforcement..."
           }
@@ -178,6 +183,18 @@
   },
   "model": "opusplan",
   "permissions": {
+    "allow": [
+      "Bash(~/.claude/scripts/marker.sh write code-review)",
+      "Bash(~/.claude/scripts/marker.sh write skill-review)",
+      "Bash(~/.claude/scripts/marker.sh write plan-review)",
+      "Bash(~/.claude/scripts/marker.sh write ready-for-review)",
+      "Bash(~/.claude/scripts/marker.sh activate plan-review)",
+      "Bash(~/.claude/scripts/marker.sh activate ready-for-review)",
+      "Bash(~/.claude/scripts/marker.sh activate respond-pr)",
+      "Bash(~/.claude/scripts/marker.sh deactivate plan-review)",
+      "Bash(~/.claude/scripts/marker.sh deactivate ready-for-review)",
+      "Bash(~/.claude/scripts/marker.sh deactivate respond-pr)"
+    ],
     "deny": [
       "Bash(sudo *)",
       "Bash(sudo)",

@@ -15,6 +15,7 @@ from pathlib import Path
 HOOKS_DIR = Path(__file__).resolve().parent.parent
 
 SKILLS_DIR = HOOKS_DIR.parent / "skills"
+SCRIPTS_DIR = HOOKS_DIR.parent / "scripts"
 
 # SKILL.md fences may be indented when the fixture sits inside a
 # numbered list (e.g. respond-pr's "0. **Enable hook bypass.**"). The
@@ -247,6 +248,11 @@ def write_plan_review_routing_read_marker(home: Path, session_id: str) -> Path:
 
 def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     """Run a SKILL.md-extracted bash command in a sandboxed $HOME."""
+    scripts_dir = isolated_home / ".claude" / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    marker_link = scripts_dir / "marker.sh"
+    if not marker_link.exists():
+        marker_link.symlink_to(SCRIPTS_DIR / "marker.sh")
     subprocess.run(
         ["bash", "-c", command],
         cwd=cwd,
