@@ -29,14 +29,19 @@ class TestMarkerLibRepoHash:
             f"_marker_lib_repo_hash produced {actual!r}, expected {expected!r}"
         )
 
-    def test_no_trailing_newline_in_hash_input(self):
-        # Verify that the hash equals the Python sha256 of the bare path bytes,
-        # confirming printf '%s' does not add a trailing newline to the input.
+    def test_trailing_newline_produces_different_hash(self):
+        # If printf '%s' ever starts emitting a trailing newline, the hash would
+        # match sha256("/tmp/foo\n") instead of sha256("/tmp/foo"). Assert the
+        # two are distinct so this test fails if the recipe regresses.
         path = "/tmp/foo"
-        expected = hashlib.sha256(path.encode()).hexdigest()
+        hash_without_newline = hashlib.sha256(path.encode()).hexdigest()
+        hash_with_newline = hashlib.sha256((path + "\n").encode()).hexdigest()
         actual = _run_lib_fn(f'_marker_lib_repo_hash "{path}"')
-        assert actual == expected, (
-            f"_marker_lib_repo_hash produced {actual!r}, expected {expected!r}"
+        assert actual == hash_without_newline, (
+            f"_marker_lib_repo_hash produced {actual!r}, expected no-newline hash {hash_without_newline!r}"
+        )
+        assert actual != hash_with_newline, (
+            "hash matched the newline-suffixed input — printf '%s' may be adding a trailing newline"
         )
 
     def test_matches_inline_recipe(self):
