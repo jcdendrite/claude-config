@@ -4,11 +4,25 @@ Portable [Claude Code](https://claude.ai/claude-code) global configuration: cust
 
 Maintained by [Cordova Strategy](https://cordovastrategy.com).
 
+## Philosophy
+
+**Why this repo exists:**
+
+Working with a variety of clients from very early stage to enterprise-level, I wanted to use a flexible but reliable setup for Claude Code to help me get through large chunks of work efficiently and cost-effectively: from security audits of vibe-coded code bases to building out standard features, adding testing infrastructure, and enforcing quality against industry-standard and best practices checklists. I wanted to stop fixing the same errors that AI agents kept encountering and really focus my time on the nuanced technical challenges that need human judgment. 
+
+**How this repo is different from others:**
+
+AI agents are powerful but probabilistic. They will frequently gaslight you, confidently (even top-class models), and draw incorrect conclusions from prose. As a close friend of mine put it, AI is great at summarization but not synthesis. I wanted to add a layer of *determinism* on top of agents' inherently probabilistic judgement to enforce quality and prevent repetitive errors where I could. To achieve these goals, I added safeguards in this repo with *hooks* and *markers*.
+
+I also wanted to encode industry-standard, best practices in this repo. LLMs are trained on the corpus of the internet and are biased by the loudest and most common viewpoints. As a former neuroscience academic, I believe in the rigor of research and scientific thinking, weighing pros and cons and adhering to evidence-based approaches. You'll see that perspective represented in the content of the *skills* and *instructions* in this repo, with *references* to primary sources that converge on tried-and-true guidelines on how to design and write good software.
+
+**How this works in practice:**
+
 Claude Code without enforcement will claim code is done before tests pass, skip the review step when it judges a change "too small," write to the main worktree when a concurrent session is already staged there, and paste client codenames directly into commit messages and PR bodies. claude-config makes these mistakes structurally impossible rather than relying on prompt instructions.
 
 A CLAUDE.md instruction says "you should run code-review before committing." A PreToolUse hook says "the commit is denied until code-review ran on this exact diff in this session." This distinction is the core design choice: enforce at the tool-call boundary, not at the prompt layer, because prompt-layer instructions are advisory — the model can disregard them on any change it judges simple enough not to need review.
 
-claude-config is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. claude-config ships the enforcement harness; most hand-rolled `~/.claude/` configs improvise the patterns claude-config systematizes: per-session marker keying, specialist reviewer routing, and three-tier redaction.
+claude-config is a _workflow-enforcement layer_ — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. claude-config ships the enforcement harness; most hand-rolled `~/.claude/` configs improvise the patterns claude-config systematizes: per-session marker keying, specialist reviewer routing, and three-tier redaction.
 
 ## Requirements
 
