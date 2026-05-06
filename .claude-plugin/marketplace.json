@@ -9,7 +9,7 @@
     {
       "name": "lovable-knowledge",
       "description": "How Lovable's UI knowledge fields work (Project Knowledge vs Workspace Knowledge), the .lovable/*.md repo-mirror workflow, content scope split, precedence, character limits, and review criteria for .lovable/** changes.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": {
         "name": "Cordova Strategy"
       },

@@ -19,11 +19,7 @@ user-invocable: false
 
 # Lovable Knowledge — Architecture & Review
 
-The facts below come from primary sources ([Lovable Docs — Knowledge](https://docs.lovable.dev/features/knowledge)).
-
 ## 1. The four sources Lovable loads
-
-> "When you send a message, Lovable reads your project knowledge, workspace knowledge, and project code... It also looks at instruction files in your project's GitHub repository such as AGENTS.md or CLAUDE.md."
 
 Effective priority order:
 
@@ -32,17 +28,11 @@ Effective priority order:
 3. **AGENTS.md / CLAUDE.md** (repo files — AGENTS.md has the explicit "always read regardless of session length" guarantee)
 4. **Project code**
 
-> "Lovable is encouraged to prioritize the instructions defined in project knowledge, since they apply specifically to the current project."
-
-> "Root-level AGENTS.md files are always read by the Lovable agent regardless of session length."
-
 All four are loaded every session. Lovable docs warn that in very long
 conversations instructions can drift; the "always read" guarantee for
 AGENTS.md is the defense-in-depth.
 
 ## 2. Project Knowledge vs Workspace Knowledge
-
-Per Lovable docs:
 
 | | Workspace Knowledge | Project Knowledge |
 |---|---|---|
@@ -50,8 +40,6 @@ Per Lovable docs:
 | Use for | Coding style, naming, libraries/frameworks, architectural patterns, testing requirements, lint rules, brand/voice, **Lovable-platform behavior** | What the app does, user personas, schema/tables, architecture decisions, domain terminology, project-specific constraints, design specifics, security/compliance, links to important references |
 | Precedence | — | **Wins on conflict** |
 | Char limit | 10,000 | 10,000 |
-
-> "Keep shared rules in workspace knowledge and project-specific details in project knowledge to avoid confusion and maximize clarity."
 
 When a rule could plausibly fit in either: ask whether it would apply to
 a *different* project in the same Lovable workspace. If yes →
@@ -110,8 +98,3 @@ When reviewing a PR that touches `.lovable/*.md`:
    `workspace-knowledge.md` changed, has the "Last synced" date been
    bumped in the same PR? Does the PR description note that the human
    needs to paste the merged content into the Lovable UI?
-
-## 6. Primary sources
-
-- [Lovable Docs — Knowledge](https://docs.lovable.dev/features/knowledge)
-- [agents.md standard](https://agents.md) (cross-agent AGENTS.md context)
