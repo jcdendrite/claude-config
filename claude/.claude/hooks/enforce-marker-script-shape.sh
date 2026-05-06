@@ -33,6 +33,17 @@ fi
 # Strip leading/trailing whitespace
 TRIMMED=$(printf '%s' "$COMMAND" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
 
+# Reject path traversal sequences before the allowlist check. The VALID_PATTERN
+# character class permits '.' and '/', which together admit '../' segments.
+# An explicit '..' pre-check closes that gap cleanly.
+if printf '%s' "$TRIMMED" | grep -qF '..'; then
+  TRUNCATED=$(printf '%s' "$TRIMMED" | cut -c1-80)
+  REASON="marker.sh invocation denied (path traversal '..' detected). Command (truncated): $TRUNCATED"
+  REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+  exit 0
+fi
+
 # Strict allowlist. Tilde form (~/.claude/scripts/marker.sh) and absolute
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
 # No bash wrapper, no env-var prefix, no chain operator, no redirect, no

@@ -138,3 +138,7 @@ class TestEnforceMarkerScriptShape:
     def test_relative_path_denied(self):
         cmd = "./marker.sh write code-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_path_traversal_denied(self):
+        cmd = "/home/evil/../../home/jared/.claude/scripts/marker.sh write code-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
