@@ -1,4 +1,4 @@
-"""Pure helpers and path constants shared across hook and script test files.
+"""Pure helpers and path constants shared across hook, skill, and script test files.
 
 No pytest decorators here — this is a plain Python module. Import
 explicitly from each test file that needs these symbols.
