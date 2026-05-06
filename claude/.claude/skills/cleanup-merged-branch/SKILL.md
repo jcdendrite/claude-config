@@ -15,7 +15,7 @@ argument-hint: "[branch-name]"
 
 # Cleanup merged branch
 
-This repo squash-merges PRs and enforces worktree discipline. Two
+This repo squash-merges PRs and enforces worktree discipline. Three
 constraints shape every step:
 
 - **Always use `git branch -D`** (force), not `-d`. Squash merges don't
@@ -25,6 +25,10 @@ constraints shape every step:
   subshell runs, so `cd /worktree && git push` doesn't work — the hook
   reads the session's prior CWD, not the inline `cd`. Run `cd` as its
   own Bash call, then the git op in a follow-up call.
+- **Steps 4 and 5 require executing from inside a linked worktree.**
+  Both `git push --delete` and `git merge --ff-only` are blocked from
+  the main tree by the worktree-required hook. If no worktree exists
+  for this branch, Step 4 creates a temp one; Step 5 reuses it.
 
 ## Before you begin — anchor CWD
 
@@ -103,12 +107,6 @@ cd .claude/worktrees/_cleanup-tmp-<SUFFIX>
 git push origin --delete <BRANCH>
 ```
 
-If you created `_cleanup-tmp-<SUFFIX>`, remove it when done:
-
-```bash
-git worktree remove .claude/worktrees/_cleanup-tmp-<SUFFIX>
-```
-
 ## 5. Fast-forward default branch
 
 Check whether local main lags behind origin/main:
@@ -117,15 +115,34 @@ Check whether local main lags behind origin/main:
 git rev-list --count HEAD..origin/main
 ```
 
-Zero means you're done. If nonzero, fast-forward — same CWD anchoring
-pattern as step 4 (reuse the worktree if still open):
+Zero means you're done — but you may still need to remove the temp
+worktree below.
+
+If nonzero, fast-forward from inside the temp worktree created in
+Step 4 — it is still open. The worktree-required hook blocks the main
+tree. `-C <REPO_ROOT>` below is load-bearing because the temp worktree
+is detached HEAD; without it, the merge would target the wrong ref.
+Two separate Bash calls (idempotent — always run both):
 
 ```bash
-# Call 1 — anchor CWD (skip if already in a worktree):
-cd <worktree-path>
+# Call 1 — anchor CWD into the worktree:
+cd .claude/worktrees/_cleanup-tmp-<SUFFIX>
 
-# Call 2 — fast-forward:
+# Call 2 — fast-forward main via the main repo's git dir:
 git -C <REPO_ROOT> merge --ff-only origin/main
+```
+
+If Step 4 created `_cleanup-tmp-<SUFFIX>`, remove it now. Two separate
+Bash calls — `git worktree remove` fails with
+`getcwd: cannot access parent directories` if CWD is still inside the
+target worktree:
+
+```bash
+# Call 1 — exit the temp worktree:
+cd <REPO_ROOT>
+
+# Call 2 — remove it:
+git worktree remove .claude/worktrees/_cleanup-tmp-<SUFFIX>
 ```
 
 ## 6. Summary
