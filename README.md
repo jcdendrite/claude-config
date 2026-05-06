@@ -106,7 +106,6 @@ flowchart LR
 - **`/ai-instruction-and-memory-files`** — how AI coding agents load instruction files (CLAUDE.md, AGENTS.md, Cursor rules, Lovable knowledge) and Claude Code auto-memory: precedence, duplication rules, length targets, import patterns.
 - **`/verify-primary-sources`** — when web research informs a code or design decision, read the primary documentation directly rather than trusting agent summaries or secondary sources.
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context.
-- **`/cleanup-merged-branch`** — removes the local worktree and branch, prunes remote tracking refs, and fast-forwards the default branch after a PR is merged. Handles squash-merge branch detection and CWD anchoring for worktree-enforced repos.
 
 Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain a `REFERENCES.md` — canonical references (URLs, key quotes, framework notes) that informed the skill's rules. `REFERENCES.md` is not loaded during skill execution; consult it when editing a skill to verify a rule still holds or to add new guidance.
 
@@ -197,6 +196,8 @@ chmod +x ~/.claude/scripts/*
   ```
 
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, and `/respond-pr` write review markers via `~/.claude/scripts/marker.sh`. The 10 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval. A companion `enforce-marker-script-shape.sh` hook denies any other invocation (chains, env-var prefixes, redirects) to prevent prompt-injection escalation via the allowlist.
+
+- **`cleanup-merged-branches.sh`** — discovers all local branches whose PRs are merged (queried via `gh pr list --head <branch> --state merged`) and cleans them up: removes the worktree, force-deletes the local branch, prunes the remote tracking ref, deletes the remote branch if not auto-deleted, and fast-forwards the default branch. Run from any shell (or via `!` from any Claude session — auto-approved by the paired `permissions.allow` entries). Pass `--dry-run` to preview without acting.
 
 ## Worktree enforcement
 

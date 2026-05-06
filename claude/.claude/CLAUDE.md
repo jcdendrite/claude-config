@@ -35,7 +35,7 @@
 
 - **Opus:** judgment-heavy reasoning, plan-mode planning, and parent-dispatcher orchestration.
 - **Sonnet (default):** all code reading, code writing, and specialist reviewer agents. Enforced via `model: sonnet` frontmatter in each agent file.
-- **Haiku:** narrow, deterministic skills only (e.g. `/cleanup-merged-branch`). Never for code authoring or judgment.
+- **Haiku:** narrow, deterministic skills only. Never for code authoring or judgment.
 
 ## Safety
 
