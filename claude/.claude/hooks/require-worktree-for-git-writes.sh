@@ -12,6 +12,14 @@
 # bootstrap `git worktree add` isn't denied on the main tree). Anything
 # else is denied when run from the main working tree of an opted-in repo.
 # Allowed unconditionally inside a linked worktree.
+#
+# Known limitation: parses the Bash command as a string, splitting on
+# shell operators only. Heredoc bodies, single-quoted, and double-quoted
+# regions are not distinguished from live command text — a Bash command
+# whose prose contains the literal `git <word>` (e.g. inside a `<<EOF`
+# heredoc writing a file) can be denied as if it invoked `git <word>`.
+# Workaround: write prose-containing files via the Write/Edit tool, not
+# Bash heredocs.
 
 # Defensive: prevent GIT_DIR / GIT_WORK_TREE env overrides from making the
 # main tree impersonate a linked worktree via rev-parse output.
