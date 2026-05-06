@@ -104,7 +104,6 @@ flowchart LR
 - **`/config-environments`** — designing configuration that differs across environments (dev, staging, production): env var naming, credential isolation, secrets provisioning, and the anti-patterns that reintroduce tight coupling.
 - **`/sql-query-conventions`** — read-path conventions for SQL and PostgREST/Supabase queries: pagination, limits, N+1 avoidance, batch-size ceilings, explicit column selection.
 - **`/ai-instruction-and-memory-files`** — how AI coding agents load instruction files (CLAUDE.md, AGENTS.md, Cursor rules, Lovable knowledge) and Claude Code auto-memory: precedence, duplication rules, length targets, import patterns.
-- **`/lovable-knowledge`** — Lovable Project Knowledge vs Workspace Knowledge fields, the `.lovable/*.md` repo-mirror workflow, content scope split, precedence, and character limits.
 - **`/verify-primary-sources`** — when web research informs a code or design decision, read the primary documentation directly rather than trusting agent summaries or secondary sources.
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context.
 - **`/cleanup-merged-branch`** — removes the local worktree and branch, prunes remote tracking refs, and fast-forwards the default branch after a PR is merged. Handles squash-merge branch detection and CWD anchoring for worktree-enforced repos.
@@ -125,6 +124,16 @@ Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill direc
 - **Location:** `.claude/skills/code-review-<project>/SKILL.md` or `.claude/skills/plan-review-<project>/SKILL.md`, placed in the consuming repo. The `<project>` token is freeform; only the prefix (`code-review-` or `plan-review-`) is load-bearing.
 - **Frontmatter:** match the shape of any skill in `claude/.claude/skills/` (`name`, `description`, `user-invocable`). The parent invokes the layer via the Skill tool — not via description-based auto-trigger, which doesn't fire from inside a running skill (design rationale in [`docs/design-decisions.md`](docs/design-decisions.md)).
 - **Behavior:** glob runs from the repo root (`git rev-parse --show-toplevel`). Single match → invoked and merged into the base checklist. Multiple matches → review stops — that's a config error in the consuming project, not a review item the skill resolves. Zero matches → proceeds without a layer.
+
+### Plugins (marketplace)
+
+Skills that apply to one or a few private projects — not broadly to all sessions — live as marketplace plugins under `plugins/<name>/` rather than in `claude/.claude/skills/`. This keeps them out of the global skill catalog and lets them be installed only in the repos that need them.
+
+This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plugin lives under `plugins/<name>/` with a `.claude-plugin/plugin.json` manifest and skills under `plugins/<name>/skills/<name>/SKILL.md`.
+
+**Current plugins:**
+
+- **`lovable-knowledge`** — Lovable Project Knowledge vs Workspace Knowledge fields, the `.lovable/*.md` repo-mirror workflow, content scope split, precedence, and character limits. To install at project scope from a Lovable project repo: first register the marketplace (`claude plugin marketplace add <path-or-URL-to-claude-config>`), then `claude plugin install lovable-knowledge@claude-config --scope project`.
 
 ### Reviewer subagents
 

@@ -46,6 +46,8 @@ name and matcher; do not rely solely on settings.json `if` conditions.
 
 **`REFERENCES.md` is the co-located reference file for a skill.** A skill directory may contain a `REFERENCES.md` alongside `SKILL.md` — use it for canonical URLs, key quotes, and framework notes that informed the skill's rules. `REFERENCES.md` is not loaded at skill runtime; read it manually (via Read or Bash) when editing a skill to verify a rule still holds or to add new guidance. Do not embed this reference material directly in `SKILL.md`.
 
+**Project-scoped plugins:** skills that apply to one or a few private projects — not broadly to all sessions — live under `plugins/<name>/` as marketplace plugins, not in `claude/.claude/skills/`. The repo exposes itself as a marketplace via `.claude-plugin/marketplace.json`. Add `.claude-plugin/plugin.json` and `skills/<name>/SKILL.md` inside `plugins/<name>/`. Install at project scope from the consuming repo: `claude plugin install <name>@claude-config --scope project`.
+
 ## Plans in this repo affect all stow users
 
 `claude/` is stowed into `$HOME` — changes ship to every user who clones and stows this repo, not only to the session owner. When reviewing a plan for claude-config, evaluate with that audience in mind. Files under `claude/` are not personal config; they are distributed to all stow users on `git pull`. Surface this when declaring the user surface in Step 2 of plan-review, and weight finding severity accordingly.
