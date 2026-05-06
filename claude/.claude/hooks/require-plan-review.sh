@@ -26,6 +26,8 @@
 #   0      — allow (no opinion)
 #   0+JSON — deny (plan exists but no review marker for this session)
 
+. "$(dirname "$0")/_lib.sh"
+
 INPUT=$(cat)
 TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
 
@@ -65,7 +67,7 @@ if [ -n "$SESSION_ID" ]; then
   fi
 
   # Completion-marker check.
-  REPO_HASH=$(printf '%s' "$REPO_ROOT" | sha256sum | awk '{print $1}')
+  REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
   MARKER="$HOME/.claude/plan-review-markers/$REPO_HASH.$SESSION_ID"
   if [ -f "$MARKER" ]; then
     exit 0
