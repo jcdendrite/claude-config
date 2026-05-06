@@ -315,7 +315,7 @@ Pytest suite covering hooks (allow, deny, and ask paths) and skill description c
 pytest claude/.claude/
 ```
 
-CI runs this on every PR and main push via `.github/workflows/hooks.yml`.
+CI runs this on every PR and main push via `.github/workflows/tests.yml`.
 
 ## Threat model
 

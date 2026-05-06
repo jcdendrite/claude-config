@@ -1,4 +1,4 @@
-# WARNING: The job id ("hook-tests") is the status check context string
+# WARNING: The job id ("tests") is the status check context string
 # referenced by branch protection on main. Renaming the job silently breaks
 # the required-check match. If you rename the job, also update the
 # required_status_checks.contexts list via:
@@ -6,7 +6,7 @@
 # (The workflow-level "name:" does NOT affect the context string for GitHub
 # Actions checks — only the job id does.)
 
-name: Hook tests
+name: Tests
 
 on:
   push:
@@ -17,11 +17,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: hooks-${{ github.ref }}
+  group: tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  hook-tests:
+  tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -55,7 +55,7 @@ jobs:
           # Include any directory that contains test files or whose contents are
           # read by tests. Update this list when a new test or test-input
           # directory appears under claude/.claude/.
-          REGEX='^(claude/\.claude/(hooks|skills|scripts|tests)/|\.github/workflows/hooks\.yml|pyproject\.toml)'
+          REGEX='^(claude/\.claude/(hooks|skills|scripts|tests)/|\.github/workflows/tests\.yml|pyproject\.toml)'
 
           MATCHED=$(echo "$CHANGED" | grep -E "$REGEX" || true)
           UNMATCHED=$(echo "$CHANGED" | grep -vE "$REGEX" || true)
