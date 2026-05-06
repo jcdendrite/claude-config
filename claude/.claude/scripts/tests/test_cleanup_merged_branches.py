@@ -25,7 +25,9 @@ _SCRIPT = Path(__file__).parent.parent / "cleanup-merged-branches.sh"
 def _init_repo(path: Path) -> None:
     """Initialise a git repo with one commit and a remote pointing at itself."""
     path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    # --initial-branch=main avoids depending on the system's init.defaultBranch setting,
+    # which varies across git versions and CI environments.
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
 
