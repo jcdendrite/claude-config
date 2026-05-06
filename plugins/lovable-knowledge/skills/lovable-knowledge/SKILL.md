@@ -38,7 +38,7 @@ AGENTS.md is the defense-in-depth.
 |---|---|---|
 | Scope | Cross-project (the Lovable workspace) | Single-project |
 | Use for | Coding style, naming, libraries/frameworks, architectural patterns, testing requirements, lint rules, brand/voice, **Lovable-platform behavior** | What the app does, user personas, schema/tables, architecture decisions, domain terminology, project-specific constraints, design specifics, security/compliance, links to important references |
-| Precedence | — | **Wins on conflict** |
+| Precedence | — | **Prioritized on conflict** |
 | Char limit | 10,000 | 10,000 |
 
 When a rule could plausibly fit in either: ask whether it would apply to
