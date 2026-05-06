@@ -33,6 +33,8 @@
 # - gh pr view fails (network issue, gh not configured, etc.) — fail-open
 #   to keep the user unblocked; the skill's prose triggers still fire.
 
+. "$(dirname "$0")/_lib.sh"
+
 INPUT=$(cat)
 TOOL=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
 if [ "$TOOL" != "Bash" ]; then
@@ -135,7 +137,7 @@ fi
 
 # Completion-marker check.
 if [ -n "$SESSION_ID" ]; then
-  REPO_HASH=$(printf '%s' "$REPO_ROOT" | sha256sum | awk '{print $1}')
+  REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
   MARKER="$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
   if [ -f "$MARKER" ]; then
     MARKER_HEAD=$(tr -d '[:space:]' < "$MARKER")

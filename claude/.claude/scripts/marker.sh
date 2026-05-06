@@ -2,6 +2,10 @@
 # Write or remove review markers for Claude Code workflow skills.
 # Called from SKILL.md HOOK_TEST_FIXTURE fenced blocks.
 # Usage: marker.sh <write|activate|deactivate> <skill>
+# _marker_lib_repo_hash is defined in the sourced library so the hash recipe
+# stays in sync with the read side (require-*.sh hooks) automatically.
+. "$HOME/.claude/hooks/_lib.sh"
+
 set -u
 
 usage() {
@@ -47,7 +51,7 @@ _resolve_repo_hash() {
   # tr -d '\n' is load-bearing: git rev-parse appends a trailing newline.
   # require-* hooks compute the hash via printf '%s' "$REPO_ROOT" (no newline),
   # so both sides must strip it to produce the same sha256 and matching paths.
-  git rev-parse --show-toplevel | tr -d '\n' | sha256sum | awk '{print $1}'
+  _marker_lib_repo_hash "$(git rev-parse --show-toplevel | tr -d '\n')"
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then

@@ -254,6 +254,11 @@ def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     marker_link = scripts_dir / "marker.sh"
     if not marker_link.exists():
         marker_link.symlink_to(SCRIPTS_DIR / "marker.sh")
+    hooks_dir = isolated_home / ".claude" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    lib_link = hooks_dir / "_lib.sh"
+    if not lib_link.exists():
+        lib_link.symlink_to(HOOKS_DIR / "_lib.sh")
     subprocess.run(
         ["bash", "-c", command],
         cwd=cwd,

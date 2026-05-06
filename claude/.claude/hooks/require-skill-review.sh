@@ -27,6 +27,7 @@
 #   so re-staging non-SKILL.md files after a clean skill-review does not
 #   invalidate the marker.
 
+. "$(dirname "$0")/_lib.sh"
 
 INPUT=$(cat)
 COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
@@ -59,7 +60,7 @@ if [ -z "$(git diff --cached 2>/dev/null)" ]; then
   exit 0
 fi
 
-REPO_HASH=$(printf '%s' "$REPO_ROOT" | sha256sum | awk '{print $1}')
+REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 CURRENT_HASH=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
 
