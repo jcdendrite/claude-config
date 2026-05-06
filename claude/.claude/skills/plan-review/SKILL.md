@@ -96,7 +96,7 @@ B3. **Breaking intermediate states** — During phased migrations, is there a wi
 
 B4. **Unresolved external dependencies** — Does the plan depend on external services, APIs, or tools whose availability, rate limits, or behavior the author hasn't verified?
 
-B5. **Evidence and verification** — Does the plan cite a source for each finding/assertion (file:line, tool that flagged it, or how it was discovered)? When the plan asserts a specific code shape (function signature, exact line number, type field, import path), verify the cited source actually matches — citation alone is insufficient if the assertion misquotes it. Conclusions without evidence force reviewers to re-derive them; misquoted citations produce phantom code-review findings when the implementer correctly diverges.
+B5. **Evidence and verification** — Does the plan cite a source for each finding/assertion (file:line, tool that flagged it, or how it was discovered)? When the plan asserts a specific code shape (function signature, exact line number, type field, import path), verify the cited source actually matches — citation alone is insufficient if the assertion misquotes it. **When the plan asserts a shape is "canonical," "the existing pattern," or "the convention," verify the cited example represents the broader population — run `git grep` and check the count. A single-call-site citation does not establish a pattern.** Conclusions without evidence force reviewers to re-derive them; misquoted or unrepresentative citations produce phantom code-review findings when the implementer correctly diverges.
 
 ### Scope
 
