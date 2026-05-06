@@ -13,7 +13,7 @@ ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — all 10 must be allowed                               #
+    # Valid shapes — all 12 must be allowed                               #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize(
@@ -26,9 +26,11 @@ class TestEnforceMarkerScriptShape:
             "~/.claude/scripts/marker.sh activate plan-review",
             "~/.claude/scripts/marker.sh activate ready-for-review",
             "~/.claude/scripts/marker.sh activate respond-pr",
+            "~/.claude/scripts/marker.sh activate memory-skill",
             "~/.claude/scripts/marker.sh deactivate plan-review",
             "~/.claude/scripts/marker.sh deactivate ready-for-review",
             "~/.claude/scripts/marker.sh deactivate respond-pr",
+            "~/.claude/scripts/marker.sh deactivate memory-skill",
         ],
     )
     def test_valid_shapes_allowed(self, command):
@@ -113,6 +115,16 @@ class TestEnforceMarkerScriptShape:
     def test_mismatched_subcommand_skill_pair_denied(self):
         """code-review does not support activate — must be denied."""
         cmd = "~/.claude/scripts/marker.sh activate code-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_memory_skill_extra_arg_denied(self):
+        """activate memory-skill with a trailing arg must be denied."""
+        cmd = "~/.claude/scripts/marker.sh activate memory-skill extra"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_memory_skill_underscore_denied(self):
+        """Underscore form (memory_skill) is not in the allowlist."""
+        cmd = "~/.claude/scripts/marker.sh activate memory_skill"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     # ------------------------------------------------------------------ #
