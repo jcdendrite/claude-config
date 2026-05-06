@@ -42,7 +42,7 @@ def _make_repo_with_remote(tmp_path: Path) -> tuple[Path, Path]:
     """Return (local_repo, bare_remote) with origin configured and default branch set."""
     bare = tmp_path / "remote.git"
     bare.mkdir()
-    subprocess.run(["git", "init", "--bare", "-q"], cwd=bare, check=True)
+    subprocess.run(["git", "init", "--bare", "-q", "--initial-branch=main"], cwd=bare, check=True)
 
     local = tmp_path / "local"
     _init_repo(local)
