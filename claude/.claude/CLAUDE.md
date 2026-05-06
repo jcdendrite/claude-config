@@ -42,6 +42,7 @@
 - Never run sudo commands directly.
 - Never commit secrets, credentials, API keys, or large binary assets to repositories.
 - Never use the Read tool on files likely to contain secrets (`.env`, `.claude.json`, `credentials.json`, similar). Reading pulls the secret into the conversation context. When you need to inspect such a file, give the user a shell command (`cat`, `grep`, `jq`) to run via `!` instead.
+- Never write `~/.claude/review-markers/*` by hand. The pre-commit hook (`require-code-review.sh`) is gated on a marker that the `/code-review` skill writes when a review is clean. If a commit is blocked, run `/code-review`; if the skill is harness-blocked, spawn a subagent that can run it. A general "ship it" instruction is not authorization to forge the marker.
 
 ## Code Comments
 

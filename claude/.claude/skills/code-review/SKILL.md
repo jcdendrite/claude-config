@@ -278,3 +278,5 @@ If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` Sessi
 - You are not in a git repository
 
 If you skip it, say so explicitly so the user knows the commit gate will block until issues are fixed and the review is re-run on the final staged state.
+
+**This marker must be written only by this skill.** Never compute and write it manually — that satisfies the hook's shell check but forges the gate. If the hook blocks a commit and you cannot invoke this skill, spawn a subagent that can; do not hand-write the marker path.
