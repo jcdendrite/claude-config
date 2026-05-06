@@ -35,6 +35,8 @@ Restate the problem, why now, and the intended outcome in one short paragraph. I
 
 Find similar features, the target subsystem, and integration points. Spawn `general-purpose` subagents in parallel when scope warrants — judge fan-out from surface area, do not default to a fixed count. Read the files each subagent flags before designing. Do not use `Explore` here; its read-excerpt window is wrong for design-context analysis.
 
+**Pattern claims require a grep, not a single example.** Before the plan asserts that any code shape is "canonical," "the existing pattern," "how the codebase does X," or equivalent, run `git grep` (or ripgrep) for the shape across the relevant directory and count call sites. Cite the count in the plan ("12 of 13 edge functions use form X; the one exception is `path/to/file.ts:NN`") rather than naming a single example. A single-call-site citation establishes that the shape compiles, not that it is canonical — outliers and one-offs read identically to canonical examples until you check the population.
+
 ## Step 4 — Clarifying questions
 
 List every underspecified decision (edge cases, error handling, scope boundaries, backward compatibility) and ask the user. Do not proceed until answered or the user delegates the call to you.
