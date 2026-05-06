@@ -22,5 +22,3 @@ From the hooks reference, "Reference scripts by path" section:
 From the hooks-guide troubleshooting section:
 
 > "If you see 'command not found', use absolute paths or `$CLAUDE_PROJECT_DIR` to reference scripts."
-
-**Misattribution note:** An earlier draft of the Section 2 rule was written with the quote *"Use absolute paths: specify full paths for scripts, using `\"$CLAUDE_PROJECT_DIR\"` for the project root."* That exact wording does **not** appear on the live docs. The two real recommendations are the troubleshooting line above and the path-resolution framing in the hooks reference. Re-verify against the cited URLs if adding a new verbatim citation — do not carry forward a quoted string that can't be located in the source.
