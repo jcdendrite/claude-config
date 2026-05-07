@@ -56,9 +56,9 @@ Comments must be readable by a future coder who has not read the PR description,
 - **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message or PR body.
 - **Self-test:** if you can't write the comment such that it survives the PR being merged and the description being lost, don't write the comment. Move the rationale to the commit message instead.
 
-## Compact Instructions
+## State digest format
 
-See `~/.claude/COMPACT_INSTRUCTIONS.md` for what to preserve and what may be dropped during conversation compaction.
+See `~/.claude/COMPACT_INSTRUCTIONS.md` for the structured digest shape both `/compact` and `/handoff` produce.
 
 ## Output Preferences
 
