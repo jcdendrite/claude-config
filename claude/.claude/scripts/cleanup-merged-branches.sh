@@ -142,7 +142,24 @@ if [ "$DRY_RUN" -eq 1 ]; then
   if [ "${#MERGED_BRANCHES[@]}" -gt 0 ]; then
     echo "Would clean up:"
     for BRANCH in "${MERGED_BRANCHES[@]}"; do
-      echo "  ${BRANCH} (${MERGED_PR_INFO[$BRANCH]})"
+      _DRY_LOCKED=0
+      _DRY_MATCHED=0
+      while IFS= read -r _line; do
+        if [[ "$_line" == "worktree "* ]]; then
+          _DRY_MATCHED=0
+        elif [[ "$_line" == "branch refs/heads/${BRANCH}" ]]; then
+          _DRY_MATCHED=1
+        elif [ "$_DRY_MATCHED" -eq 1 ] && [[ "$_line" == "locked"* ]]; then
+          _DRY_LOCKED=1
+        elif [ -z "$_line" ]; then
+          _DRY_MATCHED=0
+        fi
+      done < <(git worktree list --porcelain)
+      if [ "$_DRY_LOCKED" -eq 1 ]; then
+        echo "  ${BRANCH} (${MERGED_PR_INFO[$BRANCH]}) [locked — will skip]"
+      else
+        echo "  ${BRANCH} (${MERGED_PR_INFO[$BRANCH]})"
+      fi
     done
   fi
 
@@ -195,18 +212,45 @@ for BRANCH in "${MERGED_BRANCHES[@]}"; do
   # Step 1: Remove worktree (if present)
   # Use --porcelain to get the exact path; do NOT construct from branch name
   # (slashes in branch names would break path interpolation).
+  # The `locked` line appears after `branch` in a porcelain record, so we
+  # use a deferred-commit pattern: finalize path + lock state at each record
+  # boundary rather than at the moment the branch line is matched.
   WORKTREE_PATH=""
+  WORKTREE_LOCKED=0
+  _CANDIDATE_PATH=""
+  _CANDIDATE_LOCKED=0
+  _CANDIDATE_MATCHED=0
+  _commit_wt_candidate() {
+    if [ "$_CANDIDATE_MATCHED" -eq 1 ]; then
+      WORKTREE_PATH="$_CANDIDATE_PATH"
+      WORKTREE_LOCKED="$_CANDIDATE_LOCKED"
+    fi
+  }
   while IFS= read -r line; do
     if [[ "$line" == "worktree "* ]]; then
-      CANDIDATE_PATH="${line#worktree }"
+      _commit_wt_candidate
+      _CANDIDATE_PATH="${line#worktree }"
+      _CANDIDATE_LOCKED=0
+      _CANDIDATE_MATCHED=0
     elif [[ "$line" == "branch refs/heads/${BRANCH}" ]]; then
-      WORKTREE_PATH="$CANDIDATE_PATH"
+      _CANDIDATE_MATCHED=1
+    elif [[ "$line" == "locked"* ]]; then
+      _CANDIDATE_LOCKED=1
     fi
   done < <(git worktree list --porcelain)
+  _commit_wt_candidate  # finalize the last record
 
   if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" != "$REPO_ROOT" ]; then
-    git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || true
-    echo "    worktree:       removed: ${WORKTREE_PATH}"
+    if [ "$WORKTREE_LOCKED" -eq 1 ]; then
+      echo "    worktree:       locked (skipped)"
+      continue
+    fi
+    if git worktree remove "$WORKTREE_PATH" 2>/dev/null; then
+      echo "    worktree:       removed: ${WORKTREE_PATH}"
+    else
+      echo "    worktree:       remove failed (manual step needed)"
+      continue
+    fi
   else
     echo "    worktree:       not found"
   fi
