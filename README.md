@@ -202,30 +202,25 @@ chmod +x ~/.claude/scripts/*
 
 ## Context management
 
-Claude Code compresses conversation history when the context window fills up. This config adds three layers to keep that process reliable.
+Claude Code compresses conversation history when the context window fills up. This config adds two layers to keep that process reliable.
 
 ### How it works
 
-1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires after `/compact` and `/clear` — not just on session start. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
+1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires on session start, after `/clear`, and after compaction. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
 
-2. **Compaction guidance (`COMPACT_INSTRUCTIONS.md`).** `claude/.claude/CLAUDE.md` points the compaction summarizer at `~/.claude/COMPACT_INSTRUCTIONS.md`, which defines the structured digest shape both `/compact` and `/handoff` produce. See the file for sections and per-section guidance. Whether the summarizer follows external references is unverified — if compaction still drops critical state, inline the file contents under `## State digest format` in CLAUDE.md as a fallback.
-
-3. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `/tmp/<slug>-handoff.md`. Claude proactively suggests this at ~60% context usage (same threshold Anthropic recommends for manual `/compact`) because:
-   - Quality: cleaner context → more accurate handoff.
-   - Token efficiency: once you decide to hand off, every turn beyond 60% is waste.
+2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `/tmp/<slug>-handoff.md`. The §1–§6 shape is defined inline in `claude/.claude/commands/handoff.md`. Claude proactively suggests `/handoff` at ~60% context usage because cleaner context produces a higher-quality resume file, and every turn beyond 60% is waste.
 
 ### When to use which
 
 | Situation | Right action |
 |---|---|
-| Same session, conversation is noisy but task continues | `/compact` (guided by `COMPACT_INSTRUCTIONS.md`) |
 | Switching to an unrelated task | `/clear` (intent-driven, no percentage threshold) |
 | Ending a session, will resume later | `/handoff` (produces resume file) |
 | Context >83.5%: auto-compact fires | Happens automatically; marker state is restored by the hook |
 
 ### Threshold reference
 
-- ~60%: suggested threshold for both `/compact` and `/handoff` — [Anthropic best practices](https://code.claude.com/docs/en/best-practices) cites 60% as the point where manual compaction produces the highest-quality summary.
+- ~60%: suggested threshold for `/handoff` — [Anthropic best practices](https://code.claude.com/docs/en/best-practices) cite 60% as the point where context compression produces the highest-quality summary; the same logic applies to `/handoff` (less context noise → better resume file).
 - ~83.5%: auto-compact trigger (community-reported; configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
 - Run `~/.claude/scripts/analyze-context.py` to inspect token usage for the current session.
 

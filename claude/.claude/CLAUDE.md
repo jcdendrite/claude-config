@@ -15,7 +15,7 @@
 - Always prefer minimal, targeted changes. Do not refactor entire files or expand scope beyond what was asked. If you see an opportunity for a broader improvement, mention it separately — do not bundle it in.
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
 - Use descriptive variable and function names. No generic names.
-- When a session crosses ~60% context usage (visible via statusline `.context_window.used_percentage`) AND the current task is incomplete, proactively suggest the user run `/handoff`. This is the same threshold Anthropic recommends for manual `/compact`, for the same reasons: cleaner context produces a higher-quality handoff, and every turn beyond 60% burns tokens that the handoff was meant to save. Do not run it yourself — it's a user-invoked slash command. If the user agrees, the command writes `/tmp/<slug>-handoff.md` and provides the resume incantation. Run `analyze-context.py` if unsure about the threshold.
+- When a session crosses ~60% context usage (visible via statusline `.context_window.used_percentage`) AND the current task is incomplete, proactively suggest the user run `/handoff`. Do not run it yourself — it's a user-invoked slash command. If the user agrees, the command writes `/tmp/<slug>-handoff.md` and provides the resume incantation. Run `analyze-context.py` if unsure about the threshold. (See README's "Threshold reference" section for the why-60%.)
 
 ### Heavy command output
 
@@ -55,10 +55,6 @@ Comments must be readable by a future coder who has not read the PR description,
 - **No PR-defined terminology** in code comments (e.g., "Defense A", "Action 6", "Pattern C"). If a label is meaningful it must be defined in code (constant name, function name, type name) — not in a comment that depends on context outside the file.
 - **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message or PR body.
 - **Self-test:** if you can't write the comment such that it survives the PR being merged and the description being lost, don't write the comment. Move the rationale to the commit message instead.
-
-## State digest format
-
-See `~/.claude/COMPACT_INSTRUCTIONS.md` for the structured digest shape both `/compact` and `/handoff` produce.
 
 ## Output Preferences
 
