@@ -114,7 +114,7 @@ case "$SUBCOMMAND" in
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         mkdir -p "$HOME/.claude/.ready-for-review-active.d"
-        touch "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
+        date +%s > "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
         ;;
       respond-pr)
         SESSION_ID=$(_resolve_session_id) || exit 2

@@ -88,6 +88,21 @@ class TestMarkerScriptHappyPath:
         active_file = isolated_home / ".claude" / ".plan-review-active.d" / sid
         assert active_file.exists()
 
+    def test_activate_ready_for_review_writes_epoch_timestamp(
+        self, isolated_home, git_repo
+    ):
+        """activate ready-for-review must write a unix epoch integer, not an
+        empty file — the hook reads the content to enforce the 90-min ceiling."""
+        sid = self._seed_session(isolated_home)
+        result = _run(["activate", "ready-for-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        active_file = isolated_home / ".claude" / ".ready-for-review-active.d" / sid
+        assert active_file.exists()
+        content = active_file.read_text().strip()
+        assert content.isdigit(), (
+            f"activate ready-for-review must write a unix epoch integer, got: {content!r}"
+        )
+
     def test_deactivate_removes_active_marker(self, isolated_home, git_repo):
         sid = self._seed_session(isolated_home)
         active_dir = isolated_home / ".claude" / ".plan-review-active.d"
