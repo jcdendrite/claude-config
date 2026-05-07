@@ -15,7 +15,7 @@
 - Always prefer minimal, targeted changes. Do not refactor entire files or expand scope beyond what was asked. If you see an opportunity for a broader improvement, mention it separately — do not bundle it in.
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
 - Use descriptive variable and function names. No generic names.
-- When a session crosses ~300K output tokens, proactively suggest a handoff. Run `analyze-context.py` if unsure. Write a handoff file at `/tmp/<descriptive-task-slug>-handoff.md` (use a real slug, not the literal `<task>`), tell the user the exact path, and ask them to open a new session with: `Read <path> and continue.`
+- When a session crosses ~60% context usage (visible via statusline `.context_window.used_percentage`) AND the current task is incomplete, proactively suggest the user run `/handoff`. This is the same threshold Anthropic recommends for manual `/compact`, for the same reasons: cleaner context produces a higher-quality handoff, and every turn beyond 60% burns tokens that the handoff was meant to save. Do not run it yourself — it's a user-invoked slash command. If the user agrees, the command writes `/tmp/<slug>-handoff.md` and provides the resume incantation. Run `analyze-context.py` if unsure about the threshold.
 
 ### Heavy command output
 
@@ -55,6 +55,10 @@ Comments must be readable by a future coder who has not read the PR description,
 - **No PR-defined terminology** in code comments (e.g., "Defense A", "Action 6", "Pattern C"). If a label is meaningful it must be defined in code (constant name, function name, type name) — not in a comment that depends on context outside the file.
 - **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message or PR body.
 - **Self-test:** if you can't write the comment such that it survives the PR being merged and the description being lost, don't write the comment. Move the rationale to the commit message instead.
+
+## Compact Instructions
+
+See `~/.claude/COMPACT_INSTRUCTIONS.md` for what to preserve and what may be dropped during conversation compaction.
 
 ## Output Preferences
 

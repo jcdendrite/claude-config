@@ -2,15 +2,15 @@
 # SessionStart hook: surface active gate-bypass marker state to the resuming
 # Claude session.
 #
-# Audience: Claude (the agent), not humans. The harness injects plain-text
-# stdout from SessionStart hooks directly into the agent's conversation context
-# at session start. This lets a new session — after compaction or restart —
-# see which review-skill gates are already bypassed without having to rediscover
-# the on-disk state itself.
+# Audience: Claude (the agent), not humans. Output is a JSON payload with
+# hookSpecificOutput.additionalContext — the harness injects it into the
+# agent's conversation context. Registered with matcher "startup|clear|compact"
+# so it fires on fresh starts AND after /compact and /clear, restoring marker
+# knowledge in each resumed context.
 #
-# Emits output only when at least one active marker is present or stale.
-# All-absent (normal fresh-session state) produces no output, keeping routine
-# session starts noise-free.
+# Emits hookSpecificOutput only when at least one active marker is present or
+# stale. All-absent (normal fresh-session state) produces no output, keeping
+# routine session starts noise-free.
 #
 # Active markers are session-scoped (keyed by session_id) so they can be
 # checked here regardless of which git repo the session opens in. Completion
@@ -55,7 +55,8 @@ if [ "$PLAN_REVIEW_STATUS" = "absent" ] \
   exit 0
 fi
 
-printf "Active review-skill gate markers detected for this session. Each line below shows one skill's bypass state — \"present\" means the gate is bypassed (skill is mid-run or was interrupted); \"stale\" (>60 min old) means the bypass has expired and the gate is back in force.\n"
-printf "  plan-review-active: %s\n" "$PLAN_REVIEW_STATUS"
-printf "  ready-for-review-active: %s\n" "$READY_FOR_REVIEW_STATUS"
-printf "  respond-pr-active: %s\n" "$RESPOND_PR_STATUS"
+ADDITIONAL_CONTEXT=$(printf 'Active review-skill gate markers detected for this session. Each line below shows one skill'"'"'s bypass state — "present" means the gate is bypassed (skill is mid-run or was interrupted); "stale" (>60 min old) means the bypass has expired and the gate is back in force.\n  plan-review-active: %s\n  ready-for-review-active: %s\n  respond-pr-active: %s' \
+  "$PLAN_REVIEW_STATUS" "$READY_FOR_REVIEW_STATUS" "$RESPOND_PR_STATUS")
+jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
+  '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}' || true
+exit 0

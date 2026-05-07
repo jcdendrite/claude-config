@@ -106,6 +106,7 @@ flowchart LR
 - **`/ai-instruction-and-memory-files`** — how AI coding agents load instruction files (CLAUDE.md, AGENTS.md, Cursor rules, Lovable knowledge) and Claude Code auto-memory: precedence, duplication rules, length targets, import patterns.
 - **`/verify-primary-sources`** — when web research informs a code or design decision, read the primary documentation directly rather than trusting agent summaries or secondary sources.
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context.
+- **`/handoff`** — write a structured cross-session handoff file at `/tmp/<slug>-handoff.md` capturing goal, status, next step, modified files, active markers, open questions, and the resume incantation (`Read /tmp/<slug>-handoff.md and continue.`). User-invoked only — implemented as a slash command at `claude/.claude/commands/handoff.md`, not a skill, to keep it out of the always-loaded skills catalog. Claude proactively suggests `/handoff` when context usage exceeds ~60% with an incomplete task; you decide whether to invoke.
 
 Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain a `REFERENCES.md` — canonical references (URLs, key quotes, framework notes) that informed the skill's rules. `REFERENCES.md` is not loaded during skill execution; consult it when editing a skill to verify a rule still holds or to add new guidance.
 
@@ -198,6 +199,35 @@ chmod +x ~/.claude/scripts/*
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, and `/respond-pr` write review markers via `~/.claude/scripts/marker.sh`. The 10 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval. A companion `enforce-marker-script-shape.sh` hook denies any other invocation (chains, env-var prefixes, redirects) to prevent prompt-injection escalation via the allowlist.
 
 - **`cleanup-merged-branches.sh`** — discovers all local branches whose PRs are merged (queried via `gh pr list --head <branch> --state merged`) and cleans them up: removes the worktree, force-deletes the local branch, prunes the remote tracking ref, deletes the remote branch if not auto-deleted, and fast-forwards the default branch. Run from any shell (or via `!` from any Claude session — auto-approved by the paired `permissions.allow` entries). Pass `--dry-run` to preview without acting.
+
+## Context management
+
+Claude Code compresses conversation history when the context window fills up. This config adds three layers to keep that process reliable.
+
+### How it works
+
+1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires after `/compact` and `/clear` — not just on session start. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
+
+2. **Compaction guidance (`COMPACT_INSTRUCTIONS.md`).** `claude/.claude/CLAUDE.md` points the compaction summarizer at `~/.claude/COMPACT_INSTRUCTIONS.md`, which defines the structured digest shape both `/compact` and `/handoff` produce. See the file for sections and per-section guidance. Whether the summarizer follows external references is unverified — if compaction still drops critical state, inline the file contents under `## State digest format` in CLAUDE.md as a fallback.
+
+3. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `/tmp/<slug>-handoff.md`. Claude proactively suggests this at ~60% context usage (same threshold Anthropic recommends for manual `/compact`) because:
+   - Quality: cleaner context → more accurate handoff.
+   - Token efficiency: once you decide to hand off, every turn beyond 60% is waste.
+
+### When to use which
+
+| Situation | Right action |
+|---|---|
+| Same session, conversation is noisy but task continues | `/compact` (guided by `COMPACT_INSTRUCTIONS.md`) |
+| Switching to an unrelated task | `/clear` (intent-driven, no percentage threshold) |
+| Ending a session, will resume later | `/handoff` (produces resume file) |
+| Context >83.5%: auto-compact fires | Happens automatically; marker state is restored by the hook |
+
+### Threshold reference
+
+- ~60%: suggested threshold for both `/compact` and `/handoff` — [Anthropic best practices](https://code.claude.com/docs/en/best-practices) cites 60% as the point where manual compaction produces the highest-quality summary.
+- ~83.5%: auto-compact trigger (community-reported; configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
+- Run `~/.claude/scripts/analyze-context.py` to inspect token usage for the current session.
 
 ## Worktree enforcement
 
