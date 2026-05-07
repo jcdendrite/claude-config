@@ -13,10 +13,17 @@
 #
 # Two-marker pattern:
 # - Active marker (~/.claude/.ready-for-review-active.d/<session_id>):
-#   presence-only, fresh mtime <60 min. Written by /ready-for-review at
-#   step 0; removed at step 7 (completion). Bypasses the gate so the
+#   content = unix epoch written at activation; fresh mtime <60 min;
+#   activation age <90 min (hard ceiling). Written by /ready-for-review
+#   at step 0; removed at step 7 (completion). Bypasses the gate so the
 #   skill's own iteration pushes (step 3 fix → push → loop) don't
 #   self-deny. mtime refreshed on each bypass to handle long runs.
+#   The 90-min ceiling caps the sliding window: cross-skill iteration
+#   pushes (e.g. /respond-pr landing review fixes) refresh the mtime
+#   without explicit user re-authorization — without a ceiling, a
+#   stuck-but-not-cleaned-up active marker bypasses indefinitely.
+#   Empty or non-numeric content fails closed (handles markers from
+#   before this version shipped, or any malformed write).
 # - Completion marker (~/.claude/ready-for-review-markers/<repo-hash>.<session_id>):
 #   contents are the local HEAD SHA at gate-completion time. Written at
 #   step 7 only when every halt-on-fail step passed. Pushes against the
@@ -121,8 +128,16 @@ fi
 if [ -n "$SESSION_ID" ]; then
   ACTIVE_MARKER="$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
   if [ -f "$ACTIVE_MARKER" ] && [ -n "$(find "$ACTIVE_MARKER" -mmin -60 2>/dev/null)" ]; then
-    touch "$ACTIVE_MARKER" 2>/dev/null
-    exit 0
+    CREATED_TS=$(cat "$ACTIVE_MARKER" 2>/dev/null)
+    NOW_TS=$(date +%s 2>/dev/null)
+    # -ge 0 guards against a future-dated CREATED_TS: without it, a negative
+    # delta (e.g. -600) would still pass -lt 5400, incorrectly granting bypass.
+    if [[ "$CREATED_TS" =~ ^[0-9]+$ ]] && [[ "$NOW_TS" =~ ^[0-9]+$ ]] && \
+       [ "$((NOW_TS - CREATED_TS))" -ge 0 ] && \
+       [ "$((NOW_TS - CREATED_TS))" -lt 5400 ]; then
+      touch "$ACTIVE_MARKER" 2>/dev/null
+      exit 0
+    fi
   fi
 fi
 

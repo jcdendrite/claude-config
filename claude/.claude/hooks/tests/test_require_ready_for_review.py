@@ -226,7 +226,7 @@ class TestRequireReadyForReview:
         sid = "session-active"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
-        (marker_dir / sid).touch()
+        (marker_dir / sid).write_text(str(int(time.time())))
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -244,7 +244,7 @@ class TestRequireReadyForReview:
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
         marker = marker_dir / sid
-        marker.touch()
+        marker.write_text(str(int(time.time())))
         ninety_min_ago = time.time() - 90 * 60
         os.utime(marker, (ninety_min_ago, ninety_min_ago))
         assert (
@@ -262,7 +262,7 @@ class TestRequireReadyForReview:
         """Per-session keying: A's active marker must NOT authorize B's push."""
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
-        (marker_dir / "session-A").touch()
+        (marker_dir / "session-A").write_text(str(int(time.time())))
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -276,12 +276,13 @@ class TestRequireReadyForReview:
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
         """Long-running skill mitigation: hook touches marker on each bypass
-        so a session approaching the 60-min cutoff doesn't get blocked."""
+        so a session approaching the 60-min cutoff doesn't get blocked.
+        Timestamp content must be within the 90-min ceiling."""
         sid = "session-long"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
         marker = marker_dir / sid
-        marker.touch()
+        marker.write_text(str(int(time.time())))
         fifty_min_ago = time.time() - 50 * 60
         os.utime(marker, (fifty_min_ago, fifty_min_ago))
         pre_mtime = marker.stat().st_mtime
@@ -295,6 +296,94 @@ class TestRequireReadyForReview:
         )
         assert marker.stat().st_mtime > pre_mtime, (
             "active marker mtime must be refreshed on bypass"
+        )
+
+    def test_active_marker_within_ceiling_allows(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """Marker activated 67 min ago (within 90-min ceiling) with fresh mtime
+        must allow bypass — ceiling is 90 min, not 0."""
+        sid = "session-within-ceiling"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        created_ts = int(time.time()) - 4000  # ~67 min ago, within 90-min ceiling
+        marker.write_text(str(created_ts))
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    def test_active_marker_hard_ceiling_blocks_after_90min(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """90-min hard ceiling: a marker activated >90 min ago must be denied
+        even when mtime is fresh. Pins the design choice: cross-skill iteration
+        pushes refresh mtime, so mtime alone does not bound gate lifetime."""
+        sid = "session-ceiling"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        created_ts = int(time.time()) - 5500  # just past 90 min
+        marker.write_text(str(created_ts))
+        # mtime is now (fresh) — only the ceiling check should block
+        pre_mtime = marker.stat().st_mtime
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+        assert marker.stat().st_mtime == pre_mtime, (
+            "hook must NOT touch the marker when ceiling is exceeded (deny path)"
+        )
+
+    def test_active_marker_empty_content_denies_bypass(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """Rollout backward compat: a marker written before the timestamp
+        change (empty content) fails closed — bypass denied, not allowed.
+        Prevents stale pre-upgrade markers from granting indefinite bypass."""
+        sid = "session-empty"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text("")  # empty — pre-upgrade shape
+        # mtime is now (fresh)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_active_marker_future_timestamp_denies_bypass(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """Future-dated CREATED_TS yields a negative delta; without the -ge 0
+        guard that negative delta passes -lt 5400. Pins the guard as load-bearing."""
+        sid = "session-future"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        future_ts = int(time.time()) + 600  # 10 min in the future
+        marker.write_text(str(future_ts))
+        # mtime is now (fresh)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
         )
 
     # -- Completion-marker check ------------------------------------------
@@ -462,6 +551,10 @@ class TestRequireReadyForReview:
         assert marker.exists(), (
             "SKILL.md activate-gate recipe ran but no marker landed at the "
             "path the hook checks — skill and hook disagree on layout."
+        )
+        assert marker.read_text().strip().isdigit(), (
+            "activate-gate marker must contain a unix epoch timestamp "
+            f"(parseable integer), got: {marker.read_text().strip()!r}"
         )
         assert (
             run_hook(
