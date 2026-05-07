@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ruff check claude/.claude/)",
+      "Bash(pytest claude/.claude/)",
+      "Bash(pytest claude/.claude/scripts/tests/test_cleanup_merged_branches.py)"
+    ]
+  }
+}
