@@ -17,6 +17,10 @@
 - Use descriptive variable and function names. No generic names.
 - When a session crosses ~300K output tokens, proactively suggest a handoff. Run `analyze-context.py` if unsure. Write a handoff file at `/tmp/<descriptive-task-slug>-handoff.md` (use a real slug, not the literal `<task>`), tell the user the exact path, and ask them to open a new session with: `Read <path> and continue.`
 
+### Heavy command output
+
+Verify-class runs (full test suites, lint, typecheck, build) should run via the `Agent` tool with `subagent_type: general-purpose` — not directly via `Bash` in the parent. The subagent writes full output to `${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns a structured verdict plus the file paths; the parent reads the file for more detail rather than re-running. This applies to suite-level runs; commands scoped to a single test file or single test name during interactive debugging can stay inline.
+
 ## Code Review
 
 - After writing or modifying code, run `/code-review` before presenting the code to the user. If the review finds issues, fix them first, then present the final version.
