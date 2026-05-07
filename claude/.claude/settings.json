@@ -156,6 +156,16 @@
             "statusMessage": "Checking routing-read gate..."
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-env-reads.sh",
+            "statusMessage": "Checking env-file read gate..."
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -206,7 +216,16 @@
       "Bash(sudo *)",
       "Bash(sudo)",
       "Read(**/.env)",
-      "Read(**/.env.*)",
+      "Read(**/.env.local)",
+      "Read(**/.env.local.*)",
+      "Read(**/.env.production)",
+      "Read(**/.env.production.*)",
+      "Read(**/.env.development)",
+      "Read(**/.env.development.*)",
+      "Read(**/.env.staging)",
+      "Read(**/.env.staging.*)",
+      "Read(**/.env.test)",
+      "Read(**/.env.test.*)",
       "Read(**/credentials.json)"
     ]
   }

@@ -427,8 +427,10 @@ To make it the default, add to `~/.claude/settings.json`:
 | Rule | What it closes |
 |---|---|
 | `Bash(sudo *)`, `Bash(sudo)` | Privilege escalation — turns the `sudo` prohibition in `CLAUDE.md` into a hard block |
-| `Read(**/.env)`, `Read(**/.env.*)` | Local secret reads — the classifier won't flag in-working-directory reads as exfiltration |
+| `Read(**/.env)`, `Read(**/.env.local)`, `Read(**/.env.local.*)`, `Read(**/.env.production)`, `Read(**/.env.production.*)`, `Read(**/.env.development)`, `Read(**/.env.development.*)`, `Read(**/.env.staging)`, `Read(**/.env.staging.*)`, `Read(**/.env.test)`, `Read(**/.env.test.*)` | Local secret reads — hard floors on the well-known secret-bearing variants; the classifier won't flag in-working-directory reads as exfiltration |
 | `Read(**/credentials.json)` | Cloud provider credential files (AWS CLI, GCP service accounts, etc.) |
+
+The `deny-env-reads.sh` PreToolUse hook covers `.env.*` variants not listed above. It allows the three conventional non-secret template suffixes (`.env.example`, `.env.template`, `.env.sample`) while denying everything else, including symlinks whose resolved target's basename matches a denied pattern.
 
 These rules apply in all permission modes, not only auto mode.
 
