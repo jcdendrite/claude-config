@@ -567,3 +567,107 @@ class TestGhUnauthenticated:
         result = _run_script(local, env)
         assert result.returncode != 0
         assert "auth" in result.stderr.lower() or "login" in result.stderr.lower()
+
+
+class TestLockedWorktreeSkipped:
+    """Case 17: branch with a locked worktree is fully skipped (worktree, local branch, remote)."""
+
+    def test_locked_worktree_is_skipped(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/locked-wt")
+        subprocess.run(["git", "branch", "-D", "feat/locked-wt"], cwd=bare, check=True)
+
+        wt_path = tmp_path / "locked-tree"
+        _make_worktree(local, "feat/locked-wt", wt_path)
+        subprocess.run(
+            ["git", "worktree", "lock", str(wt_path), "--reason", "test lock"],
+            cwd=local, check=True, capture_output=True,
+        )
+
+        env = fake_gh({"feat/locked-wt": {"number": 200, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "locked (skipped)" in result.stdout
+        assert wt_path.exists(), "locked worktree should not be removed"
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/locked-wt"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "local branch should still exist when worktree is locked"
+
+    def test_locked_annotated_in_dry_run(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/locked-dry")
+        subprocess.run(["git", "branch", "-D", "feat/locked-dry"], cwd=bare, check=True)
+
+        wt_path = tmp_path / "locked-dry-tree"
+        _make_worktree(local, "feat/locked-dry", wt_path)
+        subprocess.run(
+            ["git", "worktree", "lock", str(wt_path), "--reason", "test lock"],
+            cwd=local, check=True, capture_output=True,
+        )
+
+        env = fake_gh({"feat/locked-dry": {"number": 210, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "Would clean up" in result.stdout
+        assert "feat/locked-dry" in result.stdout
+        assert "locked" in result.stdout and "will skip" in result.stdout
+        # Dry-run must not touch the worktree or branch
+        assert wt_path.exists()
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/locked-dry"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0
+
+
+class TestLockedWorktreeMixedWithUnlocked:
+    """Case 18: locked and unlocked merged branches in same run — locked skipped, unlocked cleaned."""
+
+    def test_mixed_locked_and_unlocked(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+
+        # Branch 1: locked worktree
+        _make_feature_branch(local, "feat/locked-mix")
+        subprocess.run(["git", "branch", "-D", "feat/locked-mix"], cwd=bare, check=True)
+        locked_wt = tmp_path / "locked-mix-tree"
+        _make_worktree(local, "feat/locked-mix", locked_wt)
+        subprocess.run(
+            ["git", "worktree", "lock", str(locked_wt), "--reason", "test lock"],
+            cwd=local, check=True, capture_output=True,
+        )
+
+        # Branch 2: unlocked worktree
+        _make_feature_branch(local, "feat/unlocked-mix")
+        subprocess.run(["git", "branch", "-D", "feat/unlocked-mix"], cwd=bare, check=True)
+        unlocked_wt = tmp_path / "unlocked-mix-tree"
+        _make_worktree(local, "feat/unlocked-mix", unlocked_wt)
+
+        env = fake_gh({
+            "feat/locked-mix": {"number": 201, "mergedAt": "2026-05-01"},
+            "feat/unlocked-mix": {"number": 202, "mergedAt": "2026-05-01"},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+
+        # Locked branch: skipped entirely
+        assert "locked (skipped)" in result.stdout
+        assert locked_wt.exists(), "locked worktree should remain"
+        ref_locked = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/locked-mix"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_locked.returncode == 0, "locked local branch should remain"
+
+        # Unlocked branch: fully cleaned
+        assert "removed:" in result.stdout
+        assert not unlocked_wt.exists(), "unlocked worktree should be removed"
+        ref_unlocked = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/unlocked-mix"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_unlocked.returncode != 0, "unlocked local branch should be deleted"
