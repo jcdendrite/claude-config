@@ -569,10 +569,10 @@ class TestGhUnauthenticated:
         assert "auth" in result.stderr.lower() or "login" in result.stderr.lower()
 
 
-class TestLockedWorktreeSkipped:
-    """Case 17: branch with a locked worktree is fully skipped (worktree, local branch, remote)."""
+class TestLockedWorktreeUnlockedAndRemoved:
+    """Case 17: branch with a locked worktree is unlocked and fully removed (worktree, local branch, remote)."""
 
-    def test_locked_worktree_is_skipped(self, tmp_path, fake_gh):
+    def test_locked_worktree_is_unlocked_and_removed(self, tmp_path, fake_gh):
         local, bare = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/locked-wt")
         subprocess.run(["git", "branch", "-D", "feat/locked-wt"], cwd=bare, check=True)
@@ -588,13 +588,14 @@ class TestLockedWorktreeSkipped:
         result = _run_script(local, env)
 
         assert result.returncode == 0
-        assert "locked (skipped)" in result.stdout
-        assert wt_path.exists(), "locked worktree should not be removed"
+        assert "unlocked stale lock" in result.stdout
+        assert "removed:" in result.stdout
+        assert not wt_path.exists(), "locked worktree on a merged branch should be removed"
         ref_check = subprocess.run(
             ["git", "rev-parse", "--verify", "refs/heads/feat/locked-wt"],
             cwd=local, capture_output=True,
         )
-        assert ref_check.returncode == 0, "local branch should still exist when worktree is locked"
+        assert ref_check.returncode != 0, "local branch should be deleted after worktree removed"
 
     def test_locked_annotated_in_dry_run(self, tmp_path, fake_gh):
         local, bare = _make_repo_with_remote(tmp_path)
@@ -614,7 +615,7 @@ class TestLockedWorktreeSkipped:
         assert result.returncode == 0
         assert "Would clean up" in result.stdout
         assert "feat/locked-dry" in result.stdout
-        assert "locked" in result.stdout and "will skip" in result.stdout
+        assert "locked" in result.stdout and "will unlock and remove" in result.stdout
         # Dry-run must not touch the worktree or branch
         assert wt_path.exists()
         ref_check = subprocess.run(
@@ -625,7 +626,7 @@ class TestLockedWorktreeSkipped:
 
 
 class TestLockedWorktreeMixedWithUnlocked:
-    """Case 18: locked and unlocked merged branches in same run — locked skipped, unlocked cleaned."""
+    """Case 18: locked and unlocked merged branches in same run — both fully cleaned."""
 
     def test_mixed_locked_and_unlocked(self, tmp_path, fake_gh):
         local, bare = _make_repo_with_remote(tmp_path)
@@ -654,20 +655,65 @@ class TestLockedWorktreeMixedWithUnlocked:
 
         assert result.returncode == 0
 
-        # Locked branch: skipped entirely
-        assert "locked (skipped)" in result.stdout
-        assert locked_wt.exists(), "locked worktree should remain"
+        # Locked branch: unlocked and fully cleaned
+        assert "unlocked stale lock" in result.stdout
+        assert not locked_wt.exists(), "locked worktree on merged branch should be removed"
         ref_locked = subprocess.run(
             ["git", "rev-parse", "--verify", "refs/heads/feat/locked-mix"],
             cwd=local, capture_output=True,
         )
-        assert ref_locked.returncode == 0, "locked local branch should remain"
+        assert ref_locked.returncode != 0, "locked local branch should be deleted after removal"
 
         # Unlocked branch: fully cleaned
-        assert "removed:" in result.stdout
         assert not unlocked_wt.exists(), "unlocked worktree should be removed"
         ref_unlocked = subprocess.run(
             ["git", "rev-parse", "--verify", "refs/heads/feat/unlocked-mix"],
             cwd=local, capture_output=True,
         )
         assert ref_unlocked.returncode != 0, "unlocked local branch should be deleted"
+
+
+class TestLockedWorktreeRemoveFailsCleanly:
+    """Case 19: locked worktree with untracked content — unlock attempted, remove refused, worktree relocked."""
+
+    def test_locked_dirty_worktree_is_refused_and_relocked(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/locked-dirty")
+        subprocess.run(["git", "branch", "-D", "feat/locked-dirty"], cwd=bare, check=True)
+
+        wt_path = tmp_path / "locked-dirty-tree"
+        _make_worktree(local, "feat/locked-dirty", wt_path)
+        # Untracked file causes git worktree remove to refuse without --force
+        (wt_path / "leftover.txt").write_text("in-progress work")
+        subprocess.run(
+            ["git", "worktree", "lock", str(wt_path), "--reason", "test lock"],
+            cwd=local, check=True, capture_output=True,
+        )
+
+        env = fake_gh({"feat/locked-dirty": {"number": 220, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "unlocked stale lock" in result.stdout
+        assert "remove failed (manual step needed)" in result.stdout
+        # Worktree dir and its content must survive
+        assert wt_path.exists()
+        assert (wt_path / "leftover.txt").exists()
+        # Local branch must survive (script continue'd before branch -D)
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/locked-dirty"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "branch ref must survive when worktree remove fails"
+        # Worktree must be relocked (best-effort restore of prior state)
+        porcelain = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=local, capture_output=True, text=True, check=True,
+        )
+        records = porcelain.stdout.strip().split("\n\n")
+        wt_str = str(wt_path)
+        wt_is_locked = any(
+            f"worktree {wt_str}" in record and "locked" in record
+            for record in records
+        )
+        assert wt_is_locked, "worktree should be relocked after failed remove"
