@@ -156,7 +156,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
         fi
       done < <(git worktree list --porcelain)
       if [ "$_DRY_LOCKED" -eq 1 ]; then
-        echo "  ${BRANCH} (${MERGED_PR_INFO[$BRANCH]}) [locked — will skip]"
+        echo "  ${BRANCH} (${MERGED_PR_INFO[$BRANCH]}) [locked — will unlock and remove]"
       else
         echo "  ${BRANCH} (${MERGED_PR_INFO[$BRANCH]})"
       fi
@@ -242,12 +242,16 @@ for BRANCH in "${MERGED_BRANCHES[@]}"; do
 
   if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" != "$REPO_ROOT" ]; then
     if [ "$WORKTREE_LOCKED" -eq 1 ]; then
-      echo "    worktree:       locked (skipped)"
-      continue
+      if git worktree unlock "$WORKTREE_PATH" 2>/dev/null; then
+        echo "    worktree:       unlocked stale lock"
+      fi
     fi
     if git worktree remove "$WORKTREE_PATH" 2>/dev/null; then
       echo "    worktree:       removed: ${WORKTREE_PATH}"
     else
+      if [ "$WORKTREE_LOCKED" -eq 1 ]; then
+        git worktree lock "$WORKTREE_PATH" 2>/dev/null || true
+      fi
       echo "    worktree:       remove failed (manual step needed)"
       continue
     fi
