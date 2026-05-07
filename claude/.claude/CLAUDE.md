@@ -58,7 +58,7 @@ Comments must be readable by a future coder who has not read the PR description,
 
 ## State digest format
 
-See `~/.claude/COMPACT_INSTRUCTIONS.md` for the structured digest shape both `/compact` and `/handoff` produce.
+See `~/.claude/COMPACT_INSTRUCTIONS.md` for the structured digest shape `/handoff` produces. Auto-compaction uses Anthropic's internal summarizer and cannot be guided by this file.
 
 ## Output Preferences
 

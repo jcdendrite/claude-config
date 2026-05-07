@@ -1,9 +1,8 @@
 # State digest format
 
-Read this file when summarizing the conversation for `/compact`
-(manual or auto). The same shape is used by `/handoff` for
-cross-session resume files — a context-reset agent reads the same
-digest regardless of how the context was reset.
+Read this file when writing a `/handoff` cross-session resume file.
+Auto-compaction uses Anthropic's internal summarizer — this file has
+no effect on it.
 
 Produce a summary with these sections, in order:
 

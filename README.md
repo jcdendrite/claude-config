@@ -208,7 +208,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires after `/compact` and `/clear` — not just on session start. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
 
-2. **Compaction guidance (`COMPACT_INSTRUCTIONS.md`).** `claude/.claude/CLAUDE.md` points the compaction summarizer at `~/.claude/COMPACT_INSTRUCTIONS.md`, which defines the structured digest shape both `/compact` and `/handoff` produce. See the file for sections and per-section guidance. Whether the summarizer follows external references is unverified — if compaction still drops critical state, inline the file contents under `## State digest format` in CLAUDE.md as a fallback.
+2. **Handoff format (`COMPACT_INSTRUCTIONS.md`).** `claude/.claude/CLAUDE.md` references `~/.claude/COMPACT_INSTRUCTIONS.md`, which defines the §1–§6 structured digest shape that `/handoff` produces. **Auto-compaction does not follow this format** — Anthropic's internal compaction engine uses its own summarizer regardless of CLAUDE.md instructions or external file references. The marker re-injection hook (not the digest format) is what restores gate state after auto-compact.
 
 3. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `/tmp/<slug>-handoff.md`. Claude proactively suggests this at ~60% context usage (same threshold Anthropic recommends for manual `/compact`) because:
    - Quality: cleaner context → more accurate handoff.
@@ -218,7 +218,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 | Situation | Right action |
 |---|---|
-| Same session, conversation is noisy but task continues | `/compact` (guided by `COMPACT_INSTRUCTIONS.md`) |
+| Same session, conversation is noisy but task continues | `/compact` |
 | Switching to an unrelated task | `/clear` (intent-driven, no percentage threshold) |
 | Ending a session, will resume later | `/handoff` (produces resume file) |
 | Context >83.5%: auto-compact fires | Happens automatically; marker state is restored by the hook |
