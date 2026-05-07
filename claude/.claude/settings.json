@@ -6,7 +6,12 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/capture-session-id.sh"
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
           {
             "type": "command",
             "command": "~/.claude/hooks/session-marker-dashboard.sh"
