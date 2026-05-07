@@ -19,7 +19,7 @@
 
 ### Heavy command output
 
-Verify-class runs (full test suites, lint, typecheck, build) should run via the `Agent` tool with `subagent_type: general-purpose` — not directly via `Bash` in the parent. The subagent absorbs the output and returns a verdict plus any failure excerpts; the parent's prompt cache and working state stay intact. This applies to suite-level runs; commands scoped to a single test file or single test name during interactive debugging can stay inline.
+Verify-class runs (full test suites, lint, typecheck, build) should run via the `Agent` tool with `subagent_type: general-purpose` — not directly via `Bash` in the parent. The subagent writes full output to `${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns a structured verdict plus the file paths; the parent reads the file for more detail rather than re-running. This applies to suite-level runs; commands scoped to a single test file or single test name during interactive debugging can stay inline.
 
 ## Code Review
 
