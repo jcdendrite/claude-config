@@ -24,6 +24,21 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# Progress helpers (stderr-only, no-op when stderr is not a TTY)
+# ---------------------------------------------------------------------------
+
+progress() {
+  [ -t 2 ] || return 0
+  local i=$1 n=$2 label=$3
+  printf '\r  [%d/%d] %-60.60s' "$i" "$n" "$label" >&2
+}
+
+clear_progress() {
+  [ -t 2 ] || return 0
+  printf '\r%-80s\r' '' >&2
+}
+
+# ---------------------------------------------------------------------------
 # Argument validation
 # ---------------------------------------------------------------------------
 
@@ -92,11 +107,25 @@ declare -a MERGED_BRANCHES=()
 declare -A MERGED_PR_INFO=()   # branch -> "PR #N, merged DATE"
 declare -a SKIPPED_BRANCHES=() # checked-out candidates
 
+CANDIDATE_COUNT=0
+for _B in "${ALL_BRANCHES[@]}"; do
+  [ "$_B" = "$DEFAULT_BRANCH" ] && continue
+  [ "$_B" = "$CURRENT_HEAD" ] && continue
+  CANDIDATE_COUNT=$(( CANDIDATE_COUNT + 1 ))
+done
+
+if [ -t 2 ] && [ "$CANDIDATE_COUNT" -gt 0 ]; then
+  printf 'Scanning %d branch(es) for merged PRs...\n' "$CANDIDATE_COUNT" >&2
+fi
+
+_PROGRESS_I=0
 for BRANCH in "${ALL_BRANCHES[@]}"; do
   # Skip the default branch
   [ "$BRANCH" = "$DEFAULT_BRANCH" ] && continue
   # Skip the currently checked-out branch (will recheck per-branch below)
   [ "$BRANCH" = "$CURRENT_HEAD" ] && continue
+  _PROGRESS_I=$(( _PROGRESS_I + 1 ))
+  progress "$_PROGRESS_I" "$CANDIDATE_COUNT" "$BRANCH"
 
   # Query for a merged PR targeting this branch name
   PR_JSON=$(gh pr list \
@@ -126,6 +155,7 @@ else:
     MERGED_PR_INFO["$BRANCH"]="PR #${PR_NUMBER}, merged ${PR_MERGED_AT}"
   fi
 done
+clear_progress
 
 # ---------------------------------------------------------------------------
 # Dry-run: print candidates and exit
