@@ -8,11 +8,13 @@
 # to fire this hook on ALL Bash commands. The internal grep is the actual
 # gate. The "if" field is a hint only.
 #
-# Any Bash command containing "marker.sh" must be one of the 12 valid
-# invocation shapes exactly. No chains, no env-var prefixes, no redirects,
-# no bash wrappers, no extra args. This prevents prompt-injection attacks
-# that chain marker.sh invocations with malicious commands and rely on the
-# settings.json allowlist to approve the first segment.
+# Commands that start directly with the marker.sh path (~/ or absolute) must
+# match one of the 12 valid invocation shapes exactly: no chains, no redirects,
+# no extra args. Wrapped forms (env-var prefix, bash wrapper, relative path,
+# subshell) are not gated here — they fast-exit at Stage 2 and are denied by
+# the permissions.allow layer, which does not list their wrapper executables.
+# Removing the permissions.allow gate without updating this hook would leave
+# those forms ungated.
 set -uo pipefail
 
 INPUT=$(cat)
@@ -25,22 +27,37 @@ if [ "$JQ_EXIT" -ne 0 ]; then
   exit 0
 fi
 
-# Fast-exit: no opinion on commands that don't involve marker.sh
-if ! printf '%s' "$COMMAND" | grep -qF 'marker.sh'; then
-  exit 0
-fi
+# Strip leading/trailing whitespace — computed before the activation guards so
+# both the fast-reject and anchored-path check share one computation.
+TRIMMED=$(printf '%s' "$COMMAND" | sed -E 's/^[[:space:]]+//')
 
-# Strip leading/trailing whitespace
-TRIMMED=$(printf '%s' "$COMMAND" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+# Stage 1: cheap substring fast-reject — most Bash calls have no marker mention.
+printf '%s' "$COMMAND" | grep -qF 'marker.sh' || exit 0
 
 # Reject path traversal sequences before the allowlist check. The VALID_PATTERN
 # character class permits '.' and '/', which together admit '../' segments.
-# An explicit '..' pre-check closes that gap cleanly.
-if printf '%s' "$TRIMMED" | grep -qF '..'; then
+# Match '..' only as a path segment (../foo, foo/.., foo/../bar) — not as
+# range notation (a..b), ellipses, or node_modules/.../foo. This check runs
+# before Stage 2 so that tilde-form traversal paths (e.g.
+# ~/.claude/scripts/../scripts/marker.sh) are caught even though Stage 2's
+# anchored regex does not match them.
+if printf '%s' "$TRIMMED" | grep -qE '(^|/)\.\.(/|$)'; then
   TRUNCATED=$(printf '%s' "$TRIMMED" | cut -c1-80)
   REASON="marker.sh invocation denied (path traversal '..' detected). Command (truncated): $TRUNCATED"
   REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+  exit 0
+fi
+
+# Stage 2: anchored leading-path check. Bash =~ treats the subject as a single
+# string; `^` anchors at position 0 only — correct for multi-line $COMMAND
+# (heredocs) because grep -E with '^' matches per-line and would over-activate
+# on a heredoc body whose inner line starts with the script path.
+# Wrapped/chained forms (bash -c, env-var prefix, semicolons, subshells)
+# intentionally fast-exit here; permissions.allow is their gate — those wrapper
+# executables are not in the allow list, so the permission layer denies them
+# before this hook's deep validation would ever matter.
+if [[ ! "$TRIMMED" =~ ^(\~|\$HOME|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh([[:space:]]|$) ]]; then
   exit 0
 fi
 
@@ -72,6 +89,7 @@ Valid shapes:
   ~/.claude/scripts/marker.sh deactivate respond-pr
   ~/.claude/scripts/marker.sh deactivate memory-skill
 
-No chains (&&, ||, ;), env-var prefixes, bash wrappers, redirects, or extra args."
+No chains (&&, ||, ;), redirects, or extra args. Env-var prefix, bash wrapper,
+and relative-path forms are not gated here — they are denied by permissions.allow."
 REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
