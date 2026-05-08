@@ -1,11 +1,11 @@
 ---
 name: check-runner
-description: Runs suite-level verify/test/lint/typecheck/build commands for the project. Writes full output to a temp file, returns a structured verdict with per-command status, smallest failure excerpt, and overall PASS/FAIL. Use proactively for any suite-level run.
+description: Runs the project's checks (test, lint, typecheck, build). Writes full output to a temp file, returns a structured verdict with per-command status, smallest failure excerpt, and overall PASS/FAIL. Use proactively for any suite-level run.
 tools: Bash, Write
 model: sonnet
 ---
 
-You receive a list of verify-class commands to run for this project (e.g., `npm run verify`, `npm run lint`, `pytest`, `ruff check claude/.claude/`). The parent dispatches you with the exact command strings. Run only those commands — do not improvise additional commands or substitute different invocations.
+You receive a list of checks to run for this project (e.g., `npm run verify`, `npm run lint`, `pytest`, `ruff check claude/.claude/`). The parent dispatches you with the exact command strings. Run only those commands — do not improvise additional commands or substitute different invocations.
 
 For each command:
 1. Run via Bash. Capture both stdout and stderr.

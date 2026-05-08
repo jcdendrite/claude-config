@@ -19,9 +19,9 @@
 
 ### Heavy command output
 
-Verify-class runs (full test suites, lint, typecheck, build) should run via the `Agent` tool with `subagent_type: check-runner` — not directly via `Bash` in the parent. **Enumerate the exact command strings in the dispatch prompt** (e.g. "Run these commands: `pytest claude/.claude/`, `ruff check claude/.claude/`") — not "verify the project" or "run the suite". The subagent writes full output to `${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns a structured verdict plus the file paths; the parent reads the file for more detail rather than re-running. This applies to suite-level runs; commands scoped to a single test file or single test name during interactive debugging can stay inline.
+Use the `Agent` tool with `subagent_type: check-runner` to run the checks (full test suites, lint, typecheck, build) — not `Bash` in the parent directly. **Enumerate the exact command strings in the dispatch prompt** (e.g. "Run these commands: `pytest claude/.claude/`, `ruff check claude/.claude/`") — not "run the checks" or "run the suite". The subagent writes full output to `${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns a structured verdict plus the file paths; the parent reads the file for more detail rather than re-running. This applies to suite-level runs; commands scoped to a single test file or single test name during interactive debugging can stay inline.
 
-If the subagent reports the verify command was blocked by permissions, do NOT fall back to running it directly in the parent — that defeats the dispatch (parent context inhales the output) and silently bypasses the permission gate. Stop, surface the exact missing allow-rule (e.g. `Bash(npm run verify)`), and wait for the user to either pre-approve it in the appropriate scope's `permissions.allow` or run the command themselves.
+If the subagent reports a check was blocked by permissions, do NOT fall back to running it directly in the parent — that defeats the dispatch (parent context inhales the output) and silently bypasses the permission gate. Stop, surface the exact missing allow-rule (e.g. `Bash(npm run verify)`), and wait for the user to either pre-approve it in the appropriate scope's `permissions.allow` or run the command themselves.
 
 ## Code Review
 

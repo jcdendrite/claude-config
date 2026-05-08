@@ -19,7 +19,7 @@ Checklist item 10 (PATH-resolved commands) applies. Justification accepted.
 
 ### `npm run lint`, `npm run typecheck`, `npm run build` — intentionally not in the global allow list
 
-These three entries would let subagent-dispatched verify-class commands (see
+These three entries would let subagent-dispatched checks (see
 CLAUDE.md "Heavy command output") inherit permissions and run without prompt.
 They are deliberately absent from the global allow list because:
 
