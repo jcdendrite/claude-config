@@ -15,6 +15,7 @@ fi
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO_DIR"
+mkdir -p "$HOME/.local/bin"
 stow -v --adopt -t "$HOME" claude
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
