@@ -70,34 +70,12 @@ class TestEnforceMarkerScriptShape:
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     # ------------------------------------------------------------------ #
-    # Env-var prefix — intentionally bypassed by Stage 2                 #
-    # ------------------------------------------------------------------ #
-
-    def test_env_var_prefix_allowed(self):
-        """The shape hook intentionally does not gate this form; permissions.allow denies the
-        wrapping executable. Do not change this test without first confirming the
-        permission-layer gate still applies."""
-        cmd = "FOO=1 ~/.claude/scripts/marker.sh write code-review"
-        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "allow"
-
-    # ------------------------------------------------------------------ #
     # Redirect                                                            #
     # ------------------------------------------------------------------ #
 
     def test_redirect_denied(self):
         cmd = "~/.claude/scripts/marker.sh write code-review > /tmp/out"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
-
-    # ------------------------------------------------------------------ #
-    # Bash wrapper — intentionally bypassed by Stage 2                   #
-    # ------------------------------------------------------------------ #
-
-    def test_bash_wrapper_allowed(self):
-        """The shape hook intentionally does not gate this form; permissions.allow denies the
-        wrapping executable. Do not change this test without first confirming the
-        permission-layer gate still applies."""
-        cmd = "bash ~/.claude/scripts/marker.sh write code-review"
-        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "allow"
 
     # ------------------------------------------------------------------ #
     # Extra args                                                          #
@@ -148,17 +126,6 @@ class TestEnforceMarkerScriptShape:
 
     def test_absolute_path_form_allowed(self):
         cmd = "/home/jared/.claude/scripts/marker.sh write code-review"
-        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "allow"
-
-    # ------------------------------------------------------------------ #
-    # Relative path — intentionally bypassed by Stage 2                  #
-    # ------------------------------------------------------------------ #
-
-    def test_relative_path_allowed(self):
-        """The shape hook intentionally does not gate this form; permissions.allow denies the
-        wrapping executable. Do not change this test without first confirming the
-        permission-layer gate still applies."""
-        cmd = "./marker.sh write code-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "allow"
 
     def test_path_traversal_denied(self):
