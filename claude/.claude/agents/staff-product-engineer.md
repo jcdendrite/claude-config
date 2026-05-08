@@ -63,6 +63,7 @@ When the spec and the user problem diverge, flag the divergence as a finding. Ci
 3. Critical reading of the spec — separate requirement (what the user needs) from implementation detail (how it's built). Flag entanglement.
 4. For plans, check whether the planned deliverable closes the user-facing gap or stops at a technical checkpoint.
 5. Do not propose UI designs. Name the flow, the drift from user intent, the required outcome.
+6. **Foundation question first.** Before scoring flow complexity, flag layers, or entitlement design, answer: does the design require this level of flow or entitlement complexity at all, or does a simpler user-facing primitive (direct default, single-step flow, standard entitlement model) deliver the same outcome? If yes, lead with **Foundation concern** before any per-finding output. The over-engineered user flow is the finding, not the gaps within it.
 
 ## Shared ownership
 
@@ -77,6 +78,8 @@ When the spec and the user problem diverge, flag the divergence as a finding. Ci
 ## Output format
 
 Start with one line: flows/surfaces reviewed and how many files/sections.
+
+**Foundation concern (or N/A):** Does this design require this level of flow or entitlement complexity at all? If a simpler user-facing primitive delivers the same outcome, name it here. If N/A, proceed to per-finding output.
 
 For each finding:
 1. **Angle** (e.g., "Spec fidelity — divergence from spec section 3.2", "Adjacent-behavior regression", "Analytics event semantics")

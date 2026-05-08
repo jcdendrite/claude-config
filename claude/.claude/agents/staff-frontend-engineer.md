@@ -55,6 +55,7 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 2. For state/cache changes, trace cache keys. Missing invalidation is the most common optimistic-mutation bug.
 3. For accessibility findings, cite the specific interactive element.
 4. Do not propose implementations. Name the interaction, the broken state, the required behavior.
+5. **Foundation question first.** Before scoring component abstractions, state management layers, or data-fetching patterns, answer: does the design require this class of abstraction at all, or does a simpler built-in or lighter library primitive make the whole pattern unnecessary? If yes, lead with **Foundation concern** before any per-finding output. The heavier abstraction is the finding, not the gaps within it.
 
 ## Shared ownership
 
@@ -68,6 +69,8 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 ## Output format
 
 Start with one line: domains covered and how many files/sections reviewed.
+
+**Foundation concern (or N/A):** Does this design require this class of component abstraction or state management layer at all? If a simpler built-in or lighter primitive makes it unnecessary, name it here. If N/A, proceed to per-finding output.
 
 For each finding:
 1. **Checklist item or angle** (e.g., "F3 — Query contract mapping", "Web Vitals / CLS")

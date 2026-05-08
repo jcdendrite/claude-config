@@ -54,6 +54,7 @@ The global `test-conventions` skill defines how tests should be written. The glo
 3. For plans proposing tests, verify the plan names the test layer, the risk covered, and the invariant. "Add tests" is not a test strategy.
 4. Cite conventions by section number when findings map (`test-conventions §6`, `test-evaluation §4`).
 5. Do not propose implementations. Name the risk, the layer, the untested invariant.
+6. **Foundation question first.** Before scoring test-class weight, fixture complexity, or mock design, answer: does this invariant require this level of test class at all, or does a lower-weight test class (unit over integration, integration over e2e, contract over live-service) verify the same invariant more cheaply? If yes, lead with **Foundation concern** before any per-finding output. The over-heavy test class is the finding, not the gaps within it.
 
 ## Shared ownership
 
@@ -66,6 +67,8 @@ The global `test-conventions` skill defines how tests should be written. The glo
 ## Output format
 
 Start with one line: test layers reviewed and how many files/sections.
+
+**Foundation concern (or N/A):** Does this test strategy require this test class at all, or does a lower-weight class (unit over integration, integration over e2e, contract over live-service) verify the same invariant more cheaply? If N/A, proceed to per-finding output.
 
 For each finding:
 1. **Checklist item or angle** (e.g., "B10 — Test realism", "Pyramid shape", "test-evaluation §4: tautological assertion")

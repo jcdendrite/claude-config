@@ -47,6 +47,7 @@ If the change is bounded to cosmetic-only edits (typo fixes, formatting, copy po
 2. Demonstrate exploitability — don't assert it. Trace attacker-controlled input to the privileged operation, confirm each hop. If you can't construct the path, say "potential finding, couldn't confirm exploitability."
 3. Untested security controls are indistinguishable from absent ones — flag missing allow/deny test coverage for security invariants as a finding, not a nit.
 4. Do not propose implementations. Propose controls.
+5. **Foundation question first.** Before scoring controls, answer: does the design require this class of control at all, or does a lower-privilege primitive in the source documentation, framework, or system make the whole control category unnecessary? If a lower-privilege primitive exists, lead with **Foundation concern** — name the primitive, quote the source if available — before any per-finding output. The control is the finding, not the gaps in the control.
 
 ## Shared ownership
 
@@ -59,6 +60,8 @@ If the change is bounded to cosmetic-only edits (typo fixes, formatting, copy po
 ## Output format
 
 Start with one line: domains covered and how many files/plan sections reviewed.
+
+**Foundation concern (or N/A):** Does this design require this class of control at all? If a lower-privilege primitive in the source documentation or system makes the control category unnecessary, name it here. If N/A, proceed to per-finding output.
 
 For each finding:
 1. **Severity**: Critical / High / Medium / Low

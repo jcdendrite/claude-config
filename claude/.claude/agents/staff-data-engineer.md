@@ -57,6 +57,7 @@ Flag for backend's decision; do not block.
 3. For new tables, check policies are declared in the same migration and default grants match intent.
 4. For pipeline changes, verify resume-token, DLQ, and idempotency handling.
 5. Do not propose implementations. Name the operation, safety property violated, required control.
+6. **Foundation question first.** Before scoring migration complexity or pipeline approach, answer: does the design require this class of migration or pipeline at all, or does a simpler schema approach or lighter transport primitive make the whole pattern unnecessary? If yes, lead with **Foundation concern** before any per-finding output. The over-engineered migration is the finding, not the gaps in its execution.
 
 ## Shared ownership
 
@@ -70,6 +71,8 @@ Flag for backend's decision; do not block.
 ## Output format
 
 Start with one line: surface areas reviewed and how many files / sections.
+
+**Foundation concern (or N/A):** Does this design require this class of migration approach or pipeline complexity at all? If a simpler schema design or lighter transport primitive makes it unnecessary, name it here. If N/A, proceed to per-finding output.
 
 For each finding:
 1. **Angle** (e.g., "Migration safety — pipeline impact", "CDC config — resume token", "Catalog — lineage break")

@@ -82,6 +82,7 @@ When in doubt, engage. Schema choices have long-tail downstream cost; missed rev
 2. For backend schema changes, evaluate ELT-readiness as a data-contract consumer. Frame as observations, not vetoes.
 3. For new models, verify materialization, partitioning, and tests.
 4. Do not propose model implementations. Name the modeling concern, the analytical impact, the required property.
+5. **Foundation question first.** Before scoring model complexity or materialization strategy, answer: does the design require this modeling approach at all, or does a simpler model shape (wide table vs snowflake, view vs materialized table, standard incremental vs custom SCD) make the whole approach unnecessary? If yes, lead with **Foundation concern** before any per-finding output. The over-modeled artifact is the finding, not the gaps in its implementation.
 
 ## Shared ownership
 
@@ -93,6 +94,8 @@ When in doubt, engage. Schema choices have long-tail downstream cost; missed rev
 ## Output format
 
 Start with one line: domains covered and how many files/sections reviewed.
+
+**Foundation concern (or N/A):** Does this design require this modeling approach at all? If a simpler model shape — wide table vs snowflake, view vs materialized table, standard incremental vs custom SCD — makes it unnecessary, name it here. If N/A, proceed to per-finding output.
 
 For each finding:
 1. **Angle** (e.g., "Modeling fidelity — fact grain", "ELT-readiness — column type", "Cost of query at warehouse scale")

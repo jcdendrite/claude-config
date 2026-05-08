@@ -61,20 +61,23 @@ A plan failing any of these is not ready to implement — return it to the autho
 
 ## Step 4 — Design-fitness gate
 
-Before evaluating gaps, answer two questions in order:
-
+Before evaluating gaps, answer three questions in order:
 1. **What user surface and threat model does this serve?** A line or two — production users, internal-only, dev-only, or whatever framing fits. Persona reviewers must scope findings to the declared surface, not default to a worst-case external-attacker model.
-
 2. **Is the design appropriately sized for the user pain it solves on that surface?** Gap-finding on an over-elaborate design elaborates it further (each finding closes a gap by adding more machinery), and the checklist won't surface "this whole design is the wrong shape."
 
 Markers of over-elaboration:
-
 - Defensive layers beyond the declared user surface and threat model; conditional logic for phases that may not arrive.
 - Layers duplicating an existing abstraction; granularity exceeding any consumer's need.
 - Captured outputs / fields with no downstream reader.
 - "Could be done in N lines" stays valid even after personas shaped the plan.
 
-If over-elaborated: stop. Surface the simpler design as the primary review output before any checklist findings. Otherwise proceed to Step 5 — gap-finding will surface what's missing.
+3. **Are foundation-correctness tripwires clean?** These fire on observable plan text, not on judgment calls. If any fire, stop — output "Foundation concern: [one sentence]" + "Lighter alternative: [one sentence pointing to source]" as the primary output; do not spawn specialists until the foundation question is resolved.
+
+   - **Over-powered primitive.** Plan uses a mechanism heavier, more invasive, or wider-scope than the task needs. Required: name the lighter primitive in the source documentation and justify why it fails. If not enumerated, the foundation is the finding, not the hardening on top of it.
+   - **Compounding layers.** Plan stacks multiple layers (validation, retry, fallback, defense, schema-drift handling, etc.), each closing a gap the prior layer's existence created. Required: ask "what foundational change dissolves these?" before scoring any layer individually.
+   - **Self-referential findings.** Plan cites its own prior findings ("addresses the gap from the previous draft," "closes the issue raised in the prior pass"). Required: treat each self-reference as evidence the foundation generates problems faster than patches close them.
+
+If over-elaborated or any foundation tripwire fires: stop. Surface the simpler design or the foundation question as the primary review output before any checklist findings. Otherwise proceed to Step 5 — gap-finding will surface what's missing.
 
 Question implementation choices, not feature scope — the ticket itself isn't reviewed here, that goes back to the author.
 
