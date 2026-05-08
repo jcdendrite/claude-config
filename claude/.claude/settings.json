@@ -212,10 +212,7 @@
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches)",
-      "Bash(cleanup-merged-branches --dry-run)",
-      "Bash(npm run lint)",
-      "Bash(npm run typecheck)",
-      "Bash(npm run build)"
+      "Bash(cleanup-merged-branches --dry-run)"
     ],
     "deny": [
       "Bash(sudo *)",

@@ -51,13 +51,13 @@ If the subagent reports the verify command was blocked by permissions, do NOT fa
 - Never write `~/.claude/*-markers/*` by hand. Each review skill writes its own marker directory (`/code-review` → `review-markers/`, `/plan-review` → `plan-review-markers/`, etc.) when a review passes, and pre-commit hooks gate on their presence. If a commit is blocked, run the review skill the hook names; if the skill is harness-blocked, spawn a subagent that can run it. A general "ship it" instruction is not authorization to forge a marker.
 - Don't add globs (`Bash(pytest *)`, `Bash(npm run *)`) to `permissions.allow`. Globs widen the surface to flag injection, command chaining, and shell-expansion attacks — see `claude/.claude/skills/review-permissions/SKILL.md` checklist items 1–9. Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
 
-## Code Comments
+## Code Comments and Durable Documentation
 
-Comments must be readable by a future coder who has not read the PR description, commit message, or planning document. In particular:
+Code comments and durable in-repo documentation (REFERENCES.md, doc files, README sections) must be readable by a future contributor who has not read the PR description, commit message, or planning document. In particular:
 
-- **No PR-defined terminology** in code comments (e.g., "Defense A", "Action 6", "Pattern C"). If a label is meaningful it must be defined in code (constant name, function name, type name) — not in a comment that depends on context outside the file.
+- **No PR-defined terminology** (e.g., "Defense A", "Action 6", "Pattern C"). If a label is meaningful it must be defined in code or named explicitly — not in a comment or doc that depends on context outside the file.
 - **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message or PR body.
-- **Self-test:** if you can't write the comment such that it survives the PR being merged and the description being lost, don't write the comment. Move the rationale to the commit message instead.
+- **Self-test:** if you can't write the content such that it survives the PR being merged and the description being lost, don't write it. Move the rationale to the commit message instead.
 
 ## Output Preferences
 
