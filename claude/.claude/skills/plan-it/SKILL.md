@@ -43,7 +43,13 @@ List every underspecified decision (edge cases, error handling, scope boundaries
 
 ## Step 5 — Architecture design
 
-Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, and `verify-primary-sources` if their domains are implicated. Write the plan with these sections:
+Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, and `verify-primary-sources` if their domains are implicated.
+
+**External-pattern grounding.** When the chosen approach invokes a pattern from external documentation (a library, framework, or vendor doc), quote the literal source lines that establish the pattern — not a paraphrase, not a summary, not the section heading. This extends Step 3's grep-the-population rule from in-codebase patterns to external sources. A capitalized pattern name ("the X pattern") lifted from prose without a verbatim source quote is a hazard: names crystallize an interpretation that may not match the source.
+
+**Lighter-alternatives subsection.** If the chosen approach adopts a more powerful, invasive, or wider-scope mechanism than the task requires — a heavier abstraction, a more privileged execution context, a more complex coordination pattern, a more invasive integration — include a **Lighter alternatives considered** subsection in the plan. Enumerate at least two lighter primitives from the source documentation/system; for each, state in one sentence why it does not solve the problem. If you cannot find two lighter alternatives in the source, that itself is the signal that you have not read the source carefully enough — re-read with the specific question "what mechanisms exist that do NOT require this heavier choice?" before continuing.
+
+Write the plan with these sections:
 
 1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
 2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block)

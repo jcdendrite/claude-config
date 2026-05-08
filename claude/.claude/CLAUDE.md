@@ -7,12 +7,14 @@
 - Avoid duplicating managed values across files where they can drift out of sync, but use judgment — sometimes a simple hardcoded value is better than an over-engineered abstraction.
 - Before taking any action that is destructive, irreversible, or has blast radius beyond the immediate change (data loss, breaking API changes, infrastructure modifications), flag the risk and confirm the approach.
 - When uncertain about a CLI flag, tool behavior, or API detail, verify rather than guessing.
+- **Default-suspect over-powered primitives.** When a design adopts a more powerful, invasive, or wider-scope mechanism than the task requires — a heavier abstraction, a more privileged execution context, a more complex coordination pattern, a more invasive integration — identify the lighter primitive in the source documentation/system that could solve the problem before adopting the heavier one. Re-read the source with the specific question "what mechanisms exist that do NOT require this heavier choice?" — first-pass reads miss the answer routinely.
 
 ## Working Style
 
 - Walk through your proposed approach and explain tradeoffs before writing code. When presenting options, evaluate them — state which you'd recommend and why, rather than listing choices without a judgment.
 - Be precise. Do not overstate severity, conflate distinct issues, or hand-wave. State the realistic impact and verify claims against actual code — not against what the code or a sensible design should do.
 - Always prefer minimal, targeted changes. Do not refactor entire files or expand scope beyond what was asked. If you see an opportunity for a broader improvement, mention it separately — do not bundle it in.
+- **Compounding defensive layers are a wrong-foundation tell.** When a design accumulates stacked defenses on a single mechanism — each new layer closing a gap that the prior layer's existence created — or starts citing its own prior findings, step back and ask whether a foundational change would dissolve them. Do not keep adding hardening. The right primitive usually has a simple shape; compounding complexity is a signal to question the foundation, not to defend it more carefully.
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
 - Use descriptive variable and function names. No generic names.
 - When a session crosses ~60% context usage (visible via statusline `.context_window.used_percentage`) AND the current task is incomplete, proactively suggest the user run `/handoff`. Do not run it yourself — it's a user-invoked slash command. If the user agrees, the command writes `/tmp/<slug>-handoff.md` and provides the resume incantation. Run `analyze-context` if unsure about the threshold. (See README's "Threshold reference" section for the why-60%.)

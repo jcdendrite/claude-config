@@ -63,6 +63,7 @@ Schema is the query plan. Access patterns drive the design. `staff-data-engineer
 2. For contract changes, grep every consumer. List them.
 3. For external/SDK calls, verify retry/timeout/credential scoping. Cite the docs or source if non-obvious.
 4. Do not propose implementations. Name the contract, the breakage, the required property.
+5. **Foundation question first.** Before scoring API contracts, coordination patterns, or error-handling complexity, answer: does the design require this class of API/coordination approach at all, or does a simpler primitive in the source documentation or framework make the whole approach unnecessary? If yes, lead with **Foundation concern** before any per-finding output. The over-engineered contract is the finding, not the gaps in the contract.
 
 ## Shared ownership
 
@@ -97,6 +98,8 @@ format below.
 ### Inline output
 
 Start with one line: domains covered and how many files/sections reviewed.
+
+**Foundation concern (or N/A):** Does this design require this class of API contract, coordination pattern, or error-handling approach at all? If a simpler primitive in the framework or source documentation makes it unnecessary, name it here. If N/A, proceed to per-finding output.
 
 For each finding:
 1. **Checklist item or angle** (e.g., "K1 — Contract compatibility", "Timeouts/cancellation")

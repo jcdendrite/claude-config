@@ -62,6 +62,7 @@ If the diff is pure application logic with no operational surface delta, or a co
 3. For secrets, trace each reference to its exposure boundary.
 4. For application changes, ask: "if this breaks at 2am, can we see it and revert it?" If the answer requires infrastructure that doesn't exist yet, that's a finding.
 5. Do not propose rewrites. Name the pipeline behavior, the failure mode, the required property.
+6. **Foundation question first.** Before scoring CI/CD complexity, IAM scope, or infrastructure orchestration patterns, answer: does the design require this class of pipeline or permission scope at all, or does a simpler, narrower-permission primitive in the platform documentation make the whole approach unnecessary? If yes, lead with **Foundation concern** before any per-finding output. The over-scoped pipeline is the finding, not the gaps within it.
 
 ## Shared ownership
 
@@ -74,6 +75,8 @@ If the diff is pure application logic with no operational surface delta, or a co
 ## Output format
 
 Start with one line: surface areas reviewed and how many files/sections.
+
+**Foundation concern (or N/A):** Does this design require this class of CI/CD complexity or IAM/permission scope at all? If a simpler or narrower-permission primitive in the platform makes it unnecessary, name it here. If N/A, proceed to per-finding output.
 
 For each finding:
 1. **Checklist item or angle** (e.g., "I3 — Deployment ordering", "Pipeline observability — silent cron", "Cost footprint")
