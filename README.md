@@ -19,6 +19,16 @@ claude-config is a **workflow-enforcement layer** — hooks that gate what Claud
 
 **macOS:** `sha256sum` ships in GNU `coreutils`. Install with `brew install coreutils`, then add the gnubin directory to PATH so the unprefixed name resolves: `export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"`.
 
+**PATH setup for script wrappers:** The three user-facing scripts are installed as wrappers under `~/.local/bin/`. That directory needs to be on your PATH:
+
+- **Linux / WSL2 (Ubuntu-based):** `~/.profile` auto-adds `~/.local/bin` if the directory exists. Re-login, or pick it up immediately: `source ~/.profile`
+- **macOS (stock zsh):** not auto-added. Add once: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`
+- **fish (any platform):** `fish_add_path ~/.local/bin`
+
+Verify: `command -v cleanup-merged-branches` should print the wrapper path.
+
+**Existing users:** `git pull` does not materialize the new wrappers automatically — re-run `./install.sh` once after pulling. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
+
 ## Setup
 
 ```bash
@@ -160,24 +170,18 @@ Schema-change diffs nominally route three ways — `staff-backend-engineer` (des
 
 Utility scripts in `claude/.claude/scripts/` (stowed to `~/.claude/scripts/`).
 
-**First-time setup:** after pulling this repo for the first time, make scripts executable:
-
-```bash
-chmod +x ~/.claude/scripts/*
-```
-
 - **`analyze-context.py`** — inspect context window growth for a Claude Code session. Reads `~/.claude/projects/<project>/<session>.jsonl` and `~/.claude/usage-data/session-meta/` locally; no network calls, no writes.
 
   ```bash
   # Latest session in current project (run from project root)
-  ~/.claude/scripts/analyze-context.py
+  analyze-context
 
   # Heaviest sessions across all projects
-  ~/.claude/scripts/analyze-context.py --top
-  ~/.claude/scripts/analyze-context.py --top 20
+  analyze-context --top
+  analyze-context --top 20
 
   # Specific session
-  ~/.claude/scripts/analyze-context.py <session-id>
+  analyze-context <session-id>
   ```
 
   The per-session view reports start/peak/end token counts, a growth curve
@@ -192,13 +196,18 @@ chmod +x ~/.claude/scripts/*
 - **`token-analyzer.py`** — cross-session per-model token breakdown (Opus / Sonnet / Haiku) with cache-hit rates, plus a list of Opus sessions that likely could have run on Sonnet (no plan-mode, no edits, no sub-agent dispatch, no extended thinking, no judgment-skill invocations). Reads `~/.claude/projects/*/*.jsonl`; no network calls, no writes.
 
   ```bash
-  ~/.claude/scripts/token-analyzer.py             # all-time
-  ~/.claude/scripts/token-analyzer.py --since 7d  # include token activity from the last N days (e.g. 2d, 7d)
+  token-analyzer             # all-time
+  token-analyzer --since 7d  # include token activity from the last N days (e.g. 2d, 7d)
   ```
 
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, and `/respond-pr` write review markers via `~/.claude/scripts/marker.sh`. The 10 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval. A companion `enforce-marker-script-shape.sh` hook denies any other invocation (chains, env-var prefixes, redirects) to prevent prompt-injection escalation via the allowlist.
 
-- **`cleanup-merged-branches.sh`** — discovers all local branches whose PRs are merged (queried via `gh pr list --head <branch> --state merged`) and cleans them up: removes the worktree, force-deletes the local branch, prunes the remote tracking ref, deletes the remote branch if not auto-deleted, and fast-forwards the default branch. Run from any shell (or via `!` from any Claude session — auto-approved by the paired `permissions.allow` entries). Pass `--dry-run` to preview without acting.
+- **`cleanup-merged-branches.sh`** — discovers all local branches whose PRs are merged (queried via `gh pr list --head <branch> --state merged`) and cleans them up: removes the worktree, force-deletes the local branch, prunes the remote tracking ref, deletes the remote branch if not auto-deleted, and fast-forwards the default branch. Auto-approved by the paired `permissions.allow` entries.
+
+  ```bash
+  cleanup-merged-branches          # run cleanup
+  cleanup-merged-branches --dry-run  # preview without acting
+  ```
 
 ## Context management
 
@@ -222,7 +231,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 - ~60%: suggested threshold for `/handoff` — [Anthropic best practices](https://code.claude.com/docs/en/best-practices) cite 60% as the point where context compression produces the highest-quality summary; the same logic applies to `/handoff` (less context noise → better resume file).
 - ~83.5%: auto-compact trigger (community-reported; configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
-- Run `~/.claude/scripts/analyze-context.py` to inspect token usage for the current session.
+- Run `analyze-context` to inspect token usage for the current session.
 
 ## Worktree enforcement
 
