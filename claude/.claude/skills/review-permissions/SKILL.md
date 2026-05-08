@@ -89,14 +89,19 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
    and `git config --global`. `Bash(git status:*)` is vastly safer.
    Flag rules that glob on the binary name without a subcommand.
 
-10. **SSRF via registry/index flags** — Do npm/pip/cargo rules allow
+10. **PATH-resolved commands** — Does the rule name an unqualified binary
+    (no leading `/`, `~/`, or `./`)? A project prepending `./bin/` or
+    `./node_modules/.bin/` silently wins. Flag bare-name entries; require
+    justification (binary is OS-provided and unshadowable) or an absolute-path rule.
+
+11. **SSRF via registry/index flags** — Do npm/pip/cargo rules allow
     `--registry`, `--index-url`, or `--extra-index-url`? These redirect
     HTTP requests to attacker-controlled servers, leaking IP, auth
     tokens, and package queries.
 
 ### Data exfiltration and secret exposure
 
-11. **Sensitive file reads** — Do rules allowing `cat`, `head`, `tail`,
+12. **Sensitive file reads** — Do rules allowing `cat`, `head`, `tail`,
     `file`, `stat`, or `less` permit reading sensitive paths?
     `cat ~/.ssh/id_rsa`, `cat /proc/self/environ`,
     `head ~/.aws/credentials`, `cat .env` all expose secrets. Flag
@@ -104,14 +109,14 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
     (user/machine fingerprinting) and `env`, `printenv`, `set`,
     `export` (environment variable dumps).
 
-12. **Network exfiltration** — Do rules allow any network-capable
+13. **Network exfiltration** — Do rules allow any network-capable
     command? `curl`, `wget`, `git push`, `git remote add`, `ssh`,
     `scp`, `nc`, `dig`, `nslookup` can exfiltrate any data the AI has
     read in the session. A `cat` + `curl` combination allows
     read-then-exfiltrate. Flag any network-capable command in the
     allow list.
 
-13. **Chained multi-step exploitation** — Do any combinations of allowed
+14. **Chained multi-step exploitation** — Do any combinations of allowed
     rules create a dangerous chain? Common pairs:
     - Any file-read command + any network command = read-then-exfiltrate
     - Any write command + any execution command = write-then-execute
@@ -120,7 +125,7 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
 
 ### Code execution
 
-14. **Project code execution** — Do rules allow commands that execute
+15. **Project code execution** — Do rules allow commands that execute
     project-controlled code?
     - Test runners (`jest`, `vitest`, `pytest`, `go test`, etc.)
       execute config files, setup scripts, and test code
@@ -131,17 +136,14 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
     Flag any rule that auto-allows these without project-specific
     justification.
 
-15. **Arbitrary binary execution** — Do rules allow running any binary
+16. **Arbitrary binary execution** — Do rules allow running any binary
     with certain flags (e.g., `Bash(*:--version)`)? A malicious binary
     in `$PATH` ignores `--version` and runs its payload. Prefer
-    explicit binary names. Also check for PATH-relative shadowing:
-    a rule allowing `Bash(python:*)` executes whatever `python`
-    resolves to, which in a compromised project could be a trojan in
-    `./node_modules/.bin/` or `./bin/`.
+    explicit binary names.
 
 ### AI manipulation
 
-16. **Prompt injection exploiting permissions** — Could a malicious repo
+17. **Prompt injection exploiting permissions** — Could a malicious repo
     use prompt injection (via CLAUDE.md, README, code comments, issue
     bodies, or .gitattributes) to instruct the AI to craft commands
     that exploit these permission rules? For each allowed command,
@@ -153,7 +155,7 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
 
 ### Shared resource conflicts
 
-17. **Integration test runners** — Do rules allow test commands that may
+18. **Integration test runners** — Do rules allow test commands that may
     hit shared dependencies (databases, APIs)? Multiple concurrent
     sessions can conflict on shared test databases. Test runners that
     commonly run integration tests (`deno test`, `pytest`, `go test`,
@@ -163,27 +165,27 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
 
 ### Scope
 
-18. **Global vs project scope** — Are the rules in a global
+19. **Global vs project scope** — Are the rules in a global
     `~/.claude/settings.json` or a project `.claude/settings.json`?
     Global rules apply across all projects and should be maximally
     restrictive. Project-level rules can be more permissive because
     the risk context is known.
 
-19. **Blanket allows** — Are there unscoped rules like `"Bash"` (allows
+20. **Blanket allows** — Are there unscoped rules like `"Bash"` (allows
     all bash commands) or `"Edit"` (allows all file edits)? These
     defeat the permission system entirely. Flag and recommend scoped
     alternatives.
 
 ### Non-Bash tool permissions
 
-20. **Write/Edit to sensitive paths** — Do rules allow `Write` or `Edit`
+21. **Write/Edit to sensitive paths** — Do rules allow `Write` or `Edit`
     to paths outside the project directory? `Write(/etc/*)`,
     `Edit(~/.bashrc)`, or unscoped `Write` could overwrite system
     files, shell configs, or SSH keys. Scope to the project directory.
 
-21. **Read of secrets** — Do rules allow `Read` of sensitive paths?
+22. **Read of secrets** — Do rules allow `Read` of sensitive paths?
     `Read(~/.ssh/*)`, `Read(.env)`, `Read(/proc/*/environ)` expose
-    credentials. Same concern as checklist item 11 but for the Read
+    credentials. Same concern as checklist item 12 but for the Read
     tool.
 
 ## Output format
