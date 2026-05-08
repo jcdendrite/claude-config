@@ -54,6 +54,14 @@ _resolve_repo_hash() {
   _marker_lib_repo_hash "$(git rev-parse --show-toplevel | tr -d '\n')"
 }
 
+_guard_staged_vs_unstaged() {
+  local skill="$1"; shift
+  if git diff --cached --quiet -- "$@" && ! git diff --quiet -- "$@"; then
+    printf 'marker.sh: staged diff is empty but unstaged tracked changes exist — run `git add` before /%s.\n' "$skill" >&2
+    exit 2
+  fi
+}
+
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
@@ -73,6 +81,7 @@ case "$SUBCOMMAND" in
       code-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_HASH=$(_resolve_repo_hash) || exit 2
+        _guard_staged_vs_unstaged code-review
         mkdir -p "$HOME/.claude/review-markers"
         git diff --cached | sha256sum | awk '{print $1}' \
           > "$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"
@@ -80,6 +89,7 @@ case "$SUBCOMMAND" in
       skill-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_HASH=$(_resolve_repo_hash) || exit 2
+        _guard_staged_vs_unstaged skill-review 'claude/.claude/skills/**/SKILL.md'
         mkdir -p "$HOME/.claude/skill-review-markers"
         # The pathspec is load-bearing: scopes the hash to SKILL.md diffs only,
         # matching what require-skill-review.sh checks at commit time.
