@@ -6,17 +6,17 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
 
 ## Philosophy
 
-### Why this repo exists: ###
+### Why this repo exists
 
 Working across a variety of projects from very early stage to enterprise-level, I wanted to use a flexible but predictable setup for Claude Code to help me get through large chunks of work efficiently and cost-effectively: from security audits of vibe-coded code bases to building out standard features, adding testing infrastructure, and enforcing quality against industry-standard and best practices checklists. I wanted to stop fixing the same errors that AI agents kept encountering and really focus my time on the nuanced technical challenges that need human judgment.
 
-### How this repo is different from others: ###
+### How this repo is different from others
 
 AI agents are powerful but probabilistic. They will frequently appear to gaslight you, confidently (even top-class models), and draw incorrect conclusions from prose. Simply put, AI is reliable with summarization but not synthesis. I wanted to add a layer of determinism on top of agents' inherently probabilistic judgment to enforce quality and prevent repetitive errors where I could. To achieve these goals, I added safeguards in this repo with *hooks* and *markers*.
 
 I also wanted to encode industry-standard best practices in this repo. LLMs are trained on the corpus of the internet and are biased by the loudest and most common viewpoints. While the wisdom of the masses can often be directionally correct, I find that it's best to defer to primary sources and trusted research, a perspective I picked up during my time studying neuroscience. I believe in the rigor of research and scientific thinking, weighing pros and cons and adhering to evidence-based approaches. You'll see that perspective represented in the content of the *skills* and *instructions* in this repo, with *references* to primary sources that converge on tried-and-true guidelines on how to design and write good software.
 
-### How enforcement complements instructions ###
+### How enforcement complements instructions
 
 Claude Code without enforcement will claim code is done before tests pass, skip the review step when it judges a change "too small," write to the main worktree when a concurrent session is already staged there, and paste project codenames directly into commit messages and PR bodies. claude-config makes these mistakes structurally impossible rather than relying on prompt instructions.
 
