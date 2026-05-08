@@ -211,7 +211,6 @@
       "Bash(~/.claude/scripts/marker.sh deactivate respond-pr)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
-      "Bash(npm run verify)",
       "Bash(npm run lint)",
       "Bash(npm run typecheck)",
       "Bash(npm run build)"
