@@ -359,7 +359,7 @@ class TestRequireWorktreeForGitWrites:
         assert (
             run_hook(
                 WORKTREE_HOOK,
-                bash_input("git log -- .github/workflows/hooks.yml"),
+                bash_input("git log -- .github/workflows/tests.yml"),
                 cwd=opted_in_repo,
             )
             == "allow"
