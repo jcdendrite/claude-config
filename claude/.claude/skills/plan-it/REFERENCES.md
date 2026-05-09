@@ -52,7 +52,7 @@ minutes each, "no placeholders" rule (bans TBD/TODO/implement later), literal
 code blocks in each step, self-review checklist after writing.
 
 **Not adopted:** dual artifact (spec then plan), 200+ line plans with TDD
-step-by-step content. claude-config plans are denser, written for reviewer +
+step-by-step content. `claude-config` plans are denser, written for reviewer +
 implementer, not executor.
 
 ### Devin session-prompt convention (primary)

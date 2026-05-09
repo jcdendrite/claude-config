@@ -34,7 +34,7 @@ symlink and silently stages changes to the public repo. Edit the
 committed file directly via PR.
 
 **Terminology:** Use "project" / "private project", not "client", in
-claude-config prose. The redaction hook is `deny-private-project-refs`.
+`claude-config` prose. The redaction hook is `deny-private-project-refs`.
 
 **Hook defense-in-depth:** Hooks must filter their own input by tool
 name and matcher; do not rely solely on settings.json `if` conditions.
@@ -50,7 +50,7 @@ name and matcher; do not rely solely on settings.json `if` conditions.
 
 ## Plans in this repo affect all stow users
 
-`claude/` is stowed into `$HOME` — changes ship to every user who clones and stows this repo, not only to the session owner. When reviewing a plan for claude-config, evaluate with that audience in mind. Files under `claude/` are not personal config; they are distributed to all stow users on `git pull`. Surface this when declaring the user surface in Step 2 of plan-review, and weight finding severity accordingly.
+`claude/` is stowed into `$HOME` — changes ship to every user who clones and stows this repo, not only to the session owner. When reviewing a plan for `claude-config`, evaluate with that audience in mind. Files under `claude/` are not personal config; they are distributed to all stow users on `git pull`. Surface this when declaring the user surface in Step 2 of plan-review, and weight finding severity accordingly.
 
 ## AI agents: don't merge your own PRs
 
