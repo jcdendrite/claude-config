@@ -34,7 +34,7 @@ Required prefix by settings file scope:
 
 - **Project settings** (`<repo>/.claude/settings.json`): `"$CLAUDE_PROJECT_DIR"/<rest>`. Quotes around the variable handle paths with spaces.
 - **Plugin settings** (plugin-bundled `settings.json`): `${CLAUDE_PLUGIN_ROOT}/<rest>`. Resolves to the plugin's installation directory; changes on each plugin update.
-- **User settings** (`~/.claude/settings.json`): `~/<rest>`, `$HOME/<rest>`, or a literal `/...` absolute path. Acceptable because user-scoped hooks live at a fixed user-level location. claude-config's own `~/.claude/settings.json` uses `~/.claude/hooks/...` across all hook entries with no observed failures — this form is safe in shells that perform standard tilde expansion.
+- **User settings** (`~/.claude/settings.json`): `~/<rest>`, `$HOME/<rest>`, or a literal `/...` absolute path. Acceptable because user-scoped hooks live at a fixed user-level location. `claude-config`'s own `~/.claude/settings.json` uses `~/.claude/hooks/...` across all hook entries with no observed failures — this form is safe in shells that perform standard tilde expansion.
 
 Rejected forms: bare `./<rest>`, `../<rest>`, or unprefixed script names. Concrete failure mode: `./.claude/hooks/foo.sh` produces `/bin/sh: 1: ./.claude/hooks/foo.sh: not found` whenever the agent's CWD has drifted off the project root — for example, in a worktree session after a `cd`.
 

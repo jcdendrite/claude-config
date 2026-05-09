@@ -1,6 +1,6 @@
-# Walkthrough: One contribution cycle with claude-config active
+# Walkthrough: One contribution cycle with `claude-config` active
 
-This transcript shows a realistic contribution cycle enforced by claude-config hooks and skills. Task: add a rate limit to the user export endpoint.
+This transcript shows a realistic contribution cycle enforced by `claude-config` hooks and skills. Task: add a rate limit to the user export endpoint.
 
 ---
 
