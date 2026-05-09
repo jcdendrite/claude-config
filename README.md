@@ -8,7 +8,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
 
 ### Why this repo exists
 
-Working across a variety of projects from very early stage to enterprise-level, I wanted to use a flexible but predictable setup for Claude Code to help me get through large chunks of work efficiently and cost-effectively: from security audits of vibe-coded codebases to building out standard features, adding testing infrastructure, and enforcing quality against industry-standard, best practice checklists. I wanted to stop fixing the same errors that AI agents kept encountering and really focus my time on the nuanced technical challenges that need human judgment.
+Working across a variety of projects from very early stage to enterprise-level, I wanted to use a flexible but predictable setup for Claude Code to help me get through large chunks of work efficiently and cost-effectively: from security audits of vibe-coded codebases to building out standard features, adding testing infrastructure, and enforcing quality against industry-standard, best-practice checklists. I wanted to stop fixing the same errors that AI agents kept encountering and really focus my time on the nuanced technical challenges that need human judgment.
 
 ### How this repo is different from others
 
@@ -22,7 +22,7 @@ Claude Code without enforcement will claim code is done before tests pass, skip 
 
 A CLAUDE.md instruction says "you should run code-review before committing." A PreToolUse hook says "the commit is denied until code-review ran on this exact diff in this session." This distinction is the core design choice: enforce at the tool-call boundary, not at the prompt layer, because prompt-layer instructions are advisory — the model can disregard them on any change it judges simple enough not to need review.
 
-claude-config is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. claude-config ships the enforcement harness; most hand-rolled `~/.claude/` configs improvise the patterns claude-config systematizes: per-session marker keying, specialist reviewer routing, and three-tier redaction.
+claude-config is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. claude-config ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns claude-config systematizes: per-session marker keying, specialist reviewer routing, and three-tier redaction.
 
 ## Requirements
 
