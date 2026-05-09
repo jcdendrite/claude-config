@@ -122,5 +122,5 @@ Keep the failure mode and the fix; drop the trigger's identity.
 ### Enforcement
 
 `deny-private-project-refs.sh` fires on `git commit`, `gh pr create`,
-and `gh pr edit`. See README "Private-project redaction" for blocklist
+`gh pr edit`, and mutating `gh api` calls. See README "Private-project redaction" for blocklist
 setup, opt-in instructions, and test location.

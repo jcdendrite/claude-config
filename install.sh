@@ -64,4 +64,4 @@ check_private_projects_file
 
 echo ""
 echo "Done. Optional: run the hook test suite:"
-echo "  pytest claude/.claude/hooks/tests/"
+echo "  pytest claude/.claude/"
