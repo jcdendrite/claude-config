@@ -311,6 +311,55 @@ Agents spawned with `isolation: worktree` create their own worktrees under `.cla
 
 To opt out, delete `.claude/worktree-required`.
 
+## Recovery from gate deadlock
+
+Active-bypass markers from sessions that crash before cleanup evict themselves automatically: the hooks check `kill -0` against the stored PID and remove dead entries on the next gate hit. The case that remains is a *live session* whose review skill cannot execute — harness-blocked, failing to load, or unable to produce a completion marker due to a tool error.
+
+For three gates, the gating condition is removable via Bash without destroying work:
+
+**`require-plan-review.sh`** blocks Write/Edit when a plan file exists in `.claude/plans/` with no completion marker for this session:
+
+```bash
+# Remove the plan file to clear the gate. Copy the content first if you
+# need to preserve it — this deletes the file from disk.
+rm .claude/plans/<slug>.md
+```
+
+**`require-code-review.sh`** blocks `git commit` when staged changes have not been reviewed in this session. Two options:
+
+```bash
+# Unstage the files. Changes remain in your working tree; re-stage and
+# run /code-review once the skill is available.
+git reset HEAD -- <files>
+```
+
+Or commit directly from a terminal outside Claude Code — Claude Code PreToolUse hooks only fire for `Bash` tool calls within a session.
+
+**`require-skill-review.sh`** blocks `git commit` when a staged `SKILL.md` has not been audited in this session:
+
+```bash
+git reset HEAD -- <path-to-SKILL.md>
+```
+
+Same fallback as above: committing from a terminal outside Claude Code bypasses the hook.
+
+### Gates with no clean escape
+
+Three skill gates have no safe condition-removal path — the gate's intent is to force the skill:
+
+- **`require-ready-for-review.sh`**: the escape paths (close the PR, force-push, hard-reset) are destructive. If the skill cannot run in the current session, spawn a subagent to run it.
+- **`require-respond-pr.sh`**: the gate ensures the skill fetches all review-comment types before any `gh` PR comment operation. There is no condition to remove short of closing the PR.
+- **`require-memory-skill.sh`**: the gate is path-based (fires on writes to memory files). Writing elsewhere defeats the user's intent. Run the skill in a subagent.
+
+### Orphaned active-bypass markers
+
+If a skill's active-bypass gate refuses to release after the skill has finished, the marker's stored PID may be from a `--continue` resume cycle that is still alive. Use the manual sweep utility:
+
+```bash
+~/.claude/scripts/marker.sh clear-stale          # evict dead-PID entries
+~/.claude/scripts/marker.sh clear-stale --dry-run # report without removing
+```
+
 ## Private-project redaction
 
 This repo is public, so any project codename, organization name, or tracker-ID that lands in a commit or PR description ships to the world. The repo-root [`CLAUDE.md`](./CLAUDE.md) "Redact private-project-identifying content" rule defines what to keep out; `deny-private-project-refs.sh` is the mechanical enforcement.
