@@ -1,18 +1,12 @@
 ---
 name: config-environments
 description: >
-  Design and review configuration that differs across environments (dev,
-  staging, production): env var naming, credential isolation, secrets
-  provisioning, and the anti-patterns that reintroduce tight coupling.
-  TRIGGER when: designing new env-var schemes, reviewing code that branches
-  on environment to pick credentials/config, proposing or reviewing variable
-  names with environment suffixes (`_DEV`, `_PROD`, `_STAGING`), or planning
-  secret-isolation strategies across dev and prod.
-  DO NOT TRIGGER when: the config genuinely needs to hold both values
-  simultaneously in the same process (migrations reading `OLD_*` and `NEW_*`
-  at once, test harnesses stubbing real values, feature flags orthogonal to
-  environment), or when the task is a single-environment app with no
-  per-env variation.
+  Multi-environment config design: env-var naming, credential isolation,
+  and secrets provisioning across dev/staging/prod. TRIGGER when
+  designing or reviewing env-var schemes, branching-on-environment
+  credential selection, or secret-isolation strategies. DO NOT TRIGGER
+  when a process legitimately holds both env values simultaneously
+  (migrations, test harnesses) or for single-environment apps.
 user-invocable: false
 ---
 

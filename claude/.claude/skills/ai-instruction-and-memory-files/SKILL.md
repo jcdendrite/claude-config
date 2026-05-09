@@ -1,23 +1,13 @@
 ---
 name: ai-instruction-and-memory-files
 description: >
-  How Claude Code loads CLAUDE.md (and AGENTS.md via the `@AGENTS.md`
-  import pattern); how AGENTS.md serves as the cross-agent standard
-  (also read by Codex, Cursor, Gemini CLI, Windsurf, Amp, Aider, etc.);
-  Claude Code auto-memory (MEMORY.md index + topic files); and general
-  principles for editing any of these surfaces — precedence, duplication
-  rules, length targets, lost-in-the-middle, the user-vs-Claude-written
-  split.
-  TRIGGER when: editing CLAUDE.md or AGENTS.md; creating, editing,
-  auditing, or pruning Claude Code auto-memory in
-  `~/.claude/projects/*/memory/`; deciding whether a rule belongs in
-  CLAUDE.md vs AGENTS.md vs auto-memory; debating file length or
-  context budget for these surfaces.
-  DO NOT TRIGGER when: editing `.lovable/*.md` (use `lovable-knowledge`);
-  editing agent-specific rules files like `.cursorrules` or
-  `.github/copilot-instructions.md` (out of current scope); editing
-  README.md or other project docs not loaded by AI coding agents; or
-  writing code.
+  Editing rules for CLAUDE.md, AGENTS.md, and Claude Code auto-memory
+  (MEMORY.md index + topic files): loading precedence, duplication
+  policy, length targets, user-vs-Claude-written split.
+  TRIGGER when editing or auditing CLAUDE.md, AGENTS.md, or
+  ~/.claude/projects/*/memory/, or deciding which surface a rule
+  belongs in. DO NOT TRIGGER for .lovable/*.md, .cursorrules,
+  .github/copilot-instructions.md, README.md, or writing code.
 user-invocable: false
 ---
 

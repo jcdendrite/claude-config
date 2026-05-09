@@ -1,18 +1,12 @@
 ---
 name: plan-it
 description: >
-  Produce an implementation plan in .claude/plans/<topic-slug>.md
-  through Discovery, Codebase Exploration, Clarifying Questions, and
-  Architecture Design, then hand off to /plan-review for QA.
-  TRIGGER when: the user asks for a plan, design doc, or implementation
-  strategy for non-trivial work; before starting a feature branch where
-  the change spans multiple files or domains.
-  Triggers in plan mode too — compose with plan mode per Steps 1 and 6
-  rather than following plan mode's built-in workflow.
-  DO NOT TRIGGER when: the change is a one-line config tweak, a
-  single-file refactor with obvious shape, or the user explicitly said
-  "just implement it"; on the default branch with no intent to branch;
-  when a plan already exists and needs QA (use /plan-review instead).
+  Produces an implementation plan in .claude/plans/<slug>.md via
+  discovery, exploration, and architecture design, then hands off to
+  /plan-review. TRIGGER when asked for a plan or implementation strategy
+  for work spanning multiple files or domains. DO NOT TRIGGER for
+  single-file tweaks, "just implement it" requests, or when a plan
+  already exists (use /plan-review instead).
 user-invocable: true
 argument-hint: "[optional topic or ticket id]"
 ---

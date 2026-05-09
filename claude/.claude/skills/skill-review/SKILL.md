@@ -1,18 +1,13 @@
 ---
 name: skill-review
 description: >
-  How to review and audit Claude Code skill files
-  (`.claude/skills/**/SKILL.md`): frontmatter conventions, trigger
-  design, voice, length targets, the operational-vs-narrative content
-  test, and the cross-reference vs duplication framework.
-  TRIGGER when: reviewing a `.claude/skills/**/SKILL.md` change
-  (PR / diff / pre-commit audit); auditing trigger accuracy across a
-  skill set; restructuring or pruning skills.
-  DO NOT TRIGGER when: authoring, iterating on, or optimizing a skill
-  (use `skill-creator` for scaffolding, eval / benchmark loops, and
-  description tuning); editing CLAUDE.md or AGENTS.md (use
-  `ai-instruction-and-memory-files`); editing `.lovable/*.md` (use
-  `lovable-knowledge`); reviewing code that isn't a skill file.
+  Review and audit of SKILL.md files: frontmatter conventions, trigger
+  design, voice, length targets, and cross-reference vs duplication
+  policy. TRIGGER when reviewing a .claude/skills/**/SKILL.md change or
+  auditing trigger accuracy across a skill set. DO NOT TRIGGER when
+  authoring or iterating on a skill (use skill-creator), editing
+  CLAUDE.md/AGENTS.md (use ai-instruction-and-memory-files), or
+  reviewing non-skill files.
 user-invocable: false
 ---
 

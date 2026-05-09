@@ -1,22 +1,13 @@
 ---
 name: git-feature-branch-sync
 description: >
-  Decision framework for keeping a feature branch up to date with the
-  repo's default branch: when to rebase-and-force-push vs merge-in,
-  how to force-push safely (`--force-with-lease` / `--force-if-includes`
-  / plain `--force`), and when the "never force-push" instinct is
-  correct vs overcautious. This is the global framework — per-project
-  policy (squash-merge vs merge-commit, rebase-after-review rules,
-  branch-protection specifics) lives in that repo's CLAUDE.md or a
-  project-scoped skill.
-  TRIGGER when: deciding how to integrate the default branch into a
-  feature branch, whether/how to force-push a feature branch, or
-  picking between `--force-with-lease` and `--force-if-includes`.
-  DO NOT TRIGGER when: routine work on a clean feature branch with no
-  integration question, operations on the default / release / other
-  shared branches (those are always protected — never force-push them),
-  or mid-merge / mid-rebase / mid-cherry-pick state (use
-  `git-state-safety` instead).
+  When to rebase vs merge a feature branch and force-push safety
+  (--force-with-lease / --force-if-includes / plain --force).
+  TRIGGER when syncing a feature branch with the default branch or
+  deciding whether and how to force-push. DO NOT TRIGGER for routine
+  work on a clean branch, operations on shared/default branches (those
+  are always protected — never force-push them), or
+  mid-merge/rebase/cherry-pick state (use git-state-safety instead).
 user-invocable: false
 ---
 

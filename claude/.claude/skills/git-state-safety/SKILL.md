@@ -1,21 +1,13 @@
 ---
 name: git-state-safety
 description: >
-  How to inspect other branches / commits safely when the working tree is
-  in a fragile state: mid-merge, mid-rebase, mid-cherry-pick, or with
-  staged changes from a partially-resolved conflict. Prevents the
-  silently-corrupted-index failure mode where a diagnostic
-  `git checkout <ref> -- <path>` overwrites the mid-merge index and the
-  resulting commit is wrong.
-  TRIGGER when: examining another ref's content while the current tree
-  has merge/rebase/cherry-pick state, unresolved conflicts, or a
-  partially-staged merge resolution. Also when recovering from a bad
-  merge that was already committed.
-  DO NOT TRIGGER when: plain read-only git operations on a clean tree,
-  normal feature work without pending merges, writing new code
-  unrelated to git state, or rebase-vs-merge-main and force-push-safety
-  questions on a clean feature branch (use `git-feature-branch-sync`
-  instead).
+  Safe inspection of other refs while mid-merge, mid-rebase, or
+  mid-cherry-pick — avoids `git checkout <ref> -- <path>` which
+  silently corrupts the index in these states. TRIGGER when examining
+  another ref while the tree has merge/rebase/cherry-pick state or
+  unresolved conflicts, or when recovering from a bad merge that was
+  already committed. DO NOT TRIGGER on a clean tree or for force-push
+  safety questions (use git-feature-branch-sync instead).
 user-invocable: false
 ---
 

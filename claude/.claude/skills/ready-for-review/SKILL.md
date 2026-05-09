@@ -1,27 +1,14 @@
 ---
 name: ready-for-review
 description: >
-  Pre-handoff gate run before a human reviewer looks at an open PR:
-  verifies tests/lint/typecheck, runs /code-review against the
-  cumulative PR-vs-default-branch diff, syncs PR description against
-  branch state, checks CI, and confirms tree hygiene.
-  TRIGGER when: (a) the user signals work is reviewer-ready, OR Claude
-  is about to summarize what landed and implicitly hand back — fire on
-  the *intent* (work-is-done-for-now-and-the-user-is-the-next-actor),
-  not on specific phrases. Examples that should fire: "ready for
-  review", "ship it", "PR is up", "take a look", "your turn", "PR is
-  now full-scope X", "implementation pushed and reviewable"; (b) Claude
-  has just pushed (or is about to push) commits to a branch that
-  already has an open PR and is wrapping up rather than continuing to
-  iterate; (c) before spawning a multi-persona ripple review (CISO +
-  multiple staff-* engineers) via the Agent tool on a PR-stage diff
-  outside an active /ready-for-review or /pre-merge flow, or before
-  invoking /ultrareview.
-  DO NOT TRIGGER when: work is still being iterated (more commits
-  planned before handoff); only a diff review or single verification
-  step was requested; on the default branch; or when a project-specific
-  pre-merge-style skill already wraps these checks (let that skill
-  delegate here instead).
+  Pre-handoff gate for open PRs: verifies tests/lint/typecheck, runs
+  /code-review on the full PR diff, syncs PR description, and checks CI.
+  TRIGGER when handing off to a human reviewer — wrapping up work on a
+  branch with an open PR, "ship it" intent, or before spawning a
+  multi-persona review (CISO + staff-* engineers) or /ultrareview.
+  DO NOT TRIGGER during active iteration, on diff-only requests,
+  on the default branch, or when a project-specific pre-merge skill
+  already wraps these checks.
 argument-hint: "[optional scope note]"
 ---
 
