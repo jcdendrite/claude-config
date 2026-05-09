@@ -4,9 +4,9 @@ description: >
   Editing rules for CLAUDE.md, AGENTS.md, and Claude Code auto-memory
   (MEMORY.md index + topic files): loading precedence, duplication
   policy, length targets, user-vs-Claude-written split.
-  TRIGGER when editing or auditing CLAUDE.md, AGENTS.md, or
+  TRIGGER when: editing or auditing CLAUDE.md, AGENTS.md, or
   ~/.claude/projects/*/memory/, or deciding which surface a rule
-  belongs in. DO NOT TRIGGER for .lovable/*.md, .cursorrules,
+  belongs in. DO NOT TRIGGER when: editing .lovable/*.md, .cursorrules,
   .github/copilot-instructions.md, README.md, or writing code.
 user-invocable: false
 ---
