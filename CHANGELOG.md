@@ -8,7 +8,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 - **check-runner subagent** — Haiku agent for suite-level command dispatch; returns structured pass/fail verdicts and writes full output to a temp file so the parent context doesn't inhale raw output (#189)
 - **Foundation-critique gates** — plan-review, plan-it, reviewer agents, and CLAUDE.md now include compounding-defensive-layers and wrong-foundation prompts to catch design tells early (#190)
-- **Backtick escaping block** — `deny-escaped-backticks.sh` blocks `gh pr create`/`gh pr edit` bodies that contain `\`` sequences, preventing shell-expansion surprises in heredoc-constructed PR bodies (#192)
+- **Backtick escaping block** — `deny-escaped-backticks-in-pr-body.sh` blocks `gh pr create`/`gh pr edit` bodies that contain `\`` sequences, preventing shell-expansion surprises in heredoc-constructed PR bodies (#192)
 - **`~/.local/bin` script wrappers** — `analyze-context`, `token-analyzer`, `cleanup-merged-branches`, and `marker` are now accessible as short-form commands without the full path (#184)
 - **Proactive handoff + marker re-injection** — `session-marker-dashboard.sh` now fires on `compact` events (not only session start), restoring gate-marker state automatically after auto-compaction; CLAUDE.md prompts Claude to suggest `/handoff` at ~60% context (#172)
 - **Ready-for-review active-marker ceiling** — 90-minute hard expiry on the bypass marker prevents stale bypasses from carrying across sessions unnoticed (#173)
