@@ -4,11 +4,25 @@ Portable [Claude Code](https://claude.ai/claude-code) global configuration: cust
 
 Maintained by [Cordova Strategy](https://cordovastrategy.com).
 
-Claude Code without enforcement will claim code is done before tests pass, skip the review step when it judges a change "too small," write to the main worktree when a concurrent session is already staged there, and paste client codenames directly into commit messages and PR bodies. claude-config makes these mistakes structurally impossible rather than relying on prompt instructions.
+## Philosophy
+
+### Why this repo exists
+
+Working across a variety of projects from very early stage to enterprise-level, I wanted to use a flexible but predictable setup for Claude Code to help me get through large chunks of work efficiently and cost-effectively: from security audits of vibe-coded codebases to building out standard features, adding testing infrastructure, and enforcing quality against industry-standard, best-practice checklists. I wanted to stop fixing the same errors that AI agents kept encountering and really focus my time on the nuanced technical challenges that need human judgment.
+
+### How this repo is different from others
+
+AI agents are powerful but probabilistic. They will frequently gaslight you, or more fairly put, they will confidently draw incorrect conclusions from prose (even top-class models). Simply stated, unsupervised AI is reliable for summarization but not synthesis. I wanted to add a layer of determinism on top of agents' inherently probabilistic judgment to enforce quality and prevent repetitive errors where I could. To achieve these goals, I added safeguards in this repo with *hooks* and *markers*.
+
+I also wanted to encode industry-standard best practices in this repo. LLMs are trained on the corpus of the internet and are biased by the loudest and most common viewpoints. While the wisdom of the masses can often be directionally correct, it's best to defer to primary sources and scientific thinking, applying the rigor of research and adhering to evidence-based approaches. You'll see those perspectives represented in the content of the *skills* and *instructions* in this repo, with *references* to primary sources that converge on tried-and-true guidelines on how to design and write good software.
+
+### How enforcement complements instructions
+
+Claude Code without enforcement will claim code is done before tests pass, skip the review step when it judges a change "too small," write to the main worktree when a concurrent session is already staged there, and paste project codenames directly into commit messages and PR bodies. claude-config makes these mistakes structurally impossible rather than relying on prompt instructions.
 
 A CLAUDE.md instruction says "you should run code-review before committing." A PreToolUse hook says "the commit is denied until code-review ran on this exact diff in this session." This distinction is the core design choice: enforce at the tool-call boundary, not at the prompt layer, because prompt-layer instructions are advisory — the model can disregard them on any change it judges simple enough not to need review.
 
-claude-config is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. claude-config ships the enforcement harness; most hand-rolled `~/.claude/` configs improvise the patterns claude-config systematizes: per-session marker keying, specialist reviewer routing, and three-tier redaction.
+claude-config is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. claude-config ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns claude-config systematizes: per-session marker keying, specialist reviewer routing, and three-tier redaction.
 
 ## Requirements
 
@@ -354,7 +368,7 @@ CI runs this on every PR and main push via `.github/workflows/hooks.yml`.
 
 ## Threat model
 
-The hook system protects against three failure modes: committing client identifiers to a public repo (the tracker-ID regex and private-projects blocklist run before every `git commit` and PR create/edit); claiming work is done before tests pass or code review ran (the require-code-review and require-ready-for-review hooks deny the commit or push until the review marker exists for the current staged state); and two concurrent Claude sessions racing on the same working tree (require-worktree-for-git-writes denies write-path git operations unless the session is inside a linked worktree).
+The hook system protects against three failure modes: committing project identifiers to a public repo (the tracker-ID regex and private-projects blocklist run before every `git commit` and PR create/edit); claiming work is done before tests pass or code review ran (the require-code-review and require-ready-for-review hooks deny the commit or push until the review marker exists for the current staged state); and two concurrent Claude sessions racing on the same working tree (require-worktree-for-git-writes denies write-path git operations unless the session is inside a linked worktree).
 
 The hook system does not protect against a skill or hook script itself being malicious — if an attacker can write to `claude/.claude/`, they can ship a hook that exfiltrates secrets before denying the command. It does not protect against an attacker with write access to `~/.claude/`: the marker directory, session files, and hook scripts all live there, and tampering with any of them can bypass or forge gate checks. It does not protect against a model that quotes sensitive tool output back to the user in chat — the hooks gate tool calls, not what the model says; if Claude reads a secret from an allowed path and repeats it in conversation, no hook fires.
 
