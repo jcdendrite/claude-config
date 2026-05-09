@@ -4,18 +4,7 @@
 
 ## Contribution workflow
 
-The skills form a sequential pipeline:
-
-1. **`/plan-it`** — produce an implementation plan before touching any code.
-2. **`/plan-review`** — required before writing code when a plan file exists in `.claude/plans/`.
-3. **Write code** — after plan-review passes. Hook blocks edits until review marker exists.
-4. **`/code-review`** — required before `git commit`. Hook blocks commit until review marker exists.
-5. **`git commit`** — only after code-review passes.
-6. **`/ready-for-review`** — required before `git push` on a branch with an open PR. Verifies tests, lint, typecheck, and cumulative diff.
-7. **`git push` / PR open** — only after ready-for-review passes.
-8. **`/respond-pr`** — required before reading or posting PR comments via `gh api`.
-
-The [workflow diagram in the README](./README.md#workflow) shows the Mermaid pipeline and which hook gates each transition.
+The skills form a sequential pipeline enforced by hooks — steps cannot be skipped. See the [workflow diagram in the README](./README.md#workflow) for the full pipeline and which hook gates each transition.
 
 ## Worktrees
 
