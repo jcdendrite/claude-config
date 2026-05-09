@@ -221,6 +221,8 @@
       "Bash(~/.claude/scripts/marker.sh deactivate plan-review)",
       "Bash(~/.claude/scripts/marker.sh deactivate ready-for-review)",
       "Bash(~/.claude/scripts/marker.sh deactivate respond-pr)",
+      "Bash(~/.claude/scripts/marker.sh activate memory-skill)",
+      "Bash(~/.claude/scripts/marker.sh deactivate memory-skill)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches)",

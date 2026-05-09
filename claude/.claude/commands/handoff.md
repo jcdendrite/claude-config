@@ -36,7 +36,7 @@ Target under 200 lines. Reference files by path; do not inline contents.
 ## Pre-write checklist
 
 Before writing the file, verify:
-- Every section §1–§6 above is populated
+- Every section §1–§7 above is populated
 - No placeholder text ("TBD", "TODO", "fill in later") in any section
 - §2 Status is consistent with §3 Next concrete step and §6 Open questions
 - You are not claiming "done" for any step whose verification is still pending

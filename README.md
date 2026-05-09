@@ -91,6 +91,7 @@ flowchart LR
 | `require-plan-review.sh` | `Write`/`Edit` while a plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
 | `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | `/skill-review` behavioral-equivalence audit |
+| `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |
 | `require-ready-for-review.sh` | `git push`, `gh pr ready` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
@@ -99,17 +100,22 @@ flowchart LR
 
 - **`require-code-review.sh`** — blocks `git commit` (including chained forms like `git add . && git commit`) until `/code-review` has run on the current staged state. Verified via per-session sha256 marker in `~/.claude/review-markers/<repo-hash>.<session-id>`, which auto-invalidates the moment the staging area changes. Per-session keying prevents two parallel sessions in the same worktree from overwriting each other's markers when staging different diffs.
 - **`require-skill-review.sh`** — blocks `git commit` only when staged changes include a `SKILL.md`. Requires `/skill-review` to have produced a behavioral-equivalence audit for any removed or shortened lines. Marker is keyed to the SKILL.md-scoped diff (not the full staged diff), so re-staging non-skill files after a clean review does not invalidate the marker.
-- **`deny-private-project-refs.sh`** — blocks `git commit`, `gh pr create`, and `gh pr edit` when the staged diff, commit message, or PR title/body/body-source-file contains either (a) tracker-ID tokens (`[A-Z]{2,}-\d+`) outside an OSS-prefix allowlist (`CVE-`, `RFC-`, `GH-`, and similar — see the script for the full list), or (b) a literal substring match against entries in the user's opt-in `~/.claude/private-projects.md` blocklist. Enforces the mechanical categories of the repo-root `CLAUDE.md` redaction rule; structural fingerprints still require review discipline. See [Private-project redaction](#private-project-redaction) below.
+- **`deny-private-project-refs.sh`** — blocks `git commit`, `gh pr create`, `gh pr edit`, and mutating `gh api` calls when the staged diff, commit message, or PR title/body/body-source-file contains either (a) tracker-ID tokens (`[A-Z]{2,}-\d+`) outside an OSS-prefix allowlist (`CVE-`, `RFC-`, `GH-`, and similar — see the script for the full list), or (b) a literal substring match against entries in the user's opt-in `~/.claude/private-projects.md` blocklist. Enforces the mechanical categories of the repo-root `CLAUDE.md` redaction rule; structural fingerprints still require review discipline. See [Private-project redaction](#private-project-redaction) below.
 - **`require-stow-reminder.sh`** — scoped to the `claude-config` repo. Blocks `gh pr create` and `gh pr edit` (when the edit changes the body) if the PR adds a new immediate child of `claude/.claude/` (file or directory) and neither the inline command, a referenced `--body-file`/`--template`, nor any `--fill`-sourced commit message mentions `install.sh` or `stow` (case-insensitive). Reason: GNU Stow links each top-level child of `claude/.claude/` individually, so a brand-new child only appears in `~/.claude/` after re-running `install.sh` — `git pull` alone won't materialize the symlink. The reminder lands in the PR body so the post-merge stow step doesn't get forgotten at merge time.
 - **`require-respond-pr.sh`** — blocks PR comment reads and posts (`gh api .../pulls|issues/N/{comments,reviews}`, `gh pr comment`, `gh pr review`) and redirects to `/respond-pr`, so all three comment types get fetched and replies carry the `[Claude Code]` attribution prefix. Honors a per-session bypass marker at `~/.claude/.respond-pr-active.d/<session_id>` that the skill sets on entry and removes on exit; the hook refreshes the marker's mtime on each bypass so long skill runs don't hit the 60-minute staleness cutoff. Per-session keying (rather than a singleton path) keeps parallel Claude sessions from thrashing on cleanup or leaking bypass to unrelated sessions.
 - **`require-ready-for-review.sh`** — gates `git push` and `gh pr ready` on branches with an open PR. Requires `/ready-for-review` to have run and passed since the last commit. Verified via a per-session marker keyed by HEAD SHA — a new commit invalidates the marker automatically and forces a re-run. An active-skill bypass marker (`~/.claude/.ready-for-review-active.d/<session_id>`) prevents the skill's own iteration pushes (fix → push → loop) from self-denying.
-- **`capture-session-id.sh`** (SessionStart) — at session start, writes the session's `session_id` to `~/.claude/sessions/<claude-pid>` so skills running as Bash tool calls (which don't see the hook payload) can look up their own session id via the bash tool's `$PPID`. Used by both `/respond-pr` and `/code-review` to compute per-session marker filenames.
+- **`capture-session-id.sh`** (SessionStart, SubagentStart) — at session and subagent start, writes the session's `session_id` to `~/.claude/sessions/<claude-pid>` so skills running as Bash tool calls (which don't see the hook payload) can look up their own session id via the bash tool's `$PPID`. Used by both `/respond-pr` and `/code-review` to compute per-session marker filenames.
 - **`ask-review-permissions.sh`** — asks before `Edit`/`Write`/`MultiEdit` to `.claude/settings*.json`, nudging toward `/review-permissions` when the edit touches `permissions.allow`.
 - **`require-worktree-for-git-writes.sh`** — opt-in per repo. When active, denies non-read-only git operations unless the session runs in a linked git worktree. Prevents concurrent Claude Code sessions from racing on the same working tree. See [Worktree enforcement](#worktree-enforcement) below for opt-in instructions.
 - **`require-worktree-for-file-writes.sh`** — opt-in per repo (same `.claude/worktree-required` sentinel). When active, denies `Edit`/`Write`/`MultiEdit` on paths in the main working tree; all file edits must land in a linked worktree.
 - **`guard-settings-model-effort.sh`** — blocks `git commit` when `claude/.claude/settings.json` has staged changes to `model` or `effortLevel`. Per-session overrides should not be committed; use `ANTHROPIC_MODEL`/`CLAUDE_CODE_EFFORT_LEVEL` env vars or `/effort max` mid-session instead.
 - **`check-skill-length.sh`** — blocks `git commit` when a staged `SKILL.md` exceeds 200 lines and grew vs HEAD. Nudges toward splitting a growing skill or moving reference material to a co-located `REFERENCES.md`.
 - **`session-marker-dashboard.sh`** (SessionStart) — at session start, emits a summary of any active bypass markers (`/respond-pr`, `/ready-for-review`) into the resumed session's context so stale bypasses are visible.
+- **`enforce-marker-script-shape.sh`** — PreToolUse `Bash` gate that denies any `marker.sh` invocation not exactly matching the allowlisted shape pattern (`~/.claude/scripts/marker.sh <subcommand> <skill>`). Blocks chains (`&&`, `;`), redirects, env-var prefixes, and extra arguments. Defense-in-depth against prompt-injection escalation through the `marker.sh` allow rules.
+- **`deny-env-reads.sh`** — PreToolUse `Read` gate that allows `.env.example`, `.env.template`, and `.env.sample` (including symlink-resolved targets) while denying all other `.env`/`.env.*` paths. Extends the static `permissions.deny` entries in [Auto mode](#auto-mode) to cover `.env.*` variants not listed there.
+- **`require-memory-skill.sh`** — PreToolUse `Edit|Write|MultiEdit` gate on `~/.claude/projects/*/memory/MEMORY.md` and new memory topic files under that path. Requires an active `/ai-instruction-and-memory-files` per-session marker before allowing writes, ensuring index format and frontmatter rules are applied.
+- **`require-routing-read.sh`** — PreToolUse `Agent` gate active during a running `/plan-review` session. Denies subagent spawn until `~/.claude/skills/plan-review/ROUTING.md` has been read (tracked by `log-routing-read.sh`), ensuring reviewer routing consults the full ownership table before any specialist is spawned.
+- **`log-routing-read.sh`** — PostToolUse `Read` companion to `require-routing-read.sh`. Writes a per-session routing-read marker when `~/.claude/skills/plan-review/ROUTING.md` is read during an active `/plan-review` session. The only PostToolUse hook in this repo.
 
 ### Skills (slash commands)
 
@@ -161,7 +167,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 ### Reviewer subagents
 
-Eight stack-agnostic reviewer personas in `claude/.claude/agents/`, spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`).
+Eight stack-agnostic reviewer personas in `claude/.claude/agents/`, spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`). The directory also ships `check-runner`, a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts — dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output".
 
 - **`ciso-reviewer`** — threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth.
 - **`staff-backend-engineer`** — API contracts, error handling, idempotency, retry semantics, service boundaries; AND application data-store schema design (relational + NoSQL): partition keys, GSI/LSI, document shape, single-table vs multi-table, index coverage for app queries.
@@ -214,7 +220,7 @@ Utility scripts in `claude/.claude/scripts/` (stowed to `~/.claude/scripts/`).
   token-analyzer --since 7d  # include token activity from the last N days (e.g. 2d, 7d)
   ```
 
-- **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, and `/respond-pr` write review markers via `~/.claude/scripts/marker.sh`. The 10 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval. A companion `enforce-marker-script-shape.sh` hook denies any other invocation (chains, env-var prefixes, redirects) to prevent prompt-injection escalation via the allowlist.
+- **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. The 12 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval; shape validation is enforced by `enforce-marker-script-shape.sh` (see [Hooks](#hooks)).
 
 - **`cleanup-merged-branches.sh`** — discovers all local branches whose PRs are merged (queried via `gh pr list --head <branch> --state merged`) and cleans them up: removes the worktree, force-deletes the local branch, prunes the remote tracking ref, deletes the remote branch if not auto-deleted, and fast-forwards the default branch. Auto-approved by the paired `permissions.allow` entries.
 
@@ -231,7 +237,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires on session start, after `/clear`, and after compaction. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
 
-2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `/tmp/<slug>-handoff.md`. The §1–§6 shape is defined inline in `claude/.claude/commands/handoff.md`. Claude proactively suggests `/handoff` at ~60% context usage because cleaner context produces a higher-quality resume file, and every turn beyond 60% is waste.
+2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `/tmp/<slug>-handoff.md`. The §1–§7 shape is defined inline in `claude/.claude/commands/handoff.md`. Claude proactively suggests `/handoff` at ~60% context usage because cleaner context produces a higher-quality resume file, and every turn beyond 60% is waste.
 
 ### When to use which
 
@@ -417,8 +423,8 @@ Auto mode replaces per-action permission prompts with a background classifier th
 ### Requirements
 
 - **Plan:** Max, Team, Enterprise, or Anthropic API. Not available on Pro, or on Bedrock, Vertex, or Foundry.
-- **Model:** Claude Sonnet 4.6, Opus 4.6, or Opus 4.7 (Team/Enterprise/API); Opus 4.7 only on Max. Verify that any custom model alias in your `settings.json` ultimately resolves to one of these.
-- **Claude Code:** v2.1.83 or later.
+- **Model:** see the [permission modes reference](https://code.claude.com/docs/en/permission-modes) for the current supported model list. Verify that any custom model alias in your `settings.json` ultimately resolves to a supported model.
+- **Claude Code:** a recent release — check `claude --version` against the [permission modes reference](https://code.claude.com/docs/en/permission-modes).
 
 ### Activating
 
