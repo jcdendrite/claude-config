@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 
 import pytest
 from helpers import (
@@ -98,21 +97,19 @@ class TestRequireRespondPr:
         sid = "test-session-fresh"
         marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
         marker_dir.mkdir(parents=True)
-        (marker_dir / sid).touch()
+        (marker_dir / sid).write_text(str(os.getpid()))
         assert (
             run_hook(RESPOND_PR_HOOK, bash_input(command, session_id=sid), cwd=current_repo_foo_bar)
             == "allow"
         )
 
-    def test_stale_bypass_marker_denies(self, isolated_home, current_repo_foo_bar):
-        sid = "test-session-stale"
+    def test_dead_pid_bypass_marker_evicts_and_denies(self, isolated_home, current_repo_foo_bar):
+        """Orphaned marker with a dead PID is evicted and the gate denies."""
+        sid = "test-session-dead-pid"
         marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
         marker_dir.mkdir(parents=True)
         marker = marker_dir / sid
-        marker.touch()
-        # Backdate 90 minutes — past the hook's 60-minute staleness cutoff.
-        ninety_min_ago = time.time() - 90 * 60
-        os.utime(marker, (ninety_min_ago, ninety_min_ago))
+        marker.write_text("99999999")  # PID outside Linux/macOS max range → always dead
         assert (
             run_hook(
                 RESPOND_PR_HOOK,
@@ -121,6 +118,7 @@ class TestRequireRespondPr:
             )
             == "deny"
         )
+        assert not marker.exists(), "hook must evict the orphan marker on dead PID"
 
     def test_other_sessions_marker_does_not_leak_bypass(self, isolated_home, current_repo_foo_bar):
         """Regression: a marker for session A must NOT bypass session B's
@@ -168,18 +166,12 @@ class TestRequireRespondPr:
             == "deny"
         )
 
-    def test_bypass_refreshes_marker_mtime(self, isolated_home, current_repo_foo_bar):
-        """Long-running skill mitigation: the hook touches the marker on
-        each bypass so a respond-pr session approaching the 60-minute
-        staleness cutoff doesn't get blocked mid-execution."""
+    def test_alive_pid_bypass_marker_allows(self, isolated_home, current_repo_foo_bar):
+        """Active marker with a live PID bypasses the gate for any session duration."""
         sid = "long-run-session"
         marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
         marker_dir.mkdir(parents=True)
-        marker = marker_dir / sid
-        marker.touch()
-        fifty_min_ago = time.time() - 50 * 60
-        os.utime(marker, (fifty_min_ago, fifty_min_ago))
-        pre_mtime = marker.stat().st_mtime
+        (marker_dir / sid).write_text(str(os.getpid()))
         assert (
             run_hook(
                 RESPOND_PR_HOOK,
@@ -187,10 +179,6 @@ class TestRequireRespondPr:
                 cwd=current_repo_foo_bar,
             )
             == "allow"
-        )
-        post_mtime = marker.stat().st_mtime
-        assert post_mtime > pre_mtime, (
-            "marker mtime must be refreshed on bypass to keep long skill runs alive"
         )
 
     def test_non_bash_tool_allowed(self, isolated_home):

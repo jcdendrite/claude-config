@@ -177,7 +177,7 @@ Then remove the active-session marker:
 ~/.claude/scripts/marker.sh deactivate ready-for-review
 ```
 
-Removes only this session's file; if the skill errors before this step, do not manually clean up — the hook's 60-minute staleness cutoff handles orphans.
+Removes only this session's file. If the skill errors before reaching this step, the gate will evict the orphan automatically once the session's process ends — the hook checks PID liveness on each gate hit.
 
 **Do NOT write the completion marker if:**
 

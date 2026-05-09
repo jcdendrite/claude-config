@@ -21,10 +21,10 @@ set -uo pipefail
 # by the ai-instruction-and-memory-files skill at Step 0 via
 # `marker.sh activate memory-skill`, removed at its final step via
 # `marker.sh deactivate memory-skill`. While THIS session's marker exists AND
-# is fresh (<60 min old), the hook allows through so the skill's own
-# Write/Edit calls during the memory-write session are not re-blocked.
-# mtime is refreshed on each bypass to handle long sessions that span multiple
-# memory writes without hitting the staleness cutoff.
+# its stored PID is alive (kill -0), the hook allows through so the skill's
+# own Write/Edit calls during the memory-write session are not re-blocked.
+# Orphaned markers (session errored before cleanup) are evicted automatically:
+# dead PID → rm on next gate hit.
 #
 # Fail-open conditions (exit 0 without denying):
 #   - session_id absent from input — cannot key a per-session marker
@@ -86,12 +86,15 @@ if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
 
-# Active-bypass: fresh marker for THIS session means the skill is active —
-# allow through and refresh the marker's mtime so long sessions don't time out.
+# Active-bypass: alive PID stored in the marker means the skill is active —
+# allow through. Dead or unreadable PID → evict the orphan.
 ACTIVE_MARKER="$HOME/.claude/.memory-skill-active.d/$SESSION_ID"
-if [ -f "$ACTIVE_MARKER" ] && [ -n "$(find "$ACTIVE_MARKER" -mmin -60 2>/dev/null)" ]; then
-  touch "$ACTIVE_MARKER" 2>/dev/null
-  exit 0
+if [ -f "$ACTIVE_MARKER" ]; then
+  STORED_PID=$(cat "$ACTIVE_MARKER" 2>/dev/null | tr -d '[:space:]')
+  if [[ "$STORED_PID" =~ ^[0-9]+$ ]] && kill -0 "$STORED_PID" 2>/dev/null; then
+    exit 0
+  fi
+  rm -f "$ACTIVE_MARKER" 2>/dev/null
 fi
 
 REASON="Memory write blocked by ai-instruction-and-memory-files gate. You are writing to $FILE_PATH, which is part of Claude Code's auto-memory file system (MEMORY.md index or a new topic file). Invoke the ai-instruction-and-memory-files skill via the Skill tool first — it covers MEMORY.md index format, topic-file frontmatter, length budgets, and the type classification (user / feedback / project / reference). The skill's Step 0 activates a bypass marker so all memory writes in the session pass through after the skill is loaded."

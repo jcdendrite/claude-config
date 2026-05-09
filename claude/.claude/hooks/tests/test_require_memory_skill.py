@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -47,11 +46,11 @@ def _memory_input(base_input: dict, session_id: str) -> dict:
 
 
 def _write_active_marker(isolated_home: Path, session_id: str) -> Path:
-    """Create a fresh active-bypass marker for the given session."""
+    """Create an active-bypass marker with the current process PID (alive)."""
     marker_dir = isolated_home / ".claude" / ".memory-skill-active.d"
     marker_dir.mkdir(parents=True, exist_ok=True)
     marker = marker_dir / session_id
-    marker.touch()
+    marker.write_text(str(os.getpid()))
     return marker
 
 
@@ -139,33 +138,17 @@ class TestRequireMemorySkill:
         payload = _memory_input(edit_input(memory_md), sid)
         assert run_hook(HOOK_PATH, payload) == "allow"
 
-    def test_active_marker_stale_denies(self, isolated_home, memory_tree):
-        """Marker older than 60 minutes does not bypass — gate re-fires."""
-        sid = "sess-stale"
-        marker = _write_active_marker(isolated_home, sid)
-        # Set mtime to 61 minutes ago.
-        stale_time = time.time() - 61 * 60
-        os.utime(marker, (stale_time, stale_time))
+    def test_dead_pid_active_marker_evicts_and_denies(self, isolated_home, memory_tree):
+        """Orphaned marker with a dead PID is evicted and the gate denies."""
+        sid = "sess-dead-pid"
+        marker_dir = isolated_home / ".claude" / ".memory-skill-active.d"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker = marker_dir / sid
+        marker.write_text("99999999")  # PID outside Linux/macOS max range → always dead
         memory_md = str(memory_tree / "MEMORY.md")
         payload = _memory_input(edit_input(memory_md), sid)
         assert run_hook(HOOK_PATH, payload) == "deny"
-
-    def test_active_marker_mtime_refreshed_on_bypass(self, isolated_home, memory_tree):
-        """Hook touches the marker on each bypass so long sessions stay alive."""
-        sid = "sess-refresh"
-        marker = _write_active_marker(isolated_home, sid)
-        # Set mtime to 55 minutes ago — still fresh but clearly in the past.
-        old_time = time.time() - 55 * 60
-        os.utime(marker, (old_time, old_time))
-        memory_md = str(memory_tree / "MEMORY.md")
-        payload = _memory_input(edit_input(memory_md), sid)
-        assert run_hook(HOOK_PATH, payload) == "allow"
-        # Mtime must now be within the last minute.
-        refreshed_mtime = marker.stat().st_mtime
-        assert (time.time() - refreshed_mtime) < 60, (
-            "Hook did not refresh the marker's mtime on bypass — "
-            "long sessions will hit the 60-min staleness cutoff mid-run."
-        )
+        assert not marker.exists(), "hook must evict the orphan marker on dead PID"
 
     def test_active_marker_other_session_does_not_bypass(self, isolated_home, memory_tree):
         """Active marker keyed to a different session_id does not bypass this session."""

@@ -81,18 +81,24 @@ class TestMarkerScriptHappyPath:
         assert len(files) == 1
         assert files[0].name.endswith(f".{sid}")
 
-    def test_activate_creates_active_marker(self, isolated_home, git_repo):
+    def test_activate_creates_active_marker_with_pid(self, isolated_home, git_repo):
+        """activate must write the Claude session PID to the active.d file body
+        so hooks can check liveness with kill -0."""
         sid = self._seed_session(isolated_home)
         result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         active_file = isolated_home / ".claude" / ".plan-review-active.d" / sid
         assert active_file.exists()
+        content = active_file.read_text().strip()
+        assert content.isdigit(), (
+            f"activate must write a numeric PID to the active marker, got: {content!r}"
+        )
+        stored_pid = int(content)
+        assert stored_pid > 0, f"stored PID must be positive, got: {stored_pid}"
 
-    def test_activate_ready_for_review_writes_epoch_timestamp(
-        self, isolated_home, git_repo
-    ):
-        """activate ready-for-review must write a unix epoch integer, not an
-        empty file — the hook reads the content to enforce the 90-min ceiling."""
+    def test_activate_ready_for_review_writes_pid(self, isolated_home, git_repo):
+        """activate ready-for-review writes the Claude session PID (same as
+        other skills) — hook now uses PID liveness, not epoch timestamp."""
         sid = self._seed_session(isolated_home)
         result = _run(["activate", "ready-for-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
@@ -100,7 +106,7 @@ class TestMarkerScriptHappyPath:
         assert active_file.exists()
         content = active_file.read_text().strip()
         assert content.isdigit(), (
-            f"activate ready-for-review must write a unix epoch integer, got: {content!r}"
+            f"activate ready-for-review must write a numeric PID, got: {content!r}"
         )
 
     def test_deactivate_removes_active_marker(self, isolated_home, git_repo):
@@ -131,6 +137,54 @@ class TestMarkerScriptHappyPath:
     def test_help_exits_0(self, isolated_home, git_repo):
         result = _run(["--help"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0
+
+
+class TestMarkerScriptClearStale:
+    """Tests for `marker.sh clear-stale [--dry-run]`."""
+
+    def _make_active_dir(self, home, skill):
+        d = home / ".claude" / f".{skill}-active.d"
+        d.mkdir(parents=True)
+        return d
+
+    def test_clear_stale_removes_dead_pid_entry(self, isolated_home, git_repo):
+        """clear-stale evicts entries whose stored PID is dead."""
+        d = self._make_active_dir(isolated_home, "plan-review")
+        orphan = d / "orphan-session"
+        orphan.write_text("99999999")
+        result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert not orphan.exists(), "clear-stale must remove dead-PID marker"
+        assert "evict" in result.stdout
+
+    def test_clear_stale_keeps_alive_pid_entry(self, isolated_home, git_repo):
+        """clear-stale preserves entries whose stored PID is alive."""
+        d = self._make_active_dir(isolated_home, "respond-pr")
+        alive = d / "live-session"
+        alive.write_text(str(os.getpid()))
+        result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert alive.exists(), "clear-stale must not remove alive-PID marker"
+
+    def test_clear_stale_dry_run_does_not_remove(self, isolated_home, git_repo):
+        """--dry-run reports would-evict entries without removing them."""
+        d = self._make_active_dir(isolated_home, "memory-skill")
+        orphan = d / "dry-run-session"
+        orphan.write_text("99999999")
+        result = _run(["clear-stale", "--dry-run"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert orphan.exists(), "--dry-run must not remove markers"
+        assert "dry-run" in result.stdout or "would evict" in result.stdout
+
+    def test_clear_stale_no_active_dirs_exits_0(self, isolated_home, git_repo):
+        """When no active.d directories exist, exits 0 with zero evictions."""
+        result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0
+        assert "evicted 0" in result.stdout
+
+    def test_clear_stale_invalid_extra_arg_exits_2(self, isolated_home, git_repo):
+        result = _run(["clear-stale", "--unknown-flag"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
 
 
 class TestMarkerScriptEmptyStagedGuard:
