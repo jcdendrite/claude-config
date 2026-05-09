@@ -3,10 +3,10 @@ name: verify-primary-sources
 description: >
   Fetch primary documentation directly rather than relying on agent
   summaries when web research drives a code or design decision.
-  TRIGGER when acting on a documentation claim from a subagent, blog
+  TRIGGER when: acting on a documentation claim from a subagent, blog
   post, or other secondary source for an architectural/API/library/
-  security decision. DO NOT TRIGGER for quick syntax lookups, error
-  decoding, or when the cited URL is already the primary source.
+  security decision. DO NOT TRIGGER when: doing quick syntax lookups,
+  error decoding, or when the cited URL is already the primary source.
 user-invocable: false
 ---
 

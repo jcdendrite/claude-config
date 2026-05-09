@@ -3,10 +3,10 @@ name: git-feature-branch-sync
 description: >
   When to rebase vs merge a feature branch and force-push safety
   (--force-with-lease / --force-if-includes / plain --force).
-  TRIGGER when syncing a feature branch with the default branch or
-  deciding whether and how to force-push. DO NOT TRIGGER for routine
-  work on a clean branch, operations on shared/default branches (those
-  are always protected — never force-push them), or
+  TRIGGER when: syncing a feature branch with the default branch or
+  deciding whether and how to force-push. DO NOT TRIGGER when: doing
+  routine work on a clean branch, operating on shared/default branches
+  (always protected — never force-push them), or in
   mid-merge/rebase/cherry-pick state (use git-state-safety instead).
 user-invocable: false
 ---

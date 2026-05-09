@@ -4,9 +4,10 @@ description: >
   Review and audit of Claude Code hooks (.claude/hooks/*.sh and
   settings.json hook entries): matcher selection, fail-open vs
   fail-closed posture, emit_deny shape, performance budget, test
-  patterns. TRIGGER when reviewing a hook script or settings.json hook
-  entry, or designing a new hook. DO NOT TRIGGER for permissions.allow
-  edits (use review-permissions) or non-Claude hook systems.
+  patterns. TRIGGER when: reviewing a .claude/hooks/*.sh script or
+  settings.json hook entry, or designing a new hook.
+  DO NOT TRIGGER when: editing permissions.allow rules
+  (use review-permissions) or non-Claude hook systems.
 allowed-tools: Read, Grep, Glob, Bash
 user-invocable: false
 ---
