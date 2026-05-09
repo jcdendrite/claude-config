@@ -83,6 +83,18 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/deny-escaped-backticks-in-pr-body.sh",
+            "if": "Bash(gh pr create *)",
+            "statusMessage": "Checking PR body backticks..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-escaped-backticks-in-pr-body.sh",
+            "if": "Bash(gh pr edit *)",
+            "statusMessage": "Checking PR body backticks..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/require-respond-pr.sh",
             "statusMessage": "Checking respond-pr gate..."
           },
