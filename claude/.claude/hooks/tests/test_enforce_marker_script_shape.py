@@ -14,7 +14,7 @@ ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — all 12 must be allowed                               #
+    # Valid shapes — all 14 must be allowed                               #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize(
@@ -32,6 +32,8 @@ class TestEnforceMarkerScriptShape:
             "~/.claude/scripts/marker.sh deactivate ready-for-review",
             "~/.claude/scripts/marker.sh deactivate respond-pr",
             "~/.claude/scripts/marker.sh deactivate memory-skill",
+            "~/.claude/scripts/marker.sh clear-stale",
+            "~/.claude/scripts/marker.sh clear-stale --dry-run",
         ],
     )
     def test_valid_shapes_allowed(self, command):

@@ -55,4 +55,17 @@ if ! printf '%s\n' "$SESSION_ID" > "$HOME/.claude/sessions/$CLAUDE_PID" 2>/dev/n
   exit 0
 fi
 
+# Update any active.d entries for this session to the current PID. This
+# handles --continue: the session resumes under a new PID, but any active
+# markers written before the restart still carry the old PID. Hooks use
+# kill -0 <stored-pid> for liveness, so stale PIDs would cause them to
+# evict live markers. Rewriting here keeps bypass working after restart.
+for _active_dir in "$HOME/.claude"/.*-active.d; do
+  [ -d "$_active_dir" ] || continue
+  _entry="$_active_dir/$SESSION_ID"
+  if [ -f "$_entry" ]; then
+    printf '%s\n' "$CLAUDE_PID" > "$_entry" 2>/dev/null || true
+  fi
+done
+
 exit 0

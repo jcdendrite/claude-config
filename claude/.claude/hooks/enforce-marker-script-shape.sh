@@ -9,7 +9,7 @@
 # gate. The "if" field is a hint only.
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
-# match one of the 12 valid invocation shapes exactly: no chains, no redirects,
+# match one of the 14 valid invocation shapes exactly: no chains, no redirects,
 # no extra args. Wrapped forms (env-var prefix, bash wrapper, relative path,
 # subshell) are not gated here — they fast-exit at Stage 2 and are denied by
 # the permissions.allow layer, which does not list their wrapper executables.
@@ -65,7 +65,7 @@ fi
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
 # No bash wrapper, no env-var prefix, no chain operator, no redirect, no
 # extra args after the skill name.
-VALID_PATTERN='^(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill))[[:space:]]*$'
+VALID_PATTERN='^(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?)[[:space:]]*$'
 
 if printf '%s' "$TRIMMED" | grep -qE "$VALID_PATTERN"; then
   exit 0
@@ -88,6 +88,8 @@ Valid shapes:
   ~/.claude/scripts/marker.sh deactivate ready-for-review
   ~/.claude/scripts/marker.sh deactivate respond-pr
   ~/.claude/scripts/marker.sh deactivate memory-skill
+  ~/.claude/scripts/marker.sh clear-stale
+  ~/.claude/scripts/marker.sh clear-stale --dry-run
 
 No chains (&&, ||, ;), redirects, or extra args. Env-var prefix, bash wrapper,
 and relative-path forms are not gated here — they are denied by permissions.allow."

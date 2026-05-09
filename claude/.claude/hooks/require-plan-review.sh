@@ -9,10 +9,11 @@
 #
 # Two-marker pattern:
 # - Active marker (~/.claude/.plan-review-active.d/<session_id>):
-#   presence-only, fresh mtime <60 min. Written by /plan-review at step 0;
+#   content = Claude session PID. Written by /plan-review at step 0;
 #   removed at the deactivation step. Bypasses the gate so the skill's own
-#   Write/Edit calls during review don't self-deny. mtime refreshed on each
-#   bypass to handle long reviews.
+#   Write/Edit calls during review don't self-deny. The hook checks PID
+#   liveness (kill -0) on each gate hit; dead PIDs are evicted automatically,
+#   which handles orphaned markers from sessions that errored before cleanup.
 # - Completion marker (~/.claude/plan-review-markers/<repo-hash>.<session_id>):
 #   written by /plan-review when the review is clean. Existence-checked;
 #   allows Write/Edit until the next session.
@@ -61,9 +62,12 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 if [ -n "$SESSION_ID" ]; then
   # Active-marker bypass: the /plan-review skill is currently running.
   ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
-  if [ -f "$ACTIVE_MARKER" ] && [ -n "$(find "$ACTIVE_MARKER" -mmin -60 2>/dev/null)" ]; then
-    touch "$ACTIVE_MARKER" 2>/dev/null
-    exit 0
+  if [ -f "$ACTIVE_MARKER" ]; then
+    STORED_PID=$(cat "$ACTIVE_MARKER" 2>/dev/null | tr -d '[:space:]')
+    if [[ "$STORED_PID" =~ ^[0-9]+$ ]] && kill -0 "$STORED_PID" 2>/dev/null; then
+      exit 0
+    fi
+    rm -f "$ACTIVE_MARKER" 2>/dev/null
   fi
 
   # Completion-marker check.

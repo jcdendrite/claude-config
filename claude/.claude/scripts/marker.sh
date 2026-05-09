@@ -1,7 +1,7 @@
 #!/bin/bash
 # Write or remove review markers for Claude Code workflow skills.
 # Called from SKILL.md HOOK_TEST_FIXTURE fenced blocks.
-# Usage: marker.sh <write|activate|deactivate> <skill>
+# Usage: marker.sh <write|activate|deactivate|clear-stale> [<skill>|--dry-run]
 # _marker_lib_repo_hash is defined in the sourced library so the hash recipe
 # stays in sync with the read side (require-*.sh hooks) automatically.
 . "$HOME/.claude/hooks/_lib.sh"
@@ -10,12 +10,15 @@ set -u
 
 usage() {
   cat >&2 <<'EOF'
-Usage: ~/.claude/scripts/marker.sh <subcommand> <skill>
+Usage: ~/.claude/scripts/marker.sh <subcommand> [<skill>|--dry-run]
 
 Subcommands:
   write      Write a completion marker for the given skill
   activate   Write an active-bypass marker for the given skill
   deactivate Remove the active-bypass marker for the given skill
+  clear-stale [--dry-run]
+             Evict active-bypass markers whose originating session is no
+             longer alive. --dry-run reports without removing.
 
 Valid (subcommand, skill) combinations:
   write       code-review | skill-review | plan-review | ready-for-review
@@ -43,6 +46,25 @@ _resolve_session_id() {
   exit 2
 }
 
+_resolve_claude_pid_for_session() {
+  # Reverse-lookup: find the PID whose sessions file contains SESSION_ID.
+  # Returns the PID string, or "unknown" on failure (fails closed at hook time).
+  local session_id="$1"
+  local sessions_dir="$HOME/.claude/sessions"
+  local claude_pid=""
+  if [ -d "$sessions_dir" ]; then
+    local f
+    for f in "$sessions_dir"/*; do
+      [ -f "$f" ] || continue
+      if [ "$(cat "$f" 2>/dev/null)" = "$session_id" ]; then
+        claude_pid=$(basename "$f")
+        break
+      fi
+    done
+  fi
+  printf '%s' "${claude_pid:-unknown}"
+}
+
 _resolve_repo_hash() {
   if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
     printf 'marker.sh: not inside a git repository\n' >&2
@@ -67,13 +89,35 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   exit 0
 fi
 
-if [ $# -ne 2 ]; then
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
   usage
   exit 2
 fi
 
 SUBCOMMAND="$1"
-SKILL="$2"
+ARG2="${2:-}"
+
+# Validate arg count per subcommand.
+case "$SUBCOMMAND" in
+  write|activate|deactivate)
+    if [ -z "$ARG2" ]; then
+      usage
+      exit 2
+    fi
+    SKILL="$ARG2"
+    ;;
+  clear-stale)
+    if [ -n "$ARG2" ] && [ "$ARG2" != "--dry-run" ]; then
+      usage
+      exit 2
+    fi
+    ;;
+  *)
+    printf "marker.sh: unknown subcommand '%s'\n" "$SUBCOMMAND" >&2
+    usage
+    exit 2
+    ;;
+esac
 
 case "$SUBCOMMAND" in
   write)
@@ -118,23 +162,27 @@ case "$SUBCOMMAND" in
     case "$SKILL" in
       plan-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
+        CLAUDE_PID=$(_resolve_claude_pid_for_session "$SESSION_ID")
         mkdir -p "$HOME/.claude/.plan-review-active.d"
-        touch "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+        printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
+        CLAUDE_PID=$(_resolve_claude_pid_for_session "$SESSION_ID")
         mkdir -p "$HOME/.claude/.ready-for-review-active.d"
-        date +%s > "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
+        printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
         ;;
       respond-pr)
         SESSION_ID=$(_resolve_session_id) || exit 2
+        CLAUDE_PID=$(_resolve_claude_pid_for_session "$SESSION_ID")
         mkdir -p "$HOME/.claude/.respond-pr-active.d"
-        touch "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
+        printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
         ;;
       memory-skill)
         SESSION_ID=$(_resolve_session_id) || exit 2
+        CLAUDE_PID=$(_resolve_claude_pid_for_session "$SESSION_ID")
         mkdir -p "$HOME/.claude/.memory-skill-active.d"
-        touch "$HOME/.claude/.memory-skill-active.d/$SESSION_ID"
+        printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.memory-skill-active.d/$SESSION_ID"
         ;;
       *)
         printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill\n" "$SKILL" >&2
@@ -167,9 +215,36 @@ case "$SUBCOMMAND" in
         ;;
     esac
     ;;
-  *)
-    printf "marker.sh: unknown subcommand '%s'\n" "$SUBCOMMAND" >&2
-    usage
-    exit 2
+  clear-stale)
+    DRY_RUN=0
+    [ "$ARG2" = "--dry-run" ] && DRY_RUN=1
+    EVICTED=0
+    KEPT=0
+    for active_dir in "$HOME/.claude"/.*-active.d; do
+      [ -d "$active_dir" ] || continue
+      dir_name=$(basename "$active_dir")
+      for entry in "$active_dir"/*; do
+        [ -f "$entry" ] || continue
+        stored_pid=$(cat "$entry" 2>/dev/null | tr -d '[:space:]')
+        entry_name=$(basename "$entry")
+        if [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null; then
+          KEPT=$((KEPT + 1))
+          [ "$DRY_RUN" -eq 1 ] && printf '  keep: %s/%s (PID %s alive)\n' "$dir_name" "$entry_name" "$stored_pid"
+        else
+          EVICTED=$((EVICTED + 1))
+          if [ "$DRY_RUN" -eq 0 ]; then
+            rm -f "$entry"
+            printf '  evict: %s/%s (PID %s dead)\n' "$dir_name" "$entry_name" "${stored_pid:-empty}"
+          else
+            printf '  evict (dry-run): %s/%s (PID %s dead)\n' "$dir_name" "$entry_name" "${stored_pid:-empty}"
+          fi
+        fi
+      done
+    done
+    if [ "$DRY_RUN" -eq 1 ]; then
+      printf 'clear-stale: would evict %d orphan(s), keep %d active\n' "$EVICTED" "$KEPT"
+    else
+      printf 'clear-stale: evicted %d orphan(s), kept %d active\n' "$EVICTED" "$KEPT"
+    fi
     ;;
 esac

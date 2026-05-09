@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 
 import pytest
 from helpers import (
@@ -210,11 +209,11 @@ class TestRequirePlanReview:
     # bypasses the gate so the skill's own Write/Edit calls don't self-deny.
 
     def test_fresh_active_marker_allows_write(self, plan_review_repo, plan_review_home):
-        """Active marker created by /plan-review Step 0 bypasses the gate."""
+        """Active marker with alive PID bypasses the gate for Write tool calls."""
         sid = "session-active-write"
         marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
         marker_dir.mkdir(parents=True)
-        (marker_dir / sid).touch()
+        (marker_dir / sid).write_text(str(os.getpid()))
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
@@ -228,7 +227,7 @@ class TestRequirePlanReview:
         sid = "session-active-edit"
         marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
         marker_dir.mkdir(parents=True)
-        (marker_dir / sid).touch()
+        (marker_dir / sid).write_text(str(os.getpid()))
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
@@ -242,7 +241,7 @@ class TestRequirePlanReview:
         sid = "session-active-multiedit"
         marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
         marker_dir.mkdir(parents=True)
-        (marker_dir / sid).touch()
+        (marker_dir / sid).write_text(str(os.getpid()))
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
@@ -264,17 +263,32 @@ class TestRequirePlanReview:
             == "deny"
         )
 
-    def test_stale_active_marker_falls_through_to_deny(
+    def test_alive_pid_active_marker_bypasses(
         self, plan_review_repo, plan_review_home
     ):
-        """>60min old active marker doesn't bypass; no completion marker → deny."""
-        sid = "session-stale-active"
+        """Active marker whose stored PID is alive bypasses the gate."""
+        sid = "session-alive-pid"
+        marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).write_text(str(os.getpid()))
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_dead_pid_active_marker_evicts_and_denies(
+        self, plan_review_repo, plan_review_home
+    ):
+        """Active marker whose stored PID is dead is evicted; gate denies."""
+        sid = "session-dead-pid"
         marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
         marker_dir.mkdir(parents=True)
         marker = marker_dir / sid
-        marker.touch()
-        ninety_min_ago = time.time() - 90 * 60
-        os.utime(marker, (ninety_min_ago, ninety_min_ago))
+        marker.write_text("99999999")  # PID outside Linux/macOS max range → always dead
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
@@ -283,6 +297,7 @@ class TestRequirePlanReview:
             )
             == "deny"
         )
+        assert not marker.exists(), "hook must evict the orphan marker on dead PID"
 
     def test_other_sessions_active_marker_does_not_bypass(
         self, plan_review_repo, plan_review_home
@@ -298,31 +313,6 @@ class TestRequirePlanReview:
                 cwd=plan_review_repo,
             )
             == "deny"
-        )
-
-    def test_active_marker_mtime_refreshed_on_bypass(
-        self, plan_review_repo, plan_review_home
-    ):
-        """Long-running review mitigation: hook touches the active marker on each
-        bypass so a session approaching the 60-min cutoff doesn't get blocked."""
-        sid = "session-long-review"
-        marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
-        marker_dir.mkdir(parents=True)
-        marker = marker_dir / sid
-        marker.touch()
-        fifty_min_ago = time.time() - 50 * 60
-        os.utime(marker, (fifty_min_ago, fifty_min_ago))
-        pre_mtime = marker.stat().st_mtime
-        assert (
-            run_hook(
-                REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input("/tmp/foo.py"), "session_id": sid},
-                cwd=plan_review_repo,
-            )
-            == "allow"
-        )
-        assert marker.stat().st_mtime > pre_mtime, (
-            "active marker mtime must be refreshed on bypass to keep long reviews alive"
         )
 
     # -- SKILL.md fixture alignment -----------------------------------------

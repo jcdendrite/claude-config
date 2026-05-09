@@ -197,4 +197,4 @@ time-sensitive project context, and references to external systems.
 ~/.claude/scripts/marker.sh deactivate memory-skill
 ```
 
-Removes this session's bypass marker. Orphaned markers (if the skill errors before reaching this step) expire automatically after 60 minutes.
+Removes this session's bypass marker. If the skill errors before reaching this step, the gate will evict the orphan automatically once the session's process ends — the hook checks PID liveness on each gate hit.

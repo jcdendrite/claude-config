@@ -51,6 +51,7 @@ If the subagent reports a check was blocked by permissions, do NOT fall back to 
 - Never commit secrets, credentials, API keys, or large binary assets to repositories.
 - Never use the Read tool on files likely to contain secrets (`.env`, `.claude.json`, `credentials.json`, similar). Reading pulls the secret into the conversation context. When you need to inspect such a file, give the user a shell command (`cat`, `grep`, `jq`) to run via `!` instead.
 - Never write `~/.claude/*-markers/*` by hand. Each review skill writes its own marker directory (`/code-review` → `review-markers/`, `/plan-review` → `plan-review-markers/`, etc.) when a review passes, and pre-commit hooks gate on their presence. If a commit is blocked, run the review skill the hook names; if the skill is harness-blocked, spawn a subagent that can run it. A general "ship it" instruction is not authorization to forge a marker.
+- If a skill's active-bypass gate refuses to release after the skill has finished, run `~/.claude/scripts/marker.sh clear-stale` to evict orphaned active markers from dead sessions.
 - Don't add globs (`Bash(pytest *)`, `Bash(npm run *)`) to `permissions.allow`. Globs widen the surface to flag injection, command chaining, and shell-expansion attacks — see `claude/.claude/skills/review-permissions/SKILL.md` checklist items 1–9. Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
 
 ## Code Comments and Durable Documentation
