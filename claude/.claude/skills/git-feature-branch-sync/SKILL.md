@@ -1,8 +1,7 @@
 ---
 name: git-feature-branch-sync
 description: >
-  When to rebase vs merge a feature branch and force-push safety
-  (--force-with-lease / --force-if-includes / plain --force).
+  When to rebase vs merge a feature branch and how to force-push safely.
   TRIGGER when: syncing a feature branch with the default branch or
   deciding whether and how to force-push. DO NOT TRIGGER when: doing
   routine work on a clean branch, operating on shared/default branches

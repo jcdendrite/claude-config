@@ -1,9 +1,7 @@
 ---
 name: plan-review
 description: >
-  Review implementation plans before presenting to the user. Evaluates against
-  domain-specific checklists (backend, frontend, security, infrastructure, data)
-  based on which domains the plan touches.
+  Review implementation plans before presenting to the user.
   TRIGGER when: an implementation plan has been written or updated in .claude/plans/
   or is about to be presented to the user for review.
   DO NOT TRIGGER when: the plan is a trivial one-liner (single migration, config

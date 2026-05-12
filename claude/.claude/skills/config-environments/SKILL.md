@@ -1,8 +1,8 @@
 ---
 name: config-environments
 description: >
-  Multi-environment config design: env-var naming, credential isolation,
-  and secrets provisioning across dev/staging/prod. TRIGGER when:
+  Multi-environment config design, credential isolation, and secrets provisioning.
+  TRIGGER when:
   designing or reviewing env-var schemes, branching-on-environment
   credential selection, or secret-isolation strategies.
   DO NOT TRIGGER when: a process legitimately holds both env values

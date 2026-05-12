@@ -1,8 +1,7 @@
 ---
 name: ready-for-review
 description: >
-  Pre-handoff gate for open PRs: verifies tests/lint/typecheck, runs
-  /code-review on the full PR diff, syncs PR description, and checks CI.
+  Pre-handoff gate for open PRs before human review.
   TRIGGER when handing off to a human reviewer — wrapping up work on a
   branch with an open PR, "ship it" intent, or before spawning a
   multi-persona review (CISO + staff-* engineers) or /ultrareview.

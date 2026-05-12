@@ -2,10 +2,6 @@
 name: branch-creation
 description: >
   How to name new feature branches and start them from a clean base.
-  Covers ticket-system naming (Linear, Jira, GitHub Issues) vs
-  ticket-less projects, anti-patterns to reject (tracker `<user>/`
-  defaults), and the pre-creation step of branching from a fresh
-  default-branch tip.
   TRIGGER when: creating a new feature branch, picking a branch name,
   deciding whether to use a tracker-provided default branch name.
   DO NOT TRIGGER when: on an existing branch, syncing a branch with

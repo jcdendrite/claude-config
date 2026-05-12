@@ -1,9 +1,8 @@
 ---
 name: plan-it
 description: >
-  Produces an implementation plan in .claude/plans/<slug>.md via
-  discovery, exploration, and architecture design, then hands off to
-  /plan-review. TRIGGER when asked for a plan or implementation strategy
+  Produces an implementation plan and hands off to /plan-review.
+  TRIGGER when asked for a plan or implementation strategy
   for work spanning multiple files or domains. DO NOT TRIGGER for
   single-file tweaks, "just implement it" requests, or when a plan
   already exists (use /plan-review instead).

@@ -1,9 +1,8 @@
 ---
 name: sql-query-conventions
 description: >
-  Read-path SQL conventions (raw SQL, PostgREST, SQL-shaped ORMs):
-  explicit limits, pagination, N+1 avoidance, batch-size ceilings, and
-  explicit column selection. TRIGGER when: writing or modifying a SELECT
+  Read-path SQL conventions for raw SQL, PostgREST, and SQL-shaped ORMs.
+  TRIGGER when: writing or modifying a SELECT
   query, PostgREST .from()/.select() chain, list-returning ORM call, or
   query-shape / pagination design. DO NOT TRIGGER when: writing
   write-path (INSERT/UPDATE/DELETE), DDL-only migrations, test fixtures,

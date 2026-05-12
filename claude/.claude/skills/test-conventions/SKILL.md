@@ -1,9 +1,7 @@
 ---
 name: test-conventions
 description: >
-  Testing conventions for writing tests in any codebase: test pyramid layers,
-  test-first discipline, design for testability, test isolation, naming, test
-  data, coverage judgment, and mock design.
+  Testing conventions for writing tests in any codebase.
   TRIGGER when: planning tests for new code, writing test infrastructure
   (mocks, helpers, fixtures), or discussing test strategy for new features.
   DO NOT TRIGGER when: a project-level test skill is already loaded, the task
