@@ -41,8 +41,8 @@ on demand. Description text is always-loaded context budget; body
 text is conditional. Frontmatter overspend hurts more than body overspend.
 
 Target description shape: one summary sentence (≤80 chars), then `TRIGGER when:` and
-`DO NOT TRIGGER when:` clauses. Enumerating body-topic headings in the summary is the
-anti-pattern — body sections already enumerate; the summary routes.
+`DO NOT TRIGGER when:` clauses. Do not enumerate body-topic headings in the summary —
+body sections already enumerate; the summary routes.
 
 ## 2. Trigger design
 
