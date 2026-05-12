@@ -58,3 +58,5 @@ Effort sections optional; if present, describe review surface (file count, domai
 Invoke `/plan-review` against the written plan file. Address any findings before presenting the plan to the user.
 
 **If plan mode is active:** after `/plan-review` is clean and findings are addressed, call `ExitPlanMode` to request approval. The harness shows the plan file's contents in the approval UI; do not also ask conversationally.
+
+**Draft-PR handoff for design-doc or cross-team contract changes.** If the plan introduces a new design document (e.g., a new file under `docs/design/`) or defines a cross-team data contract (a schema shape, enum, or API surface that downstream teams or analytical pipelines depend on), after `ExitPlanMode` is approved and the plan + doc are committed on the implementation branch, push the branch and open a **draft** PR before starting implementation. Async comments on the rendered diff are easier to thread than prose in a plan file, and downstream reviewers may need lead time. Skip this for plans that are implementation-only (no new design doc, no cross-team contract).
