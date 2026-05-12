@@ -20,6 +20,16 @@ user-invocable: false
 
 While active, `require-memory-skill.sh` bypasses for this session (<60 min freshness; mtime refreshed on each pass). If the command fails (empty `SESSION_ID`), abort — `capture-session-id.sh` SessionStart hook did not run, and every gated memory write below will be blocked.
 
+## Step 1 — Decide where this rule belongs before writing
+
+Before writing any file under `memory/`, check in order:
+
+1. **Grep CLAUDE.md and AGENTS.md** (project tree + `~/.claude/`) for keywords from the rule. If covered → edit the source, don't write to memory. Restating a covered rule is pure load. (See §3 compliance asymmetry, §5 anti-duplication heuristic.)
+2. **Does this rule fire only inside a specific named skill's workflow?** If yes → that skill's `SKILL.md`, not memory. Skill bodies load at the moment the rule applies; memory loads every session whether the session uses that workflow or not.
+3. **Confirm the content fits a genuine memory use:** personal preference (user type), feedback calibration with the *why* — corrections *and* validated judgment calls (feedback type), past-incident context not captured in code or commit messages (project type), or pointer to an external system (reference type).
+
+If step 1 or 2 produces a destination, write there and stop. This pre-write check is placed here — before the architecture overview — because the Step 0 procedural form is what runs reliably before the writer decides what to do. See §4 and §5 below for the full routing tables.
+
 # AI Instruction & Memory Files — Architecture
 
 The facts below come from primary sources (URLs in co-located REFERENCES.md).

@@ -141,8 +141,11 @@ Run `gh pr checks <n>`.
 Steps 3 and 4 may have produced new commits or body edits. Reconfirm:
 
 - Working tree is clean.
-- All commits are pushed: `git status` shows the branch up to date
-  with `origin/<branch>`, not ahead.
+- All commits are pushed. If `git status` shows the branch ahead of
+  `origin/<branch>` because steps 2/3 produced fix commits, push them
+  now — those commits are inside the approved scope of this gate and
+  the user does not need to re-authorize the push. After pushing,
+  re-verify the branch is no longer ahead.
 - PR body edit (if any) landed — re-fetch with `gh pr view` and confirm.
 
 If the branch has no PR and no remote tracking, surface this — a project-specific pre-merge skill should open the PR; this skill does not.
