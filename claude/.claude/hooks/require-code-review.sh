@@ -72,6 +72,6 @@ fi
 # Build the reason as a bash variable so the conditional marker-chain
 # note can be interpolated; jq -Rs handles JSON-encoding safely
 # regardless of what characters appear in the appended note.
-REASON="Commit blocked by code-review gate: the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit."
+REASON="Commit blocked by code-review gate: the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit. If the skill cannot run, see: https://github.com/jcdendrite/claude-config/blob/main/docs/hooks.md#gate-deadlock-recovery"
 REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
