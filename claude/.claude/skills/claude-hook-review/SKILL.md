@@ -1,19 +1,13 @@
 ---
 name: claude-hook-review
 description: >
-  How to review Claude Code hook scripts (`claude/.claude/hooks/*.sh`)
-  and hook entries in `settings.json` (PreToolUse, PostToolUse,
-  SessionStart): event/matcher selection, dispatch design,
-  fail-open vs fail-closed posture, the `emit_deny` JSON shape,
-  performance budget, and test patterns.
-  TRIGGER when: reviewing a change to a hook script under
-  `.claude/hooks/`; reviewing a change to a hook entry in
-  `settings.json` (`hooks.PreToolUse`, `hooks.PostToolUse`,
-  `hooks.SessionStart`, etc.); designing a new hook.
-  DO NOT TRIGGER when: editing `permissions.allow` rules (use
-  `review-permissions`); editing other `settings.json` fields (env,
-  model, theme — use `update-config`); reviewing non-Claude hook
-  systems (git hooks, husky, lefthook).
+  Review and audit of Claude Code hooks (.claude/hooks/*.sh and
+  settings.json hook entries): matcher selection, fail-open vs
+  fail-closed posture, emit_deny shape, performance budget, test
+  patterns. TRIGGER when: reviewing a .claude/hooks/*.sh script or
+  settings.json hook entry, or designing a new hook.
+  DO NOT TRIGGER when: editing permissions.allow rules
+  (use review-permissions) or non-Claude hook systems.
 allowed-tools: Read, Grep, Glob, Bash
 user-invocable: false
 ---

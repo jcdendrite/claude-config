@@ -1,22 +1,12 @@
 ---
 name: verify-primary-sources
 description: >
-  When web research will inform a code or design decision, fetch and
-  read the primary documentation directly rather than relying on
-  agent summaries or secondary sources. Read the surrounding
-  context — "the docs say X" and "the docs say X in the context of
-  Y" often point at opposite conclusions.
-  TRIGGER when: web research is informing an
-  architectural / API-behavior / library-choice / deprecation /
-  security-posture decision; you are about to relay or act on a
-  documentation claim from a secondary source (subagent, blog
-  post, forum answer, LLM summary); the user asks Claude to
-  research a technical question online before writing code.
-  DO NOT TRIGGER when: looking up syntax (jq operators, regex
-  flags), decoding an error string, fetching a single referenced
-  URL that IS the primary source (whether the user pasted it or a
-  subagent cited it), reading a CHANGELOG entry the user pointed
-  at — quick lookups that don't drive a strategic conclusion.
+  Fetch primary documentation directly rather than relying on agent
+  summaries when web research drives a code or design decision.
+  TRIGGER when: acting on a documentation claim from a subagent, blog
+  post, or other secondary source for an architectural/API/library/
+  security decision. DO NOT TRIGGER when: doing quick syntax lookups,
+  error decoding, or when the cited URL is already the primary source.
 user-invocable: false
 ---
 

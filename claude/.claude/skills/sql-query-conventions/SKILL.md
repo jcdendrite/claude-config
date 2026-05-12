@@ -1,22 +1,13 @@
 ---
 name: sql-query-conventions
 description: >
-  Conventions for writing read-path queries against SQL / relational
-  stores (raw SQL, PostgREST/Supabase `.from(...).select(...)`,
-  SQL-shaped ORMs): pagination, limits, avoiding N+1, batch-size
-  ceilings, explicit column selection, and the AI anti-patterns that
-  silently scale badly. Write-path idempotency conventions live in
-  project-level guardrails and in `test-conventions`, not here.
-  TRIGGER when: writing or modifying a read-path SQL or PostgREST
-  query — adding a `SELECT`, a `.from(...)` / `.select(...)` chain, a
-  list-returning ORM call, raw read SQL, or data-access helper;
-  designing query shape, pagination, or batch size.
-  DO NOT TRIGGER when: writing INSERT/UPDATE/DELETE or other write-path
-  code, reading existing queries without modification, editing test
-  mocks or fixture seed data, purely-schema migrations (DDL only, no
-  DML), generated client code, or writing queries against document/KV
-  stores (DynamoDB, MongoDB, Cassandra, etc. — those have different
-  read-path conventions and belong in a separate skill).
+  Read-path SQL conventions (raw SQL, PostgREST, SQL-shaped ORMs):
+  explicit limits, pagination, N+1 avoidance, batch-size ceilings, and
+  explicit column selection. TRIGGER when: writing or modifying a SELECT
+  query, PostgREST .from()/.select() chain, list-returning ORM call, or
+  query-shape / pagination design. DO NOT TRIGGER when: writing
+  write-path (INSERT/UPDATE/DELETE), DDL-only migrations, test fixtures,
+  or document/KV stores.
 user-invocable: false
 ---
 
