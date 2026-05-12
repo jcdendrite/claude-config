@@ -90,6 +90,6 @@ if [ -n "$TARGET_PATH" ]; then
   fi
 fi
 
-REASON="Write/Edit blocked by plan-review gate: a plan file exists in .claude/plans/ but no plan-review marker was found for this session. Run the /plan-review skill now. When the review is clean, the skill will record the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry. If the skill cannot run, see: https://github.com/jcdendrite/claude-config/blob/main/docs/hooks.md#gate-deadlock-recovery"
+REASON="Write/Edit blocked by plan-review gate: a plan file exists in .claude/plans/ but no plan-review marker was found for this session. Run the /plan-review skill now. When the review is clean, the skill will record the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry."
 REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
