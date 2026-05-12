@@ -215,7 +215,7 @@ def skill_review_marker_path(home: Path, repo: Path, session_id: str = DEFAULT_T
 
 def write_skill_review_marker(home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID) -> None:
     diff = subprocess.run(
-        ["git", "diff", "--cached", "--", "claude/.claude/skills/**/SKILL.md"],
+        ["git", "diff", "--cached", "--", "claude/.claude/skills/**/SKILL.md", "plugins/*/skills/**/SKILL.md"],
         capture_output=True,
         cwd=repo,
     ).stdout

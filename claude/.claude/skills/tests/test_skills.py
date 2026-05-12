@@ -23,6 +23,21 @@ from pathlib import Path
 import pytest
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
+# Plugins live two levels above the .claude/ dir: <repo>/plugins/<name>/skills/<skill>/SKILL.md
+_PLUGINS_DIR = SKILLS_DIR.parent.parent.parent / "plugins"
+
+
+def _skill_file(skill_name: str) -> Path:
+    """Locate a SKILL.md by name — stowed skills first, then plugin skills."""
+    candidate = SKILLS_DIR / skill_name / "SKILL.md"
+    if candidate.exists():
+        return candidate
+    if _PLUGINS_DIR.exists():
+        for plugin_dir in sorted(_PLUGINS_DIR.iterdir()):
+            plugin_candidate = plugin_dir / "skills" / skill_name / "SKILL.md"
+            if plugin_candidate.exists():
+                return plugin_candidate
+    return candidate  # let read_text() surface the FileNotFoundError
 
 
 def _skill_description(skill_name: str) -> str:
@@ -32,7 +47,7 @@ def _skill_description(skill_name: str) -> str:
     If frontmatter delimiters are absent the skill is structurally broken;
     returning empty string causes downstream assertions to fail cleanly.
     """
-    skill_file = SKILLS_DIR / skill_name / "SKILL.md"
+    skill_file = _skill_file(skill_name)
     content = skill_file.read_text()
     if not content.startswith("---"):
         return ""
@@ -42,7 +57,7 @@ def _skill_description(skill_name: str) -> str:
 
 
 def _specialist_skills() -> list[str]:
-    """Discover non-user-invocable skills from the skills directory.
+    """Discover non-user-invocable skills from the stowed skills directory and plugins.
 
     Any skill with user-invocable: false in its frontmatter is expected to
     fire via description-based auto-trigger and must carry TRIGGER when: /
@@ -58,6 +73,19 @@ def _specialist_skills() -> list[str]:
         frontmatter = _skill_description(skill_dir.name)
         if frontmatter and "user-invocable: false" in frontmatter:
             skills.append(skill_dir.name)
+    if _PLUGINS_DIR.exists():
+        for plugin_dir in sorted(_PLUGINS_DIR.iterdir()):
+            plugin_skills_dir = plugin_dir / "skills"
+            if not plugin_skills_dir.is_dir():
+                continue
+            for skill_dir in sorted(plugin_skills_dir.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                if not (skill_dir / "SKILL.md").exists():
+                    continue
+                frontmatter = _skill_description(skill_dir.name)
+                if frontmatter and "user-invocable: false" in frontmatter:
+                    skills.append(skill_dir.name)
     return skills
 
 

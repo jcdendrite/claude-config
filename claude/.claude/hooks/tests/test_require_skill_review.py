@@ -8,7 +8,6 @@ import pytest
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
-    SKILLS_DIR,
     bash_input,
     edit_input,
     extract_skill_command,
@@ -18,8 +17,9 @@ from helpers import (
     write_skill_review_marker,
 )
 
-SKILL_REVIEW_HOOK = HOOKS_DIR / "require-skill-review.sh"
-SKILL_REVIEW_SKILL = SKILLS_DIR / "skill-review" / "SKILL.md"
+_PLUGINS_DIR = HOOKS_DIR.parent.parent.parent / "plugins"
+SKILL_REVIEW_HOOK = _PLUGINS_DIR / "skill-review" / "hooks" / "require-skill-review.sh"
+SKILL_REVIEW_SKILL = _PLUGINS_DIR / "skill-review" / "skills" / "skill-review" / "SKILL.md"
 
 
 def _stage_skill_change(git_repo):
@@ -27,6 +27,18 @@ def _stage_skill_change(git_repo):
     skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
     skill_file.parent.mkdir(parents=True, exist_ok=True)
     skill_file.write_text("## test skill\n")
+    subprocess.run(
+        ["git", "add", str(skill_file.relative_to(git_repo))],
+        cwd=git_repo,
+        check=True,
+    )
+
+
+def _stage_plugin_skill_change(git_repo):
+    """Stage a SKILL.md change inside a plugin directory (plugins/*/skills/**/SKILL.md)."""
+    skill_file = git_repo / "plugins" / "skill-review" / "skills" / "skill-review" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True, exist_ok=True)
+    skill_file.write_text("## test plugin skill\n")
     subprocess.run(
         ["git", "add", str(skill_file.relative_to(git_repo))],
         cwd=git_repo,
@@ -286,3 +298,28 @@ class TestRequireSkillReview:
             cwd=git_repo,
         )
         assert result == "allow"
+
+    def test_plugin_skill_no_marker_denies_commit(self, isolated_home, git_repo):
+        """Plugin-path SKILL.md (plugins/*/skills/**/SKILL.md) is gated like stowed skills."""
+        _stage_plugin_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_plugin_skill_correct_hash_marker_allows(self, isolated_home, git_repo):
+        """Plugin-path SKILL.md allows when the marker covers the plugin diff hash."""
+        _stage_plugin_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )

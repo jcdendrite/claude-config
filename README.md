@@ -132,7 +132,7 @@ flowchart LR
 - **`/plan-it`** — produce the implementation plan.
 - **`/plan-review`** — review the plan against domain checklists.
 - **`/code-review`** — principal-engineer review with ripple-effect triage.
-- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes.
+- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. (Provided by the `skill-review@claude-config` plugin — see [Project-scoped plugins](docs/skills.md#project-scoped-plugins).)
 - **`/ready-for-review`** — final tests + cumulative-diff review before push.
 - **`/respond-pr`** — fetch and reply to all PR comments with `[Claude Code]` attribution.
 
@@ -142,13 +142,13 @@ flowchart LR
 |---|---|---|
 | `require-plan-review.sh` | `Write`/`Edit` while a plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
-| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | `/skill-review` behavioral-equivalence audit |
+| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | `/skill-review` behavioral-equivalence audit (ships with `skill-review@claude-config` plugin) |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |
 | `require-ready-for-review.sh` | `git push`, `gh pr ready` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
 
-See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all 19 hooks and 18 skills, see [`docs/hooks.md`](docs/hooks.md) and [`docs/skills.md`](docs/skills.md).
+See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all hooks, skills, and project-scoped plugins, see [`docs/hooks.md`](docs/hooks.md) and [`docs/skills.md`](docs/skills.md).
 
 ### Statusline
 
