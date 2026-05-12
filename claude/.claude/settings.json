@@ -200,6 +200,15 @@
     "claude-md-management@claude-plugins-official": false,
     "claude-code-setup@claude-plugins-official": false
   },
+  "skillOverrides": {
+    "claude-api": "off",
+    "fewer-permission-prompts": "off",
+    "init": "off",
+    "keybindings-help": "off",
+    "review": "off",
+    "security-review": "off",
+    "simplify": "off"
+  },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
       "source": {
