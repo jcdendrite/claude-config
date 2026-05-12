@@ -25,6 +25,36 @@ Full descriptions for every skill (slash command) in `claude/.claude/skills/`. F
 
 Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain co-located auxiliary files — see architecture notes below for the two distinct roles they play.
 
+## Bundled skills disabled by default
+
+Claude Code ships a set of bundled skills alongside its custom-skill support. Seven bundled skills are disabled in this repo's `settings.json` via `skillOverrides: "off"`. The reason in each case is either redundancy with a more capable repo-specific skill or low utility relative to the description-budget cost. All skill descriptions contribute to the `skillListingBudgetFraction` context allocation; `/doctor` reports a warning when the budget overflows and descriptions are dropped. The disabled skills freed budget for the always-relevant `user-invocable: false` skills that auto-trigger during the engineering workflow.
+
+| Bundled skill | Why disabled |
+|---|---|
+| `/claude-api` | Only relevant when building Claude API / Anthropic SDK apps. Out of scope for this repo's tooling work. |
+| `/fewer-permission-prompts` | One-time setup utility; rarely fires in established sessions. |
+| `/init` | One-time setup; CLAUDE.md is already established, and `/init` advice may conflict with repo conventions. |
+| `/keybindings-help` | One-time setup utility; rarely fires in established sessions. |
+| `/review` | "Review a PR" — superseded by `/code-review` (specialist reviewer routing) and `/ultrareview`. |
+| `/security-review` | Superseded by `/code-review` specialist routing (ciso-reviewer agent fires automatically). |
+| `/simplify` | Overlaps with `/code-review`, which spins up domain specialists and produces a structured checklist. |
+
+### Re-enable for your session
+
+Via `/skills` UI: open `/skills`, highlight the skill, press `Space` to cycle to `"on"`, then `Enter`. This writes to `~/.claude/settings.local.json` (gitignored; persists across sessions).
+
+Persistent per-user: add to `~/.claude/settings.local.json`:
+
+```json
+{
+  "skillOverrides": {
+    "claude-api": "on"
+  }
+}
+```
+
+`settings.local.json` overrides `settings.json` at the same scope; the repo's `"off"` entry does not win. Remove the entry (or set to `"on"`) to restore. Reference: [Claude Code skills — Override skill visibility from settings](https://code.claude.com/docs/en/skills.md).
+
 ## Skill architecture notes
 
 - **Co-located files come in two roles, neither auto-loaded.** `REFERENCES.md` is an edit-time reference (canonical URLs, key quotes, framework notes that informed the skill's rules) — read by humans and agents when updating the skill, not at runtime. A runtime auxiliary file (e.g., `plan-review/ROUTING.md`) is read by the skill itself via the Read tool at runtime. The 200-line cap (`check-skill-length.sh`) marks the degradation point — shorten first, do not extract: an auxiliary adds Read-tool indirection without reducing context cost. `plan-review/ROUTING.md` is a last-resort exception (content could not be cut; `require-routing-read.sh` and `log-routing-read.sh` compensate for the indirection). Both types belong to one skill and are not shared across skills.
