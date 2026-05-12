@@ -1,8 +1,7 @@
 ---
 name: test-evaluation
 description: >
-  Evaluate and debug existing test suites: diagnose inverted pyramids, identify
-  wrong-layered tests, root-cause flaky tests, and spot common anti-patterns.
+  Evaluate and debug existing test suites.
   TRIGGER when: reviewing or evaluating an existing test suite, debugging slow
   or flaky tests, assessing test coverage quality, or reviewing test code.
   DO NOT TRIGGER when: writing new tests (use test-conventions), or the task is

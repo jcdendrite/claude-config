@@ -40,6 +40,10 @@ The harness loads only the description at startup; the body is fetched
 on demand. Description text is always-loaded context budget; body
 text is conditional. Frontmatter overspend hurts more than body overspend.
 
+Target description shape: one summary sentence (≤80 chars), then `TRIGGER when:` and
+`DO NOT TRIGGER when:` clauses. Enumerating body-topic headings in the summary is the
+anti-pattern — body sections already enumerate; the summary routes.
+
 ## 2. Trigger design
 
 Format the description with two parallel lists:

@@ -1,8 +1,7 @@
 ---
 name: verify-primary-sources
 description: >
-  Fetch primary documentation directly rather than relying on agent
-  summaries when web research drives a code or design decision.
+  Fetch primary documentation directly rather than relying on agent summaries.
   TRIGGER when: acting on a documentation claim from a subagent, blog
   post, or other secondary source for an architectural/API/library/
   security decision. DO NOT TRIGGER when: doing quick syntax lookups,

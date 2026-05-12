@@ -1,9 +1,8 @@
 ---
 name: git-state-safety
 description: >
-  Safe inspection of other refs while mid-merge, mid-rebase, or
-  mid-cherry-pick — avoids `git checkout <ref> -- <path>` which
-  silently corrupts the index in these states. TRIGGER when: examining
+  Ref inspection while mid-merge/rebase/cherry-pick without corrupting the index.
+  TRIGGER when: examining
   another ref while the tree has merge/rebase/cherry-pick state or
   unresolved conflicts, or recovering from a bad merge already committed.
   DO NOT TRIGGER when: working on a clean tree or for force-push safety
