@@ -21,6 +21,22 @@
 # Workaround: write prose-containing files via the Write/Edit tool, not
 # Bash heredocs.
 
+# emit_deny is defined before sourcing _lib.sh so it is available even if
+# _lib.sh is absent (e.g. mid-stow). The guarded source below ensures a
+# missing _lib.sh emits a deny rather than a silent allow or a bare exit 1.
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' \
+    "$reason_json"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by worktree-enforcement hook: could not source _lib.sh — hook cannot evaluate git discipline safely."
+  exit 0
+fi
+
 # Defensive: prevent GIT_DIR / GIT_WORK_TREE env overrides from making the
 # main tree impersonate a linked worktree via rev-parse output.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
@@ -30,14 +46,6 @@ COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/n
 JQ_EXIT=$?
 CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
-
-emit_deny() {
-  local reason="$1"
-  local reason_json
-  reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' \
-    "$reason_json"
-}
 
 # Returns success when the command chains `cd ... <op> ... git ...`. The
 # hook reads cwd from Claude Code's session-persisted bash state (set by
@@ -197,32 +205,7 @@ readonly ALLOWED_SUBCMDS=(
 )
 ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
-# Decide whether a fragment actually invokes `git`, not just mentions it
-# as a substring of a path or URL. Scans whitespace-separated words and
-# returns success iff any word equals `git` or ends in `/git` (absolute
-# path form, e.g. `/usr/bin/git`). Env-var prefixes (`FOO=1 git ...`),
-# `env`/`sudo` prefixes, and `git` as the nth word are all handled by
-# walking every word rather than just the first.
-#
-# Rejects: `ls .github/workflows/`, `cat .gitignore`, `grep github.com`,
-# `./git-foo` (not `git` and not `*/git`). Accepts: `git log`, `sudo git
-# commit`, `FOO=1 git push`, `/usr/bin/git status`.
-fragment_invokes_git() {
-  local fragment="$1"
-  local saved_opts=$-
-  set -f
-  local found=false word
-  for word in $fragment; do
-    if [[ "$word" == "git" || "$word" == */git ]]; then
-      found=true
-      break
-    fi
-  done
-  if [[ "$saved_opts" != *f* ]]; then
-    set +f
-  fi
-  $found
-}
+fragment_invokes_git() { _lib_fragment_invokes_git "$@"; }
 
 # Extract the git subcommand from a fragment like "git -C path commit -m foo".
 # Strips global flags that consume the next word, skips other flags, returns
@@ -231,6 +214,13 @@ fragment_invokes_git() {
 #
 # Globbing is explicitly disabled for the loop so that an input like
 # "git * log" can't glob against cwd contents to hide the real subcommand.
+#
+# Intentionally NOT delegating to _lib_extract_git_subcmd: this hook is
+# fail-closed — an unrecognized or malformed subcommand is denied.
+# _lib_extract_git_subcmd strips trailing non-alnum chars (e.g. `push)` →
+# `push`) for the ready-for-review hook's "is this a push?" detection;
+# stripping here would silently allow `log)` after paren-group splitting
+# when `log` happens to be allowlisted.
 extract_git_subcmd() {
   local fragment="$1"
   local after_git="${fragment#*git}"
@@ -259,9 +249,7 @@ extract_git_subcmd() {
   printf '%s' "$subcmd"
 }
 
-# Split on shell operators so chained commands get inspected fragment by
-# fragment. Replace operators with newlines, then walk the list.
-FRAGMENTS=$(printf '%s' "$COMMAND" | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g')
+FRAGMENTS=$(_lib_split_fragments "$COMMAND")
 
 while IFS= read -r fragment; do
   [ -z "$fragment" ] && continue
