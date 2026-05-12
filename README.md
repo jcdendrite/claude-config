@@ -153,10 +153,10 @@ See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one f
 ### Statusline
 
 ```
-[opusplan] 32% • $1.24 • ~/MyCode/proj • main
+Opus 4.7 [##----] 32% • 5h:7% • 7d:24% • $1.24 • ~/MyCode/proj • main
 ```
 
-`statusline-command.sh` renders model, context usage percentage, session cost, working directory, and git branch in the status bar. Configured in `settings.json` via the `statusline` key.
+`statusline-command.sh` renders model, context usage percentage, 5-hour and 7-day capacity used percentages (for subscription plans), session cost (for API-based plans, working directory, and git branch in the status bar. Configured in `settings.json` via the `statusline` key.
 
 ### Plugins (marketplace)
 
