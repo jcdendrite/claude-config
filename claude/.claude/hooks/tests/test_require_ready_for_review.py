@@ -514,6 +514,59 @@ class TestRequireReadyForReview:
             == "allow"
         )
 
+    # -- Command-shape coverage (regex-gap fixes) -------------------------
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C /some/wt push origin feature",
+            "git --git-dir=/some/wt/.git --work-tree=/some/wt push",
+            "GIT_DIR=/some/wt/.git git push",
+            "eval git push",
+            "xargs git push",
+            "git push;",
+            "(cd /wt; git push)",
+        ],
+    )
+    def test_command_shapes_that_escaped_old_regex_are_denied(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Command forms that the old regex missed must now be detected and gated."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_cwd_json_field_used_for_branch_resolution(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """Hook must read .cwd from the JSON payload, not the inherited process CWD,
+        for branch detection. When the payload's cwd points at a feature-branch
+        repo but the hook process runs from an unrelated directory, the gate
+        must still fire (not bypass via the default-branch check)."""
+        import tempfile
+
+        sid = "s"
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "git push origin feature"},
+            "session_id": sid,
+            "cwd": str(repo_on_feature_branch),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert (
+                run_hook(
+                    READY_FOR_REVIEW_HOOK,
+                    payload,
+                    cwd=Path(tmpdir),
+                )
+                == "deny"
+            )
+
     def test_skill_deactivate_command_removes_active_marker(
         self, isolated_home, repo_on_feature_branch
     ):

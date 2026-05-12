@@ -45,20 +45,26 @@ fi
 
 COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
+CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty')
+[ -z "$CWD" ] && CWD="$PWD"
 
-# Match the gated commands: `git push` and `gh pr ready`.
-# - `(^|&&?|;|\|\|?)\s*git\s+push(\s|$)` — git push at start or after a
-#   shell separator, ensuring `git push-other-thing` and `git pushd` don't
-#   match (no such commands today, but defensive).
-# - `(^|&&?|;|\|\|?)\s*gh\s+pr\s+ready(\s|$)` — gh pr ready, same shape.
+# Detect gated commands by tokenizing fragments, not regex. This handles:
+# git -C <path> push, git --git-dir=... push, GIT_DIR=... git push,
+# eval git push, xargs git push, git push; (trailing semicolon),
+# (cd /wt; git push) (paren group).
 is_git_push=false
 is_gh_pr_ready=false
-if printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+push(\s|$)'; then
-  is_git_push=true
-fi
-if printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*gh\s+pr\s+ready(\s|$)'; then
-  is_gh_pr_ready=true
-fi
+FRAGMENTS=$(_lib_split_fragments "$COMMAND")
+while IFS= read -r frag; do
+  [ -z "$frag" ] && continue
+  if _lib_fragment_invokes_git "$frag"; then
+    subcmd=$(_lib_extract_git_subcmd "$frag")
+    [ "$subcmd" = "push" ] && is_git_push=true
+  fi
+  if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+ready(\s|;|$)'; then
+    is_gh_pr_ready=true
+  fi
+done <<< "$FRAGMENTS"
 if ! $is_git_push && ! $is_gh_pr_ready; then
   exit 0
 fi
@@ -93,7 +99,7 @@ if $is_git_push; then
 fi
 
 # Are we in a git repo?
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+REPO_ROOT=$(cd "$CWD" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
@@ -105,11 +111,11 @@ fi
 # `rev-parse --abbrev-ref origin/HEAD`: the latter outputs the literal
 # string "origin/HEAD" (not empty) when origin/HEAD isn't a symbolic ref,
 # which defeats the fallback path.
-CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-DEFAULT_BRANCH=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+CURRENT_BRANCH=$(cd "$CWD" 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null)
+DEFAULT_BRANCH=$(cd "$CWD" 2>/dev/null && git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
 if [ -z "$DEFAULT_BRANCH" ]; then
   for candidate in main master develop; do
-    if git rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
+    if cd "$CWD" 2>/dev/null && git rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
       DEFAULT_BRANCH="$candidate"
       break
     fi
@@ -135,7 +141,7 @@ fi
 # Network call — wrap in `timeout` so a hanging gh doesn't stall the
 # tool-call. On error/timeout, fail-open: the skill's prose triggers
 # still fire, and we don't want to brick offline / flaky-network work.
-PR_NUMBER=$(timeout 5 gh pr view --json number --jq '.number' 2>/dev/null)
+PR_NUMBER=$(cd "$CWD" 2>/dev/null && timeout 5 gh pr view --json number --jq '.number' 2>/dev/null)
 if [ -z "$PR_NUMBER" ]; then
   exit 0
 fi
@@ -146,7 +152,7 @@ if [ -n "$SESSION_ID" ]; then
   MARKER="$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
   if [ -f "$MARKER" ]; then
     MARKER_HEAD=$(tr -d '[:space:]' < "$MARKER")
-    CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null)
+    CURRENT_HEAD=$(cd "$CWD" 2>/dev/null && git rev-parse HEAD 2>/dev/null)
     if [ -n "$MARKER_HEAD" ] && [ -n "$CURRENT_HEAD" ] && [ "$MARKER_HEAD" = "$CURRENT_HEAD" ]; then
       exit 0
     fi
