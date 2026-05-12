@@ -60,9 +60,9 @@ A CLAUDE.md instruction says "you should run code-review before committing." A P
 
 The README below is organized by feature surface (hooks, skills, plugins, scripts). If you came looking for transferable ideas, these are the load-bearing ones:
 
-- **Per-session sha256 marker keying** — review markers key on `<repo-hash>.<session-id>` plus the staged-diff sha256, so a re-staged line auto-invalidates the gate without timers or manual reset, and parallel sessions can't clear each other's markers. See [Hooks](#hooks) (`require-code-review.sh`) and `docs/design-decisions.md` decision 2.
+- **Per-session sha256 marker keying** — review markers key on `<repo-hash>.<session-id>` plus the staged-diff sha256, so a re-staged line auto-invalidates the gate without timers or manual reset, and parallel sessions can't clear each other's markers. See [`docs/hooks.md`](docs/hooks.md) (`require-code-review.sh`) and `docs/design-decisions.md` decision 2.
 - **Compaction-aware marker re-injection** — `session-marker-dashboard.sh` matches `startup|clear|compact`, restoring active-bypass marker visibility after auto-compact fires. See [Context management](#context-management).
-- **Read-before-dispatch routing gate** — `require-routing-read.sh` blocks subagent spawn during `/plan-review` until `ROUTING.md` is read; a PostToolUse companion records the read per session. See [Hooks](#hooks).
+- **Read-before-dispatch routing gate** — `require-routing-read.sh` blocks subagent spawn during `/plan-review` until `ROUTING.md` is read; a PostToolUse companion records the read per session. See [`docs/hooks.md`](docs/hooks.md).
 - **Project-layer composition by glob + Skill-tool dispatch** — `/plan-review` and `/code-review` glob for `.claude/skills/<parent>-<project>/SKILL.md` at runtime; consuming repos extend the base checklist without forking. Description-based auto-trigger was empirically tested and rejected (it doesn't fire from inside a running skill). See [docs/skills.md](docs/skills.md) and `docs/design-decisions.md` decision 8.
 - **Three-tier redaction** — always-on tracker-ID regex, opt-in user-local blocklist, reviewer discipline for structural fingerprints. See [Private-project redaction](#private-project-redaction).
 
@@ -129,12 +129,12 @@ flowchart LR
 
 **Skills in the pipeline:**
 
-- **`/plan-it`** — produce an implementation plan in `.claude/plans/<topic-slug>.md` through discovery, codebase exploration, clarifying questions, and architecture design; hands off to `/plan-review`.
-- **`/plan-review`** — review an implementation plan against domain checklists before presenting it to a human; required before writing code when a plan file exists in `.claude/plans/`.
-- **`/code-review`** — principal-engineer code review with ripple-effect triage and domain-specific audits; required before `git commit`.
-- **`/skill-review`** — behavioral-equivalence audit for `SKILL.md` changes; required before `git commit` when staged changes include a SKILL.md. Produces an explicit table verifying that every removed or shortened line's behavior is preserved.
-- **`/ready-for-review`** — pre-handoff gate that verifies tests/lint/typecheck and reviews the cumulative PR diff; required before `git push` on a branch with an open PR.
-- **`/respond-pr`** — fetch all PR review comments (inline, top-level, review summaries) and post replies with `[Claude Code]` attribution; required before reading or posting PR comments via `gh api`.
+- **`/plan-it`** — produce the implementation plan.
+- **`/plan-review`** — review the plan against domain checklists.
+- **`/code-review`** — principal-engineer review with ripple-effect triage.
+- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes.
+- **`/ready-for-review`** — final tests + cumulative-diff review before push.
+- **`/respond-pr`** — fetch and reply to all PR comments with `[Claude Code]` attribution.
 
 **Hook transitions:**
 
@@ -148,7 +148,7 @@ flowchart LR
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
 
-See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing.
+See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all 19 hooks and 18 skills, see [`docs/hooks.md`](docs/hooks.md) and [`docs/skills.md`](docs/skills.md).
 
 ### Statusline
 
@@ -157,32 +157,6 @@ See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one f
 ```
 
 `statusline-command.sh` renders model, context usage percentage, session cost, working directory, and git branch in the status bar. Configured in `settings.json` via the `statusline` key.
-
-### Hooks
-
-The 19 hooks divide into gate hooks (blocking a command until a condition is met) and utility hooks (wiring session state). Key gates:
-
-- **`require-code-review.sh`** — blocks `git commit` until `/code-review` ran on the current staged diff. Marker auto-invalidates on any re-staging.
-- **`deny-private-project-refs.sh`** — blocks commits and PR creates/edits containing tracker IDs outside the OSS allowlist or any entry in `~/.claude/private-projects.md`.
-- **`require-ready-for-review.sh`** — blocks `git push` on open-PR branches until `/ready-for-review` passes since the last commit.
-- **`require-worktree-for-git-writes.sh`** — opt-in: blocks non-read-only git operations outside a linked worktree, preventing concurrent-session races.
-- **`enforce-marker-script-shape.sh`** — blocks any `marker.sh` invocation not matching the allowlisted shape, closing prompt-injection escalation through allow rules.
-
-Full descriptions for all 19 hooks: [`docs/hooks.md`](docs/hooks.md).
-
-### Skills
-
-The 18 skills (slash commands) cover the full lifecycle and a set of domain-specific conventions. Core pipeline skills:
-
-- **`/plan-it`** and **`/plan-review`** — planning phase, then review before code.
-- **`/code-review`** — multi-specialist review required before every commit.
-- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes.
-- **`/ready-for-review`** — final diff review and test verification before push.
-- **`/respond-pr`** — PR comment fetch and reply with `[Claude Code]` attribution.
-
-Domain skills include `/git-state-safety`, `/review-permissions`, `/test-conventions`, `/config-environments`, `/sql-query-conventions`, `/ai-instruction-and-memory-files`, and more.
-
-Full descriptions for all 18 skills, plus skill architecture notes and project-specific layer mechanics: [`docs/skills.md`](docs/skills.md).
 
 ### Plugins (marketplace)
 
