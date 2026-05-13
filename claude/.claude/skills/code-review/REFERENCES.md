@@ -26,3 +26,13 @@ Reference material that informed this skill. Not loaded during skill execution �
 **Rationale:** The glob generalizes across projects without editing the public skill on each onboarding. Hardcoding project names was rejected (no generalization). Config-file indirection was rejected (no value over the established naming convention). Prose pointer is the F-04-validated mechanism: Skill-tool invocation works mid-skill; description-based auto-trigger does not.
 
 **Hygiene item added:** Item 9 (Repeated in-house logic that should be extracted) was added to the Hygiene section of `code-review/SKILL.md`. The item includes a DAMP carve-out for test files — repeated arrange/assert blocks are intentional in tests. Items 9–34 renumbered to 10–35 throughout the body and ownership table.
+
+## F-06: Bare-name Skill() resolution with plugin-form skills (2026-05-13)
+
+**Question:** When a skill's available-skills identifier is `plugin-name:skill-name`, do Skill() calls using only the bare skill name (`skill-name`) still resolve? Do prose pointers in calling skills (e.g., "invoke the `skill-name` skill") still dispatch correctly?
+
+**Test:** Two probes against `claude-hook-review` (identifier: `claude-hook-review:claude-hook-review`). (1) Direct: invoked `Skill(skill="claude-hook-review")`. (2) End-to-end: staged a change to `claude/.claude/hooks/_lib.sh` and ran `/code-review`, which carries the prose pointer "invoke the `claude-hook-review` skill" at line 139.
+
+**Result:** Both pass. Bare-name Skill() calls resolve — the harness accepts `claude-hook-review` and loads from the plugin cache. For the prose-pointer dispatch, the model used the namespaced form `claude-hook-review:claude-hook-review` (cross-referencing the available-skills list), and the 9-item checklist and row-35 hook criteria fired correctly.
+
+**Implication:** Prose pointers using bare skill names in calling skills do not need updating when a skill moves to plugin form.
