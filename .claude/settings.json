@@ -7,7 +7,9 @@
     "allow": [
       "Bash(ruff check claude/.claude/)",
       "Bash(pytest claude/.claude/)",
-      "Bash(pytest claude/.claude/scripts/tests/test_cleanup_merged_branches.py)"
+      "Bash(pytest claude/.claude/scripts/tests/test_cleanup_merged_branches.py)",
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --yes)",
+      "Bash(cleanup-merged-branches --yes)"
     ]
   }
 }

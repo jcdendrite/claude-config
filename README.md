@@ -226,10 +226,11 @@ Utility scripts in `claude/.claude/scripts/` (stowed to `~/.claude/scripts/`).
 
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. The 12 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval; shape validation is enforced by `enforce-marker-script-shape.sh` (see [`docs/hooks.md`](docs/hooks.md)).
 
-- **`cleanup-merged-branches.sh`** — discovers all local branches whose PRs are merged (queried via `gh pr list --head <branch> --state merged`) and cleans them up: removes the worktree, force-deletes the local branch, prunes the remote tracking ref, deletes the remote branch if not auto-deleted, and fast-forwards the default branch. Auto-approved by the paired `permissions.allow` entries.
+- **`cleanup-merged-branches.sh`** — discovers local branches that are safe to delete and cleans them up: removes the worktree, force-deletes the local branch, prunes the remote tracking ref, deletes the remote branch if not auto-deleted, and fast-forwards the default branch. Two signals are used: `gh pr list --head <branch> --state merged` (confirmed merged PR for this exact branch name), and `git merge-base --is-ancestor` to catch branches whose commits are reachable from `origin/<default>` even when the PR shipped under a different head name (renamed branch, worktree-prefixed name, etc.). Branches confirmed via gh are deleted without prompting; branches detected only via reachability prompt for confirmation. `--yes` skips the prompt and auto-confirms reachability-only branches — required when invoking from a non-interactive shell (including the Claude Code Bash tool, which does not allocate a TTY) — without it, probable-merge branches are skipped with a warning. Auto-approved by the paired `permissions.allow` entries.
 
   ```bash
-  cleanup-merged-branches          # run cleanup
+  cleanup-merged-branches          # run cleanup (prompts for reachability-only branches)
+  cleanup-merged-branches --yes    # run cleanup, auto-confirm all candidates
   cleanup-merged-branches --dry-run  # preview without acting
   ```
 

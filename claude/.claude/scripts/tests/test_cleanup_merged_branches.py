@@ -6,8 +6,10 @@ against temporary repos created per-test.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import pty
 import subprocess
 import textwrap
 from pathlib import Path
@@ -69,6 +71,13 @@ def _make_worktree(repo: Path, branch_name: str, wt_path: Path) -> None:
         cwd=repo,
         check=True,
     )
+
+
+def _dead_pid() -> int:
+    """Return a pid that is guaranteed not to be running."""
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +537,6 @@ class TestInvalidArgs:
         ["foo"],
         ["--bar"],
         ["--dry-run", "x"],
-        ["--dry-run", "--dry-run"],
     ])
     def test_invalid_args_exit_2(self, tmp_path, fake_gh, bad_args):
         local, _ = _make_repo_with_remote(tmp_path)
@@ -536,6 +544,17 @@ class TestInvalidArgs:
         result = _run_script(local, env, args=bad_args)
         assert result.returncode == 2
         assert "Usage" in result.stderr
+
+    @pytest.mark.parametrize("valid_dup_args", [
+        ["--dry-run", "--dry-run"],
+        ["--yes", "--yes"],
+        ["--dry-run", "--yes", "--dry-run"],
+    ])
+    def test_duplicate_flags_are_idempotent(self, tmp_path, fake_gh, valid_dup_args):
+        local, _ = _make_repo_with_remote(tmp_path)
+        env = fake_gh({})
+        result = _run_script(local, env, args=valid_dup_args)
+        assert result.returncode == 0
 
 
 class TestGhMissing:
@@ -579,8 +598,9 @@ class TestLockedWorktreeUnlockedAndRemoved:
 
         wt_path = tmp_path / "locked-tree"
         _make_worktree(local, "feat/locked-wt", wt_path)
+        dead = _dead_pid()
         subprocess.run(
-            ["git", "worktree", "lock", str(wt_path), "--reason", "test lock"],
+            ["git", "worktree", "lock", str(wt_path), "--reason", f"test (pid {dead})"],
             cwd=local, check=True, capture_output=True,
         )
 
@@ -604,8 +624,9 @@ class TestLockedWorktreeUnlockedAndRemoved:
 
         wt_path = tmp_path / "locked-dry-tree"
         _make_worktree(local, "feat/locked-dry", wt_path)
+        dead = _dead_pid()
         subprocess.run(
-            ["git", "worktree", "lock", str(wt_path), "--reason", "test lock"],
+            ["git", "worktree", "lock", str(wt_path), "--reason", f"test (pid {dead})"],
             cwd=local, check=True, capture_output=True,
         )
 
@@ -636,8 +657,9 @@ class TestLockedWorktreeMixedWithUnlocked:
         subprocess.run(["git", "branch", "-D", "feat/locked-mix"], cwd=bare, check=True)
         locked_wt = tmp_path / "locked-mix-tree"
         _make_worktree(local, "feat/locked-mix", locked_wt)
+        dead = _dead_pid()
         subprocess.run(
-            ["git", "worktree", "lock", str(locked_wt), "--reason", "test lock"],
+            ["git", "worktree", "lock", str(locked_wt), "--reason", f"test (pid {dead})"],
             cwd=local, check=True, capture_output=True,
         )
 
@@ -685,8 +707,9 @@ class TestLockedWorktreeRemoveFailsCleanly:
         _make_worktree(local, "feat/locked-dirty", wt_path)
         # Untracked file causes git worktree remove to refuse without --force
         (wt_path / "leftover.txt").write_text("in-progress work")
+        dead = _dead_pid()
         subprocess.run(
-            ["git", "worktree", "lock", str(wt_path), "--reason", "test lock"],
+            ["git", "worktree", "lock", str(wt_path), "--reason", f"test (pid {dead})"],
             cwd=local, check=True, capture_output=True,
         )
 
@@ -717,3 +740,255 @@ class TestLockedWorktreeRemoveFailsCleanly:
             for record in records
         )
         assert wt_is_locked, "worktree should be relocked after failed remove"
+
+
+# ---------------------------------------------------------------------------
+# Tier B helpers and tests (reachable from origin/main, no merged PR)
+# ---------------------------------------------------------------------------
+
+def _make_tier_b_branch(repo: Path, remote: Path, branch_name: str) -> None:
+    """Feature branch whose commits are reachable from origin/main, but gh returns no PR."""
+    subprocess.run(["git", "checkout", "-q", "-b", branch_name], cwd=repo, check=True)
+    _commit(repo, f"work on {branch_name}")
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "merge", "-q", "--ff-only", branch_name], cwd=repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=repo, check=True)
+
+
+class TestTierBReachableNoMergedPR:
+    """Branches reachable from origin/main but with no merged PR for this name."""
+
+    def test_reachable_but_no_merged_pr_prompts(self, fake_gh, tmp_path):
+        """Tier B branch: interactive y via pty stdin → deleted."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "tier-b-branch")
+        env = fake_gh({})
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                [str(_SCRIPT)], cwd=local,
+                env=env,
+                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            os.close(slave_fd)
+            os.write(master_fd, b"y\n")
+            proc.wait(timeout=30)
+            os.close(master_fd)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+            raise
+
+        assert proc.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-b-branch" not in branches
+
+    def test_reachable_but_no_merged_pr_skipped_on_n(self, fake_gh, tmp_path):
+        """Tier B branch: interactive n via pty stdin → branch survives."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "tier-b-branch")
+        env = fake_gh({})
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                [str(_SCRIPT)], cwd=local,
+                env=env,
+                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            os.close(slave_fd)
+            os.write(master_fd, b"n\n")
+            proc.wait(timeout=30)
+            os.close(master_fd)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+            raise
+
+        assert proc.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-b-branch" in branches
+
+    def test_reachable_no_pr_non_tty_no_yes_skips(self, fake_gh, tmp_path):
+        """Tier B branch, non-TTY stdin, no --yes: branch skipped with warning."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "tier-b-branch")
+        env = fake_gh({})
+        result = subprocess.run(
+            [str(_SCRIPT)], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert result.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-b-branch" in branches
+        assert b"tier-b-branch" in result.stdout
+
+    def test_reachable_no_pr_with_yes_flag_deletes(self, fake_gh, tmp_path):
+        """Tier B branch + --yes: deleted without prompt."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "tier-b-branch")
+        env = fake_gh({})
+        result = subprocess.run(
+            [str(_SCRIPT), "--yes"], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert result.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-b-branch" not in branches
+
+    def test_unmerged_branch_not_touched(self, fake_gh, tmp_path):
+        """Tier C branch (not reachable from origin/main, no merged PR) is never deleted."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "unmerged-branch")
+        env = fake_gh({})
+        result = subprocess.run(
+            [str(_SCRIPT), "--yes"], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert result.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "unmerged-branch" in branches
+
+    def test_dry_run_separates_confirmed_and_probable(self, tmp_path):
+        """Dry-run shows Tier A under 'confirmed merged' and Tier B under 'probable merges'."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "tier-a-branch")
+        _make_tier_b_branch(local, remote, "tier-b-branch")
+        _make_feature_branch(local, "tier-c-branch")
+
+        shim_dir = tmp_path / "gh_shim_sep"
+        shim_dir.mkdir()
+        shim_py = shim_dir / "gh"
+        shim_py.write_text(_gh_shim_source({"tier-a-branch": {"number": 1, "mergedAt": "2026-05-01"}}))
+        shim_py.chmod(0o755)
+        env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
+
+        result = subprocess.run(
+            [str(_SCRIPT), "--dry-run"], cwd=local,
+            env=env, stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert result.returncode == 0
+        output = result.stdout.decode()
+        assert "confirmed merged" in output
+        assert "tier-a-branch" in output
+        assert "probable" in output.lower() or "would prompt" in output.lower()
+        assert "tier-b-branch" in output
+        assert "tier-c-branch" not in output
+
+    def test_existing_tier_a_silent_clean_preserved(self, tmp_path):
+        """Tier A branch (gh-confirmed merged) cleans silently, no prompt needed."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "tier-a-branch")
+
+        shim_dir = tmp_path / "gh_shim_a"
+        shim_dir.mkdir()
+        shim_py = shim_dir / "gh"
+        shim_py.write_text(_gh_shim_source({"tier-a-branch": {"number": 1, "mergedAt": "2026-05-01"}}))
+        shim_py.chmod(0o755)
+        env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
+
+        result = subprocess.run(
+            [str(_SCRIPT)], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert result.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-a-branch" not in branches
+        assert b"prompt" not in result.stdout.lower()
+
+    def test_dry_run_with_yes_flag_no_prompt(self, fake_gh, tmp_path):
+        """--dry-run --yes: tier B listed but nothing deleted, no prompt."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "tier-b-branch")
+        env = fake_gh({})
+        result = subprocess.run(
+            [str(_SCRIPT), "--dry-run", "--yes"], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert result.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-b-branch" in branches
+        output = result.stdout.decode()
+        assert "tier-b-branch" in output
+
+
+class TestLockedWorktreeLiveness:
+    """Live vs dead pid liveness check for locked worktrees."""
+
+    def test_locked_worktree_live_pid_skipped(self, tmp_path):
+        """Locked worktree with live pid (current process) is not removed."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "locked-branch")
+        wt_path = tmp_path / "locked-wt"
+        _make_worktree(local, "locked-branch", wt_path)
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", f"test (pid {os.getpid()})", str(wt_path)],
+            cwd=local, check=True,
+        )
+
+        shim_dir = tmp_path / "gh_shim_live"
+        shim_dir.mkdir()
+        shim_py = shim_dir / "gh"
+        shim_py.write_text(_gh_shim_source({"locked-branch": {"number": 300, "mergedAt": "2026-05-01"}}))
+        shim_py.chmod(0o755)
+        env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
+
+        result = subprocess.run(
+            [str(_SCRIPT), "--yes"], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert wt_path.exists()
+        output = result.stdout.decode()
+        assert "live" in output.lower() or "locked" in output.lower()
+
+    def test_locked_worktree_dead_pid_removed(self, tmp_path):
+        """Locked worktree with dead pid is unlocked and removed."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "stale-locked-branch")
+        wt_path = tmp_path / "stale-wt"
+        _make_worktree(local, "stale-locked-branch", wt_path)
+        dead = _dead_pid()
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", f"test (pid {dead})", str(wt_path)],
+            cwd=local, check=True,
+        )
+
+        shim_dir = tmp_path / "gh_shim_dead"
+        shim_dir.mkdir()
+        shim_py = shim_dir / "gh"
+        shim_py.write_text(_gh_shim_source({"stale-locked-branch": {"number": 301, "mergedAt": "2026-05-01"}}))
+        shim_py.chmod(0o755)
+        env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
+
+        result = subprocess.run(
+            [str(_SCRIPT), "--yes"], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        output = result.stdout.decode()
+        assert "stale" in output.lower() or "dead" in output.lower()
