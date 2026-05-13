@@ -1,14 +1,13 @@
 ---
 name: ready-for-review
 description: >
-  Pre-handoff gate for open PRs before human review.
+  Pre-handoff gate that brings a feature branch to a reviewer-ready state — runs verification, code review, syncs or opens a PR.
   TRIGGER when: handing off to a human reviewer — wrapping up work on a
   branch with an open PR, "ship it" intent, or before spawning a
   multi-persona review (CISO + staff-* engineers) or /ultrareview.
   DO NOT TRIGGER when: during active iteration, on diff-only requests,
-  on the default branch, or when a project-specific pre-merge skill
-  already wraps these checks.
-argument-hint: "[optional scope note]"
+  or on the default branch.
+argument-hint: "[optional PR context]"
 ---
 
 # Ready-for-review gate
@@ -36,8 +35,8 @@ If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStar
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base:
   `gh pr view --json number,baseRefName`
-- If no PR exists, note this — steps 4 and 5 will be skipped and a
-  reminder surfaced at the end.
+- If no PR exists, note this — step 5.5 will open one after verification
+  and review complete.
 
 ## 2. Verification (halt on fail)
 
@@ -135,6 +134,19 @@ Run `gh pr checks <n>`.
   Do not auto-halt — sometimes the human reviewer wants to see the
   failure themselves — but make the failure explicit before handoff.
 
+## 5.5. Create PR if missing (skip if PR already exists)
+
+Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
+Body (omit `$ARGUMENTS` if empty; use single-quoted `<<'EOF'` heredoc; capture PR number for step 6):
+```
+## Summary
+$(git log $(git merge-base origin/$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main) HEAD)..HEAD --format="- %s")
+$ARGUMENTS
+## Test plan
+- [ ] (fill in manual verification steps)
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+```
+
 ## 6. Final hygiene recheck (halt on fail)
 
 Steps 3 and 4 may have produced new commits or body edits. Reconfirm:
@@ -147,7 +159,7 @@ Steps 3 and 4 may have produced new commits or body edits. Reconfirm:
   re-verify the branch is no longer ahead.
 - PR body edit (if any) landed — re-fetch with `gh pr view` and confirm.
 
-If the branch has no PR and no remote tracking, surface this — a project-specific pre-merge skill should open the PR; this skill does not.
+Confirm PR #N (created in step 5.5 if newly opened) is up to date with the branch HEAD.
 
 ## 7. Record gate completion + deactivate session
 
@@ -185,5 +197,4 @@ is ready for human review:
 - Code review: findings fixed, or "none."
 - PR description: sections updated, or "already in sync" / "no PR."
 - CI: status per check, or "no PR."
-- Branch: clean, pushed, PR #N ready for review (or "push + open PR
-  via project skill, then hand off").
+- Branch: clean, pushed, PR #N ready for review.

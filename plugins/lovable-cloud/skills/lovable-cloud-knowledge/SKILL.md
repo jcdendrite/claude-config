@@ -1,5 +1,5 @@
 ---
-name: lovable-knowledge
+name: lovable-cloud-knowledge
 description: >
   How Lovable's UI knowledge fields work (Project Knowledge vs Workspace
   Knowledge), the `.lovable/*.md` repo-mirror workflow, content scope

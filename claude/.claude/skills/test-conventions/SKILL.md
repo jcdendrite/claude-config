@@ -4,11 +4,15 @@ description: >
   Testing conventions for writing tests in any codebase.
   TRIGGER when: planning tests for new code, writing test infrastructure
   (mocks, helpers, fixtures), or discussing test strategy for new features.
-  DO NOT TRIGGER when: a project-level test skill is already loaded, the task
-  is purely mechanical (running tests, fixing a single assertion, updating a
-  snapshot), or evaluating/debugging an existing test suite (use test-evaluation).
+  DO NOT TRIGGER when: the task is purely mechanical (running tests,
+  fixing a single assertion, updating a snapshot), or evaluating/debugging
+  an existing test suite (use test-evaluation).
 user-invocable: false
 ---
+
+## Step 0 — Load project-specific layer
+
+Glob `.claude/skills/test-conventions-*/SKILL.md` from the repo root (`git rev-parse --show-toplevel`); if one matches, invoke it via the Skill tool. Multiple = config error — list and stop. None = proceed.
 
 # Testing Conventions
 

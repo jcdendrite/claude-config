@@ -1,0 +1,9 @@
+{
+  "name": "lovable-cloud",
+  "description": "Skills for Lovable Cloud projects — Project/Workspace Knowledge fields, edge-function auth model, and migration-sync workflow.",
+  "version": "2.0.0",
+  "author": {
+    "name": "Cordova Strategy"
+  },
+  "skills": "./skills/"
+}
