@@ -307,6 +307,11 @@ for BRANCH in "${TO_DELETE[@]}"; do
 
   echo "  ${BRANCH}:"
 
+  # Use --porcelain to get the exact path; do NOT construct from branch name
+  # (slashes in branch names would break path interpolation).
+  # The `locked` line appears after `branch` in a porcelain record, so we
+  # use a deferred-commit pattern: finalize path + lock state at each record
+  # boundary rather than at the moment the branch line is matched.
   WORKTREE_PATH=""
   WORKTREE_LOCKED=0
   WORKTREE_LOCK_PID=""
@@ -371,6 +376,8 @@ for BRANCH in "${TO_DELETE[@]}"; do
     echo "    worktree:       not found"
   fi
 
+  # After --prune, check the tracking ref directly; substring grep on fetch output
+  # can't distinguish "origin/feat/foo" from "origin/feat/foo-v2".
   FETCH_OUTPUT=$(git fetch --prune 2>&1 || true)
   REMOTE_AUTO_PRUNED=0
   if echo "$FETCH_OUTPUT" | grep -qF "[deleted]" && \
@@ -414,6 +421,9 @@ elif [ "$LOCAL_DEFAULT_SHA" = "$REMOTE_DEFAULT_SHA" ]; then
   echo "Default branch: already current"
 else
   COMMIT_COUNT=$(git rev-list --count "${DEFAULT_BRANCH}..origin/${DEFAULT_BRANCH}" 2>/dev/null || echo 0)
+  # When on the default branch, merge --ff-only updates both the ref and the
+  # working tree. When on a feature branch, use a fetch refspec to update the
+  # default branch ref without touching the currently checked-out branch.
   CURRENT_HEAD_FOR_FF=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   if [ "$CURRENT_HEAD_FOR_FF" = "$DEFAULT_BRANCH" ]; then
     FF_CMD=(git merge --ff-only "origin/${DEFAULT_BRANCH}" -q)
