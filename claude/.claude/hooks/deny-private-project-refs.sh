@@ -108,6 +108,19 @@
 # Allowlist extension: append to OSS_ALLOWLIST below if a legitimate
 # open-source prefix is blocked. Do NOT add private-project-specific
 # prefixes.
+#
+# Shape-aware deny hint.
+# ----------------------
+# When the command chains operations with && or ||, the deny messages
+# (both tracker-ID and private-projects branches) append a hint suggesting
+# the agent split the chain into separate Bash calls. Detection is
+# best-effort grep (not a real shell parser) — && and || in prose are
+# rare enough to justify detection; ; is excluded to avoid false positives
+# on prose semicolons. The hint is informational only — the deny condition
+# is unchanged. The "matched entry is intentionally NOT named" invariant
+# above is preserved: the hint uses placeholder examples (<name>), not
+# the matched token. Parallel to cwd_anchor_note_if_chained in
+# require-worktree-for-git-writes.sh.
 
 set -uo pipefail
 
@@ -313,6 +326,21 @@ is_pseudo_file_path() {
   esac
 }
 
+# Detect && / || chain operators in the command and append a corrective
+# hint to deny messages when the chain shape is present. ; is excluded —
+# it appears too often in English prose (commit messages, PR descriptions)
+# to be useful as a chain signal. Detection is best-effort grep: && or ||
+# inside a string-quoted region (e.g. --body "use && to chain") would
+# still trigger the hint (known false positive).
+chain_split_hint_if_chained() {
+  if printf '%s' "$1" | grep -qE '&&|\|\|'; then
+    # $1 is used as a grep predicate only — intentionally not echoed.
+    # Echoing any part of $COMMAND would risk re-exposing the matched
+    # blocklist entry (see header "Invariant" note).
+    printf '%s' " Tip: this command chains operations with && / ||. If the matched token is in a path or setup portion of the chain (e.g. a \`cd /home/<name>/...\` prefix) and is NOT actually a private-project reference in the gated content, split the chain into two separate Bash calls — the cwd persists between calls in the same session, so running \`cd /path\` as one call and the gated command as a follow-up call keeps the path out of the gated command's text. If the match IS a real private-project reference in the gated content (PR body, commit message, gh api body), the chain-split won't help — rewrite the content instead. The match-anywhere foundation is intentional; see the hook header for design rationale."
+  fi
+}
+
 # Each content surface that could carry a tracker ID is appended here
 # separately so a future change won't silently drop coverage of one.
 SCAN_TARGET=""
@@ -462,7 +490,7 @@ HITS=$(printf '%s' "$SCAN_TARGET" \
 if [ -n "$HITS" ]; then
   # Report the first few offenders to keep the message short.
   HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
-  emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body / gh api body without the tracker ID before retrying."
+  emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body / gh api body without the tracker ID before retrying.$(chain_split_hint_if_chained "$COMMAND")"
   exit 0
 fi
 
@@ -487,7 +515,7 @@ if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
     if printf '%s' "$SCAN_TARGET" | grep -qiw -F -- "$line"; then
       # Generic message — see header "Invariant" note. The matched
       # entry is intentionally NOT named.
-      emit_deny "Blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file contains an entry from your ~/.claude/private-projects.md blocklist. Review the content and remove the project name before retrying. (The hook deliberately does not name which entry matched — printing it would re-expose the value in terminal output, CI logs, and Claude's conversation context, which is exactly what this gate exists to prevent.) See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      emit_deny "Blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file contains an entry from your ~/.claude/private-projects.md blocklist. Review the content and remove the project name before retrying. (The hook deliberately does not name which entry matched — printing it would re-expose the value in terminal output, CI logs, and Claude's conversation context, which is exactly what this gate exists to prevent.) See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
       exit 0
     fi
   done < "$PRIVATE_PROJECTS_FILE"

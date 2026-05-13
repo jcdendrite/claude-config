@@ -1806,3 +1806,84 @@ class TestDenyPrivateProjectRefs:
             )
             == "deny"
         )
+
+    # -- Shape-aware chain-detection hint ------------------------------------
+    # When the command chains operations with && or ||, deny messages
+    # append a hint suggesting the agent split the chain into separate
+    # Bash calls. Detection is best-effort grep — ; is excluded to avoid
+    # false positives on prose semicolons.
+
+    def test_tracker_id_chained_command_deny_includes_chain_hint(self, claude_config_repo):
+        """Chained cd && git commit: chain detected, hint appended to deny."""
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(
+                "cd /home/username/mycode && git commit -m 'WIDGET-123 fix'"
+            )),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Tip: this command chains" in reason
+
+    def test_blocklist_chained_command_deny_includes_chain_hint(self, claude_config_repo, private_projects_file):
+        """Chained cd && gh pr create: blocklist match + chain detected, hint appended."""
+        private_projects_file("Acme Corp\n")
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(
+                "cd /home/username/mycode && gh pr create --body 'Acme Corp integration work'"
+            )),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Tip: this command chains" in reason
+        # The "matched entry NOT named" invariant must hold even with the chain hint appended.
+        assert "Acme Corp" not in reason
+        assert "acme corp" not in reason.lower()
+
+    def test_tracker_id_unchained_command_deny_omits_chain_hint(self, claude_config_repo):
+        """Unchained command: deny fires for tracker-ID, but no chain hint."""
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(
+                "git commit -m 'Fix WIDGET-123 regression'"
+            )),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Tip: this command chains" not in reason
+
+    def test_chain_hint_not_emitted_for_semicolon_in_message(self, claude_config_repo):
+        """Semicolons in prose (commit message body) do not trigger the chain hint.
+        Best-effort: the helper detects && and || only, excluding ; to avoid
+        false positives on prose semicolons. This is a known design tradeoff;
+        see the chain_split_hint_if_chained helper comment."""
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(
+                "git commit -m 'Fix WIDGET-123; also update docs'"
+            )),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Tip: this command chains" not in reason
