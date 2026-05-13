@@ -99,7 +99,7 @@ Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 ```
 claude/        # stow package — claude/.claude/ → ~/.claude/
-plugins/       # marketplace plugins (lovable-knowledge, etc.)
+plugins/       # marketplace plugins (lovable-knowledge, skill-review, claude-hook-review)
 docs/          # design-decisions, walkthrough, hooks, skills
 .github/       # workflows, dependabot
 .claude/       # repo-local plans, settings, worktrees (gitignored)
@@ -166,7 +166,11 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 **Current plugins:**
 
-- **`lovable-knowledge`** — Lovable Project Knowledge vs Workspace Knowledge fields, the `.lovable/*.md` repo-mirror workflow, content scope split, precedence, and character limits. To install at project scope from a Lovable project repo: first register the marketplace (`claude plugin marketplace add <path-or-URL-to-claude-config>`), then `claude plugin install lovable-knowledge@claude-config --scope project`.
+One-time setup per machine: register the marketplace with `claude plugin marketplace add <path-or-URL-to-claude-config>`. Then install any of the plugins below at project scope:
+
+- **`lovable-knowledge`** — Lovable Project Knowledge vs Workspace Knowledge fields, the `.lovable/*.md` repo-mirror workflow, content scope split, precedence, and character limits. `claude plugin install lovable-knowledge@claude-config --scope project`
+- **`skill-review`** — Behavioral-equivalence audit for `SKILL.md` changes; gates `git commit` when staged changes include a `SKILL.md`. `claude plugin install skill-review@claude-config --scope project`
+- **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 
 ### Reviewer subagents
 
