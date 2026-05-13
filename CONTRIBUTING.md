@@ -39,7 +39,7 @@ CI runs both on every PR and main push. Both must pass before the PR can be revi
 
 ## Skill edits
 
-When editing a `SKILL.md`, invoke the skill on its own diff before committing. A skill edit can violate the rules it enforces — the skill is the reviewer of its own changes. Run `/skill-review` via the Skill tool and check the diff against its output before staging the file.
+When editing a `SKILL.md`, invoke the skill on its own diff before committing. A skill edit can violate the rules it enforces — the skill is the reviewer of its own changes. Run `/skill-review` via the Skill tool and check the diff against its output before staging the file. (`/skill-review` is provided by the `skill-review@claude-config` plugin, auto-enabled after `./install.sh` — see [docs/skills.md — Project-scoped plugins](./docs/skills.md#project-scoped-plugins).)
 
 ## Contact
 

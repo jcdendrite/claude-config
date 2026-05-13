@@ -23,14 +23,21 @@ if [ -f "$SETTINGS_FILE" ]; then
   echo ""
   echo "=== Registering marketplaces from extraKnownMarketplaces ==="
   existing_marketplaces="$(claude plugin marketplace list --json 2>/dev/null | jq -r '.[].name')"
-  while IFS=$'\t' read -r name repo; do
+  while IFS=$'\t' read -r name source_type identifier; do
+    case "$source_type" in
+      directory) identifier="$REPO_DIR" ;;  # directory sources in stowed config are always self-referential
+      github)    : ;;
+      *)         echo "  ! $name: unknown source type '$source_type' — skipping"; continue ;;
+    esac
     if echo "$existing_marketplaces" | grep -qFx "$name"; then
       echo "  ✓ $name (already registered)"
     else
-      echo "  → adding $name ($repo)"
-      claude plugin marketplace add "$repo" --scope user
+      echo "  → adding $name ($identifier)"
+      claude plugin marketplace add "$identifier" --scope user
     fi
-  done < <(jq -r '.extraKnownMarketplaces // {} | to_entries[] | "\(.key)\t\(.value.source.repo)"' "$SETTINGS_FILE")
+  done < <(jq -r '.extraKnownMarketplaces // {} | to_entries[] |
+    "\(.key)\t\(.value.source.source)\t\(.value.source.repo // .value.source.path // "")"
+  ' "$SETTINGS_FILE")
 
   echo ""
   echo "=== Installing plugins from enabledPlugins ==="
