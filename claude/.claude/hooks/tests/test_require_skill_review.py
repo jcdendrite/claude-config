@@ -20,6 +20,8 @@ from helpers import (
 _PLUGINS_DIR = HOOKS_DIR.parent.parent.parent / "plugins"
 SKILL_REVIEW_HOOK = _PLUGINS_DIR / "skill-review" / "hooks" / "require-skill-review.sh"
 SKILL_REVIEW_SKILL = _PLUGINS_DIR / "skill-review" / "skills" / "skill-review" / "SKILL.md"
+_PLUGIN_LIB = _PLUGINS_DIR / "skill-review" / "hooks" / "_lib.sh"
+_STOWED_LIB = HOOKS_DIR / "_lib.sh"
 
 
 def _stage_skill_change(git_repo):
@@ -322,4 +324,35 @@ class TestRequireSkillReview:
                 cwd=git_repo,
             )
             == "allow"
+        )
+
+    def test_mixed_stowed_and_plugin_skill_stale_stowed_only_marker_denies(
+        self, isolated_home, git_repo
+    ):
+        """A marker written for a stowed-only diff is stale when a plugin SKILL.md is later
+        staged — the combined hash differs from the stowed-only hash, so the gate must deny."""
+        _stage_skill_change(git_repo)
+        # Write marker that covers only the stowed SKILL.md diff.
+        write_skill_review_marker(isolated_home, git_repo)
+        # Stage an additional plugin SKILL.md; combined hash now differs from stored marker.
+        _stage_plugin_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_plugin_lib_sh_matches_stowed_lib_sh(self):
+        """_lib.sh in the plugin hooks dir must be byte-identical to the stowed copy.
+
+        Both the plugin hook (require-skill-review.sh) and marker.sh source different
+        copies of _lib.sh. If they diverge, _marker_lib_repo_hash may produce different
+        hashes on the read side vs the write side, permanently breaking the gate.
+        """
+        assert _PLUGIN_LIB.read_bytes() == _STOWED_LIB.read_bytes(), (
+            "plugins/skill-review/hooks/_lib.sh has drifted from claude/.claude/hooks/_lib.sh. "
+            "These files must stay byte-identical — update the plugin copy when the stowed copy changes."
         )

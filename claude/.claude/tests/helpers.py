@@ -217,6 +217,7 @@ def write_skill_review_marker(home: Path, repo: Path, session_id: str = DEFAULT_
     diff = subprocess.run(
         ["git", "diff", "--cached", "--", "claude/.claude/skills/**/SKILL.md", "plugins/*/skills/**/SKILL.md"],
         capture_output=True,
+        check=True,
         cwd=repo,
     ).stdout
     diff_hash = hashlib.sha256(diff).hexdigest()

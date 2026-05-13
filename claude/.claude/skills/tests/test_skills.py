@@ -84,7 +84,7 @@ def _specialist_skills() -> list[str]:
                 if not (skill_dir / "SKILL.md").exists():
                     continue
                 frontmatter = _skill_description(skill_dir.name)
-                if frontmatter and "user-invocable: false" in frontmatter:
+                if frontmatter and "user-invocable: false" in frontmatter and skill_dir.name not in skills:
                     skills.append(skill_dir.name)
     return skills
 
