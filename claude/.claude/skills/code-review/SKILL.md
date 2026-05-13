@@ -74,67 +74,69 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 11. **Misleading names** — Do function or variable names promise more or less than they deliver? A `validateUser` that only checks one field, an `allItems` that holds a filtered subset.
 
+12. **Stripped WHY comments** — In modified files, were comments documenting a non-obvious constraint, subtle invariant, bug workaround, or surprising behavior deleted? Stripping these regresses documentation that the original author judged worth keeping. The "default to no comments" rule applies to *adding*; it does not authorize bulk removal during unrelated edits. Apply the same WHY test to existing comments: keep if it meets the standard, remove only if it restates WHAT the code does. Check `git diff` for deleted comment lines in changed hunks.
+
 ### Security
 
-12. **Test adequacy for security controls** — For code enforcing security invariants (access control, input validation, privilege boundaries), are there tests for both allow and deny paths? This overrides the general "add tests" exclusion — untested security controls are indistinguishable from absent ones. Check: for each boundary, is the unauthorized caller rejected AND the authorized caller accepted?
+13. **Test adequacy for security controls** — For code enforcing security invariants (access control, input validation, privilege boundaries), are there tests for both allow and deny paths? This overrides the general "add tests" exclusion — untested security controls are indistinguishable from absent ones. Check: for each boundary, is the unauthorized caller rejected AND the authorized caller accepted?
 
 ### Scope discipline
 
-13. **Pre-existing issues in unchanged code** — If you notice issues in code NOT written or modified in this change, flag them in a separate "Pre-existing issues" section. Do NOT fix them — informational only, out of scope.
+14. **Pre-existing issues in unchanged code** — If you notice issues in code NOT written or modified in this change, flag them in a separate "Pre-existing issues" section. Do NOT fix them — informational only, out of scope.
 
 ## Domain: Infrastructure
 
-14. **Concurrency and parallelism scoping** — Do concurrency groups, mutex locks, or job dependencies match their intended scope? A workflow-level concurrency group affects all jobs, including no-op or unrelated ones — check that cancel-in-progress won't kill an important job due to an unrelated trigger.
+15. **Concurrency and parallelism scoping** — Do concurrency groups, mutex locks, or job dependencies match their intended scope? A workflow-level concurrency group affects all jobs, including no-op or unrelated ones — check that cancel-in-progress won't kill an important job due to an unrelated trigger.
 
-15. **Secret exposure** — Are secrets used in contexts that could log them? Check for secrets in `run:` commands that echo or pipe output, in `env:` blocks visible to steps that don't need them, and in artifact uploads. Ensure secrets are not passed as command-line arguments (visible in process lists).
+16. **Secret exposure** — Are secrets used in contexts that could log them? Check for secrets in `run:` commands that echo or pipe output, in `env:` blocks visible to steps that don't need them, and in artifact uploads. Ensure secrets are not passed as command-line arguments (visible in process lists).
 
-16. **Permissions least privilege** — Are workflow permissions, IAM roles, or service accounts scoped to what's actually needed? Flag `contents: write` when only `read` is required, `admin` when `write` suffices, or wildcard permissions.
+17. **Permissions least privilege** — Are workflow permissions, IAM roles, or service accounts scoped to what's actually needed? Flag `contents: write` when only `read` is required, `admin` when `write` suffices, or wildcard permissions.
 
-17. **Idempotency** — Is the workflow/script safe to re-run? Check for unconditional creates (without "if not exists"), non-atomic operations that leave partial state on failure, and missing cleanup on retry.
+18. **Idempotency** — Is the workflow/script safe to re-run? Check for unconditional creates (without "if not exists"), non-atomic operations that leave partial state on failure, and missing cleanup on retry.
 
-18. **Trigger-condition alignment** — Do trigger filters (branch, path, actor, event type) match the job's purpose? A job intended only for bot commits but triggered on all pushes is a mismatch even if individual steps have `if` guards.
+19. **Trigger-condition alignment** — Do trigger filters (branch, path, actor, event type) match the job's purpose? A job intended only for bot commits but triggered on all pushes is a mismatch even if individual steps have `if` guards.
 
 ## Domain: Data
 
-19. **Migration reversibility** — Destructive operations (`DROP COLUMN`, type narrowing, table drops) need a backup or reversal path.
+20. **Migration reversibility** — Destructive operations (`DROP COLUMN`, type narrowing, table drops) need a backup or reversal path.
 
-20. **Index coverage** — New `WHERE`/`JOIN`/`ORDER BY` columns and foreign keys need supporting indexes, especially on growing tables.
+21. **Index coverage** — New `WHERE`/`JOIN`/`ORDER BY` columns and foreign keys need supporting indexes, especially on growing tables.
 
-21. **Lock safety** — Flag long-locking DDL on large tables — `ALTER` with defaults, `CREATE INDEX` without `CONCURRENTLY`, in-migration backfills.
+22. **Lock safety** — Flag long-locking DDL on large tables — `ALTER` with defaults, `CREATE INDEX` without `CONCURRENTLY`, in-migration backfills.
 
-22. **RLS and access control on new tables** — New tables exposed via auto-generated APIs (PostgREST, Hasura, generated resolvers) need row-security enabled with policies.
+23. **RLS and access control on new tables** — New tables exposed via auto-generated APIs (PostgREST, Hasura, generated resolvers) need row-security enabled with policies.
 
 ## Domain: Frontend
 
-23. **Accessibility** — Do interactive elements have accessible names (aria-label, visible label, alt text)? Are click handlers on non-button elements keyboard-accessible? Check for missing focus management in modals and drawers.
+24. **Accessibility** — Do interactive elements have accessible names (aria-label, visible label, alt text)? Are click handlers on non-button elements keyboard-accessible? Check for missing focus management in modals and drawers.
 
-24. **Render performance** — Are there new inline object/array/function literals in JSX props that would cause child re-renders on every parent render? Check for missing `key` props on list items and expensive computations not wrapped in `useMemo`/`useCallback` where the component re-renders frequently.
+25. **Render performance** — Are there new inline object/array/function literals in JSX props that would cause child re-renders on every parent render? Check for missing `key` props on list items and expensive computations not wrapped in `useMemo`/`useCallback` where the component re-renders frequently.
 
-25. **Bundle impact** — Does the change add a large new dependency where a smaller alternative or existing utility exists? Flag full-library imports (e.g., all of lodash) when only one function is used.
+26. **Bundle impact** — Does the change add a large new dependency where a smaller alternative or existing utility exists? Flag full-library imports (e.g., all of lodash) when only one function is used.
 
-26. **State-dependent rendering coverage** — Does the change modify which UI state a component enters (conditional branches, state machines, context-driven rendering)? If so, check whether tests verify the affected states render correctly. For each new or changed condition, is there a test that the component renders the expected output for each branch?
+27. **State-dependent rendering coverage** — Does the change modify which UI state a component enters (conditional branches, state machines, context-driven rendering)? If so, check whether tests verify the affected states render correctly. For each new or changed condition, is there a test that the component renders the expected output for each branch?
 
 ## Domain: Backend
 
-27. **Auth boundary coverage** — Every new endpoint or RPC needs both authentication (who) and authorization (can they) — and the check must not be bypassable by hitting the endpoint outside the UI flow.
+28. **Auth boundary coverage** — Every new endpoint or RPC needs both authentication (who) and authorization (can they) — and the check must not be bypassable by hitting the endpoint outside the UI flow.
 
-28. **Input validation at system boundaries** — Validate/sanitize user input before SQL, shell, file paths, or outbound API calls — framework parameterization counts, string concatenation does not.
+29. **Input validation at system boundaries** — Validate/sanitize user input before SQL, shell, file paths, or outbound API calls — framework parameterization counts, string concatenation does not.
 
-29. **Error response leakage** — Error responses must not expose internal details (stack traces, internal IDs, DB error text, file paths) — log server-side, return generic to the client.
+30. **Error response leakage** — Error responses must not expose internal details (stack traces, internal IDs, DB error text, file paths) — log server-side, return generic to the client.
 
-30. **Dependency upgrades** — Does the change upgrade a runtime or build dependency? Read the changelog for breaking changes. Check for peer dependency conflicts and, for frontend deps, bundle size regression.
+31. **Dependency upgrades** — Does the change upgrade a runtime or build dependency? Read the changelog for breaking changes. Check for peer dependency conflicts and, for frontend deps, bundle size regression.
 
-31. **Third-party API integration** — Does the change add or modify a third-party API call? Verify retry/timeout behavior, credential scoping (least-privilege keys), and failure modes (API down, unexpected data).
+32. **Third-party API integration** — Does the change add or modify a third-party API call? Verify retry/timeout behavior, credential scoping (least-privilege keys), and failure modes (API down, unexpected data).
 
-32. **Sensitive data in logs** — Does the change add or modify logging? Verify logs do not include tokens, credentials, PII, or full API responses from auth/OAuth endpoints. Extract only the fields needed for debugging.
+33. **Sensitive data in logs** — Does the change add or modify logging? Verify logs do not include tokens, credentials, PII, or full API responses from auth/OAuth endpoints. Extract only the fields needed for debugging.
 
-33. **Performance-sensitive code paths** — Does the change modify a hot path (queries in loops, N+1, cache read/write, large list ops)? Verify with representative data volumes, not just test fixtures.
+34. **Performance-sensitive code paths** — Does the change modify a hot path (queries in loops, N+1, cache read/write, large list ops)? Verify with representative data volumes, not just test fixtures.
 
 ## Domain: Claude Code config
 
 For `.claude/skills/**/SKILL.md` review (frontmatter, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions), invoke the `skill-review` skill — do not assert behavioral equivalence on prose compressions yourself; that audit is `skill-review`'s job.
 
-34. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
+35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
 For hook reviews (`claude/.claude/hooks/*.sh`, hook entries in `settings.json`), invoke the `claude-hook-review` skill.
 
@@ -146,7 +148,7 @@ Apply when changed files match `.lovable/**`. Invoke the `lovable-knowledge` ski
 
 - Issues that a linter, typechecker, or compiler would catch (imports, type errors, formatting)
 - Stylistic nitpicks in unchanged code (naming conventions, whitespace, comment style)
-- Generic improvement suggestions ("add tests," "add docs," "improve error messages") not tied to a specific finding from the checklist above, **except** for security controls (see item 12)
+- Generic improvement suggestions ("add tests," "add docs," "improve error messages") not tied to a specific finding from the checklist above, **except** for security controls (see item 13)
 - Domain checklist items for domains where no files were changed
 
 ## Output format
@@ -234,26 +236,27 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **6–9. Hygiene** (dead exports, unnecessary wrappers, inline business logic, repeated in-house logic) | judgment (any reviewer) | — |
 | **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
-| **12. Test adequacy for security controls** | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
-| **13. Pre-existing issues in unchanged code** | judgment (any reviewer) | — |
-| **14–18. Infrastructure** (concurrency scoping, secret exposure, least-privilege, idempotency, trigger alignment) | `staff-platform-engineer` | `ciso-reviewer` (15 secret exposure, 16 least-privilege) |
-| **19. Migration reversibility** | `staff-data-engineer` (rollback safety, pipeline impact) | `staff-backend-engineer` |
-| **20. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
-| **21. Lock safety** | `staff-data-engineer` (DDL execution shape, pipeline impact) | `staff-platform-engineer` (deploy-window, lock-budget) |
-| **22. RLS / access control on new tables** | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
-| **23. Accessibility** | `staff-frontend-engineer` (technical a11y) | `staff-product-engineer` (a11y as spec fidelity) |
-| **24. Render performance** | `staff-frontend-engineer` | — |
-| **25. Bundle impact** | `staff-frontend-engineer` | `staff-platform-engineer` (build tooling) |
-| **26. State-dependent rendering coverage** | `staff-frontend-engineer` (branch implementation) | `staff-sdet` (test coverage), `staff-product-engineer` (right branches for spec) |
-| **27. Auth boundary coverage** | `staff-backend-engineer` | `ciso-reviewer` |
-| **28. Input validation at boundaries** | `staff-backend-engineer` | `ciso-reviewer` |
-| **29. Error response leakage** | `staff-backend-engineer` | `ciso-reviewer` |
-| **30. Dependency upgrades** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (CI / build deps) |
-| **31. Third-party API integration** | `staff-backend-engineer` | `ciso-reviewer` (credential scoping) |
-| **32. Sensitive data in logs** | `staff-backend-engineer` | `ciso-reviewer` |
-| **33. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
-| **34. Permission scope** | `ciso-reviewer` | — |
-| **35. Hook correctness** — reviewed via `claude-hook-review` skill | `staff-platform-engineer` | `ciso-reviewer` |
+| **12. Stripped WHY comments** | judgment (any reviewer) | — |
+| **13. Test adequacy for security controls** | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
+| **14. Pre-existing issues in unchanged code** | judgment (any reviewer) | — |
+| **15–19. Infrastructure** (concurrency scoping, secret exposure, least-privilege, idempotency, trigger alignment) | `staff-platform-engineer` | `ciso-reviewer` (16 secret exposure, 17 least-privilege) |
+| **20. Migration reversibility** | `staff-data-engineer` (rollback safety, pipeline impact) | `staff-backend-engineer` |
+| **21. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
+| **22. Lock safety** | `staff-data-engineer` (DDL execution shape, pipeline impact) | `staff-platform-engineer` (deploy-window, lock-budget) |
+| **23. RLS / access control on new tables** | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
+| **24. Accessibility** | `staff-frontend-engineer` (technical a11y) | `staff-product-engineer` (a11y as spec fidelity) |
+| **25. Render performance** | `staff-frontend-engineer` | — |
+| **26. Bundle impact** | `staff-frontend-engineer` | `staff-platform-engineer` (build tooling) |
+| **27. State-dependent rendering coverage** | `staff-frontend-engineer` (branch implementation) | `staff-sdet` (test coverage), `staff-product-engineer` (right branches for spec) |
+| **28. Auth boundary coverage** | `staff-backend-engineer` | `ciso-reviewer` |
+| **29. Input validation at boundaries** | `staff-backend-engineer` | `ciso-reviewer` |
+| **30. Error response leakage** | `staff-backend-engineer` | `ciso-reviewer` |
+| **31. Dependency upgrades** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (CI / build deps) |
+| **32. Third-party API integration** | `staff-backend-engineer` | `ciso-reviewer` (credential scoping) |
+| **33. Sensitive data in logs** | `staff-backend-engineer` | `ciso-reviewer` |
+| **34. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
+| **35. Permission scope** | `ciso-reviewer` | — |
+| **36. Hook correctness** — reviewed via `claude-hook-review` skill | `staff-platform-engineer` | `ciso-reviewer` |
 
 ## Step — Record review completion
 
