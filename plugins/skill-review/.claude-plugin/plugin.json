@@ -1,10 +1,9 @@
 {
   "name": "skill-review",
   "description": "Behavioral-equivalence audit for SKILL.md changes. Gates git commit when staged changes include a SKILL.md. Primarily useful in claude-config itself where SKILL.md files are authored.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": {
     "name": "Cordova Strategy"
   },
-  "skills": "./skills/",
-  "hooks": "./hooks/hooks.json"
+  "skills": "./skills/"
 }
