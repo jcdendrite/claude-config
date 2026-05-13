@@ -187,9 +187,9 @@ If not all three hold, point at the canonical source.
 If the review is clean (table above has no N rows, no other
 blockers), record completion by running this command exactly once:
 
-<!-- HOOK_TEST_FIXTURE: skill-review-marker-write — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/skill-review/SKILL.md) to verify it matches require-skill-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: skill-review-marker-write — the hook-alignment test suite reads this exact fenced block from this file (plugins/skill-review/skills/skill-review/SKILL.md) to verify it matches require-skill-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh write skill-review
 ```
 
-The pathspec `claude/.claude/skills/**/SKILL.md` is encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks.
+The pathspecs `claude/.claude/skills/**/SKILL.md` and `plugins/*/skills/**/SKILL.md` are encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks — covering both stowed skills and project-scoped plugin skills.

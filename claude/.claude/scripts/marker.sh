@@ -133,11 +133,11 @@ case "$SUBCOMMAND" in
       skill-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_HASH=$(_resolve_repo_hash) || exit 2
-        _guard_staged_vs_unstaged skill-review 'claude/.claude/skills/**/SKILL.md'
+        _guard_staged_vs_unstaged skill-review 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'
         mkdir -p "$HOME/.claude/skill-review-markers"
-        # The pathspec is load-bearing: scopes the hash to SKILL.md diffs only,
-        # matching what require-skill-review.sh checks at commit time.
-        git diff --cached -- 'claude/.claude/skills/**/SKILL.md' | sha256sum | awk '{print $1}' \
+        # The pathspecs are load-bearing: scope the hash to SKILL.md diffs only (both stowed
+        # and plugin locations), matching what require-skill-review.sh checks at commit time.
+        git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}' \
           > "$HOME/.claude/skill-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       plan-review)

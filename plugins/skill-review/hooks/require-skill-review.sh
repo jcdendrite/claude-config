@@ -10,7 +10,7 @@
 # How it works:
 # - The /skill-review skill writes
 #   ~/.claude/skill-review-markers/<repo-hash>.<session_id> with the sha256 hash
-#   of `git diff --cached -- 'claude/.claude/skills/**/SKILL.md'` when the review
+#   of `git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'` when the review
 #   is clean. The marker lives under $HOME (not inside the repo) so it never
 #   pollutes `git status` or risks being accidentally committed.
 # - This hook reads session_id from its JSON payload, recomputes the same
@@ -49,7 +49,7 @@ fi
 
 # Early exit: if no SKILL.md files are staged, this hook is a no-op.
 # Commits that don't touch any skill file are not gated by skill-review.
-SKILL_DIFF=$(git diff --cached --name-only -- 'claude/.claude/skills/**/SKILL.md')
+SKILL_DIFF=$(git diff --cached --name-only -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md')
 if [ -z "$SKILL_DIFF" ]; then
   exit 0
 fi
@@ -62,7 +62,7 @@ fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
-CURRENT_HASH=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
+CURRENT_HASH=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
 
 # Empty session_id (older Claude Code versions or payload-schema drift) can't
 # key a per-session marker — fall through to deny.

@@ -1,0 +1,9 @@
+{
+  "name": "claude-hook-review",
+  "description": "Review playbook for Claude Code hooks: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. Primarily useful in claude-config where hook scripts are authored.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Cordova Strategy"
+  },
+  "skills": "./skills/"
+}

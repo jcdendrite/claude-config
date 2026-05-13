@@ -28,9 +28,10 @@ while IFS= read -r f; do
     MESSAGES="${MESSAGES}  $f: $new lines (was $old, limit 200)\n"
     FAIL=1
   fi
-# Path prefix is repo-root-relative for this repo's layout (claude/.claude/skills/).
+# Path prefixes are repo-root-relative for this repo's layout.
+# Covers both stowed skills (claude/.claude/skills/) and project-scoped plugins (plugins/*/skills/).
 # In other repos this grep matches nothing and the hook exits 0 silently.
-done < <(git diff --cached --name-only | grep -E 'claude/.claude/skills/.+/SKILL\.md')
+done < <(git diff --cached --name-only | grep -E '(claude/.claude/skills/|plugins/[^/]+/skills/).+/SKILL\.md')
 
 if [ "$FAIL" -eq 1 ]; then
   REASON=$(printf 'Skill length gate: one or more SKILL.md files grew past the 200-line limit. Reduce to 200 or fewer lines before committing:\n%b' "$MESSAGES")
