@@ -28,6 +28,7 @@ Run with: pytest claude/.claude/
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -250,4 +251,18 @@ class TestModelInvokableSkillTriggerContracts:
         assert "DO NOT TRIGGER when:" in desc, (
             f"{skill_name}/SKILL.md description is missing 'DO NOT TRIGGER when:' block; "
             f"add it or set disable-model-invocation: true if this skill should not auto-load"
+        )
+
+
+def test_skill_overrides_documented_in_docs_skills_md() -> None:
+    """Every disabled bundled skill in skillOverrides must have a row in docs/skills.md."""
+    repo_root = Path(__file__).resolve().parents[4]
+    settings = json.loads((repo_root / "claude/.claude/settings.json").read_text())
+    docs_text = (repo_root / "docs/skills.md").read_text()
+    for skill_name in settings.get("skillOverrides", {}):
+        marker = f"| `/{skill_name}` |"
+        assert marker in docs_text, (
+            f"skillOverrides has {skill_name!r} but docs/skills.md has no "
+            f"`{marker}` row. Every disabled bundled skill needs a rationale "
+            'row in the "Bundled skills disabled by default" table.'
         )

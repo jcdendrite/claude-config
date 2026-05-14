@@ -39,8 +39,24 @@ committed file directly via PR.
 **Hook defense-in-depth:** Hooks must filter their own input by tool
 name and matcher; do not rely solely on settings.json `if` conditions.
 
+**Should this be a hook?** When the user asks for an automated or
+recurring behavior — "from now on when X…", "each time X…", "whenever
+X…", "before/after X…" — the answer is a hook configured in
+`.claude/settings.json`, not a memory or a skill instruction. The
+harness executes hooks; nothing in memory or a CLAUDE.md prose rule can
+fulfill an automatic-trigger request. Route to the `claude-hook-review`
+skill for hook design and review.
+
 **Plugin config:** `enabledPlugins` only takes effect in
 `settings.json`, not `settings.local.json`.
+
+**Disabling a plugin: `false` vs. removing the entry.** In this repo's
+committed `claude/.claude/settings.json`, `enabledPlugins[name]: false`
+is reserved for plugins kept as quick-flip handles for occasional
+re-enable. Plugins with no foreseeable re-enable use case are removed
+from the map entirely. Don't propose `false` reflexively as the
+disable-pattern — it smuggles in a re-enable affordance the user may
+not want to extend. Mirror existing entries when in doubt.
 
 **No shared partials across skills — but co-located auxiliary files are distinct.** `SKILL.md` frontmatter has no `includes:`, `import:`, or `extends:` fields; the `@path` import syntax works in `CLAUDE.md` only, not in `SKILL.md`. When two skills need the same rule text, duplicate it into both skill files intentionally — do not extract it into a `_shared/` directory or similar abstraction. Duplication keeps each skill independently readable and prevents brittle cross-skill coupling. A skill directory may contain co-located auxiliary files (`REFERENCES.md` for edit-time reference; a runtime auxiliary like `plan-review/ROUTING.md` — an exception for load-bearing content that cannot be shortened, not a routine response to hitting the length cap) — these belong to one skill and are not cross-skill sharing. See [`docs/skills.md` — Skill architecture notes](docs/skills.md#skill-architecture-notes) for the full breakdown.
 
