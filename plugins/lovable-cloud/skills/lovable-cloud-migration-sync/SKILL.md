@@ -2,8 +2,8 @@
 name: lovable-cloud-migration-sync
 description: >
   Post-apply cleanup for Lovable-duplicated migrations: diff originals, db reset, delete, open PR.
-  TRIGGER when the user signals Lovable's migration apply step completed, regardless of exact wording.
-  DO NOT TRIGGER when all originals already deleted, or user asks about mechanics without signaling completion.
+  TRIGGER when: the user signals Lovable's migration apply step completed, regardless of exact wording.
+  DO NOT TRIGGER when: all originals already deleted, or user asks about mechanics without signaling completion.
 user-invocable: true
 ---
 
