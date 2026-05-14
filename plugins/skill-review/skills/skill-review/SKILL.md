@@ -5,7 +5,7 @@ description: >
   design, voice, length targets, and cross-reference vs duplication
   policy. TRIGGER when: reviewing a .claude/skills/**/SKILL.md change or
   auditing trigger accuracy across a skill set. DO NOT TRIGGER when:
-  authoring or iterating on a skill (use skill-creator), editing
+  authoring or iterating on a skill, editing
   CLAUDE.md/AGENTS.md (use ai-instruction-and-memory-files), or
   reviewing non-skill files.
 user-invocable: false
@@ -13,9 +13,7 @@ user-invocable: false
 
 # Skill Review — Architecture & Checklist
 
-Fires in **review and audit** contexts. `skill-creator` covers the authoring
-loop — do not fire during authoring turns; dual-firing on every skill-edit
-turn is the failure mode this lane split prevents.
+Fires in **review and audit** contexts — do not trigger during authoring turns.
 
 ## 1. What makes a skill load
 
