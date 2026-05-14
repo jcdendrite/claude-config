@@ -102,3 +102,4 @@ gh api repos/owner/repo/pulls/4/comments/12345678/replies \
   esac
   ```
   (or `/issues/comments/{id}` for issue-level comments)
+- **Avoid SHA-pinned commit references.** When acknowledging a fix in a reply, prefer "addressed in the latest commit on this branch" over "fixed in commit `<sha>`". SHA references become stale if the branch is rebased or force-pushed; branch-tip language remains correct across rebases. If a SHA was cited in a prior reply, note it in the stale-SHA correction batch — do not leave stale SHAs uncorrected before requesting reviewer re-verification.
