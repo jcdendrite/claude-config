@@ -33,6 +33,8 @@ for browser-invoked functions.
 
 Your project will have its own auth utility location and naming convention for the user JWT validation helper.
 
+In-code JWT validation must cryptographically verify the token signature (not just decode it) and check the `exp` claim. Decode-only is not sufficient — the gateway provides no backup for Tier 1.
+
 ### Tier 2: Service-role / cron / trigger functions
 
 Functions called by pg_cron, pg_net database triggers, or other edge functions
@@ -46,6 +48,8 @@ using the service role key. Not called by browsers.
 **Why:** Service-role keys use HS256, which the gateway can verify. Both the
 gateway and in-code auth enforce access — defense in depth.
 
+**Caution:** `verify_jwt = true` accepts any HS256-signed JWT — including anon-role tokens issued to ordinary unauthenticated browsers. In-code auth must verify the `role` claim equals `service_role` in the decoded JWT payload (not a caller-supplied header value). Omitting this check allows anon callers to invoke service-role functions.
+
 ### Tier 3: Webhook functions
 
 Functions called by external services (Stripe, Lovable, etc.) that cannot
@@ -58,6 +62,8 @@ send a Supabase JWT of any kind.
 
 **Why:** External callers have no Supabase JWT. The function authenticates the
 caller by verifying a request signature specific to that service.
+
+**Critical:** Signature verification must consume the raw request body (`await req.arrayBuffer()` or `await req.text()`) before any other body read. Parsing the body as JSON before signature verification corrupts the HMAC check — some implementations then silently fall through to processing the unverified payload.
 
 ### Tier 4: Intentionally public functions
 
@@ -89,7 +95,7 @@ and in the function source.
 
 ## Adding a new edge function
 
-1. Determine the function's tier (browser, service-role, webhook, or public).
+1. Determine the function's tier. If the caller is an external service (not a browser user, not your own cron/trigger, not an explicitly no-auth endpoint like a sitemap or health check) — it is Tier 3, not Tier 4. Both Tier 3 and Tier 4 use `verify_jwt = false`, so miscategorizing Tier 3 as Tier 4 produces a silently open endpoint. Default to Tier 3 when uncertain about external callers.
 2. Add a `[functions.<name>]` entry to `config.toml` with the correct
    `verify_jwt` setting per the tier table above.
 3. Add a comment above the entry if `verify_jwt = false`, stating which tier
