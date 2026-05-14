@@ -91,7 +91,7 @@ Evaluate the plan against each item. Only flag items where there is a concrete i
 
 B1. **Unstated assumptions** — Does the plan assume library, framework, or SDK behavior without verifying it? Look for claims about API/client/protocol behavior the author hasn't tested.
 
-B2. **Missing consumer analysis** — Does the plan account for all callers/importers/consumers of the changed code? A response-format change without enumerating consumers will break things.
+B2. **Missing consumer analysis** — Does the plan account for all callers/importers/consumers of the changed code? A response-format change without enumerating consumers will break things. **When the change re-points a read to a different backing table that remains populated by separate code paths, the integrity-maintainers of the prior backing table (every flow that INSERTs, UPDATEs, or DELETEs there) must also mutate the new backing table symmetrically — enumerate them, not just the read consumers.**
 
 B3. **Breaking intermediate states** — During phased migrations, is there a window where mixed old/new components cause runtime failures?
 
@@ -145,7 +145,7 @@ I4. **Secret and config provisioning** — Does the plan specify where and how n
 
 ## Domain: Data
 
-Apply when the plan touches database schema, migrations, pipelines, or warehouse modeling.
+Apply when the plan touches database schema, migrations, pipelines, warehouse modeling, or shifts the backing read source of any SQL helper, RLS function, materialized view, CDC/change-stream filter, or application query.
 
 D1. **Migration safety** — Does the plan describe how the migration runs without downtime — no long-locking ALTERs, in-transaction backfills, rewrite-triggering type changes, or `CREATE INDEX` without `CONCURRENTLY` on large tables?
 
@@ -156,6 +156,8 @@ D3. **Deploy-time compatibility** — Does the plan account for mid-deploy failu
 D4. **Access control on new objects** — Does the plan declare row security/grants on new tables, views, and functions exposed via auto-generated APIs?
 
 D5. **Index coverage** — Does the plan provide indexes for new query patterns (`WHERE`/`JOIN`/`ORDER BY` columns, foreign keys), especially on growing tables?
+
+D6. **Read-source switch — symmetric maintainers** — Does the plan switch a function, RLS helper, application query, materialized view, or CDC/change-stream filter from reading table A to reading table B while both remain populated by separate code paths? If so, enumerate every flow that INSERTs, UPDATEs, or DELETEs in table A — RPCs, edge functions, triggers, admin tools, migrations, background jobs, queue consumers, cron jobs, webhook handlers — and verify each touches table B symmetrically. DELETE symmetry is the highest-severity case: a hard-delete on A that doesn't cascade to B leaves ghost rows the new read path returns as live data. INSERT-side dual-write verification alone is insufficient. A point-in-time orphan count (e.g. "0 rows now") confirms past state, not the forward-time invariant.
 
 ## Domain: Frontend
 
@@ -209,12 +211,7 @@ Read `~/.claude/skills/plan-review/ROUTING.md` before any spawn decision.
 
 ## Output format
 
-Start with which domains were detected and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs (from ROUTING.md's Item ownership table), e.g.:
-
-> - staff-data-engineer: D1 (migration safety), D4 (RLS enforceability)
-> - ciso-reviewer: S1 (threat model), S3–S5 (auth/IDOR/data minimization), D4 co-ownership
-
-If none spawned: "No specialists spawned — generalist review only."
+Start with which domains were detected and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs from ROUTING.md's Item ownership table (e.g., `staff-data-engineer: D1, D4; ciso-reviewer: S1, S3–S5, D4 co-ownership`); if none, write "No specialists spawned — generalist review only."
 
 For each finding, state:
 1. **Which checklist item** (ID and name, e.g., "B3 — Breaking intermediate states")

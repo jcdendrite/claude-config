@@ -8,6 +8,7 @@
 - Before taking any action that is destructive, irreversible, or has blast radius beyond the immediate change (data loss, breaking API changes, infrastructure modifications), flag the risk and confirm the approach.
 - When uncertain about a CLI flag, tool behavior, or API detail, verify rather than guessing.
 - **Default-suspect over-powered primitives.** When a design adopts a more powerful, invasive, or wider-scope mechanism than the task requires — a heavier abstraction, a more privileged execution context, a more complex coordination pattern, a more invasive integration — identify the lighter primitive in the source documentation/system that could solve the problem before adopting the heavier one. Re-read the source with the specific question "what mechanisms exist that do NOT require this heavier choice?" — first-pass reads miss the answer routinely.
+- **Audit structural siblings before scoping a fix narrowly.** When a fix lands in one arm of a multi-arm structure (case statement, switch, parallel subcommands, sibling functions sharing a shape), check the other arms for the same bug shape before finalizing scope. If the fix is identical, apply to every affected site; abstract when two or more share it. Scope is set by the bug, not by where the symptom surfaced.
 
 ## Working Style
 
