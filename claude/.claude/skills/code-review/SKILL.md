@@ -62,11 +62,15 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 6. **Dead exports** — Are there exported types, functions, or constants not imported by any other file? Check with grep before flagging.
 
-7. **Unnecessary wrappers** — Are there functions that simply delegate to another function without adding logic, type narrowing, or meaningful naming?
+7. **Unnecessary wrappers** — Are there functions that simply delegate to another function without adding logic, type narrowing, or meaningful naming? The same principle applies at module level: if a file's entire post-refactor content is re-export statements from a single other module (and it no longer holds any unique declarations), suggest deleting the shim and updating importers directly. This is not a breaking change if all callers are in the same repo.
 
 8. **Inline business logic where a library method exists** — Is there hand-rolled logic (regex parsing, string manipulation, date math, data structure ops) where the project's existing dependencies already provide a tested function for the same thing?
 
 9. **Repeated in-house logic that should be extracted** — Is the same non-trivial logic block (≥~5 lines, or any block with semantic identity beyond formatting) repeated in three or more sites in this codebase, where a single shared helper would carry the same behavior? The default threshold is three instances, but it's a default, not a rule: a 2-instance extraction can be right when the logic is obviously a single domain concept (Stripe error shaping, retry with backoff, auth-error mapping) and a 5-instance repetition can be wrong to extract when the bodies are coincidentally similar but semantically distinct (each one will diverge under its own pressure). Suggest the extraction site (`_shared/<helper>.ts`, `lib/<helper>.ts`, or the codebase's established shared-utility location) and name what the helper should encapsulate, not just "DRY this up." Carve-out: production code is DRY; **test code is DAMP** — repeated arrange/assert blocks in tests often aid readability over abstraction, so do not flag test-file duplication unless the repeated block is large enough to obscure the test's intent.
+
+9a. **Repeated domain discriminants without a shared type** — Is the same string literal representing a domain concept (tier, role, status, event type) used as a type annotation at 3 or more sites without a shared `type` alias? Flag with: suggest `export type <Name> = '<value1>' | '<value2>'` at the canonical module for that domain, and replace inline literals at call sites. String literal unions are preferred over `enum`; do not suggest `enum` as the fix.
+
+9b. **Unnamed bounds in slice/substring calls** — Does the code pass a numeric literal directly as a `substring`, `slice`, `substr`, or `truncate` argument in non-test code? If the number represents a semantic bound (prefix length for redaction, maximum field width, ID segment length), it should be a named constant expressing the intent, not a bare number. Suggest: `const <DESCRIPTIVE_NAME> = <N>;` at the shared-utility level if the bound is used across files, or at the top of the file if local.
 
 ### Clarity
 
@@ -132,6 +136,8 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 34. **Performance-sensitive code paths** — Does the change modify a hot path (queries in loops, N+1, cache read/write, large list ops)? Verify with representative data volumes, not just test fixtures.
 
+34a. **Bare `new Error()` in a file with typed Error subclasses** — If the file defines or imports a custom `Error` subclass and uses `instanceof` dispatch in a catch handler, any `throw new Error(string)` for a parallel failure path will fall through the typed catch arm and land in the generic handler. Flag any bare `new Error(string)` throw in the same file that shares the logical shape of an existing typed subclass. The fix is a typed subclass — not try/catch widening.
+
 ## Domain: Claude Code config
 
 For `.claude/skills/**/SKILL.md` review (frontmatter, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions), invoke the `skill-review` skill — do not assert behavioral equivalence on prose compressions yourself; that audit is `skill-review`'s job.
@@ -184,7 +190,6 @@ This is the last gate before ship — a specialist miss here ships as a regressi
 Always spawn `ciso-reviewer` when the change touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the change is declared dev-only or internal-only (no privilege boundary crossed) (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. Always spawn `staff-product-engineer` when the change alters user-facing behavior.
 
 Spawn per question (not per file-path domain) — "change touches `.github/`" isn't enough; the question needs a specific shape.
-
 When you spawn: spawn on the CODE, not on this review's output (each subagent reads the diff fresh); pick the specialist that serves the question (table is reference, not roster); pass diff scope, specific question, AND — for re-review — prior findings + what's been applied. Reviewers without prior context re-discover; that's wasted spawn.
 
 The Change type column keys on what the change *does* for an operator or consumer, not on file types — a markdown-only diff can cross a runtime-config or CI/CD boundary if it restructures the taxonomy operators use to provision secrets, identify deploy targets, or reason about config layering. Use the table as a checklist of boundaries to *consider*, not as default-fire triggers.
@@ -234,6 +239,8 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **4. Silent defaults** | `staff-backend-engineer`, `staff-platform-engineer` (infra / test code) | — |
 | **5. Feature flag coverage** | `staff-product-engineer` (default-off semantics) | `staff-platform-engineer` (rollout) |
 | **6–9. Hygiene** (dead exports, unnecessary wrappers, inline business logic, repeated in-house logic) | judgment (any reviewer) | — |
+| **9a. Repeated domain discriminants without a shared type** | judgment (any reviewer) | — |
+| **9b. Unnamed bounds in slice/substring calls** | judgment (any reviewer) | — |
 | **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
 | **12. Stripped WHY comments** | judgment (any reviewer) | — |
@@ -255,6 +262,7 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **32. Third-party API integration** | `staff-backend-engineer` | `ciso-reviewer` (credential scoping) |
 | **33. Sensitive data in logs** | `staff-backend-engineer` | `ciso-reviewer` |
 | **34. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
+| **34a. Bare `new Error()` in a file with typed Error subclasses** | `staff-backend-engineer` (server-side throw paths), `staff-frontend-engineer` (client-side throw paths) | — |
 | **35. Permission scope** | `ciso-reviewer` | — |
 | **36. Hook correctness** — reviewed via `claude-hook-review` skill | `staff-platform-engineer` | `ciso-reviewer` |
 
