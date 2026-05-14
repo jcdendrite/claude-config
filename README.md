@@ -464,7 +464,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires on session start, after `/clear`, and after compaction. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
 
-2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `/tmp/<slug>-handoff.md`. The §1–§7 shape is defined inline in `claude/.claude/commands/handoff.md`. Claude proactively suggests `/handoff` at ~60% context usage because cleaner context produces a higher-quality resume file, and every turn beyond 60% is waste.
+2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `/tmp/<slug>-handoff.md`. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` at ~60% context usage because cleaner context produces a higher-quality resume file, and every turn beyond 60% is waste.
 
 ### When to use which
 

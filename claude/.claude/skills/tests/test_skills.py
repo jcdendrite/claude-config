@@ -1,18 +1,27 @@
-"""Static contract tests for specialist skill SKILL.md description fields.
+"""Static contract tests for skill SKILL.md description fields.
 
-Each specialist skill in this repo is auto-triggerable: the Claude Code harness
-reads the frontmatter `description` field at session start and loads the skill
-body when the description matches the current context. The TRIGGER when: /
-DO NOT TRIGGER when: blocks inside that description are the routing contracts.
+Skills in this repo fall into three invocation categories:
+- Model-invokable (default): the Claude Code harness reads the frontmatter
+  `description` at session start and auto-loads the skill body when the
+  description matches context. These skills MUST carry TRIGGER when: /
+  DO NOT TRIGGER when: discipline so the harness fires at the right time.
+- User-only commands (disable-model-invocation: true): descriptions are
+  suppressed from the always-loaded listing budget; the user invokes directly
+  via /skill-name. These skills must be registered in COMMAND_SKILLS.
+- Model-only reference (user-invocable: false): invoked by model auto-trigger
+  only; same TRIGGER discipline requirement as default.
 
-These tests verify the contracts without invoking Claude Code or the API:
-- Both TRIGGER when: and DO NOT TRIGGER when: blocks are present in the description.
-- The TRIGGER block covers the file surface or intent the skill owns.
-- The DO NOT TRIGGER block names the adjacent skill whose surface overlaps.
+Three invocation paths exist for skills — user slash, model auto-load from
+description, and parent-skill glob dispatch via Skill tool. The third path
+(F-05 / F-07) is the designed invocation mechanism for project-layer add-on
+skills (code-review-*, plan-review-*, test-conventions-*) and is the reason a
+skill can legitimately carry both user-invocable: false and
+disable-model-invocation: true simultaneously — it is NOT "uninvocable".
+See code-review/REFERENCES.md F-05 and F-07 for the empirical record.
 
-A silent regression (dropping a surface glob or an adjacent-skill exclusion
-from the description) means the skill either stops firing on its surface or
-dual-fires with a neighbor. These tests catch that at CI time.
+Contracts enforced:
+(a) Every model-invokable skill has TRIGGER when: and DO NOT TRIGGER when:.
+(b) Every registered command skill carries disable-model-invocation: true.
 
 Run with: pytest claude/.claude/
 """
@@ -89,6 +98,50 @@ def _specialist_skills() -> list[str]:
     return skills
 
 
+def _model_invokable_skills() -> list[str]:
+    """Discover all skills the model can auto-load — i.e., NOT disable-model-invocation: true.
+
+    Any skill without disable-model-invocation: true is presented to the model
+    in the always-loaded skill listing and must carry TRIGGER when: / DO NOT
+    TRIGGER when: discipline so the harness fires it at the right time.
+    """
+    skills = []
+    for skill_dir in sorted(SKILLS_DIR.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        if not (skill_dir / "SKILL.md").exists():
+            continue
+        frontmatter = _skill_description(skill_dir.name)
+        if frontmatter and "disable-model-invocation: true" not in frontmatter:
+            skills.append(skill_dir.name)
+    if _PLUGINS_DIR.exists():
+        for plugin_dir in sorted(_PLUGINS_DIR.iterdir()):
+            plugin_skills_dir = plugin_dir / "skills"
+            if not plugin_skills_dir.is_dir():
+                continue
+            for skill_dir in sorted(plugin_skills_dir.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                if not (skill_dir / "SKILL.md").exists():
+                    continue
+                frontmatter = _skill_description(skill_dir.name)
+                if (
+                    frontmatter
+                    and "disable-model-invocation: true" not in frontmatter
+                    and skill_dir.name not in skills
+                ):
+                    skills.append(skill_dir.name)
+    return skills
+
+
+# Explicit registry of user-only command skills. Each must carry
+# disable-model-invocation: true in its frontmatter so the description is
+# suppressed from the model's always-loaded listing budget. Add to this list
+# whenever a new command-style skill (user-invoked slash workflow, no model
+# auto-discovery needed) is created under skills/.
+COMMAND_SKILLS = ["handoff", "read-docx-comments"]
+
+
 class TestSpecialistSkillTriggerContracts:
     """TRIGGER / DO NOT TRIGGER contract tests for non-user-invocable skills.
 
@@ -153,4 +206,48 @@ class TestSpecialistSkillTriggerContracts:
         assert adjacent_skill in dnt_section, (
             f"{skill_name}/SKILL.md DO NOT TRIGGER section does not name '{adjacent_skill}'; "
             f"the two skills may dual-fire on overlapping surfaces"
+        )
+
+    @pytest.mark.parametrize("skill_name", COMMAND_SKILLS)
+    def test_command_skill_has_disable_model_invocation(self, skill_name):
+        """User-only command skills must carry disable-model-invocation: true."""
+        desc = _skill_description(skill_name)
+        assert "disable-model-invocation: true" in desc, (
+            f"{skill_name}/SKILL.md is registered as a command skill but is missing "
+            f"disable-model-invocation: true; add it or remove from COMMAND_SKILLS"
+        )
+
+
+class TestModelInvokableSkillTriggerContracts:
+    """TRIGGER / DO NOT TRIGGER contract tests for all model-invokable skills.
+
+    Widens the specialist-skill contracts above to every skill the model can
+    auto-load — i.e., any skill whose frontmatter does NOT contain
+    disable-model-invocation: true. This includes both user-invocable: false
+    reference skills and default-mode workflow skills (plan-it, plan-review,
+    code-review, ready-for-review, respond-pr, etc.).
+
+    Without this coverage, a maintainer removing TRIGGER discipline from a
+    first-class workflow skill goes undetected until the harness stops firing
+    the skill at the right time.
+    """
+
+    MODEL_INVOKABLE_SKILLS = _model_invokable_skills()
+
+    @pytest.mark.parametrize("skill_name", MODEL_INVOKABLE_SKILLS)
+    def test_model_invokable_skill_has_trigger_block(self, skill_name):
+        """Description must contain a TRIGGER when: block."""
+        desc = _skill_description(skill_name)
+        assert "TRIGGER when:" in desc, (
+            f"{skill_name}/SKILL.md description is missing 'TRIGGER when:' block; "
+            f"add it or set disable-model-invocation: true if this skill should not auto-load"
+        )
+
+    @pytest.mark.parametrize("skill_name", MODEL_INVOKABLE_SKILLS)
+    def test_model_invokable_skill_has_do_not_trigger_block(self, skill_name):
+        """Description must contain a DO NOT TRIGGER when: block."""
+        desc = _skill_description(skill_name)
+        assert "DO NOT TRIGGER when:" in desc, (
+            f"{skill_name}/SKILL.md description is missing 'DO NOT TRIGGER when:' block; "
+            f"add it or set disable-model-invocation: true if this skill should not auto-load"
         )

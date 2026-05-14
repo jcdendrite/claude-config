@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Principal engineer code review of changed/new code before presenting to user
+description: Principal engineer code review of changed/new code before presenting to user. TRIGGER when: code has been written or modified and is about to be presented to the user, or the user explicitly asks for a code review. DO NOT TRIGGER when: the change is cosmetic-only (typo, formatting, copy polish, CSS color/font tweaks with no behavioral delta), when staged changes include only SKILL.md files (use skill-review instead), when staged changes include only plan files in .claude/plans/ (use plan-review instead), or when a fresh review-markers/ entry already covers the staged diff.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 

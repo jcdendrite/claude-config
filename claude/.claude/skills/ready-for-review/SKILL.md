@@ -2,10 +2,10 @@
 name: ready-for-review
 description: >
   Pre-handoff gate for open PRs before human review.
-  TRIGGER when handing off to a human reviewer — wrapping up work on a
+  TRIGGER when: handing off to a human reviewer — wrapping up work on a
   branch with an open PR, "ship it" intent, or before spawning a
   multi-persona review (CISO + staff-* engineers) or /ultrareview.
-  DO NOT TRIGGER during active iteration, on diff-only requests,
+  DO NOT TRIGGER when: during active iteration, on diff-only requests,
   on the default branch, or when a project-specific pre-merge skill
   already wraps these checks.
 argument-hint: "[optional scope note]"
