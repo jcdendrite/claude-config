@@ -240,7 +240,7 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **5. Feature flag coverage** | `staff-product-engineer` (default-off semantics) | `staff-platform-engineer` (rollout) |
 | **6–9. Hygiene** (dead exports, unnecessary wrappers, inline business logic, repeated in-house logic) | judgment (any reviewer) | — |
 | **9a. Repeated domain discriminants without a shared type** | judgment (any reviewer) | — |
-| **9b. Unnamed bounds in slice/substring calls** | judgment (any reviewer) | — |
+| **9b. Unnamed semantic bounds in slicing/truncation** | judgment (any reviewer) | — |
 | **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
 | **12. Stripped WHY comments** | judgment (any reviewer) | — |
@@ -262,7 +262,7 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **32. Third-party API integration** | `staff-backend-engineer` | `ciso-reviewer` (credential scoping) |
 | **33. Sensitive data in logs** | `staff-backend-engineer` | `ciso-reviewer` |
 | **34. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |
-| **34a. Bare `new Error()` in a file with typed Error subclasses** | `staff-backend-engineer` (server-side throw paths), `staff-frontend-engineer` (client-side throw paths) | — |
+| **34a. Untyped error raised where the file uses typed-error dispatch** | `staff-backend-engineer` (server-side throw paths), `staff-frontend-engineer` (client-side throw paths) | — |
 | **35. Permission scope** | `ciso-reviewer` | — |
 | **36. Hook correctness** — reviewed via `claude-hook-review` skill | `staff-platform-engineer` | `ciso-reviewer` |
 
