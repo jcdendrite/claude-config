@@ -1,38 +1,18 @@
 ---
 name: lovable-cloud-knowledge
 description: >
-  How Lovable's UI knowledge fields work (Project Knowledge vs Workspace
-  Knowledge), the `.lovable/*.md` repo-mirror workflow, content scope
-  split, precedence, character limits, and review criteria for `.lovable/**`
-  changes.
-  TRIGGER when: editing `.lovable/*.md`; drafting changes to Lovable
-  Project Knowledge or Workspace Knowledge; deciding which Lovable
-  knowledge field a given rule belongs in; reviewing `.lovable/**`
-  changes in a PR.
-  DO NOT TRIGGER when: the project-level CLAUDE.md does not identify
-  this as a Lovable project; editing CLAUDE.md or AGENTS.md (use
-  `ai-instruction-and-memory-files`); editing agent-specific rules files
-  like `.cursorrules` or `.github/copilot-instructions.md` (out of
-  current scope); or writing code.
+  Lovable's UI knowledge fields — `.lovable/*.md` repo-mirror workflow,
+  Project/Workspace scope split, precedence, review criteria.
+  TRIGGER when: editing `.lovable/*.md`; drafting Project/Workspace Knowledge
+  changes; reviewing `.lovable/**` PRs.
+  DO NOT TRIGGER when: not a Lovable project; editing CLAUDE.md or AGENTS.md;
+  editing agent rules files; writing code.
 user-invocable: false
 ---
 
-# Lovable Knowledge — Architecture & Review
+# Lovable Knowledge — Workflow & Review
 
-## 1. The four sources Lovable loads
-
-Effective priority order:
-
-1. **Project Knowledge** (Lovable UI field — highest priority)
-2. **Workspace Knowledge** (Lovable UI field)
-3. **AGENTS.md / CLAUDE.md** (repo files — AGENTS.md has the explicit "always read regardless of session length" guarantee)
-4. **Project code**
-
-All four are loaded every session. Lovable docs warn that in very long
-conversations instructions can drift; the "always read" guarantee for
-AGENTS.md is the defense-in-depth.
-
-## 2. Project Knowledge vs Workspace Knowledge
+## 1. Project Knowledge vs Workspace Knowledge
 
 | | Workspace Knowledge | Project Knowledge |
 |---|---|---|
@@ -46,7 +26,9 @@ a *different* project in the same Lovable workspace. If yes →
 workspace. If no (it's tied to *this* product's domain, schema, or
 constraints) → project.
 
-## 3. `.lovable/` repo-mirror workflow
+Project Knowledge is prioritized over Workspace Knowledge on conflict. See REFERENCES.md for the full four-source load priority (Project Knowledge → Workspace Knowledge → AGENTS.md/CLAUDE.md → project code).
+
+## 2. `.lovable/` repo-mirror workflow
 
 `.lovable/project-knowledge.md` and `.lovable/workspace-knowledge.md` are
 **version-controlled mirrors** of the corresponding Lovable UI fields.
@@ -68,7 +50,7 @@ authoring/review surface.
 **Do not** skip the repo step and paste directly into the UI without a
 PR — that loses diff review, version history, and audit trail.
 
-## 4. Authoring guidance
+## 3. Authoring guidance
 
 When writing content for either field:
 
@@ -82,7 +64,7 @@ When writing content for either field:
   task instructions — apply the same length and behavior-test discipline
   as Claude Code skills (see `ai-instruction-and-memory-files` §3).
 
-## 5. Review checklist for `.lovable/**` changes
+## 4. Review checklist for `.lovable/**` changes
 
 When reviewing a PR that touches `.lovable/*.md`:
 
