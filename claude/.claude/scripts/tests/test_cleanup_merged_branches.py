@@ -719,6 +719,7 @@ class TestLockedWorktreeRemoveFailsCleanly:
         assert result.returncode == 0
         assert "unlocked stale lock" in result.stdout
         assert "remove failed (manual step needed)" in result.stdout
+        assert "contains modified or untracked files" in result.stdout
         # Worktree dir and its content must survive
         assert wt_path.exists()
         assert (wt_path / "leftover.txt").exists()

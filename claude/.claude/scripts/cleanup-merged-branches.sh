@@ -363,13 +363,17 @@ for BRANCH in "${TO_DELETE[@]}"; do
         echo "    worktree:       unlocked stale lock (pid ${WORKTREE_LOCK_PID} dead)"
       fi
     fi
-    if git worktree remove "$WORKTREE_PATH" 2>/dev/null; then
+    WORKTREE_REMOVE_OUTPUT=
+    if WORKTREE_REMOVE_OUTPUT=$(git worktree remove "$WORKTREE_PATH" 2>&1); then
       echo "    worktree:       removed: ${WORKTREE_PATH}"
     else
       if [ "$WORKTREE_LOCKED" -eq 1 ]; then
         git worktree lock "$WORKTREE_PATH" 2>/dev/null || true
       fi
       echo "    worktree:       remove failed (manual step needed)"
+      if [ -n "$WORKTREE_REMOVE_OUTPUT" ]; then
+        printf '%s\n' "$WORKTREE_REMOVE_OUTPUT" | sed 's/^/                    /'
+      fi
       continue
     fi
   else
