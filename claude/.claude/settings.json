@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(pytest claude/.claude/)",
+      "Bash(ruff check claude/.claude/)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {

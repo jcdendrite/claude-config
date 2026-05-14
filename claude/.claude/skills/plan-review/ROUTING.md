@@ -11,6 +11,7 @@ This is the design-stage gate. Specialist misses here are recoverable in code-re
 - **Below-staff-level depth.** Specialized kernels (query-planner internals, cryptography primitives, fine-grained a11y, kernel-level concurrency) — not "general knowledge in domain X."
 - **High-stakes boundary.** RLS, auth, billing, payment, data migration, privileged ops — a specialist's eyes are worth it even at generalist depth.
 - **Holistic-reasoning overload.** Multi-domain change you can't hold in working memory at once.
+- **Contract blast radius — not LOC.** A small surface that re-points a shared internal contract (a helper read by many sites, a config consumed by many flows) is fundamental even when the diff is tiny. Size by consumers of the contract, not by changed lines.
 - **Convergence-as-design-tell** from a prior round (see Reconciliation).
 - **Explicit user request.**
 

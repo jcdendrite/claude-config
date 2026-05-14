@@ -91,7 +91,7 @@ Evaluate the plan against each item. Only flag items where there is a concrete i
 
 B1. **Unstated assumptions** — Does the plan assume library, framework, or SDK behavior without verifying it? Look for claims about API/client/protocol behavior the author hasn't tested.
 
-B2. **Missing consumer analysis** — Does the plan account for all callers/importers/consumers of the changed code? A response-format change without enumerating consumers will break things.
+B2. **Missing consumer analysis** — Does the plan account for all callers/importers/consumers of the changed code? A response-format change without enumerating consumers will break things. When the change re-points a read to a different data source, also enumerate the write paths to the prior source — they must now feed the new source or the contract drifts.
 
 B3. **Breaking intermediate states** — During phased migrations, is there a window where mixed old/new components cause runtime failures?
 
@@ -209,12 +209,7 @@ Read `~/.claude/skills/plan-review/ROUTING.md` before any spawn decision.
 
 ## Output format
 
-Start with which domains were detected and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs (from ROUTING.md's Item ownership table), e.g.:
-
-> - staff-data-engineer: D1 (migration safety), D4 (RLS enforceability)
-> - ciso-reviewer: S1 (threat model), S3–S5 (auth/IDOR/data minimization), D4 co-ownership
-
-If none spawned: "No specialists spawned — generalist review only."
+Start with which domains were detected and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs from ROUTING.md's Item ownership table (e.g., `staff-data-engineer: D1, D4; ciso-reviewer: S1, S3–S5, D4 co-ownership`); if none, write "No specialists spawned — generalist review only."
 
 For each finding, state:
 1. **Which checklist item** (ID and name, e.g., "B3 — Breaking intermediate states")
