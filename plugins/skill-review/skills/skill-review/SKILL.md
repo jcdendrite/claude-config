@@ -65,9 +65,9 @@ DO NOT TRIGGER when: <obvious misfire>; <adjacent skill's surface>; <out of scop
 
 **DO NOT TRIGGER carries equal weight.** Over-broad triggers load
 skill body into unrelated turns; over-narrow leave it dormant. Name
-the adjacent skills whose surfaces overlap — a `skill-review`
-description that doesn't list `skill-creator` under DO NOT TRIGGER
-will dual-fire on every authoring turn.
+the adjacent skills whose surfaces overlap — a `claude-hook-review`
+description that doesn't list `review-permissions` under DO NOT TRIGGER
+will dual-fire on every hook-settings turn.
 
 ## 3. Voice and structure
 
