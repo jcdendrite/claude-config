@@ -11,7 +11,7 @@ This is the design-stage gate. Specialist misses here are recoverable in code-re
 - **Below-staff-level depth.** Specialized kernels (query-planner internals, cryptography primitives, fine-grained a11y, kernel-level concurrency) — not "general knowledge in domain X."
 - **High-stakes boundary.** RLS, auth, billing, payment, data migration, privileged ops — a specialist's eyes are worth it even at generalist depth.
 - **Holistic-reasoning overload.** Multi-domain change you can't hold in working memory at once.
-- **Contract blast radius — not LOC.** A small bash/code surface that re-points a shared internal contract (a helper read by many sites, a config field consumed by N flows, an RLS function called by every gated table) is fundamental even when the diff is tiny. Size by consumers of the contract, not by changed lines.
+- **Contract blast radius — not LOC.** A small surface that re-points a shared internal contract (a helper read by many sites, a config consumed by many flows) is fundamental even when the diff is tiny. Size by consumers of the contract, not by changed lines.
 - **Convergence-as-design-tell** from a prior round (see Reconciliation).
 - **Explicit user request.**
 
@@ -71,7 +71,6 @@ The dispatcher fires reviewers per touched domain. Each agent self-scopes agains
 | **D3. Deploy-time compatibility** | `staff-data-engineer` | `staff-backend-engineer`, `staff-platform-engineer` |
 | **D4. Access control on new objects** | `staff-data-engineer` (enforceability) | `ciso-reviewer` (threat framing) |
 | **D5. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
-| **D6. Read-source switch — symmetric maintainers** | `staff-backend-engineer` (write-path symmetry across application code, edge functions, background jobs, queue consumers) | `staff-data-engineer` (migration-level and pipeline write paths, CDC/MV source swaps), `ciso-reviewer` (when the re-pointed read feeds an access-control decision; skip on display/analytics-only reads) |
 | **F1. User-facing impact** | `staff-frontend-engineer` | `staff-product-engineer` |
 | **F2. State management** | `staff-frontend-engineer` | — |
 | **F3. Query contract mapping** | `staff-frontend-engineer` | `staff-backend-engineer`, `staff-product-engineer` (user-visible drift) |
