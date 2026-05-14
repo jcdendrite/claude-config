@@ -3,9 +3,9 @@ name: skill-review
 description: >
   Review and audit of SKILL.md files: frontmatter conventions, trigger
   design, voice, length targets, and cross-reference vs duplication
-  policy. TRIGGER when: reviewing a .claude/skills/**/SKILL.md change or
-  auditing trigger accuracy across a skill set. DO NOT TRIGGER when:
-  authoring or iterating on a skill, editing
+  policy. TRIGGER when: authoring or reviewing a .claude/skills/**/SKILL.md
+  change, or auditing trigger accuracy across a skill set.
+  DO NOT TRIGGER when: editing
   CLAUDE.md/AGENTS.md (use ai-instruction-and-memory-files), or
   reviewing non-skill files.
 user-invocable: false
@@ -13,7 +13,7 @@ user-invocable: false
 
 # Skill Review — Architecture & Checklist
 
-Fires in **review and audit** contexts — do not trigger during authoring turns.
+Fires during **review, audit, and authoring** of `.claude/skills/**/SKILL.md` changes.
 
 ## 1. What makes a skill load
 
