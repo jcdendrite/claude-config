@@ -1,12 +1,7 @@
 ---
 name: plan-it
-description: >
-  Produces an implementation plan and hands off to /plan-review.
-  TRIGGER when asked for a plan or implementation strategy
-  for work spanning multiple files or domains. DO NOT TRIGGER for
-  single-file tweaks, "just implement it" requests, or when a plan
-  already exists (use /plan-review instead).
-user-invocable: true
+description: Produce an implementation plan for a feature or bug fix.
+disable-model-invocation: true
 argument-hint: "[optional topic or ticket id]"
 ---
 

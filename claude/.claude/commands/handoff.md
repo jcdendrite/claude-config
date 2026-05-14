@@ -1,3 +1,8 @@
+---
+description: Write a cross-session handoff file at /tmp/<descriptive-slug>-handoff.md.
+disable-model-invocation: true
+---
+
 Write a cross-session handoff file at `/tmp/<descriptive-slug>-handoff.md` using the structure below.
 
 ## §1 Goal
