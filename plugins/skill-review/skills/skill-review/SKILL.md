@@ -13,12 +13,9 @@ user-invocable: false
 
 # Skill Review — Architecture & Checklist
 
-Fires in **review and audit** contexts (applying a checklist to a
-skill-file change). `skill-creator` covers the authoring loop —
-scaffolding, evals, benchmarking, description tuning. The lane split
-is by context, not by output type: skill-review stays out of authoring
-turns to avoid dual-firing with `skill-creator`'s broad "edit existing
-skill" claim.
+Fires in **review and audit** contexts. `skill-creator` covers the authoring
+loop — do not fire during authoring turns; dual-firing on every skill-edit
+turn is the failure mode this lane split prevents.
 
 ## 1. What makes a skill load
 
@@ -35,6 +32,11 @@ Optional frontmatter:
   `Read, Grep, Glob, Bash`). Omit to inherit the session's tools.
 - **`user-invocable`** — `false` hides the skill from the slash-command
   menu but keeps it auto-triggerable from the description.
+- **`disable-model-invocation`** — `true` removes the description from the
+  always-loaded skill-listing budget; Skill tool invocations still work.
+  Use `true` on add-on skills (`.claude/skills/<parent>-<project>/SKILL.md`)
+  invoked by a parent via Glob+Skill-tool — `test-conventions`, `plan-review`,
+  and `code-review` all use this pattern; auto-trigger is not needed.
 
 The harness loads only the description at startup; the body is fetched
 on demand. Description text is always-loaded context budget; body
@@ -139,7 +141,9 @@ If not all three hold, point at the canonical source.
 
 1. **Frontmatter** — `name` matches directory; `description` present
    and contains both `TRIGGER when:` and `DO NOT TRIGGER when:`
-   blocks. `allowed-tools` and `user-invocable` only if needed.
+   blocks. `allowed-tools` and `user-invocable` only if needed. Add
+   `disable-model-invocation: true` on add-on skills loaded by a parent
+   via Glob+Skill-tool (`.claude/skills/<parent>-<project>/SKILL.md`).
 2. **Description scope** — the description's TRIGGER list matches
    what the body actually covers. An overpromising description fires
    on turns the body can't help with.

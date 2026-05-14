@@ -11,17 +11,7 @@ user-invocable: false
 
 # Edge Function Authentication Framework
 
-## Background: ES256 and the hosted gateway
-
-Supabase's hosted gateway `verify_jwt` setting **cannot verify ES256-signed
-user JWTs** — it only supports HS256 verification. Supabase Cloud projects
-using ES256 signing keys must disable gateway JWT verification for
-browser-invoked functions and rely on in-code auth instead.
-
-Service-role keys use HS256, so `verify_jwt = true` still works for functions
-called exclusively with the service role key.
-
-Reference: https://supabase.com/docs/guides/functions/auth
+> Background: see REFERENCES.md for the ES256/HS256 gateway constraint that shapes the tier table below.
 
 ## Auth tiers
 
