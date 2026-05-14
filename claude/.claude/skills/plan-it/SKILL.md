@@ -26,7 +26,7 @@ Restate the problem, why now, and the intended outcome in one short paragraph. I
 
 ## Step 2.5 — Load project-specific layer
 
-If a project-specific layer exists for this skill, invoke it now — the layer's rules apply to the steps below. Glob for `.claude/skills/plan-it-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, invoke it via the Skill tool. If multiple match, list them and stop — that's a config error in the project, not something you can resolve. If none match, proceed without a layer.
+If a project-specific layer exists for this skill, load it now. Glob for `.claude/skills/plan-it-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, read it with the Read tool — the layer's rules apply to the steps below. If multiple match, list them and stop — that's a config error in the project, not something you can resolve. If none match, proceed without a layer.
 
 ## Step 3 — Codebase exploration
 
