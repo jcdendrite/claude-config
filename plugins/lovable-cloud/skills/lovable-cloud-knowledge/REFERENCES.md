@@ -1,4 +1,4 @@
-# References — lovable-knowledge
+# References — lovable-cloud-knowledge
 
 Reference material that informed this skill. Not loaded during skill execution — consult when editing the skill to verify a rule still holds or to add new guidance.
 

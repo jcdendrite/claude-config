@@ -63,7 +63,7 @@ The README below is organized by feature surface (hooks, skills, plugins, script
 - **Per-session sha256 marker keying** — review markers key on `<repo-hash>.<session-id>` plus the staged-diff sha256, so a re-staged line auto-invalidates the gate without timers or manual reset, and parallel sessions can't clear each other's markers. See [`docs/hooks.md`](docs/hooks.md) (`require-code-review.sh`) and `docs/design-decisions.md` decision 2.
 - **Compaction-aware marker re-injection** — `session-marker-dashboard.sh` matches `startup|clear|compact`, restoring active-bypass marker visibility after auto-compact fires. See [Context management](#context-management).
 - **Read-before-dispatch routing gate** — `require-routing-read.sh` blocks subagent spawn during `/plan-review` until `ROUTING.md` is read; a PostToolUse companion records the read per session. See [`docs/hooks.md`](docs/hooks.md).
-- **Project-layer composition by glob + Skill-tool dispatch** — `/plan-it`, `/plan-review`, and `/code-review` glob for `.claude/skills/<parent>-<project>/SKILL.md` at runtime; consuming repos extend the base skill without forking. Description-based auto-trigger was empirically tested and rejected (it doesn't fire from inside a running skill). See [docs/skills.md](docs/skills.md) and `docs/design-decisions.md` decision 8.
+- **Project-layer composition by glob + Skill-tool dispatch** — `/plan-it`, `/plan-review`, `/code-review`, and `/test-conventions` glob for `.claude/skills/<parent>-<project>/SKILL.md` at runtime; consuming repos extend the base skill without forking. Description-based auto-trigger was empirically tested and rejected (it doesn't fire from inside a running skill). Add-on skills on the project side should set `disable-model-invocation: true` — the parent invokes them via the Skill tool, so their description doesn't need to be in the always-loaded skill-listing budget. See [docs/skills.md](docs/skills.md) and `docs/design-decisions.md` decision 8.
 - **Three-tier redaction** — always-on tracker-ID regex, opt-in user-local blocklist, reviewer discipline for structural fingerprints. See [Private-project redaction](#private-project-redaction).
 
 ## Quickstart
@@ -99,7 +99,7 @@ Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 ```
 claude/        # stow package — claude/.claude/ → ~/.claude/
-plugins/       # marketplace plugins (lovable-knowledge, skill-review, claude-hook-review)
+plugins/       # marketplace plugins (lovable-cloud, skill-review, claude-hook-review)
 docs/          # design-decisions, walkthrough, hooks, skills
 .github/       # workflows, dependabot
 .claude/       # repo-local plans, settings, worktrees (gitignored)
@@ -168,7 +168,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 One-time setup per machine: register the marketplace with `claude plugin marketplace add <path-or-URL-to-claude-config>`. Then install any of the plugins below at project scope:
 
-- **`lovable-knowledge`** — Lovable Project Knowledge vs Workspace Knowledge fields, the `.lovable/*.md` repo-mirror workflow, content scope split, precedence, and character limits. `claude plugin install lovable-knowledge@claude-config --scope project`
+- **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
 - **`skill-review`** — Behavioral-equivalence audit for `SKILL.md` changes; gates `git commit` when staged changes include a `SKILL.md`. `claude plugin install skill-review@claude-config --scope project`
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 

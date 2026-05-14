@@ -148,7 +148,7 @@ For hook reviews (`claude/.claude/hooks/*.sh`, hook entries in `settings.json`),
 
 ## Domain: Lovable config
 
-Apply when changed files match `.lovable/**`. Invoke the `lovable-knowledge` skill for the review checklist (perspective, specificity, scope split between project/workspace knowledge, char budget, sync status).
+Apply when changed files match `.lovable/**`. Invoke the `lovable-cloud-knowledge` skill for the review checklist (perspective, specificity, scope split between project/workspace knowledge, char budget, sync status).
 
 ## Exclusions — do NOT flag these
 

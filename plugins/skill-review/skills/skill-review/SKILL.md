@@ -3,9 +3,9 @@ name: skill-review
 description: >
   Review and audit of SKILL.md files: frontmatter conventions, trigger
   design, voice, length targets, and cross-reference vs duplication
-  policy. TRIGGER when: reviewing a .claude/skills/**/SKILL.md change or
-  auditing trigger accuracy across a skill set. DO NOT TRIGGER when:
-  authoring or iterating on a skill (use skill-creator), editing
+  policy. TRIGGER when: authoring or reviewing a .claude/skills/**/SKILL.md
+  change, or auditing trigger accuracy across a skill set.
+  DO NOT TRIGGER when: editing
   CLAUDE.md/AGENTS.md (use ai-instruction-and-memory-files), or
   reviewing non-skill files.
 user-invocable: false
@@ -13,12 +13,7 @@ user-invocable: false
 
 # Skill Review — Architecture & Checklist
 
-Fires in **review and audit** contexts (applying a checklist to a
-skill-file change). `skill-creator` covers the authoring loop —
-scaffolding, evals, benchmarking, description tuning. The lane split
-is by context, not by output type: skill-review stays out of authoring
-turns to avoid dual-firing with `skill-creator`'s broad "edit existing
-skill" claim.
+Fires during **review, audit, and authoring** of `.claude/skills/**/SKILL.md` changes.
 
 ## 1. What makes a skill load
 
@@ -35,6 +30,11 @@ Optional frontmatter:
   `Read, Grep, Glob, Bash`). Omit to inherit the session's tools.
 - **`user-invocable`** — `false` hides the skill from the slash-command
   menu but keeps it auto-triggerable from the description.
+- **`disable-model-invocation`** — `true` removes the description from the
+  always-loaded skill-listing budget; Skill tool invocations still work.
+  Use `true` on add-on skills (`.claude/skills/<parent>-<project>/SKILL.md`)
+  invoked by a parent via Glob+Skill-tool — `test-conventions`, `plan-review`,
+  and `code-review` all use this pattern; auto-trigger is not needed.
 
 The harness loads only the description at startup; the body is fetched
 on demand. Description text is always-loaded context budget; body
@@ -65,9 +65,9 @@ DO NOT TRIGGER when: <obvious misfire>; <adjacent skill's surface>; <out of scop
 
 **DO NOT TRIGGER carries equal weight.** Over-broad triggers load
 skill body into unrelated turns; over-narrow leave it dormant. Name
-the adjacent skills whose surfaces overlap — a `skill-review`
-description that doesn't list `skill-creator` under DO NOT TRIGGER
-will dual-fire on every authoring turn.
+the adjacent skills whose surfaces overlap — a `claude-hook-review`
+description that doesn't list `review-permissions` under DO NOT TRIGGER
+will dual-fire on every hook-settings turn.
 
 ## 3. Voice and structure
 
@@ -139,7 +139,9 @@ If not all three hold, point at the canonical source.
 
 1. **Frontmatter** — `name` matches directory; `description` present
    and contains both `TRIGGER when:` and `DO NOT TRIGGER when:`
-   blocks. `allowed-tools` and `user-invocable` only if needed.
+   blocks. `allowed-tools` and `user-invocable` only if needed. Add
+   `disable-model-invocation: true` on add-on skills loaded by a parent
+   via Glob+Skill-tool (`.claude/skills/<parent>-<project>/SKILL.md`).
 2. **Description scope** — the description's TRIGGER list matches
    what the body actually covers. An overpromising description fires
    on turns the body can't help with.

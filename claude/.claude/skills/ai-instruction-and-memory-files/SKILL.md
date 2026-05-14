@@ -76,7 +76,7 @@ CLAUDE.md all load together.
 
 For Lovable's UI knowledge fields (Project Knowledge, Workspace
 Knowledge), the `.lovable/*.md` repo-mirror workflow, and review
-criteria for `.lovable/**` changes, see the `lovable-knowledge` skill.
+criteria for `.lovable/**` changes, see the `lovable-cloud-knowledge` skill.
 
 ## 2. Length targets
 
