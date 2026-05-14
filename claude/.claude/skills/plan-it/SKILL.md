@@ -24,6 +24,10 @@ If `.claude/plans/<topic-slug>.md` already exists, open it for revision in place
 
 Restate the problem, why now, and the intended outcome in one short paragraph. If any of the three is unclear, ask the user before moving on. This becomes the lead of the plan's **Context** section, with the first sentence stating the goal.
 
+## Step 2.5 — Load project-specific layer
+
+If a project-specific layer exists for this skill, invoke it now — the layer's rules apply to the steps below. Glob for `.claude/skills/plan-it-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, invoke it via the Skill tool. If multiple match, list them and stop — that's a config error in the project, not a review you can resolve. If none match, proceed without a layer.
+
 ## Step 3 — Codebase exploration
 
 Find similar features, the target subsystem, and integration points. Spawn `general-purpose` subagents in parallel when scope warrants — judge fan-out from surface area, do not default to a fixed count. Read the files each subagent flags before designing. Do not use `Explore` here; its read-excerpt window is wrong for design-context analysis.
