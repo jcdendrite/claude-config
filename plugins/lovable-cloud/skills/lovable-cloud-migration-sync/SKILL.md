@@ -5,6 +5,7 @@ description: >
   TRIGGER when: the user signals Lovable's migration apply step completed, regardless of exact wording.
   DO NOT TRIGGER when: all originals already deleted, or user asks about mechanics without signaling completion.
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # Lovable Migration Sync
