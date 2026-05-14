@@ -25,7 +25,7 @@ Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill direc
 
 ## Bundled skills disabled by default
 
-Claude Code ships a set of bundled skills alongside its custom-skill support. Seven bundled skills are disabled in this repo's `settings.json` via `skillOverrides: "off"`. The reason in each case is either redundancy with a more capable repo-specific skill or low utility relative to the description-budget cost. All skill descriptions contribute to the `skillListingBudgetFraction` context allocation; `/doctor` reports a warning when the budget overflows and descriptions are dropped. The disabled skills freed budget for the always-relevant `user-invocable: false` skills that auto-trigger during the engineering workflow.
+Claude Code ships a set of bundled skills alongside its custom-skill support. Eight bundled skills are disabled in this repo's `settings.json` via `skillOverrides: "off"`. The reason in each case is either redundancy with a more capable repo-specific skill or low utility relative to the description-budget cost. All skill descriptions contribute to the `skillListingBudgetFraction` context allocation; `/doctor` reports a warning when the budget overflows and descriptions are dropped. The disabled skills freed budget for the always-relevant `user-invocable: false` skills that auto-trigger during the engineering workflow.
 
 | Bundled skill | Why disabled |
 |---|---|
@@ -36,6 +36,7 @@ Claude Code ships a set of bundled skills alongside its custom-skill support. Se
 | `/review` | "Review a PR" — superseded by `/code-review` (specialist reviewer routing) and `/ultrareview`. |
 | `/security-review` | Superseded by `/code-review` specialist routing (ciso-reviewer agent fires automatically). |
 | `/simplify` | Overlaps with `/code-review`, which spins up domain specialists and produces a structured checklist. |
+| `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), and `/skill-review` (skill bodies); remaining env/model/theme edits are trivial direct file changes. |
 
 ### Re-enable for your session
 
