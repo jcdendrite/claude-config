@@ -60,6 +60,7 @@ Persistent per-user: add to `~/.claude/settings.local.json`:
 - **Frontmatter has no inclusion fields.** There are no `includes:`, `import:`, or `extends:` frontmatter keys — skills do not support partial inclusion.
 - **`@path` import syntax is for `CLAUDE.md` only.** The `@path/to/file` import pattern that works in `CLAUDE.md` files is not supported in `SKILL.md`.
 - **Duplicate rule text across skills intentionally.** When two skills need the same rule, copy it into both — do not extract it into a `_shared/` partial or similar abstraction. Duplication is deliberate: it keeps each skill independently readable and avoids brittle cross-skill coupling. If you find yourself wanting a shared partial, that is a signal to reconsider whether the skills should be merged, not a signal to add an include mechanism.
+- **Bare-name `Skill()` calls resolve against plugin-namespaced skills.** When a skill's identifier in the available-skills listing is `plugin-name:skill-name`, invoking `Skill(skill="skill-name")` still resolves — the harness accepts the bare name. Prose pointers in calling skills (e.g., "invoke the `skill-name` skill") do not need updating when a skill moves to plugin form.
 
 ## Project-scoped plugins
 

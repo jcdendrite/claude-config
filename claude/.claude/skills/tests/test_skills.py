@@ -13,11 +13,12 @@ Skills in this repo fall into three invocation categories:
 
 Three invocation paths exist for skills — user slash, model auto-load from
 description, and parent-skill glob dispatch via Skill tool. The third path
-(F-05 / F-07) is the designed invocation mechanism for project-layer add-on
-skills (code-review-*, plan-review-*, test-conventions-*) and is the reason a
+is the designed invocation mechanism for project-layer add-on skills
+(code-review-*, plan-review-*, test-conventions-*) and is the reason a
 skill can legitimately carry both user-invocable: false and
 disable-model-invocation: true simultaneously — it is NOT "uninvocable".
-See code-review/REFERENCES.md F-05 and F-07 for the empirical record.
+See docs/design-decisions.md §8 and docs/skills.md "Project-specific layers"
+for rationale and examples.
 
 Contracts enforced:
 (a) Every model-invokable skill has TRIGGER when: and DO NOT TRIGGER when:.
