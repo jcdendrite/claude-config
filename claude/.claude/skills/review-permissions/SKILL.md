@@ -7,7 +7,7 @@ description: >
   or allowed commands.
   DO NOT TRIGGER when: reviewing hook entries in settings.json (use
   `claude-hook-review`); reviewing other settings.json fields — env,
-  model, theme (use `update-config`); reviewing Bash command behavior
+  model, theme; reviewing Bash command behavior
   that is unrelated to permissions scoping.
 allowed-tools: Read, Grep, Glob, Bash
 user-invocable: false
