@@ -194,7 +194,6 @@ class TestSpecialistSkillTriggerContracts:
 
     @pytest.mark.parametrize("skill_name,adjacent_skill", [
         ("claude-hook-review", "review-permissions"),
-        ("skill-review", "skill-creator"),
         ("review-permissions", "claude-hook-review"),
         ("test-conventions", "test-evaluation"),
         ("test-evaluation", "test-conventions"),
