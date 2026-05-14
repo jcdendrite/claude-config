@@ -1,10 +1,8 @@
 ---
 name: respond-pr
-description: Read and respond to PR review comments on the current branch's pull request
+description: Read and respond to PR review comments on the current branch's pull request. TRIGGER when: replying to PR review comments, OR posting any comment/reply to a GitHub pull request — even as part of a larger task. Enforces required attribution prefix. DO NOT TRIGGER when: on the default branch with no PR open, when there are no unread review comments, or when the conversation is about a different PR than the current branch's.
 argument-hint: "[PR number]"
 ---
-
-TRIGGER when: replying to PR review comments, OR posting any comment/reply to a GitHub pull request — even as part of a larger task. Enforces required attribution prefix.
 
 Fetch all review comments on the current branch's open pull request and address them.
 

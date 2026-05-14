@@ -2,8 +2,8 @@
 name: plan-it
 description: >
   Produces an implementation plan and hands off to /plan-review.
-  TRIGGER when asked for a plan or implementation strategy
-  for work spanning multiple files or domains. DO NOT TRIGGER for
+  TRIGGER when: asked for a plan or implementation strategy
+  for work spanning multiple files or domains. DO NOT TRIGGER when:
   single-file tweaks, "just implement it" requests, or when a plan
   already exists (use /plan-review instead).
 user-invocable: true
