@@ -201,7 +201,8 @@
     "keybindings-help": "off",
     "review": "off",
     "security-review": "off",
-    "simplify": "off"
+    "simplify": "off",
+    "update-config": "off"
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {

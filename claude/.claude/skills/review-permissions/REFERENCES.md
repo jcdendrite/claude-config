@@ -37,3 +37,36 @@ They are deliberately absent from the global allow list because:
 
 Do not reintroduce these to the stowed global allow list without re-evaluating
 the trust boundary.
+
+## Allowing privileged scripts — three-layer strict-shape pattern
+
+Claude Code permission rules are glob-only (no regex, no alternation, no
+`{a,b}`). Chain segments evaluate independently (`safe-cmd && evil-cmd`
+lets the first segment through silently while prompting on the second).
+Deny rules cannot carve out exceptions: a deny like `Bash(<script> *)`
+matches everything including the valid shapes (deny runs before allow;
+allow is never reached). Without further enforcement, any shape outside
+the explicit allow list **prompts** the user — prompt fatigue leads to
+absent-minded approvals.
+
+When you legitimately need to allow a privileged script, use all three
+layers:
+
+1. **`settings.json` `permissions.allow`** — exact-string `Bash(...)`
+   entries for each valid invocation shape (no trailing `*`). Ships to
+   all stow users. Achieves silent auto-approval for known-good forms.
+2. **Dedicated `PreToolUse:Bash` hook** — fast-exit 0 if the script name
+   doesn't appear; otherwise match the full command string against
+   anchored regex patterns for the N valid shapes. Exit 2 + usage on
+   stderr for anything else. Do not include attacker-controlled bytes
+   verbatim in the error message (truncate to 80 chars).
+3. **Script's own arg validation** — `case` whitelist with explicit
+   mismatched-combination rejection. Third independent layer; holds if
+   the hook is bypassed.
+
+For trivial scripts that call only absolute paths and do not exec
+untrusted input, layer 3 alone may be sufficient — see the
+`cleanup-merged-branches` decision above for that case.
+
+Verified against the official permissions docs at
+`code.claude.com/docs/en/permissions.md`.

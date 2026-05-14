@@ -190,11 +190,11 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
 
 ## Output format
 
-For each finding, state:
+State each finding as: rule → checklist item (by number and name) → attack vector (a concrete exploiting command) → suggested fix (tighter rule or alternative). If no issues are found, say: "No issues found."
+## Allowing privileged scripts
 
-1. **Which rule** — the exact `permissions.allow` entry
-2. **Which checklist item** (by number and name)
-3. **Attack vector** — a concrete command that exploits the rule
-4. **Suggested fix** — a tighter rule or alternative approach
-
-If no issues are found, say: "No issues found."
+When an allow rule covers a custom script (not a standard tool), confirm
+the **three-layer strict-shape pattern** is in place: exact-string allow
+entries + dedicated `PreToolUse:Bash` hook + script-internal arg
+validation. See `REFERENCES.md` — "Allowing privileged scripts" for the
+full pattern and rationale.
