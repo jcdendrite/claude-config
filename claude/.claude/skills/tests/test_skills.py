@@ -11,14 +11,14 @@ Skills in this repo fall into three invocation categories:
 - Model-only reference (user-invocable: false): invoked by model auto-trigger
   only; same TRIGGER discipline requirement as default.
 
-Three invocation paths exist for skills — user slash, model auto-load from
-description, and parent-skill glob dispatch via Skill tool. The third path
-is the designed invocation mechanism for project-layer add-on skills
-(code-review-*, plan-review-*, test-conventions-*) and is the reason a
-skill can legitimately carry both user-invocable: false and
-disable-model-invocation: true simultaneously — it is NOT "uninvocable".
-See docs/design-decisions.md §8 and docs/skills.md "Project-specific layers"
-for rationale and examples.
+Two invocation paths exist for skills — user slash and model auto-load from
+description. Project-layer add-on skills (code-review-*, plan-review-*,
+plan-it-*, test-conventions-*) are a third surface but not a third invocation
+path: parent skills glob for the layer file and read it via the Read tool,
+incorporating the layer's content into the parent's reasoning pass. The layer
+does not need to be invocable at all — it is a file that is read, not a skill
+that is dispatched. See docs/design-decisions.md §8 and
+docs/skills.md "Project-specific layers" for rationale.
 
 Contracts enforced:
 (a) Every model-invokable skill has TRIGGER when: and DO NOT TRIGGER when:.
@@ -251,6 +251,62 @@ class TestModelInvokableSkillTriggerContracts:
         assert "DO NOT TRIGGER when:" in desc, (
             f"{skill_name}/SKILL.md description is missing 'DO NOT TRIGGER when:' block; "
             f"add it or set disable-model-invocation: true if this skill should not auto-load"
+        )
+
+
+class TestProjectLayerUsesReadNotSkill:
+    """Project-layer loading must use the Read tool, not the Skill tool.
+
+    Parent skills that support project-layer composition glob for a layer
+    file and read it via the Read tool. Skill() invocation is broken when
+    the layer carries disable-model-invocation: true — the harness blocks
+    the invocation. Reading the file is the correct primitive: the parent
+    incorporates the layer's content, not its invocation context.
+    """
+
+    PARENT_SKILLS = ["code-review", "plan-it", "plan-review", "test-conventions"]
+
+    def _project_layer_section(self, skill_name: str) -> str:
+        """Extract the project-layer loading paragraph from a skill body."""
+        skill_file = _skill_file(skill_name)
+        content = skill_file.read_text()
+        if content.startswith("---"):
+            closing = content.index("---", 3)
+            body = content[closing + 3:]
+        else:
+            body = content
+        lines = body.splitlines()
+        start = None
+        for i, line in enumerate(lines):
+            if line.startswith("## ") and "project-specific layer" in line.lower():
+                start = i
+                break
+        assert start is not None, (
+            f"{skill_name}/SKILL.md has no '## ... project-specific layer ...' heading"
+        )
+        section_lines = []
+        for line in lines[start + 1:]:
+            if line.startswith("## "):
+                break
+            section_lines.append(line)
+        return "\n".join(section_lines)
+
+    @pytest.mark.parametrize("skill_name", PARENT_SKILLS)
+    def test_project_layer_uses_read_tool(self, skill_name):
+        """Project-layer section must instruct Read tool usage."""
+        section = self._project_layer_section(skill_name)
+        assert "Read tool" in section, (
+            f"{skill_name}/SKILL.md project-layer section does not mention 'Read tool'; "
+            f"parent skills must read the layer file via the Read tool, not invoke via Skill()"
+        )
+
+    @pytest.mark.parametrize("skill_name", PARENT_SKILLS)
+    def test_project_layer_does_not_use_skill_tool(self, skill_name):
+        """Project-layer section must not instruct Skill tool invocation."""
+        section = self._project_layer_section(skill_name)
+        assert "Skill tool" not in section, (
+            f"{skill_name}/SKILL.md project-layer section still mentions 'Skill tool'; "
+            f"Skill() invocation is blocked when the layer carries disable-model-invocation: true"
         )
 
 

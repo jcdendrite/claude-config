@@ -12,7 +12,7 @@ user-invocable: false
 
 ## Step 0 — Load project-specific layer
 
-If a project-specific layer exists for this skill, invoke it now and apply its conventions alongside the items below. Glob for `.claude/skills/test-conventions-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, invoke it via the Skill tool. If multiple match, list them and stop — that's a config error in the project, not a review you can resolve. If none match, proceed without a layer.
+If a project-specific layer exists for this skill, load it now. Glob for `.claude/skills/test-conventions-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, read it with the Read tool and apply its conventions alongside the items below. If multiple match, list them and stop — that's a config error in the project, not something this review resolves. If none match, proceed without a layer.
 
 # Testing Conventions
 

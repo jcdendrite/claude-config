@@ -22,7 +22,7 @@ Apply the **Base checklist** always. Apply each **Domain checklist** only when a
 
 ## Step 0.5 — Load project-specific layer
 
-If a project-specific layer exists for this skill, invoke it now and merge its checklist into the items below. Glob for `.claude/skills/code-review-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, invoke it via the Skill tool. If multiple match, list them and stop — that's a config error in the project, not a review you can resolve. If none match, proceed without a layer.
+If a project-specific layer exists for this skill, load it now. Glob for `.claude/skills/code-review-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, read it with the Read tool and merge its checklist into the items below. If multiple match, list them and stop — that's a config error in the project, not something this review resolves. If none match, proceed without a layer.
 
 ## Step 1 — Implementation-fitness gate
 
