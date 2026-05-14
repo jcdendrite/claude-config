@@ -92,7 +92,7 @@ with the user.
 ### 5. Verify locally before deleting
 
 Run the full verification — `supabase db reset` followed by your project's
-verification commands — via the `Agent` tool with `subagent_type: general-purpose`.
+verification commands — via the `Agent` tool with `subagent_type: check-runner`.
 See `~/.claude/CLAUDE.md` "Heavy command output" for the rationale and
 spool-file convention.
 
