@@ -31,6 +31,8 @@ Step 4's foundation tripwires (over-powered primitive, compounding layers, self-
 
 The lesson the rules encode: gap-finding on a wrong foundation elaborates the wrong foundation. The tripwires anchor Step 4 to observable surface features (layer counts, self-references, heavier-than-needed mechanism) so they fire even when the AI's internal reasoning is coherent. See also `claude/.claude/CLAUDE.md` Engineering Judgment and Working Style for the global-level statement of the same heuristics.
 
+The fourth tripwire (misordered observe-then-mutate steps) was added after a planning session repeatedly proposed annotating a CI-status check as possibly-stale rather than relocating it after the push that invalidated its result — an ordering bug papered over with a compensating caveat.
+
 ## Hook enforcement — 2026-05-05
 
 Two hooks mechanically enforce ROUTING.md consultation during plan-review:
