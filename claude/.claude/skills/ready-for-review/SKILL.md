@@ -35,7 +35,7 @@ If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStar
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base:
   `gh pr view --json number,baseRefName`
-- If no PR exists, note this — step 5.5 will open one after verification
+- If no PR exists, note this — step 5 will open one after verification
   and review complete.
 
 ## 2. Verification (halt on fail)
@@ -101,7 +101,7 @@ Flag and fix:
 - **Reviewer-action items Claude can answer itself.** Strip claims
   you can verify ("all migrations match precedent" — confirm and
   remove), test counts (those belong in the commit message), and
-  CI placeholders (step 5 covers those). Keep items requiring
+  CI placeholders (step 7 covers those). Keep items requiring
   reviewer judgment: deploy coordination, security-invariant catalog
   approval, architectural sign-off.
 - Stale prose left behind by code changes — a removed guard, an
@@ -124,17 +124,7 @@ breaks GitHub markdown code-span rendering. Backslash-escape backticks
 only inside double-quoted strings or unquoted (`<<EOF`) heredocs where
 they would otherwise trigger command substitution.
 
-## 5. CI status (warn only; skip if no PR)
-
-Run `gh pr checks <n>`.
-
-- All green → continue.
-- Still running → note the in-flight checks; user decides whether to wait.
-- Red → surface failing check names with a one-line summary of each.
-  Do not auto-halt — sometimes the human reviewer wants to see the
-  failure themselves — but make the failure explicit before handoff.
-
-## 5.5. Create PR if missing (skip if PR already exists)
+## 5. Create PR if missing (skip if PR already exists)
 
 Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
 Body (omit `$ARGUMENTS` if empty; use single-quoted `<<'EOF'` heredoc; capture PR number for step 6):
@@ -159,9 +149,19 @@ Steps 3 and 4 may have produced new commits or body edits. Reconfirm:
   re-verify the branch is no longer ahead.
 - PR body edit (if any) landed — re-fetch with `gh pr view` and confirm.
 
-Confirm PR #N (created in step 5.5 if newly opened) is up to date with the branch HEAD.
+Confirm PR #N (created in step 5 if newly opened) is up to date with the branch HEAD.
 
-## 7. Record gate completion + deactivate session
+## 7. CI status (warn only)
+
+Run `gh pr checks <n>`:
+- All green → continue.
+- Still running → note the in-flight checks; user decides whether to wait.
+- No checks reported (`gh pr checks` exits non-zero) → not yet registered; treat as pending.
+- Red → surface failing check names with a one-line summary of each.
+  Do not auto-halt — sometimes the human reviewer wants to see the
+  failure themselves — but make the failure explicit before handoff.
+
+## 8. Record gate completion + deactivate session
 
 If every halt-on-fail step above passed, record the completed gate
 and remove the active-session marker:
@@ -196,5 +196,5 @@ is ready for human review:
 - Verification: commands run and their results.
 - Code review: findings fixed, or "none."
 - PR description: sections updated, or "already in sync" / "no PR."
-- CI: status per check, or "no PR."
+- CI: status per check.
 - Branch: clean, pushed, PR #N ready for review.
