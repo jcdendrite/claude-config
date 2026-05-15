@@ -75,3 +75,44 @@ _lib_split_fragments() {
     | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
     | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
 }
+
+# Single source of truth for read-only git subcommands. Sourced by
+# require-worktree-for-git-writes.sh and check-runner-bash-guard.sh.
+# Edit this list; both consumers transitively pick up the change.
+_LIB_READONLY_GIT_SUBCMDS=(
+  blame
+  branch           # "git branch" lists; creating/deleting takes flags
+  cat-file
+  check-attr       # read-only attribute lookup
+  check-ignore     # read-only gitignore query
+  check-mailmap    # read-only mailmap lookup
+  check-ref-format # read-only ref name validation
+  count-objects
+  describe
+  diff
+  fetch            # updates remote-tracking refs only, not working tree
+  for-each-ref
+  fsck
+  help
+  log
+  ls-files
+  ls-remote
+  ls-tree
+  name-rev
+  reflog
+  remote
+  rev-list
+  rev-parse
+  shortlog
+  show
+  status
+  tag              # "git tag" lists; creating takes flags — acceptable risk
+  var              # read-only git variable lookup
+  verify-commit
+  verify-tag
+  version
+  worktree         # bootstrap for the whole mechanism — don't block it
+)
+_lib_readonly_git_subcmds() {
+  printf '%s\n' "${_LIB_READONLY_GIT_SUBCMDS[@]}"
+}

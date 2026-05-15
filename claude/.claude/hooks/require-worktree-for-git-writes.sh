@@ -169,40 +169,8 @@ fi
 # From here on we are in the MAIN working tree of an opted-in repo.
 # Only read-only git subcommands are allowed; everything else is denied.
 
-readonly ALLOWED_SUBCMDS=(
-  blame
-  branch          # "git branch" lists; creating/deleting takes flags
-  cat-file
-  check-attr      # read-only attribute lookup
-  check-ignore    # read-only gitignore query
-  check-mailmap   # read-only mailmap lookup
-  check-ref-format # read-only ref name validation
-  count-objects
-  describe
-  diff
-  fetch           # updates remote-tracking refs only, not working tree
-  for-each-ref
-  fsck
-  help
-  log
-  ls-files
-  ls-remote
-  ls-tree
-  name-rev
-  reflog
-  remote
-  rev-list
-  rev-parse
-  shortlog
-  show
-  status
-  tag             # "git tag" lists; creating takes flags — acceptable risk
-  var             # read-only git variable lookup
-  verify-commit
-  verify-tag
-  version
-  worktree        # bootstrap for this whole mechanism — don't block it
-)
+# Pulled from _lib.sh — shared with check-runner-bash-guard.sh.
+ALLOWED_SUBCMDS=($(_lib_readonly_git_subcmds))
 ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
 fragment_invokes_git() { _lib_fragment_invokes_git "$@"; }

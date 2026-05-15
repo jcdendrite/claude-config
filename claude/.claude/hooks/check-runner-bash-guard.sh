@@ -5,8 +5,9 @@
 # concurrently; this guard is not a replacement for them.
 # Posture: fail-closed — _lib.sh absent → deny; malformed JSON → deny.
 # Purpose: deny any Bash fragment invoking `git` with a subcommand not on the
-# 32-entry read-only allowlist. check-runner has no legitimate reason to invoke
-# git mutations; denies in all repos regardless of worktree discipline.
+# read-only allowlist in _lib.sh (_lib_readonly_git_subcmds). check-runner has
+# no legitimate reason to invoke git mutations; denies in all repos regardless
+# of worktree discipline.
 # Known gaps: non-git mutation vectors (rm, mv, stray redirects) are not
 # separately gated — maxTurns + prose constraints bound those paths.
 set -uo pipefail
@@ -38,12 +39,8 @@ if ! [[ "$COMMAND" =~ (^|[^[:alnum:]])git([^[:alnum:]]|$) ]]; then
   exit 0
 fi
 
-readonly ALLOWED_SUBCMDS=(
-  blame branch cat-file check-attr check-ignore check-mailmap check-ref-format
-  count-objects describe diff fetch for-each-ref fsck help log ls-files
-  ls-remote ls-tree name-rev reflog remote rev-list rev-parse shortlog show
-  status tag var verify-commit verify-tag version worktree
-)
+# Pulled from _lib.sh — shared with require-worktree-for-git-writes.sh.
+ALLOWED_SUBCMDS=($(_lib_readonly_git_subcmds))
 ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
 FRAGMENTS=$(_lib_split_fragments "$COMMAND")
