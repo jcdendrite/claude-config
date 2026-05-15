@@ -5,7 +5,10 @@ description: >
   TRIGGER when: asked for a plan or implementation strategy
   for work spanning multiple files or domains. DO NOT TRIGGER when:
   single-file tweaks, "just implement it" requests, or when a plan
-  already exists (use /plan-review instead).
+  already exists (use /plan-review instead). Exception: deliberate
+  invocation (slash command, or gate-driven from
+  require-plan-review.sh) is always fine — Step 5's depth-tiering
+  handles small changes.
 user-invocable: true
 argument-hint: "[optional topic or ticket id]"
 ---
