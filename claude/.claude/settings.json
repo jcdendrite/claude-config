@@ -249,12 +249,6 @@
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
       }
-    },
-    "claude-config": {
-      "source": {
-        "source": "directory",
-        "path": ""
-      }
     }
   }
 }
