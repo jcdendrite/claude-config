@@ -22,10 +22,10 @@ Header line: working directory + current git branch. Then list paths edited this
 List active markers under `~/.claude/*-markers/` and `~/.claude/.*-active.d/` — filenames, which skill wrote each, and (for completion markers) the staged-diff hash the marker covers.
 
 ## §6 Open questions / decisions deferred
-Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know.
+Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, note it here — sub-agents inherit plan-mode state and will refuse to execute until the resuming agent calls `ExitPlanMode`.
 
 ## §7 Resume command
-`Read /tmp/<slug>-handoff.md and continue.` When §3's next step is execution to be delegated to sub-agents, add a line telling the resuming agent to call `ExitPlanMode` first if it opens in plan mode — sub-agents spawned from a plan-mode session honor the plan-mode system-reminder and decline to execute.
+`Read /tmp/<slug>-handoff.md and continue.`
 
 ## You may drop
 
