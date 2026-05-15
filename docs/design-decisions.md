@@ -1,6 +1,6 @@
 # Design Decisions
 
-Nine non-obvious choices and the reasoning behind them.
+Ten non-obvious choices and the reasoning behind them.
 
 ## 1. Hook-enforced gates over advisory instructions
 
@@ -49,3 +49,11 @@ Three operations on the persona roster, with different decision criteria. **Bias
 Decision tree: (1) Can an existing persona absorb this without diluting? → extend. (2) Is this a slice of a persona with two distinct mental models? → split. (3) Is this a chronic gap with its own canonical failure-mode body? → spawn. Splits and spawns must come with explicit ownership-line updates in adjacent personas.
 
 The right criterion for adding a persona is **distinct review heuristics an AI reviewer can act on from a diff** — not industry-headcount mimicry. Some roles are deliberately absent: DBRE distinctive value is live-system observability unavailable from a diff, with static heuristics already covered by `staff-data-engineer` and `staff-platform-engineer`; data platform engineer is absorbed into those same two; data steward/governance is a non-engineering function whose policy stays human-owned. If a project's review pattern consistently surfaces a gap and the AI can act on diff-visible signals, the right response is to spawn with explicit ownership-line updates in adjacent personas.
+
+## 10. check-runner constrained after a rogue investigation run (2026-05-14)
+
+A check-runner invocation iterated for ~90 minutes / ~120 tool calls, creating an unauthorized SQL migration and modifying production source in a downstream project while attempting to "fix" a failing test it was verifying. Three gaps enabled it: (a) `tools: Bash, Write` with no path scoping on Write, (b) prose that forbade *recommending* fixes but not *applying* them, (c) no turn cap.
+
+Resolved by four layers: (1) drop `Write` from tools — spool files flow through Bash redirect to `${TMPDIR:-/tmp}/`, and no other write is legitimate; (2) add `maxTurns: 20` — ~2× the expected turn count for a typical three-command dispatch, hard-stops runaway iteration; (3) add reviewer-style "You do not modify project files" prose + single-shot per-command protocol + require `timeout: 600000` on every Bash call; (4) attach a subagent-frontmatter `hooks.PreToolUse` script (`check-runner-bash-guard.sh`) that denies `git` write subcommands, reusing the 32-entry read-only allowlist from `require-worktree-for-git-writes.sh`.
+
+Non-git mutation vectors (`rm`/`mv`/stray redirects) are not separately fenced — `maxTurns` plus dropped Write plus prose are sufficient. Stacking pattern-regex for those would compound defensive layers without a foundational reason: every such layer exists because a prior layer left a gap, which is the tell that the foundation needs changing, not more hardening. Git mutations get a dedicated harness block because commits land in history and pushes can't be undone.

@@ -174,7 +174,7 @@ One-time setup per machine: register the marketplace with `claude plugin marketp
 
 ### Reviewer subagents
 
-Eight stack-agnostic reviewer personas in `claude/.claude/agents/`, spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`). The directory also ships `check-runner`, a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts — dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output".
+Eight stack-agnostic reviewer personas in `claude/.claude/agents/`, spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`). The directory also ships `check-runner`, a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts — dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output". `check-runner` is constrained to `tools: Bash` only, capped at `maxTurns: 20`, and guarded by a `hooks.PreToolUse` script that denies git write operations — see `docs/design-decisions.md` §10.
 
 - **`ciso-reviewer`** — threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth.
 - **`staff-backend-engineer`** — API contracts, error handling, idempotency, retry semantics, service boundaries; AND application data-store schema design (relational + NoSQL): partition keys, GSI/LSI, document shape, single-table vs multi-table, index coverage for app queries.
