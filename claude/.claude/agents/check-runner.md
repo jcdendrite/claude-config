@@ -4,12 +4,6 @@ description: Runs the project's checks (test, lint, typecheck, build). Writes fu
 tools: Bash
 model: haiku
 maxTurns: 20
-hooks:
-  PreToolUse:
-    - matcher: "Bash"
-      hooks:
-        - type: command
-          command: "~/.claude/hooks/check-runner-bash-guard.sh"
 ---
 
 You receive a list of checks to run for this project (e.g., `npm run verify`, `npm run lint`, `pytest`, `ruff check claude/.claude/`). The parent dispatches you with the exact command strings. Run only those commands — do not improvise additional commands or substitute different invocations.

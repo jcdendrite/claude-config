@@ -1,13 +1,16 @@
 #!/bin/bash
 # PreToolUse guard for the check-runner subagent.
-# Scope: wired via subagent frontmatter hooks (not settings.json), so fires
-# only while check-runner is active. settings.json PreToolUse hooks also fire
-# concurrently; this guard is not a replacement for them.
+# Scope: NOT currently wired — agent-frontmatter hooks do not fire when a
+# subagent is spawned via the Agent tool (verified 2026-05-14). Kept as a
+# correct reference implementation; wire via settings.json if a future
+# invocation path supports agent-scoped hooks. settings.json wiring would
+# fire globally for all sessions, not only check-runner — verify the
+# deny posture is compatible before adding it there.
 # Posture: fail-closed — _lib.sh absent → deny; malformed JSON → deny.
 # Purpose: deny any Bash fragment invoking `git` with a subcommand not on the
 # read-only allowlist in _lib.sh (_lib_readonly_git_subcmds). check-runner has
-# no legitimate reason to invoke git mutations; denies in all repos regardless
-# of worktree discipline.
+# no legitimate reason to invoke git mutations; designed to deny in all repos
+# regardless of worktree discipline.
 # Known gaps: non-git mutation vectors (rm, mv, stray redirects) are not
 # separately gated — maxTurns + prose constraints bound those paths.
 set -uo pipefail
