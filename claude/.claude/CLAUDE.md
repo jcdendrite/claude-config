@@ -41,7 +41,7 @@ If the subagent reports a check was blocked by permissions, do NOT fall back to 
 ## Agent Briefing
 
 - When spawning sub-agents with `isolation: "worktree"`, do NOT include an explicit `Working directory: /path/to/repo` line. The harness sets the agent's CWD to the isolated worktree automatically; naming the main repo path causes the agent to use `git -C <main-path>` operations that bypass isolation and mutate the main working tree directly.
-- Before delegating execution to a sub-agent from a session that has been in plan mode, call `ExitPlanMode` in the parent first. Sub-agents inherit harness-enforced plan-mode state and will refuse to execute — returning a plan file even when the prompt says "execute, do not plan" — until the parent exits plan mode. Symptom: the sub-agent cites a "plan-mode system-reminder" as harness-enforced and asks the user to exit plan mode.
+- Before delegating execution to a sub-agent from a session in plan mode, call `ExitPlanMode` in the parent first. A spawned sub-agent receives the plan-mode system-reminder and a typical agent honors it — declining to execute and returning a plan file even when the prompt says "execute, do not plan." This is the agent obeying an instruction, not a hard harness block, so the symptom is a polite refusal, not a tool error. Exit plan mode in the parent before delegating execution work.
 - In a repo with worktree enforcement opt-in (`.claude/worktree-required` committed), Edit and Write must also target the worktree path — the hook blocks main-tree file writes, but resolving paths to `.claude/worktrees/<branch>/...` up front avoids the round-trip denial.
 
 ## Model Routing

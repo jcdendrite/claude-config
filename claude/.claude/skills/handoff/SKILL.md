@@ -25,7 +25,7 @@ List active markers under `~/.claude/*-markers/` and `~/.claude/.*-active.d/` �
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know.
 
 ## §7 Resume command
-`Read /tmp/<slug>-handoff.md and continue.`
+`Read /tmp/<slug>-handoff.md and continue.` When §3's next step is execution to be delegated to sub-agents, add a line telling the resuming agent to call `ExitPlanMode` first if it opens in plan mode — sub-agents spawned from a plan-mode session honor the plan-mode system-reminder and decline to execute.
 
 ## You may drop
 
