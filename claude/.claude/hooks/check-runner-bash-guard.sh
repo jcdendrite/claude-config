@@ -1,0 +1,67 @@
+#!/bin/bash
+# PreToolUse guard for the check-runner subagent.
+# Scope: NOT currently wired — agent-frontmatter hooks do not fire when a
+# subagent is spawned via the Agent tool (verified 2026-05-14). Kept as a
+# correct reference implementation; wire via settings.json if a future
+# invocation path supports agent-scoped hooks. settings.json wiring would
+# fire globally for all sessions, not only check-runner — verify the
+# deny posture is compatible before adding it there.
+# Posture: fail-closed — _lib.sh absent → deny; malformed JSON → deny.
+# Purpose: deny any Bash fragment invoking `git` with a subcommand not on the
+# read-only allowlist in _lib.sh (_lib_readonly_git_subcmds). check-runner has
+# no legitimate reason to invoke git mutations; designed to deny in all repos
+# regardless of worktree discipline.
+# Known gaps: non-git mutation vectors (rm, mv, stray redirects) are not
+# separately gated — maxTurns + prose constraints bound those paths.
+set -uo pipefail
+
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' \
+    "$reason_json"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "check-runner-bash-guard: could not source _lib.sh — refusing to evaluate git discipline under degraded state."
+  exit 0
+fi
+
+INPUT=$(cat)
+COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+JQ_EXIT=$?
+
+if [ "$JQ_EXIT" -ne 0 ]; then
+  emit_deny "check-runner-bash-guard: could not parse tool-input JSON — refusing to evaluate git discipline under malformed input."
+  exit 0
+fi
+
+# Fast-path: no `git` word in command → nothing to enforce.
+if ! [[ "$COMMAND" =~ (^|[^[:alnum:]])git([^[:alnum:]]|$) ]]; then
+  exit 0
+fi
+
+# Pulled from _lib.sh — shared with require-worktree-for-git-writes.sh.
+ALLOWED_SUBCMDS=($(_lib_readonly_git_subcmds))
+ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
+
+FRAGMENTS=$(_lib_split_fragments "$COMMAND")
+
+while IFS= read -r fragment; do
+  [ -z "$fragment" ] && continue
+  _lib_fragment_invokes_git "$fragment" || continue
+
+  subcmd=$(_lib_extract_git_subcmd "$fragment")
+  if [ -z "$subcmd" ]; then
+    emit_deny "check-runner-bash-guard: could not determine the git subcommand in '$fragment'. check-runner must not invoke git mutations — return the verdict now."
+    exit 0
+  fi
+
+  if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
+    emit_deny "check-runner-bash-guard: 'git $subcmd' is not on the read-only allowlist. check-runner must not invoke git mutations — return the verdict now with whatever results you have so far."
+    exit 0
+  fi
+done <<< "$FRAGMENTS"
+
+exit 0

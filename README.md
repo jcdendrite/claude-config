@@ -172,9 +172,11 @@ One-time setup per machine: register the marketplace with `claude plugin marketp
 - **`skill-review`** — Behavioral-equivalence audit for `SKILL.md` changes; gates `git commit` when staged changes include a `SKILL.md`. `claude plugin install skill-review@claude-config --scope project`
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 
-### Reviewer subagents
+### Agents
 
-Eight stack-agnostic reviewer personas in `claude/.claude/agents/`, spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`). The directory also ships `check-runner`, a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts — dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output".
+Two agent types ship in `claude/.claude/agents/`:
+
+**Reviewer subagents** — eight stack-agnostic personas spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`).
 
 - **`ciso-reviewer`** — threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth.
 - **`staff-backend-engineer`** — API contracts, error handling, idempotency, retry semantics, service boundaries; AND application data-store schema design (relational + NoSQL): partition keys, GSI/LSI, document shape, single-table vs multi-table, index coverage for app queries.
@@ -188,6 +190,8 @@ Eight stack-agnostic reviewer personas in `claude/.claude/agents/`, spawned by `
 Schema-change diffs nominally route three ways — `staff-backend-engineer` (designs), `staff-data-engineer` (operational / pipeline impact, DDL shape), `staff-analytics-engineer` (ELT-readiness). Trigger discipline in the skill bodies prevents three-persona fire on trivial additive changes. The decision criteria for adding, splitting, or excluding a persona — including why DBRE, data platform engineer, and data steward are deliberately not in the roster — are in [Designing reviewer personas](#designing-reviewer-personas) below.
 
 For guidance on extending, splitting, or spawning personas, see [design-decisions.md §9](docs/design-decisions.md).
+
+**`check-runner`** — a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts. Dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output". Constrained to `tools: Bash` only, capped at `maxTurns: 20`, and guarded by a `hooks.PreToolUse` script that denies git write operations — see `docs/design-decisions.md` §10.
 
 ### Configuration files
 
