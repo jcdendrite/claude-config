@@ -21,22 +21,29 @@ stow -v --adopt -t "$HOME" claude
 SETTINGS_FILE="$HOME/.claude/settings.json"
 if [ -f "$SETTINGS_FILE" ]; then
   echo ""
-  echo "=== Registering marketplaces from extraKnownMarketplaces ==="
+  echo "=== Registering marketplaces ==="
   existing_marketplaces="$(claude plugin marketplace list --json 2>/dev/null | jq -r '.[].name')"
-  while IFS=$'\t' read -r name source_type identifier; do
-    case "$source_type" in
-      directory) identifier="$REPO_DIR" ;;  # directory sources in stowed config are always self-referential
-      github)    : ;;
-      *)         echo "  ! $name: unknown source type '$source_type' — skipping"; continue ;;
-    esac
+
+  # This repo is itself a marketplace. A directory source needs an absolute
+  # path, which is machine-specific and cannot live in the stowed settings.json
+  # — so register it here from this checkout's location.
+  if echo "$existing_marketplaces" | grep -qFx "claude-config"; then
+    echo "  ✓ claude-config (already registered)"
+  else
+    echo "  → adding claude-config ($REPO_DIR)"
+    claude plugin marketplace add "$REPO_DIR" --scope user
+  fi
+
+  while IFS=$'\t' read -r name repo; do
     if echo "$existing_marketplaces" | grep -qFx "$name"; then
       echo "  ✓ $name (already registered)"
     else
-      echo "  → adding $name ($identifier)"
-      claude plugin marketplace add "$identifier" --scope user
+      echo "  → adding $name ($repo)"
+      claude plugin marketplace add "$repo" --scope user
     fi
   done < <(jq -r '.extraKnownMarketplaces // {} | to_entries[] |
-    "\(.key)\t\(.value.source.source)\t\(.value.source.repo // .value.source.path // "")"
+    select(.value.source.source == "github") |
+    "\(.key)\t\(.value.source.repo)"
   ' "$SETTINGS_FILE")
 
   echo ""
