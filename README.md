@@ -166,7 +166,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 **Current plugins:**
 
-One-time setup per machine: register the marketplace with `claude plugin marketplace add <path-or-URL-to-claude-config>`. Then install any of the plugins below at project scope:
+`./install.sh` registers the `claude-config` marketplace automatically. To register it manually (without running `install.sh`), run `claude plugin marketplace add <path-to-claude-config>`. Then install any of the plugins below at project scope:
 
 - **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
 - **`skill-review`** — Behavioral-equivalence audit for `SKILL.md` changes; gates `git commit` when staged changes include a `SKILL.md`. `claude plugin install skill-review@claude-config --scope project`

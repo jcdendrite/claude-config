@@ -34,7 +34,11 @@ if [ -f "$SETTINGS_FILE" ]; then
     claude plugin marketplace add "$REPO_DIR" --scope user
   fi
 
-  while IFS=$'\t' read -r name repo; do
+  while IFS=$'\t' read -r name source_type repo; do
+    if [ "$source_type" != "github" ]; then
+      echo "  ! $name: non-github source '$source_type' — skipping (only github sources are portable)"
+      continue
+    fi
     if echo "$existing_marketplaces" | grep -qFx "$name"; then
       echo "  ✓ $name (already registered)"
     else
@@ -42,8 +46,7 @@ if [ -f "$SETTINGS_FILE" ]; then
       claude plugin marketplace add "$repo" --scope user
     fi
   done < <(jq -r '.extraKnownMarketplaces // {} | to_entries[] |
-    select(.value.source.source == "github") |
-    "\(.key)\t\(.value.source.repo)"
+    "\(.key)\t\(.value.source.source)\t\(.value.source.repo // "")"
   ' "$SETTINGS_FILE")
 
   echo ""
