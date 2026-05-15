@@ -94,7 +94,7 @@ REASON="Write/Edit blocked by plan-review gate: a plan file exists in .claude/pl
 
   - If a plan covers this change → run /plan-review against it. The skill records the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry.
 
-  - If no plan covers this change yet → run /plan-it first. It authors the plan (depth-tiers per its own Step 5 — small changes get a short plan, large changes get a full one) and hands off to /plan-review at the end.
+  - If no plan covers this change yet → run /plan-it first. It authors the plan and hands off to /plan-review at the end.
 
 The model judges which case applies from conversation context. Plans live wherever you put them — typically .claude/plans/, but also /tmp/<slug>.md, handoff docs, or external design doc URLs. The hook does not try to detect plan-change correlation."
 REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
