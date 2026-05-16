@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# claude-auto — launch Claude Code in auto mode on a model auto mode accepts.
+#
+# Repo default model is opusplan (Opus in plan mode, Sonnet during execution).
+# Auto mode is an execution mode; its supported session model is plan-dependent:
+# Opus on every eligible plan; Sonnet additionally on Team/Enterprise/API, not
+# on Max. Opus is the safe cross-plan default.
+#
+# Team/Enterprise/API users who prefer Sonnet's lighter execution can override:
+#   ANTHROPIC_MODEL=sonnet claude-auto
+exec claude --model "${ANTHROPIC_MODEL:-opus}" --permission-mode auto "$@"
