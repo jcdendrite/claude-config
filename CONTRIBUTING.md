@@ -45,8 +45,6 @@ runs `claude -p` locally using your Claude subscription auth — no API key,
 no CI wiring, no per-token charge on Max plan.
 
 ```bash
-pip install pyyaml   # one-time local dev dependency
-
 # Run the 3 pilot skills:
 python evals/run_trigger_evals.py --skill code-review --skill test-conventions --skill test-evaluation
 

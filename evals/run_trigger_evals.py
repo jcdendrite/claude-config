@@ -51,22 +51,6 @@ def find_skill_dir(skill_name: str) -> Path | None:
     return None
 
 
-def parse_skill_frontmatter(skill_dir: Path) -> dict:
-    try:
-        import yaml
-    except ImportError:
-        sys.exit(
-            "PyYAML is required. Install it: pip install pyyaml\n"
-            "(Local dev dependency — CI never runs this script.)"
-        )
-    skill_md = skill_dir / "SKILL.md"
-    text = skill_md.read_text()
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}
-    return yaml.safe_load(parts[1]) or {}
-
-
 def discover_case_files() -> list[Path]:
     results = []
     for p in SKILLS_DIR.glob("*/evals/trigger-cases.json"):

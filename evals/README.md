@@ -20,9 +20,6 @@ subscription auth. This means:
 ## Usage
 
 ```bash
-# Install the one local dev dependency (not needed by CI):
-pip install pyyaml
-
 # Run all skills that have a trigger-cases.json:
 python evals/run_trigger_evals.py
 
