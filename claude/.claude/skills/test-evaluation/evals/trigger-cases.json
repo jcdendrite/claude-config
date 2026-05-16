@@ -1,0 +1,31 @@
+{
+  "skill_name": "test-evaluation",
+  "cases": [
+    {
+      "id": "evaluating-existing-suite-quality",
+      "query": "Look at our existing test suite and assess the coverage quality and test pyramid shape.",
+      "should_trigger": true
+    },
+    {
+      "id": "debugging-flaky-tests",
+      "query": "Our CI is failing intermittently. Some tests pass locally but fail in CI. Help me debug these flaky tests.",
+      "should_trigger": true
+    },
+    {
+      "id": "vs-test-conventions-new-tests",
+      "query": "I'm about to write tests for a new OAuth flow I'm implementing. What testing patterns should I use?",
+      "should_trigger": false,
+      "also_not_triggered": ["test-conventions"]
+    },
+    {
+      "id": "fix-single-failing-assertion",
+      "query": "Fix this failing assertion: assert len(results) == 5 is getting 4.",
+      "should_trigger": false
+    },
+    {
+      "id": "reviewing-test-code-coverage",
+      "query": "Review our test code and tell me which areas have weak coverage and which tests are redundant.",
+      "should_trigger": true
+    }
+  ]
+}

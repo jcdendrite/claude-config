@@ -310,6 +310,48 @@ class TestProjectLayerUsesReadNotSkill:
         )
 
 
+def test_trigger_cases_files_well_formed() -> None:
+    """Every trigger-cases.json file found under skills/ or plugins/ must be valid.
+
+    Discovery-based: no hardcoded skill list. Validates shape only — never
+    invokes a model. Auto-extends as trigger-cases.json files are added in
+    follow-up PRs. CI-safe (pure static check).
+    """
+    repo_root = Path(__file__).resolve().parents[4]
+    found_files: list[Path] = []
+    for base in [
+        repo_root / "claude" / ".claude" / "skills",
+        repo_root / "plugins",
+    ]:
+        for p in base.glob("*/evals/trigger-cases.json"):
+            found_files.append(p)
+        for p in base.glob("*/skills/*/evals/trigger-cases.json"):
+            found_files.append(p)
+
+    assert found_files, "No trigger-cases.json files found — run the pilot skills setup first"
+
+    for path in found_files:
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            raise AssertionError(f"{path}: invalid JSON — {exc}") from exc
+
+        assert "skill_name" in data, f"{path}: missing 'skill_name'"
+        assert "cases" in data, f"{path}: missing 'cases'"
+        assert isinstance(data["cases"], list) and data["cases"], f"{path}: 'cases' must be a non-empty list"
+
+        # skill_name must match the parent skill directory name
+        skill_dir_name = path.parts[-3]  # …/skills/<name>/evals/trigger-cases.json
+        assert data["skill_name"] == skill_dir_name, (
+            f"{path}: skill_name={data['skill_name']!r} does not match parent dir {skill_dir_name!r}"
+        )
+
+        for i, case in enumerate(data["cases"]):
+            prefix = f"{path} case[{i}]"
+            assert isinstance(case.get("query"), str), f"{prefix}: 'query' must be a string"
+            assert isinstance(case.get("should_trigger"), bool), f"{prefix}: 'should_trigger' must be a boolean"
+
+
 def test_skill_overrides_documented_in_docs_skills_md() -> None:
     """Every disabled bundled skill in skillOverrides must have a row in docs/skills.md."""
     repo_root = Path(__file__).resolve().parents[4]

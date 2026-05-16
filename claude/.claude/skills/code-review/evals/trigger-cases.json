@@ -1,0 +1,31 @@
+{
+  "skill_name": "code-review",
+  "cases": [
+    {
+      "id": "code-written-commit-pending",
+      "query": "Look over this code before I commit: def add(a, b): return a + b",
+      "should_trigger": true
+    },
+    {
+      "id": "explicit-user-code-review-request",
+      "query": "Please do a code review of this function: def fetch_user(user_id): return db.query(User).filter_by(id=user_id).first()",
+      "should_trigger": true
+    },
+    {
+      "id": "cosmetic-typo-fix",
+      "query": "Fix the typo in the README heading: 'recieve' -> 'receive'.",
+      "should_trigger": false
+    },
+    {
+      "id": "plan-only-no-code",
+      "query": "I need to plan the implementation of a new rate limiting system.",
+      "should_trigger": false,
+      "also_not_triggered": ["plan-review"]
+    },
+    {
+      "id": "vs-skill-review-skill-md-only",
+      "query": "Review the edits I made to plan-it/SKILL.md.",
+      "should_trigger": false
+    }
+  ]
+}
