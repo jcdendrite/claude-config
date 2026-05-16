@@ -64,6 +64,8 @@ not want to extend. Mirror existing entries when in doubt.
 
 **Project-scoped plugins:** skills that apply to one or a few private projects — not broadly to all sessions — live under `plugins/<name>/` as marketplace plugins, not in `claude/.claude/skills/`. The repo exposes itself as a marketplace via `.claude-plugin/marketplace.json`. Add `.claude-plugin/plugin.json` and `skills/<name>/SKILL.md` inside `plugins/<name>/`. Install at project scope from the consuming repo: `claude plugin install <name>@claude-config --scope project`.
 
+**Global skill bodies stay platform-agnostic.** Skills under `claude/.claude/skills/` are stowed to every user who clones this repo — their bodies must read cleanly regardless of stack. Encode the generic concept; do not hardcode engine/platform-specific tokens (`pg_cron`, `net.http_post`, vendor API names). Stack-specific examples and checks belong in a project-layer skill (`<skill>-<project>/SKILL.md`) that the base skill loads via its project-layer glob — e.g. `/code-review`'s Step 0.5 globs `.claude/skills/code-review-*/SKILL.md`.
+
 ## Plans in this repo affect all stow users
 
 `claude/` is stowed into `$HOME` — changes ship to every user who clones and stows this repo, not only to the session owner. When reviewing a plan for `claude-config`, evaluate with that audience in mind. Files under `claude/` are not personal config; they are distributed to all stow users on `git pull`. Surface this when declaring the user surface in Step 2 of plan-review, and weight finding severity accordingly.

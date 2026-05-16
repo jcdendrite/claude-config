@@ -13,8 +13,6 @@ user-invocable: false
 
 # Skill Review — Architecture & Checklist
 
-Fires during **review, audit, and authoring** of `.claude/skills/**/SKILL.md` changes.
-
 ## 1. What makes a skill load
 
 A skill file is `claude/.claude/skills/<name>/SKILL.md`. Required
@@ -183,6 +181,10 @@ If not all three hold, point at the canonical source.
     an imperative directive, an escape-hatch exception, or a
     verification command fails this audit even when the summary reads
     as equivalent.
+
+12. **Platform-genericness** — skills under `claude/.claude/skills/` keep
+    engine/platform tokens (`pg_cron`, `net.http_post`) out; stack-specific
+    content goes in a `<skill>-<project>` layer. (Repo-specific; see CLAUDE.md.)
 
 ## Step — Record review completion
 
