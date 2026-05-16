@@ -81,11 +81,13 @@ Schema is the query plan. Access patterns drive the design. `staff-data-engineer
 
 When your invocation prompt includes `findings_path: <path>`:
 
-1. Ensure the directory exists: `mkdir -p agent-reviews` (Bash; this call is allowed).
-2. Write all findings to `<path>` using the **Write tool** — do not use `cat`,
-   `echo`, shell heredocs, or Python file writes (those are permission-gated and
-   will be denied). Writing this file is explicitly required by this instruction;
-   the default "do not create .md files unless the user asks" rule does not apply
+1. Write all findings to `<path>` using the **Write tool** — do not use `cat`,
+   `echo`, shell heredocs, or Python file writes. A shell heredoc carrying a
+   full review overruns the shell command-length limit and aborts mid-write; the
+   Write tool sends content as a structured parameter with no such limit. The
+   Write tool also creates parent directories automatically, so no `mkdir` step
+   is needed. Writing this file is explicitly required by this instruction; the
+   default "do not create .md files unless the user asks" rule does not apply
    here — this instruction IS the request.
    Structure the file as:
    - `# staff-backend-engineer` (H1 title)
@@ -93,7 +95,7 @@ When your invocation prompt includes `findings_path: <path>`:
      failure mode, required property
    - Final section: `## Recommendations` — severity-sorted bullets using
      `[BLOCKER]`, `[CONCERN]`, or `[FYI]` prefixes
-3. Return inline **only** the pointer line:
+2. Return inline **only** the pointer line:
    `Wrote findings to <path>. Found <N> issues. <One-sentence summary>.`
    Do not include any findings inline when `findings_path` is present — the
    parent reads them from the file. Including full findings inline when
