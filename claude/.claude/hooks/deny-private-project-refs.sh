@@ -98,12 +98,13 @@
 # identifiers (which the user can blocklist as separate entries if
 # they appear in commit-time content).
 #
-# Invariant: the blocklist scan's deny message does NOT name the
-# matched entry. Echoing a name the user explicitly flagged as
-# sensitive would re-expose it in terminal output, screenshots, CI
-# logs, and Claude's conversation context — exactly the surfaces this
-# gate exists to protect. Generic-message-only is load-bearing and
-# tested.
+# Blocklist deny message: names each matched blocklist entry verbatim
+# and quotes the offending line(s) from the scanned content (capped at
+# 3 lines per entry, each truncated to 200 chars). The matched token is
+# the user's own private-project name, already in the staged content
+# and in ~/.claude/private-projects.md; naming it in the deny
+# discloses it to no new party while letting the agent remove it in
+# one pass rather than bisecting the diff manually.
 #
 # Allowlist extension: append to OSS_ALLOWLIST below if a legitimate
 # open-source prefix is blocked. Do NOT add private-project-specific
@@ -117,10 +118,10 @@
 # best-effort grep (not a real shell parser) — && and || in prose are
 # rare enough to justify detection; ; is excluded to avoid false positives
 # on prose semicolons. The hint is informational only — the deny condition
-# is unchanged. The "matched entry is intentionally NOT named" invariant
-# above is preserved: the hint uses placeholder examples (<name>), not
-# the matched token. Parallel to cwd_anchor_note_if_chained in
-# require-worktree-for-git-writes.sh.
+# is unchanged. The hint uses placeholder examples (<name>) in its
+# illustrative cd-path guidance; it does not echo $COMMAND because the
+# command text is not needed for the split guidance. Parallel to
+# cwd_anchor_note_if_chained in require-worktree-for-git-writes.sh.
 
 set -uo pipefail
 
@@ -334,9 +335,9 @@ is_pseudo_file_path() {
 # still trigger the hint (known false positive).
 chain_split_hint_if_chained() {
   if printf '%s' "$1" | grep -qE '&&|\|\|'; then
-    # $1 is used as a grep predicate only — intentionally not echoed.
-    # Echoing any part of $COMMAND would risk re-exposing the matched
-    # blocklist entry (see header "Invariant" note).
+    # $1 is used as a grep predicate only — its text is not echoed in
+    # the hint because the command content is not needed for the split
+    # guidance.
     printf '%s' " Tip: this command chains operations with && / ||. If the matched token is in a path or setup portion of the chain (e.g. a \`cd /home/<name>/...\` prefix) and is NOT actually a private-project reference in the gated content, split the chain into two separate Bash calls — the cwd persists between calls in the same session, so running \`cd /path\` as one call and the gated command as a follow-up call keeps the path out of the gated command's text. If the match IS a real private-project reference in the gated content (PR body, commit message, gh api body), the chain-split won't help — rewrite the content instead. The match-anywhere foundation is intentional; see the hook header for design rationale."
   fi
 }
@@ -499,6 +500,7 @@ fi
 # readability gate ([ -r ]) covers both absent and unreadable cases.
 PRIVATE_PROJECTS_FILE="${HOME}/.claude/private-projects.md"
 if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
+  blocklist_report=""
   while IFS= read -r raw_line || [ -n "$raw_line" ]; do
     # Strip CR (CRLF), then leading/trailing whitespace.
     line=${raw_line%$'\r'}
@@ -511,12 +513,25 @@ if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
     # `-F` is literal-match (no regex foot-guns), `-i` case-insensitive,
     # `-w` whole-word boundaries, `--` guards entries that happen to
     # start with `-`. See header "Whole-word matching" note for the
-    # tradeoff rationale.
-    if printf '%s' "$SCAN_TARGET" | grep -qiw -F -- "$line"; then
-      # Generic message — see header "Invariant" note. The matched
-      # entry is intentionally NOT named.
-      emit_deny "Blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file contains an entry from your ~/.claude/private-projects.md blocklist. Review the content and remove the project name before retrying. (The hook deliberately does not name which entry matched — printing it would re-expose the value in terminal output, CI logs, and Claude's conversation context, which is exactly what this gate exists to prevent.) See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
-      exit 0
+    # tradeoff rationale. Collect the offending lines (cap 3 per entry);
+    # grep | head may SIGPIPE under pipefail — bare assignment is safe
+    # because -e is not set.
+    matched_lines=$(printf '%s' "$SCAN_TARGET" | grep -iw -F -- "$line" | head -3)
+    if [ -n "$matched_lines" ]; then
+      blocklist_report="${blocklist_report}"$'\n'"  - ${line}"
+      while IFS= read -r hit; do
+        if [ "${#hit}" -gt 200 ]; then
+          hit="${hit:0:200}…"
+        fi
+        blocklist_report="${blocklist_report}"$'\n'"    ${hit}"
+      done <<< "$matched_lines"
     fi
   done < "$PRIVATE_PROJECTS_FILE"
+
+  if [ -n "$blocklist_report" ]; then
+    emit_deny "Blocked by redaction gate: staged/committed content matches entries from your ~/.claude/private-projects.md blocklist. Remove these references before retrying:${blocklist_report}
+
+See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
+    exit 0
+  fi
 fi
