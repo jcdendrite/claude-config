@@ -179,7 +179,7 @@ def detect_trigger_in_stream(
     Early-terminates the subprocess after the first decisive Skill tool_use block.
     """
     buf = b""
-    lines_collected: list[bytes] = []
+    all_lines: list[bytes] = []
     deadline = time.monotonic() + SAMPLE_TIMEOUT_S
 
     while True:
@@ -195,7 +195,10 @@ def detect_trigger_in_stream(
         buf += chunk
         while b"\n" in buf:
             line, buf = buf.split(b"\n", 1)
-            lines_collected.append(line)
+            all_lines.append(line)
+        fired, _ = detect_trigger_in_lines(all_lines, skill_name, also_not)
+        if fired is not None:
+            break
 
     try:
         proc.kill()
@@ -203,7 +206,7 @@ def detect_trigger_in_stream(
     except Exception:
         pass
 
-    return detect_trigger_in_lines(lines_collected, skill_name, also_not)
+    return detect_trigger_in_lines(all_lines, skill_name, also_not)
 
 
 def run_single_sample(args: tuple) -> tuple[str | None, list[str]]:
