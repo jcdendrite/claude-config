@@ -1,7 +1,8 @@
 {
   "enabledPlugins": {
     "skill-review@claude-config": true,
-    "claude-hook-review@claude-config": true
+    "claude-hook-review@claude-config": true,
+    "plugin-semver@claude-config": true
   },
   "permissions": {
     "allow": [

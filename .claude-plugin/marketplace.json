@@ -9,7 +9,6 @@
     {
       "name": "lovable-cloud",
       "description": "Skills for Lovable Cloud projects — Project/Workspace Knowledge fields, edge-function auth model, and migration-sync workflow.",
-      "version": "2.1.2",
       "author": {
         "name": "Cordova Strategy"
       },
@@ -19,7 +18,6 @@
     {
       "name": "skill-review",
       "description": "Behavioral-equivalence audit for SKILL.md changes. Gates git commit when staged changes include a SKILL.md. Install at project scope in repos that author SKILL.md files.",
-      "version": "1.0.0",
       "author": {
         "name": "Cordova Strategy"
       },
@@ -29,11 +27,19 @@
     {
       "name": "claude-hook-review",
       "description": "Review playbook for Claude Code hooks: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. Install at project scope in repos that author .claude/hooks/*.sh scripts.",
-      "version": "1.0.0",
       "author": {
         "name": "Cordova Strategy"
       },
       "source": "./plugins/claude-hook-review",
+      "category": "productivity"
+    },
+    {
+      "name": "plugin-semver",
+      "description": "Semver and version-field discipline for Claude Code plugin changes. Install at project scope in any repo that authors plugins for a Claude Code marketplace.",
+      "author": {
+        "name": "Cordova Strategy"
+      },
+      "source": "./plugins/plugin-semver",
       "category": "productivity"
     }
   ]

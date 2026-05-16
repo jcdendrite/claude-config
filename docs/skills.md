@@ -64,25 +64,29 @@ Persistent per-user: add to `~/.claude/settings.local.json`:
 
 ## Project-scoped plugins
 
-Two skills that primarily apply to this repo's own workflow — editing `SKILL.md` files and authoring hook scripts — live as project-scoped plugins in `plugins/` rather than stowed user-scope skills. This keeps them out of the always-loaded skill catalog for downstream projects that stow claude-config but rarely touch these surfaces.
+Three skills that primarily apply to this repo's own workflow — editing `SKILL.md` files, authoring hook scripts, and managing plugin versioning — live as project-scoped plugins in `plugins/` rather than stowed user-scope skills. This keeps them out of the always-loaded skill catalog for downstream projects that stow claude-config but rarely touch these surfaces.
 
 | Plugin | What it provides | When to install |
 |---|---|---|
 | `skill-review@claude-config` | Behavioral-equivalence audit for `SKILL.md` changes; gates `git commit` when staged changes include a `SKILL.md` | Repos that author their own `SKILL.md` files |
 | `claude-hook-review@claude-config` | Review playbook for `.claude/hooks/*.sh` scripts and `settings.json` hook entries | Repos that author their own hook scripts |
+| `plugin-semver@claude-config` | Semver and version-field discipline for plugin manifests | Repos that author Claude Code plugins for a marketplace |
 
-Both plugins are enabled automatically in claude-config sessions via `enabledPlugins` in `.claude/settings.json`. For this to work, the claude-config marketplace must be registered on the machine:
+All three plugins are enabled automatically in claude-config sessions via `enabledPlugins` in `.claude/settings.json`. For this to work, the claude-config marketplace must be registered on the machine:
 
 ```bash
 claude plugin marketplace add ~/MyCode/claude-config   # adjust to your actual checkout path
 ```
 
-Then Claude Code will resolve the plugins from the project settings. To install either plugin in a downstream project:
+Then Claude Code will resolve the plugins from the project settings. To install any plugin in a downstream project:
 
 ```bash
 claude plugin install skill-review@claude-config --scope project
 claude plugin install claude-hook-review@claude-config --scope project
+claude plugin install plugin-semver@claude-config --scope project
 ```
+
+**Version field convention:** a plugin's `version` is declared in its `.claude-plugin/plugin.json` only — never in a `marketplace.json` entry. Claude Code resolves `plugin.json` first and silently masks any marketplace value, so adding `version` to a marketplace entry only creates drift.
 
 ## Tuning the skill-listing budget for your project
 
