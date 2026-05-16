@@ -284,7 +284,7 @@ cd .claude/worktrees/my-feature
 # work happens here; git commit/push/etc. pass through the hook cleanly
 ```
 
-Agents spawned with `isolation: worktree` create their own worktrees under `.claude/worktrees/` automatically.
+Agents spawned with `isolation: worktree` create their own worktrees under `.claude/worktrees/` automatically — on a harness-generated branch name (`worktree-agent-<hash>`). That auto-naming is fine for ephemeral, non-PR work (parallel exploration, reviewer agents). For PR-bound work that needs a meaningful branch name, create the worktree yourself with `git worktree add .claude/worktrees/<slug> -b <slug>` first, then dispatch the agent into that path.
 
 To opt out, delete `.claude/worktree-required`.
 
