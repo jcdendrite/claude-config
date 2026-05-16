@@ -110,7 +110,7 @@ it produced land in one PR — do not leave it as an orphaned untracked file.
    **Opus 4.7** with auto mode active.
 3. `claude-auto "list the open PRs"` — confirm the argument passes through to
    the prompt.
-4. `CLAUDE_AUTO_MODE_MODEL=sonnet claude-auto` — confirm the statusline shows
+4. `ANTHROPIC_MODEL=sonnet claude-auto` — confirm the statusline shows
    **Sonnet 4.6** (on Max, auto mode is then expectedly unavailable — this
    override is for Team/Enterprise/API users).
 5. Render `README.md`; confirm the `### Auto mode` section reads correctly and
