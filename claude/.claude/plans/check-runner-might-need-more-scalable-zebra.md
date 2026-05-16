@@ -118,7 +118,7 @@ no-cwd-anchor); the prose-only resolution; and why a hook was rejected
   bundled, but it is a separate doc-accuracy nit — flagging, not
   including, to keep this change minimal.
 - The shared-DB race itself (concurrent sessions resetting one local
-  Supabase DB) is a property of the downstream DayTag repo, not
+  DB) is a property of the consuming project's environment, not
   claude-config. This plan only prevents check-runner from being the
   agent that triggers it; it does not solve cross-session DB contention.
 
