@@ -347,9 +347,9 @@ The match is **case-insensitive whole-word**, which is narrower than substring m
 
 A committed list of private-project names in this public repo would itself be the leak — it would hardcode in cleartext the exact strings the rule prevents from shipping. The file lives at `~/.claude/private-projects.md` directly, **not** inside `claude-config/claude/.claude/` (which `stow` symlinks into `$HOME/`). Creating it in the wrong place risks accidental commit; the repo-root `.gitignore` has a belt-and-suspenders entry for `claude/.claude/private-projects.md` as a safety net.
 
-#### Privacy of the deny message
+#### What the deny message reports
 
-When the blocklist scan blocks a commit or PR, the deny message **does not name which entry matched**. Echoing a name the user explicitly flagged as sensitive would re-expose it in terminal output, screenshots, CI logs, and Claude's own conversation context — exactly the surfaces the gate exists to protect. The tracker-ID scan does name matched tokens because they're mechanical patterns, not user-flagged secrets.
+When the blocklist scan blocks a commit or PR, the deny message names each matched blocklist entry and quotes the offending line(s) from the staged content. The matched token is the user's own private-project name, already in the staged content and in `~/.claude/private-projects.md`; naming it in the deny discloses it to no new party, while letting the agent locate and remove it in one pass rather than bisecting the diff. The tracker-ID scan similarly names matched tokens.
 
 #### For fork contributors
 

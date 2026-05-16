@@ -731,7 +731,8 @@ class TestDenyPrivateProjectRefs:
     # Second mechanical defense alongside the tracker-ID scan. Reads
     # ~/.claude/private-projects.md as a literal, case-insensitive
     # substring blocklist. Fails open if the file is absent or unreadable.
-    # Critical invariant: the deny message NEVER names the matched entry.
+    # Deny message behavior: names each matched blocklist entry and quotes
+    # the offending line(s) so the agent can locate and remove it in one pass.
 
     def test_blocklist_match_in_commit_message_denied(self, claude_config_repo, private_projects_file):
         private_projects_file("Acme Corp\n")
@@ -956,14 +957,13 @@ class TestDenyPrivateProjectRefs:
                 == "deny"
             ), f"expected deny for {punct_form!r}"
 
-    def test_blocklist_deny_message_does_not_name_entry(self, claude_config_repo, private_projects_file):
-        """LOAD-BEARING: the deny message must NOT echo the matched entry.
+    def test_blocklist_deny_message_names_matched_entry(self, claude_config_repo, private_projects_file):
+        """Deny message must name the matched blocklist entry verbatim.
 
-        Echoing a name the user explicitly flagged as sensitive would
-        re-expose it in terminal output, screenshots, CI logs, and
-        Claude's own conversation context — exactly the surfaces this
-        gate exists to protect. This invariant is documented in the
-        hook header and must hold across refactors.
+        The matched token is the user's own private-project name, already
+        in the staged content. Naming it in the deny lets the agent remove
+        it in one pass rather than bisecting the diff manually. The user
+        is also pointed at their blocklist file for context.
         """
         private_projects_file("Acme Corp\n")
         result = subprocess.run(
@@ -979,15 +979,90 @@ class TestDenyPrivateProjectRefs:
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
 
-        # Bright-line: no case variant of the matched entry appears.
-        assert "Acme Corp" not in reason
-        assert "acme corp" not in reason.lower()
+        # Entry is named so the agent knows what to remove.
+        assert "Acme Corp" in reason
 
-        # Lock in the explanation so a refactor that drops it fails fast.
-        assert "deliberately does not name which entry matched" in reason
-
-        # Sanity: the user is pointed at their own blocklist file.
+        # User is pointed at their own blocklist file.
         assert "private-projects.md" in reason
+
+    def test_blocklist_deny_quotes_offending_line(self, claude_config_repo, private_projects_file):
+        """Deny message includes the offending line, not just the entry name."""
+        private_projects_file("Acme Corp\n")
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input("git commit -m 'Acme Corp quarterly report'")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Acme Corp" in reason
+        # "quarterly report" only appears because the offending line was quoted.
+        assert "quarterly report" in reason
+
+    def test_blocklist_deny_names_all_matched_entries(self, claude_config_repo, private_projects_file):
+        """When multiple blocklist entries match, all are reported in one message."""
+        private_projects_file("Acme Corp\nFoo Bar Inc\n")
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input("git commit -m 'fix Acme Corp and Foo Bar Inc integration'")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Acme Corp" in reason
+        assert "Foo Bar Inc" in reason
+
+    def test_blocklist_deny_truncates_long_offending_line(self, claude_config_repo, private_projects_file, tmp_path):
+        """An offending line longer than 200 chars is truncated with an ellipsis."""
+        private_projects_file("Acme Corp\n")
+        long_line = "Acme Corp " + "x" * 220
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text(long_line + "\n")
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(f"git commit -F {msg_file}")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Acme Corp" in reason
+        assert "…" in reason
+
+    def test_blocklist_deny_offending_lines_capped_at_three(self, claude_config_repo, private_projects_file, tmp_path):
+        """When an entry matches more than 3 lines, at most 3 are quoted."""
+        private_projects_file("Acme Corp\n")
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text(
+            "line1 Acme Corp\nline2 Acme Corp\nline3 Acme Corp\nline4 Acme Corp\nline5 Acme Corp\n"
+        )
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(f"git commit -F {msg_file}")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Acme Corp" in reason
+        # Count lines in reason that are indented quoted lines (4-space prefix)
+        # containing the entry — must be at most 3.
+        quoted_lines = [ln for ln in reason.split("\n") if ln.startswith("    ") and "Acme Corp" in ln]
+        assert len(quoted_lines) <= 3
 
     # -- git commit -F / --file commit-message-source files ----------------
     # Parallel to gh pr's --body-file: the commit-message file's contents
@@ -1111,12 +1186,10 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
-    def test_git_commit_F_blocklist_match_denied_with_generic_message(
+    def test_git_commit_F_blocklist_match_denied_names_entry(
         self, claude_config_repo, private_projects_file, tmp_path,
     ):
-        """User-local blocklist must apply to -F file content. Deny
-        message must NOT name the matched entry — the generic-message-
-        only invariant is load-bearing on the new scan path too."""
+        """User-local blocklist applies to -F file content; entry is named in deny."""
         private_projects_file("Acme Corp\n")
         msg_file = tmp_path / "commit-msg.txt"
         msg_file.write_text("Polish Acme Corp release flow.\n")
@@ -1132,9 +1205,8 @@ class TestDenyPrivateProjectRefs:
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "Acme Corp" not in reason
-        assert "acme corp" not in reason.lower()
-        assert "deliberately does not name which entry matched" in reason
+        assert "Acme Corp" in reason
+        assert "private-projects.md" in reason
 
     # -- gh api mutating-call surfaces -------------------------------------
     # `gh api repos/.../pulls/N/comments`, `.../comments/M/replies`,
@@ -1351,11 +1423,10 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
-    def test_gh_api_blocklist_match_in_input_file_denied_with_generic_message(
+    def test_gh_api_blocklist_match_in_input_file_denied_names_entry(
         self, claude_config_repo, private_projects_file, tmp_path,
     ):
-        """User-local blocklist applies to --input file content too,
-        with the generic-message-only invariant preserved."""
+        """User-local blocklist applies to --input file content; entry is named in deny."""
         private_projects_file("Acme Corp\n")
         body_file = tmp_path / "comment.json"
         body_file.write_text('{"body": "Acme Corp release polish"}\n')
@@ -1373,9 +1444,8 @@ class TestDenyPrivateProjectRefs:
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "Acme Corp" not in reason
-        assert "acme corp" not in reason.lower()
-        assert "deliberately does not name which entry matched" in reason
+        assert "Acme Corp" in reason
+        assert "private-projects.md" in reason
 
     # -- gh api implicit POST and `@<path>` field-from-file bypass paths ---
     # Two bypasses surfaced in security review: (1) `gh api` auto-promotes
@@ -1542,10 +1612,9 @@ class TestDenyPrivateProjectRefs:
         self, claude_config_repo, private_projects_file,
     ):
         """A commit message containing BOTH a tracker token AND a
-        blocklist entry must surface the tracker-ID deny message. The
-        blocklist entry must NOT appear in the deny output — preserves
-        both the documented priority order AND the generic-message-only
-        invariant on the blocklist code path."""
+        blocklist entry must surface the tracker-ID deny message only.
+        The blocklist scan is skipped when the tracker-ID scan fires,
+        so the blocklist entry does not appear in the output."""
         private_projects_file("Acme Corp\n")
         result = subprocess.run(
             [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
@@ -1564,8 +1633,7 @@ class TestDenyPrivateProjectRefs:
         # Tracker-ID branch fired (priority): its specific marker phrase.
         assert "Commit blocked by redaction gate" in reason
         assert "WIDGET-123" in reason
-        # Blocklist entry must NOT appear — preserves generic-message
-        # invariant even when both scans would have matched.
+        # Blocklist scan is skipped when tracker fires, so entry absent.
         assert "Acme Corp" not in reason
         assert "acme corp" not in reason.lower()
 
@@ -1831,7 +1899,7 @@ class TestDenyPrivateProjectRefs:
         assert "Tip: this command chains" in reason
 
     def test_blocklist_chained_command_deny_includes_chain_hint(self, claude_config_repo, private_projects_file):
-        """Chained cd && gh pr create: blocklist match + chain detected, hint appended."""
+        """Chained cd && gh pr create: blocklist match named, chain hint appended."""
         private_projects_file("Acme Corp\n")
         result = subprocess.run(
             [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
@@ -1846,10 +1914,8 @@ class TestDenyPrivateProjectRefs:
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Acme Corp" in reason
         assert "Tip: this command chains" in reason
-        # The "matched entry NOT named" invariant must hold even with the chain hint appended.
-        assert "Acme Corp" not in reason
-        assert "acme corp" not in reason.lower()
 
     def test_tracker_id_unchained_command_deny_omits_chain_hint(self, claude_config_repo):
         """Unchained command: deny fires for tracker-ID, but no chain hint."""
