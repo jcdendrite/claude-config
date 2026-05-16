@@ -6,10 +6,9 @@ During a `/ready-for-review` run in a downstream project (2026-05-15), the
 `check-runner` subagent ran `npm run verify` and reported "Unit tests: PASS
 (81 tests passed)" and "Integration tests: PASS (7 tests passed)". Both
 numbers were wrong: `npm run verify` is a single command from the agent's
-view but internally runs ~7 sub-suites, and the actual totals were ~1396
-Vitest + 293 Deno-integration + 81 Deno-unit + 7 Vitest-integration + hook
-suites. The agent (a **haiku** model) free-form-summarized a 1.1 MB spool
-file with no defined extraction procedure and grabbed two salient-looking
+view but internally runs multiple sub-suites, each printing its own summary
+block in a different format. The agent (a **haiku** model) free-form-summarized
+the full spool file with no defined extraction procedure and grabbed two salient-looking
 numbers, mislabeling them. The wrong counts were propagated into a PR body
 before discovery.
 
@@ -70,12 +69,13 @@ problem paragraph, resolution paragraph):
 `## 12. check-runner verdict over-reporting: invented sub-suite counts (2026-05-15)`
 
 Record:
-- **Incident**: on a `/ready-for-review` run for PR #224, check-runner
-  reported per-suite test counts ("81 unit", "7 integration") that were
-  wrong — `npm run verify` runs ~7 sub-suites; actual totals were far
-  larger. The wrong numbers reached the PR body before discovery.
+- **Incident**: on a `/ready-for-review` run in a consuming project,
+  check-runner reported per-suite test counts that were wrong —
+  `npm run verify` runs multiple sub-suites internally; the reported
+  numbers reflected two salient-looking counts misidentified from different
+  runners. The wrong numbers reached the PR body before discovery.
 - **Root cause**: the return contract never asks for counts; the haiku
-  model volunteered a breakdown by free-form-summarizing a 1.1 MB spool
+  model volunteered a breakdown by free-form-summarizing the full spool
   file and picked salient numbers with no grounding in which runner
   emitted each line.
 - **Resolution**: prose-only — an umbrella-command-discipline paragraph
