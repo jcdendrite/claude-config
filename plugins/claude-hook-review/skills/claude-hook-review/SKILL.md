@@ -89,7 +89,7 @@ Prefer named variables over magic strings buried in a regex; future contributors
 
 ## 7. Performance budget
 
-Hooks fire on every matching tool call. Budget <100ms per fire. Subprocess spawns (`jq`, `grep`) add up — avoid loops over them. No network calls. No unbounded file I/O. If the hook reads user-controlled input, cap the read before scanning.
+Hooks fire on every matching tool call. Budget <100ms per fire. Subprocess spawns (`jq`, `grep`) add up — avoid loops over them. No network calls. No unbounded file I/O. If the hook reads user-controlled input, cap the read before scanning. External commands that contact a daemon, socket, or network (`docker`, `systemctl`, `curl`, package managers) must run under an explicit timeout — a hanging external call blocks the entire tool invocation until the OS timeout fires.
 
 ## 8. Test patterns
 
@@ -110,3 +110,16 @@ Flag these on a hook PR:
 - No unbounded loops, no network calls, no unbounded file I/O.
 - Header lists known gaps the hook does not close.
 - **`command` path resolution**: every `command` starts with `"$CLAUDE_PROJECT_DIR"`, `${CLAUDE_PLUGIN_ROOT}`, or a stable user-level prefix (`~`, `$HOME`, literal `/`). Bare `./` or unprefixed names fail review — see Section 2.
+
+## 10. Operational-footprint escalation
+
+After the section-9 checklist, spawn `staff-platform-engineer` synchronously. Pass the hook script or diff (not this review's output — each agent reads the source fresh) with these specific questions:
+
+- Does the per-fire latency hold across all system states (daemon present, absent, slow, unresponsive)?
+- Are external commands (`docker`, `systemctl`, `curl`, package managers, sockets) guarded by an explicit timeout?
+- What failure modes arise when the gated command is slow or absent, and does the hook handle them?
+- Are there daemon, network, or process dependencies that could cause the hook to block indefinitely?
+
+Return ≤2K tokens of structured findings keyed to these questions; if over budget, prioritize by severity and note omissions. After the agent returns, fold its findings into the review output.
+
+Also spawn `ciso-reviewer` when the hook gates a security boundary — auth checks, secrets, env-var reads, private-data redaction, or credential handling. Pass the same source and ask: is the security boundary correctly enforced, and could sensitive data leak via the hook's stdout or failure path? Apply the same ≤2K-token constraint.

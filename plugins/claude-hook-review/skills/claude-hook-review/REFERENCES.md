@@ -22,3 +22,11 @@ From the hooks reference, "Reference scripts by path" section:
 From the hooks-guide troubleshooting section:
 
 > "If you see 'command not found', use absolute paths or `$CLAUDE_PROJECT_DIR` to reference scripts."
+
+## Motivating failure (Sections 7 and 10)
+
+A hook PR that shelled out to an external daemon command passed `/code-review` without `staff-platform-engineer` ever being consulted. A follow-up manual review found a Medium-severity unbounded-latency bug: the external command could hang indefinitely with no timeout guard, blocking every matching tool invocation until the OS fired a default timeout.
+
+The miss was structural: `code-review` delegates hook review to `claude-hook-review`, and neither had a step that escalated to `staff-platform-engineer` for operational-footprint review. Item 36 in `code-review`'s item-ownership table names `staff-platform-engineer` as primary owner of "Hook correctness," but the ownership was declared and never actuated by either the primary or the delegate skill.
+
+Section 10 closes the gap at the delegate so the escalation fires on both entry paths (`code-review` → `claude-hook-review`, and `claude-hook-review` triggered directly). The Section 7 timeout line closes the deterministic catch — both are needed because Section 7 catches the specific external-command pattern statically while Section 10 provides the holistic operational judgment a static checklist cannot replicate.
