@@ -79,3 +79,13 @@ A check-runner invocation of `npm run verify` in a consuming project returned in
 The return contract never asks for test counts — it defines per-command exit code, pass/fail, failure excerpt, and spool path. Volunteering a per-sub-suite breakdown was outside the contract; haiku had no grounding procedure for doing it correctly.
 
 Resolved with prose — an umbrella-command-discipline paragraph: for any single enumerated command that internally runs multiple sub-suites, check-runner returns exactly one verdict entry (name, exit code, overall pass/fail) — no per-sub-suite breakdown, no test counts, no characterization of individual sub-results. The parent reads the spool file if counts are needed. A grounded count-extraction procedure was considered and rejected: runner formats differ across tools (test frameworks, hook scripts, build tools all emit different summary shapes); an umbrella command emits N summary blocks with no single canonical "count"; the result is still a haiku model extracting structured data from free-form text — compounding complexity. Consistent with the §10 and §11 stance of foundational scoping over layered heuristic hardening.
+
+## 13. check-runner verdict contamination from stale spool files (2026-05-16)
+
+check-runner writes command output to `${TMPDIR:-/tmp}/<slug>-<epoch-ms>.txt`. In environments with multiple sessions or worktrees — e.g., a shared developer machine running parallel Claude Code sessions — spool files accumulate across sessions. The slug component is stable across runs for a given command (`npm-run-verify`, `ruff-check`, etc.), so prior runs' spool files share the slug prefix. When the agent read the spool in a separate Bash call using a glob (`${TMPDIR:-/tmp}/<slug>-*.txt`), it matched all stale files from prior sessions. In one incident, ~85 stale files matched and produced a 67 MB read; the agent confabulated a verdict from the mixture rather than from the current run's output.
+
+Two contributing factors: (a) the procedure described two steps (run the command, then write/read the spool), opening a window for glob-based recovery to substitute stale content; (b) no prohibition on glob-based spool recovery existed.
+
+Resolved: (1) the per-command procedure now uses one self-contained Bash call that computes the epoch, redirects to a fresh spool, captures the exit code, and emits the spool path plus a bounded `tail` inline — all in the same call; (2) an explicit prohibition added: never locate a spool file by glob or `ls`; the only spool content included in the verdict is what the creating call emits inline.
+
+Consistent with §10–§12: foundational scoping (one-call discipline + inline-output prohibition) over layered detection heuristics.
