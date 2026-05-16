@@ -25,14 +25,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    sys.exit(
-        "PyYAML is required. Install it: pip install pyyaml\n"
-        "(Local dev dependency — CI never runs this script.)"
-    )
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = REPO_ROOT / "claude" / ".claude" / "skills"
 PLUGINS_DIR = REPO_ROOT / "plugins"
@@ -60,6 +52,13 @@ def find_skill_dir(skill_name: str) -> Path | None:
 
 
 def parse_skill_frontmatter(skill_dir: Path) -> dict:
+    try:
+        import yaml
+    except ImportError:
+        sys.exit(
+            "PyYAML is required. Install it: pip install pyyaml\n"
+            "(Local dev dependency — CI never runs this script.)"
+        )
     skill_md = skill_dir / "SKILL.md"
     text = skill_md.read_text()
     parts = text.split("---", 2)
