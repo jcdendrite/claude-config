@@ -7,7 +7,8 @@ TRIGGER / DO NOT TRIGGER conditions.
 LOCAL USE ONLY — never run in CI. Uses the session's Claude subscription
 auth (no ANTHROPIC_API_KEY required; no per-token charge on Max plan).
 
-Adapted from Anthropic's scripts/run_eval.py in anthropics/skills.
+Sampling and subprocess structure adapted from Anthropic's scripts/run_eval.py in
+anthropics/skills; detection rewritten for Claude Code Skill-tool dispatch.
 """
 
 from __future__ import annotations
@@ -34,9 +35,9 @@ DEFAULT_SAMPLES = 3
 DEFAULT_WORKERS = 4
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
-# Skill-tool detection: tool names whose input JSON contains the triggered skill name.
-# Adapted verbatim from run_eval.py's detection algorithm.
-TRIGGER_TOOL_NAMES = frozenset(("Skill", "Read"))
+# Skill-tool detection: Claude Code auto-triggers a skill by calling the Skill tool.
+# Read is NOT included — its input is a file path, not a skill name.
+TRIGGER_TOOL_NAMES = frozenset(("Skill",))
 
 
 def find_skill_dir(skill_name: str) -> Path | None:
@@ -98,9 +99,7 @@ def detect_trigger_in_lines(
     """Parse stream-json lines and return which skill fired (if any).
 
     Returns (fired_skill_name_or_None, list_of_also_not_skills_that_fired).
-    Stops on the first decisive Skill/Read tool_use block.
-
-    Adapted verbatim from run_eval.py's detection algorithm.
+    Scans all lines without early termination so later also_not blocks are observed.
     Separated from the subprocess layer so the unit test can feed fixture
     files without spawning a subprocess.
     """
@@ -141,15 +140,18 @@ def detect_trigger_in_lines(
                 current_partial += delta.get("partial_json", "")
 
         elif evt_type == "content_block_stop" and current_tool_name:
-            if skill_name in current_partial:
+            try:
+                payload = json.loads(current_partial)
+            except json.JSONDecodeError:
+                payload = None
+            invoked = payload.get("skill") if isinstance(payload, dict) else None
+            if invoked == skill_name:
                 fired_skill = skill_name
             for excluded in also_not:
-                if excluded in current_partial:
+                if invoked == excluded:
                     also_fired.append(excluded)
             current_tool_name = None
             current_partial = ""
-            if fired_skill is not None:
-                break
 
     return fired_skill, also_fired
 
@@ -159,7 +161,9 @@ def detect_trigger_in_stream(
 ) -> tuple[str | None, list[str]]:
     """Read stream-json from proc and return which skill fired.
 
-    Early-terminates the subprocess after the first decisive Skill tool_use block.
+    Early-terminates the subprocess once the target skill fires and there are no
+    also_not guards remaining to observe. When also_not is non-empty, reads to
+    completion/timeout so every block is seen.
     """
     buf = b""
     all_lines: list[bytes] = []
@@ -180,7 +184,7 @@ def detect_trigger_in_stream(
             line, buf = buf.split(b"\n", 1)
             all_lines.append(line)
         fired, _ = detect_trigger_in_lines(all_lines, skill_name, also_not)
-        if fired is not None:
+        if fired is not None and not also_not:
             break
 
     try:

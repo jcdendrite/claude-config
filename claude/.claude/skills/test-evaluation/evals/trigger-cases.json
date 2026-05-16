@@ -12,7 +12,7 @@
       "should_trigger": true
     },
     {
-      "id": "vs-test-conventions-new-tests",
+      "id": "new-tests-stays-silent",
       "query": "I'm about to write tests for a new OAuth flow I'm implementing. What testing patterns should I use?",
       "should_trigger": false
     },
@@ -24,7 +24,8 @@
     {
       "id": "reviewing-test-code-coverage",
       "query": "Review our test code and tell me which areas have weak coverage and which tests are redundant.",
-      "should_trigger": true
+      "should_trigger": true,
+      "also_not_triggered": ["code-review"]
     }
   ]
 }

@@ -121,13 +121,15 @@ skill, it calls the `Skill` tool with the skill name in the input JSON. The
 harness reads the stream-json output and looks for:
 
 ```
-content_block_start → content_block.type == "tool_use" AND name in ("Skill", "Read")
+content_block_start → content_block.type == "tool_use" AND name == "Skill"
 content_block_delta → input_json_delta.partial_json (accumulated)
-content_block_stop  → check if skill_name appears in accumulated JSON
+content_block_stop  → parse accumulated JSON; compare input["skill"] == skill_name exactly
 ```
 
-Early-terminates on the first decisive event. Detection logic is unit-tested
-via committed stream-json fixtures in `evals/fixtures/` — see
+Early-terminates the subprocess once the target skill fires and no `also_not`
+guards remain to observe; reads to timeout when misfire guards are active so every
+block is seen. Detection logic is unit-tested via synthetic hand-authored
+stream-json fixtures in `evals/fixtures/` — see
 `claude/.claude/skills/tests/test_trigger_detector.py`.
 
 ## Linting

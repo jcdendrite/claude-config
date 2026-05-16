@@ -1,6 +1,6 @@
 """Unit tests for the stream-json trigger detector in evals/run_trigger_evals.py.
 
-Feeds committed fixture files (captured stream-json transcripts) to
+Feeds committed fixture files (synthetic, hand-authored stream-json fixtures) to
 detect_trigger_in_lines() and asserts the correct fired-skill name.
 Deterministic, no claude -p call — CI-safe.
 
@@ -19,7 +19,7 @@ FIXTURES_DIR = Path(__file__).resolve().parents[4] / "evals" / "fixtures"
 
 def _lines(fixture_name: str) -> list[str]:
     path = FIXTURES_DIR / fixture_name
-    return path.read_text().splitlines()
+    return path.read_text().splitlines()  # each fixture is a synthetic hand-authored JSONL file
 
 
 class TestDetectTriggerInLines:
@@ -52,5 +52,16 @@ class TestDetectTriggerInLines:
 
     def test_empty_lines_returns_none(self) -> None:
         fired, also = detect_trigger_in_lines([], "code-review", [])
+        assert fired is None
+        assert also == []
+
+    def test_read_of_skill_named_path_no_match(self) -> None:
+        """Read tool_use whose path contains 'code-review' must NOT count as a skill fire.
+
+        Before removing Read from TRIGGER_TOOL_NAMES this test would have returned
+        ('code-review', []) — a false positive. Regression guard for that bug.
+        """
+        lines = _lines("no-trigger-read-skillmd.jsonl")
+        fired, also = detect_trigger_in_lines(lines, "code-review", [])
         assert fired is None
         assert also == []

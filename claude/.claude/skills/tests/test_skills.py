@@ -346,10 +346,23 @@ def test_trigger_cases_files_well_formed() -> None:
             f"{path}: skill_name={data['skill_name']!r} does not match parent dir {skill_dir_name!r}"
         )
 
+        ids_seen: set[str] = set()
         for i, case in enumerate(data["cases"]):
             prefix = f"{path} case[{i}]"
-            assert isinstance(case.get("query"), str), f"{prefix}: 'query' must be a string"
+            assert isinstance(case.get("query"), str) and case["query"], f"{prefix}: 'query' must be a non-empty string"
             assert isinstance(case.get("should_trigger"), bool), f"{prefix}: 'should_trigger' must be a boolean"
+            assert isinstance(case.get("id"), str) and case["id"], f"{prefix}: 'id' must be a non-empty string"
+            assert case["id"] not in ids_seen, f"{prefix}: duplicate id {case['id']!r}"
+            ids_seen.add(case["id"])
+            if "also_not_triggered" in case:
+                ant = case["also_not_triggered"]
+                assert isinstance(ant, list) and all(isinstance(s, str) for s in ant), (
+                    f"{prefix}: 'also_not_triggered' must be a list of strings"
+                )
+                assert data["skill_name"] not in ant, (
+                    f"{prefix}: 'also_not_triggered' must not contain the skill's own name "
+                    f"({data['skill_name']!r}) — a skill cannot be a misfire of itself"
+                )
 
 
 def test_skill_overrides_documented_in_docs_skills_md() -> None:
