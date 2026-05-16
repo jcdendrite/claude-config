@@ -19,8 +19,7 @@
     {
       "id": "vs-test-evaluation-debugging-flaky",
       "query": "Our test suite has been flaky lately and some tests are taking over 10 seconds. Help me debug and fix the slow tests.",
-      "should_trigger": false,
-      "also_not_triggered": ["test-evaluation"]
+      "should_trigger": false
     },
     {
       "id": "fix-single-assertion",

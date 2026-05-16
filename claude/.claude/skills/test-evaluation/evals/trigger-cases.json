@@ -14,8 +14,7 @@
     {
       "id": "vs-test-conventions-new-tests",
       "query": "I'm about to write tests for a new OAuth flow I'm implementing. What testing patterns should I use?",
-      "should_trigger": false,
-      "also_not_triggered": ["test-conventions"]
+      "should_trigger": false
     },
     {
       "id": "fix-single-failing-assertion",
