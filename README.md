@@ -362,18 +362,22 @@ Auto mode replaces per-action permission prompts with a background classifier th
 #### Requirements
 
 - **Plan:** Max, Team, Enterprise, or Anthropic API. Not available on Pro, or on Bedrock, Vertex, or Foundry.
-- **Model:** see the [permission modes reference](https://code.claude.com/docs/en/permission-modes) for the current supported model list. Verify that any custom model alias in your `settings.json` ultimately resolves to a supported model.
+- **Model:** Auto mode requires a supported *session* model — the eligible set is plan-dependent (see the [permission modes reference](https://code.claude.com/docs/en/permission-modes) for the authoritative list). Opus is eligible on all qualifying plans; Sonnet is additionally eligible on Team, Enterprise, and API, but **not on Max**. This repo ships `opusplan` as the default, which routes auto mode to Sonnet during execution — on Max that produces "unavailable for this model." The `claude-auto` wrapper described in the next section handles this automatically.
 - **Claude Code:** a recent release — check `claude --version` against the [permission modes reference](https://code.claude.com/docs/en/permission-modes).
 
 #### Activating
 
-Press **Shift+Tab** in the CLI to cycle through modes until `auto` appears, then accept the one-time opt-in prompt. To start directly in auto mode:
+Press **Shift+Tab** in the CLI to cycle through modes until `auto` appears, then accept the one-time opt-in prompt. To start directly in auto mode, use the `claude-auto` wrapper shipped by this repo:
 
 ```bash
-claude --permission-mode auto
+claude-auto                                # defaults to Opus (eligible on all plans)
+claude-auto "summarize the open PRs"       # positional prompt passes through
+CLAUDE_AUTO_MODE_MODEL=sonnet claude-auto  # Sonnet override (Team/Enterprise/API only)
 ```
 
-To make it the default, add to `~/.claude/settings.json`:
+The wrapper resolves the model mismatch between `opusplan`'s Sonnet execution and auto mode's session-model requirement. On Team, Enterprise, and API plans, Sonnet is eligible for auto mode, so `claude --permission-mode auto` also works directly — the wrapper is most useful on Max, where only Opus qualifies.
+
+To make auto mode the default, add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -382,6 +386,8 @@ To make it the default, add to `~/.claude/settings.json`:
   }
 }
 ```
+
+`defaultMode` sets the *mode*, not the *model* — the session-model requirement above still applies regardless of how auto mode is activated.
 
 #### Hard-floor deny rules
 
