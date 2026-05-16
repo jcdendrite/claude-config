@@ -7,5 +7,5 @@
 # on Max. Opus is the safe cross-plan default.
 #
 # Team/Enterprise/API users who prefer Sonnet's lighter execution can override:
-#   CLAUDE_AUTO_MODE_MODEL=sonnet claude-auto
-exec claude --model "${CLAUDE_AUTO_MODE_MODEL:-opus}" --permission-mode auto "$@"
+#   ANTHROPIC_MODEL=sonnet claude-auto
+exec claude --model "${ANTHROPIC_MODEL:-opus}" --permission-mode auto "$@"

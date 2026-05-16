@@ -370,12 +370,12 @@ Auto mode replaces per-action permission prompts with a background classifier th
 Press **Shift+Tab** in the CLI to cycle through modes until `auto` appears, then accept the one-time opt-in prompt. To start directly in auto mode, use the `claude-auto` wrapper shipped by this repo:
 
 ```bash
-claude-auto                                # defaults to Opus (eligible on all plans)
-claude-auto "summarize the open PRs"       # positional prompt passes through
-CLAUDE_AUTO_MODE_MODEL=sonnet claude-auto  # Sonnet override (Team/Enterprise/API only)
+claude-auto                          # defaults to Opus (eligible on all plans)
+claude-auto "summarize the open PRs"  # positional prompt passes through
+ANTHROPIC_MODEL=sonnet claude-auto   # Sonnet override (Team/Enterprise/API only)
 ```
 
-The wrapper resolves the model mismatch between `opusplan`'s Sonnet execution and auto mode's session-model requirement. On Team, Enterprise, and API plans, Sonnet is eligible for auto mode, so `claude --permission-mode auto` also works directly — the wrapper is most useful on Max, where only Opus qualifies.
+The wrapper resolves the model mismatch between `opusplan`'s Sonnet execution and auto mode's session-model requirement. On Team, Enterprise, and API plans, Sonnet is eligible for auto mode, so `claude --permission-mode auto` also works directly — the wrapper is most useful on Max, where only Opus qualifies. `ANTHROPIC_MODEL` is Claude Code's built-in model env var and applies to all invocation forms.
 
 To make auto mode the default, add to `~/.claude/settings.json`:
 

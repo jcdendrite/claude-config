@@ -28,10 +28,10 @@ cleanly on every plan, not just Max.
 - **No `settings.json` change.** `opusplan` remains the committed default.
 - **Ship a launcher** at `claude/.local/bin/claude-auto` — a pure passthrough
   wrapper, following the repo's existing `~/.local/bin` PATH-wrapper pattern.
-- **Cross-plan compatibility** via an overridable model variable, defaulting to
-  `opus` (the only model eligible for auto mode on *both* Max and enterprise
-  plans). Enterprise users who prefer Sonnet's lighter execution override with
-  `CLAUDE_AUTO_MODE_MODEL=sonnet`.
+- **Cross-plan compatibility** via Claude Code's built-in `ANTHROPIC_MODEL` env
+  var, defaulting to `opus` (the only model eligible for auto mode on *both* Max
+  and enterprise plans). Enterprise users who prefer Sonnet's lighter execution
+  override with `ANTHROPIC_MODEL=sonnet`.
 - **Update** the existing README `### Auto mode` section — it currently gives
   activation instructions that fail under the repo's own shipped default on Max.
 
@@ -55,8 +55,8 @@ executable bit set (`chmod +x`); git tracks the mode, and the existing
 # on Max. Opus is the safe cross-plan default.
 #
 # Team/Enterprise/API users who prefer Sonnet's lighter execution can override:
-#   CLAUDE_AUTO_MODE_MODEL=sonnet claude-auto
-exec claude --model "${CLAUDE_AUTO_MODE_MODEL:-opus}" --permission-mode auto "$@"
+#   ANTHROPIC_MODEL=sonnet claude-auto
+exec claude --model "${ANTHROPIC_MODEL:-opus}" --permission-mode auto "$@"
 ```
 
 `stow` symlinks `claude/.local/bin/` → `~/.local/bin/` (already done by
