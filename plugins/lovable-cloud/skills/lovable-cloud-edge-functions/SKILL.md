@@ -4,8 +4,10 @@ description: >
   Guide for adding, modifying, and deploying Supabase edge functions —
   authentication, config.toml settings, and Lovable Cloud deployment.
   TRIGGER when: adding, modifying, or reviewing edge functions in a Lovable
-  Cloud project, or modifying supabase/config.toml.
-  DO NOT TRIGGER when: not working on edge functions or config.toml.
+  Cloud project, or modifying a file that configures an edge function (e.g.
+  supabase/config.toml) or invokes one (e.g. a pg_cron job).
+  DO NOT TRIGGER when: the change neither configures, invokes, nor modifies
+  an edge function.
 user-invocable: false
 ---
 
