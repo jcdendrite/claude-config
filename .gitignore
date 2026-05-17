@@ -8,6 +8,11 @@ __pycache__/
 .claude/settings.local.json
 .claude/worktrees/
 
+# Stow package path for plan files. .claude/plans/ above is root-anchored and
+# does not cover this path. Without this entry, stow --adopt could re-track
+# scratch plan files written into ~/.claude/plans/ via the package symlink.
+claude/.claude/plans/
+
 # Per-session findings written by /code-review specialist subagents. The skill
 # also adds this to .git/info/exclude as a fallback for repos where this line
 # isn't committed; both rules are harmless together.

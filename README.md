@@ -140,7 +140,7 @@ flowchart LR
 
 | Hook | Gates | Cleared by |
 |---|---|---|
-| `require-plan-review.sh` | `Write`/`Edit` while a plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
+| `require-plan-review.sh` | `Write`/`Edit` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
 | `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | `/skill-review` behavioral-equivalence audit (ships with `skill-review@claude-config` plugin) |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |

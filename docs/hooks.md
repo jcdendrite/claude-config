@@ -33,13 +33,17 @@ Active-bypass markers from sessions that crash before cleanup evict themselves a
 
 For three gates, the gating condition is removable via Bash without destroying work:
 
-**`require-plan-review.sh`** blocks Write/Edit when a plan file exists in `.claude/plans/` with no completion marker for this session:
+**`require-plan-review.sh`** blocks Write/Edit when an uncommitted or modified plan file exists in `.claude/plans/` with no completion marker for this session. Committed, unmodified plan files are treated as historical and do not arm the gate.
 
 ```bash
-# Remove the plan file to clear the gate. Copy the content first if you
-# need to preserve it — this deletes the file from disk. If multiple
-# plan files exist, all must be removed to clear the gate.
+# Option 1: remove the plan file to clear the gate. Copy the content first
+# if you need to preserve it. If multiple uncommitted plan files exist, all
+# must be removed or committed to clear the gate.
 rm .claude/plans/<slug>.md
+
+# Option 2: commit the plan file. A committed, unmodified plan is treated
+# as historical and does not arm the gate.
+git add .claude/plans/<slug>.md && git commit -m "plan: <topic>"
 ```
 
 **`require-code-review.sh`** blocks `git commit` when staged changes have not been reviewed in this session:
