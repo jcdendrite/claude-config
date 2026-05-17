@@ -54,6 +54,12 @@ Persistent per-user: add to `~/.claude/settings.local.json`:
 
 `settings.local.json` overrides `settings.json` at the same scope; the repo's `"off"` entry does not win. Remove the entry (or set to `"on"`) to restore. Reference: [Claude Code skills — Override skill visibility from settings](https://code.claude.com/docs/en/skills.md).
 
+## Trigger-fidelity evals
+
+`evals/run_trigger_evals.py` is a local harness that measures whether each
+skill's TRIGGER prose reliably causes the model to invoke the skill (or stay
+silent) for a set of test queries. See `evals/README.md` for usage.
+
 ## Skill architecture notes
 
 - **Co-located files come in two roles, neither auto-loaded.** `REFERENCES.md` is an edit-time reference (canonical URLs, key quotes, framework notes that informed the skill's rules) — read by humans and agents when updating the skill, not at runtime. A runtime auxiliary file (e.g., `plan-review/ROUTING.md`) is read by the skill itself via the Read tool at runtime. The 200-line cap (`check-skill-length.sh`) marks the degradation point — shorten first, do not extract: an auxiliary adds Read-tool indirection without reducing context cost. `plan-review/ROUTING.md` is a last-resort exception (content could not be cut; `require-routing-read.sh` and `log-routing-read.sh` compensate for the indirection). Both types belong to one skill and are not shared across skills.

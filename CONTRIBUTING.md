@@ -37,6 +37,24 @@ ruff check claude/.claude/  # lint
 
 CI runs both on every PR and main push. Both must pass before the PR can be reviewed.
 
+## Trigger-fidelity evals
+
+`evals/run_trigger_evals.py` measures how reliably each skill auto-triggers
+(or stays silent) for its declared TRIGGER / DO NOT TRIGGER conditions. It
+runs `claude -p` locally using your Claude subscription auth — no API key,
+no CI wiring, no per-token charge on Max plan.
+
+```bash
+# Run the 3 pilot skills:
+python evals/run_trigger_evals.py --skill code-review --skill test-conventions --skill test-evaluation
+
+# Run a single skill after editing its TRIGGER block:
+python evals/run_trigger_evals.py --skill <name>
+```
+
+See `evals/README.md` for the full usage guide, output format, and how to
+add `trigger-cases.json` files for additional skills.
+
 ## Skill edits
 
 When editing a `SKILL.md`, invoke the skill on its own diff before committing. A skill edit can violate the rules it enforces — the skill is the reviewer of its own changes. Run `/skill-review` via the Skill tool and check the diff against its output before staging the file. (`/skill-review` is provided by the `skill-review@claude-config` plugin, auto-enabled after `./install.sh` — see [docs/skills.md — Project-scoped plugins](./docs/skills.md#project-scoped-plugins).)

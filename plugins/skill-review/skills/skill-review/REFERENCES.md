@@ -21,27 +21,29 @@ regressions. The `run_loop.py` description optimizer makes sense when
 you genuinely can't tell whether a wording change improves accuracy
 without measuring it.
 
-None of those conditions apply here. This repo is a single-user skill
-catalog — each stow clone is independent, mis-fires are observed in
-the same session, and the description can be tuned by reading and
-testing directly. The skill set is small and curated. `skill-review`'s
-deterministic checklist (`check-skill-length.sh` at 200 lines,
-`require-skill-review.sh` at commit) already provides stronger
-pre-commit signal than probabilistic evals for this workflow.
+**Update:** trigger-fidelity evals have been adopted as a standalone local
+harness (`evals/run_trigger_evals.py`) that adapts `run_eval.py`'s
+stream-json detection mechanism. The `skill-creator` *plugin* remains
+disabled — the mechanism is adopted but the plugin's voice and length
+conventions still conflict with this repo. The key distinction: this repo's
+harness is for testing trigger *fidelity* of existing skills at local/manual
+cadence, not for optimizing descriptions via the `run_loop.py` search loop.
 
-`skill-creator`'s body also conflicts with this repo's conventions in
-two concrete places: it advocates 500-line skill bodies (its L92,
-L96), while `check-skill-length.sh` caps at 200; and it uses a
-conversational, first-person voice ("Cool? Cool.") that `skill-review`
-explicitly rejects in favor of imperative second-person. Keeping it
-enabled would present contradictory authoring guidance every time a
-skill was edited.
+The original conditions have changed: the skill set has grown to ~23 skills
+used across many independent projects, meaning mis-fires now happen in
+sessions the owner doesn't observe. `evals/run_trigger_evals.py` covers this
+without CI security risks (local auth, no `--dangerously-skip-permissions`),
+without per-token budget (Max-plan OAuth), and without flaky CI signals (the
+output is a human-read pass-rate report, not a binary gate).
+
+`skill-creator`'s body still conflicts in two concrete places: it advocates
+500-line skill bodies (its L92, L96), while `check-skill-length.sh` caps at
+200; and it uses a conversational, first-person voice ("Cool? Cool.") that
+`skill-review` explicitly rejects. Keeping it enabled would present
+contradictory authoring guidance every time a skill was edited.
 
 **Mechanism:** the `skill-creator@claude-plugins-official` entry is
 removed from `enabledPlugins` in `settings.json` entirely — not set to
 `false`. In this repo, `false` entries are quick-flip handles for
 plugins the user might want to enable for an occasional session;
 removing the entry means there's no foreseeable re-enable use case.
-If a future contribution to a broadly-shipped skill requires quantified
-trigger-accuracy work, add `"skill-creator@claude-plugins-official": true`
-back to `enabledPlugins` for that session.

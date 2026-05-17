@@ -1,0 +1,30 @@
+{
+  "skill_name": "test-conventions",
+  "cases": [
+    {
+      "id": "planning-tests-new-feature",
+      "query": "I'm about to write tests for my new authentication module. What approach should I use for mocking external services?",
+      "should_trigger": true
+    },
+    {
+      "id": "setting-up-test-infrastructure",
+      "query": "Help me set up a test fixture and mock strategy for a new payment service I'm building.",
+      "should_trigger": true
+    },
+    {
+      "id": "running-tests-mechanical",
+      "query": "Run the test suite and show me which tests are failing.",
+      "should_trigger": false
+    },
+    {
+      "id": "debugging-flaky-stays-silent",
+      "query": "Our test suite has been flaky lately and some tests are taking over 10 seconds. Help me debug and fix the slow tests.",
+      "should_trigger": false
+    },
+    {
+      "id": "fix-single-assertion",
+      "query": "Update this assertion to match the new API response shape: assert response.status_code == 200",
+      "should_trigger": false
+    }
+  ]
+}
