@@ -18,19 +18,21 @@ Run each enumerated command exactly once. On non-zero exit, capture and move to 
 
 Every Bash call must include the tool's `timeout` parameter set to 600000 (10 minutes). Do not omit it. A command that exceeds 10 minutes is treated as a TIMEOUT verdict for that command — capture whatever output the spool file holds and proceed to the next command.
 
-For each command, run it in one self-contained Bash call — not split across multiple calls. The single call computes the epoch, runs the command, captures the exit code, and emits the result inline:
+For each command, run it in one self-contained Bash call — not split across multiple calls. The single call emits the spool path before the command runs, then the exit code and a bounded tail inline:
 
 ```
-EPOCH=$(date +%s%3N); SPOOL="${TMPDIR:-/tmp}/<slug>-${EPOCH}.txt"; <command> > "$SPOOL" 2>&1; EXIT=$?; echo "SPOOL:$SPOOL EXIT:$EXIT"; tail -50 "$SPOOL"
+EPOCH=$(date +%s%3N); SPOOL="${TMPDIR:-/tmp}/<slug>-${EPOCH}.txt"; echo "SPOOL:$SPOOL"; <command> > "$SPOOL" 2>&1; EXIT=$?; echo "EXIT:$EXIT"; tail -50 "$SPOOL"
 ```
 
-`<slug>` is the command lowercased with non-alphanumeric runs collapsed to `-` (e.g., `npm test` → `npm-test`, `ruff check` → `ruff-check`).
+`<slug>` is the command lowercased with non-alphanumeric runs collapsed to `-` (e.g., `npm test` → `npm-test`, `ruff check` → `ruff-check`). `<command>` must be a single simple command with no embedded `;` or shell control operators; cwd is anchored separately (see Working directory above).
+
+Emitting the spool path before the command ensures the path is known even when the Bash tool's `timeout` kills the call before the `EXIT` and `tail` lines run — a TIMEOUT verdict can reference the partial spool without re-locating it.
 
 **Never read back the spool in a separate Bash call. Never locate a spool file with a glob or `ls` pattern.** Stale spool files from prior sessions accumulate under the same slug prefix in `${TMPDIR:-/tmp}/`; a glob matches them all and contaminates the verdict. The only spool content used in the structured verdict is what the creating call emits inline.
 
 Return a structured verdict using the inline output:
 - Per-command: name, exit code, pass/fail.
-- Smallest failure excerpt for each failed command (last ~50 lines from the inline tail, or the runner's summary block, whichever is smaller).
+- Smallest failure excerpt for each failed command — the `tail` output from the creating call (up to ~50 lines). The subagent does not read the spool directly; if the parent needs more context, it reads the spool file.
 - Overall PASS or FAIL.
 - The spool file paths (emitted inline by the creating call).
 
