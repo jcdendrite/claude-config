@@ -242,6 +242,14 @@ Utility scripts in `claude/.claude/scripts/` (stowed to `~/.claude/scripts/`).
   cleanup-merged-branches --dry-run  # preview without acting
   ```
 
+- **`update-claude-config-plugins.sh`** — checks which `@claude-config` marketplace plugins installed in the current project are behind the marketplace's latest version, and interactively offers to update each one. Refreshes the marketplace first (`claude plugin marketplace update`) so the diff is against the live catalog. Scoped to `@claude-config` plugins only: they carry real semver in `plugin.json` (enforced by the `plugin-semver` plugin), making version comparison clean. Run from the consumer repo's root; project-scope entries from other repos are excluded.
+
+  ```bash
+  update-claude-config-plugins             # interactive update
+  update-claude-config-plugins --yes       # update all outdated plugins without prompting
+  update-claude-config-plugins --dry-run   # preview outdated plugins without updating
+  ```
+
 ## Configuration
 
 Configuration options spanning machine-local, project-local, and user-local settings. See [SECURITY.md](./SECURITY.md) for the threat model — what the hook system protects against and what it doesn't.
