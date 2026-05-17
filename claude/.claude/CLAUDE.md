@@ -29,6 +29,12 @@ Use the `Agent` tool with `subagent_type: check-runner` to run the checks (full 
 
 If the subagent reports a check was blocked by permissions, do NOT fall back to running it directly in the parent — that defeats the dispatch (parent context inhales the output) and silently bypasses the permission gate. Stop, surface the exact missing allow-rule (e.g. `Bash(npm run verify)`), and wait for the user to either pre-approve it in the appropriate scope's `permissions.allow` or run the command themselves.
 
+### Codebase discovery
+
+When you need to *locate* something — where a symbol is defined, which files reference an identifier, broad `grep`/`glob` sweeps, exploratory reads mapping an unfamiliar area — dispatch it to a subagent (`subagent_type: Explore` for locate-style search; `general-purpose` when the exploration must read whole files, as `/plan-it` and `/plan-review` do) rather than running it inline. Discovery output inhales into the parent context exactly like a check suite does, and an auto-mode parent on Opus pays that in the most expensive tokens — for output it only needed an *answer* from. A single targeted lookup — one `grep` for a known symbol, one `Read` of a known path — stays inline; dispatch when the search is broad or spans more than ~3 queries.
+
+This does not apply to *comprehension* reads: when you need a file's content in your own reasoning — to write or modify it, review it, or design against it — read it directly. The split is locate-and-report (delegable) vs. read-and-reason (not).
+
 ## Code Review
 
 - After writing or modifying code, run `/code-review` before presenting the code to the user. If the review finds issues, fix them first, then present the final version.
