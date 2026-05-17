@@ -1,7 +1,7 @@
 {
   "name": "claude-hook-review",
-  "description": "Review playbook for Claude Code hooks: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. Install at project scope in repos that author .claude/hooks/*.sh scripts.",
-  "version": "1.1.0",
+  "description": "Review playbook for Claude Code hooks: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, the review checklist, and operational-footprint escalation to staff-platform-engineer. Install at project scope in repos that author .claude/hooks/*.sh scripts.",
+  "version": "1.1.1",
   "author": {
     "name": "Cordova Strategy"
   },
