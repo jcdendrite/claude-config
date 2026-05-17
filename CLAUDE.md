@@ -45,7 +45,7 @@ X…", "before/after X…" — the answer is a hook configured in
 `.claude/settings.json`, not a memory or a skill instruction. The
 harness executes hooks; nothing in memory or a CLAUDE.md prose rule can
 fulfill an automatic-trigger request. Route to the `claude-hook-review`
-plugin for hook design and review.
+skill for hook design and review.
 
 **Plugin config:** `enabledPlugins` only takes effect in
 `settings.json`, not `settings.local.json`.
