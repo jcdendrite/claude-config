@@ -86,6 +86,6 @@ check-runner writes command output to `${TMPDIR:-/tmp}/<slug>-<epoch-ms>.txt`. I
 
 Two contributing factors: (a) the procedure described two steps (run the command, then write/read the spool), opening a window for glob-based recovery to substitute stale content; (b) no prohibition on glob-based spool recovery existed.
 
-Resolved: (1) the per-command procedure now uses one self-contained Bash call that computes the epoch, redirects to a fresh spool, captures the exit code, and emits the spool path plus a bounded `tail` inline — all in the same call; (2) an explicit prohibition added: never locate a spool file by glob or `ls`; the only spool content included in the verdict is what the creating call emits inline.
+Resolved: (1) the per-command procedure now uses one self-contained Bash call that emits the spool path *before* the command runs, then redirects the command's output to the spool, captures the exit code, and emits a bounded `tail` — all in the same call. Emitting the path first ensures it survives a Bash-tool timeout kill: if the harness terminates the call mid-command, the pre-run echo has already landed in the call's output and the TIMEOUT verdict can reference the partial spool. (2) An explicit prohibition added: never locate a spool file by glob or `ls`; the only spool content included in the verdict is what the creating call emits inline.
 
 Consistent with §10–§12: foundational scoping (one-call discipline + inline-output prohibition) over layered detection heuristics.
