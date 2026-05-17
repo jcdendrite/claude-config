@@ -45,7 +45,7 @@ X…", "before/after X…" — the answer is a hook configured in
 `.claude/settings.json`, not a memory or a skill instruction. The
 harness executes hooks; nothing in memory or a CLAUDE.md prose rule can
 fulfill an automatic-trigger request. Route to the `claude-hook-review`
-skill for hook design and review.
+plugin for hook design and review.
 
 **Plugin config:** `enabledPlugins` only takes effect in
 `settings.json`, not `settings.local.json`.
@@ -87,11 +87,13 @@ check the diff against its output — e.g. an edit adding prose to a
 skill that argues for brevity is the kind of thing the skill would
 flag against itself.
 
+## Review pipeline
+
 `/plan-it` is the prescribed entry for plan creation. `/plan-review`,
 `/code-review`, and `/skill-review` are mandatory pipeline steps before PR
 handoff — all three are hook-enforced (see README "Workflow" for the full
 skill invocation order and which hook gates each transition).
-`/skill-review`'s gate fires only when staged changes include a SKILL.md.
+`/skill-review`'s gate fires only when staged changes include a SKILL.md; it ships in the bundled `skill-review` plugin (not under `claude/.claude/skills/`).
 
 ## Redact private-project-identifying content
 
