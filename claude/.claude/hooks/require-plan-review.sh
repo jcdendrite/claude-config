@@ -1,11 +1,12 @@
 #!/bin/bash
-# PreToolUse hook: block Write/Edit when a plan file exists in .claude/plans/
-# without a current plan-review marker for this session.
+# PreToolUse hook: block Write/Edit when an uncommitted or modified plan file
+# exists in .claude/plans/ without a current plan-review marker for this session.
 #
 # Globally applied (no opt-in), consistent with require-code-review.sh,
 # require-ready-for-review.sh, and require-respond-pr.sh.
-# Projects without a .claude/plans/ directory or with no plan files pass
-# through silently — the plan-existence check is the built-in filter.
+# Projects without a .claude/plans/ directory, or where all plan files are
+# committed and unmodified (historical), pass through silently — the
+# uncommitted-plan check is the built-in filter.
 #
 # Two-marker pattern:
 # - Active marker (~/.claude/.plan-review-active.d/<session_id>):
@@ -44,14 +45,26 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-# Check whether any plan file exists under .claude/plans/ in the project.
+# Check whether any uncommitted or modified plan file exists in .claude/plans/.
+# A plan file that is tracked and identical to HEAD is historical (its PR
+# shipped) and does not arm the gate. Untracked or modified plan files are
+# active work and do.
 PLANS_DIR="$REPO_ROOT/.claude/plans"
 if [ ! -d "$PLANS_DIR" ]; then
   exit 0
 fi
 
-PLAN_COUNT=$(find "$PLANS_DIR" -maxdepth 1 -name "*.md" -o -name "*.txt" 2>/dev/null | wc -l)
-if [ "$PLAN_COUNT" -eq 0 ]; then
+NEEDS_REVIEW=0
+while IFS= read -r PLAN_FILE; do
+  if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$PLAN_FILE" >/dev/null 2>&1 \
+     && git -C "$REPO_ROOT" diff --quiet HEAD -- "$PLAN_FILE" 2>/dev/null; then
+    continue
+  fi
+  NEEDS_REVIEW=1
+  break
+done < <(find "$PLANS_DIR" -maxdepth 1 -type f \( -name "*.md" -o -name "*.txt" \) 2>/dev/null)
+
+if [ "$NEEDS_REVIEW" -eq 0 ]; then
   exit 0
 fi
 
@@ -90,7 +103,7 @@ if [ -n "$TARGET_PATH" ]; then
   fi
 fi
 
-REASON="Write/Edit blocked by plan-review gate: a plan file exists in .claude/plans/ but no plan-review marker was found for this session. Next step depends on whether a plan covers this change:
+REASON="Write/Edit blocked by plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker was found for this session. Committed, unmodified plan files are treated as historical and do not arm the gate. Next step depends on whether a plan covers this change:
 
   - If a plan covers this change → run /plan-review against it. The skill records the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry.
 

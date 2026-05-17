@@ -202,6 +202,55 @@ class TestRequirePlanReview:
         assert "/plan-review" in reason
         assert "plan-review-markers" in reason
 
+    # -- Committed-clean plan suppression -----------------------------------
+    # A plan file that is tracked and unmodified vs HEAD is historical —
+    # its review shipped with the PR that committed it. It must not re-arm
+    # the gate in a new session. Only untracked or modified plan files count
+    # as active work.
+
+    def test_committed_clean_plan_does_not_arm_gate(self, plan_review_repo, plan_review_home):
+        """A plan file that is committed and unmodified vs HEAD does not arm the gate."""
+        subprocess.run(["git", "add", ".claude/plans/impl-plan.md"], cwd=plan_review_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "plan"], cwd=plan_review_repo, check=True)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "session-committed-clean"},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_modified_committed_plan_arms_gate(self, plan_review_repo, plan_review_home):
+        """A plan file that is committed but modified on disk still arms the gate."""
+        subprocess.run(["git", "add", ".claude/plans/impl-plan.md"], cwd=plan_review_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "plan"], cwd=plan_review_repo, check=True)
+        (plan_review_repo / ".claude" / "plans" / "impl-plan.md").write_text(
+            "# Implementation plan\n\nStep 1...\n\nStep 2 (added)...\n"
+        )
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "session-modified-committed"},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_one_committed_one_uncommitted_plan_arms_gate(self, plan_review_repo, plan_review_home):
+        """If any plan file is untracked, the gate arms even if another is committed-clean."""
+        subprocess.run(["git", "add", ".claude/plans/impl-plan.md"], cwd=plan_review_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "plan"], cwd=plan_review_repo, check=True)
+        (plan_review_repo / ".claude" / "plans" / "new-plan.md").write_text("# New plan\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "session-one-committed-one-not"},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
     # -- Active-marker bypass -----------------------------------------------
     # Marker layout: ~/.claude/.plan-review-active.d/<session_id>.
     # The /plan-review skill writes one file per session at Step 0 and
