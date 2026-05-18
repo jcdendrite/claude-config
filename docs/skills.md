@@ -55,11 +55,13 @@ Persistent per-user: add to `~/.claude/settings.local.json`:
 
 `settings.local.json` overrides `settings.json` at the same scope; the repo's `"off"` entry does not win. Remove the entry (or set to `"on"`) to restore. Reference: [Claude Code skills — Override skill visibility from settings](https://code.claude.com/docs/en/skills.md).
 
-## Trigger-fidelity evals
+## Skill evals
 
-`evals/run_trigger_evals.py` is a local harness that measures whether each
-skill's TRIGGER prose reliably causes the model to invoke the skill (or stay
-silent) for a set of test queries. See `evals/README.md` for usage.
+`evals/run_skill_evals.py` is a local harness that measures each skill's
+`trigger-cases.json` against its declared TRIGGER / DO NOT TRIGGER conditions —
+either by observing live auto-dispatch (`runtime`) or by asking a model to
+classify which skill a query should match (`description-fidelity`). See
+`evals/README.md` for usage and the two-method model.
 
 ## Skill architecture notes
 

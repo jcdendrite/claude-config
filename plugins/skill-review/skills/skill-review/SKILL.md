@@ -67,7 +67,7 @@ the adjacent skills whose surfaces overlap — a `claude-hook-review`
 description that doesn't list `review-permissions` under DO NOT TRIGGER
 will dual-fire on every hook-settings turn.
 
-After a `TRIGGER`-block change, run `python evals/run_trigger_evals.py --skill <name>` and confirm rates held before committing.
+After a `TRIGGER`-block change, run `python evals/run_skill_evals.py --skill <name>` and confirm rates held before committing.
 
 ## 3. Voice and structure
 
