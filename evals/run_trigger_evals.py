@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,13 +28,21 @@ from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+EVALS_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = REPO_ROOT / "claude" / ".claude" / "skills"
 PLUGINS_DIR = REPO_ROOT / "plugins"
 
-SAMPLE_TIMEOUT_S = 30
-DEFAULT_SAMPLES = 3
+SAMPLE_TIMEOUT_S = 90
+DEFAULT_SAMPLES = 10
 DEFAULT_WORKERS = 4
 DEFAULT_MODEL = "claude-sonnet-4-6"
+
+# Measurement method declared per case file. `runtime` skills are measured by
+# this harness, which spawns `claude -p` and watches for the Skill tool to fire.
+# `description-fidelity` skills are measured by a separate runner — see
+# evals/README.md. A case file must declare one of these.
+RUNTIME_METHOD = "runtime"
+VALID_METHODS = frozenset((RUNTIME_METHOD, "description-fidelity"))
 
 # Skill-tool detection: Claude Code auto-triggers a skill by calling the Skill tool.
 # Read is NOT included — its input is a file path, not a skill name.
@@ -67,7 +76,61 @@ def load_case_file(path: Path) -> dict:
         data = json.load(f)
     if "skill_name" not in data or "cases" not in data:
         raise ValueError(f"Invalid trigger-cases.json at {path}: missing skill_name or cases")
+    method = data.get("method")
+    if method not in VALID_METHODS:
+        raise ValueError(
+            f"Invalid trigger-cases.json at {path}: 'method' must be one of "
+            f"{sorted(VALID_METHODS)}, got {method!r}"
+        )
     return data
+
+
+def partition_case_files(case_files: list[Path]) -> tuple[list[Path], list[tuple[str, str]]]:
+    """Split case files into runtime-measurable and skipped (non-runtime).
+
+    Returns (runtime_files, skipped); skipped holds (skill_name, method) pairs
+    for skills this harness cannot measure. Raises via load_case_file() on any
+    file with a missing or invalid method.
+    """
+    runtime_files: list[Path] = []
+    skipped: list[tuple[str, str]] = []
+    for case_file in case_files:
+        data = load_case_file(case_file)
+        if data["method"] == RUNTIME_METHOD:
+            runtime_files.append(case_file)
+        else:
+            skipped.append((data["skill_name"], data["method"]))
+    return runtime_files, skipped
+
+
+def format_skip_notice(skipped: list[tuple[str, str]]) -> str:
+    """One-line report of skills excluded because they are not runtime-measurable."""
+    names = ", ".join(sorted(name for name, _ in skipped))
+    return (
+        f"Skipped {len(skipped)} skill(s) not measured by the runtime harness: "
+        f"{names}. See evals/README.md for the measurement method each skill uses."
+    )
+
+
+def seed_temp_project_git(project_dir: Path) -> None:
+    """Copy the committed fixture skeleton into project_dir and set up git state.
+
+    Static content (README, calculator.py, tests/) comes from
+    evals/fixtures/temp-project/. The staged-but-uncommitted diff comes from
+    evals/fixtures/temp-project.staged.patch. Git identity is pinned via -c
+    flags so this does not depend on machine git config.
+    """
+    fixture_dir = EVALS_DIR / "fixtures" / "temp-project"
+    staged_patch = EVALS_DIR / "fixtures" / "temp-project.staged.patch"
+
+    shutil.copytree(fixture_dir, project_dir, dirs_exist_ok=True)
+
+    git = ["git", "-c", "user.email=eval@example.com", "-c", "user.name=Eval Harness"]
+    subprocess.run([*git, "init", "-q"], cwd=project_dir, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=project_dir, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "initial"], cwd=project_dir, check=True)
+    subprocess.run(["git", "apply", str(staged_patch)], cwd=project_dir, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=project_dir, check=True)
 
 
 def build_temp_project(skills_dir: Path, plugins_dir: Path) -> Path:
@@ -90,6 +153,7 @@ def build_temp_project(skills_dir: Path, plugins_dir: Path) -> Path:
             if ps.is_dir():
                 (plugin_skills / plugin_dir.name).symlink_to(ps)
     (dot_claude / "settings.json").write_text(json.dumps({"hooks": {}}))
+    seed_temp_project_git(tmp)
     return tmp
 
 
@@ -364,10 +428,17 @@ def main() -> int:
             print("No trigger-cases.json files found. Run --skill <name> or author case files first.", file=sys.stderr)
             return 1
 
+    runtime_files, skipped = partition_case_files(case_files)
+    if skipped:
+        print(format_skip_notice(skipped))
+    if not runtime_files:
+        print("No runtime-measurable skills to run.")
+        return 0
+
     tmp_project = build_temp_project(SKILLS_DIR, PLUGINS_DIR)
     try:
         skill_results = []
-        for case_file in case_files:
+        for case_file in runtime_files:
             sr = run_skill(case_file, tmp_project, args.model, args.samples, args.workers, args.verbose)
             skill_results.append(sr)
 
@@ -386,7 +457,6 @@ def main() -> int:
         return 0  # always 0 — measurement, not a gate
 
     finally:
-        import shutil
         shutil.rmtree(tmp_project, ignore_errors=True)
 
 

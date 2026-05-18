@@ -14,7 +14,7 @@ subscription auth. This means:
 - **No CI wiring.** Trigger-fidelity is a probabilistic model classification, not
   a deterministic computation. A single-sample binary pass/fail produces a
   flaky CI signal; the harness treats output as a human-read pass-rate report
-  (`triggered 2/3`), not a gate. Running it in CI would also require
+  (`triggered 7/10`), not a gate. Running it in CI would also require
   `--dangerously-skip-permissions` on a public repo — a security footgun.
 
 ## Usage
@@ -50,14 +50,14 @@ model used.
 ## Reading the output
 
 ```
-Skill trigger-fidelity   model=claude-sonnet-4-6  K=3   2026-05-15
+Skill trigger-fidelity   model=claude-sonnet-4-6  K=10   2026-05-15
 
 code-review                                              4/5
-  code-written-commit-pending         triggers      3/3   PASS
-  explicit-user-code-review-request   triggers      2/3   PASS
-  cosmetic-typo-fix                   does-not-trig 0/3   PASS
-  plan-only-no-code                   does-not-trig 1/3   FAIL  (plan-review fired 2/3)
-  vs-skill-review-skill-md-only       does-not-trig 0/3   PASS
+  code-written-commit-pending         triggers      10/10  PASS
+  explicit-user-code-review-request   triggers       8/10  PASS
+  cosmetic-typo-fix                   does-not-trig  0/10  PASS
+  plan-only-no-code                   does-not-trig  2/10  FAIL  (plan-review fired 7/10)
+  vs-skill-review-skill-md-only       does-not-trig  0/10  PASS
 
 summary: 1 skills, 5 cases | pass 4/5 | review the 1 FAIL cases above
 ```
@@ -67,6 +67,11 @@ summary: 1 skills, 5 cases | pass 4/5 | review the 1 FAIL cases above
 - **FAIL + parenthetical**: adjacent skill stole the trigger — the actionable signal
   for tightening the DO NOT TRIGGER prose.
 - Exit code is always `0` — measurement, not a gate.
+
+**Noise floor.** Triggering is probabilistic, so the pass rate carries sampling
+noise. At `K=10` a case that genuinely triggers ~60% of the time still reads
+FAIL roughly 1 run in 6. Treat a borderline FAIL near the 50% line as a prompt
+to re-run at higher `K` (e.g. `--samples 30`), not as a confirmed regression.
 
 ## Adding trigger cases
 
@@ -81,6 +86,7 @@ Schema:
 ```json
 {
   "skill_name": "code-review",
+  "method": "runtime",
   "cases": [
     {
       "id": "post-implementation-handoff",
@@ -102,10 +108,31 @@ Schema:
 }
 ```
 
+- `method`: required. Which harness measures this skill — see
+  [Measurement methods](#measurement-methods).
 - `id`: stable label shown in the report.
 - `should_trigger`: `true` = the skill must fire; `false` = it must stay silent.
 - `also_not_triggered`: optional. Adjacent skills that must **not** fire on this
   query. A FAIL names which adjacent skill stole the trigger.
+
+## Measurement methods
+
+Each `trigger-cases.json` declares a `method`:
+
+- **`runtime`** — this harness spawns `claude -p` and watches for the skill's
+  `Skill` tool call to fire. It measures real auto-dispatch in a live session.
+- **`description-fidelity`** — a separate runner asks a model to classify which
+  skill a query should match, given the skill listing. It measures whether the
+  skill's `description` discriminates the query, not runtime dispatch.
+
+Headless `claude -p` does not reliably auto-trigger every skill — advisory
+skills the model is not pushed to invoke (and `user-invocable: false` skills)
+under-trigger regardless of description quality, so `runtime` measurement
+returns a false zero for them. Those skills use `description-fidelity` instead.
+
+`run_trigger_evals.py` runs `runtime` skills only; it reports any
+`description-fidelity` skill as skipped. The `description-fidelity` runner is
+not yet implemented.
 
 **Write realistic queries.** On-the-nose queries (keyword-bait like "trigger
 code-review now") pass trivially. The `also_not_triggered` confusion cases carry
