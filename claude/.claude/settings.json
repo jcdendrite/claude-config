@@ -167,6 +167,11 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/deny-pii-in-commits.sh",
+            "statusMessage": "Scanning for PII/PHI..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/enforce-marker-script-shape.sh",
             "statusMessage": "Checking marker.sh invocation shape..."
           },
@@ -219,6 +224,11 @@
             "type": "command",
             "command": "~/.claude/hooks/deny-env-reads.sh",
             "statusMessage": "Checking env-file read gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-data-file-reads.sh",
+            "statusMessage": "Checking data-file read gate..."
           }
         ]
       }

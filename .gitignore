@@ -24,3 +24,10 @@ agent-reviews/
 # creates the file in this tree, this prevents it from ever landing in
 # git history. See claude/.claude/hooks/deny-private-project-refs.sh.
 claude/.claude/private-projects.md
+
+# Same belt-and-suspenders for the user-local PII guard config files read
+# by deny-pii-in-commits.sh and deny-data-file-reads.sh. They belong at
+# ~/.claude/ directly; these entries prevent an accidental copy inside the
+# stowed tree from being committed. See docs/security-hardening.md.
+claude/.claude/pii-patterns.md
+claude/.claude/data-file-read-guard.md
