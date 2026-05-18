@@ -26,6 +26,12 @@
       "id": "fix-single-assertion",
       "query": "Update this assertion to match the new API response shape: assert response.status_code == 200",
       "should_trigger": false
+    },
+    {
+      "id": "adding-tests-to-partially-covered-module",
+      "query": "I'm adding test coverage for the refund path in our payment module. It already has a couple of tests for the happy path — how should I structure the new ones?",
+      "should_trigger": true,
+      "also_not_triggered": ["test-evaluation"]
     }
   ]
 }

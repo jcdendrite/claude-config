@@ -4,7 +4,7 @@
   "cases": [
     {
       "id": "evaluating-existing-suite-quality",
-      "query": "Look at our existing test suite and assess the coverage quality and test pyramid shape.",
+      "query": "Our test suite has grown messy over the last few releases and I'm not confident it actually catches regressions anymore. Can you go through it and tell me where it's weak?",
       "should_trigger": true
     },
     {
@@ -27,6 +27,12 @@
       "query": "Review our test code and tell me which areas have weak coverage and which tests are redundant.",
       "should_trigger": true,
       "also_not_triggered": ["code-review"]
+    },
+    {
+      "id": "assess-before-extending-suite",
+      "query": "Before I add any more tests to the checkout flow, I want to know whether the tests we already have are solid. Can you assess them?",
+      "should_trigger": true,
+      "also_not_triggered": ["test-conventions"]
     }
   ]
 }

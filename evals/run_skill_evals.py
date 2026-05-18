@@ -1,8 +1,14 @@
-"""Skill trigger-fidelity harness for claude-config.
+"""Skill eval harness for claude-config.
 
-Runs `claude -p` against per-skill trigger-cases.json files and reports
-how reliably each skill auto-triggers (or stays silent) for its declared
-TRIGGER / DO NOT TRIGGER conditions.
+Measures each skill's trigger-cases.json against its declared TRIGGER /
+DO NOT TRIGGER conditions, using one of two methods declared per case file:
+
+- runtime: spawn `claude -p` and watch for the Skill tool to fire. Measures
+  real auto-dispatch; faithful only when the skill triggers headlessly.
+- description-fidelity: ask `claude -p`, in a plain classification prompt,
+  which skill a query should match given the full skill listing. Measures
+  whether the skill's description discriminates the query — not runtime
+  dispatch. Used for advisory skills the runtime substrate cannot reach.
 
 LOCAL USE ONLY — never run in CI. Uses the session's Claude subscription
 auth (no ANTHROPIC_API_KEY required; no per-token charge on Max plan).
@@ -16,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -37,12 +44,13 @@ DEFAULT_SAMPLES = 10
 DEFAULT_WORKERS = 4
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
-# Measurement method declared per case file. `runtime` skills are measured by
-# this harness, which spawns `claude -p` and watches for the Skill tool to fire.
-# `description-fidelity` skills are measured by a separate runner — see
-# evals/README.md. A case file must declare one of these.
+# Measurement method declared per case file. `runtime` spawns `claude -p` and
+# watches for the Skill tool to fire; `description-fidelity` asks `claude -p` to
+# classify which skill a query should match. See evals/README.md. A case file
+# must declare exactly one of these.
 RUNTIME_METHOD = "runtime"
-VALID_METHODS = frozenset((RUNTIME_METHOD, "description-fidelity"))
+DESCRIPTION_FIDELITY_METHOD = "description-fidelity"
+VALID_METHODS = frozenset((RUNTIME_METHOD, DESCRIPTION_FIDELITY_METHOD))
 
 # Skill-tool detection: Claude Code auto-triggers a skill by calling the Skill tool.
 # Read is NOT included — its input is a file path, not a skill name.
@@ -85,31 +93,20 @@ def load_case_file(path: Path) -> dict:
     return data
 
 
-def partition_case_files(case_files: list[Path]) -> tuple[list[Path], list[tuple[str, str]]]:
-    """Split case files into runtime-measurable and skipped (non-runtime).
+def partition_case_files(case_files: list[Path]) -> tuple[list[Path], list[Path]]:
+    """Split case files by measurement method.
 
-    Returns (runtime_files, skipped); skipped holds (skill_name, method) pairs
-    for skills this harness cannot measure. Raises via load_case_file() on any
-    file with a missing or invalid method.
+    Returns (runtime_files, description_fidelity_files). Raises via
+    load_case_file() on any file with a missing or invalid method.
     """
     runtime_files: list[Path] = []
-    skipped: list[tuple[str, str]] = []
+    description_fidelity_files: list[Path] = []
     for case_file in case_files:
-        data = load_case_file(case_file)
-        if data["method"] == RUNTIME_METHOD:
+        if load_case_file(case_file)["method"] == RUNTIME_METHOD:
             runtime_files.append(case_file)
         else:
-            skipped.append((data["skill_name"], data["method"]))
-    return runtime_files, skipped
-
-
-def format_skip_notice(skipped: list[tuple[str, str]]) -> str:
-    """One-line report of skills excluded because they are not runtime-measurable."""
-    names = ", ".join(sorted(name for name, _ in skipped))
-    return (
-        f"Skipped {len(skipped)} skill(s) not measured by the runtime harness: "
-        f"{names}. See evals/README.md for the measurement method each skill uses."
-    )
+            description_fidelity_files.append(case_file)
+    return runtime_files, description_fidelity_files
 
 
 def seed_temp_project_git(project_dir: Path) -> None:
@@ -155,6 +152,192 @@ def build_temp_project(skills_dir: Path, plugins_dir: Path) -> Path:
     (dot_claude / "settings.json").write_text(json.dumps({"hooks": {}}))
     seed_temp_project_git(tmp)
     return tmp
+
+
+# --- description-fidelity measurement -------------------------------------
+#
+# This path does not exercise skill auto-dispatch. It asks `claude -p` a plain
+# question — "which skill should handle this query?" — given the skill listing
+# as prompt data. Plain question-answering is unaffected by the headless
+# auto-trigger limitation (anthropics/claude-code#34648), so it is an honest
+# fallback for advisory skills the `runtime` substrate cannot measure.
+
+
+def parse_skill_frontmatter(skill_md_path: Path) -> tuple[str, str]:
+    """Extract (name, description) from a SKILL.md YAML frontmatter block.
+
+    Minimal stdlib parser — handles inline scalars and `>`/`|` block scalars.
+    Avoids a PyYAML dependency so this module imports cleanly under CI, which
+    installs only pytest and ruff. Falls back to the directory name when the
+    `name` key is absent or there is no frontmatter.
+    """
+    text = skill_md_path.read_text()
+    fallback_name = skill_md_path.parent.name
+    if not text.startswith("---"):
+        return fallback_name, ""
+    try:
+        closing = text.index("\n---", 3)
+    except ValueError:
+        return fallback_name, ""
+    lines = text[3:closing].splitlines()
+
+    name = fallback_name
+    description = ""
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("name:"):
+            value = line.split(":", 1)[1].strip()
+            if value:
+                name = value
+            i += 1
+        elif line.startswith("description:"):
+            value = line.split(":", 1)[1].strip()
+            if value and value not in (">", "|", ">-", "|-", ">+", "|+"):
+                description = value
+                i += 1
+            else:
+                # Block scalar: gather blank or indented continuation lines,
+                # stopping at the next top-level key.
+                block: list[str] = []
+                i += 1
+                while i < len(lines) and (not lines[i].strip() or lines[i][:1] in (" ", "\t")):
+                    block.append(lines[i].strip())
+                    i += 1
+                description = " ".join(part for part in block if part)
+        else:
+            i += 1
+    return name, description
+
+
+def assemble_skill_listing() -> tuple[str, frozenset[str]]:
+    """Build the skill listing shown to the classifier and the set of valid names.
+
+    Reads name + description frontmatter from every SKILL.md under SKILLS_DIR
+    and the plugin skill dirs — the same paths discover_case_files() globs — so
+    adjacent skills compete in the classification prompt exactly as they do in
+    a live session's skill listing.
+    """
+    skill_md_paths = sorted(SKILLS_DIR.glob("*/SKILL.md"))
+    if PLUGINS_DIR.exists():
+        skill_md_paths += sorted(PLUGINS_DIR.glob("*/skills/*/SKILL.md"))
+
+    entries: list[str] = []
+    names: list[str] = []
+    for path in skill_md_paths:
+        name, description = parse_skill_frontmatter(path)
+        names.append(name)
+        entries.append(f"- {name}: {description}")
+    return "\n".join(entries), frozenset(names)
+
+
+def build_isolated_project() -> Path:
+    """Create a throwaway project with no skills, for description-fidelity runs.
+
+    The classification prompt carries the skill listing as data and asks a
+    plain question; `claude -p` must answer it, not auto-dispatch a skill. An
+    empty project (no .claude/skills/) keeps project-scope skills and hooks out
+    of the way. settings.json disables hooks.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="claude-eval-df-"))
+    dot_claude = tmp / ".claude"
+    dot_claude.mkdir()
+    (dot_claude / "settings.json").write_text(json.dumps({"hooks": {}}))
+    return tmp
+
+
+def build_classification_prompt(skill_listing: str, query: str) -> str:
+    """Construct the single-query classification prompt for description-fidelity.
+
+    The answer is constrained to one line — one skill name or the literal
+    `none` — so parse_classification_answer() is deterministic.
+    """
+    return (
+        "You are classifying which Claude Code skill, if any, should handle a "
+        "user request.\n\n"
+        "Below is the full list of available skills with their descriptions. "
+        "Each description states when the skill should and should not be "
+        "used.\n\n"
+        f"<skills>\n{skill_listing}\n</skills>\n\n"
+        "A user has made this request:\n\n"
+        f"<request>\n{query}\n</request>\n\n"
+        "Which single skill should handle this request? Reply with exactly one "
+        "line containing only the skill name, or the literal word none if no "
+        "skill applies. Do not explain."
+    )
+
+
+def parse_classification_answer(raw_output: str, valid_skill_names: frozenset[str]) -> str | None:
+    """Parse a classifier reply into a skill name, or None for 'none'/unparseable.
+
+    Accepts the constrained one-line answer (a bare skill name or `none`) and,
+    as a best-effort fallback, a prose-wrapped name. Returning the *named*
+    skill — not a boolean — lets description-fidelity score also_not_triggered
+    violations the same way runtime mode does.
+    """
+    text = raw_output.strip()
+    if not text:
+        return None
+
+    last_line = ""
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            last_line = line.strip().strip("\"'`. ").lower()
+            break
+    if last_line == "none":
+        return None
+    if last_line in valid_skill_names:
+        return last_line
+
+    # Best-effort fallback for a prose-wrapped answer. Longest name first so a
+    # name that is a substring of another cannot mask the longer match.
+    for name in sorted(valid_skill_names, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(name)}\b", text):
+            return name
+    return None
+
+
+def score_classification(
+    named_skill: str | None, skill_name: str, also_not: list[str]
+) -> tuple[str | None, list[str]]:
+    """Map a classifier's named skill to the (fired, also_fired) scoring shape.
+
+    Shared by run_description_fidelity_sample() and its unit tests. A named
+    skill listed in also_not is an also_not_triggered violation — scored
+    exactly as a runtime misfire is.
+    """
+    fired = skill_name if named_skill == skill_name else None
+    also_fired = [excluded for excluded in also_not if excluded == named_skill]
+    return fired, also_fired
+
+
+def run_description_fidelity_sample(args: tuple) -> tuple[str | None, list[str]]:
+    """Run one classification sample. Called from worker processes.
+
+    Returns the same (fired_skill_or_None, also_fired) shape as
+    run_single_sample() so run_case() scores both methods identically.
+    """
+    query, skill_name, also_not, isolated_project, skill_listing, valid_names, model = args
+
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    prompt = build_classification_prompt(skill_listing, query)
+
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", prompt, "--model", model],
+            cwd=str(isolated_project),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=SAMPLE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return None, []
+
+    named = parse_classification_answer(proc.stdout, valid_names)
+    return score_classification(named, skill_name, also_not)
 
 
 def detect_trigger_in_lines(
@@ -286,7 +469,8 @@ def run_single_sample(args: tuple) -> tuple[str | None, list[str]]:
 def run_case(
     case: dict,
     skill_name: str,
-    tmp_project: Path,
+    method: str,
+    run_context: dict,
     model: str,
     samples: int,
     workers: int,
@@ -300,10 +484,19 @@ def run_case(
     fired_count = 0
     also_fired_totals: dict[str, int] = {}
 
-    sample_args = [(query, skill_name, also_not, tmp_project, model)] * samples
+    if method == RUNTIME_METHOD:
+        sample_fn = run_single_sample
+        sample_arg: tuple = (query, skill_name, also_not, run_context["tmp_project"], model)
+    else:
+        sample_fn = run_description_fidelity_sample
+        sample_arg = (
+            query, skill_name, also_not, run_context["isolated_project"],
+            run_context["skill_listing"], run_context["valid_names"], model,
+        )
+    sample_args = [sample_arg] * samples
 
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(run_single_sample, a) for a in sample_args]
+        futures = [pool.submit(sample_fn, a) for a in sample_args]
         for fut in as_completed(futures):
             fired_skill, also_fired = fut.result()
             if fired_skill == skill_name:
@@ -339,7 +532,7 @@ def run_case(
 
 def run_skill(
     case_file: Path,
-    tmp_project: Path,
+    run_context: dict,
     model: str,
     samples: int,
     workers: int,
@@ -347,19 +540,21 @@ def run_skill(
 ) -> dict:
     data = load_case_file(case_file)
     skill_name = data["skill_name"]
+    method = data["method"]
     cases = data["cases"]
 
     if verbose:
-        print(f"\n{skill_name}", flush=True)
+        print(f"\n{skill_name}  [{method}]", flush=True)
 
     case_results = []
     for case in cases:
-        result = run_case(case, skill_name, tmp_project, model, samples, workers, verbose)
+        result = run_case(case, skill_name, method, run_context, model, samples, workers, verbose)
         case_results.append(result)
 
     passed = sum(1 for r in case_results if r["passed"])
     return {
         "skill_name": skill_name,
+        "method": method,
         "cases": case_results,
         "passed": passed,
         "total": len(case_results),
@@ -368,11 +563,11 @@ def run_skill(
 
 def print_report(skill_results: list[dict], model: str, samples: int, verbose: bool) -> None:
     today = date.today().isoformat()
-    print(f"\nSkill trigger-fidelity   model={model}  K={samples}   {today}\n")
+    print(f"\nSkill eval   model={model}  K={samples}   {today}\n")
 
     if not verbose:
         for sr in skill_results:
-            print(f"{sr['skill_name']:<50} {sr['passed']}/{sr['total']}")
+            print(f"{sr['skill_name']:<40} {sr['method']:<22} {sr['passed']}/{sr['total']}")
             for cr in sr["cases"]:
                 triggered_label = "triggers" if cr["should_trigger"] else "does-not-trig"
                 status = "PASS" if cr["passed"] else "FAIL"
@@ -392,7 +587,7 @@ def print_report(skill_results: list[dict], model: str, samples: int, verbose: b
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Skill trigger-fidelity harness (local only, never CI)")
+    parser = argparse.ArgumentParser(description="Skill eval harness (local only, never CI)")
     parser.add_argument(
         "--skill", action="append", dest="skills", metavar="NAME",
         help="Skill name to test (repeatable; default: all with trigger-cases.json)",
@@ -428,19 +623,38 @@ def main() -> int:
             print("No trigger-cases.json files found. Run --skill <name> or author case files first.", file=sys.stderr)
             return 1
 
-    runtime_files, skipped = partition_case_files(case_files)
-    if skipped:
-        print(format_skip_notice(skipped))
-    if not runtime_files:
-        print("No runtime-measurable skills to run.")
-        return 0
+    runtime_files, description_fidelity_files = partition_case_files(case_files)
 
-    tmp_project = build_temp_project(SKILLS_DIR, PLUGINS_DIR)
+    tmp_project: Path | None = None
+    isolated_project: Path | None = None
     try:
         skill_results = []
-        for case_file in runtime_files:
-            sr = run_skill(case_file, tmp_project, args.model, args.samples, args.workers, args.verbose)
-            skill_results.append(sr)
+
+        # runtime files first, then description-fidelity — each measured by its
+        # own substrate, both reported in one table with a `method` column.
+        if runtime_files:
+            tmp_project = build_temp_project(SKILLS_DIR, PLUGINS_DIR)
+            runtime_context = {"tmp_project": tmp_project}
+            for case_file in runtime_files:
+                skill_results.append(
+                    run_skill(case_file, runtime_context, args.model, args.samples, args.workers, args.verbose)
+                )
+
+        if description_fidelity_files:
+            isolated_project = build_isolated_project()
+            skill_listing, valid_names = assemble_skill_listing()
+            description_fidelity_context = {
+                "isolated_project": isolated_project,
+                "skill_listing": skill_listing,
+                "valid_names": valid_names,
+            }
+            for case_file in description_fidelity_files:
+                skill_results.append(
+                    run_skill(
+                        case_file, description_fidelity_context,
+                        args.model, args.samples, args.workers, args.verbose,
+                    )
+                )
 
         print_report(skill_results, args.model, args.samples, args.verbose)
 
@@ -457,7 +671,10 @@ def main() -> int:
         return 0  # always 0 — measurement, not a gate
 
     finally:
-        shutil.rmtree(tmp_project, ignore_errors=True)
+        if tmp_project is not None:
+            shutil.rmtree(tmp_project, ignore_errors=True)
+        if isolated_project is not None:
+            shutil.rmtree(isolated_project, ignore_errors=True)
 
 
 if __name__ == "__main__":

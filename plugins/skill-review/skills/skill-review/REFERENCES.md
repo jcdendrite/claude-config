@@ -21,17 +21,17 @@ regressions. The `run_loop.py` description optimizer makes sense when
 you genuinely can't tell whether a wording change improves accuracy
 without measuring it.
 
-**Update:** trigger-fidelity evals have been adopted as a standalone local
-harness (`evals/run_trigger_evals.py`) that adapts `run_eval.py`'s
-stream-json detection mechanism. The `skill-creator` *plugin* remains
-disabled — the mechanism is adopted but the plugin's voice and length
-conventions still conflict with this repo. The key distinction: this repo's
-harness is for testing trigger *fidelity* of existing skills at local/manual
-cadence, not for optimizing descriptions via the `run_loop.py` search loop.
+**Update:** skill evals have been adopted as a standalone local harness
+(`evals/run_skill_evals.py`) that adapts `run_eval.py`'s stream-json detection
+mechanism. The `skill-creator` *plugin* remains disabled — the mechanism is
+adopted but the plugin's voice and length conventions still conflict with this
+repo. The key distinction: this repo's harness measures the trigger fidelity
+of existing skills at local/manual cadence, not optimizing descriptions via
+the `run_loop.py` search loop.
 
 The original conditions have changed: the skill set has grown to ~23 skills
 used across many independent projects, meaning mis-fires now happen in
-sessions the owner doesn't observe. `evals/run_trigger_evals.py` covers this
+sessions the owner doesn't observe. `evals/run_skill_evals.py` covers this
 without CI security risks (local auth, no `--dangerously-skip-permissions`),
 without per-token budget (Max-plan OAuth), and without flaky CI signals (the
 output is a human-read pass-rate report, not a binary gate).

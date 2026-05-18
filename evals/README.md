@@ -1,8 +1,10 @@
-# Skill Trigger-Fidelity Evals
+# Skill Evals
 
-A local harness that measures how reliably each skill auto-triggers (or stays
-silent) when given a test query. Answers: "does this skill's TRIGGER prose
-actually cause the model to invoke it?"
+A local harness that measures each skill's `trigger-cases.json` against its
+declared TRIGGER / DO NOT TRIGGER conditions. It runs one of two measurement
+methods per skill — `runtime` or `description-fidelity` — and reports a
+per-case pass rate. See [Measurement methods](#measurement-methods) for which
+method fits which skill.
 
 ## Why local only — never CI
 
@@ -11,8 +13,8 @@ subscription auth. This means:
 
 - **No `ANTHROPIC_API_KEY` required.** Max-plan OAuth auth is used automatically.
 - **No per-token charge** beyond your subscription.
-- **No CI wiring.** Trigger-fidelity is a probabilistic model classification, not
-  a deterministic computation. A single-sample binary pass/fail produces a
+- **No CI wiring.** Both methods produce a probabilistic model classification,
+  not a deterministic computation. A single-sample binary pass/fail produces a
   flaky CI signal; the harness treats output as a human-read pass-rate report
   (`triggered 7/10`), not a gate. Running it in CI would also require
   `--dangerously-skip-permissions` on a public repo — a security footgun.
@@ -21,25 +23,25 @@ subscription auth. This means:
 
 ```bash
 # Run all skills that have a trigger-cases.json:
-python evals/run_trigger_evals.py
+python evals/run_skill_evals.py
 
 # Run one skill:
-python evals/run_trigger_evals.py --skill code-review
+python evals/run_skill_evals.py --skill code-review
 
 # Run the test-conventions / test-evaluation adjacency pair:
-python evals/run_trigger_evals.py --skill test-conventions --skill test-evaluation
+python evals/run_skill_evals.py --skill test-conventions --skill test-evaluation
 
 # Tune sampling:
-python evals/run_trigger_evals.py --skill code-review --samples 5
+python evals/run_skill_evals.py --skill code-review --samples 5
 
 # Spot-compare with Opus:
-python evals/run_trigger_evals.py --skill code-review --model claude-opus-4-7
+python evals/run_skill_evals.py --skill code-review --model claude-opus-4-7
 
 # Verbose (prints each case as it completes):
-python evals/run_trigger_evals.py --verbose
+python evals/run_skill_evals.py --verbose
 
 # Write machine-readable results:
-python evals/run_trigger_evals.py --json /tmp/results.json
+python evals/run_skill_evals.py --json /tmp/results.json
 ```
 
 Default model: `claude-sonnet-4-6`. Sonnet is a stricter classifier than Opus,
@@ -50,22 +52,31 @@ model used.
 ## Reading the output
 
 ```
-Skill trigger-fidelity   model=claude-sonnet-4-6  K=10   2026-05-15
+Skill eval   model=claude-sonnet-4-6  K=10   2026-05-15
 
-code-review                                              4/5
+code-review                              runtime                4/5
   code-written-commit-pending         triggers      10/10  PASS
   explicit-user-code-review-request   triggers       8/10  PASS
   cosmetic-typo-fix                   does-not-trig  0/10  PASS
   plan-only-no-code                   does-not-trig  2/10  FAIL  (plan-review fired 7/10)
   vs-skill-review-skill-md-only       does-not-trig  0/10  PASS
+test-conventions                         description-fidelity   6/6
+  planning-tests-new-feature          triggers      10/10  PASS
+  adding-tests-to-partially-covered…  triggers       9/10  PASS
 
-summary: 1 skills, 5 cases | pass 4/5 | review the 1 FAIL cases above
+summary: 2 skills, 7 cases | pass 5/7 | review the 2 FAIL cases above
 ```
 
+- The second column on each skill line is the **measurement method** —
+  `runtime` or `description-fidelity`. The two are distinct signals; the
+  column keeps them from being conflated.
 - **PASS**: trigger rate ≥ 50% for should-trigger cases; < 50% for should-not.
   Plus no `also_not_triggered` skill fired in any sample.
 - **FAIL + parenthetical**: adjacent skill stole the trigger — the actionable signal
   for tightening the DO NOT TRIGGER prose.
+- Under `description-fidelity` the `triggers` / `does-not-trig` per-case label
+  reads as "the classifier named this skill" / "named a different skill or
+  none" — there is no live dispatch in that mode.
 - Exit code is always `0` — measurement, not a gate.
 
 **Noise floor.** Triggering is probabilistic, so the pass rate carries sampling
@@ -117,22 +128,26 @@ Schema:
 
 ## Measurement methods
 
-Each `trigger-cases.json` declares a `method`:
+Each `trigger-cases.json` declares a `method`. `run_skill_evals.py` runs both
+in one invocation, routing per case file and labelling each skill's mode in the
+report:
 
-- **`runtime`** — this harness spawns `claude -p` and watches for the skill's
+- **`runtime`** — the harness spawns `claude -p` and watches for the skill's
   `Skill` tool call to fire. It measures real auto-dispatch in a live session.
-- **`description-fidelity`** — a separate runner asks a model to classify which
-  skill a query should match, given the skill listing. It measures whether the
-  skill's `description` discriminates the query, not runtime dispatch.
+- **`description-fidelity`** — the harness asks a model, in a plain `claude -p`
+  classification prompt, which one skill a query should match given the full
+  skill listing. It measures whether the skill's `description` discriminates
+  the query, not runtime dispatch.
 
 Headless `claude -p` does not reliably auto-trigger every skill — advisory
 skills the model is not pushed to invoke (and `user-invocable: false` skills)
 under-trigger regardless of description quality, so `runtime` measurement
 returns a false zero for them. Those skills use `description-fidelity` instead.
 
-`run_trigger_evals.py` runs `runtime` skills only; it reports any
-`description-fidelity` skill as skipped. The `description-fidelity` runner is
-not yet implemented.
+The two methods measure genuinely different properties and are not
+interchangeable. `runtime` is strictly more faithful when available — it
+observes the real dispatch decision — so a skill that *can* trigger headlessly
+keeps `runtime` rather than being downgraded to classification.
 
 **Write realistic queries.** On-the-nose queries (keyword-bait like "trigger
 code-review now") pass trivially. The `also_not_triggered` confusion cases carry
@@ -140,6 +155,8 @@ the real signal — write queries that read like genuine user turns where the
 boundary between adjacent skills is ambiguous.
 
 ## How detection works
+
+### runtime
 
 The harness runs `claude -p <query>` from a throwaway project whose
 `.claude/skills/` is symlinked to the working-tree `claude/.claude/skills/`.
@@ -155,9 +172,27 @@ content_block_stop  → parse accumulated JSON; compare input["skill"] == skill_
 
 Early-terminates the subprocess once the target skill fires and no `also_not`
 guards remain to observe; reads to timeout when misfire guards are active so every
-block is seen. Detection logic is unit-tested via synthetic hand-authored
-stream-json fixtures in `evals/fixtures/` — see
-`claude/.claude/skills/tests/test_trigger_detector.py`.
+block is seen.
+
+### description-fidelity
+
+The harness assembles a skill listing — every skill's `name` and `description`
+frontmatter — and builds one `claude -p` prompt per case: the listing, the
+case query, and an instruction to name the single skill that should handle the
+query, or `none`. It runs from an empty project (no skills symlinked) so
+`claude -p` answers the question rather than auto-dispatching. The reply is
+parsed to one skill name; that name is scored against `should_trigger` and
+`also_not_triggered` exactly as a runtime fire is — a reply naming a guarded
+adjacent skill is an `also_not_triggered` violation.
+
+This path is plain question-answering, not skill auto-dispatch, so it is
+unaffected by the headless auto-trigger limitation that makes `runtime`
+unreliable for advisory skills.
+
+The `method` schema, the classification-answer parser, and the runtime
+stream-json detector are unit-tested offline (synthetic inputs, no `claude -p`)
+in `claude/.claude/skills/tests/test_trigger_detector.py`; the runtime fixtures
+live in `evals/fixtures/`.
 
 ## Linting
 
