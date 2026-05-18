@@ -100,7 +100,7 @@ Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 ```
 claude/        # stow package — claude/.claude/ → ~/.claude/
 plugins/       # marketplace plugins (lovable-cloud, skill-review, claude-hook-review)
-docs/          # design-decisions, walkthrough, hooks, skills
+docs/          # design-decisions, walkthrough, hooks, skills, scripts, auto-mode, redaction
 .github/       # workflows, dependabot
 .claude/       # repo-local plans, settings, worktrees (gitignored)
 ```
@@ -250,160 +250,22 @@ To opt out, delete `.claude/worktree-required`.
 
 ### Private-project redaction
 
-This repo is public, so any project codename, organization name, or tracker-ID that lands in a commit or PR description ships to the world. The repo-root [`CLAUDE.md`](./CLAUDE.md) "Redact private-project-identifying content" rule defines what to keep out; `deny-private-project-refs.sh` is the mechanical enforcement.
+This repo is public — any project codename, organization name, or tracker-ID that lands in a commit or PR description ships to the world. `claude-config` defends against that in three tiers:
 
-Two scans run, in order:
+1. **Tracker-ID scan** (always on, no setup) — `deny-private-project-refs.sh` blocks `git commit`, `gh pr create`, `gh pr edit`, and mutating `gh api` calls whose content carries `[A-Z]{2,}-\d+` tracker tokens outside an OSS-prefix allowlist.
+2. **Private-projects blocklist** (opt-in) — the same hook reads a user-local `~/.claude/private-projects.md` and blocks any commit or PR whose content matches a listed project name (case-insensitive, whole-word).
+3. **Reviewer discipline** — structural fingerprints the hook can't catch (a verbatim RLS policy, a rare column-naming pattern) are a review responsibility, not a mechanical one.
 
-1. **Tracker-ID scan (always on, no setup).** Matches `[A-Z]{2,}-\d+` tokens not on the OSS allowlist. The allowlist also reserves two placeholder prefixes — `PROJ-` and `TICKET-` — so skill examples and commit messages can use a realistic-looking tracker shape (`PROJ-<digits>`, `TICKET-<digits>`) without obfuscating the digits to defeat the scan.
-2. **Private-projects blocklist (opt-in).** Reads `~/.claude/private-projects.md` at hook runtime and blocks commits/PRs whose content contains any non-comment, non-blank line from the file as a case-insensitive whole-word match.
-
-#### Opt-in: enable the blocklist
-
-```bash
-# Create the file with a header pointing at this section for usage
-# rules (the hook ignores `#` lines, so the header doesn't affect
-# matching):
-cat > ~/.claude/private-projects.md <<'EOF'
-# Project names blocked from commits / PR titles / PR bodies in
-# claude-config (and forks). Match semantics + what to put in this
-# file: see README.md "Private-project redaction" in the
-# claude-config repo.
-
-EOF
-
-# Append your project names, one per line:
-echo "Acme Corp" >> ~/.claude/private-projects.md
-echo "Project Bluebird" >> ~/.claude/private-projects.md
-```
-
-#### File format
-
-- One project name per line.
-- Lines starting with `#` are comments; ignored.
-- Blank lines ignored.
-- Leading and trailing whitespace stripped.
-- Names can contain spaces.
-- Match is case-insensitive whole-word literal. No regex. No globs.
-
-#### What to put in the file (and what NOT to)
-
-The match is **case-insensitive whole-word**, which is narrower than substring match — `AcmeCorp` matches `AcmeCorp`, `acmecorp`, `ACMECORP` (any casing as a standalone word), but NOT `AcmeCorpService` (concatenated — `S` is a word character so the boundary fails), and NOT `acme` inside `acmebrand` (substring within a word).
-
-**Worked example.** Suppose your private project is `AcmeCorporation` with tracker prefix `ACME`:
-
-✅ **Add `AcmeCorporation`** — catches the project name as a standalone word in commits, PR bodies, or added diff lines. Case variants (`acmecorporation`, `ACMECORPORATION`) match too — you don't need separate entries.
-
-❌ **Don't add `ACME` alone** — the tracker-ID regex already catches `ACME-<digits>` patterns automatically; bare `ACME` adds nothing the regex doesn't already cover, while introducing a small false-positive surface for legitimate standalone uses of the word.
-
-❌ **Avoid very short or common-word codenames as bare entries.** Whole-word matching shrinks the false-positive surface compared to substring match, but a 3-letter codename like `ART` would still match commits mentioning the word `art` or `ART` standalone (`ART department review`, `the art of war`). If your codename is a common standalone word, use a multi-word form (`ART pipeline` instead of `ART` alone) — the longer phrase is more selective — or rely on reviewer discipline instead of mechanical match.
-
-**Rule of thumb:**
-
-- **Tracker prefixes** (`[A-Z]{2,}` + dash + digits): trust the tracker-ID regex; don't blocklist the bare prefix.
-- **Distinctive project names** (full names, codenames ≥ 5 chars and not common English words): blocklist them. Whole-word + case-insensitive handles casing variants automatically.
-- **Concatenated identifiers** (`AcmeCorpService`, `acmecorp_client`, `acme-corp-api`): NOT caught by whole-word match against `AcmeCorp`. If a project name commonly appears concatenated AND the concatenated form is sensitive to leak, add the concatenated form as its own entry.
-
-#### Why user-local, not committed
-
-A committed list of private-project names in this public repo would itself be the leak — it would hardcode in cleartext the exact strings the rule prevents from shipping. The file lives at `~/.claude/private-projects.md` directly, **not** inside `claude-config/claude/.claude/` (which `stow` symlinks into `$HOME/`). Creating it in the wrong place risks accidental commit; the repo-root `.gitignore` has a belt-and-suspenders entry for `claude/.claude/private-projects.md` as a safety net.
-
-#### What the deny message reports
-
-When the blocklist scan blocks a commit or PR, the deny message names each matched blocklist entry and quotes the offending line(s) from the staged content. The matched token is the user's own private-project name, already in the staged content and in `~/.claude/private-projects.md`; naming it in the deny discloses it to no new party, while letting the agent locate and remove it in one pass rather than bisecting the diff. The tracker-ID scan similarly names matched tokens.
-
-#### For fork contributors
-
-Forks of `claude-config` inherit the same hook (the scoping check passes for any `claude-config` substring in the origin URL). A fork user can drop their own `~/.claude/private-projects.md` and contribute back without their project names ever ending up in a PR they open against the upstream.
+The repo-root [`CLAUDE.md`](./CLAUDE.md) "Redact private-project-identifying content" rule defines *what* to keep out; the hook is the mechanical enforcement of tiers 1–2. For blocklist setup, file format, match semantics, the deny-message contract, and the fork-contributor path, see [`docs/private-project-redaction.md`](docs/private-project-redaction.md).
 
 ### Auto mode
 
-Auto mode replaces per-action permission prompts with a background classifier that evaluates each tool call before it runs, blocking anything irreversible, destructive, or targeted outside your environment. See the [engineering deep dive](https://www.anthropic.com/engineering/claude-code-auto-mode) and the [permission modes reference](https://code.claude.com/docs/en/permission-modes) for how the two-layer pipeline works.
+[Auto mode](https://code.claude.com/docs/en/permission-modes) replaces per-action permission prompts with a background classifier that evaluates each tool call before it runs, blocking anything irreversible, destructive, or targeted outside your environment. This repo adds two things on top of the stock feature:
 
-#### Requirements
+- **`claude-auto` wrapper** — resolves a model-eligibility mismatch. This repo defaults to `opusplan`, which routes auto mode's execution to Sonnet, but Sonnet is not auto-mode-eligible on Max. The wrapper starts a session directly in auto mode on an eligible model.
+- **Hard-floor `permissions.deny` rules** — `settings.json` ships deny rules that run *before* the classifier and cannot be overridden by any `autoMode.allow` entry, hard-blocking `sudo` and well-known secret-file reads. These apply in every permission mode, not just auto mode.
 
-- **Plan:** Max, Team, Enterprise, or Anthropic API. Not available on Pro, or on Bedrock, Vertex, or Foundry.
-- **Model:** Auto mode requires a supported *session* model — the eligible set is plan-dependent (see the [permission modes reference](https://code.claude.com/docs/en/permission-modes) for the authoritative list). Opus is eligible on all qualifying plans; Sonnet is additionally eligible on Team, Enterprise, and API, but **not on Max**. This repo ships `opusplan` as the default, which routes auto mode to Sonnet during execution — on Max that produces "unavailable for this model." The `claude-auto` wrapper described in the next section handles this automatically.
-- **Claude Code:** a recent release — check `claude --version` against the [permission modes reference](https://code.claude.com/docs/en/permission-modes).
-
-#### Activating
-
-Press **Shift+Tab** in the CLI to cycle through modes until `auto` appears, then accept the one-time opt-in prompt. To start directly in auto mode, use the `claude-auto` wrapper shipped by this repo:
-
-```bash
-claude-auto                          # defaults to Opus (eligible on all plans)
-claude-auto "summarize the open PRs"  # positional prompt passes through
-ANTHROPIC_MODEL=sonnet claude-auto   # Sonnet override (Team/Enterprise/API only)
-```
-
-The wrapper resolves the model mismatch between `opusplan`'s Sonnet execution and auto mode's session-model requirement. On Team, Enterprise, and API plans, Sonnet is eligible for auto mode, so `claude --permission-mode auto` also works directly — the wrapper is most useful on Max, where only Opus qualifies. `ANTHROPIC_MODEL` is Claude Code's built-in model env var and applies to all invocation forms.
-
-To make auto mode the default, add to `~/.claude/settings.json`:
-
-```json
-{
-  "permissions": {
-    "defaultMode": "auto"
-  }
-}
-```
-
-`defaultMode` sets the *mode*, not the *model* — the session-model requirement above still applies regardless of how auto mode is activated.
-
-#### Hard-floor deny rules
-
-`settings.json` in this repo ships a `permissions.deny` list that runs *before* the classifier and cannot be overridden by any `autoMode.allow` entry. These close gaps the classifier's default block list doesn't cover:
-
-| Rule | What it closes |
-|---|---|
-| `Bash(sudo *)`, `Bash(sudo)` | Privilege escalation — turns the `sudo` prohibition in `CLAUDE.md` into a hard block |
-| `Read(**/.env)`, `Read(**/.env.local)`, `Read(**/.env.local.*)`, `Read(**/.env.production)`, `Read(**/.env.production.*)`, `Read(**/.env.development)`, `Read(**/.env.development.*)`, `Read(**/.env.staging)`, `Read(**/.env.staging.*)`, `Read(**/.env.test)`, `Read(**/.env.test.*)` | Local secret reads — hard floors on the well-known secret-bearing variants; the classifier won't flag in-working-directory reads as exfiltration |
-| `Read(**/credentials.json)` | Cloud provider credential files (AWS CLI, GCP service accounts, etc.) |
-
-The `deny-env-reads.sh` PreToolUse hook covers `.env.*` variants not listed above. It allows the three conventional non-secret template suffixes (`.env.example`, `.env.template`, `.env.sample`) while denying everything else, including symlinks whose resolved target's basename matches a denied pattern.
-
-These rules apply in all permission modes, not only auto mode.
-
-#### What to put in `settings.local.json`
-
-The classifier trusts only the working repo and its configured remotes by default. Add `autoMode.environment` to `~/.claude/settings.local.json` (gitignored) to declare which infrastructure is yours, reducing false positives on routine operations:
-
-```json
-{
-  "autoMode": {
-    "environment": [
-      "$defaults",
-      "Organization: <org name>. Primary use: <use case, e.g. software development, security consulting>.",
-      "Source control: github.com — only repos this developer is a collaborator on. Do not push to other organizations.",
-      "Trusted domains: <domains your work regularly reaches, e.g. supabase.com, vercel.com, api.example.com>",
-      "Additional context: <regulated industry, multi-tenant infrastructure, compliance constraints if any>"
-    ]
-  }
-}
-```
-
-`"$defaults"` splices in the built-in trust list at that position. Omit it only if you intend to replace the defaults entirely — doing so silently drops all built-in block rules including force-push and `curl | bash` protection. See the [danger note in the config reference](https://code.claude.com/docs/en/auto-mode-config#override-the-block-and-allow-rules).
-
-Keep project names, internal hostnames, and private domain names in `settings.local.json`. Do not put them in the committed `settings.json`.
-
-Start minimal and expand reactively: run `claude auto-mode config` to see your effective config, and check `/permissions → Recently denied` after the first few sessions to find legitimate operations the classifier is blocking.
-
-#### Broad allow rules drop in auto mode
-
-When auto mode activates, Claude Code silently drops `permissions.allow` rules that grant arbitrary code execution:
-
-- Blanket wildcards: `Bash(*)`, `PowerShell(*)`
-- Wildcarded interpreters: `Bash(python3:*)`, `Bash(node:*)`, and similar
-- Package-manager run commands
-
-Check your `settings.local.json` for entries matching these patterns — those operations will route to the classifier instead of auto-approving. Narrow rules like `Bash(npm test)` carry over unchanged. Dropped rules are restored when you leave auto mode.
-
-#### Inspection and tuning
-
-```bash
-claude auto-mode defaults   # print built-in environment, allow, and soft_deny rules
-claude auto-mode config     # print effective config with your settings applied
-claude auto-mode critique   # get AI feedback on your custom rules
-```
+For plan and model requirements, activation, the full hard-floor deny table, the `settings.local.json` `autoMode.environment` schema, and tuning commands, see [`docs/auto-mode.md`](docs/auto-mode.md).
 
 ### Output preferences
 
