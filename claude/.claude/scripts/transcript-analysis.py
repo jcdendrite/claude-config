@@ -21,24 +21,36 @@ TEST_RUNNER_RE = re.compile(
 FAILED_RE = re.compile(r"\b(\d+)\s+failed\b")
 
 STRUGGLE_PHRASES: list[str] = [
+    # attested in transcripts
+    "hold on",
+    "why did you",
+    "try again",
+    "no not that",
+    # predicted patterns
     "no, that",
     "that's wrong",
     "not right",
     "you're wrong",
     "stop doing",
     "don't do that",
-    "why did you",
     "still broken",
     "still failing",
-    "try again",
     "you missed",
     "incorrect",
     "not what i asked",
     "wrong approach",
-    "no not that",
     "that doesn't work",
     "please don't",
 ]
+
+
+def _projects_glob(args: argparse.Namespace) -> str:
+    return getattr(args, "projects", None) or "*"
+
+
+def _branch_filter(args: argparse.Namespace) -> set[str] | None:
+    raw: str | None = getattr(args, "branches", None)
+    return {b for b in raw.split(",") if b} if raw else None
 
 
 def _fam(model: str) -> str:
@@ -104,10 +116,8 @@ def _longest_fail_streak(failed_flags: list[bool]) -> int:
 
 
 def cmd_buckets(args: argparse.Namespace) -> None:
-    projects_glob: str = getattr(args, "projects", None) or "*"
-    branch_filter: set[str] | None = (
-        {b for b in args.branches.split(",") if b} if getattr(args, "branches", None) else None
-    )
+    projects_glob = _projects_glob(args)
+    branch_filter = _branch_filter(args)
 
     branch_data: dict[str, dict] = defaultdict(
         lambda: {"sessions": 0, "opus": 0, "sonnet": 0, "haiku": 0, "other": 0, "ts_min": float("inf"), "ts_max": float("-inf")}
@@ -161,7 +171,7 @@ def cmd_fail_seq(args: argparse.Namespace) -> None:
         print("--branches is required for fail-seq", file=sys.stderr)
         sys.exit(1)
     branches: set[str] = {b for b in args.branches.split(",") if b}
-    projects_glob: str = getattr(args, "projects", None) or "*"
+    projects_glob = _projects_glob(args)
 
     branch_runs: dict[str, list[tuple[str, int]]] = defaultdict(list)
 
@@ -237,10 +247,8 @@ def cmd_fail_seq(args: argparse.Namespace) -> None:
 
 
 def cmd_struggle(args: argparse.Namespace) -> None:
-    projects_glob: str = getattr(args, "projects", None) or "*"
-    branch_filter: set[str] | None = (
-        {b for b in args.branches.split(",") if b} if getattr(args, "branches", None) else None
-    )
+    projects_glob = _projects_glob(args)
+    branch_filter = _branch_filter(args)
 
     branch_data: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
@@ -277,10 +285,8 @@ def cmd_struggle(args: argparse.Namespace) -> None:
 
 
 def cmd_duration(args: argparse.Namespace) -> None:
-    projects_glob: str = getattr(args, "projects", None) or "*"
-    branch_filter: set[str] | None = (
-        {b for b in args.branches.split(",") if b} if getattr(args, "branches", None) else None
-    )
+    projects_glob = _projects_glob(args)
+    branch_filter = _branch_filter(args)
     gap_secs: int = (getattr(args, "gap_minutes", None) or 30) * 60
 
     branch_timestamps: dict[str, list[float]] = defaultdict(list)
@@ -316,10 +322,8 @@ def cmd_duration(args: argparse.Namespace) -> None:
 
 
 def cmd_subagents(args: argparse.Namespace) -> None:
-    projects_glob: str = getattr(args, "projects", None) or "*"
-    branch_filter: set[str] | None = (
-        {b for b in args.branches.split(",") if b} if getattr(args, "branches", None) else None
-    )
+    projects_glob = _projects_glob(args)
+    branch_filter = _branch_filter(args)
 
     branch_data: dict[str, dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
@@ -367,7 +371,7 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
     branches: list[str] = [b.strip() for b in args.branches.split(",") if b.strip()]
     repo: str = args.repo
     author: str = getattr(args, "author", None) or ""
-    projects_glob: str = getattr(args, "projects", None) or "*"
+    projects_glob = _projects_glob(args)
 
     branch_models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):

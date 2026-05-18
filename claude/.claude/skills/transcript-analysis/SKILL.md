@@ -1,6 +1,6 @@
 ---
 name: transcript-analysis
-description: Run the transcript-analysis.py toolkit to analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration decomposition, subagent-vs-main turn split, or PR-to-branch mapping. TRIGGER when: the user asks which model was used on a branch, wants to check whether a debugging loop converged or thrashed, wants to scan for frustration signals, wants to see how active vs idle time breaks down on a branch, wants to know how much work ran in subagents vs the main thread, or wants to link branches to PRs with comment counts. DO NOT TRIGGER when: the user wants token-cost or cache-efficiency analysis (use token-analyzer.py directly), or when the question is about a specific file's content rather than transcript-wide patterns.
+description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, or PR-to-branch mapping. For token-cost or cache-efficiency analysis use token-analyzer.py directly.
 disable-model-invocation: true
 ---
 
