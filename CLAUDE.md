@@ -66,6 +66,14 @@ not want to extend. Mirror existing entries when in doubt.
 
 **Global skill bodies stay platform-agnostic.** Skills under `claude/.claude/skills/` are stowed to every user who clones this repo — their bodies must read cleanly regardless of stack. Encode the generic concept; do not hardcode engine/platform-specific tokens (`pg_cron`, `net.http_post`, vendor API names). Stack-specific examples and checks belong in a project-layer skill (`<skill>-<project>/SKILL.md`) that the base skill loads via its project-layer glob — e.g. `/code-review`'s Step 0.5 globs `.claude/skills/code-review-*/SKILL.md`.
 
+## Review pipeline
+
+`/plan-it` is the prescribed entry for plan creation. `/plan-review` and
+`/code-review` are mandatory pipeline steps before PR handoff — both are
+hook-enforced (see README "Workflow" for the full skill invocation order and
+which hook gates each transition). When staged changes include a SKILL.md,
+`/skill-review` is also required; `/code-review` invokes it automatically.
+
 ## Plans in this repo affect all stow users
 
 `claude/` is stowed into `$HOME` — changes ship to every user who clones and stows this repo, not only to the session owner. When reviewing a plan for `claude-config`, evaluate with that audience in mind. Files under `claude/` are not personal config; they are distributed to all stow users on `git pull`. Surface this when declaring the user surface in Step 2 of plan-review, and weight finding severity accordingly.
@@ -86,12 +94,6 @@ committing a skill change, invoke the skill via the `Skill` tool and
 check the diff against its output — e.g. an edit adding prose to a
 skill that argues for brevity is the kind of thing the skill would
 flag against itself.
-
-`/plan-it` is the prescribed entry for plan creation. `/plan-review`,
-`/code-review`, and `/skill-review` are mandatory pipeline steps before PR
-handoff — all three are hook-enforced (see README "Workflow" for the full
-skill invocation order and which hook gates each transition).
-`/skill-review`'s gate fires only when staged changes include a SKILL.md.
 
 ## Redact private-project-identifying content
 
