@@ -1,5 +1,6 @@
 {
   "skill_name": "code-review",
+  "method": "runtime",
   "cases": [
     {
       "id": "code-written-commit-pending",
@@ -8,7 +9,7 @@
     },
     {
       "id": "explicit-user-code-review-request",
-      "query": "Please do a code review of this function: def fetch_user(user_id): return db.query(User).filter_by(id=user_id).first()",
+      "query": "I've just finished implementing a new feature and I'm ready to commit. Can you do a formal code review of my changes?",
       "should_trigger": true
     },
     {

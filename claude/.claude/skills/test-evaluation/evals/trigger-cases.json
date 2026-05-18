@@ -1,5 +1,6 @@
 {
   "skill_name": "test-evaluation",
+  "method": "description-fidelity",
   "cases": [
     {
       "id": "evaluating-existing-suite-quality",

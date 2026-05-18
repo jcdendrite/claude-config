@@ -1,5 +1,6 @@
 {
   "skill_name": "test-conventions",
+  "method": "description-fidelity",
   "cases": [
     {
       "id": "planning-tests-new-feature",

@@ -10,11 +10,23 @@ pytest pythonpath so `import run_trigger_evals` resolves correctly.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
-from run_trigger_evals import detect_trigger_in_lines
+import pytest
+from run_trigger_evals import (
+    detect_trigger_in_lines,
+    format_skip_notice,
+    load_case_file,
+    partition_case_files,
+    seed_temp_project_git,
+)
 
 FIXTURES_DIR = Path(__file__).resolve().parents[4] / "evals" / "fixtures"
+HARNESS = Path(__file__).resolve().parents[4] / "evals" / "run_trigger_evals.py"
 
 
 def _lines(fixture_name: str) -> list[str]:
@@ -65,3 +77,114 @@ class TestDetectTriggerInLines:
         fired, also = detect_trigger_in_lines(lines, "code-review", [])
         assert fired is None
         assert also == []
+
+
+class TestSeedTempProjectGit:
+    def test_calculator_staged_not_committed(self) -> None:
+        """calculator.py must be staged (M ) — not unstaged ( M) — after seeding.
+
+        A silently mis-applied patch yields an empty diff, which would make every
+        code-review and test-evaluation sample fail for a reason unrelated to skill
+        triggering — the exact false signal the fixture fix exists to kill.
+        """
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            seed_temp_project_git(tmp)
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            lines = result.stdout.splitlines()
+            assert any(
+                line.startswith("M ") and "calculator.py" in line for line in lines
+            ), f"calculator.py should be staged (M ), got: {result.stdout!r}"
+            assert not any(
+                line.startswith(" M") and "calculator.py" in line for line in lines
+            ), f"calculator.py should not appear unstaged ( M), got: {result.stdout!r}"
+
+
+class TestCaseFileMethod:
+    """The `method` field gates which harness measures a skill."""
+
+    @staticmethod
+    def _write_case_file(directory: Path, name: str, payload: dict) -> Path:
+        path = directory / name
+        path.write_text(json.dumps(payload))
+        return path
+
+    def test_load_case_file_rejects_missing_method(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            path = self._write_case_file(
+                Path(tmp_str), "missing.json", {"skill_name": "x", "cases": []}
+            )
+            with pytest.raises(ValueError, match="method"):
+                load_case_file(path)
+
+    def test_load_case_file_rejects_unknown_method(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            path = self._write_case_file(
+                Path(tmp_str),
+                "unknown.json",
+                {"skill_name": "x", "method": "guesswork", "cases": []},
+            )
+            with pytest.raises(ValueError, match="method"):
+                load_case_file(path)
+
+    def test_load_case_file_accepts_valid_methods(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            for method in ("runtime", "description-fidelity"):
+                path = self._write_case_file(
+                    Path(tmp_str),
+                    f"{method}.json",
+                    {"skill_name": "x", "method": method, "cases": []},
+                )
+                assert load_case_file(path)["method"] == method
+
+    def test_partition_splits_by_method(self) -> None:
+        """Runtime files run; description-fidelity files are reported as skipped."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            runtime = self._write_case_file(
+                tmp, "runtime.json",
+                {"skill_name": "rt", "method": "runtime", "cases": []},
+            )
+            descfid = self._write_case_file(
+                tmp, "descfid.json",
+                {"skill_name": "df", "method": "description-fidelity", "cases": []},
+            )
+            runtime_files, skipped = partition_case_files([runtime, descfid])
+            assert runtime_files == [runtime]
+            assert skipped == [("df", "description-fidelity")]
+
+    def test_format_skip_notice_names_skills(self) -> None:
+        notice = format_skip_notice(
+            [
+                ("test-evaluation", "description-fidelity"),
+                ("test-conventions", "description-fidelity"),
+            ]
+        )
+        assert "test-conventions" in notice
+        assert "test-evaluation" in notice
+        assert "README" in notice
+
+
+class TestSkipNoticeWiring:
+    def test_description_fidelity_skill_skipped_with_notice(self) -> None:
+        """`--skill` on a description-fidelity skill prints the skip notice, exits 0.
+
+        test-conventions declares method=description-fidelity, so the runtime
+        harness runs no samples — this exercises the skip path end-to-end
+        without spawning claude -p.
+        """
+        result = subprocess.run(
+            [sys.executable, str(HARNESS), "--skill", "test-conventions"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Skipped" in result.stdout
+        assert "test-conventions" in result.stdout
