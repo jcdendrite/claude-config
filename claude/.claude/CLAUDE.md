@@ -27,7 +27,11 @@ Use the `Agent` tool with `subagent_type: check-runner` to run the checks (full 
 
 **The dispatch prompt must include the absolute working directory** (e.g. `Working directory: /absolute/path/to/worktree`). check-runner has no guaranteed cwd; directory-sensitive commands run from the wrong tree produce misleading failures. Do not enumerate setup or state-mutating commands in the list — db resets, migrations, container start/stop, seed scripts, package installs — perform setup yourself before dispatching.
 
-If the subagent reports a check was blocked by permissions, do NOT fall back to running it directly in the parent — that defeats the dispatch (parent context inhales the output) and silently bypasses the permission gate. Stop, surface the exact missing allow-rule (e.g. `Bash(npm run verify)`), and wait for the user to either pre-approve it in the appropriate scope's `permissions.allow` or run the command themselves.
+If the subagent reports a check was `BLOCKED`, do NOT fall back to running it directly in the parent — that defeats the dispatch (parent context inhales the output) and silently bypasses the gate that stopped it. Branch on the `block_type` the verdict carries:
+
+- `SETTINGS_DENIAL` — a missing or declined permission rule. Before recommending an allow-rule, confirm an existing rule does not already cover the command (don't propose a dead rule). Surface the exact rule needed — exact-match, not a glob (per the Safety section), e.g. `Bash(npm run verify)` — and wait for the user to pre-approve it in the appropriate scope's `permissions.allow` or run the command themselves.
+- `HOOK_BLOCK` — a PreToolUse hook blocked the call; this is not a settings gap. Diagnose from the hook's verbatim stderr in the verdict; do not add an allow-rule.
+- `UNKNOWN_BLOCK` — surface the verbatim message and ask the user; an interactive-prompt decline can land here. Do not guess a remediation.
 
 ### Codebase discovery
 
