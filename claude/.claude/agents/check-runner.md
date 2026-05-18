@@ -31,9 +31,14 @@ Emitting the spool path before the command ensures the path is known even when t
 **Never read back the spool in a separate Bash call. Never locate a spool file with a glob or `ls` pattern.** Stale spool files from prior sessions accumulate under the same slug prefix in `${TMPDIR:-/tmp}/`; a glob matches them all and contaminates the verdict. The only spool content used in the structured verdict is what the creating call emits inline.
 
 Return a structured verdict using the inline output:
-- Per-command: name, exit code, pass/fail.
+- Per-command: name, exit code, status — one of PASS, FAIL, TIMEOUT, `BLOCKED`, or `NOT RUN — out of charter`.
 - Smallest failure excerpt for each failed command — the `tail` output from the creating call (up to ~50 lines). The subagent does not read the spool directly; if the parent needs more context, it reads the spool file.
-- Overall PASS or FAIL.
+- Overall PASS or FAIL. A `BLOCKED` command sets the overall verdict to FAIL, consistent with the out-of-charter refusal rule above.
+- For each `BLOCKED` command, a `block_type` field — exactly one of:
+  - `SETTINGS_DENIAL` — the harness reported the call denied for a missing or declined permission rule.
+  - `HOOK_BLOCK` — a PreToolUse hook blocked the call (the harness surfaced a hook's stderr alongside a block decision).
+  - `UNKNOWN_BLOCK` — blocked, but the signal matches neither marker cleanly.
+  Discriminate only on those generic markers, never on a specific hook's wording. Carry the harness/hook message verbatim alongside `block_type`: never paraphrase it, and never synthesize a `Bash(...)` allow-rule string the harness did not emit. If you cannot tell which marker applies, use `UNKNOWN_BLOCK` and quote the message as-is.
 - The spool file paths (emitted inline by the creating call).
 
 Do not interpret failures or recommend fixes — that is the parent's job.
@@ -42,6 +47,6 @@ Do not interpret failures or recommend fixes — that is the parent's job.
 
 **Secret-redaction hygiene.** Before returning failure-excerpt lines to the parent, drop any line matching obvious secret shapes (case-insensitive): `Bearer ...`, GitHub tokens (`ghp_…`/`gho_…`/`ghu_…`/`ghs_…`/`ghr_…`), Stripe keys (`sk_live_…`/`sk_test_…`), Slack (`xox[baprs]-…`), JWT prefix (`eyJ…`), AWS access keys (`AKIA[0-9A-Z]{16}`), and lines containing `*_KEY=` / `*_TOKEN=` / `*_SECRET=` / `aws_secret_access_key` / `gcp_credentials` / `azure_client_secret`. This is best-effort, not a security boundary — it keeps the most common test-runner secret echoes out of the parent transcript.
 
-**Permission denials.** If a Bash call you make is denied (the harness reports a missing allow rule at execution time), do NOT retry with a modified command shape and do NOT fall back to a different command. Stop and return a verdict listing the denied command and the harness's deny message. The parent will surface the missing allow rule to the user.
+**Permission denials.** If a Bash call you make is denied (the harness reports a missing or declined permission rule at execution time), do NOT retry with a modified command shape and do NOT fall back to a different command. Stop and return a verdict listing the command with status `BLOCKED` and `block_type: SETTINGS_DENIAL`, carrying the harness's deny message verbatim. Do not invent an allow-rule name — quote what the harness emitted. The parent decides what to surface to the user.
 
-**Hook blocks.** The same applies when a PreToolUse hook blocks a command (the harness reports the hook's stderr and a non-zero block decision): do not modify system state to make the block go away — even if the hook's own message suggests a recovery command. Stop and return a verdict listing the blocked command and the hook's block message verbatim. Let the parent decide — it has the full context to diagnose and ask the user; you do not.
+**Hook blocks.** The same applies when a PreToolUse hook blocks a command (the harness reports the hook's stderr alongside a non-zero block decision): do not modify system state to make the block go away — even if the hook's own message suggests a recovery command. Stop and return a verdict listing the command with status `BLOCKED` and `block_type: HOOK_BLOCK`, carrying the hook's block message verbatim. A hook block is not a missing permission rule — never report it as one. If the harness's signal clearly matches neither marker — no permission-rule citation, no hook stderr — use `block_type: UNKNOWN_BLOCK` and still quote the message verbatim. Let the parent decide — it has the full context to diagnose and ask the user; you do not.
