@@ -141,7 +141,7 @@ def _model_invokable_skills() -> list[str]:
 # suppressed from the model's always-loaded listing budget. Add to this list
 # whenever a new command-style skill (user-invoked slash workflow, no model
 # auto-discovery needed) is created under skills/.
-COMMAND_SKILLS = ["handoff", "read-docx-comments"]
+COMMAND_SKILLS = ["handoff", "read-docx-comments", "transcript-analysis"]
 
 
 class TestSpecialistSkillTriggerContracts:
