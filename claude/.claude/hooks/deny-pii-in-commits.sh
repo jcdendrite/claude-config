@@ -145,7 +145,15 @@ COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/n
 # `-a`/`--all`, a `--` pathspec separator, or a bare pathspec argument all
 # commit working-tree content not in the index at hook time.
 commit_fragment_has_worktree_target() {
-  printf '%s\n' "$1" | xargs -n1 2>/dev/null | awk '
+  # Each stage is captured into a variable rather than run as one pipeline.
+  # The awk exits as soon as it finds a worktree-target token; in a single
+  # pipeline that closes the pipe on a still-running `xargs -n1`, and under
+  # `set -o pipefail` the resulting SIGPIPE surfaces as a non-zero pipeline
+  # status — spuriously reporting "no target". Testing the captured awk
+  # output makes the verdict independent of any stage's exit code.
+  local fragment_tokens verdict
+  fragment_tokens=$(printf '%s\n' "$1" | xargs -n1 2>/dev/null)
+  verdict=$(awk '
     BEGIN { past = 0; skip = 0 }
     {
       if (!past) { if ($0 == "commit") past = 1; next }
@@ -167,7 +175,8 @@ commit_fragment_has_worktree_target() {
       # A bare, non-consumed token after `commit` is a pathspec.
       print "Y"; exit
     }
-  ' | grep -q Y
+  ' <<< "$fragment_tokens")
+  [ "$verdict" = "Y" ]
 }
 
 # Walk the command's shell fragments once. _lib_split_fragments splits on
@@ -325,13 +334,18 @@ luhn_valid() {
 }
 
 # --- Scan -----------------------------------------------------------------
+# Each match test reads SCAN_TARGET via a here-string, not `printf | grep`.
+# `grep -q` exits on the first match; in a pipeline that SIGPIPEs the
+# `printf`, and under `set -o pipefail` a large SCAN_TARGET could then make
+# the pipeline report non-zero — dropping a real match. A here-string is
+# not a pipeline, so the test reflects only grep's own exit status.
 MATCHED_LABELS=()
 
-if printf '%s' "$SCAN_TARGET" | grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b'; then
+if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SCAN_TARGET"; then
   MATCHED_LABELS+=("US Social Security number")
 fi
 
-CC_CANDIDATES=$(printf '%s' "$SCAN_TARGET" | grep -oE '\b[0-9]{13,19}\b' | sort -u)
+CC_CANDIDATES=$(grep -oE '\b[0-9]{13,19}\b' <<< "$SCAN_TARGET" | sort -u)
 if [ -n "$CC_CANDIDATES" ]; then
   while IFS= read -r cc_candidate; do
     [ -z "$cc_candidate" ] && continue
@@ -343,7 +357,7 @@ if [ -n "$CC_CANDIDATES" ]; then
 fi
 
 for i in "${!USER_REGEXES[@]}"; do
-  if printf '%s' "$SCAN_TARGET" | grep -qE -e "${USER_REGEXES[$i]}"; then
+  if grep -qE -e "${USER_REGEXES[$i]}" <<< "$SCAN_TARGET"; then
     MATCHED_LABELS+=("${USER_LABELS[$i]}")
   fi
 done
