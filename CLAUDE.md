@@ -68,11 +68,10 @@ not want to extend. Mirror existing entries when in doubt.
 
 ## Review pipeline
 
-`/plan-it` is the prescribed entry for plan creation. `/plan-review`,
-`/code-review`, and `/skill-review` are mandatory pipeline steps before PR
-handoff — all three are hook-enforced (see README "Workflow" for the full
-skill invocation order and which hook gates each transition).
-`/skill-review`'s gate fires only when staged changes include a SKILL.md; it ships in the bundled `skill-review` plugin (not under `claude/.claude/skills/`).
+`/plan-it` is the prescribed entry for plan creation. `/plan-review` and
+`/code-review` are mandatory pipeline steps before PR handoff — both are
+hook-enforced (see README "Workflow" for the full skill invocation order and
+which hook gates each transition).
 
 ## Plans in this repo affect all stow users
 
