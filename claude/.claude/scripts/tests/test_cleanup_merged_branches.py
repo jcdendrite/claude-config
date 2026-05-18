@@ -993,3 +993,100 @@ class TestLockedWorktreeLiveness:
         )
         output = result.stdout.decode()
         assert "stale" in output.lower() or "dead" in output.lower()
+
+
+class TestWorktreeInUseGuard:
+    """A worktree that a live process is working inside is not removed."""
+
+    def test_worktree_with_live_process_is_skipped(self, tmp_path, fake_gh):
+        """A worktree holding a live process's cwd is skipped; branch survives."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/in-use")
+        subprocess.run(["git", "branch", "-D", "feat/in-use"], cwd=bare, check=True)
+
+        wt_path = tmp_path / "in-use-tree"
+        _make_worktree(local, "feat/in-use", wt_path)
+
+        env = fake_gh({"feat/in-use": {"number": 400, "mergedAt": "2026-05-01"}})
+        # A live process whose working directory is inside the worktree.
+        holder = subprocess.Popen(["sleep", "120"], cwd=str(wt_path))
+        try:
+            result = _run_script(local, env)
+        finally:
+            holder.terminate()
+            holder.wait()
+
+        assert result.returncode == 0
+        assert "in use by a live process" in result.stdout
+        assert wt_path.exists(), "worktree in use must not be removed"
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/in-use"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "branch must survive when its worktree is in use"
+
+    def test_worktree_in_use_via_subdirectory_is_skipped(self, tmp_path, fake_gh):
+        """A process cwd'd into a subdirectory of the worktree also skips it."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/in-use-sub")
+        subprocess.run(["git", "branch", "-D", "feat/in-use-sub"], cwd=bare, check=True)
+
+        wt_path = tmp_path / "in-use-sub-tree"
+        _make_worktree(local, "feat/in-use-sub", wt_path)
+        subdir = wt_path / "nested"
+        subdir.mkdir()
+
+        env = fake_gh({"feat/in-use-sub": {"number": 401, "mergedAt": "2026-05-01"}})
+        holder = subprocess.Popen(["sleep", "120"], cwd=str(subdir))
+        try:
+            result = _run_script(local, env)
+        finally:
+            holder.terminate()
+            holder.wait()
+
+        assert result.returncode == 0
+        assert "in use by a live process" in result.stdout
+        assert wt_path.exists(), "worktree with an in-use subdirectory must not be removed"
+
+    def test_idle_worktree_still_removed(self, tmp_path, fake_gh):
+        """A worktree with no live process inside it is removed as before."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/idle-wt")
+        subprocess.run(["git", "branch", "-D", "feat/idle-wt"], cwd=bare, check=True)
+
+        wt_path = tmp_path / "idle-tree"
+        _make_worktree(local, "feat/idle-wt", wt_path)
+
+        env = fake_gh({"feat/idle-wt": {"number": 403, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "worktree:       removed:" in result.stdout
+        assert "in use by a live process" not in result.stdout
+        assert not wt_path.exists(), "idle worktree must still be removed"
+
+    def test_worktree_in_use_annotated_in_dry_run(self, tmp_path, fake_gh):
+        """--dry-run flags an in-use worktree and changes nothing."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/in-use-dry")
+
+        wt_path = tmp_path / "in-use-dry-tree"
+        _make_worktree(local, "feat/in-use-dry", wt_path)
+
+        env = fake_gh({"feat/in-use-dry": {"number": 402, "mergedAt": "2026-05-01"}})
+        holder = subprocess.Popen(["sleep", "120"], cwd=str(wt_path))
+        try:
+            result = _run_script(local, env, args=["--dry-run"])
+        finally:
+            holder.terminate()
+            holder.wait()
+
+        assert result.returncode == 0
+        assert "feat/in-use-dry" in result.stdout
+        assert "worktree in use" in result.stdout and "would skip" in result.stdout
+        assert wt_path.exists()
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/in-use-dry"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0

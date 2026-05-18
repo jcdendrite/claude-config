@@ -18,6 +18,19 @@
 # invocation shapes — no PreToolUse hook is needed because no
 # wildcard is in play.
 #
+# Live-worktree guard:
+# This script removes the worktree of every merged branch it cleans up.
+# Before removing one it skips any worktree that a live process is
+# working inside — it inspects process working directories (Linux
+# /proc, otherwise lsof) and skips a worktree that is the cwd of a live
+# process (a Claude Code session, a shell, a dev server). Removing such
+# a worktree would leave that process serving a deleted directory.
+# The check sees process working directories, and only those of the
+# invoking user; it does not catch a process holding the worktree by an
+# open file descriptor without cwd'ing in, nor one bind-mounted into it
+# whose owning session has already exited. So still prefer to run this
+# only once other Claude Code sessions are idle.
+#
 # Usage:
 #   cleanup-merged-branches.sh
 #   cleanup-merged-branches.sh --dry-run
@@ -44,6 +57,80 @@ progress() {
 clear_progress() {
   [ -t 2 ] || return 0
   printf '\r%-80s\r' '' >&2
+}
+
+# ---------------------------------------------------------------------------
+# Live-worktree detection
+#
+# A worktree must not be removed while a live process is working inside it:
+# that process would be left with a deleted working directory. Detection is
+# OS-level (process working directories), not tied to any project's tooling.
+# ---------------------------------------------------------------------------
+
+# Snapshot of every readable process working directory. Populated once by
+# collect_process_cwds; PROCESS_CWD_SCAN records whether the scan succeeded.
+declare -a PROCESS_CWDS=()
+PROCESS_CWD_SCAN="unknown"
+
+collect_process_cwds() {
+  PROCESS_CWDS=()
+  PROCESS_CWD_SCAN="unavailable"
+  local proc_cwd pid cwd line
+  if readlink /proc/self/cwd >/dev/null 2>&1; then
+    # Linux: each /proc/<pid>/cwd is a symlink to that process's cwd.
+    for proc_cwd in /proc/[0-9]*/cwd; do
+      pid="${proc_cwd#/proc/}"; pid="${pid%/cwd}"
+      [ "$pid" = "$$" ] && continue
+      cwd=$(readlink "$proc_cwd" 2>/dev/null) || continue
+      if [ -n "$cwd" ]; then
+        PROCESS_CWDS+=("$cwd")
+      fi
+    done
+  elif command -v lsof >/dev/null 2>&1; then
+    # No procfs (e.g. macOS): `lsof -d cwd` reports each process's cwd.
+    # -F pn emits a `p<pid>` line, an `fcwd` line, then an `n<path>` line per
+    # process; the case below picks p and n lines and ignores any other.
+    pid=""
+    while IFS= read -r line; do
+      case "$line" in
+        p*) pid="${line#p}" ;;
+        n*)
+          [ "$pid" = "$$" ] && continue
+          cwd="${line#n}"
+          if [ -n "$cwd" ]; then
+            PROCESS_CWDS+=("$cwd")
+          fi
+          ;;
+      esac
+    done < <(lsof -d cwd -F pn 2>/dev/null)
+  fi
+  # A scan that finds zero process working directories has not worked — at
+  # minimum the invoking shell should appear. Leave PROCESS_CWD_SCAN as
+  # "unavailable" in that case so worktree_in_use reports "could not
+  # determine" and worktrees are skipped conservatively, rather than
+  # treated as idle and deleted on the strength of an empty snapshot.
+  if [ "${#PROCESS_CWDS[@]}" -gt 0 ]; then
+    PROCESS_CWD_SCAN="ok"
+  fi
+  return 0
+}
+
+# worktree_in_use <path> — is any live process working inside <path>?
+#   0 = in use   1 = idle   2 = could not determine
+# Matches against the collect_process_cwds snapshot, so the OS is scanned
+# once per run rather than once per branch.
+worktree_in_use() {
+  [ "$PROCESS_CWD_SCAN" = "unavailable" ] && return 2
+  local target="$1" resolved cwd
+  # Canonicalize so symlinked path components match the kernel-canonical
+  # cwd strings reported by /proc and lsof.
+  resolved=$(cd "$target" 2>/dev/null && pwd -P) || resolved="$target"
+  for cwd in "${PROCESS_CWDS[@]+"${PROCESS_CWDS[@]}"}"; do
+    if [ "$cwd" = "$resolved" ] || [[ "$cwd" == "$resolved"/* ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -173,6 +260,9 @@ else:
 done
 clear_progress
 
+# Snapshot live process working directories once; worktree_in_use queries it.
+collect_process_cwds
+
 # ---------------------------------------------------------------------------
 # Dry-run: print candidates and exit
 # ---------------------------------------------------------------------------
@@ -199,22 +289,34 @@ if [ "$DRY_RUN" -eq 1 ]; then
     local _branch="$1"
     local _locked=0
     local _matched=0
+    local _cand_path=""
+    local _wt_path=""
     while IFS= read -r _line; do
       if [[ "$_line" == "worktree "* ]]; then
+        _cand_path="${_line#worktree }"
         _matched=0
       elif [[ "$_line" == "branch refs/heads/${_branch}" ]]; then
         _matched=1
+        _wt_path="$_cand_path"
       elif [ "$_matched" -eq 1 ] && [[ "$_line" == "locked"* ]]; then
         _locked=1
       elif [ -z "$_line" ]; then
         _matched=0
       fi
     done < <(git worktree list --porcelain)
-    if [ "$_locked" -eq 1 ]; then
-      echo "  ${_branch} (${MERGED_PR_INFO[$_branch]}) [locked — will unlock and remove]"
-    else
-      echo "  ${_branch} (${MERGED_PR_INFO[$_branch]})"
+    local _tag=""
+    if [ -n "$_wt_path" ] && [ "$_wt_path" != "$REPO_ROOT" ]; then
+      local _in_use=0
+      worktree_in_use "$_wt_path" || _in_use=$?
+      if [ "$_in_use" -eq 0 ]; then
+        _tag=" [worktree in use — would skip]"
+      elif [ "$_in_use" -eq 2 ]; then
+        _tag=" [worktree idle state unverifiable — would skip]"
+      elif [ "$_locked" -eq 1 ]; then
+        _tag=" [locked — will unlock and remove]"
+      fi
     fi
+    echo "  ${_branch} (${MERGED_PR_INFO[$_branch]})${_tag}"
   }
 
   if [ "${#_DRY_TIER_A[@]}" -gt 0 ]; then
@@ -295,6 +397,8 @@ fi
 # ---------------------------------------------------------------------------
 
 declare -a SKIPPED_LIVE_LOCK=()
+declare -a SKIPPED_IN_USE=()
+declare -A SKIPPED_IN_USE_REASON=()
 
 echo "Cleaned up:"
 
@@ -345,6 +449,19 @@ for BRANCH in "${TO_DELETE[@]}"; do
   _commit_wt_candidate
 
   if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" != "$REPO_ROOT" ]; then
+    WORKTREE_IN_USE=0
+    worktree_in_use "$WORKTREE_PATH" || WORKTREE_IN_USE=$?
+    if [ "$WORKTREE_IN_USE" -eq 0 ]; then
+      echo "    worktree:       skipped (in use by a live process)"
+      SKIPPED_IN_USE+=("$BRANCH")
+      SKIPPED_IN_USE_REASON["$BRANCH"]="worktree in use by a live process"
+      continue
+    elif [ "$WORKTREE_IN_USE" -eq 2 ]; then
+      echo "    worktree:       skipped (cannot verify it is idle)"
+      SKIPPED_IN_USE+=("$BRANCH")
+      SKIPPED_IN_USE_REASON["$BRANCH"]="worktree idle state unverifiable"
+      continue
+    fi
     if [ "$WORKTREE_LOCKED" -eq 1 ]; then
       WORKTREE_LOCK_ALIVE=0
       if [ -n "$WORKTREE_LOCK_PID" ]; then
@@ -447,6 +564,10 @@ fi
 
 for BRANCH in "${SKIPPED_LIVE_LOCK[@]+"${SKIPPED_LIVE_LOCK[@]}"}"; do
   echo "Skipped (live agent lock): ${BRANCH}"
+done
+
+for BRANCH in "${SKIPPED_IN_USE[@]+"${SKIPPED_IN_USE[@]}"}"; do
+  echo "Skipped (${SKIPPED_IN_USE_REASON[$BRANCH]}): ${BRANCH}"
 done
 
 if [ "${#SKIPPED_NEEDS_PROMPT[@]}" -gt 0 ]; then
