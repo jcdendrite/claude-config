@@ -71,7 +71,8 @@ not want to extend. Mirror existing entries when in doubt.
 `/plan-it` is the prescribed entry for plan creation. `/plan-review` and
 `/code-review` are mandatory pipeline steps before PR handoff — both are
 hook-enforced (see README "Workflow" for the full skill invocation order and
-which hook gates each transition).
+which hook gates each transition). When staged changes include a SKILL.md,
+`/skill-review` is also required; `/code-review` invokes it automatically.
 
 ## Plans in this repo affect all stow users
 
