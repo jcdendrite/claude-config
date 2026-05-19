@@ -45,7 +45,11 @@ language and stack:
   loop body. Batch it or hoist it out of the loop.
 - Data crossing a trust boundary (request input, external response,
   caller-supplied identifier) is validated before use.
-- New behavior ships with a test that names the specific case it guards.
+- New behavior ships with a test that names the specific case it guards — but
+  only when the codebase already shows a test convention (a tests directory, a
+  runner config, sibling test files following a pattern). When no such
+  convention exists, flag the coverage gap in **Still uncertain** rather than
+  introduce test scaffolding the project does not have.
 
 This baseline is what you check while writing. It does not replace the
 self-review pass below.
