@@ -24,9 +24,10 @@ class TestMarkerScriptSessionMissing:
     """When the session file ($HOME/.claude/sessions/$PPID) does not exist,
     every write/activate/deactivate subcommand must exit 2 and write nothing.
     This guards against the silent-empty-suffix regression: without explicit
-    || exit 2 on the command-substitution call sites, exit 2 inside
-    _resolve_session_id() only exits the subshell — the parent continues and
-    writes a malformed marker with an empty session-id suffix."""
+    || exit 2 on the command-substitution call sites, the return 2 inside
+    _resolve_session_id() only sets the subshell exit status — the parent
+    continues and writes a malformed marker with an empty session-id
+    suffix."""
 
     @pytest.mark.parametrize(
         "args",
@@ -306,3 +307,51 @@ class TestMarkerScriptEmptyStagedGuard:
         assert result.returncode == 0, result.stderr
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
         assert len(list(marker_dir.iterdir())) == 1
+
+
+class TestMarkerScriptStalePidLookup:
+    """Regression guard: `activate` must stamp the live Claude PID into the
+    active-bypass marker even when ~/.claude/sessions/ holds stale entries
+    from prior (crashed) sessions. The PID is resolved from the process
+    ancestor walk, not by content-scanning the sessions directory, so stale
+    files cannot mislead it."""
+
+    def _seed_session(self, home, sid="test-session-stale"):
+        sessions_dir = home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / str(os.getpid())).write_text(sid)
+        return sid, sessions_dir
+
+    def test_activate_ignores_stale_session_entry(self, isolated_home, git_repo):
+        """A stale sessions/ entry whose filename sorts lexically before the
+        live PID — what the old reverse-lookup directory scan would have
+        picked first — must not end up in the active marker."""
+        sid, sessions_dir = self._seed_session(isolated_home)
+        # Leading-zero filename: capture-session-id.sh only ever writes bare
+        # PIDs, so a "0"-prefixed name is never a real entry, and it sorts
+        # lexically before every str(os.getpid()) (which never starts with
+        # "0"). The pre-fix directory scan would have stamped this into the
+        # marker; the ancestor walk never reads it.
+        stale = sessions_dir / "08888888"
+        stale.write_text(sid)
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        active_file = isolated_home / ".claude" / ".plan-review-active.d" / sid
+        assert active_file.exists()
+        content = active_file.read_text().strip()
+        assert content == str(os.getpid()), (
+            f"activate must stamp the live ancestor PID, not the stale "
+            f"sessions entry; got {content!r}"
+        )
+
+    def test_write_arm_still_resolves_session_id(self, isolated_home, git_repo):
+        """The refactored _resolve_session_id keeps its signature: a `write`
+        arm (which needs only the session id) resolves and writes its
+        marker with the correct session-id suffix."""
+        sid, _ = self._seed_session(isolated_home)
+        result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "review-markers"
+        files = list(marker_dir.iterdir())
+        assert len(files) == 1
+        assert files[0].name.endswith(f".{sid}")
