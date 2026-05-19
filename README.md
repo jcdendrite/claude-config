@@ -109,7 +109,7 @@ docs/          # design-decisions, walkthrough, hooks, skills, scripts, auto-mod
 
 The skills form a sequential pipeline that covers the full contribution lifecycle. Hooks enforce the transitions so steps cannot be skipped.
 
-Linear pipeline: plan-it → plan-review → code → code-review → commit → ready-for-review → push → respond-pr; each transition gated by a require-\* hook. Branch divergence from `origin/<default>` is surfaced at session start (`check-branch-divergence.sh` SessionStart advisory) and resolved at the push gate (`/ready-for-review` invokes `/git-feature-branch-sync` if behind) — see [Detecting divergence](claude/.claude/skills/git-feature-branch-sync/SKILL.md#detecting-divergence) for the canonical recipe.
+Linear pipeline: plan-it → plan-review → code → code-review → commit → ready-for-review → push → respond-pr; each transition gated by a require-\* hook.
 
 ```mermaid
 flowchart LR
