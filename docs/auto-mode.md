@@ -143,11 +143,12 @@ follows:
 | `Explore` | Haiku | Pinned by Claude Code; read-only search |
 | `staff-*`, `ciso-reviewer` | Sonnet | `model: sonnet` frontmatter in `~/.claude/agents/` |
 | `check-runner` | Haiku | `model: haiku` frontmatter |
+| `code-writer` | Sonnet | `model: sonnet` frontmatter |
 | `general-purpose` | **Opus (inherited)** | No model of its own — falls through to the parent |
 
-So dispatching `general-purpose` for delegated execution or whole-file
-discovery from an Opus auto-mode parent runs that work on Opus — roughly 5x the
-per-token cost of Sonnet. To keep it off Opus, pass an explicit `model: sonnet`
+So dispatching `general-purpose` for whole-file discovery or research from an
+Opus auto-mode parent runs that work on Opus — roughly 5x the per-token cost of
+Sonnet. To keep it off Opus, pass an explicit `model: sonnet`
 on the `Agent` dispatch; resolution step 2 overrides the inherited parent at
 step 4.
 
