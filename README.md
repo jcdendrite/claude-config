@@ -176,7 +176,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 ### Agents
 
-Two agent types ship in `claude/.claude/agents/`:
+Three agent types ship in `claude/.claude/agents/`:
 
 **Reviewer subagents** — eight stack-agnostic personas spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`).
 
@@ -194,6 +194,8 @@ Schema-change diffs nominally route three ways — `staff-backend-engineer` (des
 For guidance on extending, splitting, or spawning personas, see [design-decisions.md §9](docs/design-decisions.md).
 
 **`check-runner`** — a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts. Dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output". Constrained to `tools: Bash` only, capped at `maxTurns: 20`, and guarded by a `hooks.PreToolUse` script that denies git write operations — see `docs/design-decisions.md` §10.
+
+**`code-writer`** — a non-reviewer Sonnet agent that implements delegated code changes and self-reviews its own diff before returning, verifying it against the relevant `staff-*` reviewer angles so review-finding-class defects are caught in its own context rather than as a parent round-trip. Dispatched by the parent in place of `general-purpose` for code-writing; see `claude/.claude/CLAUDE.md` "Model Routing" and `docs/design-decisions.md` §14.
 
 ### Configuration files
 
