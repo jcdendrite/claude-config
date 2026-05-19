@@ -22,7 +22,7 @@ While active, `require-memory-skill.sh` bypasses for this session (<60 min fresh
 
 Before writing any file under `memory/`, check in order:
 
-1. **Grep CLAUDE.md and AGENTS.md** (project tree + `~/.claude/`) for keywords from the rule. If covered → edit the source, don't write to memory. Restating a covered rule is pure load. (See §3 compliance asymmetry, §5 anti-duplication heuristic.)
+1. **Grep CLAUDE.md and AGENTS.md** (project tree + `~/.claude/`) for keywords from the rule. If covered → edit the source, don't write to memory. Restating a covered rule is pure load. (See §3 advisory vs deterministic, §5 anti-duplication heuristic.)
 2. **Does this rule fire only inside a specific named skill's workflow?** If yes → that skill's `SKILL.md`, not memory. Skill bodies load at the moment the rule applies; memory loads every session whether the session uses that workflow or not.
 3. **Confirm the content fits a genuine memory use:** personal preference (user type), feedback calibration with the *why* — corrections *and* validated judgment calls (feedback type), past-incident context not captured in code or commit messages (project type), or pointer to an external system (reference type).
 
@@ -80,14 +80,16 @@ criteria for `.lovable/**` changes, see the `lovable-cloud-knowledge` skill.
 
 ## 2. Length targets
 
-Per [Claude Code Best Practices](https://code.claude.com/docs/en/best-practices),
-[HumanLayer](https://www.humanlayer.dev/blog/writing-a-good-claude-md),
-and [Chroma's Context Rot research](https://research.trychroma.com/context-rot):
-
-- Target: **under 200 lines per file**.
-- Diminishing returns past 300 lines. 1000+ words correlates negatively with compliance.
-- Attention decay hits the **middle** of long files — "lost in the middle." Burying critical rules past line ~150 reduces their effective load.
-- Compliance with prose rules tops out around **70%**. Structural tests and hooks hit 100%. When a rule can be encoded as either, prefer the mechanical enforcement.
+Official threshold: **under 200 lines per CLAUDE.md file** ([Claude Code
+— memory](https://code.claude.com/docs/en/memory): "Longer files consume
+more context and reduce adherence"). The unit is **lines** — no
+Anthropic source attaches a word-count threshold. Within that cap, line
+count undercounts density (long-paragraph lines bury rules), and
+attention decays in the middle ("lost in the middle"). Apply the
+**behavior test** below per line; place critical rules near start or end. CLAUDE.md is **advisory** while
+hooks are **deterministic** ([Claude Code Best Practices](https://code.claude.com/docs/en/best-practices):
+hooks "guarantee the action happens") — prefer a hook or structural
+test when a rule can be encoded as one.
 
 ### The behavior test
 
@@ -111,11 +113,11 @@ Claude Code when both files exist. Zero maintenance, single source.
 **Duplicate (defense-in-depth) when:**
 - The content is genuinely critical and one delivery mechanism could fail silently.
 - Different agents reach the file through different load paths and the rule needs to fire in all of them.
-- Example: a security-critical rule appearing in AGENTS.md (prose, ~70% compliance) AND enforced by a pre-commit hook (mechanical, 100% compliance) — the hook catches what prose drift misses.
+- Example: a security-critical rule appearing in AGENTS.md (advisory) AND enforced by a pre-commit hook (deterministic) — the hook catches what prose drift misses.
 
 **Do NOT duplicate when:**
 - An AGENTS.md-aware agent already reads it natively and Claude Code can import it via `@AGENTS.md` — one canonical source covers both.
-- The content is enforced structurally (a test, a hook) — prose duplication adds maintenance without raising compliance above the already-100% structural enforcement.
+- The content is enforced structurally (a test, a hook) — prose duplication adds maintenance without raising adherence above the deterministic enforcement.
 - The rule is process discipline enforced by `/pre-merge`, commit-review hooks, or other mechanical gates.
 
 ## 4. Quick decision flow when editing
@@ -172,8 +174,8 @@ Index discipline:
 | Rule that fires only inside a specific skill's flow              | That skill's SKILL.md (not CLAUDE.md, not auto-memory) |
 | Past incident "why" not captured in code, tests, or commit msgs  | Auto-memory (feedback or project type)           |
 | Pointer to external systems (Linear, Grafana, etc.)              | Auto-memory (reference type)                     |
-| Restatement of a rule already in CLAUDE.md / AGENTS.md           | **Nowhere — delete it** (§3 compliance asymmetry)|
-| Rule already enforced by a hook or structural test               | **Nowhere — enforcement is 100%, prose is load** |
+| Restatement of a rule already in CLAUDE.md / AGENTS.md           | **Nowhere — delete it** (§3 advisory vs deterministic)|
+| Rule already enforced by a hook or structural test               | **Nowhere — the hook enforces it; prose is load**|
 
 ### Anti-duplication heuristic
 
