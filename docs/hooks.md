@@ -22,7 +22,7 @@ Full descriptions for every hook in `claude/.claude/hooks/`. For the gate summar
 
 ## Utility hooks
 
-- **`capture-session-id.sh`** (SessionStart, SubagentStart) — at session and subagent start, writes the session's `session_id` to `~/.claude/sessions/<claude-pid>` so skills running as Bash tool calls (which don't see the hook payload) can look up their own session id via the bash tool's `$PPID`. Used by both `/respond-pr` and `/code-review` to compute per-session marker filenames.
+- **`capture-session-id.sh`** (SessionStart, SubagentStart) — at session and subagent start, writes the session's `session_id` to `~/.claude/sessions/<claude-pid>` so skills running as Bash tool calls (which don't see the hook payload) can look up their own session id via the bash tool's `$PPID`. Used by both `/respond-pr` and `/code-review` to compute per-session marker filenames. The hook also self-prunes superseded and orphaned bare-PID files from `~/.claude/sessions/`, throttled to once per 24 hours via `~/.claude/.sessions-gc-stamp`.
 - **`ask-review-permissions.sh`** — asks before `Edit`/`Write`/`MultiEdit` to `.claude/settings*.json`, nudging toward `/review-permissions` when the edit touches `permissions.allow`.
 - **`session-marker-dashboard.sh`** (SessionStart) — at session start, emits a summary of any active bypass markers (`/respond-pr`, `/ready-for-review`) into the resumed session's context so stale bypasses are visible.
 - **`enforce-marker-script-shape.sh`** — PreToolUse `Bash` gate that denies any `marker.sh` invocation not exactly matching the allowlisted shape pattern (`~/.claude/scripts/marker.sh <subcommand> <skill>`). Blocks chains (`&&`, `;`), redirects, env-var prefixes, and extra arguments. Defense-in-depth against prompt-injection escalation through the `marker.sh` allow rules.
@@ -82,3 +82,5 @@ If a skill's active-bypass gate refuses to release after the skill has finished,
 ~/.claude/scripts/marker.sh clear-stale          # evict dead-PID entries
 ~/.claude/scripts/marker.sh clear-stale --dry-run # report without removing
 ```
+
+`clear-stale` operates only on active-bypass marker directories (`.*-active.d/`); it does not touch `~/.claude/sessions/`, which is GC'd automatically by `capture-session-id.sh`.

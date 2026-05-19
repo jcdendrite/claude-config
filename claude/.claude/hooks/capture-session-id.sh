@@ -68,4 +68,83 @@ for _active_dir in "$HOME/.claude"/.*-active.d; do
   fi
 done
 
+# Garbage-collect stale bare-PID files from ~/.claude/sessions/.
+#
+# Throttled to once per 24 hours via ~/.claude/.sessions-gc-stamp so the
+# sweep does not run on every SubagentStart in an agentic session. The
+# stamp lives outside sessions/ to keep that directory purely bare-PID
+# files plus Claude Code's <pid>.json sidecars.
+#
+# Fail-open: every find/kill/rm non-zero exit is swallowed. The sweep is
+# best-effort tidiness — a failure must never propagate to the hook's
+# top-level exit and must never block session startup.
+_gc_stamp="$HOME/.claude/.sessions-gc-stamp"
+_sessions_dir="$HOME/.claude/sessions"
+
+# Check whether a fresh stamp exists (mtime under 24 hours old).
+# `find FILE -mtime -1` exits 0 and prints the path when mtime < 24h.
+_stamp_fresh=$(find "$_gc_stamp" -mtime -1 2>/dev/null)
+if [ -z "$_stamp_fresh" ]; then
+  # Stamp is absent or stale — run the sweep, then refresh the stamp.
+  (
+    # Precompute sets for the age-based checks. The directory is flat so
+    # no -maxdepth is needed. Both find calls are best-effort; failure
+    # produces an empty variable, which means those entries are simply
+    # skipped rather than deleted — safe and fail-open.
+    _old_files=$(find "$_sessions_dir" -type f -mtime +30 2>/dev/null || true)
+    _fresh_files=$(find "$_sessions_dir" -type f -mmin -5 2>/dev/null || true)
+
+    for _session_file in "$_sessions_dir"/*; do
+      # Guard against empty-directory no-match (nullglob not set).
+      [ -e "$_session_file" ] || continue
+
+      _b=${_session_file##*/}
+
+      # Only bare-PID filenames pass (excludes <pid>.json sidecars and
+      # anything else Claude Code may write). This is the single gate
+      # every deletion must pass.
+      [[ "$_b" =~ ^[0-9]+$ ]] || continue
+
+      # Never touch the lookup file just written by this run.
+      [ "$_b" = "$CLAUDE_PID" ] && continue
+
+      # Skip files younger than 5 minutes (floor against clock skew and
+      # a just-written sibling file whose mtime we can't perfectly order).
+      # Match whole newline-bounded paths: an unbounded substring match
+      # would let PID 123 match a list containing PID 1234.
+      case $'\n'"$_fresh_files"$'\n' in
+        *$'\n'"$_session_file"$'\n'*) continue ;;
+      esac
+
+      # Delete: superseded prior incarnation of this session (Leak A).
+      # `$(<file)` reads without a subprocess; a vanished file yields an
+      # empty string, and the subshell's 2>/dev/null swallows the notice.
+      _file_content=$(<"$_session_file")
+      if [ "$_file_content" = "$SESSION_ID" ]; then
+        rm -f "$_session_file" 2>/dev/null || true
+        continue
+      fi
+
+      # Delete: mapped process is gone (Leak B, common case).
+      if ! kill -0 "$_b" 2>/dev/null; then
+        rm -f "$_session_file" 2>/dev/null || true
+        continue
+      fi
+
+      # Delete: mtime older than 30 days covers PID-reuse where kill -0
+      # passes for an unrelated live process (Leak B, ceiling). Match
+      # whole newline-bounded paths so PID 123 cannot match PID 1234.
+      case $'\n'"$_old_files"$'\n' in
+        *$'\n'"$_session_file"$'\n'*) rm -f "$_session_file" 2>/dev/null || true ;;
+      esac
+    done
+  ) 2>/dev/null || true
+
+  # Refresh the throttle stamp regardless of sweep outcome. A failed
+  # write is harmless — the sweep is idempotent and simply re-runs next
+  # session — but emit a diagnostic per this hook's stderr convention.
+  touch "$_gc_stamp" 2>/dev/null || \
+    echo "[capture-session-id] could not write GC throttle stamp $_gc_stamp; sweep will re-run next session" >&2
+fi
+
 exit 0
