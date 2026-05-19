@@ -1,10 +1,13 @@
 #!/bin/bash
 # PreToolUse hook: block git commit when claude/.claude/settings.json has
-# model or effortLevel changes staged relative to main.
+# session-scoped keys (model, effortLevel, skipAutoPermissionPrompt) staged
+# relative to main.
 #
-# Purpose: model/effortLevel overrides in settings.json are typically session-
-# scoped ephemeral changes (e.g., /config model opus). Accidentally committing
-# them modifies the shipped config for all users. This hook catches that class
+# Purpose: these keys are typically session-scoped ephemeral changes —
+# model/effortLevel from /config, and skipAutoPermissionPrompt written
+# automatically by Claude Code when it persists the permission-prompt
+# preference into the user settings file. Accidentally committing them
+# modifies the shipped config for all users. This hook catches that class
 # of accidental commit and surfaces it before git runs.
 #
 # Defense-in-depth: the hook filters its own input by tool name AND checks
@@ -13,7 +16,7 @@
 #
 # Exit codes:
 #   0      — allow (no opinion)
-#   0+JSON — deny (model or effortLevel changed in staged settings.json)
+#   0+JSON — deny (a guarded key changed in staged settings.json)
 
 INPUT=$(cat)
 TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
@@ -52,11 +55,13 @@ else
   MAIN_CONTENT=$(git show "main:$SETTINGS_REPO_PATH" 2>/dev/null)
 fi
 
-# Extract model and effortLevel from both versions using jq.
+# Extract the guarded keys from both versions using jq.
 STAGED_MODEL=$(printf '%s\n' "$STAGED_CONTENT" | jq -r '.model // ""' 2>/dev/null)
 STAGED_EFFORT=$(printf '%s\n' "$STAGED_CONTENT" | jq -r '.effortLevel // ""' 2>/dev/null)
+STAGED_SKIP_AUTO_PROMPT=$(printf '%s\n' "$STAGED_CONTENT" | jq -r '.skipAutoPermissionPrompt // ""' 2>/dev/null)
 MAIN_MODEL=$(printf '%s\n' "$MAIN_CONTENT" | jq -r '.model // ""' 2>/dev/null)
 MAIN_EFFORT=$(printf '%s\n' "$MAIN_CONTENT" | jq -r '.effortLevel // ""' 2>/dev/null)
+MAIN_SKIP_AUTO_PROMPT=$(printf '%s\n' "$MAIN_CONTENT" | jq -r '.skipAutoPermissionPrompt // ""' 2>/dev/null)
 
 CHANGED=0
 if [ "$STAGED_MODEL" != "$MAIN_MODEL" ]; then
@@ -65,11 +70,14 @@ fi
 if [ "$STAGED_EFFORT" != "$MAIN_EFFORT" ]; then
   CHANGED=1
 fi
+if [ "$STAGED_SKIP_AUTO_PROMPT" != "$MAIN_SKIP_AUTO_PROMPT" ]; then
+  CHANGED=1
+fi
 
 if [ "$CHANGED" -eq 0 ]; then
   exit 0
 fi
 
-REASON="settings.json has model/effortLevel changes — commit these only if intentional. The staged settings.json differs from main on model or effortLevel. These fields are typically set per-session via /config and should not be committed unless you are intentionally shipping a routing change. Unstage the file (git restore --staged claude/.claude/settings.json) to allow the commit, or proceed only if this is a deliberate routing update."
+REASON="settings.json has session-scoped keys changed — commit these only if intentional. The staged settings.json differs from main on model, effortLevel, or skipAutoPermissionPrompt. These keys are typically ephemeral session state — model/effortLevel set via /config, and skipAutoPermissionPrompt written automatically by Claude Code — and should not be committed unless you are intentionally shipping a config change. Unstage the file (git restore --staged claude/.claude/settings.json) to allow the commit, or proceed only if this is a deliberate update."
 REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"

@@ -81,8 +81,25 @@ class TestGuardSettingsModelEffort:
             == "deny"
         )
 
+    def test_skip_auto_permission_prompt_change_denies_commit(self, settings_repo):
+        """skipAutoPermissionPrompt, written automatically by Claude Code, must block."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "skipAutoPermissionPrompt": true}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                bash_input("git commit -m 'update settings'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     def test_unrelated_settings_change_allows(self, settings_repo):
-        """Changing a key other than model/effortLevel must not block."""
+        """Changing a key other than the guarded set must not block."""
         repo, settings_file = settings_repo
         stage_settings(repo, settings_file, '{"model": "sonnet", "effortLevel": "normal", "theme": "dark"}\n')
         assert (
