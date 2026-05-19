@@ -86,8 +86,8 @@ After a `TRIGGER`-block change, run `python evals/run_skill_evals.py --skill <na
 ## 4. Length and the behavior test
 
 Target under **200 lines per file** (diminishing returns past 300).
-Prose-rule compliance tops out around ~70%; structural tests and
-hooks hit 100%. When a rule can be encoded mechanically, prefer
+Skill bodies are advisory; hooks and structural tests are
+deterministic. When a rule can be encoded mechanically, prefer
 mechanical enforcement.
 
 **The behavior test.** For every line: does removing this line
