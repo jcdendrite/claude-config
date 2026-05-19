@@ -63,6 +63,7 @@ This does not apply to *comprehension* reads: when you need a file's content in 
 - **Opus:** judgment-heavy reasoning, plan-mode planning, and parent-dispatcher orchestration.
 - **Sonnet (default):** all code reading, code writing, and specialist reviewer agents. Enforced via `model: sonnet` frontmatter in each agent file.
 - **Haiku:** narrow, deterministic skills only. Never for code authoring or judgment.
+- **Always dispatch `general-purpose` with an explicit `model`.** It is the one routinely-dispatched built-in with no model of its own, so it inherits the parent — and a session cannot detect its own permission mode to know whether that parent is an auto-mode Opus. Default to `model: sonnet`: a no-op when the parent is already Sonnet, and it keeps delegated work off Opus when the parent is not. Pass `model: opus` only when the delegated task genuinely needs Opus-level reasoning. Do not pass `model` to the other agents — `Explore` is pinned to Haiku, and `staff-*` / `ciso-reviewer` / `check-runner` carry their own `model:` frontmatter.
 
 ## Safety
 

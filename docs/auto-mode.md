@@ -121,6 +121,45 @@ operations will route to the classifier instead of auto-approving. Narrow rules
 like `Bash(npm test)` carry over unchanged. Dropped rules are restored when you
 leave auto mode.
 
+## Subagent delegation under auto mode
+
+Auto mode anchors the session to one model for its entire lifetime — there is
+no plan-mode-to-execution model switch the way `opusplan` provides. On Max that
+anchor is Opus (the only auto-eligible session model), so every subagent that
+*inherits* the parent model runs on Opus too.
+
+Subagent model is resolved in this order — the first that applies wins:
+
+1. `CLAUDE_CODE_SUBAGENT_MODEL` environment variable (global override)
+2. The `model` parameter on the `Agent` dispatch
+3. The `model:` frontmatter in the agent's definition file
+4. The parent / main-conversation model (inherited)
+
+The routinely-dispatched built-in subagents resolve as follows:
+
+| Agent | Model under an Opus auto-mode parent | Why |
+|---|---|---|
+| `Explore` | Haiku | Pinned by Claude Code; read-only search |
+| `staff-*`, `ciso-reviewer` | Sonnet | `model: sonnet` frontmatter in `~/.claude/agents/` |
+| `check-runner` | Haiku | `model: haiku` frontmatter |
+| `general-purpose` | **Opus (inherited)** | No model of its own — falls through to the parent |
+
+So dispatching `general-purpose` for delegated execution or whole-file
+discovery from an Opus auto-mode parent runs that work on Opus — roughly 5x the
+per-token cost of Sonnet. To keep it off Opus, pass an explicit `model: sonnet`
+on the `Agent` dispatch; resolution step 2 overrides the inherited parent at
+step 4.
+
+Since a session cannot reliably tell whether it is in auto mode, treat this as
+unconditional: always dispatch `general-purpose` with an explicit `model`. See
+the Model Routing section of the global `CLAUDE.md`.
+
+Do **not** reach for `CLAUDE_CODE_SUBAGENT_MODEL` to solve this. It sits at
+resolution step 1 and overrides *every* subagent's model — including
+`check-runner`'s deliberate Haiku pin and the `staff-*` reviewers' Sonnet pin.
+The per-dispatch `model` parameter is the targeted instrument; the env var is a
+blunt global hammer.
+
 ## Inspection and tuning
 
 ```bash
