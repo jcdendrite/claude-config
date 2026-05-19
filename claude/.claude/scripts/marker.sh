@@ -27,42 +27,43 @@ Valid (subcommand, skill) combinations:
 EOF
 }
 
-_resolve_session_id() {
+_walk_session() {
   local sid pid
   # Walk up the process ancestor chain looking for a session file. Direct
   # invocation resolves in one step ($PPID = Claude Code PID). Script
   # invocation from the Bash tool resolves in two steps ($PPID = Bash tool
   # shell, grandparent = Claude Code PID). The loop handles any depth.
+  # On the first ancestor with a readable session file, print
+  # "<session_id> <pid>": that $pid is the live Claude main-process PID,
+  # since the walk reached it as a process ancestor of this script.
   pid=$PPID
   while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
     sid=$(cat "$HOME/.claude/sessions/$pid" 2>/dev/null)
     if [ -n "$sid" ]; then
-      printf '%s' "$sid"
+      printf '%s %s' "$sid" "$pid"
       return 0
     fi
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' \t')
   done
   printf 'marker.sh: SESSION_ID empty — capture-session-id.sh SessionStart hook did not run. Abort without writing a marker.\n' >&2
-  exit 2
+  return 2
 }
 
-_resolve_claude_pid_for_session() {
-  # Reverse-lookup: find the PID whose sessions file contains SESSION_ID.
-  # Returns the PID string, or "unknown" on failure (fails closed at hook time).
-  local session_id="$1"
-  local sessions_dir="$HOME/.claude/sessions"
-  local claude_pid=""
-  if [ -d "$sessions_dir" ]; then
-    local f
-    for f in "$sessions_dir"/*; do
-      [ -f "$f" ] || continue
-      if [ "$(cat "$f" 2>/dev/null)" = "$session_id" ]; then
-        claude_pid=$(basename "$f")
-        break
-      fi
-    done
-  fi
-  printf '%s' "${claude_pid:-unknown}"
+_resolve_session_id() {
+  local out
+  out=$(_walk_session) || return 2
+  printf '%s' "${out%% *}"
+}
+
+_resolve_claude_pid() {
+  # The live Claude main-process PID for this session — the ancestor whose
+  # session file the walk matched. Written into the active-bypass marker so
+  # require-*.sh hooks can liveness-check it with kill -0. Resolving it from
+  # the ancestor walk (not by content-scanning ~/.claude/sessions/) keeps it
+  # immune to stale per-session files left behind after a crash.
+  local out
+  out=$(_walk_session) || return 2
+  printf '%s' "${out##* }"
 }
 
 _resolve_repo_hash() {
@@ -162,25 +163,25 @@ case "$SUBCOMMAND" in
     case "$SKILL" in
       plan-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid_for_session "$SESSION_ID")
+        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
         mkdir -p "$HOME/.claude/.plan-review-active.d"
         printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid_for_session "$SESSION_ID")
+        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
         mkdir -p "$HOME/.claude/.ready-for-review-active.d"
         printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
         ;;
       respond-pr)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid_for_session "$SESSION_ID")
+        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
         mkdir -p "$HOME/.claude/.respond-pr-active.d"
         printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
         ;;
       memory-skill)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid_for_session "$SESSION_ID")
+        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
         mkdir -p "$HOME/.claude/.memory-skill-active.d"
         printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.memory-skill-active.d/$SESSION_ID"
         ;;

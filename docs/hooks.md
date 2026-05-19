@@ -82,3 +82,5 @@ If a skill's active-bypass gate refuses to release after the skill has finished,
 ~/.claude/scripts/marker.sh clear-stale          # evict dead-PID entries
 ~/.claude/scripts/marker.sh clear-stale --dry-run # report without removing
 ```
+
+`activate` resolves the live PID from the process ancestor tree, so a stale `~/.claude/sessions/` entry left by a crashed or restarted session cannot be stamped into a freshly written marker. `clear-stale` remains the tool for markers left behind by sessions that ended without `deactivate`.
