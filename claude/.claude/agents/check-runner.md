@@ -18,15 +18,17 @@ Run each enumerated command exactly once. On non-zero exit, capture and move to 
 
 Every Bash call must include the tool's `timeout` parameter set to 600000 (10 minutes). Do not omit it. A command that exceeds 10 minutes is treated as a TIMEOUT verdict for that command — capture whatever output the spool file holds and proceed to the next command.
 
-For each command, run it in one self-contained Bash call — not split across multiple calls. The single call emits the spool path before the command runs, then the exit code and a bounded tail inline:
+For each command, run it in one self-contained Bash call — not split across multiple calls. The single call emits the spool path before the command runs, then the exit code — and, only on a non-zero exit, a bounded failure tail — inline:
 
 ```
-EPOCH=$(date +%s%3N); SPOOL="${TMPDIR:-/tmp}/<slug>-${EPOCH}.txt"; echo "SPOOL:$SPOOL"; <command> > "$SPOOL" 2>&1; EXIT=$?; echo "EXIT:$EXIT"; tail -50 "$SPOOL"
+EPOCH=$(date +%s%3N); SPOOL="${TMPDIR:-/tmp}/<slug>-${EPOCH}.txt"; echo "SPOOL:$SPOOL"; <command> > "$SPOOL" 2>&1; EXIT=$?; echo "EXIT:$EXIT"; if [ "$EXIT" -ne 0 ]; then tail -50 "$SPOOL"; fi
 ```
 
 `<slug>` is the command lowercased with non-alphanumeric runs collapsed to `-` (e.g., `npm test` → `npm-test`, `ruff check` → `ruff-check`). `<command>` must be a single simple command with no embedded `;` or shell control operators; cwd is anchored separately (see Working directory above).
 
 Emitting the spool path before the command ensures the path is known even when the Bash tool's `timeout` kills the call before the `EXIT` and `tail` lines run — a TIMEOUT verdict can reference the partial spool without re-locating it.
+
+The tail runs only on a non-zero exit. A passing command's verdict is complete with its exit code alone; surfacing a passing run's output into your context invites summarizing or totaling what it printed. Test counts and per-suite tallies belong in the spool file — the parent extracts them from there, not from your verdict.
 
 **Never read back the spool in a separate Bash call. Never locate a spool file with a glob or `ls` pattern.** Stale spool files from prior sessions accumulate under the same slug prefix in `${TMPDIR:-/tmp}/`; a glob matches them all and contaminates the verdict. The only spool content used in the structured verdict is what the creating call emits inline.
 
@@ -43,7 +45,7 @@ Return a structured verdict using the inline output:
 
 Do not interpret failures or recommend fixes — that is the parent's job.
 
-**Umbrella-command discipline.** A single enumerated command (e.g. `npm run verify`) may internally run several sub-suites, each printing its own summary block. Return exactly one verdict entry for that command — its name, its exit code, its overall pass/fail — never a per-sub-suite breakdown. Do not report, total, or characterize test counts; do not name or decompose the individual sub-suites. If the parent needs that detail it reads the spool file. This does not change the failure-excerpt rule above: on a failed command you still quote the smallest excerpt verbatim — a verbatim quote is not a synthesized count.
+**Umbrella-command discipline.** A single enumerated command (e.g. `npm run verify`) may internally run several sub-suites. Return exactly one verdict entry for that command — its name, its exit code, its overall pass/fail — never a per-sub-suite breakdown. Every sub-suite's full output is in the spool file; the parent extracts sub-suite detail or test counts from the spool itself. On a failed command, the failure-excerpt rule above still applies — quote the smallest excerpt verbatim.
 
 **Secret-redaction hygiene.** Before returning failure-excerpt lines to the parent, drop any line matching obvious secret shapes (case-insensitive): `Bearer ...`, GitHub tokens (`ghp_…`/`gho_…`/`ghu_…`/`ghs_…`/`ghr_…`), Stripe keys (`sk_live_…`/`sk_test_…`), Slack (`xox[baprs]-…`), JWT prefix (`eyJ…`), AWS access keys (`AKIA[0-9A-Z]{16}`), and lines containing `*_KEY=` / `*_TOKEN=` / `*_SECRET=` / `aws_secret_access_key` / `gcp_credentials` / `azure_client_secret`. This is best-effort, not a security boundary — it keeps the most common test-runner secret echoes out of the parent transcript.
 
