@@ -90,9 +90,9 @@
           },
           {
             "type": "command",
-            "command": "~/.claude/hooks/guard-settings-model-effort.sh",
+            "command": "~/.claude/hooks/guard-settings-session-keys.sh",
             "if": "Bash(git commit *)",
-            "statusMessage": "Checking settings.json model/effort..."
+            "statusMessage": "Checking settings.json session keys..."
           },
           {
             "type": "command",
