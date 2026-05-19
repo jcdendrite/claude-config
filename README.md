@@ -149,6 +149,7 @@ flowchart LR
 | `require-ready-for-review.sh` | `git push`, `gh pr ready` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
+| `cleanup-session-id.sh` | — (SessionEnd, no gate) | Removes the session-id lookup file its paired SessionStart hook wrote |
 
 See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all hooks, skills, scripts, and project-scoped plugins, see [`docs/hooks.md`](docs/hooks.md), [`docs/skills.md`](docs/skills.md), and [`docs/scripts.md`](docs/scripts.md).
 
