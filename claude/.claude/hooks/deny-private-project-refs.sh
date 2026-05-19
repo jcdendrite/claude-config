@@ -7,13 +7,15 @@
 # repo-root CLAUDE.md redaction rule ("Redact private-project-
 # identifying content").
 #
-# NOTE — `if`-dispatch is advisory; the real gate is the internal regex
-# at the top of this script. settings.json wires `if` entries
-# (`Bash(git commit *)`, `Bash(gh pr create *)`, `Bash(gh pr edit *)`,
-# `Bash(gh api *)`) for zero-cost early dispatch, but any drift between
-# those patterns and the IS_GIT_COMMIT / IS_GH_PR / IS_GH_API regexes
-# here creates silent coverage gaps. Update both surfaces when extending
-# coverage.
+# Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition,
+# so it runs for every Bash tool call and filters internally. A narrowing
+# `if: "Bash(git commit *)"` would let ordinary, executable forms such as
+# `git -c key=val commit` and `git -C <path> commit` slip past the early
+# dispatch unscanned. Command detection word-walks each shell fragment
+# (split on `&&`/`;`/`|`/`$()`/backticks) past global git flags, env-var
+# prefixes, and gh subcommand flags written ahead of the subcommand, then
+# exits immediately — before any git or scan work — when no gated surface
+# (git commit / gh pr create|edit / mutating gh api) is present.
 #
 # Scope and limits:
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
@@ -61,8 +63,23 @@
 #   that `--fill` then republishes.
 # - `gh pr create --body "$(cat file)"` or backtick command substitution
 #   inside --body/--title hides the actual content behind shell
-#   expansion the hook doesn't execute. Static regex match sees only
-#   the literal `$(...)` string.
+#   expansion the hook doesn't execute. The content scan sees only the
+#   literal `$(...)` string.
+# - Wrapper forms that evaluate the real command behind a nested shell
+#   boundary — `eval "git commit ..."`, `xargs git commit`,
+#   `sh -c 'git commit ...'`. The command word lives inside a quoted
+#   string the hook does not execute; same unscannable class as the
+#   `$(...)` body case above.
+# - A backslash-escaped `\git` invocation (used to bypass a shell alias)
+#   is not recognized as a git command: fragment detection matches a
+#   word equal to `git` or ending in `/git`, and `\git` is neither.
+#   Closing this belongs in a _lib.sh change — the word test is shared
+#   code used by several hooks.
+# - `git -C <path> commit` aimed at a *different* repository is still
+#   detected as a commit, but the staged-diff scan runs against the
+#   session's current repository, not the `-C` target. `-C` into a
+#   subdirectory of the same repo is unaffected (scan pathspecs are
+#   repo-root-relative).
 # - `gh api graphql` is a separate surface from the REST `gh api
 #   <path>` calls covered above. A tracker-ID literal in `-f query=`
 #   / `-F variables=` / `--input` is still caught by the same flag-
@@ -125,10 +142,6 @@
 
 set -uo pipefail
 
-INPUT=$(cat)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-JQ_EXIT=$?
-
 emit_deny() {
   local reason="$1"
   local reason_json
@@ -137,56 +150,126 @@ emit_deny() {
     "$reason_json"
 }
 
+# emit_deny is defined before sourcing _lib.sh so a missing _lib.sh can
+# still deny rather than silently allow.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by redaction gate: could not source _lib.sh — hook cannot evaluate command detection safely."
+  exit 0
+fi
+
+INPUT=$(cat)
+TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
+COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+JQ_EXIT=$?
+
 # Fail-closed on malformed input. Matches the posture of
 # require-worktree-for-git-writes.sh: if we can't parse stdin, we can't
-# tell what's about to run, so deny rather than silently allow.
+# tell what's about to run, so deny rather than silently allow. JQ_EXIT
+# is captured from the .tool_input.command extraction deliberately: jq
+# parses the whole document, and that filter additionally surfaces a
+# type error when .tool_input is not an object — so a zero exit here
+# means both extractions ran against well-formed JSON.
 if [ "$JQ_EXIT" -ne 0 ]; then
   emit_deny "Blocked by redaction gate: could not parse tool-input JSON. Refusing to evaluate redaction under malformed input."
   exit 0
 fi
 
-# Identify which gated surface (if any) the command touches. A single
-# chained command can touch multiple
-# (`git commit ... && gh pr create ...`,
-# `gh pr edit ... && gh api ... -X POST`), in which case all matching
-# scan paths run.
+# Defense-in-depth: only act on Bash calls. settings.json already matches
+# the Bash tool, but the hook does not rely on that alone (see repo
+# CLAUDE.md, "Hook defense-in-depth").
+if [ "$TOOL_NAME" != "Bash" ]; then
+  exit 0
+fi
+
+# Word-walk a single shell fragment and report which gated `gh` surface it
+# invokes: `pr` for `gh pr create` / `gh pr edit`, `api` for `gh api`, and
+# empty for everything else (non-gh fragments and non-gated gh subcommands
+# such as `gh pr comment`). The `gh` word test (`gh` or `*/gh`) mirrors
+# _lib_fragment_invokes_git, so absolute paths and env-var prefixes are
+# seen through.
+#
+# gh's root command has no value-taking global flags (only `--help` /
+# `--version`), but cobra still lets a subcommand's own flags be written
+# *before* the subcommand — `gh -X POST api ...` and `gh --repo o/r pr
+# create ...` both parse. So the walk cannot assume the first bare word
+# after `gh` is the subcommand. Instead it keys on the command path:
+#   - `pr` surface: a word `pr` immediately followed by `create` / `edit`.
+#     A two-word command path is always contiguous (cobra resolves it as a
+#     unit); hoisted flags land before `pr` or after `create`/`edit`, never
+#     between them.
+#   - `api` surface: any word `api` after `gh`. A bare `api` that is really
+#     a flag value rather than the subcommand is harmless — the caller's
+#     body-flag check still has to pass before IS_GH_API is set.
+# Globbing is disabled so wildcards in the command text do not expand.
+# Trailing non-[alnum/_/-] is stripped from each word (fragment splitting
+# can leave `create)` from a paren group).
+fragment_gh_gated_surface() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local past_gh=false prev="" word stripped surface=""
+  for word in $fragment; do
+    if ! $past_gh; then
+      case "$word" in
+        gh|*/gh) past_gh=true ;;
+      esac
+      continue
+    fi
+    stripped="${word%%[^a-zA-Z0-9_-]*}"
+    case "$stripped" in
+      create|edit) if [ "$prev" = "pr" ]; then surface="pr"; break; fi ;;
+      api) surface="api"; break ;;
+    esac
+    prev="$stripped"
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  printf '%s' "$surface"
+}
+
+# Identify which gated surface(s) the command touches. A single chained
+# command can touch several (`git commit ... && gh pr create ...`,
+# `gh pr edit ... && gh api ... -X POST`); every matching scan path runs.
+# Detection word-walks each shell fragment so global git flags (`-c`,
+# `-C`, `--git-dir`, ...), gh subcommand flags written ahead of the
+# subcommand, env-var prefixes, absolute paths, and
+# `&&`/`;`/`|`/`$()`/backtick chains cannot hide the command word.
 IS_GIT_COMMIT=0
 IS_GH_PR=0
 IS_GH_API=0
-if printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'; then
-  IS_GIT_COMMIT=1
-fi
-if printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*gh\s+pr\s+(create|edit)(\s|$)'; then
-  IS_GH_PR=1
-fi
-# `gh api` defaults to GET, but auto-promotes to POST whenever any
-# request-body flag is supplied. Per gh's docs: "adding request
-# parameters will automatically switch the request method to POST."
-# So a call worth scanning is any of:
-#  - explicit `-X` / `--method` POST/PATCH/PUT/DELETE (`-X POST`, `-X=POST`,
-#    `--method POST`, `--method=POST`, and the bare `-XPOST` short-flag
-#    concatenation gh accepts)
-#  - any `-f` / `-F` / `--field` / `--raw-field` / `--input` flag (each
-#    of which auto-POSTs even with no `-X`)
-# Gate dispatch on flags, not on the endpoint shape — endpoint
-# allowlisting is fragile and the next leak path could be a new
-# endpoint. `[^A-Za-z]` is used as the trailing method boundary
-# instead of `\b` for grep-portability and style consistency with the
-# `(\s|$)` end-anchors on the IS_GIT_COMMIT and IS_GH_PR regexes.
-# Note: the body-flag check is global to the command string, not
-# scoped to the gh api segment of a chained command — a `-X POST`
-# elsewhere in the chain would also dispatch the gh api branch. This
-# is intentionally fail-toward-scan; a false positive on dispatch
-# costs one redundant scan, a false negative ships a leak.
-if printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*gh\s+api(\s|$)'; then
-  if printf '%s\n' "$COMMAND" \
-      | grep -qiE '((-X|--method)(=|[[:space:]]+)|-X)(POST|PATCH|PUT|DELETE)([^A-Za-z]|$)'; then
-    IS_GH_API=1
-  elif printf '%s\n' "$COMMAND" \
-      | grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field|--input)(=|[[:space:]]+)'; then
-    IS_GH_API=1
+while IFS= read -r fragment; do
+  [ -z "$fragment" ] && continue
+  if _lib_fragment_invokes_git "$fragment" \
+      && [ "$(_lib_extract_git_subcmd "$fragment")" = "commit" ]; then
+    IS_GIT_COMMIT=1
   fi
-fi
+  case "$(fragment_gh_gated_surface "$fragment")" in
+    pr)
+      IS_GH_PR=1
+      ;;
+    api)
+      # `gh api` defaults to GET but auto-promotes to POST whenever any
+      # request-body flag is supplied (per gh docs: "adding request
+      # parameters will automatically switch the request method to
+      # POST"). Scan only a body-bearing call: explicit `-X` / `--method`
+      # POST/PATCH/PUT/DELETE (`-X POST`, `-X=POST`, `--method POST`,
+      # `--method=POST`, bare `-XPOST`), or any `-f` / `-F` / `--field` /
+      # `--raw-field` / `--input` flag. Dispatch keys on flags, not the
+      # endpoint path — endpoint allowlisting is fragile, and the next
+      # leak path could be a new endpoint. The flag check is global to the
+      # command string, not scoped to the gh-api fragment — intentionally
+      # fail-toward-scan: a false positive costs one redundant scan, a
+      # false negative ships a leak. `[^A-Za-z]` is the trailing method
+      # boundary (grep-portable substitute for `\b`).
+      if printf '%s\n' "$COMMAND" \
+          | grep -qiE '((-X|--method)(=|[[:space:]]+)|-X)(POST|PATCH|PUT|DELETE)([^A-Za-z]|$)'; then
+        IS_GH_API=1
+      elif printf '%s\n' "$COMMAND" \
+          | grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field|--input)(=|[[:space:]]+)'; then
+        IS_GH_API=1
+      fi
+      ;;
+  esac
+done <<< "$(_lib_split_fragments "$COMMAND")"
 
 if [ "$IS_GIT_COMMIT" -eq 0 ] && [ "$IS_GH_PR" -eq 0 ] && [ "$IS_GH_API" -eq 0 ]; then
   exit 0

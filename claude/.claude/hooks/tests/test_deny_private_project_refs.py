@@ -1953,3 +1953,155 @@ class TestDenyPrivateProjectRefs:
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
         assert "Tip: this command chains" not in reason
+
+    # -- Command-detection evasion resistance ------------------------------
+    # Surface detection word-walks shell fragments instead of matching
+    # `git commit` / `gh pr` as a literal substring, so a global git flag,
+    # an env-var prefix, an absolute path, or a `$()` wrapper between the
+    # command word and its subcommand cannot hide a gated call. Mirrors
+    # test_deny_pii_in_commits.py's git-flag detection cases.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -c user.name=ci commit -m 'Fix WIDGET-123'",
+            "git -C /tmp commit -m 'Fix WIDGET-123'",
+            "git --git-dir=/tmp/g --work-tree=/tmp/w commit -m 'Fix WIDGET-123'",
+            "GIT_DIR=/tmp/g git commit -m 'Fix WIDGET-123'",
+        ],
+        ids=["c-config-flag", "C-path-flag", "git-dir-equals-flag", "env-var-prefix"],
+    )
+    def test_git_commit_flag_evasion_forms_denied(self, claude_config_repo, command):
+        """A commit with a global flag or env-var prefix between `git` and
+        `commit` must still be detected and its message scanned. Detection
+        keys on the command shape; for the `-C` form the staged-diff scan
+        still targets the session repo, not the `-C` path (a documented
+        known gap), so these cases deny on the message token alone."""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_git_commit_config_flag_clean_message_allowed(self, claude_config_repo):
+        """A `git -c` commit with a clean message is not falsely flagged —
+        the regex-to-word-walk swap preserves the allow path."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git -c core.pager=cat commit -m 'Refactor the parser'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_git_non_commit_subcommand_with_flag_and_token_allowed(self, claude_config_repo):
+        """A non-commit git subcommand carrying a tracker-shaped token is
+        not gated — the word-walk extracts the real subcommand (`log`),
+        not `commit`, so a global flag cannot cause a false dispatch."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git -c core.pager=cat log --grep WIDGET-123"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "GH_TOKEN=ci gh pr create --body 'Fixes WIDGET-123'",
+            "/usr/bin/gh pr edit 1 --body 'Fixes WIDGET-123'",
+            "OUT=$(gh pr create --body 'Fixes WIDGET-123')",
+            "OUT=`gh pr create --body 'Fixes WIDGET-123'`",
+        ],
+        ids=["env-var-prefix", "absolute-path", "command-substitution", "backtick-substitution"],
+    )
+    def test_gh_pr_evasion_forms_denied(self, claude_config_repo, command):
+        """gh pr forms with an env-var prefix, an absolute path, or wrapped
+        in `$()` / backticks must still dispatch the PR-body scan. `$()` and
+        backticks are separate fragment-split branches in _lib_split_fragments,
+        so both are exercised."""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_gh_api_command_substitution_form_denied(self, claude_config_repo):
+        """A mutating `gh api` call wrapped in `$()` is split into its own
+        fragment and detected — the literal regex over the whole command
+        string would not have matched the `gh api` inside `$()`."""
+        command = "OUT=$(gh api repos/x/y/issues/1/comments -X POST -f body='Fixes WIDGET-123')"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_gh_non_gated_subcommand_with_env_prefix_allowed(self, claude_config_repo):
+        """An env-var-prefixed non-gated gh subcommand (`gh pr comment`)
+        carrying a tracker token is not gated — fragment_gh_gated_surface
+        keys on the command path (`pr` followed by `create`/`edit`), so
+        `pr comment` resolves to no gated surface."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("GH_TOKEN=ci gh pr comment 1 --body 'has WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh -X POST api repos/x/y/issues/1/comments -f body='Fixes WIDGET-123'",
+            "gh --method POST api repos/x/y/issues/1/comments -f body='Fixes WIDGET-123'",
+        ],
+        ids=["method-short-flag-before-api", "method-long-flag-before-api"],
+    )
+    def test_gh_api_flag_before_subcommand_denied(self, claude_config_repo, command):
+        """cobra lets `gh api`'s own flags be written before the `api`
+        subcommand word. A mutating `gh api` whose `-X` / `--method`
+        precedes `api` must still dispatch the body scan — detection keys
+        on the `api` command word, not on `gh` being adjacent to it."""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_gh_pr_flag_before_subcommand_denied(self, claude_config_repo):
+        """`gh pr create` accepts `--repo` written before the `pr create`
+        command path. A PR-body tracker token must still be detected — the
+        `pr`/`create` pair stays contiguous, so adjacency detection holds."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh --repo owner/repo pr create --body 'Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_non_gated_subcommand_mentioning_pr_allowed(self, claude_config_repo):
+        """A non-gated gh subcommand whose argument text merely contains the
+        word `pr` (here `gh issue create`, with `pr` in the title) is not
+        falsely gated — `gh pr` detection requires `pr` immediately followed
+        by `create`/`edit`, and here `create` precedes the stray `pr`."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh issue create --title 'open a pr' --body 'tracking WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_missing_lib_sh_fails_closed(self, claude_config_repo, tmp_path):
+        """Command detection depends on _lib.sh. If the hook cannot source
+        it, it must deny (fail-closed), not exit 0 — a broken _lib.sh must
+        not silently turn the redaction gate into a no-op. Exercised by
+        running a copy of the hook from a directory with no _lib.sh
+        alongside it, so `. "$(dirname "$0")/_lib.sh"` fails."""
+        isolated_hook = tmp_path / "deny-private-project-refs.sh"
+        isolated_hook.write_bytes(DENY_PRIVATE_PROJECT_REFS_HOOK.read_bytes())
+        isolated_hook.chmod(0o755)
+        result = subprocess.run(
+            [str(isolated_hook)],
+            input=json.dumps(bash_input("git commit -m 'Fix WIDGET-123'")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected a deny verdict when _lib.sh is unsourceable"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "_lib.sh" in payload["hookSpecificOutput"]["permissionDecisionReason"]
