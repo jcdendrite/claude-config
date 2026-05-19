@@ -90,7 +90,19 @@ Resolved: (1) the per-command procedure now uses one self-contained Bash call th
 
 Consistent with §10–§12: foundational scoping (one-call discipline + inline-output prohibition) over layered detection heuristics.
 
-## 14. `code-writer` agent and in-agent self-review
+## 14. check-runner count over-reporting recurred — silent-on-success replaces the prose prohibition (2026-05-19)
+
+§12's umbrella-command-discipline paragraph did not hold. A later `npm run verify` dispatch produced the same failure: the parent reported a per-sub-suite breakdown with test counts ("81 unit tests … 6 integration tests"), the unit count was too low, and the figures reached the user as verified fact. §12's prose forbade check-runner from characterizing counts; the recurrence shows prose prohibition is the wrong instrument.
+
+The reason it cannot hold: check-runner's per-command wrapper ran `tail -50` on the spool *unconditionally* — on a passing run as well as a failing one. So on a green `npm run verify` the haiku agent's own context contained the sub-suites' summary lines (`Tests 81 passed`, etc.). The agent's job is to write a verdict from what it saw; a prohibition against repeating the most salient lines of its own input competes against the act of summarizing and loses. This is the compounding-defensive-layers tell from §10/§11 — §10, §11, §12, §13 each added prose to one agent — applied to §12 itself: §12 called its prose fix "foundational scoping," but it was another prohibition layer.
+
+Resolved structurally, in two parts. (1) **Silent on success.** The wrapper's `tail` is now conditional on a non-zero exit. A passing command's verdict is its exit code; the agent never sees the sub-suite summary lines on a green run, so it cannot report a count it never read. (2) **Count-reporting relocated to the parent.** When the parent needs to tell the user how many tests passed or a per-type breakdown, it `grep`s the *full* spool file for the runner's own summary lines and quotes them verbatim — it does not take a number from the verdict or from memory.
+
+This is not the "grounded count-extraction procedure" §12 considered and rejected. That rejected design had the haiku check-runner extract structured counts from free-form text. This moves extraction out of check-runner entirely: the agent reports only exit codes, and the parent — running a more capable model — does a `grep` over the whole spool. `grep` over the full file (not a 50-line tail) surfaces every sub-suite's own summary line regardless of interleaving, so the umbrella command's mixed output stops being an obstacle. No model summarizes anything; the parent quotes verbatim `grep` output. The accurate counts always existed in the spool — the fix is deterministic extraction from it, not model summarization of it.
+
+Consistent with §10–§13: remove the count-bearing input from the agent's context (foundational) rather than add another prohibition (layered hardening).
+
+## 15. `code-writer` agent and in-agent self-review
 
 Code-writing delegated to a subagent ran on the built-in `general-purpose`
 agent. That agent commits review-finding-class defects — N+1 query shapes,

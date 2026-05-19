@@ -135,7 +135,8 @@ Subagent model is resolved in this order — the first that applies wins:
 3. The `model:` frontmatter in the agent's definition file
 4. The parent / main-conversation model (inherited)
 
-The routinely-dispatched built-in subagents resolve as follows:
+The routinely-dispatched built-in and repo-shipped subagents resolve as
+follows:
 
 | Agent | Model under an Opus auto-mode parent | Why |
 |---|---|---|

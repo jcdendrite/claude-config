@@ -1,4 +1,4 @@
-"""Tests for guard-settings-model-effort.sh."""
+"""Tests for guard-settings-session-keys.sh."""
 from __future__ import annotations
 
 import subprocess
@@ -13,7 +13,7 @@ from helpers import (
     stage_settings,
 )
 
-GUARD_SETTINGS_MODEL_EFFORT_HOOK = HOOKS_DIR / "guard-settings-model-effort.sh"
+GUARD_SETTINGS_SESSION_KEYS_HOOK = HOOKS_DIR / "guard-settings-session-keys.sh"
 
 
 @pytest.fixture
@@ -44,13 +44,13 @@ def settings_repo(tmp_path):
     return repo, settings_file
 
 
-class TestGuardSettingsModelEffort:
+class TestGuardSettingsSessionKeys:
     def test_model_change_denies_commit(self, settings_repo):
         repo, settings_file = settings_repo
         stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m 'update settings'"),
                 cwd=repo,
             )
@@ -62,7 +62,7 @@ class TestGuardSettingsModelEffort:
         stage_settings(repo, settings_file, '{"model": "sonnet", "effortLevel": "high"}\n')
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m 'update settings'"),
                 cwd=repo,
             )
@@ -74,20 +74,37 @@ class TestGuardSettingsModelEffort:
         stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "high"}\n')
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m 'routing change'"),
                 cwd=repo,
             )
             == "deny"
         )
 
+    def test_skip_auto_permission_prompt_change_denies_commit(self, settings_repo):
+        """skipAutoPermissionPrompt, written automatically by Claude Code, must block."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "skipAutoPermissionPrompt": true}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'update settings'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     def test_unrelated_settings_change_allows(self, settings_repo):
-        """Changing a key other than model/effortLevel must not block."""
+        """Changing a key other than the guarded set must not block."""
         repo, settings_file = settings_repo
         stage_settings(repo, settings_file, '{"model": "sonnet", "effortLevel": "normal", "theme": "dark"}\n')
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m 'add theme'"),
                 cwd=repo,
             )
@@ -103,7 +120,7 @@ class TestGuardSettingsModelEffort:
         subprocess.run(["git", "add", "other.txt"], cwd=repo, check=True)
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m 'other change'"),
                 cwd=repo,
             )
@@ -116,7 +133,7 @@ class TestGuardSettingsModelEffort:
         stage_settings(repo, settings_file, '{"model": "opus"}\n')
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git status"),
                 cwd=repo,
             )
@@ -128,7 +145,7 @@ class TestGuardSettingsModelEffort:
         repo, settings_file = settings_repo
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 edit_input(str(settings_file)),
                 cwd=repo,
             )
@@ -140,7 +157,7 @@ class TestGuardSettingsModelEffort:
         repo, settings_file = settings_repo
         stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
         reason = run_hook_reason(
-            GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
             bash_input("git commit -m 'update settings'"),
             cwd=repo,
         )
@@ -153,7 +170,7 @@ class TestGuardSettingsModelEffort:
         non_repo.mkdir()
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m foo"),
                 cwd=non_repo,
             )
@@ -166,7 +183,7 @@ class TestGuardSettingsModelEffort:
         stage_settings(repo, settings_file, '{"model": "haiku", "effortLevel": "normal"}\n')
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git add . && git commit -m update"),
                 cwd=repo,
             )
@@ -180,7 +197,7 @@ class TestGuardSettingsModelEffort:
         subprocess.run(["git", "reset", "HEAD", "--", "."], cwd=repo, check=True)
         assert (
             run_hook(
-                GUARD_SETTINGS_MODEL_EFFORT_HOOK,
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m foo"),
                 cwd=repo,
             )
