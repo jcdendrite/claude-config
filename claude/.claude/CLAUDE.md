@@ -18,6 +18,8 @@
 - Always prefer minimal, targeted changes. Do not refactor entire files or expand scope beyond what was asked. If you see an opportunity for a broader improvement, mention it separately — do not bundle it in.
 - **Compounding defensive layers are a wrong-foundation tell.** When a design accumulates stacked defenses on a single mechanism — each new layer closing a gap that the prior layer's existence created — or starts citing its own prior findings, step back and ask whether a foundational change would dissolve them. Do not keep adding hardening. The right primitive usually has a simple shape; compounding complexity is a signal to question the foundation, not to defend it more carefully.
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
+- Use descriptive variable and function names. No generic names.
+- **Default-consider delegation.** Before running a Bash command, starting a broad search, initiating a check suite, or beginning a Read-heavy probe, ask whether the *objective* (not the individual command) belongs in a subagent. The parent's context is re-read every turn, so verbose tool output left in it is paid for repeatedly. See the `subagent-delegation` skill for the two-test gate, which subagent fits which case, and what stays inline.
 - When a session crosses ~60% context usage (per statusline `.context_window.used_percentage`) AND the current task is incomplete, suggest the user run `/handoff` — it's user-invoked; don't run it yourself.
 
 ## Code Review

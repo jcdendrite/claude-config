@@ -1,17 +1,15 @@
 ---
 name: subagent-delegation
 description: >
-  When and how to dispatch work to a subagent — preserves parent session
-  context. TRIGGER when: about to run a full check suite
-  (pytest/lint/typecheck/build) or any full-project verification command;
-  about to do broad codebase search (multi-file grep, glob sweeps,
-  exploratory reads spanning more than ~3 queries); about to run the 2nd
-  or 3rd Bash command toward the same question; reporting test counts
-  from a check-runner verdict. DO NOT TRIGGER when: single targeted
-  lookup (one grep for a known symbol, one Read of a known path);
-  comprehension reads where file content feeds your own writing, review,
-  or design; Edit/Write sequences; output you must reason over line by
-  line (a failure you're debugging, a diff you're designing against).
+  When to dispatch work to a subagent rather than running it inline.
+  TRIGGER when: running a full check suite or other full-project
+  verification command; starting a broad codebase search; running a
+  2nd or 3rd Bash command toward the same question; delegating
+  implementation work; reporting test counts from a check-runner
+  verdict. DO NOT TRIGGER when: a single targeted lookup; a
+  comprehension read whose content feeds your own writing, review, or
+  design; Edit/Write sequences; or output you must reason over line by
+  line.
 ---
 
 # Subagent delegation
@@ -56,9 +54,6 @@ dispatch the question instead of continuing inline.
 mode. Under auto mode, its read-only diagnostics are evaluated by the
 same classifier that clears the parent's — delegating read-heavy work
 adds no permission prompts and needs no `permissions.allow` entries.
-See `docs/auto-mode.md` in the claude-config repo for the classifier's
-behavior, and Model Routing in `~/.claude/CLAUDE.md` for when to pass
-`model: opus` vs `model: sonnet` to `general-purpose`.
 
 ## Step 2 — Pick the right subagent
 
@@ -116,9 +111,8 @@ verdict carries:
 - `SETTINGS_DENIAL` — a missing or declined permission rule. Before
   recommending an allow-rule, confirm an existing rule does not already
   cover the command (don't propose a dead rule). Surface the exact rule
-  needed — exact-match, not a glob (per Safety in
-  `~/.claude/CLAUDE.md`), e.g. `Bash(npm run verify)` — and wait for
-  the user to pre-approve it in the appropriate scope's
+  needed — exact-match, not a glob, e.g. `Bash(npm run verify)` — and
+  wait for the user to pre-approve it in the appropriate scope's
   `permissions.allow` or run the command themselves.
 - `HOOK_BLOCK` — a PreToolUse hook blocked the call; this is not a
   settings gap. Diagnose from the hook's verbatim stderr in the
@@ -136,8 +130,9 @@ than running it inline:
 - `subagent_type: Explore` for locate-style search (reads excerpts, not
   whole files).
 - `general-purpose` when the exploration must read whole files (as
-  `/plan-it` and `/plan-review` do). Dispatch `general-purpose` with an
-  explicit `model` (see Model Routing in `~/.claude/CLAUDE.md`).
+  `/plan-it` and `/plan-review` do). Always pass an explicit `model`
+  on `general-purpose` — it has no model of its own and inherits the
+  parent's, which under auto mode may be Opus.
 
 Discovery output inhales into the parent context exactly like a check
 suite does, and an auto-mode parent on Opus pays that in the most
@@ -151,9 +146,19 @@ content in your own reasoning — to write or modify it, review it, or
 design against it — read it directly. The split is locate-and-report
 (delegable) vs. read-and-reason (not).
 
+### Implementation work → `code-writer`
+
+When delegating code-writing — feature code, fixes, refactors,
+migrations, schema, scripts — dispatch the `code-writer` subagent,
+not `general-purpose`. It carries `model: sonnet` and self-reviews its
+own diff against staff-engineer reviewer angles before returning,
+catching review-finding-class defects in its own context instead of as
+a parent round-trip.
+
 ### Everything else → `general-purpose`
 
 The two-test gate above covers every other case: multi-step
 diagnostics, log correlation, verbose `git diff` / state-survey bursts.
 Dispatch the objective — not the commands — to `general-purpose` with
-an explicit `model`.
+an explicit `model: sonnet` (a no-op when the parent is already
+Sonnet; keeps the dispatched work off Opus when the parent is not).
