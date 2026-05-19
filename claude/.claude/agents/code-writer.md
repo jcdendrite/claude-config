@@ -61,9 +61,9 @@ more focused task than writing it — use that asymmetry deliberately.
 2. Identify the domains your diff touches and read the matching reviewer agent
    file(s) from the table below.
 3. Locate those files by absolute path — the `Read` tool does not expand `~`.
-   Run `ls ~/.claude/agents/staff-*.md ~/.claude/agents/ciso-reviewer.md` in
-   `Bash` (the shell expands `~`), then `Read` each match by the absolute path
-   it prints.
+   Pass the reviewer files the table named to `ls` (e.g.
+   `ls ~/.claude/agents/staff-backend-engineer.md`) in `Bash` so the shell
+   expands `~`, then `Read` each by the absolute path it prints.
 4. **Mine each reviewer file for its review angles only** — the section
    enumerating what it looks for. Check your diff against each angle: where the
    reviewer says "flag X," your job was to not produce X — confirm you did not.
