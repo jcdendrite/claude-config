@@ -68,7 +68,9 @@ Hook finds marker, sha256 matches. Commit succeeds.
 
 ## 5. Ready for review
 
-**Claude runs `/ready-for-review`.** Verifies `npm test` passes, `npm run lint` clean, typecheck clean. Runs code review against the cumulative PR diff (all commits on the branch vs default branch). Syncs PR description.
+**Claude runs `/ready-for-review`.** Step 1 includes a divergence check (`git rev-list --count HEAD..origin/main` + `git merge-tree --write-tree`). If the feature branch is behind `origin/main`, the skill invokes `/git-feature-branch-sync` first and only then re-runs verification on the synced tree — the completion marker records the post-resync HEAD SHA so it matches what the push gate sees. Branch already in sync here, so the skill proceeds directly. Verifies `npm test` passes, `npm run lint` clean, typecheck clean. Runs code review against the cumulative PR diff (all commits on the branch vs default branch). Syncs PR description.
+
+(Divergence at this stage is also surfaced ahead of time by the `check-branch-divergence.sh` SessionStart hook, which prints an advisory naming the behind-by count and trial-merge state when the session opens on a branch that's already behind `origin/<default>`.)
 
 *Ready-for-review marker written for HEAD SHA.*
 

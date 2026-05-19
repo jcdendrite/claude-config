@@ -35,8 +35,8 @@ If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStar
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base:
   `gh pr view --json number,baseRefName`
-- If no PR exists, note this — step 5 will open one after verification
-  and review complete.
+- If no PR exists, step 5 will open one after verification and review.
+- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 8's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
 ## 2. Verification (halt on fail)
 
