@@ -21,6 +21,21 @@
 - Use descriptive variable and function names. No generic names.
 - When a session crosses ~60% context usage (visible via statusline `.context_window.used_percentage`) AND the current task is incomplete, proactively suggest the user run `/handoff`. Do not run it yourself — it's a user-invoked slash command. If the user agrees, the command writes `/tmp/<slug>-handoff.md` and provides the resume incantation. Run `analyze-context` if unsure about the threshold. (See README's "Threshold reference" section for the why-60%.)
 
+### Delegation: hold conclusions, not transcripts
+
+The parent session's context is the expensive resource — it is re-read on every turn, for the rest of the session, so verbose tool output left there is paid for again and again. Treat a subagent as a function call: the parent keeps the *return value*, not the callee's stack. Before running a `Bash` command — or starting a sequence of them — toward a question, apply two tests:
+
+- **Output test:** will my reasoning consume this command's *output*, or only a *conclusion drawn from it*? Conclusion-only ⇒ the output is scratch.
+- **Judgment test:** does choosing this command, and the next one after seeing its result, need parent-grade judgment? If a cheaper model could run the loop, it should.
+
+Both pointing to delegate ⇒ dispatch the **objective** — not the individual command — to a subagent: "find out X; report findings." The subagent runs the whole probe loop in its own context; the parent gets back the findings. The two subsections below name the right subagent for two common objectives — `check-runner` for check suites, `Explore`/`general-purpose` for code search — and the test above covers every other case: multi-step diagnostics, log correlation, verbose `git diff`/state-survey bursts.
+
+**Operational trigger:** when you notice you are about to run the *second or third* `Bash` command toward the same question, stop — dispatch the question instead of continuing inline.
+
+**Stays inline — do not over-delegate:** a single targeted lookup; a comprehension read whose content feeds your own writing, review, or design; `Edit`/`Write` sequences (judgment-dense, not scratch); output you must reason over line by line (a failure you are debugging, a diff you must design against).
+
+**No permission cost.** A subagent runs under the parent's permission mode. Under auto mode, its read-only diagnostics are evaluated by the same classifier that clears the parent's — delegating read-heavy work adds no permission prompts and needs no `permissions.allow` entries. Dispatch `general-purpose` with an explicit `model` (see Model Routing and `docs/auto-mode.md`).
+
 ### Heavy command output
 
 Use the `Agent` tool with `subagent_type: check-runner` to run the checks (full test suites, lint, typecheck, build) — not `Bash` in the parent directly. **Enumerate the exact command strings in the dispatch prompt** (e.g. "Run these commands: `pytest claude/.claude/`, `ruff check claude/.claude/`") — not "run the checks" or "run the suite". The subagent writes full output to `${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns a structured verdict plus the file paths; the parent reads the file for more detail rather than re-running. This applies to suite-level runs; commands scoped to a single test file or single test name during interactive debugging can stay inline.
