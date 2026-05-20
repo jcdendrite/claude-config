@@ -95,10 +95,16 @@ def run_hook_reason(hook: Path, tool_input: dict, cwd: Path | None = None) -> st
     return payload["hookSpecificOutput"].get("permissionDecisionReason")
 
 
-def bash_input(command: str, session_id: str | None = None) -> dict:
+def bash_input(
+    command: str,
+    session_id: str | None = None,
+    agent_type: str | None = None,
+) -> dict:
     payload: dict = {"tool_name": "Bash", "tool_input": {"command": command}}
     if session_id is not None:
         payload["session_id"] = session_id
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
     return payload
 
 

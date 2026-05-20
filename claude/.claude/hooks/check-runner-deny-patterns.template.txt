@@ -1,0 +1,81 @@
+# check-runner-bash-guard.sh project-layer deny patterns — TEMPLATE.
+#
+# This is the reference template. To use it in a project, copy this
+# file to that project's `<repo-root>/.claude/check-runner-deny-patterns.txt`
+# (the hook reads from that path at decision time) and uncomment the
+# patterns the project's stack actually uses. The hook reads the
+# project file from the worktree's cwd; this template file itself is
+# not read at runtime.
+#
+# Each non-blank, non-comment line is a POSIX extended regex (grep -E)
+# matched against each shell fragment of the Bash command after
+# splitting on `;`, `&&`, `||`, `|`. A match denies the call with a
+# HOOK_BLOCK verdict and cites this file's path and the matched line
+# number. A malformed regex on a single line logs to stderr and is
+# skipped; sibling lines still apply. If this file is unreadable, the
+# hook logs and continues with global-only enforcement.
+#
+# The patterns are scoped to check-runner's checks-only charter — the
+# subagent has no guaranteed cwd and must not mutate shared state.
+# Add patterns for state-mutating shapes specific to this project's
+# stack. The global hook already covers vendor-name-free shapes
+# (`<word> db reset|push|migrate|seed`, force-pushes, hard resets,
+# `rm -rf` of root/HOME/~).
+
+# --- Package installs ---
+# Package-manager `install` is ambiguous globally (`make install-test-deps`,
+# `meson install`) and must be enumerated per stack.
+#
+# \bnpm install\b
+# \bpnpm install\b
+# \byarn (add|install)\b
+# \bbun (add|install)\b
+# \bpip install\b
+# \buv (pip install|add|sync)\b
+# \bpoetry (add|install)\b
+# \bcargo (add|install)\b
+# \bgem install\b
+# \bcomposer (require|install|update)\b
+# \bmvn (install|deploy)\b
+# \bgradle (install|publish)\b
+# \bgo install\b
+# \bdotnet (add|restore)\b
+# \bapt (install|update|upgrade)\b
+# \bapt-get (install|update|upgrade)\b
+# \bbrew (install|upgrade|reinstall)\b
+# \byum install\b
+# \bdnf install\b
+
+# --- Container lifecycle ---
+# Container daemons/CLIs are vendor-named. Include the verbs that mutate
+# container or volume state — start/stop/rm/prune/exec/cp/etc.
+#
+# \bdocker (rm|down|stop|kill|prune|system prune|volume rm|network rm|exec|cp)\b
+# \bdocker-compose (up|down|stop|rm|kill)\b
+# \bdocker compose (up|down|stop|rm|kill)\b
+# \bpodman (rm|stop|kill|prune|exec|cp)\b
+# \bnerdctl (rm|stop|kill|prune|exec|cp)\b
+# \bkubectl (apply|delete|create|patch|replace|edit|scale|rollout|exec|cp)\b
+# \bhelm (install|upgrade|uninstall|rollback)\b
+
+# --- Cloud-provider CLI mutations ---
+# Mutating verbs only — leave read verbs (describe, get, list, show)
+# allowed for legitimate diagnostic use during a check.
+#
+# \baws .* (create|delete|put|update|terminate|stop|start|invoke)\b
+# \bgcloud .* (create|delete|update|deploy|stop|start)\b
+# \baz .* (create|delete|update|deploy|stop|start|set)\b
+# \bflyctl (deploy|destroy|launch|scale|secrets set)\b
+# \bfly (deploy|destroy|launch|scale|secrets set)\b
+# \bwrangler (publish|deploy|d1 execute|kv:key put|r2 object put|secret put)\b
+# \bdoctl .* (create|delete|update)\b
+# \bsupabase (start|stop|link|push|reset|migration new|functions deploy|secrets set)\b
+# \bvercel (deploy|env add|env rm|env pull)\b
+
+# --- Seed / fixture scripts ---
+# `npm run seed`, custom seed runners, db-load scripts. Project-specific.
+#
+# \bnpm run seed\b
+# \bpnpm run seed\b
+# \byarn seed\b
+# \b\./scripts/seed(\.sh|\.js|\.ts)?\b
