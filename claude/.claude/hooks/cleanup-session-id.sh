@@ -26,7 +26,9 @@
 # overwrites the PID on reuse. Every path exits 0; the normal no-match
 # path stays silent (a no-match is expected, e.g. the /clear ordering),
 # with one diagnostic only on PID-resolution failure for parity with the
-# sibling hook.
+# sibling hook. `claude -p` one-shot invocations do not fire SessionEnd,
+# so each one leaks one bare-PID file at one-shot rate (self-heals on
+# PID reuse).
 
 INPUT=$(cat 2>/dev/null)
 [ -z "$INPUT" ] && exit 0
