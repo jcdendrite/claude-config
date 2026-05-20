@@ -92,6 +92,30 @@ with the user.
 
 ### 5. Verify locally before deleting
 
+**Precondition: confirm the edge runtime is mounted on the current worktree.**
+The local Supabase edge runtime container is bind-mounted to the
+`supabase/functions` directory of whichever worktree last ran `supabase start`.
+If the mount points at a different worktree — or the mounted path was removed
+when an old worktree was deleted — every edge-function invocation returns 503
+`BOOT_ERROR`. That surfaces as a wave of verification-suite failures that look
+like real regressions but are an environment mismatch, and `check-runner` is a
+stateless subagent that cannot detect it.
+
+Check the current bind-mount target:
+
+```bash
+docker inspect $(docker ps --format '{{.Names}}' | grep '^supabase_edge_runtime_') \
+  --format '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{end}}{{end}}'
+```
+
+Compare to `$PWD/supabase/functions` and confirm the mounted path exists on
+disk. If the mount does not match the current worktree, or the path is gone,
+restart the stack from the current worktree before dispatching `check-runner`:
+
+```bash
+supabase stop && supabase start
+```
+
 Run the full verification — `supabase db reset` followed by your project's
 verification commands — via the `Agent` tool with `subagent_type: check-runner`.
 See `~/.claude/CLAUDE.md` "Heavy command output" for the rationale and
