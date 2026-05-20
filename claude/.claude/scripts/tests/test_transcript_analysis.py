@@ -48,6 +48,19 @@ def _tool_result(tool_id: str, text: str) -> dict:
     return {"type": "tool_result", "tool_use_id": tool_id, "content": text}
 
 
+def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent") -> dict:
+    return {
+        "type": "tool_use",
+        "id": tool_id,
+        "name": tool_name,
+        "input": {"subagent_type": subagent_type, "description": "x", "prompt": "y"},
+    }
+
+
+def _skill_use(tool_id: str, skill: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
+
+
 @pytest.fixture()
 def fake_projects(tmp_path, monkeypatch):
     projects = tmp_path / "projects"
@@ -318,6 +331,105 @@ class TestDurationGapSplit:
         active = span - idle
         # gap between tss[1] and tss[2] = 9700s; active = 300 + 300 = 600s
         assert active == pytest.approx(600, abs=2)
+
+
+# ---------------------------------------------------------------------------
+# subagent-mix
+# ---------------------------------------------------------------------------
+
+
+class TestSubagentMix:
+    def test_counts_agent_spawns_by_subagent_type(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+                _agent_use("a2", "ciso-reviewer"),
+                _agent_use("a3", "staff-backend-engineer"),
+            ]),
+        ])
+        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "feat" in out
+        assert "staff-backend-engineer(2)" in out
+        assert "ciso-reviewer(1)" in out
+
+    def test_counts_review_skill_invocations(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", content=[
+                _skill_use("s1", "code-review"),
+                _skill_use("s2", "code-review"),
+                _skill_use("s3", "plan-review"),
+                _skill_use("s4", "ready-for-review"),
+                _skill_use("s5", "respond-pr"),  # excluded — not in REVIEW_SKILLS
+            ]),
+        ])
+        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        # CR=2, PR=1, RR=1 — column order is Sess | Spawns | CR | PR | RR
+        lines = [ln for ln in out.splitlines() if ln.startswith("feat")]
+        assert len(lines) == 1
+        cols = lines[0].split()
+        # cols: ['feat', '1', '0', '2', '1', '1', ...]
+        assert cols[2:6] == ["0", "2", "1", "1"]
+
+    def test_legacy_task_tool_name_also_counted(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="legacy", content=[
+                _agent_use("t1", "staff-frontend-engineer", tool_name="Task"),
+            ]),
+        ])
+        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "staff-frontend-engineer(1)" in out
+
+    def test_sidechain_spawns_not_counted(self, fake_projects, capsys):
+        """Subagent-issued Agent calls (which appear on sidechain) must not double-count parent spawns."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-backend-engineer")]),
+            _asst("claude-sonnet-4-6", branch="feat", sidechain=True, content=[
+                _agent_use("a2", "ciso-reviewer"),  # excluded — sidechain
+            ]),
+        ])
+        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "staff-backend-engineer(1)" in out
+        assert "ciso-reviewer" not in out
+
+    def test_branch_filter(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat-a", content=[_agent_use("a1", "ciso-reviewer")]),
+            _asst("claude-opus-4-7", branch="feat-b", content=[_agent_use("a2", "staff-backend-engineer")]),
+        ])
+        args = type("A", (), {"projects": "*", "branches": "feat-a", "per_session": False})()
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "feat-a" in out
+        assert "feat-b" not in out
+        assert "staff-backend-engineer" not in out
+
+    def test_per_session_splits_aggregate(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "abcd1234-aaaa.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "ciso-reviewer")]),
+        ])
+        _write_jsonl(fake_projects / "efgh5678-bbbb.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "staff-backend-engineer")]),
+        ])
+        args = type("A", (), {"projects": "*", "branches": None, "per_session": True})()
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        # Both sessions should appear with stem prefixes; aggregate "feat" alone should not be present as a row.
+        assert "abcd1234" in out
+        assert "efgh5678" in out
+
+    def test_no_data_prints_message(self, fake_projects, capsys):
+        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "No data found." in out
 
 
 # ---------------------------------------------------------------------------

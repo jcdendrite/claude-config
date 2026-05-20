@@ -360,6 +360,68 @@ def cmd_subagents(args: argparse.Namespace) -> None:
             )
 
 
+REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
+
+
+def cmd_subagent_mix(args: argparse.Namespace) -> None:
+    projects_glob = _projects_glob(args)
+    branch_filter = _branch_filter(args)
+    per_session: bool = bool(getattr(args, "per_session", False))
+
+    data: dict[str, dict] = defaultdict(
+        lambda: {"sessions": 0, "spawns": defaultdict(int), "skills": defaultdict(int)}
+    )
+
+    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+        session_data: dict[str, dict] = defaultdict(
+            lambda: {"spawns": defaultdict(int), "skills": defaultdict(int)}
+        )
+        for rec in records:
+            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+                continue
+            branch = rec.get("gitBranch") or ""
+            if not branch or (branch_filter and branch not in branch_filter):
+                continue
+            for block in ((rec.get("message") or {}).get("content") or []):
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = block.get("name")
+                inp = block.get("input") or {}
+                if name in ("Agent", "Task"):
+                    stype = inp.get("subagent_type") or "unknown"
+                    session_data[branch]["spawns"][stype] += 1
+                elif name == "Skill":
+                    skill = inp.get("skill") or ""
+                    if skill in REVIEW_SKILLS:
+                        session_data[branch]["skills"][skill] += 1
+
+        for branch, sd in session_data.items():
+            key = f"{branch} [{jsonl.stem[:8]}]" if per_session else branch
+            d = data[key]
+            d["sessions"] += 1
+            for stype, cnt in sd["spawns"].items():
+                d["spawns"][stype] += cnt
+            for skill, cnt in sd["skills"].items():
+                d["skills"][skill] += cnt
+
+    if not data:
+        print("No data found.")
+        return
+
+    print(f"{'Branch':<45} {'Sess':>5} {'Spawns':>7} {'CR':>3} {'PR':>3} {'RR':>3}  Top subagent types")
+    print("-" * 120)
+    for key in sorted(data):
+        d = data[key]
+        spawns_total = sum(d["spawns"].values())
+        top = sorted(d["spawns"].items(), key=lambda kv: (-kv[1], kv[0]))
+        top_str = ", ".join(f"{t}({n})" for t, n in top[:5]) or "—"
+        print(
+            f"{key:<45} {d['sessions']:>5} {spawns_total:>7} "
+            f"{d['skills'].get('code-review', 0):>3} {d['skills'].get('plan-review', 0):>3} "
+            f"{d['skills'].get('ready-for-review', 0):>3}  {top_str}"
+        )
+
+
 def cmd_pr_link(args: argparse.Namespace) -> None:
     if not getattr(args, "repo", None):
         print("--repo is required for pr-link", file=sys.stderr)
@@ -456,6 +518,19 @@ def main() -> None:
     p_sub.add_argument("--branches", metavar="B1,B2,...")
     p_sub.add_argument("--projects", default="*", metavar="GLOB")
     p_sub.set_defaults(func=cmd_subagents)
+
+    p_mix = sub.add_parser(
+        "subagent-mix",
+        help="Subagent_type spawn counts per branch, with code/plan/ready-for-review skill invocations.",
+    )
+    p_mix.add_argument("--branches", metavar="B1,B2,...")
+    p_mix.add_argument("--projects", default="*", metavar="GLOB")
+    p_mix.add_argument(
+        "--per-session",
+        action="store_true",
+        help="Break out by individual session instead of aggregating per branch.",
+    )
+    p_mix.set_defaults(func=cmd_subagent_mix)
 
     p_pr = sub.add_parser("pr-link", help="Map branches to GitHub PRs and pull per-PR comment counts. Requires gh.")
     p_pr.add_argument("--repo", required=True, metavar="OWNER/REPO")

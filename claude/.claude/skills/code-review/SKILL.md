@@ -24,6 +24,10 @@ Apply the **Base checklist** always. Apply each **Domain checklist** only when a
 
 If a project-specific layer exists for this skill, load it now. Glob for `.claude/skills/code-review-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, read it with the Read tool and merge its checklist into the items below. If multiple match, list them and stop — that's a config error in the project, not something this review resolves. If none match, proceed without a layer.
 
+## Step 0.6 — Pre-judgment table check
+
+Before forming any ripple judgment in Step 1 or the checklist, enumerate every row in the Change-type table (under *Ripple effect triage*) that matches the diff. Hold the list in working memory through the rest of the review — each row is an anchor the spawn decision must address. This step exists because the table is the institutional memory; the parent's first-pass judgment is not. Form judgment *against* the table, not in lieu of it. For compound diffs that match multiple rows, narrow the diff scope per spawn — pass each specialist only the file(s) within their lane, not the full diff, so their findings stay in-scope.
+
 ## Step 1 — Implementation-fitness gate
 
 Before reviewing for gaps, answer: **is the implementation appropriately sized for what the change needed to accomplish?** Gap-finding on an over-elaborate change elaborates it further, and the checklist won't surface "the whole implementation is the wrong shape."
@@ -161,7 +165,14 @@ Apply when changed files match `.lovable/**`. Invoke the `lovable-cloud-knowledg
 
 Start with a one-line summary of which domains were detected (e.g., "Domains: Infrastructure, Backend").
 
-If ripple-effect subagents were spawned, follow with a `Consulted:` line listing every persona by name, comma-separated and case-exact (e.g., "Consulted: ciso-reviewer, staff-backend-engineer"). Omit the line entirely when no subagents were spawned. The fixed prefix `Consulted: ` makes the spawn grep-able post hoc.
+Follow with a mandatory **Spawn decisions:** line. For every Change-type table row that matched the diff (per Step 0.6's enumeration), list it with a one-line verdict:
+
+- `spawned: <agent> for <specific question>` — the question must be a concrete sentence, not the row's title.
+- `skipped: <row> — <reason>` — name the row by its left-column shorthand and give a one-sentence rationale.
+
+When no Change-type rows match the diff, write: *"Spawn decisions: no Change-type rows matched the diff."* This makes the absence affirmative, not silent. Empty rationale is the under-spawn failure mode this format closes; visible rationale is reviewable.
+
+**Project-layer scope:** the mandatory Spawn decisions format is base-skill-only. Project-layer skills (`code-review-*/SKILL.md`, loaded at Step 0.5) compose by extending checklists — they do not override the output format. A project layer that wants to add fields should do so via an additive section, not by replacing the base format.
 
 For each finding, state:
 
@@ -175,23 +186,22 @@ If no issues are found, say: "No issues found" — do not pad with praise or gen
 
 ## Ripple effect triage
 
-After the implementation-fitness gate and the checklist review, consider whether the change crosses system boundaries in a way that exceeds your own judgment depth.
+Spawn every Change-type table row that matches the diff (per Step 0.6's enumeration). To skip a row, write the skip rationale into the *Spawn decisions:* output (one sentence per skipped row). High-stakes rows — data migration, row-security policy changes, auth model changes, billing or payment, access-control restrictions, re-pointed reads on shared data — are near-mandatory: skip only when the change is declared dev-only or internal-only with no production-reachable surface, and name the surface in the output. The escape-hatch criteria below remain available but become reasons to skip *named in the output*, not reasons to never enumerate the row.
 
-You are the principal-engineer-generalist running this skill; specialists below have narrower lane depth, not broader context. **Form your own ripple judgment first** using the table as a reference for what boundaries exist in the change.
+This is the last gate before ship — a specialist miss here ships as a regression. Lean conservative; misses are not recoverable downstream the way they are at plan-review. The criteria below anchor when a small diff still fires and when a matched row can be skipped with rationale:
 
-This is the last gate before ship — a specialist miss here ships as a regression. Lean conservative; misses are not recoverable downstream the way they are at plan-review. Spawn a specialist when at least one applies:
-
+- **Contract blast radius — not LOC.** A small diff that re-points a shared internal contract (a helper read by many callsites, a config consumed by many flows, a rename that propagates to many policies/functions) fires the relevant Change-type rows even when the line count is small. Count *consumers of the contract*, not changed lines. A 10-line helper rename consumed by 30+ row-security policies is a high-stakes data-model change, not a hygiene refactor.
 - **Below-staff-level depth.** Specialized kernels (query-planner internals, cryptography primitives, fine-grained a11y, kernel-level concurrency) — not "general knowledge in domain X."
 - **High-stakes boundary.** RLS, auth, billing, payment, data migration, privileged ops — a specialist's eyes are worth it even at generalist depth.
 - **Holistic-reasoning overload.** Multi-domain ripple you can't hold in working memory at once.
 - **Convergence-as-design-tell** from a prior round (see Reconciliation).
 - **Explicit user request.**
 
-Always spawn `ciso-reviewer` when the change touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the change is declared dev-only or internal-only (no privilege boundary crossed) (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. Always spawn `staff-product-engineer` when the change alters user-facing behavior.
+Always spawn `ciso-reviewer` when the change touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the change is declared dev-only or internal-only (no privilege boundary crossed) (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. The ciso-reviewer rule is one instance of the general default-fire pattern above, not the exception. Always spawn `staff-product-engineer` when the change alters any end-user-visible surface: user interface, transactional or lifecycle email, push notification, SMS, in-app notification, billing artifact, exported file, webhook payload to a customer integration, OAuth consent screen, embedded widget or iframe surface, or end-user-visible log/audit entry. The trigger fires on the *channel*, not on the file-path domain — a backend-only change that ships a new email body still alters user-facing behavior. Indirect channel effects count: a data or logic change that determines which channel fires or what it contains (a new user-status enum value that triggers a different lifecycle email, a field added to a user record that an existing template reads) alters user-facing behavior even when the diff contains no channel template file.
 
 Spawn per question (not per file-path domain) — "change touches `.github/`" isn't enough; the question needs a specific shape. When you spawn: spawn on the CODE, not on this review's output (each subagent reads the diff fresh); pick the specialist that serves the question (table is reference, not roster); pass diff scope, specific question, AND — for re-review — prior findings + what's been applied. Reviewers without prior context re-discover; that's wasted spawn.
 
-The Change type column keys on what the change *does* for an operator or consumer, not on file types — a markdown-only diff can cross a runtime-config or CI/CD boundary if it restructures the taxonomy operators use to provision secrets, identify deploy targets, or reason about config layering. Use the table as a checklist of boundaries to *consider*, not as default-fire triggers.
+The Change type column keys on what the change *does* for an operator or consumer, not on file types — a markdown-only diff can cross a runtime-config or CI/CD boundary if it restructures the taxonomy operators use to provision secrets, identify deploy targets, or reason about config layering.
 
 | Change type | Spawn |
 |-------------|-------|
@@ -205,10 +215,11 @@ The Change type column keys on what the change *does* for an operator or consume
 | Adds or changes warehouse models / dbt transformations / semantic-layer files | `staff-analytics-engineer` (modeling, transformation correctness, materialization, test coverage) |
 | Adds or changes CDC / change-stream / ETL/ELT pipeline / warehouse ingestion connector | `staff-data-engineer` (transport, schema-drift, observability) + `staff-platform-engineer` (operational footprint) |
 | Modifies CI/CD pipelines or deploy config | `staff-platform-engineer` + `staff-backend-engineer` — verify pipelines and environment consistency |
+| Adds or modifies a skill, agent, instruction-file rule, or hook | `/skill-review` or `/agent-review` per the dispatcher (Domain: Claude Code config); additionally spawn a `staff-*` persona only when the edit demonstrably changes the *output* or *decision* that lane's specialist would review — not merely because the lane's name appears in the edited rule (e.g., a rule change that alters when `staff-backend-engineer` is consulted → spawn `staff-backend-engineer`; a typo or formatting fix in the same rule → do not spawn). For substantive routing-table edits specifically, defer to the *Reshapes reviewer ownership* row below, which has the precise pre/post-edit-union spawn rule. |
 | Changes runtime config (env vars, secrets, feature flags) | `staff-platform-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
 | Reshapes reviewer ownership (substantive edits to plan-review/code-review skill routing tables, or scope language in `agents/*.md`) | Spawn every persona named in the pre- or post-edit table — each evaluates whether their row (or its removal) is accurate, scoped, and not bleeding into another lane. The pre/post union ensures a row deletion still spawns the affected persona. For an `agents/*.md` edit, spawn the edited persona plus their Item-ownership co-owners. Skip whitespace / typo / copy-edit-only diffs. |
 
-**Output:** State which boundaries you considered and what your generalist judgment was on each. If you escalated, list which specialists and why; if you didn't, name the boundary and your read. Empty findings on a boundary you considered is a valid result — write the read, don't omit it.
+Report every matched row's verdict via the **Spawn decisions:** line in the *Output format* section above. Empty rationale is the under-spawn failure mode the format closes — write the read, don't omit it.
 
 When you do spawn a specialist, be specific. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer` and ask it to verify the checkout flow in CheckoutPage.tsx still enforces ownership after the new validation" is actionable.
 
