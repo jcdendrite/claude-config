@@ -18,9 +18,17 @@
 
 set -u
 
-# Cache hit: requirements.txt matches the cached copy — venv is already
-# provisioned and current. Nothing to do.
-if diff -q "${CLAUDE_PLUGIN_ROOT}/requirements.txt" "${CLAUDE_PLUGIN_DATA}/requirements.txt" >/dev/null 2>&1; then
+# Cache hit candidate: requirements.txt matches the cached copy. Confirm the
+# venv still works before short-circuiting — a previously-good venv can break
+# without requirements.txt changing (system Python upgrade evicts the
+# interpreter target, manual `rm` against site-packages, partial snapshot
+# restore, ABI swap on distro upgrade). The yaml import probe here is
+# symmetric with the probe in the provisioning path below, so drift is caught
+# on both sides of the cache decision. On probe failure we fall through to
+# the reprovisioning path, whose existing cleanup removes the broken venv.
+if diff -q "${CLAUDE_PLUGIN_ROOT}/requirements.txt" "${CLAUDE_PLUGIN_DATA}/requirements.txt" >/dev/null 2>&1 \
+   && [ -x "${CLAUDE_PLUGIN_DATA}/venv/bin/python" ] \
+   && "${CLAUDE_PLUGIN_DATA}/venv/bin/python" -c 'import yaml' >/dev/null 2>&1; then
   exit 0
 fi
 
