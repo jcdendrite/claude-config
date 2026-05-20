@@ -92,15 +92,20 @@ with the user.
 
 ### 5. Verify locally before deleting
 
-Run your project's verify entry point (e.g. `npm run verify`, `pytest`,
-`make verify` — whatever its verification command is) via the `Agent`
-tool with `subagent_type: check-runner`. Enumerate the exact command
-string in the dispatch prompt and include the absolute working directory.
+Run `supabase db reset` followed by your project's verify entry point
+(e.g. `npm run verify`, `pytest`, `make verify` — whatever its
+verification command is) via the `Agent` tool with
+`subagent_type: check-runner`. Enumerate both commands exactly in the
+dispatch prompt and include the absolute working directory.
 
-The verify entry point is responsible for replaying the migration set
-against a clean database before running tests — otherwise the run
-validates pre-replay state and the migration sync is not actually
-exercised.
+The subagent runs `supabase db reset` first to replay the migration set
+against a clean database, then runs the verify entry point. Without the
+reset, the verify run validates pre-replay state and the migration sync
+is not actually exercised. NOTICEs from `DROP IF EXISTS` on
+not-yet-created objects are expected during the reset and harmless —
+Lovable duplicates run later in timestamp order than the originals did,
+so the reset replays the originals' creation against the duplicates'
+drops.
 
 The subagent writes each command's full output to
 `${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns: per-command
