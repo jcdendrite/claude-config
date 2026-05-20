@@ -17,7 +17,7 @@ user-invocable: false
 
 ## 1. What makes an agent load
 
-An agent file is `claude/.claude/agents/<name>.md` (stowed user-scope) or `plugins/<plugin>/agents/<name>.md` (plugin-scoped). The harness scans `.claude/agents/` and `~/.claude/agents/` recursively, and each plugin's `agents/` directory. Identity comes from the `name` frontmatter field — the filename does not have to match. The canonical field reference is `https://code.claude.com/docs/en/sub-agents`.
+An agent file is `claude/.claude/agents/<name>.md` (stowed user-scope) or `plugins/<plugin>/agents/<name>.md` (plugin-scoped). The harness scans `.claude/agents/` and `~/.claude/agents/` recursively, and each plugin's `agents/` directory. Identity comes from the `name` frontmatter field — the filename does not have to match.
 
 **Required frontmatter:**
 
@@ -148,7 +148,3 @@ If not all three hold, point at the canonical source.
     Y requires citing the specific surviving line that carries the same instruction. "The meaning is the same" is not sufficient. Any N is a finding; restore the instruction.
 
     Compression that drops a forbidden-action callout ("do not X"), an imperative directive, an escape-hatch exception, or a verification command fails this audit even when the summary reads as equivalent.
-
-## Why this skill is not gated
-
-`/skill-review` is enforced by a pre-commit hook because skill descriptions carry always-loaded context budget on every session and route dispatcher decisions — getting a skill wrong is high-stakes. Agent bodies are lazy-loaded; body cost is paid only when the harness dispatches the agent. An agent-file mistake degrades a specific dispatch path, not the global skill surface. Dispatcher-level invocation from `/code-review` is sufficient. Bundling agent-review under the `skill-management` plugin's hook would extend an agent-review gate to every plugin consumer — a consumer-contract coupling this design avoids.

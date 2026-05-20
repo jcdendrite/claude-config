@@ -45,4 +45,4 @@ Anthropic's official `plugin-dev` plugin (at `anthropics/claude-plugins-official
 
 ## Why this skill is not gated
 
-Captured inline in SKILL.md's closing section ("Why this skill is not gated"). Short summary: agent bodies are lazy-loaded and lower-blast-radius than skill descriptions, so dispatcher-level invocation through `/code-review` is sufficient; no pre-commit gate. Bundling under the `skill-management` plugin's hook would couple two independent consumer contracts — plugin consumers who installed for SKILL.md enforcement would inherit an agent-review gate they did not opt into.
+See [`docs/skills.md` — skill architecture notes](../../../../docs/skills.md#skill-architecture-notes) for the gated vs not-gated decision rule.
