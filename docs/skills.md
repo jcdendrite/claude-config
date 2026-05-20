@@ -42,7 +42,7 @@ Claude Code ships a set of bundled skills alongside its custom-skill support. Tw
 | `/schedule` | Cron-scheduled remote agents (routines). Not part of this repo's skill-authoring / review-pipeline workflow. |
 | `/security-review` | Superseded by `/code-review` specialist routing (ciso-reviewer agent fires automatically). |
 | `/simplify` | Overlaps with `/code-review`, which spins up domain specialists and produces a structured checklist. |
-| `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), and `/skill-review` (skill bodies); remaining env/model/theme edits are trivial direct file changes. |
+| `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), `/skill-review` (skill bodies), and `/agent-review` (agent bodies); remaining env/model/theme edits are trivial direct file changes. |
 | `/verify` | Manual-verification skill that drives the app to confirm a change. Same scope mismatch as `/run` — claude-config skills and hooks are verified via `pytest claude/.claude/`. |
 
 ### Re-enable for your session

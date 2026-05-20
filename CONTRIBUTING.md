@@ -56,9 +56,11 @@ python evals/run_skill_evals.py --skill <name>
 See `evals/README.md` for the full usage guide, output format, and how to
 add `trigger-cases.json` files for additional skills.
 
-## Skill edits
+## Skill and agent edits
 
-When editing a `SKILL.md`, invoke the skill on its own diff before committing. A skill edit can violate the rules it enforces — the skill is the reviewer of its own changes. Run `/skill-review` via the Skill tool and check the diff against its output before staging the file. (`/skill-review` is provided by the `skill-review@claude-config` plugin, auto-enabled after `./install.sh` — see [docs/skills.md — Project-scoped plugins](./docs/skills.md#project-scoped-plugins).)
+When editing a `SKILL.md`, invoke the skill on its own diff before committing. A skill edit can violate the rules it enforces — the skill is the reviewer of its own changes. Run `/skill-review` via the Skill tool and check the diff against its output before staging the file. (`/skill-review` is provided by the `skill-management@claude-config` plugin, auto-enabled after `./install.sh` — see [docs/skills.md — Project-scoped plugins](./docs/skills.md#project-scoped-plugins).)
+
+The same rule applies to agent files (`claude/.claude/agents/*.md`, `plugins/*/agents/*.md`): run `/agent-review` via the Skill tool and check the diff against its output before staging. `/agent-review` is a stowed skill (no plugin install needed) and is dispatcher-invoked by `/code-review`; unlike `/skill-review` it is not hook-enforced (see [README — Workflow](./README.md#workflow) for the asymmetry rationale).
 
 ## Contact
 

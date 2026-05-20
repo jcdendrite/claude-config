@@ -132,7 +132,8 @@ flowchart LR
 - **`/plan-it`** — produce the implementation plan.
 - **`/plan-review`** — review the plan against domain checklists.
 - **`/code-review`** — principal-engineer review with ripple-effect triage.
-- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. (Provided by the `skill-management@claude-config` plugin — see [Project-scoped plugins](docs/skills.md#project-scoped-plugins).)
+- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. Hook-enforced (`require-skill-review.sh` blocks `git commit` until the marker is written). Provided by the `skill-management@claude-config` plugin — see [Project-scoped plugins](docs/skills.md#project-scoped-plugins).
+- **`/agent-review`** — frontmatter contract, trigger design, voice, and behavioral-equivalence audit when an agent file (`claude/.claude/agents/*.md` or `plugins/*/agents/*.md`) changes. Dispatcher-invoked by `/code-review`; **not** hook-enforced — agent bodies are lazy-loaded and lower-blast-radius than skill descriptions.
 - **`/ready-for-review`** — final tests + cumulative-diff review before push.
 - **`/respond-pr`** — fetch and reply to all PR comments with `[Claude Code]` attribution.
 

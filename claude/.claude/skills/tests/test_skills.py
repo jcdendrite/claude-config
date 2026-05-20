@@ -183,6 +183,7 @@ class TestSpecialistSkillTriggerContracts:
     @pytest.mark.parametrize("skill_name,expected_surface", [
         ("claude-hook-review", ".claude/hooks/"),
         ("skill-review", ".claude/skills/"),
+        ("agent-review", ".claude/agents/"),
         ("review-permissions", "permissions.allow"),
         ("test-conventions", "new"),
         ("test-evaluation", "existing"),
@@ -203,6 +204,7 @@ class TestSpecialistSkillTriggerContracts:
         ("review-permissions", "claude-hook-review"),
         ("test-conventions", "test-evaluation"),
         ("test-evaluation", "test-conventions"),
+        ("agent-review", "skill-review"),
     ])
     def test_do_not_trigger_names_adjacent_skill(self, skill_name, adjacent_skill):
         """DO NOT TRIGGER block must name the adjacent skill with overlapping surface."""

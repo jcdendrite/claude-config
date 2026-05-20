@@ -71,8 +71,18 @@ not want to extend. Mirror existing entries when in doubt.
 `/plan-it` is the prescribed entry for plan creation. `/plan-review` and
 `/code-review` are mandatory pipeline steps before PR handoff — both are
 hook-enforced (see README "Workflow" for the full skill invocation order and
-which hook gates each transition). When staged changes include a SKILL.md,
-`/skill-review` is also required; `/code-review` invokes it automatically.
+which hook gates each transition). `/code-review` dispatches per file type
+when staged changes include skill or agent files:
+
+- **SKILL.md** → `/skill-review` is also required and **hook-enforced**
+  (`require-skill-review.sh` blocks `git commit` until the behavioral-equivalence
+  marker is written).
+- **agent file** (`claude/.claude/agents/*.md` or `plugins/*/agents/*.md`) →
+  `/agent-review` is invoked by the dispatcher but **not hook-enforced**. Agent
+  bodies are lazy-loaded and lower-blast-radius than skill descriptions, so
+  dispatcher-level invocation suffices and no pre-commit gate is added.
+
+`/code-review` invokes whichever applies automatically.
 
 ## Plans in this repo affect all stow users
 
@@ -86,14 +96,17 @@ explicit "merge it" before running `gh pr merge`. Open-ended verbs
 like "handle" or "do the swap" cover writing the change and opening
 the PR, not landing it.
 
-## When editing a skill, run the skill on its own diff
+## When editing a skill or agent, run the skill on its own diff
 
 A skill's body states the rules it enforces; an edit can violate
 those rules unless you re-read the body with the diff in mind. Before
-committing a skill change, invoke the skill via the `Skill` tool and
-check the diff against its output — e.g. an edit adding prose to a
-skill that argues for brevity is the kind of thing the skill would
-flag against itself.
+committing a skill change, invoke `/skill-review` via the `Skill`
+tool and check the diff against its output — e.g. an edit adding
+prose to a skill that argues for brevity is the kind of thing the
+skill would flag against itself. The same rule applies to agent
+files (`claude/.claude/agents/*.md`, `plugins/*/agents/*.md`):
+invoke `/agent-review` and check the diff against its output before
+staging.
 
 ## Redact private-project-identifying content
 
