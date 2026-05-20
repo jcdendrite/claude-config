@@ -66,6 +66,15 @@
             "command": "~/.claude/hooks/session-marker-dashboard.sh"
           }
         ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/check-branch-divergence.sh"
+          }
+        ]
       }
     ],
     "SubagentStart": [

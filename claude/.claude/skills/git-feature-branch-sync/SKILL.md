@@ -18,6 +18,30 @@ placeholder. Check with `git symbolic-ref refs/remotes/origin/HEAD`.
 Pre-creation concerns (branch naming, starting from a fresh default
 tip) live in the `branch-creation` skill.
 
+## Detecting divergence
+
+Canonical recipe — used at the SessionStart advisory hook
+(`check-branch-divergence.sh`), the `/ready-for-review` pre-push gate,
+and the `/respond-pr` precheck. Same primitive everywhere so detection
+is uniform.
+
+```
+DEFAULT=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's#^refs/remotes/origin/##')
+git fetch --no-tags --quiet origin "$DEFAULT"
+BEHIND=$(git rev-list --count "HEAD..origin/$DEFAULT")
+git merge-tree --write-tree "origin/$DEFAULT" HEAD   # trial merge; conflict files printed in trailer
+```
+
+`git merge-tree --write-tree` performs a trial merge without touching
+the working tree or index; conflicting paths appear in the output's
+trailer block. Requires git ≥ 2.38.
+
+Behind-count = 0 → in sync, no action. Behind > 0 with a clean trial
+merge → safe fast-forward or rebase candidate; run the [pre-flight
+checklist](#pre-flight-checklist) before force-pushing. Behind > 0
+with conflicts → resolve via rebase or merge per [The
+decision](#the-decision) below.
+
 ## The decision
 
 - **Rebase** — `git fetch origin && git rebase origin/main`. Replays commits on top of the current default-branch tip. Linear history. Rewrites SHAs → force-push required.
