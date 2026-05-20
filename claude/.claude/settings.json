@@ -43,10 +43,14 @@
     "fewer-permission-prompts": "off",
     "init": "off",
     "keybindings-help": "off",
+    "loop": "off",
     "review": "off",
+    "run": "off",
+    "schedule": "off",
     "security-review": "off",
     "simplify": "off",
-    "update-config": "off"
+    "update-config": "off",
+    "verify": "off"
   },
   "hooks": {
     "SessionStart": [
