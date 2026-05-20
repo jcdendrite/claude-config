@@ -415,6 +415,73 @@ class TestRequireSkillReview:
             == "allow"
         )
 
+    def test_falls_back_to_system_python3_when_no_venv(
+        self, isolated_home, git_repo, tmp_path, monkeypatch
+    ):
+        """When CLAUDE_PLUGIN_DATA points at a dir without venv/bin/python,
+        the script must invoke the system `python3` so the contributor pytest
+        path and the brief window before SessionStart first-runs still work."""
+        plugin_data = tmp_path / "plugin-data-no-venv"
+        plugin_data.mkdir()
+        monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(plugin_data))
+
+        # Stage broken YAML — system python3 (which has pyyaml installed for
+        # the test environment) should detect it and the hook should deny with
+        # the structural-validator's message. Reaching that message proves the
+        # validator ran, which proves the script picked an executable python.
+        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        skill_file.write_text("---\nname: broken\ndescription: [unclosed\n---\n# body\n")
+        subprocess.run(
+            ["git", "add", str(skill_file.relative_to(git_repo))],
+            cwd=git_repo,
+            check=True,
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert "structural validator" in reason
+
+    def test_prefers_venv_python_when_present(
+        self, isolated_home, git_repo, tmp_path, monkeypatch
+    ):
+        """When ${CLAUDE_PLUGIN_DATA}/venv/bin/python exists and is executable,
+        the script must invoke that path instead of system python3 — proving
+        the SessionStart-provisioned venv is the validator's runtime."""
+        plugin_data = tmp_path / "plugin-data-with-venv"
+        venv_bin = plugin_data / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        # Stub stand-in for the venv python: writes a marker file when invoked
+        # and exits 0 (pretending validation passed). The marker's existence
+        # is the proof that the script selected this path.
+        marker_file = tmp_path / "fake-python-ran"
+        fake_python = venv_bin / "python"
+        fake_python.write_text(
+            f"#!/bin/bash\necho ran > {marker_file}\nexit 0\n"
+        )
+        fake_python.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(plugin_data))
+
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+        assert marker_file.exists(), (
+            "fake venv python was not invoked; the script did not select "
+            "${CLAUDE_PLUGIN_DATA}/venv/bin/python as expected"
+        )
+
     def test_plugin_lib_sh_matches_stowed_lib_sh(self):
         """_lib.sh in the plugin hooks dir must be byte-identical to the stowed copy.
 

@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **`skill-management` self-provisions `pyyaml`** — plugin bumped to 2.1.0; a `SessionStart` hook installs `pyyaml` into a persistent venv at `${CLAUDE_PLUGIN_DATA}/venv` on first session and after manifest changes, and the commit-time hook prefers that venv's `python` (falling back to system `python3`). Consumers no longer need to run `python3 -m pip install pyyaml` after installing the plugin.
 - **Structural SKILL.md validator** — `description + when_to_use ≤ 1536` chars and strict-YAML frontmatter checks shipped with the `skill-management` plugin; the existing commit-time hook now runs the validator on every staged SKILL.md (#290)
 - **check-runner subagent** — Haiku agent for suite-level command dispatch; returns structured pass/fail verdicts and writes full output to a temp file so the parent context doesn't inhale raw output (#189)
 - **Foundation-critique gates** — plan-review, plan-it, reviewer agents, and CLAUDE.md now include compounding-defensive-layers and wrong-foundation prompts to catch design tells early (#190)
