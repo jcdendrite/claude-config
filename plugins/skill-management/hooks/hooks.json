@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "diff -q \"${CLAUDE_PLUGIN_ROOT}/requirements.txt\" \"${CLAUDE_PLUGIN_DATA}/requirements.txt\" >/dev/null 2>&1 || { command -v python3 >/dev/null 2>&1 || { echo 'skill-management: python3 not found; SKILL.md structural validator will be unavailable until python3 is installed' >&2; exit 0; }; (cd \"${CLAUDE_PLUGIN_DATA}\" && cp \"${CLAUDE_PLUGIN_ROOT}/requirements.txt\" . && python3 -m venv venv && venv/bin/pip install -r requirements.txt) || rm -f \"${CLAUDE_PLUGIN_DATA}/requirements.txt\"; }"
+            "command": "CLAUDE_PLUGIN_DATA=\"${CLAUDE_PLUGIN_DATA}\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" \"${CLAUDE_PLUGIN_ROOT}\"/hooks/provision-validator-venv.sh"
           }
         ]
       }
