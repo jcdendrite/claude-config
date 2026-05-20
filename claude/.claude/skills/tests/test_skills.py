@@ -205,6 +205,7 @@ class TestSpecialistSkillTriggerContracts:
         ("test-conventions", "test-evaluation"),
         ("test-evaluation", "test-conventions"),
         ("agent-review", "skill-review"),
+        ("skill-review", "agent-review"),
     ])
     def test_do_not_trigger_names_adjacent_skill(self, skill_name, adjacent_skill):
         """DO NOT TRIGGER block must name the adjacent skill with overlapping surface."""
