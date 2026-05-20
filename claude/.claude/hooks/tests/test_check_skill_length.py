@@ -205,6 +205,77 @@ class TestCheckSkillLength:
         assert "190" in reason
         assert "200" in reason
 
+    def test_code_review_over_default_under_override_allows(
+        self, isolated_home, tmp_path
+    ):
+        """code-review/SKILL.md gets a 500-line cap; 300 lines (over 200, under 500) → allow."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        cr_path = "claude/.claude/skills/code-review/SKILL.md"
+        (repo / "claude" / ".claude" / "skills" / "code-review").mkdir(parents=True)
+        (repo / cr_path).write_text(make_skill_content(290))
+        subprocess.run(["git", "add", cr_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / cr_path).write_text(make_skill_content(300))
+        subprocess.run(["git", "add", cr_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_code_review_over_override_denies(self, isolated_home, tmp_path):
+        """code-review/SKILL.md over the 500-line override and growing → deny."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        cr_path = "claude/.claude/skills/code-review/SKILL.md"
+        (repo / "claude" / ".claude" / "skills" / "code-review").mkdir(parents=True)
+        (repo / cr_path).write_text(make_skill_content(490))
+        subprocess.run(["git", "add", cr_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / cr_path).write_text(make_skill_content(501))
+        subprocess.run(["git", "add", cr_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_plan_review_uses_override(self, isolated_home, tmp_path):
+        """plan-review/SKILL.md also gets the 500-line cap."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        pr_path = "claude/.claude/skills/plan-review/SKILL.md"
+        (repo / "claude" / ".claude" / "skills" / "plan-review").mkdir(parents=True)
+        (repo / pr_path).write_text(make_skill_content(290))
+        subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / pr_path).write_text(make_skill_content(300))
+        subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
     def test_cwd_not_repo_root_does_not_cause_false_negative(
         self, isolated_home, skill_repo
     ):
