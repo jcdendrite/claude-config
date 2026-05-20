@@ -225,6 +225,31 @@ After spawned reviewers return findings, pause if findings concentrate on a sing
 
 You judge which applies. Don't treat convergence as automatic authority for "patch each gap." If implementation-wrong-shape, replace the surface and re-run Step 1. If prompt-overlap, apply the underlying finding once, skip duplicates, and note the overlap so the next spawn uses tighter prompts.
 
+## Finding disposition
+
+After Reconciliation, before producing the recommendation, walk every reviewer-spawned finding and tag it ADDRESS or DEFER. ADDRESS is the default and needs no rationale; DEFER requires a named criterion from the closed list below.
+
+Default ADDRESS is grounded in opportunistic-refactoring discipline (Fowler, *Opportunistic Refactoring*): code already in the diff, especially when covered by tests already running in this PR's verification, is the cheapest place a finding will ever be fixed. DEFER is the exception.
+
+Format: inline `ADDRESS:` / `DEFER (<criterion>):` tags when there are ≤2 findings; a four-column table — Finding | Source | Disposition | Rationale — when there are 3+. The orchestrator's recommendation that follows can still propose grouping fixes into this PR vs follow-ups, but every finding has been seen, tagged, and either addressed or justified against the closed list.
+
+**DEFER criteria (closed list).** A finding may be tagged DEFER only when it matches one of:
+
+1. **Orthogonal scope** — addresses code or a concern truly unrelated to this change and not covered by tests already running in this PR's verification.
+2. **Coordinated multi-PR effort, with design-tell test passed** — the fix requires changes across repos, services, or sequenced migrations that exceed this PR's coordination boundary. Before tagging DEFER here, run the design-tell test: if the coordination requirement signals the current PR's design is wrong-shape, re-run Step 1 instead of deferring. If it's pre-existing structural debt, DEFER is valid only when a ticket is filed for the remediation and the issue is surfaced to the human in the recommendation.
+3. **Gold-plating beyond declared user surface** — Step 1's implementation-fitness gate established the user surface and threat model; the finding adds a layer beyond it.
+4. **Contract pinned at another layer** — test coverage suggested for a contract already enforced by another layer's test or invariant.
+5. **Edge case below current scale** — failure mode that doesn't fire at the system's operating scale; mark the boundary with an in-code comment so the future re-evaluation has a hook.
+
+**Invalid DEFER rationales.** These look like dispositions but aren't — do not use them:
+
+- **"Informational only" / "FYI"** — reviewer severity labels are triage signals, not dispositions. The orchestrator runs its own test against the five criteria above. A reviewer's "FYI: X is stale" produces orchestrator disposition ADDRESS unless one of the criteria genuinely applies.
+- **"No correctness impact"** — stale comments, misleading names, and outdated docs cost future readers (often future agent sessions priming on the comment to build context). Mechanical fixes are ADDRESS.
+- **"General skill guidance, not PR scope"** — narrowing the PR boundary to dismiss a finding is scope-shrinking, not disposition. If the guidance has a durable home (header comment, migration note, runbook line in the file), ADDRESS it there.
+- **"Pre-existing gap"** — pre-existing is a fact about the gap's age, not a disposition. A pre-existing gap that closes a correctness or security-invariant hole is ADDRESS; pre-existing alone is not a criterion.
+
+If you find yourself tagging 3+ findings DEFER in a single review, re-read the criteria — the default is ADDRESS, and a heavy DEFER list is usually a sign the criteria are being stretched.
+
 ## Item ownership
 
 Routes each checklist item to the reviewer subagent(s) that file findings on it. Bold shorthands match titles above; numbers are the dispatcher's primary key. **Primary owner** files findings; **co-owners** are spawned where the item touches their turf. When in doubt, this table wins over inline mentions.
