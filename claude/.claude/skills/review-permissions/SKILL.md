@@ -1,14 +1,13 @@
 ---
 name: review-permissions
 description: >
-  Security review of permissions.allow rules in Claude Code settings.json.
-  TRIGGER when: `permissions.allow` rules are added or modified in any
-  `.claude/settings.json`, or the user asks to review permission rules
-  or allowed commands.
-  DO NOT TRIGGER when: reviewing hook entries in settings.json (use
-  `claude-hook-review`); reviewing other settings.json fields — env,
-  model, theme; reviewing Bash command behavior
-  that is unrelated to permissions scoping.
+  Security review of permissions.allow rules in settings.json.
+  TRIGGER when: permissions.allow rules added/modified in any
+  .claude/settings.json, or user asks to review permission/allow
+  rules.
+  DO NOT TRIGGER when: reviewing hook entries (use claude-hook-review);
+  other settings.json fields (env, model, theme); Bash behavior
+  unrelated to permissions scoping.
 allowed-tools: Read, Grep, Glob, Bash
 user-invocable: false
 ---
