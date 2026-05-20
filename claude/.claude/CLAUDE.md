@@ -60,7 +60,13 @@
 - Don't add globs (`Bash(pytest *)`, `Bash(npm run *)`) to `permissions.allow`. Globs widen the surface to flag injection, command chaining, and shell-expansion attacks — see `claude/.claude/skills/review-permissions/SKILL.md` checklist items 1–9. Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
 - `.claude/settings.json` vs `.claude/settings.local.json` scoping: project-shared rules (permissions, hooks, skillOverrides that every engineer on the project needs) go in committed `.claude/settings.json`. Personal-machine-only rules (per-machine tooling, individual preferences) go in gitignored `.claude/settings.local.json`. Before adding a rule, ask: would another engineer on this project need this? If yes → `settings.json`. If no → `settings.local.json`.
 
-## Code Comments and Durable Documentation
+## Code Comments, Documentation, and Prose
+
+### Where to put it
+
+- **Place prose where its reader and altitude match.** Right text in the wrong file is a recurring regression class: a feature deep-dive in a README overview, implementation FYI in an agent spec, a doc back-reference from a skill body. The cost lands on the wrong reader — humans drown at the wrong altitude, the model pays tokens for non-instruction, reviewers ask "why is this here?" Test each paragraph's placement as you write: does it belong here? The fix is almost always relocation, not deletion.
+
+### When to write it and what to include
 
 Code comments and durable in-repo documentation (REFERENCES.md, doc files, README sections) must be readable by a future contributor who has not read the PR description, commit message, or planning document. In particular:
 
