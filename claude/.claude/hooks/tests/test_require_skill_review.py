@@ -549,6 +549,47 @@ class TestRequireSkillReview:
             == "deny"
         )
 
+    def test_echo_wrapping_marker_text_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """`echo ~/.claude/scripts/marker.sh write skill-review && git commit`
+        text-matches a marker write but doesn't actually invoke marker.sh.
+        Parallel to the code-review gate; anchor must reject wrapper commands."""
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(
+                    "echo ~/.claude/scripts/marker.sh write skill-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_heredoc_pipe_with_marker_text_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """Heredoc body text containing marker.sh write must not wedge the
+        skill-review gate open, even if a piped bash subshell would execute
+        the body — the outer shape is not a sanctioned chained form."""
+        _stage_skill_change(git_repo)
+        cmd = (
+            "cat <<EOF | bash\n"
+            "~/.claude/scripts/marker.sh write skill-review\n"
+            "EOF\n"
+            "git commit -m foo"
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
     def test_chained_code_review_marker_does_not_authorize_skill_review(
         self, isolated_home, git_repo
     ):

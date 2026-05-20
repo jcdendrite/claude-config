@@ -283,6 +283,86 @@ class TestRequireCodeReview:
             == "deny"
         )
 
+    def test_echo_wrapping_marker_text_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """`echo ~/.claude/scripts/marker.sh write code-review && git commit`
+        looks like a chained marker write to a text-matcher, but `echo` does
+        not actually invoke marker.sh — only prints the path. The helper must
+        anchor at command start so wrapper commands (echo, printf, cat, sudo)
+        cannot wedge the gate open via text appearance."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "echo ~/.claude/scripts/marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_env_var_prefix_marker_does_not_authorize(self, isolated_home, git_repo):
+        """`FOO=bar ~/.claude/scripts/marker.sh write code-review && git commit`
+        is intentionally not in the sanctioned chained shape — env-var prefix
+        is one of the forms enforce-marker-script-shape comments call out as
+        gated by permissions.allow, not by shape regex. The helper must
+        agree to prevent a bypass via prefix wrapping."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "FOO=bar ~/.claude/scripts/marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_bash_c_wrapped_marker_does_not_authorize(self, isolated_home, git_repo):
+        """`bash -c '~/.claude/scripts/marker.sh write code-review' && git commit`
+        wraps marker.sh in a subshell. Whether the inner marker.sh actually
+        runs depends on subshell semantics; either way the outer command does
+        not match the sanctioned chained shape, so the bypass must not fire."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "bash -c '~/.claude/scripts/marker.sh write code-review' && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_heredoc_pipe_with_marker_text_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """`cat <<EOF | bash\\n~/.claude/scripts/marker.sh write code-review\\nEOF`
+        piped into a chain with `git commit` must not bypass the gate. The
+        heredoc body text appears inside the command string but the outer
+        shape (`cat | bash && ...`) is not a sanctioned chained form.
+        Without anchoring at command start, the marker text in the heredoc
+        body would trick a fragment walker into seeing a marker-write
+        precedes the commit."""
+        cmd = (
+            "cat <<EOF | bash\n"
+            "~/.claude/scripts/marker.sh write code-review\n"
+            "EOF\n"
+            "git commit -m foo"
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
     def test_chained_skill_review_marker_does_not_authorize_code_review(
         self, isolated_home, git_repo
     ):
