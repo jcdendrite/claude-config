@@ -92,12 +92,15 @@ with the user.
 
 ### 5. Verify locally before deleting
 
-Run the project's verification suite via the `Agent` tool with
-`subagent_type: check-runner`. The verify entry point is responsible for
-replaying the migration set against a clean database before running tests —
-otherwise the run validates pre-replay state and the migration sync is not
-actually exercised. See `~/.claude/CLAUDE.md` "Heavy command output" for the
-rationale and spool-file convention.
+Run your project's verify entry point (e.g. `npm run verify`, `pytest`,
+`make verify` — whatever its verification command is) via the `Agent`
+tool with `subagent_type: check-runner`. Enumerate the exact command
+string in the dispatch prompt and include the absolute working directory.
+
+The verify entry point is responsible for replaying the migration set
+against a clean database before running tests — otherwise the run
+validates pre-replay state and the migration sync is not actually
+exercised.
 
 The subagent writes each command's full output to
 `${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns: per-command
