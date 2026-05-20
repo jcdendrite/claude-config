@@ -94,7 +94,17 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
 
   if [ "${#STAGED_BLOB_PATHS[@]}" -gt 0 ]; then
     VALIDATOR_SCRIPT="$(dirname "$0")/../scripts/validate_skill_structure.py"
-    VALIDATOR_STDERR=$(python3 "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
+    # Prefer the plugin's persistent-venv python (provisioned by the
+    # SessionStart hook against ${CLAUDE_PLUGIN_DATA}/venv) so the validator
+    # finds pyyaml without the consumer running a manual pip install. Fall
+    # back to system python3 — covers the contributor pytest path, which
+    # imports the validator directly without going through plugin hooks, and
+    # the brief window before the first SessionStart provisions the venv.
+    VALIDATOR_PYTHON="python3"
+    if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -x "${CLAUDE_PLUGIN_DATA}/venv/bin/python" ]; then
+      VALIDATOR_PYTHON="${CLAUDE_PLUGIN_DATA}/venv/bin/python"
+    fi
+    VALIDATOR_STDERR=$("$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
     VALIDATOR_EXIT=$?
     if [ "$VALIDATOR_EXIT" -ne 0 ]; then
       # Strip the tmp-dir prefix so the user sees the original repo-relative
