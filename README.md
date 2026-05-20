@@ -175,7 +175,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 - **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
 - **`skill-management`** — Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via `/skill-review`. `claude plugin install skill-management@claude-config --scope project`
 
-  Requires `python3` on `$PATH` with `pyyaml` available — install via `python3 -m pip install pyyaml` against the system interpreter the hook spawns (not a project virtualenv). The commit-time hook fails closed if either is missing.
+  **Plugin dependency:** the structural validator imports `pyyaml`. `./install.sh` installs it automatically for contributors to this repo. Consumers installing the plugin in another repo should run `python3 -m pip install pyyaml` once; the commit-time hook fails closed if `pyyaml` is unavailable to the system `python3`.
 
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 
