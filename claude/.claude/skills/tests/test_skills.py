@@ -32,10 +32,17 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
 # Plugins live two levels above the .claude/ dir: <repo>/plugins/<name>/skills/<skill>/SKILL.md
 _PLUGINS_DIR = SKILLS_DIR.parent.parent.parent / "plugins"
+
+# Per https://code.claude.com/docs/en/skills.md: "the combined `description`
+# and `when_to_use` text is truncated at 1,536 characters in the skill
+# listing to reduce context usage." Configurable via maxSkillDescriptionChars
+# setting; 1,536 is the default the harness applies when no override is set.
+MAX_SKILL_DESCRIPTION_CHARS = 1536
 
 
 def _skill_file(skill_name: str) -> Path:
@@ -65,6 +72,26 @@ def _skill_description(skill_name: str) -> str:
     # Frontmatter lives between the opening --- and the closing ---.
     closing = content.index("---", 3)
     return content[3:closing]
+
+
+def _skill_frontmatter(skill_name: str) -> dict:
+    """Return the parsed YAML frontmatter of a skill's SKILL.md.
+
+    YAML parsing (vs raw-text scanning in _skill_description) is required
+    when measuring field lengths: block-folded scalars (`description: >`)
+    render newlines as spaces, and quoted strings unescape — so the
+    rendered length the harness sees differs from the raw text length.
+
+    Raises yaml.YAMLError on invalid frontmatter — see
+    TestModelInvokableSkillFrontmatterIsStrictYaml for the dedicated check
+    that produces a focused failure message in that case.
+    """
+    skill_file = _skill_file(skill_name)
+    content = skill_file.read_text()
+    if not content.startswith("---"):
+        return {}
+    closing = content.index("---", 3)
+    return yaml.safe_load(content[3:closing]) or {}
 
 
 def _specialist_skills() -> list[str]:
@@ -307,6 +334,65 @@ class TestProjectLayerUsesReadNotSkill:
         assert "Skill tool" not in section, (
             f"{skill_name}/SKILL.md project-layer section still mentions 'Skill tool'; "
             f"Skill() invocation is blocked when the layer carries disable-model-invocation: true"
+        )
+
+
+class TestModelInvokableSkillFrontmatterIsStrictYaml:
+    """Every model-invokable skill's frontmatter must parse as strict YAML.
+
+    The Claude Code harness uses a lenient YAML parser that accepts inline
+    unquoted scalars containing `: ` (e.g., `description: TRIGGER when:
+    ...`). Relying on that leniency is fragile — any parser-strictness
+    change in the harness would silently truncate the description at the
+    first `: `, dropping the TRIGGER / DO NOT TRIGGER blocks. Block-fold
+    (`description: >`) or double-quote any value containing `: `.
+    """
+
+    MODEL_INVOKABLE_SKILLS = _model_invokable_skills()
+
+    @pytest.mark.parametrize("skill_name", MODEL_INVOKABLE_SKILLS)
+    def test_frontmatter_parses_strictly(self, skill_name):
+        skill_file = _skill_file(skill_name)
+        content = skill_file.read_text()
+        assert content.startswith("---"), (
+            f"{skill_name}/SKILL.md is missing the opening YAML frontmatter delimiter"
+        )
+        closing = content.index("---", 3)
+        raw = content[3:closing]
+        try:
+            yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            raise AssertionError(
+                f"{skill_name}/SKILL.md frontmatter is not strict YAML: {exc}. "
+                f"If a value contains ': ', block-fold (`description: >`) or "
+                f"double-quote it."
+            ) from exc
+
+
+class TestModelInvokableDescriptionLength:
+    """Enforce the harness's per-skill description-length cap.
+
+    The Claude Code harness truncates each skill listing entry's combined
+    `description` + `when_to_use` at MAX_SKILL_DESCRIPTION_CHARS. A skill
+    that exceeds the cap has the tail of its description silently dropped
+    from the system prompt — losing TRIGGER / DO NOT TRIGGER discipline if
+    that block is what gets cut. User-only command skills
+    (disable-model-invocation: true) are excluded because their descriptions
+    are suppressed from the listing entirely.
+    """
+
+    MODEL_INVOKABLE_SKILLS = _model_invokable_skills()
+
+    @pytest.mark.parametrize("skill_name", MODEL_INVOKABLE_SKILLS)
+    def test_description_within_harness_cap(self, skill_name):
+        fm = _skill_frontmatter(skill_name)
+        description = fm.get("description", "") or ""
+        when_to_use = fm.get("when_to_use", "") or ""
+        rendered = len(description) + len(when_to_use)
+        assert rendered <= MAX_SKILL_DESCRIPTION_CHARS, (
+            f"{skill_name}/SKILL.md description+when_to_use is {rendered} chars, "
+            f"exceeds harness cap of {MAX_SKILL_DESCRIPTION_CHARS}; the tail will "
+            f"be truncated from the system-prompt listing"
         )
 
 
