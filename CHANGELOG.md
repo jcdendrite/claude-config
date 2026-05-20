@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **Structural SKILL.md validator** — `description + when_to_use ≤ 1536` chars and strict-YAML frontmatter checks shipped with the `skill-management` plugin; the existing commit-time hook now runs the validator on every staged SKILL.md (#290)
 - **check-runner subagent** — Haiku agent for suite-level command dispatch; returns structured pass/fail verdicts and writes full output to a temp file so the parent context doesn't inhale raw output (#189)
 - **Foundation-critique gates** — plan-review, plan-it, reviewer agents, and CLAUDE.md now include compounding-defensive-layers and wrong-foundation prompts to catch design tells early (#190)
 - **Backtick escaping block** — `deny-escaped-backticks-in-pr-body.sh` blocks `gh pr create`/`gh pr edit` bodies that contain `\`` sequences, preventing shell-expansion surprises in heredoc-constructed PR bodies (#192)
@@ -19,6 +20,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **Plugin renamed `skill-review` → `skill-management`** — bumped to 2.0.0 (breaking — downstream installers must `claude plugin uninstall skill-review && claude plugin install skill-management@claude-config --scope project`); between uninstall and install there is a brief window with no SKILL.md gate active, do not commit SKILL.md changes during that window (#290)
 - **CI workflow renamed** — workflow display name changed from "Hook tests" to "Tests"; job id `tests` (the branch-protection check context) unchanged (#169)
 - **Handoff format inlined** — `/handoff` format moved inline into the command file; dependency on `/compact` docs removed (#176)
 - `_marker_lib_repo_hash` extracted as a shared helper across `require-*` hooks and `marker.sh`, eliminating duplicated hash-computation logic (#168)

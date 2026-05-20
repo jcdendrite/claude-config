@@ -34,9 +34,7 @@ Optional frontmatter:
   invoked by a parent via Glob+Skill-tool — `test-conventions`, `plan-review`,
   and `code-review` all use this pattern; auto-trigger is not needed.
 
-The harness loads only the description at startup; the body is fetched
-on demand. Description text is always-loaded context budget; body
-text is conditional. Frontmatter overspend hurts more than body overspend.
+Description text is always-loaded context budget; body text is conditional — so overspend in the description costs more than overspend in the body.
 
 Target description shape: one summary sentence (≤80 chars), then `TRIGGER when:` and
 `DO NOT TRIGGER when:` clauses. Do not enumerate body-topic headings in the summary —
@@ -80,8 +78,7 @@ After a `TRIGGER`-block change, run `python evals/run_skill_evals.py --skill <na
   "Review checklist") — never "Introduction," "Background,"
   "Conclusion."
 - **Tables for matrices, prose for narratives, bullets for parallel
-  options.** A four-column comparison wants a table; a two-step
-  decision wants prose.
+  options.**
 
 ## 4. Length and the behavior test
 

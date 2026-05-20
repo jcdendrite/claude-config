@@ -32,17 +32,15 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
+
+# Single source of truth for SKILL.md structural rules — the commit-gate hook
+# shells out to the same module. pyproject.toml's [tool.pytest.ini_options]
+# pythonpath puts plugins/skill-management/scripts on the import path.
+from validate_skill_structure import validate
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
 # Plugins live two levels above the .claude/ dir: <repo>/plugins/<name>/skills/<skill>/SKILL.md
 _PLUGINS_DIR = SKILLS_DIR.parent.parent.parent / "plugins"
-
-# Per https://code.claude.com/docs/en/skills.md: "the combined `description`
-# and `when_to_use` text is truncated at 1,536 characters in the skill
-# listing to reduce context usage." Configurable via maxSkillDescriptionChars
-# setting; 1,536 is the default the harness applies when no override is set.
-MAX_SKILL_DESCRIPTION_CHARS = 1536
 
 
 def _skill_file(skill_name: str) -> Path:
@@ -72,26 +70,6 @@ def _skill_description(skill_name: str) -> str:
     # Frontmatter lives between the opening --- and the closing ---.
     closing = content.index("---", 3)
     return content[3:closing]
-
-
-def _skill_frontmatter(skill_name: str) -> dict:
-    """Return the parsed YAML frontmatter of a skill's SKILL.md.
-
-    YAML parsing (vs raw-text scanning in _skill_description) is required
-    when measuring field lengths: block-folded scalars (`description: >`)
-    render newlines as spaces, and quoted strings unescape — so the
-    rendered length the harness sees differs from the raw text length.
-
-    Raises yaml.YAMLError on invalid frontmatter — see
-    TestModelInvokableSkillFrontmatterIsStrictYaml for the dedicated check
-    that produces a focused failure message in that case.
-    """
-    skill_file = _skill_file(skill_name)
-    content = skill_file.read_text()
-    if not content.startswith("---"):
-        return {}
-    closing = content.index("---", 3)
-    return yaml.safe_load(content[3:closing]) or {}
 
 
 def _specialist_skills() -> list[str]:
@@ -352,21 +330,9 @@ class TestModelInvokableSkillFrontmatterIsStrictYaml:
 
     @pytest.mark.parametrize("skill_name", MODEL_INVOKABLE_SKILLS)
     def test_frontmatter_parses_strictly(self, skill_name):
-        skill_file = _skill_file(skill_name)
-        content = skill_file.read_text()
-        assert content.startswith("---"), (
-            f"{skill_name}/SKILL.md is missing the opening YAML frontmatter delimiter"
-        )
-        closing = content.index("---", 3)
-        raw = content[3:closing]
-        try:
-            yaml.safe_load(raw)
-        except yaml.YAMLError as exc:
-            raise AssertionError(
-                f"{skill_name}/SKILL.md frontmatter is not strict YAML: {exc}. "
-                f"If a value contains ': ', block-fold (`description: >`) or "
-                f"double-quote it."
-            ) from exc
+        violations = validate(_skill_file(skill_name))
+        yaml_violations = [v for v in violations if "not strict YAML" in v]
+        assert not yaml_violations, "\n".join(yaml_violations)
 
 
 class TestModelInvokableDescriptionLength:
@@ -385,15 +351,9 @@ class TestModelInvokableDescriptionLength:
 
     @pytest.mark.parametrize("skill_name", MODEL_INVOKABLE_SKILLS)
     def test_description_within_harness_cap(self, skill_name):
-        fm = _skill_frontmatter(skill_name)
-        description = fm.get("description", "") or ""
-        when_to_use = fm.get("when_to_use", "") or ""
-        rendered = len(description) + len(when_to_use)
-        assert rendered <= MAX_SKILL_DESCRIPTION_CHARS, (
-            f"{skill_name}/SKILL.md description+when_to_use is {rendered} chars, "
-            f"exceeds harness cap of {MAX_SKILL_DESCRIPTION_CHARS}; the tail will "
-            f"be truncated from the system-prompt listing"
-        )
+        violations = validate(_skill_file(skill_name))
+        length_violations = [v for v in violations if "exceeds harness cap" in v]
+        assert not length_violations, "\n".join(length_violations)
 
 
 def test_trigger_cases_files_well_formed() -> None:
