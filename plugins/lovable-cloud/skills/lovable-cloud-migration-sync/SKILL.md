@@ -92,25 +92,35 @@ with the user.
 
 ### 5. Verify locally before deleting
 
-Run `supabase db reset` followed by your project's verify entry point
+**Run `supabase db reset` inline from the parent session — not the
+check-runner subagent.** The check-runner agent refuses state-mutating
+commands (`db reset`, `db push`, container start/stop, etc.) by
+charter, and a PreToolUse mutation-guard hook also denies them at the
+harness layer when the dispatcher is `check-runner`. Routing the reset
+through the subagent fails BLOCKED with no verify output.
+
+```bash
+cd <absolute repo path> && supabase db reset
+```
+
+The reset replays the full migration set against a clean database;
+without it, the verify run validates pre-replay state and the
+migration sync is not actually exercised. NOTICEs from
+`DROP IF EXISTS` on not-yet-created objects are expected during the
+reset and harmless — Lovable duplicates run later in timestamp order
+than the originals did, so the reset replays the originals' creation
+against the duplicates' drops.
+
+Once the reset completes, dispatch your project's verify entry point
 (e.g. `npm run verify`, `pytest`, `make verify` — whatever its
 verification command is) via the `Agent` tool with
-`subagent_type: check-runner`. Enumerate both commands exactly in the
-dispatch prompt and include the absolute working directory.
+`subagent_type: check-runner`. Enumerate the verify command exactly in
+the dispatch prompt and include the absolute working directory.
 
-The subagent runs `supabase db reset` first to replay the migration set
-against a clean database, then runs the verify entry point. Without the
-reset, the verify run validates pre-replay state and the migration sync
-is not actually exercised. NOTICEs from `DROP IF EXISTS` on
-not-yet-created objects are expected during the reset and harmless —
-Lovable duplicates run later in timestamp order than the originals did,
-so the reset replays the originals' creation against the duplicates'
-drops.
-
-The subagent writes each command's full output to
+The subagent writes the command's full output to
 `${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns: per-command
 name/exit code/pass-fail, smallest failing excerpt, overall PASS or FAIL, and
-the output file paths. If a step fails, Read the relevant output file rather
+the output file paths. If verify fails, Read the relevant output file rather
 than re-running the suite. Do not proceed to step 6 (delete originals) on FAIL.
 
 **Inline exception.** Single-test re-runs during debugging can stay inline.
