@@ -51,6 +51,16 @@ if [ -z "$(git diff --cached 2>/dev/null)" ]; then
   exit 0
 fi
 
+# Honor in-chain marker writes. When the same Bash call chains
+# `marker.sh write code-review` before `git commit`, the on-disk marker
+# does not exist yet at PreToolUse time (the chain has not run), so the
+# usual marker check below would deny. The in-chain marker.sh invocation
+# is the same evidence the on-disk marker would later provide -- marker.sh
+# is the only sanctioned writer in either case.
+if _lib_chains_marker_write_before_commit "$COMMAND" code-review; then
+  exit 0
+fi
+
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 CURRENT_HASH=$(git diff --cached | sha256sum | awk '{print $1}')

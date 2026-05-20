@@ -76,6 +76,43 @@ _lib_split_fragments() {
     | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
 }
 
+# Decide whether a command chains `marker.sh write <skill>` before its first
+# `git commit` fragment. PreToolUse hooks fire once per Bash tool call before
+# the chain runs, so an on-disk marker check denies naturally-typed forms like
+# `marker.sh write code-review && git commit`. When the same Bash call will
+# write the marker before invoking commit, the in-chain marker.sh invocation
+# is the same evidence the on-disk marker would later provide -- marker.sh is
+# the only sanctioned writer in either case.
+#
+# Usage: _lib_chains_marker_write_before_commit "$COMMAND" code-review
+# Returns 0 (true) if a marker-write fragment precedes a git-commit fragment.
+_lib_chains_marker_write_before_commit() {
+  local command="$1" skill="$2"
+  local fragment seen_marker=1
+  # The marker-write detection regex pins the path to canonical sanctioned
+  # forms (tilde-anchored ~/.claude/scripts/marker.sh or absolute path ending
+  # in /.claude/scripts/marker.sh). Without that pin, an attacker who chained
+  # `git add . && /home/evil/marker.sh write code-review && git commit` would
+  # bypass the gate: enforce-marker-script-shape's Stage 2 anchor only fires
+  # when the command STARTS with marker.sh, so a non-leading bogus path slips
+  # past it. Pinning here closes that gap defense-in-depth.
+  #
+  # Here-string (<<<) appends a trailing newline so `read` consumes the final
+  # fragment too — process substitution (< <(...)) would drop it. Matches the
+  # pattern in deny-pii-in-commits.sh and deny-private-project-refs.sh.
+  while IFS= read -r fragment; do
+    if _lib_fragment_invokes_git "$fragment" \
+        && [ "$(_lib_extract_git_subcmd "$fragment")" = "commit" ]; then
+      return "$seen_marker"
+    fi
+    if printf '%s' "$fragment" \
+        | grep -qE "(^|[[:space:]])(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|$)"; then
+      seen_marker=0
+    fi
+  done <<< "$(_lib_split_fragments "$command")"
+  return 1
+}
+
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh and check-runner-bash-guard.sh.
 # Edit this list; both consumers transitively pick up the change.

@@ -28,6 +28,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Fixed
 
+- **Chained `marker.sh write && git commit` no longer denied** — three coordinated changes: `enforce-marker-script-shape.sh` accepts a chain of one or more `marker.sh write <skill>` invocations followed by `git commit`; `require-code-review.sh` and `require-skill-review.sh` (plugin bumped to 2.2.0) honor an in-chain marker write that precedes the commit. PreToolUse fires once per Bash tool call before the chain runs, so an on-disk marker check would otherwise deny these naturally-typed forms even though the chain would create the marker. Chains to non-commit tails (curl, rm, semicolon-arbitrary) stay denied, and the structural validator still fires when chained, so malformed SKILL.md files can't slip through.
 - Two false-positives in `enforce-marker-script-shape.sh` that blocked legitimate `marker.sh` invocations with certain argument orderings (#187)
 - `cleanup-merged-branches.sh` now skips locked worktrees rather than erroring; a follow-up fix adds unlock-and-remove for worktrees that can be released (#174, #177)
 - Memory-write hook debounce replaced with active-marker bypass pattern, eliminating per-turn UUID thrash (#170)
