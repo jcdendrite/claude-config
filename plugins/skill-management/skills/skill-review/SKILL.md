@@ -34,7 +34,7 @@ Optional frontmatter:
   invoked by a parent via Glob+Skill-tool — `test-conventions`, `plan-review`,
   and `code-review` all use this pattern; auto-trigger is not needed.
 
-Description text is always-loaded context budget; body text is conditional.
+Description text is always-loaded context budget; body text is conditional — so overspend in the description costs more than overspend in the body.
 
 Target description shape: one summary sentence (≤80 chars), then `TRIGGER when:` and
 `DO NOT TRIGGER when:` clauses. Do not enumerate body-topic headings in the summary —

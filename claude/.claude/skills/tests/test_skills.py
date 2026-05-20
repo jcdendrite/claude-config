@@ -29,19 +29,14 @@ Run with: pytest claude/.claude/
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-# Import structural validation from the skill-management plugin so the test
-# suite and the commit-gate hook share a single implementation of the rules.
-# parents[4] is the repo root: test_skills.py → tests/ → skills/ → .claude/ → claude/ → root
-sys.path.insert(  # noqa: E402
-    0,
-    str(Path(__file__).resolve().parents[4] / "plugins/skill-management/scripts"),
-)
-from validate_skill_structure import validate  # noqa: E402
+# Single source of truth for SKILL.md structural rules — the commit-gate hook
+# shells out to the same module. pyproject.toml's [tool.pytest.ini_options]
+# pythonpath puts plugins/skill-management/scripts on the import path.
+from validate_skill_structure import validate
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
 # Plugins live two levels above the .claude/ dir: <repo>/plugins/<name>/skills/<skill>/SKILL.md

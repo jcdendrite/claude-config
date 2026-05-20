@@ -173,11 +173,9 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 `./install.sh` registers the `claude-config` marketplace automatically. To register it manually (without running `install.sh`), run `claude plugin marketplace add <path-to-claude-config>`. Then install any of the plugins below at project scope:
 
 - **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
-- **`skill-management`** — SKILL.md quality toolkit: structural validation (description + when_to_use ≤ 1536 chars, strict-YAML frontmatter) run automatically at `git commit` on every staged SKILL.md, plus behavioral-equivalence audit via `/skill-review`. `claude plugin install skill-management@claude-config --scope project`
+- **`skill-management`** — Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via `/skill-review`. `claude plugin install skill-management@claude-config --scope project`
 
-  Requires `python3` and `pyyaml` on PATH — the commit-time hook fails closed if either is missing. Install via `pip install pyyaml` (or your environment's equivalent).
-
-  > **Migration from `skill-review`:** renamed from `skill-review` in v2.0.0. Downstream installers run `claude plugin uninstall skill-review && claude plugin install skill-management@claude-config --scope project` to migrate. Between uninstall and install there is a brief window with no SKILL.md gate active; do not commit SKILL.md changes during that window.
+  Requires `python3` on `$PATH` with `pyyaml` available — install via `python3 -m pip install pyyaml` against the system interpreter the hook spawns (not a project virtualenv). The commit-time hook fails closed if either is missing.
 
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 
