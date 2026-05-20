@@ -60,6 +60,54 @@ if [ -z "$(git diff --cached 2>/dev/null)" ]; then
   exit 0
 fi
 
+# Structural validation phase: run validate_skill_structure.py on every staged
+# SKILL.md before the behavioral-review marker check. Structural violations
+# (invalid YAML, over-length descriptions) are cheap and deterministic; catching
+# them here prevents malformed files from reaching the behavioral-equivalence
+# audit and gives a precise error message pointing at the offending file.
+#
+# The validator must see the staged blob content, not the working-tree file —
+# otherwise a stage-broken-then-fix-locally-without-restage flow would let
+# malformed YAML slip past the gate. Materialize each staged blob via
+# `git show :<path>` into a tmp tree that mirrors the original repo path, so
+# the validator's error messages reference recognizable paths after the tmp
+# prefix is stripped below.
+STAGED_SKILL_PATHS=()
+while IFS= read -r STAGED_PATH; do
+  [ -n "$STAGED_PATH" ] && STAGED_SKILL_PATHS+=("$STAGED_PATH")
+done <<< "$SKILL_DIFF"
+
+if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
+  STAGED_BLOB_DIR=$(mktemp -d)
+  trap 'rm -rf "$STAGED_BLOB_DIR"' EXIT
+
+  STAGED_BLOB_PATHS=()
+  for STAGED_PATH in "${STAGED_SKILL_PATHS[@]}"; do
+    BLOB_PATH="$STAGED_BLOB_DIR/$STAGED_PATH"
+    mkdir -p "$(dirname "$BLOB_PATH")"
+    if git show ":$STAGED_PATH" > "$BLOB_PATH" 2>/dev/null; then
+      STAGED_BLOB_PATHS+=("$BLOB_PATH")
+    fi
+    # If git show fails (unmerged path, index corruption), skip — the
+    # marker-check phase below will deny via its own hash-mismatch path.
+  done
+
+  if [ "${#STAGED_BLOB_PATHS[@]}" -gt 0 ]; then
+    VALIDATOR_SCRIPT="$(dirname "$0")/../scripts/validate_skill_structure.py"
+    VALIDATOR_STDERR=$(python3 "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
+    VALIDATOR_EXIT=$?
+    if [ "$VALIDATOR_EXIT" -ne 0 ]; then
+      # Strip the tmp-dir prefix so the user sees the original repo-relative
+      # SKILL.md path in the deny reason rather than /tmp/tmp.XXXX/...
+      VALIDATOR_STDERR=${VALIDATOR_STDERR//"$STAGED_BLOB_DIR/"/}
+      REASON="Commit blocked by skill-management structural validator: ${VALIDATOR_STDERR}"
+      REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+      exit 0
+    fi
+  fi
+fi
+
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 CURRENT_HASH=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')

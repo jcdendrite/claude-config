@@ -12,15 +12,16 @@ from helpers import (
     edit_input,
     extract_skill_command,
     run_hook,
+    run_hook_reason,
     run_skill_command,
     skill_review_marker_path,
     write_skill_review_marker,
 )
 
 _PLUGINS_DIR = HOOKS_DIR.parent.parent.parent / "plugins"
-SKILL_REVIEW_HOOK = _PLUGINS_DIR / "skill-review" / "hooks" / "require-skill-review.sh"
-SKILL_REVIEW_SKILL = _PLUGINS_DIR / "skill-review" / "skills" / "skill-review" / "SKILL.md"
-_PLUGIN_LIB = _PLUGINS_DIR / "skill-review" / "hooks" / "_lib.sh"
+SKILL_REVIEW_HOOK = _PLUGINS_DIR / "skill-management" / "hooks" / "require-skill-review.sh"
+SKILL_REVIEW_SKILL = _PLUGINS_DIR / "skill-management" / "skills" / "skill-review" / "SKILL.md"
+_PLUGIN_LIB = _PLUGINS_DIR / "skill-management" / "hooks" / "_lib.sh"
 _STOWED_LIB = HOOKS_DIR / "_lib.sh"
 
 
@@ -345,6 +346,75 @@ class TestRequireSkillReview:
             == "deny"
         )
 
+    def test_structural_validator_reads_staged_blob_not_working_tree(
+        self, isolated_home, git_repo
+    ):
+        """Structural validation must use the staged blob, not the working-tree file.
+
+        A user who stages a malformed SKILL.md and then fixes the working
+        copy without re-staging is shipping the malformed version on commit.
+        The hook materializes staged blobs via `git show :<path>` into a tmp
+        tree to validate the actual commit payload; this test guards that
+        path. It also verifies the tmp-dir prefix is stripped from the deny
+        reason so the user sees the original repo-relative path.
+        """
+        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        # Stage broken YAML (unclosed flow sequence fails yaml.safe_load).
+        skill_file.write_text("---\nname: broken\ndescription: [unclosed\n---\n# body\n")
+        subprocess.run(
+            ["git", "add", str(skill_file.relative_to(git_repo))],
+            cwd=git_repo,
+            check=True,
+        )
+        # Fix the working tree without re-staging — staged blob still broken.
+        skill_file.write_text("---\nname: clean\ndescription: ok\n---\n# body\n")
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert "structural validator" in reason
+        assert "claude/.claude/skills/skill-review/SKILL.md" in reason
+        # `mktemp -d` paths look like /tmp/tmp.XXXXXXXX/... — if the prefix
+        # strip regresses, that token will leak into the user-facing reason.
+        assert "/tmp/tmp." not in reason
+
+    def test_structural_validator_allows_when_staged_clean_but_working_tree_broken(
+        self, isolated_home, git_repo
+    ):
+        """Complement to the previous test: staged-blob isolation works in both directions.
+
+        If the hook ever silently fell back to reading the working-tree file,
+        the previous test would still pass (both states are broken at assertion
+        time). This test stages clean YAML, then clobbers the working tree
+        with malformed YAML — the validator must see only the staged blob and
+        let the commit proceed to the marker check, which passes here because
+        a current marker is written.
+        """
+        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        skill_file.write_text("---\nname: clean\ndescription: ok\n---\n# body\n")
+        subprocess.run(
+            ["git", "add", str(skill_file.relative_to(git_repo))],
+            cwd=git_repo,
+            check=True,
+        )
+        write_skill_review_marker(isolated_home, git_repo)
+        # Clobber working tree with broken YAML — staged blob still clean.
+        skill_file.write_text("---\nname: broken\ndescription: [unclosed\n---\n# body\n")
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
     def test_plugin_lib_sh_matches_stowed_lib_sh(self):
         """_lib.sh in the plugin hooks dir must be byte-identical to the stowed copy.
 
@@ -353,6 +423,6 @@ class TestRequireSkillReview:
         hashes on the read side vs the write side, permanently breaking the gate.
         """
         assert _PLUGIN_LIB.read_bytes() == _STOWED_LIB.read_bytes(), (
-            "plugins/skill-review/hooks/_lib.sh has drifted from claude/.claude/hooks/_lib.sh. "
+            "plugins/skill-management/hooks/_lib.sh has drifted from claude/.claude/hooks/_lib.sh. "
             "These files must stay byte-identical — update the plugin copy when the stowed copy changes."
         )

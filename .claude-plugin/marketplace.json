@@ -16,12 +16,12 @@
       "category": "productivity"
     },
     {
-      "name": "skill-review",
-      "description": "Behavioral-equivalence audit for SKILL.md changes. Gates git commit when staged changes include a SKILL.md. Install at project scope in repos that author SKILL.md files.",
+      "name": "skill-management",
+      "description": "SKILL.md quality toolkit: structural validation (description + when_to_use ≤ 1536 chars, strict-YAML frontmatter) run automatically at git commit on every staged SKILL.md, plus behavioral-equivalence audit via /skill-review. Install at project scope in repos that author SKILL.md files.",
       "author": {
         "name": "Cordova Strategy"
       },
-      "source": "./plugins/skill-review",
+      "source": "./plugins/skill-management",
       "category": "productivity"
     },
     {

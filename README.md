@@ -99,7 +99,7 @@ Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 ```
 claude/        # stow package — claude/.claude/ → ~/.claude/
-plugins/       # marketplace plugins (lovable-cloud, skill-review, claude-hook-review)
+plugins/       # marketplace plugins (lovable-cloud, skill-management, claude-hook-review)
 docs/          # design-decisions, walkthrough, hooks, skills, scripts, auto-mode, redaction
 .github/       # workflows, dependabot
 .claude/       # repo-local plans, settings, worktrees (gitignored)
@@ -132,7 +132,7 @@ flowchart LR
 - **`/plan-it`** — produce the implementation plan.
 - **`/plan-review`** — review the plan against domain checklists.
 - **`/code-review`** — principal-engineer review with ripple-effect triage.
-- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. (Provided by the `skill-review@claude-config` plugin — see [Project-scoped plugins](docs/skills.md#project-scoped-plugins).)
+- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. (Provided by the `skill-management@claude-config` plugin — see [Project-scoped plugins](docs/skills.md#project-scoped-plugins).)
 - **`/ready-for-review`** — final tests + cumulative-diff review before push.
 - **`/respond-pr`** — fetch and reply to all PR comments with `[Claude Code]` attribution.
 
@@ -142,7 +142,7 @@ flowchart LR
 |---|---|---|
 | `require-plan-review.sh` | `Write`/`Edit` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
-| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | `/skill-review` behavioral-equivalence audit (ships with `skill-review@claude-config` plugin) |
+| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit (ships with `skill-management@claude-config` plugin) |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |
 | `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in) | Remove the flagged content, or `exclude:` a synthetic-fixture path |
 | `deny-data-file-reads.sh` | `Read` of a data-shaped file (opt-in) | No clear — inspect data files outside Claude |
@@ -173,7 +173,12 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 `./install.sh` registers the `claude-config` marketplace automatically. To register it manually (without running `install.sh`), run `claude plugin marketplace add <path-to-claude-config>`. Then install any of the plugins below at project scope:
 
 - **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
-- **`skill-review`** — Behavioral-equivalence audit for `SKILL.md` changes; gates `git commit` when staged changes include a `SKILL.md`. `claude plugin install skill-review@claude-config --scope project`
+- **`skill-management`** — SKILL.md quality toolkit: structural validation (description + when_to_use ≤ 1536 chars, strict-YAML frontmatter) run automatically at `git commit` on every staged SKILL.md, plus behavioral-equivalence audit via `/skill-review`. `claude plugin install skill-management@claude-config --scope project`
+
+  Requires `python3` and `pyyaml` on PATH — the commit-time hook fails closed if either is missing. Install via `pip install pyyaml` (or your environment's equivalent).
+
+  > **Migration from `skill-review`:** renamed from `skill-review` in v2.0.0. Downstream installers run `claude plugin uninstall skill-review && claude plugin install skill-management@claude-config --scope project` to migrate. Between uninstall and install there is a brief window with no SKILL.md gate active; do not commit SKILL.md changes during that window.
+
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 
 ### Agents

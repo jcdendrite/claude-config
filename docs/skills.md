@@ -82,7 +82,7 @@ Three skills that primarily apply to this repo's own workflow — editing `SKILL
 
 | Plugin | What it provides | When to install |
 |---|---|---|
-| `skill-review@claude-config` | Behavioral-equivalence audit for `SKILL.md` changes; gates `git commit` when staged changes include a `SKILL.md` | Repos that author their own `SKILL.md` files |
+| `skill-management@claude-config` | Structural validation (description + when_to_use ≤ 1536 chars, strict-YAML frontmatter) at `git commit` on every staged SKILL.md, plus behavioral-equivalence audit via `/skill-review` | Repos that author their own `SKILL.md` files |
 | `claude-hook-review@claude-config` | Review playbook for `.claude/hooks/*.sh` scripts and `settings.json` hook entries | Repos that author their own hook scripts |
 | `plugin-semver@claude-config` | Semver and version-field discipline for plugin manifests | Repos that author Claude Code plugins for a marketplace |
 
@@ -95,7 +95,7 @@ claude plugin marketplace add ~/MyCode/claude-config   # adjust to your actual c
 Then Claude Code will resolve the plugins from the project settings. To install any plugin in a downstream project:
 
 ```bash
-claude plugin install skill-review@claude-config --scope project
+claude plugin install skill-management@claude-config --scope project
 claude plugin install claude-hook-review@claude-config --scope project
 claude plugin install plugin-semver@claude-config --scope project
 ```

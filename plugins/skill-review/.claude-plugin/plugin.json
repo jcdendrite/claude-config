@@ -1,9 +1,0 @@
-{
-  "name": "skill-review",
-  "description": "Behavioral-equivalence audit for SKILL.md changes. Gates git commit when staged changes include a SKILL.md. Install at project scope in repos that author SKILL.md files.",
-  "version": "1.0.3",
-  "author": {
-    "name": "Cordova Strategy"
-  },
-  "skills": "./skills/"
-}
