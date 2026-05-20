@@ -10,8 +10,8 @@
 # How it works:
 # - The /skill-review skill writes
 #   ~/.claude/skill-review-markers/<repo-hash>.<session_id> with the sha256 hash
-#   of `git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'` when the review
-#   is clean. The marker lives under $HOME (not inside the repo) so it never
+#   of `git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/agents/*.md' 'plugins/*/agents/*.md'`
+#   when the review is clean. The marker lives under $HOME (not inside the repo) so it never
 #   pollutes `git status` or risks being accidentally committed.
 # - This hook reads session_id from its JSON payload, recomputes the same
 #   path-scoped diff hash at commit time, and compares against THIS session's
@@ -23,9 +23,9 @@
 #   each other's markers when they stage different diffs. Each session
 #   writes its own marker; the gate checks the calling session's marker
 #   specifically.
-# - The marker is scoped to SKILL.md diffs only (not the full staged diff),
-#   so re-staging non-SKILL.md files after a clean skill-review does not
-#   invalidate the marker.
+# - The marker is scoped to SKILL.md and agent-file diffs only (not the full
+#   staged diff), so re-staging unrelated files after a clean skill-review
+#   does not invalidate the marker.
 
 . "$(dirname "$0")/_lib.sh"
 
@@ -47,9 +47,9 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-# Early exit: if no SKILL.md files are staged, this hook is a no-op.
-# Commits that don't touch any skill file are not gated by skill-review.
-SKILL_DIFF=$(git diff --cached --name-only -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md')
+# Early exit: if no SKILL.md or agent files are staged, this hook is a no-op.
+# Commits that don't touch any reviewed instruction file are not gated by skill-review.
+SKILL_DIFF=$(git diff --cached --name-only -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/agents/*.md' 'plugins/*/agents/*.md')
 if [ -z "$SKILL_DIFF" ]; then
   exit 0
 fi
@@ -62,7 +62,7 @@ fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
-CURRENT_HASH=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
+CURRENT_HASH=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/agents/*.md' 'plugins/*/agents/*.md' | sha256sum | awk '{print $1}')
 
 # Empty session_id (older Claude Code versions or payload-schema drift) can't
 # key a per-session marker — fall through to deny.
@@ -81,6 +81,6 @@ fi
 # Build the reason as a bash variable so the conditional marker-chain
 # note can be interpolated; jq -Rs handles JSON-encoding safely
 # regardless of what characters appear in the appended note.
-REASON="Commit blocked by skill-review gate: Staged skill changes have not been audited by /skill-review. Run /skill-review on the staged SKILL.md diff; the skill must produce an explicit behavioral-equivalence table for any removed or shortened lines before committing."
+REASON="Commit blocked by skill-review gate: Staged SKILL.md or agent-file changes have not been audited by /skill-review. Run /skill-review on the staged diff; the skill must produce an explicit behavioral-equivalence table for any removed or shortened lines before committing."
 REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"

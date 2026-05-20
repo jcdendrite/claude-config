@@ -308,6 +308,68 @@ class TestMarkerScriptEmptyStagedGuard:
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
         assert len(list(marker_dir.iterdir())) == 1
 
+    # ── skill-review: agent-file coverage (claude/.claude/agents/*.md + plugins/*/agents/*.md) ──
+
+    def _make_stowed_agent(self, repo):
+        """Create a tracked agent file inside the repo at the expected pathspec."""
+        agent_dir = repo / "claude" / ".claude" / "agents"
+        agent_dir.mkdir(parents=True)
+        agent_md = agent_dir / "test-agent.md"
+        agent_md.write_text("---\nname: test-agent\ndescription: x\n---\n\nbody\n")
+        subprocess.run(["git", "add", str(agent_md)], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add test agent"],
+            cwd=repo,
+            check=True,
+        )
+        return agent_md
+
+    def _make_plugin_agent(self, repo):
+        """Create a tracked plugin agent file at plugins/<name>/agents/<name>.md."""
+        agent_dir = repo / "plugins" / "some-plugin" / "agents"
+        agent_dir.mkdir(parents=True)
+        agent_md = agent_dir / "test-agent.md"
+        agent_md.write_text("---\nname: test-agent\ndescription: x\n---\n\nbody\n")
+        subprocess.run(["git", "add", str(agent_md)], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add plugin agent"],
+            cwd=repo,
+            check=True,
+        )
+        return agent_md
+
+    def test_skill_review_unstaged_stowed_agent_exits_2(self, isolated_home, git_repo):
+        """Guard fires when staged diff is empty but an unstaged stowed-agent change exists."""
+        self._seed_session(isolated_home)
+        agent_md = self._make_stowed_agent(git_repo)
+        agent_md.write_text("---\nname: test-agent\ndescription: x\n---\n\nmodified\n")
+        result = _run(["write", "skill-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert "git add" in result.stderr
+        assert "/skill-review" in result.stderr
+
+    def test_skill_review_staged_stowed_agent_writes_marker(self, isolated_home, git_repo):
+        """Guard must NOT fire when a stowed-agent change is staged; marker writes successfully."""
+        self._seed_session(isolated_home)
+        agent_md = self._make_stowed_agent(git_repo)
+        agent_md.write_text("---\nname: test-agent\ndescription: x\n---\n\nupdated\n")
+        subprocess.run(["git", "add", str(agent_md)], cwd=git_repo, check=True)
+        result = _run(["write", "skill-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "skill-review-markers"
+        assert len(list(marker_dir.iterdir())) == 1
+
+    def test_skill_review_staged_plugin_agent_writes_marker(self, isolated_home, git_repo):
+        """Guard must NOT fire when a plugin-agent change is staged; marker writes successfully."""
+        self._seed_session(isolated_home)
+        agent_md = self._make_plugin_agent(git_repo)
+        agent_md.write_text("---\nname: test-agent\ndescription: x\n---\n\nupdated\n")
+        subprocess.run(["git", "add", str(agent_md)], cwd=git_repo, check=True)
+        result = _run(["write", "skill-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "skill-review-markers"
+        assert len(list(marker_dir.iterdir())) == 1
+
 
 class TestMarkerScriptStalePidLookup:
     """Regression guard: `activate` must stamp the live Claude PID into the

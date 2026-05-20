@@ -1,5 +1,31 @@
 # skill-review — References
 
+## Anthropic subagent frontmatter contract
+
+Primary source: <https://code.claude.com/docs/en/sub-agents.md>. Verbatim
+quotes for the rules encoded in §1 (agent frontmatter) and §7 item 1b:
+
+- **Required fields:** "name (required), description (required)" — only
+  these two are required; everything else is optional.
+- **Name vs. filename:** "The name is used to invoke the subagent and
+  doesn't need to match the filename." (Inverse of the SKILL.md rule.)
+- **`tools` (not `allowed-tools`):** "tools (optional, defaults to all
+  inherited tools): Comma-separated list of allowed tools."
+- **`disallowedTools` precedence:** "disallowedTools (optional): Tools
+  the subagent cannot use. This is enforced even if listed in tools."
+- **`model` values:** "model (optional, defaults to inherit): Specify
+  which model to use. Options: sonnet, haiku, opus, or a specific
+  model name like claude-sonnet-4-5. Use inherit to use the same model
+  as the parent."
+- **`maxTurns`:** "maxTurns (optional): Maximum number of turns the
+  subagent can take before stopping."
+
+The TRIGGER / DO NOT TRIGGER framing for agent descriptions is a
+**repo convention**, not a docs requirement — the docs describe the
+description as plain English "when Claude should delegate." Item 1b
+of §7 in SKILL.md applies the convention to routed-reviewer agents
+only; executor-style agents (e.g., `check-runner`) are exempt.
+
 ## Why skill-creator is disabled in this repo
 
 `skill-creator` (Anthropic's `claude-plugins-official` plugin) and

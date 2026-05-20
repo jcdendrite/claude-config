@@ -132,7 +132,7 @@ flowchart LR
 - **`/plan-it`** — produce the implementation plan.
 - **`/plan-review`** — review the plan against domain checklists.
 - **`/code-review`** — principal-engineer review with ripple-effect triage.
-- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. (Provided by the `skill-review@claude-config` plugin — see [Project-scoped plugins](docs/skills.md#project-scoped-plugins).)
+- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` or agent file (`claude/.claude/agents/*.md` or `plugins/*/agents/*.md`) changes. (Provided by the `skill-review@claude-config` plugin — see [Project-scoped plugins](docs/skills.md#project-scoped-plugins).)
 - **`/ready-for-review`** — final tests + cumulative-diff review before push.
 - **`/respond-pr`** — fetch and reply to all PR comments with `[Claude Code]` attribution.
 
@@ -142,7 +142,7 @@ flowchart LR
 |---|---|---|
 | `require-plan-review.sh` | `Write`/`Edit` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
-| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | `/skill-review` behavioral-equivalence audit (ships with `skill-review@claude-config` plugin) |
+| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` or agent file | `/skill-review` behavioral-equivalence audit (ships with `skill-review@claude-config` plugin) |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |
 | `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in) | Remove the flagged content, or `exclude:` a synthetic-fixture path |
 | `deny-data-file-reads.sh` | `Read` of a data-shaped file (opt-in) | No clear — inspect data files outside Claude |
@@ -173,7 +173,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 `./install.sh` registers the `claude-config` marketplace automatically. To register it manually (without running `install.sh`), run `claude plugin marketplace add <path-to-claude-config>`. Then install any of the plugins below at project scope:
 
 - **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
-- **`skill-review`** — Behavioral-equivalence audit for `SKILL.md` changes; gates `git commit` when staged changes include a `SKILL.md`. `claude plugin install skill-review@claude-config --scope project`
+- **`skill-review`** — Behavioral-equivalence audit for `SKILL.md` and agent-file changes (`claude/.claude/agents/*.md` and `plugins/*/agents/*.md`); gates `git commit` when those files are staged. `claude plugin install skill-review@claude-config --scope project`
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 
 ### Agents

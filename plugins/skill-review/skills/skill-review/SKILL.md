@@ -1,46 +1,48 @@
 ---
 name: skill-review
 description: >
-  Review and audit of SKILL.md files: frontmatter conventions, trigger
-  design, voice, length targets, and cross-reference vs duplication
+  Review and audit of SKILL.md and agent files: frontmatter conventions,
+  trigger design, voice, length targets, and cross-reference vs duplication
   policy. TRIGGER when: authoring or reviewing a .claude/skills/**/SKILL.md
-  change, or auditing trigger accuracy across a skill set.
+  or .claude/agents/*.md change (stowed or under plugins/*), or auditing
+  trigger accuracy across the set.
   DO NOT TRIGGER when: editing
   CLAUDE.md/AGENTS.md (use ai-instruction-and-memory-files), or
-  reviewing non-skill files.
+  reviewing non-instruction files.
 user-invocable: false
 ---
 
-# Skill Review — Architecture & Checklist
+# Skill & Agent Review — Architecture & Checklist
 
-## 1. What makes a skill load
+## 1. What makes a skill or agent load
 
-A skill file is `claude/.claude/skills/<name>/SKILL.md`. Required
-frontmatter:
+This skill covers two file types with a shared quality bar but distinct
+frontmatter contracts:
 
-- **`name`** — must match the directory name; the harness keys on it.
-- **`description`** — loaded into every session for trigger matching.
-  This is the only body content the harness sees until the skill fires.
+- **Skills:** `claude/.claude/skills/<name>/SKILL.md` or `plugins/<plugin>/skills/<name>/SKILL.md`.
+- **Agents:** `claude/.claude/agents/<name>.md` or `plugins/<plugin>/agents/<name>.md`.
 
-Optional frontmatter:
+**Required frontmatter (both):**
 
-- **`allowed-tools`** — comma-separated allowlist (e.g.
-  `Read, Grep, Glob, Bash`). Omit to inherit the session's tools.
-- **`user-invocable`** — `false` hides the skill from the slash-command
-  menu but keeps it auto-triggerable from the description.
-- **`disable-model-invocation`** — `true` removes the description from the
-  always-loaded skill-listing budget; Skill tool invocations still work.
-  Use `true` on add-on skills (`.claude/skills/<parent>-<project>/SKILL.md`)
-  invoked by a parent via Glob+Skill-tool — `test-conventions`, `plan-review`,
-  and `code-review` all use this pattern; auto-trigger is not needed.
+- **`name`** — for skills, must match the directory name; for agents, used as the dispatcher key but need not match the filename.
+- **`description`** — loaded into every session for trigger / dispatch matching. Only body content the harness sees until the file fires.
 
-The harness loads only the description at startup; the body is fetched
-on demand. Description text is always-loaded context budget; body
-text is conditional. Frontmatter overspend hurts more than body overspend.
+**Optional frontmatter — skill-specific:**
 
-Target description shape: one summary sentence (≤80 chars), then `TRIGGER when:` and
-`DO NOT TRIGGER when:` clauses. Do not enumerate body-topic headings in the summary —
-body sections already enumerate; the summary routes.
+- **`allowed-tools`** — comma-separated allowlist (e.g. `Read, Grep, Glob, Bash`). Omit to inherit the session's tools.
+- **`user-invocable`** — `false` hides the skill from the slash-command menu but keeps it auto-triggerable from the description.
+- **`disable-model-invocation`** — `true` removes the description from the always-loaded skill-listing budget; Skill tool invocations still work. Use `true` on add-on skills (`.claude/skills/<parent>-<project>/SKILL.md`) invoked by a parent via Glob+Skill-tool.
+
+**Optional frontmatter — agent-specific:**
+
+- **`tools`** — comma-separated allowlist; spelled `tools`, **not** `allowed-tools` (skill-only field). Omit to inherit.
+- **`disallowedTools`** — comma-separated denylist; takes precedence over `tools`.
+- **`model`** — `sonnet` / `haiku` / `opus`, a full model ID, or `inherit` to follow the parent.
+- **`maxTurns`** — integer cap on the agent's turn budget.
+
+The harness loads only the description at startup; the body is fetched on demand — so frontmatter overspend hurts more than body overspend.
+
+Target description shape: one summary sentence (≤80 chars), then `TRIGGER when:` and `DO NOT TRIGGER when:` clauses; do not duplicate body-topic headings in the summary.
 
 ## 2. Trigger design
 
@@ -71,17 +73,10 @@ After a `TRIGGER`-block change, run `python evals/run_skill_evals.py --skill <na
 
 ## 3. Voice and structure
 
-- **Imperative second person.** "Review the change," "Apply the
-  checklist," not "The reviewer reviews the change."
-- **Declarative numbered items** for checklist content; the dispatcher
-  routes by item number in some skills (see `code-review` Item
-  ownership table).
-- **Section headers are domain or step labels** ("Trigger design,"
-  "Review checklist") — never "Introduction," "Background,"
-  "Conclusion."
-- **Tables for matrices, prose for narratives, bullets for parallel
-  options.** A four-column comparison wants a table; a two-step
-  decision wants prose.
+- **Imperative second person.** "Review the change," not "The reviewer reviews the change."
+- **Declarative numbered items** for checklist content.
+- **Section headers are domain or step labels** — never "Introduction," "Background," "Conclusion."
+- **Tables for matrices, prose for narratives, bullets for parallel options.**
 
 ## 4. Length and the behavior test
 
@@ -137,17 +132,12 @@ If not all three hold, point at the canonical source.
 
 ## 7. Review checklist
 
-1. **Frontmatter** — `name` matches directory; `description` present
-   and contains both `TRIGGER when:` and `DO NOT TRIGGER when:`
-   blocks. `allowed-tools` and `user-invocable` only if needed. Add
-   `disable-model-invocation: true` on add-on skills loaded by a parent
-   via Glob+Skill-tool (`.claude/skills/<parent>-<project>/SKILL.md`).
+1a. **Skill frontmatter** — `name` matches directory; description has both `TRIGGER when:` and `DO NOT TRIGGER when:` blocks; `disable-model-invocation: true` on add-on skills loaded by a parent via Glob+Skill-tool.
+1b. **Agent frontmatter** — `name` need not match the filename; tool allowlist uses `tools` (not `allowed-tools`); `model` is `sonnet`/`haiku`/`opus`/full-ID/`inherit` when not omitted; `disallowedTools` and `maxTurns` valid when used.
 2. **Description scope** — the description's TRIGGER list matches
    what the body actually covers. An overpromising description fires
    on turns the body can't help with.
-3. **Trigger specificity** — TRIGGER conditions use file globs or
-   action verbs, not vague context cues alone. A skill that triggers
-   on "thinking about X" is too soft to fire reliably.
+3. **Trigger specificity** — TRIGGER conditions use file globs or action verbs, not vague context cues alone. A skill that triggers on "thinking about X" is too soft to fire reliably. For agent files, apply this to routed-reviewer agents (`staff-*`, `ciso-reviewer`, `code-writer`); executor-style agents whose description names a single invocation context (e.g., `check-runner`) are exempt — recommend only.
 4. **DO NOT TRIGGER coverage** — adjacent-skill surfaces are named
    explicitly; verify every domain-adjacent skill appears.
 5. **Length** — under the 200-line target. Flag anything that drifts
@@ -158,8 +148,9 @@ If not all three hold, point at the canonical source.
 7. **Voice** — imperative second person; numbered items for
    checklists; section headers that label domains or steps.
 8. **Cross-reference correctness** — referenced skill names exist;
-   referenced section anchors (`§2`, `§3`) match the target file's
-   structure. Renames in the target break these silently.
+   section anchors (`§2`, `§3`) and item numbers used by dispatcher
+   routing tables (`code-review`, `plan-review` Item ownership) match
+   the target's structure. Renames or renumberings break these silently.
 9. **Duplication justification** — content duplicated across skills
    passes the three-condition test in §6. Otherwise, replace the
    duplicate with a pointer.
@@ -198,4 +189,4 @@ blockers), record completion by running this command exactly once:
 ~/.claude/scripts/marker.sh write skill-review
 ```
 
-The pathspecs `claude/.claude/skills/**/SKILL.md` and `plugins/*/skills/**/SKILL.md` are encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks — covering both stowed skills and project-scoped plugin skills.
+The pathspecs for SKILL.md and agent files (stowed and plugin) are encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks.

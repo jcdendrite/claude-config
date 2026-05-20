@@ -48,6 +48,30 @@ def _stage_plugin_skill_change(git_repo):
     )
 
 
+def _stage_stowed_agent_change(git_repo):
+    """Stage an agent change at claude/.claude/agents/<name>.md."""
+    agent_file = git_repo / "claude" / ".claude" / "agents" / "test-agent.md"
+    agent_file.parent.mkdir(parents=True, exist_ok=True)
+    agent_file.write_text("---\nname: test-agent\ndescription: x\n---\n\nbody\n")
+    subprocess.run(
+        ["git", "add", str(agent_file.relative_to(git_repo))],
+        cwd=git_repo,
+        check=True,
+    )
+
+
+def _stage_plugin_agent_change(git_repo):
+    """Stage an agent change at plugins/<name>/agents/<name>.md."""
+    agent_file = git_repo / "plugins" / "some-plugin" / "agents" / "test-agent.md"
+    agent_file.parent.mkdir(parents=True, exist_ok=True)
+    agent_file.write_text("---\nname: test-agent\ndescription: x\n---\n\nbody\n")
+    subprocess.run(
+        ["git", "add", str(agent_file.relative_to(git_repo))],
+        cwd=git_repo,
+        check=True,
+    )
+
+
 class TestRequireSkillReview:
     # The marker layout is ~/.claude/skill-review-markers/<repo-hash>.<session_id>.
     # The hook reads session_id from its JSON payload and checks the
@@ -343,6 +367,92 @@ class TestRequireSkillReview:
                 cwd=git_repo,
             )
             == "deny"
+        )
+
+    def test_stowed_agent_no_marker_denies_commit(self, isolated_home, git_repo):
+        """Stowed agent file (claude/.claude/agents/*.md) is gated like SKILL.md."""
+        _stage_stowed_agent_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_stowed_agent_correct_hash_marker_allows(self, isolated_home, git_repo):
+        """Stowed agent file allows when the marker covers the agent diff hash."""
+        _stage_stowed_agent_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_plugin_agent_no_marker_denies_commit(self, isolated_home, git_repo):
+        """Plugin-path agent file (plugins/*/agents/*.md) is gated like SKILL.md."""
+        _stage_plugin_agent_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_plugin_agent_correct_hash_marker_allows(self, isolated_home, git_repo):
+        """Plugin-path agent file allows when the marker covers the agent diff hash."""
+        _stage_plugin_agent_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_mixed_skill_and_agent_stale_skill_only_marker_denies(
+        self, isolated_home, git_repo
+    ):
+        """A marker written for a skill-only diff is stale when an agent file is later
+        staged — the combined hash differs from the skill-only hash, so the gate must deny."""
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        # Stage an additional agent file; combined hash now differs from stored marker.
+        _stage_stowed_agent_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_agent_marker_survives_non_agent_restaging(self, git_repo, isolated_home):
+        """Re-staging a non-reviewed file does not invalidate an agent-file marker."""
+        _stage_stowed_agent_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        # Stage an unrelated file outside the gated pathspecs.
+        unrelated = git_repo / "claude" / ".claude" / "settings.json"
+        unrelated.parent.mkdir(parents=True, exist_ok=True)
+        unrelated.write_text('{"additional": true}')
+        subprocess.run(["git", "add", "claude/.claude/settings.json"], cwd=git_repo, check=True)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m test", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
         )
 
     def test_plugin_lib_sh_matches_stowed_lib_sh(self):
