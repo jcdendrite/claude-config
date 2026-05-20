@@ -13,6 +13,13 @@ Write a cold-start task briefing at `/tmp/<descriptive-slug>-task.md` using the 
 
 If you are still mid-task and running low on context, use `/handoff`. If the work is known, abandoned, and someone else (or a future you) should pick it up cold, use `/brief`.
 
+## When to use this vs `/plan-it`
+
+- **`/plan-it`** is for the design phase: approach is unsettled, exploration and clarifying questions are needed, and the output (`.claude/plans/<slug>.md`) is reviewed by `/plan-review` before implementation. Committed to the repo.
+- **`/brief`** is for the operational handoff: scope is settled (or the work is mechanical), no design step remains, and the output (`/tmp/<slug>-task.md`) tells a fresh session where the work stands so they can pick up execution. Ephemeral.
+
+If `§5 Decisions to make` is filling with open design questions rather than specific items awaiting an answer, write a plan instead.
+
 ## §1 Goal
 Single sentence: what shipping this work means. Frame in terms of the user-visible or system-visible outcome, not the implementation path.
 
