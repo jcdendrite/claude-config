@@ -100,8 +100,11 @@ concrete:
   you applied and what you found and fixed, or "clean." If the change was
   trivial enough to skip the deep pass, say so and why.
 - **Still uncertain:** anything you could not fully verify — an assumption you
-  made, a contract you could not trace, a decision the parent should confirm. If
-  there is nothing, say "nothing." The parent uses this to target its review.
+  made, a contract you could not trace, a decision the parent should confirm.
+  If you shipped new behavior without a test because the codebase has no test
+  convention (per the baseline rule), name the test-coverage gap as an
+  explicit item — do not omit it. If there is nothing else, say "nothing."
+  The parent uses this to target its review.
 
 No padding, no praise, no restating the dispatch prompt. If the change is
 incomplete or blocked, say so plainly with the reason.
