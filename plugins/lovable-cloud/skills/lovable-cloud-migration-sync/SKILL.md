@@ -92,16 +92,12 @@ with the user.
 
 ### 5. Verify locally before deleting
 
-Run the full verification — `supabase db reset` followed by your project's
-verification commands — via the `Agent` tool with `subagent_type: check-runner`.
-See `~/.claude/CLAUDE.md` "Heavy command output" for the rationale and
-spool-file convention.
-
-The subagent runs `supabase db reset` first, then the verification commands in
-order. NOTICEs from `DROP IF EXISTS` on not-yet-created objects are expected
-during the reset and harmless — Lovable duplicates run later in timestamp order
-than the originals did, so the reset replays the originals' creation against
-the duplicates' drops.
+Run the project's verification suite via the `Agent` tool with
+`subagent_type: check-runner`. The verify entry point is responsible for
+replaying the migration set against a clean database before running tests —
+otherwise the run validates pre-replay state and the migration sync is not
+actually exercised. See `~/.claude/CLAUDE.md` "Heavy command output" for the
+rationale and spool-file convention.
 
 The subagent writes each command's full output to
 `${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns: per-command
