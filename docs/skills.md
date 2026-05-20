@@ -42,7 +42,7 @@ Claude Code ships a set of bundled skills alongside its custom-skill support. Tw
 | `/schedule` | Cron-scheduled remote agents (routines). Not part of this repo's skill-authoring / review-pipeline workflow. |
 | `/security-review` | Superseded by `/code-review` specialist routing (ciso-reviewer agent fires automatically). |
 | `/simplify` | Overlaps with `/code-review`, which spins up domain specialists and produces a structured checklist. |
-| `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), and `/skill-review` (skill bodies); remaining env/model/theme edits are trivial direct file changes. |
+| `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), `/skill-review` (skill bodies), and `/agent-review` (agent bodies); remaining env/model/theme edits are trivial direct file changes. |
 | `/verify` | Manual-verification skill that drives the app to confirm a change. Same scope mismatch as `/run` — claude-config skills and hooks are verified via `pytest claude/.claude/`. |
 
 ### Re-enable for your session
@@ -76,6 +76,7 @@ classify which skill a query should match (`description-fidelity`). See
 - **`@path` import syntax is for `CLAUDE.md` only.** The `@path/to/file` import pattern that works in `CLAUDE.md` files is not supported in `SKILL.md`.
 - **Duplicate rule text across skills intentionally.** When two skills need the same rule, copy it into both — do not extract it into a `_shared/` partial or similar abstraction. Duplication is deliberate: it keeps each skill independently readable and avoids brittle cross-skill coupling. If you find yourself wanting a shared partial, that is a signal to reconsider whether the skills should be merged, not a signal to add an include mechanism.
 - **Bare-name `Skill()` calls resolve against plugin-namespaced skills.** When a skill's identifier in the available-skills listing is `plugin-name:skill-name`, invoking `Skill(skill="skill-name")` still resolves — the harness accepts the bare name. Prose pointers in calling skills (e.g., "invoke the `skill-name` skill") do not need updating when a skill moves to plugin form.
+- **When to gate a review skill with a pre-commit hook.** Gate skills whose target files carry always-loaded context budget on every session or route dispatcher decisions — getting them wrong is high-stakes, so `/skill-review` is enforced by `require-skill-review.sh`. Do not gate skills whose target files are lazy-loaded — body cost is paid only when the harness dispatches them, so a mistake degrades a specific dispatch path rather than the global surface. `/agent-review` falls in this lazy-loaded class; dispatcher-level invocation from `/code-review` is sufficient. Bundling an ungated reviewer under a gated plugin's hook (e.g., `/agent-review` under `skill-management`'s) would couple two independent consumer contracts — plugin consumers who installed for one enforcement would inherit the other they did not opt into.
 
 ## Project-scoped plugins
 

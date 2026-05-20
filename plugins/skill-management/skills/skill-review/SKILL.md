@@ -6,8 +6,9 @@ description: >
   policy. TRIGGER when: authoring or reviewing a .claude/skills/**/SKILL.md
   change, or auditing trigger accuracy across a skill set.
   DO NOT TRIGGER when: editing
-  CLAUDE.md/AGENTS.md (use ai-instruction-and-memory-files), or
-  reviewing non-skill files.
+  CLAUDE.md/AGENTS.md (use ai-instruction-and-memory-files), editing
+  agent files in .claude/agents/*.md or plugins/*/agents/*.md (use
+  agent-review), or reviewing non-skill files.
 user-invocable: false
 ---
 
