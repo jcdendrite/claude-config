@@ -2,7 +2,7 @@
 name: lovable-cloud-migration-sync
 description: >
   Post-apply cleanup for Lovable-duplicated migrations: diff originals, db reset, delete, open PR.
-  TRIGGER when: the user signals Lovable's migration apply step completed, regardless of exact wording; OR when cleaning up orphaned migration objects after a security-gate revert (read the Recovery section).
+  TRIGGER when: the user signals Lovable's migration apply step completed, regardless of exact wording.
   DO NOT TRIGGER when: all originals already deleted, or user asks about mechanics without signaling completion.
 user-invocable: true
 disable-model-invocation: true
@@ -136,65 +136,3 @@ git rm supabase/migrations/ORIGINAL_1.sql supabase/migrations/ORIGINAL_2.sql ...
 
 Create a branch, commit the deletions, push, and open a PR. The commit message
 should reference which originals were replaced by which Lovable UUID files.
-
-## Recovery: when the security gate reverted a Lovable migration commit
-
-A downstream security-gate workflow rejects a Lovable-bot migration
-commit and skips `git revert` because Lovable already applied the SQL
-to the Cloud DB. Reconciling the live DDL is ratify vs. compensate.
-
-### 1. Read the verbatim reject reason — judge ratify vs. compensate
-
-Read the verbatim reject reason from the tracker issue (do not paraphrase
-or keyword-match). If neither branch below affirmatively applies, ask the user.
-
-- **Compensate** when the SQL is genuinely unsafe — over-broad grant
-  (`EXECUTE` to PUBLIC on SECURITY DEFINER), unrestricted write grant to
-  `anon`, predicate-stripped RLS (`USING (true)`, `WITH CHECK (true)`),
-  SECURITY DEFINER escalation, missing `search_path` pin. Author a
-  reconciling migration that walks the unsafe object back.
-- **Ratify** only when the rejection was policy-fit (out-of-band schema
-  namespace, missing review step) AND a privilege-delta audit confirms
-  no permission grant, RLS predicate change, or role elevation. Author
-  an idempotent migration that re-records the already-live DDL.
-
-### 2. Detect orphaned objects
-
-Find suspected gate-reverts in history:
-
-```bash
-git log --author='github-actions[bot]' --grep='^Revert' -- supabase/migrations/
-```
-
-For each reverted migration, inspect what is live in the DB but absent
-from the repo. The queries below cover function signatures, policy bodies,
-and column grants; also check `pg_trigger`, `pg_extension`, table-level
-ACLs, and `pg_class.relrowsecurity` for objects the reverted DDL touches:
-
-```sql
--- Function signature disambiguation
-SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
-FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE p.proname = '<function_name>';
--- Policy body — diff against the migration's CREATE POLICY
-SELECT schemaname, tablename, policyname, cmd, qual, with_check
-FROM pg_policies WHERE tablename = '<table>';
--- Column-grant audit
-SELECT grantee, privilege_type, table_schema, table_name, column_name
-FROM information_schema.column_privileges WHERE table_name = '<table>';
-```
-
-### 3. Author the reconciling migration, then sync via the Procedure above
-
-**Compensate**: walk each unsafe object back — `REVOKE` over-broad grants,
-re-`CREATE OR REPLACE POLICY` correctly, re-define SECURITY DEFINER
-functions with `SET search_path` pinned to referenced schemas +
-`pg_catalog, pg_temp` (do not copy the original's unpinned setting).
-
-**Ratify**: write idempotent `CREATE OR REPLACE` / `DROP ... IF EXISTS` SQL
-matching the live DB. Lovable will duplicate the file; idempotent guards
-keep the duplicate safe against pre-existing state.
-
-In both cases the migration header must record the reverted SHA, verbatim
-reject reason, and branch chosen. Then run the `## Procedure` above to sync
-the new migration through Lovable.
