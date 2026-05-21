@@ -225,3 +225,194 @@ class TestRequireCodeReview:
         non_repo.mkdir()
         assert run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=non_repo) == "allow"
 
+    def test_chained_marker_write_then_commit_allowed_without_existing_marker(
+        self, isolated_home, git_repo
+    ):
+        """PreToolUse fires once per Bash tool call before the chain runs, so
+        an on-disk marker check finds nothing for naturally-typed forms like
+        `marker.sh write code-review && git commit`. The chain itself will
+        write the marker before commit, and marker.sh is the only sanctioned
+        writer in either case — trust the in-chain write and allow."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "~/.claude/scripts/marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_bare_marker_write_does_not_authorize(self, isolated_home, git_repo):
+        """The bypass must NOT recognize a bare `marker.sh` (PATH-resolved or
+        attacker-controlled path like `/home/evil/marker.sh`). Only canonical
+        ~/.claude/scripts/marker.sh or absolute /.claude/scripts/marker.sh
+        paths are sanctioned by permissions.allow and enforce-marker-script-shape,
+        and this helper must agree to prevent a chained-form bypass via a
+        non-leading bogus marker.sh path."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_chained_non_canonical_marker_path_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """A bogus marker.sh path (not under /.claude/scripts/) must not
+        trigger the bypass even when chained correctly. Closes the gap where
+        enforce-marker-script-shape's leading-anchor check would not fire on
+        a non-leading marker.sh fragment in a chain."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "git add . && /home/evil/marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_echo_wrapping_marker_text_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """`echo ~/.claude/scripts/marker.sh write code-review && git commit`
+        looks like a chained marker write to a text-matcher, but `echo` does
+        not actually invoke marker.sh — only prints the path. The helper must
+        anchor at command start so wrapper commands (echo, printf, cat, sudo)
+        cannot wedge the gate open via text appearance."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "echo ~/.claude/scripts/marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_env_var_prefix_marker_does_not_authorize(self, isolated_home, git_repo):
+        """`FOO=bar ~/.claude/scripts/marker.sh write code-review && git commit`
+        is intentionally not in the sanctioned chained shape — env-var prefix
+        is one of the forms enforce-marker-script-shape comments call out as
+        gated by permissions.allow, not by shape regex. The helper must
+        agree to prevent a bypass via prefix wrapping."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "FOO=bar ~/.claude/scripts/marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_bash_c_wrapped_marker_does_not_authorize(self, isolated_home, git_repo):
+        """`bash -c '~/.claude/scripts/marker.sh write code-review' && git commit`
+        wraps marker.sh in a subshell. Whether the inner marker.sh actually
+        runs depends on subshell semantics; either way the outer command does
+        not match the sanctioned chained shape, so the bypass must not fire."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "bash -c '~/.claude/scripts/marker.sh write code-review' && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_heredoc_pipe_with_marker_text_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """`cat <<EOF | bash\\n~/.claude/scripts/marker.sh write code-review\\nEOF`
+        piped into a chain with `git commit` must not bypass the gate. The
+        heredoc body text appears inside the command string but the outer
+        shape (`cat | bash && ...`) is not a sanctioned chained form.
+        Without anchoring at command start, the marker text in the heredoc
+        body would trick a fragment walker into seeing a marker-write
+        precedes the commit."""
+        cmd = (
+            "cat <<EOF | bash\n"
+            "~/.claude/scripts/marker.sh write code-review\n"
+            "EOF\n"
+            "git commit -m foo"
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_chained_skill_review_marker_does_not_authorize_code_review(
+        self, isolated_home, git_repo
+    ):
+        """Chaining `marker.sh write skill-review` (wrong skill) before
+        `git commit` must NOT authorize a code-review-gated commit. Each
+        gate's bypass is scoped to its own skill name."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "~/.claude/scripts/marker.sh write skill-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_marker_write_after_commit_does_not_authorize(self, isolated_home, git_repo):
+        """In a hypothetical `git commit && marker.sh write code-review`, the
+        marker write happens AFTER commit — too late. The bypass must only
+        fire when the marker-write fragment precedes the commit fragment."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "git commit -m foo && ~/.claude/scripts/marker.sh write code-review",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_quoted_marker_text_in_commit_message_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """A literal `marker.sh write code-review` appearing inside a quoted
+        commit message must NOT bypass the gate — the marker-write text has
+        to be in a fragment that precedes the commit fragment, not embedded
+        in the commit's own arguments."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    'git commit -m "marker.sh write code-review"',
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+

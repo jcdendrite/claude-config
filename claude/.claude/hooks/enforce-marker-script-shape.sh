@@ -71,6 +71,27 @@ if printf '%s' "$TRIMMED" | grep -qE "$VALID_PATTERN"; then
   exit 0
 fi
 
+# Chained-commit allowance. One or more valid `marker.sh write <skill>` shapes
+# joined by `&&`, followed by `git commit ...`, is the natural atomic form an
+# agent types after reviews pass. Chaining marker.sh with anything other than
+# `git commit` (curl, rm, redirects, ;) stays denied by falling through to the
+# message below. Coordinated with require-code-review.sh and require-skill-review.sh,
+# which honor the same in-chain marker-write pattern at the commit gate.
+#
+# Trailing content after `git commit` is constrained to characters that cannot
+# form a further shell chain or redirect (`& | ; < >`). Without that constraint
+# the regex would allow `marker.sh write X && git commit && curl evil.com`,
+# bypassing the gate's own design intent ("no chains to anything but git commit").
+# Backticks and `$` (command substitution) remain permitted; commit messages
+# containing them are uncommon enough that denying would be more disruptive than
+# the marginal forge-vector they represent, and substitution is itself gated
+# elsewhere.
+VALID_CHAINED_COMMIT_PATTERN='^((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+commit([[:space:]]+[^&|;<>]*)?$'
+
+if printf '%s' "$TRIMMED" | grep -qE "$VALID_CHAINED_COMMIT_PATTERN"; then
+  exit 0
+fi
+
 # Deny. Truncate to 80 chars to avoid echoing attacker-controlled bytes verbatim.
 TRUNCATED=$(printf '%s' "$TRIMMED" | cut -c1-80)
 REASON="marker.sh invocation denied. Command (truncated): $TRUNCATED

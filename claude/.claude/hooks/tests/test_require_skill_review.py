@@ -482,6 +482,133 @@ class TestRequireSkillReview:
             "${CLAUDE_PLUGIN_DATA}/venv/bin/python as expected"
         )
 
+    def test_chained_marker_write_then_commit_allowed_without_existing_marker(
+        self, isolated_home, git_repo
+    ):
+        """PreToolUse fires once per Bash tool call before the chain runs, so
+        an on-disk marker check finds nothing for naturally-typed forms like
+        `marker.sh write skill-review && git commit`. The chain itself will
+        write the marker before commit, and marker.sh is the only sanctioned
+        writer in either case — trust the in-chain write and allow."""
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(
+                    "~/.claude/scripts/marker.sh write skill-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_marker_write_does_not_skip_structural_validator(
+        self, isolated_home, git_repo
+    ):
+        """The in-chain marker-write bypass must NOT skip the structural
+        validator. A malformed SKILL.md must still be denied even when the
+        chain claims to write a marker — the validator gate is independent
+        of the marker-hash gate."""
+        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        skill_file.write_text("---\nname: broken\ndescription: [unclosed\n---\n# body\n")
+        subprocess.run(
+            ["git", "add", str(skill_file.relative_to(git_repo))],
+            cwd=git_repo,
+            check=True,
+        )
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(
+                "~/.claude/scripts/marker.sh write skill-review && git commit -m foo",
+                session_id=DEFAULT_TEST_SESSION_ID,
+            ),
+            cwd=git_repo,
+        )
+        assert reason is not None, "hook allowed silently; expected deny from validator"
+        assert "structural validator" in reason
+
+    def test_chained_non_canonical_marker_path_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """A bogus marker.sh path (not under /.claude/scripts/) must not
+        trigger the skill-review bypass even when chained correctly. Closes
+        the gap where enforce-marker-script-shape's leading-anchor check
+        would not fire on a non-leading marker.sh fragment in a chain."""
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(
+                    "git add . && /home/evil/marker.sh write skill-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_echo_wrapping_marker_text_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """`echo ~/.claude/scripts/marker.sh write skill-review && git commit`
+        text-matches a marker write but doesn't actually invoke marker.sh.
+        Parallel to the code-review gate; anchor must reject wrapper commands."""
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(
+                    "echo ~/.claude/scripts/marker.sh write skill-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_heredoc_pipe_with_marker_text_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """Heredoc body text containing marker.sh write must not wedge the
+        skill-review gate open, even if a piped bash subshell would execute
+        the body — the outer shape is not a sanctioned chained form."""
+        _stage_skill_change(git_repo)
+        cmd = (
+            "cat <<EOF | bash\n"
+            "~/.claude/scripts/marker.sh write skill-review\n"
+            "EOF\n"
+            "git commit -m foo"
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_chained_code_review_marker_does_not_authorize_skill_review(
+        self, isolated_home, git_repo
+    ):
+        """Chaining `marker.sh write code-review` (wrong skill) before
+        `git commit` must NOT authorize a skill-review-gated commit. Each
+        gate's bypass is scoped to its own skill name."""
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(
+                    "~/.claude/scripts/marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
     def test_plugin_lib_sh_matches_stowed_lib_sh(self):
         """_lib.sh in the plugin hooks dir must be byte-identical to the stowed copy.
 

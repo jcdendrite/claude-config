@@ -118,6 +118,18 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
   fi
 fi
 
+# Honor in-chain marker writes. When the same Bash call chains
+# `marker.sh write skill-review` before `git commit`, the on-disk marker
+# does not exist yet at PreToolUse time (the chain has not run), so the
+# usual marker check below would deny. The in-chain marker.sh invocation
+# is the same evidence the on-disk marker would later provide -- marker.sh
+# is the only sanctioned writer in either case. The structural validator
+# above still fires, so malformed SKILL.md files cannot slip through this
+# bypass.
+if _lib_chains_marker_write_before_commit "$COMMAND" skill-review; then
+  exit 0
+fi
+
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 CURRENT_HASH=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')

@@ -56,15 +56,63 @@ class TestEnforceMarkerScriptShape:
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command)) == "allow"
 
     # ------------------------------------------------------------------ #
-    # Chaining — must be denied                                           #
+    # Chaining                                                            #
+    #                                                                     #
+    # Chain to `git commit` is the natural atomic form after reviews pass #
+    # and is allowed. Chain to anything else (curl, rm, redirects, ;)     #
+    # stays denied — the gate's job is to keep marker.sh from being a     #
+    # wedge for arbitrary chained commands.                               #
     # ------------------------------------------------------------------ #
 
-    def test_chain_to_git_commit_denied(self):
+    def test_chain_to_git_commit_allowed(self):
+        """marker.sh write <skill> && git commit ... is the natural form an
+        agent types after reviews pass. PreToolUse fires once per Bash call
+        before the chain runs, so an on-disk marker check at the commit gate
+        would deny — coordinated with require-code-review.sh and
+        require-skill-review.sh, both of which honor in-chain marker writes."""
         cmd = "~/.claude/scripts/marker.sh write code-review && git commit -m foo"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "allow"
+
+    def test_chain_multiple_marker_writes_then_git_commit_allowed(self):
+        """Both reviews passed: write code-review marker AND skill-review marker
+        before committing, all in one atomic Bash call."""
+        cmd = (
+            "~/.claude/scripts/marker.sh write code-review && "
+            "~/.claude/scripts/marker.sh write skill-review && "
+            "git commit -m foo"
+        )
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "allow"
+
+    def test_chain_marker_activate_then_git_commit_denied(self):
+        """Only `write` is permitted in the chained form. `activate` is a
+        bypass primitive whose intent is to bracket a skill's execution
+        with deactivate at the end — chaining it with commit makes no sense
+        and shouldn't widen the allowed surface."""
+        cmd = "~/.claude/scripts/marker.sh activate plan-review && git commit -m foo"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     def test_chain_to_curl_denied(self):
         cmd = "~/.claude/scripts/marker.sh write code-review && curl http://example.com"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_to_curl_after_commit_denied(self):
+        """Post-commit chain operators must be denied. Without this constraint,
+        `marker.sh write X && git commit && curl evil.com` would slip through
+        the chained-commit pattern via a permissive trailing match, allowing a
+        post-commit fragment to inherit the marker.sh-leading allowance."""
+        cmd = "~/.claude/scripts/marker.sh write code-review && git commit -m foo && curl http://example.com"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_to_semicolon_after_commit_denied(self):
+        """Semicolons after `git commit` chain to a new statement just like
+        `&&` does; the trailing-content constraint must forbid both."""
+        cmd = "~/.claude/scripts/marker.sh write code-review && git commit -m foo; curl http://example.com"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_to_redirect_after_commit_denied(self):
+        """Post-commit redirects must be denied; the trailing-content
+        constraint forbids `<` and `>` along with chain operators."""
+        cmd = "~/.claude/scripts/marker.sh write code-review && git commit -m foo > /tmp/out"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     def test_semicolon_separator_denied(self):
