@@ -10,9 +10,9 @@ Longer-form writeups of specific design decisions in this repo, with primary-sou
 
 ## Worktree enforcement: hook vs. CLAUDE.md prose
 
-**Question.** Is the worktree-enforcement hook over-engineered? An engineer familiar with agentic workflows observed that this repo uses a hook to enforce worktree discipline and noted they have been able to get Claude to follow the same convention using carefully-pruned CLAUDE.md prose alone.
+**Question.** Is the worktree-enforcement hook over-engineered? A reasonable alternative is carefully-pruned CLAUDE.md prose that instructs Claude to use worktrees. This case study examines whether the hook earns its complexity over that prose-only approach.
 
-**Short answer.** Both can be true. For a single-developer workflow with one Claude session at a time on a private repo, well-crafted CLAUDE.md prose can deliver high — though not 100% — compliance. The hook is necessary for three failure modes that prose cannot reach: cross-session races (the originating motivation), approximate within-session compliance, and cwd-resolution gotchas at the moment of self-correction. The case below works through each from primary sources.
+**Short answer.** Both can be true. For a single-developer workflow with one Claude session at a time on a private repo, well-crafted CLAUDE.md prose can deliver high — though not 100% — compliance. The hook is strictly necessary for one failure mode (cross-session races) that prose cannot reach at all, because the failing state isn't in either session's context. For a second (approximate within-session compliance) prose can carry most of the load; the hook closes the residual escape rate at the tool-call boundary, and whether the mechanical guarantee is worth the hook is a cost-asymmetry call. The case below works through each from primary sources, then documents one hook-internal refinement (self-correcting deny messages) for completeness.
 
 ### What the hook actually does
 
@@ -43,9 +43,11 @@ The `require-worktree-for-file-writes.sh` hook ([PR #114](https://github.com/jcd
 
 > The existing `require-worktree-for-git-writes.sh` blocks git write ops from the main tree but leaves Edit/Write/MultiEdit unguarded. This let Claude edit files at the main-tree path and copy them into the worktree before committing — leaving uncommitted edits in the main tree that blocked `git merge --ff-only origin/main` during cleanup. This hook closes that gap.
 
-**Prose-only viability.** Insufficient. The "use worktrees" instruction was followed in spirit (commits went to the worktree) but not in mechanism (file edits hit the main tree). Closing the gap required denying Edit/Write at the tool-call boundary.
+**Prose-only viability.** Partial. A more mechanical instruction — "direct Edit/Write to `.claude/worktrees/<branch>/...`, not the main repo path" — can reduce this gap. The residual difficulty is that agent default behavior anchors paths to cwd and recently-read files, so the substitution requires deliberate attention on every call. The hook removes the need for per-call substitution by failing the call when the path resolves to the main tree. Whether that mechanical guarantee earns the hook's complexity is the same cost-asymmetry call surfaced in the general philosophy below — on a public repo where commits ship to the world and history can't be retracted, the asymmetry tends to favor enforcement; on a private repo with one developer and one session, prose may be enough.
 
-### Failure mode 3: cwd-resolution gotchas
+### Hook-internal refinement: self-correcting deny messages
+
+This section is not a prose-vs-hook comparison — the gotcha below exists only because the hook exists, so prose would never have occasion to address it. It's documented here as a hook-design principle: when a hook denies a foreseeable shape of compliance attempt, embedding the correction in the deny reason itself is the right place to teach the fix.
 
 The hook reads cwd from the Bash tool's session-persisted state, not from an inline `cd` in the command being denied. This caught a recurring class of compliance attempts where the agent chained `cd /worktree && git ...` in a single Bash call, expecting the `cd` to land it in the worktree — but the hook fires before the subshell runs, so the persisted cwd is still the main tree.
 
@@ -55,15 +57,11 @@ The hook reads cwd from the Bash tool's session-persisted state, not from an inl
 
 A parallel deny-message addendum exists for `git -C <path>`: `-C` retargets git's own working directory without changing the session cwd, so the hook still sees the main-tree cwd.
 
-The PR #59 design note (Claude-Code-generated PR body, first-person voice belongs to the agent that ran the session):
-
-> Structural enforcement at moment-of-need beats always-loaded prose. The hook is the natural place — it's already 100% effective at denying, and the deny reason is the artifact the agent reads when it self-corrects. Adding the explanation there delivers the lesson exactly when it's needed and costs zero session-context budget when irrelevant.
-
-**Prose-only viability.** Possible but expensive. To deliver the same correction via CLAUDE.md, the cwd-gotcha explanation has to load every session even when irrelevant. The deny-message approach loads zero context until the failure happens and then surfaces precisely the applicable correction.
+Generalizing the principle (PR #59's design note rephrased for the wider point): the agent reads a deny reason as part of the failure, so the lesson lands exactly when it's needed and costs nothing while it isn't. This pattern is specific to designs that are denying anyway — it's a refinement on the hook, not an argument for the hook over prose.
 
 ### Live demo
 
-To make the claim above concrete, the agent running this work deliberately invoked the chained pattern from inside the worktree — the same shape a less careful agent would naturally produce — so the hook's runtime output could be captured rather than paraphrased.
+To make the previous section concrete, the agent running this work deliberately invoked the chained pattern from inside the worktree — the same shape a less careful agent would naturally produce — so the hook's runtime output could be captured rather than paraphrased.
 
 ```text
 $ cd ~/MyCode/claude-config/.claude/worktrees/case-studies-worktree-enforcement && git log --oneline -3
@@ -82,7 +80,7 @@ a follow-up call.
 # as its own Bash call and then retry git log in a follow-up call.
 ```
 
-This is the deny string emitted by the chained-`cd` hard-deny gate (`require-worktree-for-git-writes.sh` lines 146–155) that Failure mode 3 cites; the 'Anchor cwd by running...' fix is baked into the gate's own `emit_deny` output, so the agent reads its correction inline with the denial.
+This is the deny string emitted by the chained-`cd` hard-deny gate (`require-worktree-for-git-writes.sh` lines 146–155) that the previous section cites; the 'Anchor cwd by running...' fix is baked into the gate's own `emit_deny` output, so the agent reads its correction inline with the denial — the self-correcting deny-message principle in action.
 
 ### The general philosophy
 
@@ -98,7 +96,7 @@ The hook is not the right default for every repo. From [`design-decisions.md` §
 
 > Worktree enforcement is activated per-repo by committing a `.claude/worktree-required` file. It is not a global setting because not every repo needs isolation: a small personal script with one developer has no concurrent-session race condition to guard against, and requiring worktrees there just adds friction. A multi-session feature branch with parallel Claude Code instances does need the guard.
 
-So "is this over-engineered?" depends on which repo. For a single-developer personal script with no concurrent-session pattern, yes — the hook is friction without a matching risk. For a public repo with concurrent Claude sessions and a no-retract commit history, the hook catches three classes of failure that prose cannot address.
+So "is this over-engineered?" depends on which repo. For a single-developer personal script with no concurrent-session pattern, yes — the hook is friction without a matching risk. For a public repo with concurrent Claude sessions and a no-retract commit history, the hook is strictly necessary for cross-session races, and closes the residual within-session compliance gap that prose alone leaves open.
 
 ### When the CLAUDE.md prose-only approach is sufficient
 
