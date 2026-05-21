@@ -193,14 +193,36 @@ class TestPython3Absent:
         assert "python3 not found" in result.stderr
 
 
+def _stub_venv_python(data: Path, body: str) -> Path:
+    """Drop an executable stub at data/venv/bin/python with `body` as its
+    script body. Used to simulate a previously-provisioned (or
+    previously-provisioned-then-broken) venv interpreter."""
+    venv_bin = data / "venv" / "bin"
+    venv_bin.mkdir(parents=True, exist_ok=True)
+    stub = venv_bin / "python"
+    stub.write_text("#!/bin/bash\n" + body)
+    stub.chmod(0o755)
+    return stub
+
+
 class TestCacheHit:
-    """When the cached requirements.txt matches the plugin's requirements.txt,
-    the script must short-circuit — no python3 invocation, no stderr."""
+    """When the cached requirements.txt matches the plugin's requirements.txt
+    AND the cached venv's python can still `import yaml`, the script must
+    short-circuit — no python3 invocation, no stderr.
+
+    The yaml import probe matters because the cache key (requirements.txt
+    diff) is what was *requested*, not what currently *works*. A previously-
+    good venv can break without requirements.txt changing — system Python
+    upgrade evicts the interpreter target, manual `rm` against site-packages,
+    partial snapshot restore, etc. Without the probe, require-skill-review.sh
+    would elect a broken interpreter as VALIDATOR_PYTHON."""
 
     def test_cache_hit_short_circuits(self, tmp_path, plugin_dirs):
         root, data = plugin_dirs
-        # Pre-populate the cache as if a prior session already provisioned.
+        # Pre-populate the cache as if a prior session already provisioned —
+        # requirements.txt matches AND venv/bin/python can `import yaml`.
         (data / "requirements.txt").write_text((root / "requirements.txt").read_text())
+        _stub_venv_python(data, "exit 0\n")  # accepts any args, incl. -c 'import yaml'
 
         # Stub python3 to fail loudly — if the script invokes it, the test
         # will surface the failure.
@@ -212,6 +234,46 @@ class TestCacheHit:
         assert result.returncode == 0
         assert result.stderr == "", (
             f"cache hit must produce no stderr; got: {result.stderr!r}"
+        )
+
+    def test_broken_venv_falls_through_to_reprovisioning(self, tmp_path, plugin_dirs):
+        """Cache key matches but the venv is silently broken — yaml is no
+        longer importable. The script must NOT short-circuit; it must fall
+        through to the reprovisioning path so the broken venv is replaced or
+        removed. Otherwise require-skill-review.sh would elect a broken
+        interpreter as VALIDATOR_PYTHON at the next commit."""
+        root, data = plugin_dirs
+        # Pre-populate: requirements.txt matches, venv/bin/python exists,
+        # but `python -c 'import yaml'` exits non-zero.
+        (data / "requirements.txt").write_text((root / "requirements.txt").read_text())
+        _stub_venv_python(
+            data,
+            'if [ "$1" = "-c" ]; then exit 1; fi\nexit 0\n',
+        )
+
+        # Stub python3 to fail at `-m venv` so reprovisioning lands in the
+        # graceful cleanup path. Cleanup removes data/venv + the cached
+        # requirements.txt — both are observable proofs that we fell through.
+        bin_dir = tmp_path / "bin"
+        _write_stub_python(
+            bin_dir,
+            'if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then exit 1; fi\nexit 0\n',
+        )
+
+        result = _run(data, root, extra_path=bin_dir)
+
+        assert result.returncode == 0
+        assert not (data / "venv").exists(), (
+            "broken venv must be removed by the reprovisioning cleanup path — "
+            "presence indicates the cache-hit short-circuit was taken anyway"
+        )
+        assert not (data / "requirements.txt").exists(), (
+            "cached requirements.txt must be removed so the next session "
+            "retries — presence indicates short-circuit, not fall-through"
+        )
+        assert "failed to provision Python venv" in result.stderr, (
+            "fall-through should have reached the graceful failure message; "
+            f"got stderr: {result.stderr!r}"
         )
 
 
