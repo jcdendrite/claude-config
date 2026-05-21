@@ -1,14 +1,13 @@
 ---
 name: agent-review
 description: >
-  Audit of agent files (.claude/agents/*.md, plugins/*/agents/*.md):
-  frontmatter, triggers, voice, length, duplication.
-  TRIGGER when: authoring/reviewing a .claude/agents/*.md or
-  plugins/*/agents/*.md change, or auditing trigger accuracy across
-  the roster.
-  DO NOT TRIGGER when: editing SKILL.md (use skill-review), editing
-  CLAUDE.md/AGENTS.md/memory files (use ai-instruction-and-memory-files),
-  or reviewing non-agent files.
+  Audit of agent files: frontmatter, triggers, voice, length,
+  duplication. TRIGGER when: authoring/reviewing a
+  .claude/agents/*.md or plugins/*/agents/*.md change, or auditing
+  trigger accuracy across the roster. DO NOT TRIGGER when: editing
+  SKILL.md (use skill-review), editing CLAUDE.md/AGENTS.md/memory
+  files (use ai-instruction-and-memory-files), or reviewing
+  non-agent files.
 user-invocable: false
 ---
 

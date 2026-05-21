@@ -1,14 +1,13 @@
 ---
 name: subagent-delegation
 description: >
-  When to dispatch work to a subagent vs run inline.
-  TRIGGER when: running a full check suite or full-project
-  verification; starting a broad codebase search; running 2nd/3rd
-  Bash command toward same question; delegating implementation work;
-  reporting test counts from check-runner. DO NOT TRIGGER when: a
-  single targeted lookup; a comprehension read feeding your own
-  writing/review/design; Edit/Write sequences; or output you must
-  reason over line by line.
+  When to dispatch to a subagent vs inline. TRIGGER when: full
+  check suite or full-project verification; broad codebase search;
+  2nd/3rd Bash command toward same question; delegating
+  implementation; reporting check-runner test counts.
+  DO NOT TRIGGER when: single targeted lookup; comprehension read
+  feeding your own writing/review/design; Edit/Write sequences;
+  output requiring line-by-line reasoning.
 ---
 
 # Subagent delegation
