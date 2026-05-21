@@ -370,10 +370,12 @@ class TestModelInvokableDescriptionLength:
 # nominal context per the Anthropic model overview, but the binary applies
 # the 200000-token fallback at runtime — the per-skill trim PRs (#203, #298)
 # targeted the resulting 8000-char budget, so that is the operative bound
-# this test enforces. Sonnet 4.6 is named here because the briefing pinned
-# it as the regression target; raising the bound to the nominal 1M context
-# would require evidence that Claude Code passes the model's true window
-# through the H parameter, which v2.1.145 does not.
+# this test enforces. The test class is named for Sonnet because the same
+# 200000-token fallback applies to both Opus and Sonnet orchestrators, so
+# the bound is identical regardless of which model is dispatching. Raising
+# the bound to the nominal 1M context would require evidence that Claude
+# Code passes the model's true window through the H parameter, which
+# v2.1.145 does not.
 SKILL_LISTING_FALLBACK_CONTEXT_TOKENS = 200_000
 SKILL_LISTING_BYTES_PER_TOKEN = 4
 SKILL_LISTING_BUDGET_FRACTION = 0.01
