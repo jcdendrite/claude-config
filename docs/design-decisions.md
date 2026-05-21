@@ -1,6 +1,6 @@
 # Design Decisions
 
-Non-obvious choices and the reasoning behind them.
+Non-obvious choices and the reasoning behind them. For longer-form writeups with primary-source citations, see [`case-studies.md`](case-studies.md).
 
 ## 1. Hook-enforced gates over advisory instructions
 
