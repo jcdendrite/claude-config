@@ -35,6 +35,12 @@ if [ -f "$SETTINGS_FILE" ]; then
   fi
 
   while IFS=$'\t' read -r name source_type repo; do
+    # claude-config is registered separately above as a directory source; skip
+    # any extraKnownMarketplaces entry so a stray leftover doesn't trip the
+    # non-github warning below.
+    if [ "$name" = "claude-config" ]; then
+      continue
+    fi
     if [ "$source_type" != "github" ]; then
       echo "  ! $name: non-github source '$source_type' — skipping (only github sources are portable)"
       continue
