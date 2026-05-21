@@ -4,6 +4,7 @@ No writes; pr-link is the only subcommand that touches the network (via gh).
 """
 
 import argparse
+import fnmatch
 import json
 import re
 import subprocess
@@ -422,6 +423,88 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_skill_pair(args: argparse.Namespace) -> None:
+    """Pairing rate between two skills, bucketed by ISO week.
+
+    Counts Skill tool_use blocks regardless of tool_result success — sessions
+    where the Skill tool errored (e.g., harnesses without Skill-tool support)
+    still count as leader-sessions. Filter such corpora via --exclude-projects.
+    """
+    leader: str = args.leader
+    follower: str = args.follower
+    projects_glob = _projects_glob(args)
+    exclude_glob: str | None = getattr(args, "exclude_projects", None)
+    branch_filter = _branch_filter(args)
+
+    # bin_str -> {leader_sessions, follower_main, follower_sidechain_only}
+    data: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"leader_sessions": 0, "follower_main": 0, "follower_sidechain_only": 0}
+    )
+
+    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+        # --exclude-projects: skip project dirs whose basename matches the glob
+        if exclude_glob and fnmatch.fnmatchcase(jsonl.parent.name, exclude_glob):
+            continue
+
+        has_leader_hit = False
+        leader_first_ts: float | None = None
+        has_main_follower = False
+        has_sidechain_follower = False
+
+        for rec in records:
+            if rec.get("type") != "assistant":
+                continue
+            branch = rec.get("gitBranch") or ""
+            if branch_filter and branch not in branch_filter:
+                continue
+            is_sidechain = bool(rec.get("isSidechain"))
+            for block in ((rec.get("message") or {}).get("content") or []):
+                if not isinstance(block, dict) or block.get("type") != "tool_use" or block.get("name") != "Skill":
+                    continue
+                skill = (block.get("input") or {}).get("skill") or ""
+                if skill == leader and not is_sidechain:
+                    if not has_leader_hit:
+                        # Timestamp of first leader hit; skip session if unparseable
+                        leader_first_ts = _parse_ts(rec.get("timestamp"))
+                    has_leader_hit = True
+                elif skill == follower:
+                    if is_sidechain:
+                        has_sidechain_follower = True
+                    else:
+                        has_main_follower = True
+
+        if not has_leader_hit:
+            continue
+        # Skip session entirely if the first leader hit has no parseable timestamp
+        if leader_first_ts is None:
+            continue
+
+        iso = datetime.fromtimestamp(leader_first_ts, tz=UTC).isocalendar()
+        bin_str = f"{iso.year}-W{iso.week:02d}"
+
+        d = data[bin_str]
+        d["leader_sessions"] += 1
+        if has_main_follower:
+            d["follower_main"] += 1
+        elif has_sidechain_follower:
+            # sidechain-only: sidechain follower present AND no main-thread follower
+            d["follower_sidechain_only"] += 1
+
+    if not data:
+        print("No data found.")
+        return
+
+    print(f"{'Bin':<10} {'Lead':>5} {'Main':>5} {'Side':>5} {'Pair%':>7}")
+    print(f"{'-------':<10} {'----':>5} {'----':>5} {'----':>5} {'-----':>7}")
+    for bin_str in sorted(data):
+        d = data[bin_str]
+        lead = d["leader_sessions"]
+        main = d["follower_main"]
+        side = d["follower_sidechain_only"]
+        pair_pct = 100.0 * main / lead if lead else 0.0
+        print(f"{bin_str:<10} {lead:>5} {main:>5} {side:>5} {pair_pct:>6.1f}%")
+
+
 def cmd_pr_link(args: argparse.Namespace) -> None:
     if not getattr(args, "repo", None):
         print("--repo is required for pr-link", file=sys.stderr)
@@ -538,6 +621,23 @@ def main() -> None:
     p_pr.add_argument("--author", metavar="LOGIN", help="Filter comments to this GitHub login")
     p_pr.add_argument("--projects", default="*", metavar="GLOB")
     p_pr.set_defaults(func=cmd_pr_link)
+
+    p_skill_pair = sub.add_parser(
+        "skill-pair",
+        help=(
+            "Pairing rate between two skills, bucketed by ISO week. "
+            "Counts sessions where the leader fired and whether the follower also fired (main vs sidechain-only)."
+        ),
+    )
+    p_skill_pair.add_argument("leader", metavar="LEADER", help="Leading skill name (exact match on input.skill)")
+    p_skill_pair.add_argument("follower", metavar="FOLLOWER", help="Following skill name (exact match on input.skill)")
+    p_skill_pair.add_argument("--projects", default="*", metavar="GLOB")
+    p_skill_pair.add_argument(
+        "--exclude-projects", default=None, metavar="GLOB",
+        help="Skip project dirs whose basename matches this glob.",
+    )
+    p_skill_pair.add_argument("--branches", metavar="B1,B2,...")
+    p_skill_pair.set_defaults(func=cmd_skill_pair)
 
     parsed = parser.parse_args()
     parsed.func(parsed)
