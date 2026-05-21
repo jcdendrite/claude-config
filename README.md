@@ -177,7 +177,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 - **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
 - **`skill-management`** — Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via `/skill-review`. `claude plugin install skill-management@claude-config --scope project`
 
-  **Plugin dependency:** the structural validator imports `pyyaml`. On first session in a consumer repo, the plugin's `SessionStart` hook provisions a persistent venv at `${CLAUDE_PLUGIN_DATA}/venv` and installs `pyyaml` into it; the commit-time hook prefers that venv's `python` and falls back to system `python3`. Contributors to this repo still get `pyyaml` installed on the system `python3` via `./install.sh`, which the pytest path needs (it imports the validator directly without going through plugin hooks).
+  **Plugin dependency:** the structural validator imports `pyyaml`. On first session in a consumer repo, the plugin's `SessionStart` hook provisions a persistent venv at `${CLAUDE_PLUGIN_DATA}/venv` and installs `pyyaml` into it; the commit-time hook prefers that venv's `python` and falls back to system `python3`. `./install.sh` does not install anything into the host Python — contributors who run the test suite set up a repo-local `.venv` per [CONTRIBUTING.md "Tests and lint"](./CONTRIBUTING.md#tests-and-lint).
 
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 
@@ -326,13 +326,16 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 ## Tests
 
-Pytest suite covering hooks (allow, deny, and ask paths) and skill description contracts:
+Pytest suite covering hooks (allow, deny, and ask paths) and skill description contracts. Pins live in [`requirements-dev.txt`](./requirements-dev.txt) (single source for CI + contributors):
 
 ```bash
-pytest claude/.claude/
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest claude/.claude/
+.venv/bin/ruff check claude/.claude/
 ```
 
-CI runs this on every PR and main push via `.github/workflows/tests.yml`.
+CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`.
 
 ## Acknowledgments
 
