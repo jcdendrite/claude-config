@@ -30,12 +30,16 @@ This repo is public. Do not commit anything that identifies a private project, o
 
 ## Tests and lint
 
+Pins live in [`requirements-dev.txt`](./requirements-dev.txt) — the same file CI's install step reads, so versions stay in sync.
+
 ```bash
-pytest claude/.claude/   # hook and skill tests
-ruff check claude/.claude/  # lint
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest claude/.claude/    # hook and skill tests
+.venv/bin/ruff check claude/.claude/  # lint
 ```
 
-CI runs both on every PR and main push. Both must pass before the PR can be reviewed.
+`./install.sh` does not install anything into the host Python — the `.venv` above is the contributor setup. CI runs both commands on every PR and main push; both must pass before the PR can be reviewed.
 
 ## Skill evals
 

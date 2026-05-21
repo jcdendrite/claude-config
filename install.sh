@@ -13,23 +13,6 @@ if [ ${#missing[@]} -gt 0 ]; then
   exit 1
 fi
 
-# pyyaml is imported by the skill-management plugin's structural validator,
-# which the pre-commit hook invokes via python3 and which the test suite
-# imports directly. Without it, `pytest claude/.claude/` fails to collect.
-if ! python3 -c "import yaml" >/dev/null 2>&1; then
-  echo ""
-  echo "=== Installing pyyaml (needed by tests + skill-management plugin) ==="
-  if ! python3 -m pip install --user pyyaml; then
-    echo ""
-    echo "pyyaml install failed. Some distros mark the system Python as"
-    echo "externally-managed (PEP 668). Install pyyaml another way and re-run:"
-    echo "  python3 -m pip install --user --break-system-packages pyyaml   # if you trust system pip"
-    echo "  pipx install pyyaml                                            # isolated install"
-    echo "  python3 -m venv .venv && .venv/bin/pip install pyyaml          # repo-local venv"
-    exit 1
-  fi
-fi
-
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO_DIR"
 mkdir -p "$HOME/.local/bin"
@@ -97,5 +80,6 @@ check_private_projects_file() {
 check_private_projects_file
 
 echo ""
-echo "Done. Optional: run the hook test suite:"
-echo "  pytest claude/.claude/"
+echo "Done. Optional: run the hook test suite (see CONTRIBUTING.md 'Tests and lint'):"
+echo "  python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt"
+echo "  .venv/bin/pytest claude/.claude/"

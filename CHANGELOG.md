@@ -21,6 +21,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`install.sh` no longer modifies host Python** — pyyaml `pip install --user` block removed. `pyyaml` is contributor-only (needed by `pytest claude/.claude/`); contributors set up a repo-local `.venv` per `CONTRIBUTING.md` "Tests and lint". Pins moved into `requirements-dev.txt` so CI and contributors share one source. Fixes install-time failures on macOS systems where PEP 668 / Homebrew Python rejects `--user` writes.
 - **Plugin renamed `skill-review` → `skill-management`** — bumped to 2.0.0 (breaking — downstream installers must `claude plugin uninstall skill-review && claude plugin install skill-management@claude-config --scope project`); between uninstall and install there is a brief window with no SKILL.md gate active, do not commit SKILL.md changes during that window (#290)
 - **CI workflow renamed** — workflow display name changed from "Hook tests" to "Tests"; job id `tests` (the branch-protection check context) unchanged (#169)
 - **Handoff format inlined** — `/handoff` format moved inline into the command file; dependency on `/compact` docs removed (#176)

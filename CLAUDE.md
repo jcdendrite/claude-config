@@ -7,10 +7,11 @@ govern any contribution (human or agent).
 ## Commands
 
 ```bash
-./install.sh                            # first-time setup (stow + plugin registration)
-pip install 'ruff==0.6.*'              # one-time linter install
-pytest claude/.claude/                  # test suite (hooks + skills)
-ruff check claude/.claude/              # lint
+./install.sh                                                 # first-time setup (stow + plugin registration)
+python3 -m venv .venv                                        # one-time contributor venv (pins in requirements-dev.txt)
+.venv/bin/pip install -r requirements-dev.txt                # pytest + ruff + pyyaml
+.venv/bin/pytest claude/.claude/                             # test suite (hooks + skills)
+.venv/bin/ruff check claude/.claude/                         # lint
 ```
 
 ## Working in this repo
