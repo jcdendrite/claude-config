@@ -53,6 +53,7 @@ A CLAUDE.md instruction says "you should run code-review before committing." A P
 ## Docs
 
 - [`docs/design-decisions.md`](docs/design-decisions.md) — nine non-obvious choices (hook-enforced gates, per-session sha256 marker keying, no shared skill partials, project-layer composition via prose-pointer + glob, reviewer persona roster operations, etc.) and the reasoning behind each.
+- [`docs/case-studies.md`](docs/case-studies.md) — longer-form writeups of specific design decisions with primary-source citations.
 - [`docs/walkthrough.md`](docs/walkthrough.md) — one full contribution cycle: plan → plan-review → code → code-review → commit → ready-for-review → push → respond-pr, showing each hook firing in sequence.
 - **Two `CLAUDE.md` files.** The repo-root [`CLAUDE.md`](CLAUDE.md) is contributor workflow for this repo (what GitHub renders by default). The stowed [`claude/.claude/CLAUDE.md`](claude/.claude/CLAUDE.md) is the global engineering instructions applied to every Claude Code session on the machine after `./install.sh`.
 
