@@ -1,12 +1,12 @@
 ---
 name: ready-for-review
 description: >
-  Pre-handoff gate that brings a feature branch to a reviewer-ready state — runs verification, code review, syncs or opens a PR.
-  TRIGGER when: handing off to a human reviewer — wrapping up work on a
+  Pre-handoff gate: runs verification, code review, syncs or opens a
+  PR. TRIGGER when: handing off to a human reviewer — wrapping up a
   branch with an open PR, "ship it" intent, or before spawning a
   multi-persona review (CISO + staff-* engineers) or /ultrareview.
-  DO NOT TRIGGER when: during active iteration, on diff-only requests,
-  or on the default branch.
+  DO NOT TRIGGER when: during active iteration, on diff-only
+  requests, or on the default branch.
 argument-hint: "[optional PR context]"
 ---
 

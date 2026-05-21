@@ -36,7 +36,7 @@ import pytest
 # Single source of truth for SKILL.md structural rules — the commit-gate hook
 # shells out to the same module. pyproject.toml's [tool.pytest.ini_options]
 # pythonpath puts plugins/skill-management/scripts on the import path.
-from validate_skill_structure import validate
+from validate_skill_structure import parse_frontmatter, validate
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
 # Plugins live two levels above the .claude/ dir: <repo>/plugins/<name>/skills/<skill>/SKILL.md
@@ -357,6 +357,80 @@ class TestModelInvokableDescriptionLength:
         violations = validate(_skill_file(skill_name))
         length_violations = [v for v in violations if "exceeds harness cap" in v]
         assert not length_violations, "\n".join(length_violations)
+
+
+# Skill-listing budget constants — extracted from the Claude Code binary
+# v2.1.145. Function TM$(H, $=M77) computes:
+#   budget = floor(context_window_tokens × bytesPerToken × fraction)
+# unless SLASH_COMMAND_TOOL_CHAR_BUDGET is set, in which case that wins.
+# Binary symbols (decompiled): Q3_=0.01 (fraction), M77=4 (bytesPerToken),
+# g3_=200000 (fallback context tokens), d3_=1536 (per-skill cap).
+#
+# Claude Code orchestrators run on Opus 4.7 or Sonnet 4.6; both have 1M-token
+# nominal context per the Anthropic model overview, but the binary applies
+# the 200000-token fallback at runtime — the per-skill trim PRs (#203, #298)
+# targeted the resulting 8000-char budget, so that is the operative bound
+# this test enforces. Sonnet 4.6 is named here because the briefing pinned
+# it as the regression target; raising the bound to the nominal 1M context
+# would require evidence that Claude Code passes the model's true window
+# through the H parameter, which v2.1.145 does not.
+SKILL_LISTING_FALLBACK_CONTEXT_TOKENS = 200_000
+SKILL_LISTING_BYTES_PER_TOKEN = 4
+SKILL_LISTING_BUDGET_FRACTION = 0.01
+SKILL_LISTING_BUDGET_CHARS = int(
+    SKILL_LISTING_FALLBACK_CONTEXT_TOKENS
+    * SKILL_LISTING_BYTES_PER_TOKEN
+    * SKILL_LISTING_BUDGET_FRACTION
+)
+
+
+class TestTotalListingBudgetUnderSonnet:
+    """Pin the aggregate skill-listing total under Claude Code's char budget.
+
+    The per-skill cap (``TestModelInvokableDescriptionLength``) catches one
+    description exceeding 1,536 chars but not the case where many short
+    descriptions push the total over the listing budget. When that happens,
+    Claude Code drops descriptions for the least-used skills entirely; the
+    user-facing symptom is silent — Claude stops auto-loading affected
+    skills until the user notices and runs ``/doctor``.
+
+    Test premise: if the total fits the Sonnet-context-window budget, it
+    fits the Opus budget by construction (both 1M nominal, both apply the
+    same 200000-token fallback at runtime). On failure, the message names
+    the five largest descriptions so the trimming target is obvious.
+    """
+
+    MODEL_INVOKABLE_SKILLS = _model_invokable_skills()
+
+    def test_total_within_listing_budget(self):
+        per_skill_chars: dict[str, int] = {}
+        for skill_name in self.MODEL_INVOKABLE_SKILLS:
+            frontmatter = parse_frontmatter(_skill_file(skill_name))
+            description = frontmatter.get("description", "") or ""
+            when_to_use = frontmatter.get("when_to_use", "") or ""
+            per_skill_chars[skill_name] = len(description) + len(when_to_use)
+
+        total = sum(per_skill_chars.values())
+        if total <= SKILL_LISTING_BUDGET_CHARS:
+            return
+
+        top_offenders = sorted(
+            per_skill_chars.items(), key=lambda item: item[1], reverse=True
+        )[:5]
+        offender_lines = "\n".join(
+            f"  {name}: {chars} chars" for name, chars in top_offenders
+        )
+        raise AssertionError(
+            f"Combined description+when_to_use across "
+            f"{len(self.MODEL_INVOKABLE_SKILLS)} model-invokable skills is "
+            f"{total} chars, exceeds Claude Code listing budget of "
+            f"{SKILL_LISTING_BUDGET_CHARS} chars "
+            f"(floor({SKILL_LISTING_FALLBACK_CONTEXT_TOKENS} tokens × "
+            f"{SKILL_LISTING_BYTES_PER_TOKEN} chars/token × "
+            f"{SKILL_LISTING_BUDGET_FRACTION}). Descriptions for "
+            f"least-used skills will be dropped from the system-prompt "
+            f"listing. Trim the largest offenders:\n{offender_lines}"
+        )
 
 
 def test_trigger_cases_files_well_formed() -> None:
