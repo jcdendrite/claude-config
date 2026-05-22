@@ -1,6 +1,7 @@
 """Tests for require-skill-review.sh."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 
@@ -620,3 +621,119 @@ class TestRequireSkillReview:
             "plugins/skill-management/hooks/_lib.sh has drifted from claude/.claude/hooks/_lib.sh. "
             "These files must stay byte-identical — update the plugin copy when the stowed copy changes."
         )
+
+
+def _run_hook_with_stderr(hook, tool_input: dict, cwd) -> subprocess.CompletedProcess:
+    """Run a hook and return the full CompletedProcess so callers can inspect both stdout and stderr."""
+    return subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        check=False,
+    )
+
+
+def _stage_oversized_corpus(git_repo, num_skills: int = 6, chars_each: int = 1500) -> None:
+    """Stage multiple SKILL.md files whose combined description chars exceed the 8000-char budget."""
+    for i in range(num_skills):
+        skill_file = git_repo / "claude" / ".claude" / "skills" / f"corpus-skill-{i}" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        description = "x" * chars_each
+        skill_file.write_text(
+            f"---\ndescription: {description!r}\n---\n# body\n"
+        )
+        subprocess.run(
+            ["git", "add", str(skill_file.relative_to(git_repo))],
+            cwd=git_repo,
+            check=True,
+        )
+
+
+class TestCorpusBudgetWarning:
+    """Corpus budget check emits a non-blocking stderr warning on skill-touching commits.
+
+    The corpus check fires only when at least one SKILL.md is staged. It is
+    intentionally non-blocking — the commit is allowed regardless of whether the
+    aggregate description total exceeds the Claude Code listing budget. Hard
+    enforcement lives in pytest/CI (test_total_within_listing_budget).
+    """
+
+    def test_corpus_over_budget_emits_warning_but_allows_commit(
+        self, isolated_home, git_repo
+    ):
+        """When staged skills push total descriptions over 8000 chars, a warning
+        appears on stderr but the commit decision is allow (no deny JSON on stdout)."""
+        _stage_oversized_corpus(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        # Hook must allow (no JSON deny on stdout).
+        assert not result.stdout.strip() or (
+            "deny" not in result.stdout
+        ), f"unexpected deny: {result.stdout}"
+        # Warning must appear on stderr.
+        assert "corpus budget warning" in result.stderr, (
+            f"expected corpus budget warning on stderr; got: {result.stderr!r}"
+        )
+
+    def test_corpus_under_budget_no_warning(self, isolated_home, git_repo):
+        """A single small skill staged does not trigger the corpus budget warning."""
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        assert not result.stdout.strip() or "deny" not in result.stdout
+        assert "corpus budget warning" not in result.stderr
+
+    def test_corpus_warning_does_not_fire_when_no_skill_staged(self, isolated_home, git_repo):
+        """The corpus check does not warn when no SKILL.md is staged.
+
+        The hook exits early at the SKILL_DIFF check (no staged skills), so the
+        corpus block is never reached."""
+        # git_repo has only file.txt staged — no SKILL.md.
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        # Hook must allow (early exit before corpus block).
+        assert not result.stdout.strip() or "deny" not in result.stdout
+        assert "corpus budget warning" not in result.stderr
+
+    def test_corpus_warning_allows_even_when_validator_python_missing(
+        self, isolated_home, git_repo, tmp_path, monkeypatch
+    ):
+        """When the validator python cannot be found, the corpus block must not deny.
+
+        A misconfigured environment must not block commits — the corpus check is
+        best-effort and non-blocking by design.
+        """
+        # Point CLAUDE_PLUGIN_DATA at a dir without a venv; system python3 will be used.
+        # Then shadow python3 with a stub that exits 0 but writes nothing — simulating
+        # a missing pyyaml in a constrained environment where the corpus check silently
+        # does nothing.
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        fake_python = fake_bin / "python3"
+        fake_python.write_text("#!/bin/bash\nexit 0\n")
+        fake_python.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+        monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+
+        _stage_oversized_corpus(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        # Must not deny even though corpus would exceed budget.
+        assert not result.stdout.strip() or "deny" not in result.stdout
