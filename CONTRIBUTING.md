@@ -39,6 +39,8 @@ python3 -m venv .venv
 .venv/bin/ruff check claude/.claude/  # lint
 ```
 
+**Debian/Ubuntu:** `python3 -m venv` needs the `python3-venv` apt package (or the version-specific `python3.12-venv`). Without it, venv creation exits 0 but produces no `pip`, so the second command fails with a confusing "no such file" error. If `.venv/bin/pip` is missing after the first command, run `sudo apt install python3.12-venv`, delete `.venv`, and re-run. macOS (python.org or Homebrew) bundles `ensurepip` and is unaffected.
+
 The `.venv` lives only in the main worktree root. Linked worktrees live at `.claude/worktrees/<branch>/` — exactly three levels deep — so from inside a worktree invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
 
 `./install.sh` does not install anything into the host Python — the `.venv` above is the contributor setup. CI runs both commands on every PR and main push; both must pass before the PR can be reviewed.

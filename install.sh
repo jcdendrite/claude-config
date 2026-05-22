@@ -85,6 +85,12 @@ check_private_projects_file() {
 
 check_private_projects_file
 
+if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
+  echo ""
+  echo "NOTE: this python3 lacks ensurepip, so 'python3 -m venv' produces a venv with no pip."
+  echo "      On Debian/Ubuntu, install it first: sudo apt install python3.12-venv"
+fi
+
 echo ""
 echo "Done. Optional: run the hook test suite (see CONTRIBUTING.md 'Tests and lint'):"
 echo "  python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt"
