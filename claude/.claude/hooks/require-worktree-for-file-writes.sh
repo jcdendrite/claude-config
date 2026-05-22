@@ -4,8 +4,28 @@
 # committed at the repo root). Companion to require-worktree-for-git-writes.sh,
 # which blocks git write ops from the main tree.
 #
+# Known exclusion: paths under $HOME/.claude/ are always exempt —
+# they are Claude Code harness/skill infrastructure, never project work.
+# Assumption: no project repo will be placed directly under $HOME/.claude/
+# (a checkout at $HOME/.claude/my-project/ would be fully exempt). This is
+# acceptable against the threat model (concurrent-session races), not an
+# adversarial-relocation scenario.
+# Under stow directory-fold, $HOME/.claude/ is a symlink to the package's
+# .claude/ directory; stow-managed files (e.g., ~/.claude/settings.json →
+# repo's claude/.claude/settings.json) also satisfy the raw-string prefix
+# match and are exempt. realpath cannot be used to detect this: it would
+# resolve $HOME/.claude/plans/new.md to the repo root path, which does not
+# match the home prefix, re-introducing the original bug. This is
+# acceptable: contribution sessions must use the worktree path
+# (claude/.claude/...); any write arriving via the $HOME/.claude/ prefix
+# is infrastructure activity, not contribution work.
+#
 # Defensive: prevent GIT_DIR / GIT_WORK_TREE env overrides from making the
 # main tree impersonate a linked worktree via rev-parse output.
+# HOME is not unset: its value comes from the OS user session (set by the
+# system for the running user, not from tool_input JSON), so it is trusted
+# at the same level as other shell-environment configuration — unlike git
+# env vars which git itself reads and which a committed config can pre-set.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 INPUT=$(cat)
@@ -37,6 +57,28 @@ esac
 
 # Nothing to check without a path.
 [ -z "$FILE_PATH" ] && exit 0
+
+# Claude Code's own infrastructure paths — plans, todos, memory, shell
+# snapshots, settings — are written by the harness and skills as normal
+# operation, never as project feature work. Exempt them even when
+# ~/.claude resolves (via stow directory-folding) into a repo that has
+# opted into worktree discipline.
+# $HOME is normalized first: a trailing slash would make the prefix a
+# double-slash that never matches the harness's single-slash file_path,
+# and an empty $HOME must not collapse the pattern to bare /.claude/.
+# Paths containing '..' are not exempted: the case glob matches on the
+# literal string, so $HOME/.claude/../other/file would satisfy the prefix
+# pattern without actually resolving inside $HOME/.claude/. Rejecting any
+# path that contains '/..' closes that traversal vector before the match.
+home_norm="${HOME%/}"
+if [ -n "$home_norm" ]; then
+  case "$FILE_PATH" in
+    */../*|*/..)
+      ;; # traversal present — do not exempt; fall through to repo-walk
+    "$home_norm"/.claude/*)
+      exit 0 ;;
+  esac
+fi
 
 # Walk up from the file's parent directory to find an existing ancestor.
 # Write may target a file that does not exist yet; git -C on a missing dir
