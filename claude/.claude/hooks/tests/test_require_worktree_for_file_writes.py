@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 
+import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
@@ -105,3 +106,97 @@ class TestRequireWorktreeForFileWrites:
         assert result.stdout.strip(), "Expected deny output on malformed JSON, got silent allow"
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestRequireWorktreeForFileWritesHomeExemption:
+    """The hook must not block writes to ~/.claude/ even when $HOME resolves
+    into an opted-in repo via stow directory-folding."""
+
+    @pytest.fixture
+    def opted_in_home(self, tmp_path, monkeypatch):
+        """Sandboxed $HOME that is itself a git repo with worktree-required
+        committed — reproduces the stow directory-fold scenario where
+        ~/.claude/ resolves into an opted-in claude-config checkout."""
+        home = tmp_path / "home"
+        home.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=home, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=home, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=home, check=True)
+        (home / ".claude").mkdir()
+        (home / ".claude" / "worktree-required").write_text("# sentinel\n")
+        (home / ".claude" / "plans").mkdir()
+        (home / ".claude" / "plans" / "existing.md").write_text("plan content\n")
+        subprocess.run(["git", "add", "."], cwd=home, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=home, check=True)
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    def test_home_claude_existing_file_allowed(self, opted_in_home):
+        """Write to an existing ~/.claude/ file is allowed despite the repo
+        being opted into worktree discipline."""
+        path = str(opted_in_home / ".claude" / "plans" / "existing.md")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
+
+    def test_home_claude_new_file_allowed(self, opted_in_home):
+        """Write to a not-yet-existing ~/.claude/ file is allowed. The
+        original failure manifested on new-file writes where the hook's
+        dirname-walk ascended out of the missing path into the repo root."""
+        path = str(opted_in_home / ".claude" / "plans" / "new.md")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
+
+    def test_non_claude_path_in_opted_in_home_denied(self, opted_in_home):
+        """A write to a non-.claude path inside the same opted-in home repo
+        is still denied — the exemption is scoped to ~/.claude/, not the
+        entire $HOME repo."""
+        path = str(opted_in_home / "some-project-file.txt")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "deny"
+
+    def test_adjacent_prefix_not_exempt(self, opted_in_home):
+        """~/.claude-foo/ must not match the ~/.claude/ exemption — the
+        case glob has a literal '/' after '.claude', so .claude-foo cannot
+        satisfy it."""
+        (opted_in_home / ".claude-foo").mkdir()
+        (opted_in_home / ".claude-foo" / "file.md").write_text("")
+        path = str(opted_in_home / ".claude-foo" / "file.md")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "deny"
+
+    def test_exact_dotclaude_dir_not_exempt(self, opted_in_home):
+        """A write path of exactly $HOME/.claude (no trailing segment) does
+        not satisfy the '/.claude/*' glob and falls through to repo-walk
+        denial."""
+        path = str(opted_in_home / ".claude")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "deny"
+
+    def test_dot_dot_traversal_not_exempt(self, opted_in_home):
+        """A file_path using '..' traversal through .claude/ must not be
+        exempted. The case glob matches on the raw string, so
+        $HOME/.claude/../other-file would satisfy the prefix without
+        actually resolving inside $HOME/.claude/. The traversal guard
+        rejects any path containing '/..' before the prefix check."""
+        path = str(opted_in_home / ".claude" / ".." / "project-file.txt")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "deny"
+
+    def test_stow_symlinked_claude_dir_allows(self, opted_in_home, tmp_path):
+        """When ~/.claude/ is a stow-managed symlink to a repo's .claude/
+        directory (directory-fold), writes through the symlink path must
+        still be allowed. realpath would resolve the path into the repo root,
+        breaking the fix — the hook intentionally uses the raw string."""
+        # Simulate stow directory-fold: ~/.claude is a symlink to another
+        # opted-in repo's .claude/ dir.
+        target_repo = tmp_path / "target-repo"
+        target_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=target_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=target_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=target_repo, check=True)
+        dot_claude = target_repo / ".claude"
+        dot_claude.mkdir()
+        (dot_claude / "worktree-required").write_text("# sentinel\n")
+        (dot_claude / "settings.json").write_text("{}\n")
+        subprocess.run(["git", "add", "."], cwd=target_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=target_repo, check=True)
+        # Replace ~/.claude dir with a symlink to target_repo/.claude/
+        (opted_in_home / ".claude").rename(opted_in_home / ".claude-orig")
+        (opted_in_home / ".claude").symlink_to(dot_claude)
+        # Write to ~/.claude/settings.json via the raw symlink path
+        path = str(opted_in_home / ".claude" / "settings.json")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
