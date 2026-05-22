@@ -255,6 +255,8 @@ cd .claude/worktrees/my-feature
 # work happens here; git commit/push/etc. pass through the hook cleanly
 ```
 
+The contributor `.venv` is gitignored and lives only in the main worktree root — linked worktrees never inherit it. Run tests and lint from a worktree via `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` (see [Tests](#tests)).
+
 Agents spawned with `isolation: worktree` create their own worktrees under `.claude/worktrees/` automatically — on a harness-generated branch name (`worktree-agent-<hash>`). That auto-naming is fine for ephemeral, non-PR work (parallel exploration, reviewer agents). For PR-bound work that needs a meaningful branch name, create the worktree yourself with `git worktree add .claude/worktrees/<slug> -b <slug>` first, then dispatch the agent into that path.
 
 To opt out, delete `.claude/worktree-required`.
@@ -334,6 +336,8 @@ python3 -m venv .venv
 .venv/bin/pytest claude/.claude/
 .venv/bin/ruff check claude/.claude/
 ```
+
+The `.venv` lives only in the main worktree root. From a linked worktree (`.claude/worktrees/<branch>/`), invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
 
 CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`.
 
