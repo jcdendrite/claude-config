@@ -143,7 +143,7 @@ if [ "${#CORPUS_PATHS[@]}" -gt 0 ]; then
     fi
   done
 
-  CORPUS_STDERR=$("$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" --corpus "${OVERLAY_PATHS[@]}" 2>&1)
+  CORPUS_STDERR=$(timeout 10s "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" --corpus "${OVERLAY_PATHS[@]}" 2>&1 || true)
   if [ -n "$CORPUS_STDERR" ]; then
     printf 'skill-management: corpus budget warning: %s\n' "$CORPUS_STDERR" >&2
   fi

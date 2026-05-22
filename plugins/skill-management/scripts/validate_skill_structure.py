@@ -114,10 +114,12 @@ def corpus_budget_violations(skill_files: Iterable[Path], budget: int) -> list[s
     decides corpus scope (project-only, user-scope, plugin skills, etc.) so
     user-scope and project-scope listings are never inadvertently conflated.
 
-    Skips files with disable-model-invocation: true (their descriptions are
-    suppressed from the harness listing). Skips files with unparseable
-    frontmatter rather than aborting — preserving best-effort posture for
-    use in non-blocking hook warnings.
+    Skips files with disable-model-invocation: true (exact hyphenated key;
+    only the literal string "disable-model-invocation" is recognized —
+    underscore variants are not). Skips files with unparseable frontmatter
+    rather than aborting — preserving best-effort posture for use in
+    non-blocking hook warnings. Descriptions are suppressed from the harness
+    listing for disabled skills.
 
     Returns a list with at most one violation string (naming total and the
     five largest offenders) or an empty list if the corpus is within budget.
@@ -126,7 +128,7 @@ def corpus_budget_violations(skill_files: Iterable[Path], budget: int) -> list[s
     for skill_file in skill_files:
         try:
             frontmatter = parse_frontmatter(skill_file)
-        except (yaml.YAMLError, ValueError, OSError):
+        except (yaml.YAMLError, ValueError, OSError):  # ValueError covers UnicodeDecodeError
             continue
         if frontmatter.get("disable-model-invocation"):
             continue

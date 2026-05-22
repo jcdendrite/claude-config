@@ -694,16 +694,17 @@ class TestCorpusBudgetWarning:
         assert "corpus budget warning" not in result.stderr
 
     def test_corpus_warning_does_not_fire_when_no_skill_staged(self, isolated_home, git_repo):
-        """The corpus check is skipped entirely when no SKILL.md is staged.
+        """The corpus check does not warn when no SKILL.md is staged.
 
-        The hook exits early before reaching the corpus block in that case."""
+        The hook exits early at the SKILL_DIFF check (no staged skills), so the
+        corpus block is never reached."""
         # git_repo has only file.txt staged — no SKILL.md.
         result = _run_hook_with_stderr(
             SKILL_REVIEW_HOOK,
             bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
             cwd=git_repo,
         )
-        # Hook must allow (early exit).
+        # Hook must allow (early exit before corpus block).
         assert not result.stdout.strip() or "deny" not in result.stdout
         assert "corpus budget warning" not in result.stderr
 
