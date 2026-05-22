@@ -77,6 +77,18 @@ while IFS= read -r STAGED_PATH; do
   [ -n "$STAGED_PATH" ] && STAGED_SKILL_PATHS+=("$STAGED_PATH")
 done <<< "$SKILL_DIFF"
 
+VALIDATOR_SCRIPT="$(dirname "$0")/../scripts/validate_skill_structure.py"
+# Prefer the plugin's persistent-venv python (provisioned by the
+# SessionStart hook against ${CLAUDE_PLUGIN_DATA}/venv) so the validator
+# finds pyyaml without the consumer running a manual pip install. Fall
+# back to system python3 — covers the contributor pytest path, which
+# imports the validator directly without going through plugin hooks, and
+# the brief window before the first SessionStart provisions the venv.
+VALIDATOR_PYTHON="python3"
+if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -x "${CLAUDE_PLUGIN_DATA}/venv/bin/python" ]; then
+  VALIDATOR_PYTHON="${CLAUDE_PLUGIN_DATA}/venv/bin/python"
+fi
+
 if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
   STAGED_BLOB_DIR=$(mktemp -d)
   trap 'rm -rf "$STAGED_BLOB_DIR"' EXIT
@@ -93,17 +105,6 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
   done
 
   if [ "${#STAGED_BLOB_PATHS[@]}" -gt 0 ]; then
-    VALIDATOR_SCRIPT="$(dirname "$0")/../scripts/validate_skill_structure.py"
-    # Prefer the plugin's persistent-venv python (provisioned by the
-    # SessionStart hook against ${CLAUDE_PLUGIN_DATA}/venv) so the validator
-    # finds pyyaml without the consumer running a manual pip install. Fall
-    # back to system python3 — covers the contributor pytest path, which
-    # imports the validator directly without going through plugin hooks, and
-    # the brief window before the first SessionStart provisions the venv.
-    VALIDATOR_PYTHON="python3"
-    if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -x "${CLAUDE_PLUGIN_DATA}/venv/bin/python" ]; then
-      VALIDATOR_PYTHON="${CLAUDE_PLUGIN_DATA}/venv/bin/python"
-    fi
     VALIDATOR_STDERR=$("$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
     VALIDATOR_EXIT=$?
     if [ "$VALIDATOR_EXIT" -ne 0 ]; then
@@ -115,6 +116,36 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
       printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
       exit 0
     fi
+  fi
+fi
+
+# Corpus budget warning: check aggregate description+when_to_use chars across
+# all model-invokable skills in this repo against the Claude Code listing budget.
+# Non-blocking — exits 0 regardless; hard enforcement is in pytest/CI.
+# Uses the same scoped pathspecs as SKILL_DIFF above (no bare *SKILL.md glob,
+# which would sweep in vendored or fixture files).
+CORPUS_PATHS=()
+while IFS= read -r CORPUS_PATH; do
+  [ -n "$CORPUS_PATH" ] && CORPUS_PATHS+=("$CORPUS_PATH")
+done < <(git ls-files 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 2>/dev/null)
+
+# Overlay staged blobs: replace corpus path with staged blob path for any
+# staged SKILL.md (so the warning reflects the post-commit state of staged files).
+if [ "${#CORPUS_PATHS[@]}" -gt 0 ]; then
+  OVERLAY_PATHS=()
+  for CORPUS_PATH in "${CORPUS_PATHS[@]}"; do
+    # Check if this path has a staged version (already materialized in STAGED_BLOB_DIR).
+    BLOB_CANDIDATE="${STAGED_BLOB_DIR:-}/$CORPUS_PATH"
+    if [ -n "${STAGED_BLOB_DIR:-}" ] && [ -f "$BLOB_CANDIDATE" ]; then
+      OVERLAY_PATHS+=("$BLOB_CANDIDATE")
+    else
+      OVERLAY_PATHS+=("$CORPUS_PATH")
+    fi
+  done
+
+  CORPUS_STDERR=$("$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" --corpus "${OVERLAY_PATHS[@]}" 2>&1)
+  if [ -n "$CORPUS_STDERR" ]; then
+    printf 'skill-management: corpus budget warning: %s\n' "$CORPUS_STDERR" >&2
   fi
 fi
 
