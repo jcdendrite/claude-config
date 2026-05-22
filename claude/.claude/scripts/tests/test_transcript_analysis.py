@@ -1110,6 +1110,33 @@ def _hook_deny(hook_name: str, *, stringified: bool = False) -> dict:
     }
 
 
+def _hook_deny_current(
+    message: str,
+    *,
+    tool_id: str = "toolu_cur",
+    ts: str | None = None,
+    branch: str = "main",
+) -> dict:
+    """Build a current-format hook denial.
+
+    Newer Claude Code transcripts no longer emit a hook_blocking_error
+    attachment record — a denial surfaces only as a user record whose
+    tool_result block carries is_error and the denial text.
+    """
+    rec: dict = {
+        "type": "user",
+        "gitBranch": branch,
+        "isSidechain": False,
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tool_id,
+             "content": message, "is_error": True},
+        ]},
+    }
+    if ts:
+        rec["timestamp"] = ts
+    return rec
+
+
 def _review_trace_args(
     *,
     projects: str = "*",
@@ -1326,3 +1353,92 @@ class TestReviewTrace:
         _mod.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
         assert out.strip() == ""
+
+    def test_current_format_denial_detected(self, fake_projects, capsys):
+        """A current-format is_error tool_result with a hook-denial signature is a denial."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
+        assert len(denial_lines) == 1
+        assert "code-review gate" in denial_lines[0]
+
+    def test_current_format_ordinary_error_is_not_a_denial(self, fake_projects, capsys):
+        """An is_error tool_result without a hook-denial signature is NOT a denial."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("npm ERR! command failed with exit code 1"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert out.strip() == ""
+
+    def test_current_format_denial_text_without_is_error_ignored(self, fake_projects, capsys):
+        """A tool_result with denial-shaped text but no is_error flag is NOT a denial."""
+        rec = _hook_deny_current("Blocked by worktree-enforcement hook: not allowed.")
+        rec["message"]["content"][0]["is_error"] = False
+        _write_jsonl(fake_projects / "sess.jsonl", [rec])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert out.strip() == ""
+
+    def test_legacy_and_current_shapes_deduped_by_tool_use_id(self, fake_projects, capsys):
+        """A denial recorded as both an attachment and an is_error tool_result for one
+        tool_use_id collapses to one event — and the legacy record (which carries the
+        hook name) is the one retained."""
+        attach = _hook_deny("worktree")  # toolUseID == "toolu_worktree", hookName "worktree"
+        twin = _hook_deny_current(
+            "Blocked by worktree-enforcement hook: 'git add' not allowed.",
+            tool_id="toolu_worktree",
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [attach, twin])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
+        assert len(denial_lines) == 1
+        assert "denials=1" in out
+        # The retained event is the legacy attachment record — it carries hook=worktree;
+        # the current-format twin would have emitted hook= (empty).
+        assert "hook=worktree" in denial_lines[0]
+
+    def test_multiple_distinct_current_format_denials_each_counted(self, fake_projects, capsys):
+        """Two current-format denials with distinct tool_use_ids count as two events —
+        dedup collapses same-id pairs, not distinct denials."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
+            _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="toolu_b"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
+        assert len(denial_lines) == 2
+        assert "denials=2" in out
+
+    def test_current_format_denial_with_list_content_detected(self, fake_projects, capsys):
+        """A current-format denial whose tool_result content is a list of text blocks
+        (not a bare string) is still detected."""
+        rec = _hook_deny_current("placeholder")
+        rec["message"]["content"][0]["content"] = [
+            {"type": "text", "text": "Commit blocked by code-review gate: run /code-review."},
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", [rec])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
+        assert len(denial_lines) == 1
+        assert "code-review gate" in denial_lines[0]
+
+    def test_deny_only_matches_current_format_denial(self, fake_projects, capsys):
+        """--deny-only retains a session whose only denial is current-format."""
+        _write_jsonl(fake_projects / "cur.jsonl", [
+            _hook_deny_current("Push to a branch blocked by ready-for-review gate."),
+        ])
+        _write_jsonl(fake_projects / "none.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_only=True))
+        out = capsys.readouterr().out
+        assert "cur.jsonl" in out
+        assert "none.jsonl" not in out

@@ -381,6 +381,21 @@ REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
 _REVIEWER_PREFIX = "staff-"
 _REVIEWER_EXACT = "ciso-reviewer"
 
+# Current-format transcripts record a hook denial as an is_error tool_result
+# with no structured marker — it is distinguishable from an ordinary tool
+# error only by the deny message text. These patterns match the Claude Code
+# hook-denial idiom ("Blocked by <hook>", "blocked by <X> gate", "… invocation
+# denied"). Detection is therefore best-effort in both directions: an
+# atypically worded hook denial is missed, and an ordinary tool error whose
+# text happens to contain the idiom is a false positive. review-trace is a
+# candidate locator, not an exact counter — callers treat denial counts as
+# approximate. Legacy transcripts additionally carry an explicit
+# hook_blocking_error attachment record, matched separately and exactly.
+_HOOK_DENIAL_SIGNATURE = re.compile(
+    r"blocked by .{0,80}?\b(?:hook|gate)\b|invocation denied\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _normalize_blocking_error(raw) -> dict | str:
     """Normalize blockingError — may arrive as a dict or a JSON-stringified dict."""
@@ -402,7 +417,10 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
 
     Three event types are detected per session:
     - skill: main-thread Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
-    - denial: attachment record with type==hook_blocking_error
+    - denial: a hook-blocking denial in either transcript shape — a legacy
+      `attachment` record (type==hook_blocking_error) or a current-format
+      `tool_result` block with is_error and a hook-denial message signature.
+      A denial recorded as both shapes is collapsed to one event by tool_use_id.
     - reviewer: Agent/Task spawn where subagent_type starts with 'staff-' or == 'ciso-reviewer'
     """
     projects_glob = _projects_glob(args)
@@ -423,6 +441,10 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
 
     for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
         events: list[dict] = []  # ordered, tagged with type/ts/line_no
+        # Tracks tool_use_ids already emitted as a denial. A legacy denial
+        # appears as both an attachment record and an is_error tool_result
+        # sharing one tool_use_id; this set collapses the pair to one event.
+        seen_denial_ids: set[str] = set()
 
         # Determine session model family from first non-empty main-thread assistant record.
         session_model = ""
@@ -492,15 +514,17 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                             "line_no": line_no,
                         })
 
-            # --- Signal 2: hook denials (attachment records only) ---
+            # --- Signal 2a: hook denials, legacy shape (attachment record) ---
             if rec_type == "attachment":
                 att = rec.get("attachment") or {}
                 if att.get("type") != "hook_blocking_error":
                     continue
+                tool_use_id = att.get("toolUseID") or ""
+                if tool_use_id and tool_use_id in seen_denial_ids:
+                    continue
                 raw_error = att.get("blockingError")
                 normalized = _normalize_blocking_error(raw_error)
                 hook_name = att.get("hookName") or ""
-                tool_use_id = att.get("toolUseID") or ""
                 if isinstance(normalized, dict):
                     # Real transcripts nest the human-readable text in a "blockingError"
                     # key alongside a "command" key; fall back to "message" then repr.
@@ -511,6 +535,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                     )
                 else:
                     message = str(normalized) if normalized else ""
+                if tool_use_id:
+                    seen_denial_ids.add(tool_use_id)
                 events.append({
                     "kind": "denial",
                     "hook_name": hook_name,
@@ -519,6 +545,33 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                     "ts": rec_ts_str,
                     "line_no": line_no,
                 })
+
+            # --- Signal 2b: hook denials, current shape (is_error tool_result) ---
+            # Claude Code stopped emitting the hook_blocking_error attachment
+            # record; current transcripts surface a denial only as an is_error
+            # tool_result, identified by the hook-denial message signature.
+            if rec_type == "user":
+                for block in ((rec.get("message") or {}).get("content") or []):
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
+                        continue
+                    if not block.get("is_error"):
+                        continue
+                    message = _content_text(block.get("content"))
+                    if not _HOOK_DENIAL_SIGNATURE.search(message):
+                        continue
+                    tool_use_id = block.get("tool_use_id") or ""
+                    if tool_use_id and tool_use_id in seen_denial_ids:
+                        continue
+                    if tool_use_id:
+                        seen_denial_ids.add(tool_use_id)
+                    events.append({
+                        "kind": "denial",
+                        "hook_name": "",
+                        "tool_use_id": tool_use_id,
+                        "message": message,
+                        "ts": rec_ts_str,
+                        "line_no": line_no,
+                    })
 
         if not events:
             continue
