@@ -1385,8 +1385,9 @@ class TestReviewTrace:
 
     def test_legacy_and_current_shapes_deduped_by_tool_use_id(self, fake_projects, capsys):
         """A denial recorded as both an attachment and an is_error tool_result for one
-        tool_use_id collapses to one event — and the legacy record (which carries the
-        hook name) is the one retained."""
+        tool_use_id collapses to one event. Dedup keeps whichever record appears first
+        in the transcript; here the attachment is written ahead of its twin, so the
+        retained event carries the hook name the attachment record provides."""
         attach = _hook_deny("worktree")  # toolUseID == "toolu_worktree", hookName "worktree"
         twin = _hook_deny_current(
             "Blocked by worktree-enforcement hook: 'git add' not allowed.",
@@ -1398,8 +1399,9 @@ class TestReviewTrace:
         denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
         assert len(denial_lines) == 1
         assert "denials=1" in out
-        # The retained event is the legacy attachment record — it carries hook=worktree;
-        # the current-format twin would have emitted hook= (empty).
+        # Dedup retains the first-seen record. The attachment is written ahead of the
+        # current-format twin above, so the retained event carries hook=worktree; had
+        # the twin come first, hook= would be empty.
         assert "hook=worktree" in denial_lines[0]
 
     def test_multiple_distinct_current_format_denials_each_counted(self, fake_projects, capsys):

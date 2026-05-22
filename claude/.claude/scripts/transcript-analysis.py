@@ -1081,7 +1081,7 @@ def main() -> None:
         help="Restrict output to sessions that contain at least one hook denial.",
     )
     p_review_trace.add_argument(
-        "--skill", metavar="NAME",
+        "--skill", metavar="NAME", choices=sorted(REVIEW_TRACE_SKILLS),
         help="Restrict skill-invocation matching to one skill name.",
     )
     p_review_trace.set_defaults(func=cmd_review_trace)
