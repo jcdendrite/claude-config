@@ -5,6 +5,9 @@ Longer-form writeups of specific design decisions in this repo, with primary-sou
 ## Index
 
 - [Worktree enforcement: hook vs. CLAUDE.md prose](#worktree-enforcement-hook-vs-claudemd-prose)
+- [check-runner vs. inline test output: token cost](#check-runner-vs-inline-test-output-token-cost)
+- [/handoff vs. compaction: carried-context cost](#handoff-vs-compaction-carried-context-cost)
+- [Model routing: Opus vs. Sonnet spend](#model-routing-opus-vs-sonnet-spend)
 
 ---
 
@@ -129,3 +132,230 @@ The hook scripts themselves and the README / `design-decisions.md` sections quot
 - **[PR #114](https://github.com/jcdendrite/claude-config/pull/114)** — added `require-worktree-for-file-writes.sh`.
 - **[PR #131](https://github.com/jcdendrite/claude-config/pull/131)** — added the chained-`cd` hard-deny gate (lines 146–155) that fires before the persisted-cwd check.
 - **[anthropics/claude-code#34327](https://github.com/anthropics/claude-code/issues/34327)** — external GitHub issue cited by PR #24 as documenting the cross-session race in the wild. Cited here as PR #24's reference; not independently summarized.
+
+---
+
+## check-runner vs. inline test output: token cost
+
+**Question.** When a test suite, lint, or build runs *inline* — the parent agent calls the command through its own Bash tool — the output lands in the parent's context and re-bills on every later turn. The `check-runner` subagent routes that output to a spool file on disk instead. What does it save, in tokens and in dollars?
+
+**Short answer.** Less in dollars than the mechanism suggests — and the reason is worth stating plainly. The output `check-runner` suppresses is **bimodal**: most runs produce a small log (~1,300 tokens median) where inlining would have been cheap anyway, and a large minority — roughly a quarter to a third of runs — produce 100k–330k tokens, more than a whole context window holds. So `check-runner`'s value splits in two: a modest per-run token saving on the small runs (cents to about a dollar), and, on the heavy runs, not a saving at all but *feasibility* — that output cannot be carried inline, full stop. The dollar lever is real but small; the feasibility is the point.
+
+### The mechanism
+
+`check-runner` runs each command as `<command> > "$SPOOL" 2>&1`, where `$SPOOL` is a temp file (`check-runner.md` lines 21–33). A passing command returns only its exit code; a failing one returns a bounded `tail -50` excerpt. The parent receives a structured verdict — per command, a name / exit code / status line. Three tiers result:
+
+- **Full output** → spool file on disk → **0 model tokens**, and still complete and greppable by the parent (`design-decisions.md` §14).
+- **Failure excerpt** (≤50 lines) → `check-runner`'s own haiku context only, never the parent's.
+- **Verdict** (~800 characters) → parent context.
+
+Inline there is no spool file: the parent's Bash `tool_result` *is* the output. Every line is tokenized into the parent's context — and a tool result, once in context, is re-sent on every subsequent API call, billed at the cache-read rate. Heavy output is not paid for once; it is paid for once per remaining turn.
+
+### Measured inputs
+
+Measured 2026-05-22 over a 35-day corpus (~1,278 session files, 2026-04-18 → 2026-05-22).
+
+**What `check-runner` suppresses** — 153 spool files found on disk, sized (estimated tokens, bytes/4):
+
+| | tokens |
+|---|---|
+| median | ~1,300 |
+| p75 | ~263,000 |
+| p90 | ~288,000 |
+| max | ~328,000 |
+
+The distribution is strongly **bimodal** — a cluster of small logs (a passing suite, a clean lint) and a cluster above 250k tokens (verbose umbrella `verify` commands: build, typecheck, unit and integration suites concatenated into one stream). Little sits between. A single run in the upper cluster is larger than a 200k context window.
+
+**What inline runs actually look like** — 2,184 inline test commands found in the transcripts (parent Bash calls running `pytest`, `npm test`, `vitest`, and similar):
+
+| | output tokens | N — turns after the run |
+|---|---|---|
+| median | 95 | 120 |
+| p75 | 291 | 279 |
+| p90 | 752 | 503 |
+| max | 6,135 | 1,364 |
+
+Two things to read here. The inline runs that *happen* are small — p90 is 752 tokens; the largest across 2,184 runs is ~6,100. That is the routing discipline working: `check-runner`'s description says to use it "for any suite-level run," so the heavy suites are already off the inline path and only small targeted checks (`pytest path::test_name`) stay inline. And `N` — the turns a result re-bills across — has a **median of 120**: test output, once inline, is carried a long way. A best-effort pass/fail split puts passing runs at ~60 tokens median and failing runs at ~344 — failures carry tracebacks and diffs.
+
+`check-runner` itself: 538 dispatches across 228 sessions; median per-run consumption 19,569 haiku tokens; verdict returned to the parent, median ~206 tokens.
+
+### Pricing
+
+Published Anthropic API rates, per million tokens, as of 2026-05-22. Cache write is 1.25× input; cache read is 0.1× input.
+
+| Model | Input | Output | Cache write | Cache read |
+|---|---|---|---|---|
+| Opus | $15 | $75 | $18.75 | $1.50 |
+| Haiku | $1 | $5 | $1.25 | $0.10 |
+
+### The cost model, and where it stops applying
+
+Output of `T` tokens in an Opus parent context that runs `N` more turns is written to cache once and read back each turn:
+
+```
+inline(T, N)    = T × cache_write + T × N × cache_read
+check-runner(N) = haiku_run + verdict × (cache_write + N × cache_read)
+```
+
+With the haiku run billed conservatively at the input rate (~$0.02 — most of its 19,569 tokens are cache reads at one-tenth that) and a 206-token verdict, `check-runner(N)` ≈ $0.02 + $0.0003·N — effectively flat. The inline side is what moves — *until `T` exceeds the context window, at which point `inline` is not a number, it is "does not run."*
+
+### Savings per run — the small-output regime
+
+For runs whose output fits inline (the lower cluster, up to a few thousand tokens), at the measured median `N` of 120:
+
+| Output `T` | inline | check-runner | Saving |
+|---|---|---|---|
+| 1,300 tok (median spool) | ~$0.26 | ~$0.06 | **~$0.19** |
+| 6,100 tok (largest inline observed) | ~$1.21 | ~$0.06 | **~$1.16** |
+
+So on the small runs the saving is real but modest — cents to about a dollar per run. Across 538 dispatches, with most runs in the low-output cluster, the token-replay saving aggregates to the **low hundreds of dollars** over the 35 days. That is the honest figure for this part of the lever.
+
+### The heavy-output regime — feasibility, not savings
+
+The upper cluster is a different statement. A p75 spool file is ~263,000 tokens; p90 ~288,000; max ~328,000. None fit in a 200k context window. Inline, such a command does not "cost more" — it cannot complete usefully: the output overruns the window, forcing an immediate compaction or losing most of itself. `check-runner` sends all of it to disk for **zero** context tokens and returns a 206-token verdict, with the full log still on disk for the parent to `grep` (`design-decisions.md` §14).
+
+For roughly the top quarter-to-third of suite-level runs, then, `check-runner` is not a cost optimization — it is the mechanism that lets the run happen at all without derailing the session. Each such run inline would force a compaction the session did not otherwise need; at ~$1.20 an event (see the *handoff vs. compaction* case study below), the heavy runs alone put a soft floor of well over $150 on the part of this lever that resists clean accounting. That feasibility is `check-runner`'s primary value; the dollar saving is the secondary, smaller one.
+
+### When inline is fine
+
+`check-runner` is not free: it adds a dispatch round-trip and ~$0.02–0.06. Inline is the right call for exactly the runs that already stay inline — a small, targeted `pytest path/to/test.py::test_name` to confirm one fix. The measured inline distribution shows the workflow already routes this way: the saving is captured where it exists, and inline is used where `check-runner` would be pure overhead.
+
+### Method and caveats
+
+Spool sizes are the 153 files found under `/tmp` matching `check-runner`'s `<slug>-<epoch>.txt` pattern — a point-in-time snapshot spanning many sessions, possibly including stale files; each file is one command's complete output. Inline figures and `N` come from a scan of the JSONL session logs. `N` is measured for inline runs; `check-runner` runs land at similar points in a session, so the same `N` is used as the re-bill multiplier for both. The inline side remains a counterfactual model — by design the heavy suites rarely run inline, so no large-output inline run exists to measure directly, and the spool sizes stand in for what those runs would have dumped. `check-runner`'s own consumption and verdict size are measured, not modeled. Token counts are byte length ÷ 4.
+
+### Sources
+
+- **`claude/.claude/agents/check-runner.md`** — spool redirect and per-command wrapper (lines 21–33), structured-verdict format (lines 35–48).
+- **`docs/design-decisions.md` §10–§14** — `check-runner`'s scope history; §14 covers the parent grepping the full spool.
+- **`claude/.claude/scripts/transcript-analysis.py`**, **`token-analyzer.py`** — the toolkit used to scan the session logs.
+- **Anthropic API pricing** — published per-token rates; see [docs.anthropic.com](https://docs.anthropic.com) for the current schedule.
+
+---
+
+## /handoff vs. compaction: carried-context cost
+
+**Question.** When a session's context fills, two things can happen: automatic *compaction* (the harness summarizes the conversation in place and continues), or a deliberate `/handoff` (the agent writes a short resume file and the user starts a fresh session). `/handoff` is the prescribed move at ~60% context use (`CLAUDE.md`, Working Style). Beyond resume quality, does it cost less?
+
+**Short answer.** Yes — because every turn re-bills the entire carried context as a cache read, and the two paths cap that context at different heights. Compaction is *reactive*: it lets context climb to the auto-compact threshold before firing. `/handoff` is *proactive*: invoked at 60%, it resets context well before that ceiling. Lower ceiling means a lower average context, and the per-turn replay cost falls with it — roughly 25% on the measured numbers, plus the per-event cost of generating each compaction summary.
+
+### The mechanism
+
+Both paths reset a swollen context to a small one — measured median **163,617 tokens** of carried context immediately before a compaction, **13,585 tokens** immediately after. A `/handoff` file is comparable in size to a compaction summary, so the *floor* both paths reset to is similar. The difference is the *ceiling*:
+
+- **Compaction** fires when the harness's auto-compact threshold is reached. Measured median context at that point: ~163,617 tokens — roughly 82% of a standard 200k window.
+- **`/handoff`** is invoked on the `CLAUDE.md` guidance at ~60% of the window — ~120,000 tokens — and the resumed session restarts near the 13,585-token floor.
+
+Every assistant turn re-sends the whole carried context as a cache read. A session is therefore a sawtooth: context climbs each turn, then drops at a reset. The cost of the session is the area under that sawtooth — and a lower ceiling shrinks the area.
+
+### Measured inputs
+
+Measured 2026-05-22 over the same 35-day corpus.
+
+| Quantity | Value | Source |
+|---|---|---|
+| Carried context immediately before compaction | median 163,617 tokens | transcript scan, 87-event sample |
+| Carried context immediately after compaction | median 13,585 tokens | same |
+| Compaction events | ~191 | transcript scan |
+| `/handoff` invocations | 20 (first on 2026-05-07) | transcript scan |
+
+`/handoff` is the newer habit — 20 uses against ~191 compactions — so the corpus is still mostly the compaction baseline. That makes the comparison a projection of the proactive path, not a large-sample measurement of it.
+
+### The cost model
+
+Per-turn replay cost ≈ carried_context × cache_read_rate. Pricing as in the case study above (Opus cache read $1.50 / million tokens). Model each path as a sawtooth from the 13,585-token floor to its ceiling, and take the average height:
+
+- **Compaction** — ceiling 163,617; average ≈ 88,600 tokens → **~$0.133 / turn**.
+- **/handoff** — ceiling ~120,000; average ≈ 66,800 tokens → **~$0.100 / turn**.
+
+That is a **~25% reduction** in per-turn context-replay cost. On a long session — one observed branch averaged ~253 assistant turns — that is roughly $33.6 vs. $25.3, about **$8 saved per heavy session**, before counting the next item.
+
+### Plus: the compaction summary itself
+
+Compaction is not free to perform. Generating the summary is a model call over the full ~163,617-token context (~$0.25 as a cache read) that emits a multi-thousand-token summary at the $75/million output rate — together **~$1.20 per compaction event**. Across ~191 events that is **~$230** over 35 days. A `/handoff` writes a comparable file but from a smaller (~120k) context and is counted once, not on every fill cycle — and a session that hands off proactively reaches the auto-compact threshold less often.
+
+### The quality cost compaction adds, that this model omits
+
+A compaction summary is lossy by construction — it discards detail the continued session then has to rediscover by re-reading files and re-deriving state, which spends tokens this model does not count. A `/handoff` file is curated by the agent against a fixed structure (goal, status, next step, files modified, open questions — `handoff/SKILL.md`) to capture exactly the resume state. The dollar figures above are therefore conservative: they price only the context-replay difference, not the rework compaction tends to cause.
+
+### Method and caveats
+
+Figures come from a scan of the JSONL session logs under `~/.claude/projects/`. "Carried context" uses `cache_read_input_tokens` on the assistant turn bracketing each compaction event as a proxy — a close but not exact measure of true context size. The 200k window and the 60% `/handoff` trigger are assumptions: 200k is the standard Claude Code window, 60% is this repo's `CLAUDE.md` guidance, and the measured 163,617-token pre-compaction median (~82% of 200k) is consistent with auto-compact firing in that range. The per-turn model assumes context grows roughly linearly between resets; real sessions are lumpier. The compaction baseline is well-sampled (~191 events); the `/handoff` path is projected from 20 uses.
+
+### Sources
+
+- **`claude/.claude/skills/handoff/SKILL.md`** — the handoff-file structure (§1–§7) and the under-200-line target.
+- **`claude/.claude/CLAUDE.md`** — Working Style: suggest `/handoff` at ~60% context use when the task is incomplete.
+- **`claude/.claude/scripts/transcript-analysis.py`**, **`token-analyzer.py`** — the toolkit used to scan the session logs.
+- **Anthropic API pricing** — published per-token rates; see [docs.anthropic.com](https://docs.anthropic.com) for the current schedule.
+
+---
+
+## Model routing: Opus vs. Sonnet spend
+
+**Question.** The two case studies above attack *context size* — how many tokens are carried and re-billed each turn. A separate lever attacks the *rate*: which model burns the tokens. Opus, Sonnet, and Haiku price the identical token 5× and 15× apart. What does the model mix actually cost, and where is the headroom?
+
+**Short answer.** Opus is ~92% of spend. The three levers stack — context discipline shrinks the token count, routing discipline shrinks the price per token — but routing is the largest single one, because the rate gap is 5× and applies to every token a session touches, not just heavy command output. The corpus breakdown and a sensitivity table are below.
+
+### Measured: where the money goes
+
+`token-analyzer.py` sums the four usage fields per model family across the corpus (~1,278 session files, 2026-04-18 → 2026-05-22). Priced at the published rates:
+
+| Model | Sessions | Est. cost | Share | Avg / session |
+|---|---|---|---|---|
+| Opus | 530 | ~$31,100 | 92% | ~$59 |
+| Sonnet | 848 | ~$2,780 | 8% | ~$3.30 |
+| Haiku | 42 | ~$10 | <1% | ~$0.24 |
+| **Total** | | **~$33,900** | | |
+
+Two facts stand out. First, the average Opus session costs ~18× the average Sonnet session — part workload (Opus sessions run longer and orchestration-heavy), part the 5× rate card. Second, Opus *cache reads* alone cost ~$15,300 — about 45% of all spend. That is pure context replay: the exact pool the check-runner and `/handoff` case studies drain. The levers compound — routing cuts the rate, context discipline cuts the volume, and Opus cache-read is where both land.
+
+### The rate card
+
+Per million tokens, published rates as of 2026-05-22. Cache write is 1.25× input; cache read is 0.1× input; output is 5× input.
+
+| | Opus | Sonnet | Haiku |
+|---|---|---|---|
+| Input | $15 | $3 | $1 |
+| Output | $75 | $15 | $5 |
+| Cache write | $18.75 | $3.75 | $1.25 |
+| Cache read | $1.50 | $0.30 | $0.10 |
+
+Sonnet is exactly 1/5 of Opus on every line; Haiku is 1/15. Identical work, run on Sonnet, costs 20% as much.
+
+### The lever: routing, not capability
+
+Moving work from Opus to Sonnet is not a quality compromise when the work was never judgment work. This repo's `CLAUDE.md` (Model Routing) already draws the line: Opus for judgment-heavy reasoning, plan-mode planning, and parent-dispatcher orchestration; **Sonnet as the default for all code reading, code writing, and specialist reviewer agents**; Haiku for narrow deterministic skills. The reviewer agents and `code-writer` carry `model: sonnet` frontmatter; `Explore` is pinned to Haiku.
+
+So the 92% Opus share raises an audit question: of that spend, how much is genuine judgment and orchestration, and how much is code reading or writing that the policy assigns to Sonnet but that ran on Opus because the session's parent happened to be Opus?
+
+`token-analyzer.py` has a built-in `Opus → Sonnet candidates` heuristic — Opus sessions with no plan-mode, no edits, and no Task/thinking/judgment-skill/sidechain marker. It found **0 clean candidates**, excluding 422 high-output Opus sessions (389 of them for "edits"). But "edits" is a conservative exclusion, not proof Opus was required — code-editing is exactly the work the routing policy assigns to Sonnet. The heuristic is deliberately strict; it under-counts the real headroom rather than over-counting it.
+
+### Sensitivity
+
+Because the misrouted fraction can't be read precisely off the logs, treat it as a parameter. Moving a slice of Opus work to Sonnet replaces that slice's cost with one-fifth:
+
+| Opus spend rerouted to Sonnet | Gross moved | New cost on Sonnet | Saved |
+|---|---|---|---|
+| 10% | ~$3,100 | ~$620 | **~$2,500** |
+| 30% | ~$9,300 | ~$1,870 | **~$7,500** |
+| 50% | ~$15,600 | ~$3,110 | **~$12,500** |
+
+The table assumes equal token volume on the cheaper model. A Sonnet run may take marginally more turns to converge on some tasks and fewer on others; this is the order of magnitude, not a guarantee. Even the most conservative row dwarfs the entire 35-day check-runner lever.
+
+### The bridge: delegation routes model *and* context together
+
+Subagent delegation is the mechanism check-runner generalizes. Dispatch a search to `Explore` and two things happen at once: the verbose output (file dumps, grep hits) stays in the subagent's context instead of the Opus parent's — the context lever — *and* it runs on Haiku at 1/15 the rate — the routing lever. Dispatch implementation to `code-writer` and the diff-sized reasoning runs on Sonnet, not the Opus orchestrator. Every delegation boundary is a place both levers apply: the parent keeps the conclusion and does not pay Opus rates to carry the raw material that produced it.
+
+This is why the delegation guidance in `CLAUDE.md` ("Default-consider delegation") is a cost control, not only a tidiness one. The parent's context is re-read every turn at the parent's rate; delegated work is read once, at the subagent's rate, and only its result crosses back.
+
+### Method and caveats
+
+Per-model token volumes come from `token-analyzer.py` over the corpus; costs are those volumes × the published rates. The "other" model bucket (no usage records) is dropped. Per-model session counts double-count any session that used more than one model family, so the three counts sum to more than the 1,278-file corpus. The misrouted-Opus fraction is not measured — the sensitivity table parameterizes it rather than asserting a figure. Subagent sessions are not written as separate transcript files, so the main-vs-subagent turn split cannot be reconstructed; only aggregate per-model spend is available, which is what the table above uses.
+
+### Sources
+
+- **`claude/.claude/scripts/token-analyzer.py`** — per-model token breakdown and the `Opus → Sonnet candidates` heuristic.
+- **`claude/.claude/CLAUDE.md`** — Model Routing (Opus / Sonnet / Haiku assignment) and Working Style ("Default-consider delegation").
+- **`claude/.claude/agents/`** — `model:` frontmatter on the reviewer agents, `code-writer`, and `check-runner`.
+- **Anthropic API pricing** — published per-token rates; see [docs.anthropic.com](https://docs.anthropic.com) for the current schedule.
