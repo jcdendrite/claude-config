@@ -52,8 +52,8 @@ A CLAUDE.md instruction says "you should run code-review before committing." A P
 
 ## Docs
 
-- [`docs/design-decisions.md`](docs/design-decisions.md) — nine non-obvious choices (hook-enforced gates, per-session sha256 marker keying, no shared skill partials, project-layer composition via prose-pointer + glob, reviewer persona roster operations, etc.) and the reasoning behind each.
-- [`docs/case-studies.md`](docs/case-studies.md) — longer-form writeups of specific design decisions with primary-source citations.
+- [`docs/design-decisions.md`](docs/design-decisions.md) — the non-obvious choices in this repo (hook-enforced gates, per-session sha256 marker keying, no shared skill partials, project-layer composition via prose-pointer + glob, reviewer persona roster operations, etc.) and the reasoning behind each.
+- [`docs/case-studies.md`](docs/case-studies.md) — index of longer-form case studies: individual design decisions examined in depth with primary-source citations.
 - [`docs/walkthrough.md`](docs/walkthrough.md) — one full contribution cycle: plan → plan-review → code → code-review → commit → ready-for-review → push → respond-pr, showing each hook firing in sequence.
 - **Two `CLAUDE.md` files.** The repo-root [`CLAUDE.md`](CLAUDE.md) is contributor workflow for this repo (what GitHub renders by default). The stowed [`claude/.claude/CLAUDE.md`](claude/.claude/CLAUDE.md) is the global engineering instructions applied to every Claude Code session on the machine after `./install.sh`.
 
@@ -177,7 +177,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 - **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
 - **`skill-management`** — Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via `/skill-review`. `claude plugin install skill-management@claude-config --scope project`
 
-  **Plugin dependency:** the structural validator imports `pyyaml`. On first session in a consumer repo, the plugin's `SessionStart` hook provisions a persistent venv at `${CLAUDE_PLUGIN_DATA}/venv` and installs `pyyaml` into it; the commit-time hook prefers that venv's `python` and falls back to system `python3`. `./install.sh` does not install anything into the host Python — contributors who run the test suite set up a repo-local `.venv` per [CONTRIBUTING.md "Tests and lint"](./CONTRIBUTING.md#tests-and-lint).
+  **Plugin dependency:** the structural validator imports `pyyaml`. On first session in a consumer repo, the plugin's `SessionStart` hook provisions a persistent venv at `${CLAUDE_PLUGIN_DATA}/venv` and installs `pyyaml` into it; the commit-time hook prefers that venv's `python` and falls back to system `python3`. `./install.sh` does not install anything into the host Python — contributors who run the test suite set up a repo-local `.venv` per [Tests](#tests).
 
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 
@@ -200,9 +200,9 @@ Schema-change diffs nominally route three ways — `staff-backend-engineer` (des
 
 For guidance on extending, splitting, or spawning personas, see [design-decisions.md §9](docs/design-decisions.md).
 
-**`check-runner`** — a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts. Dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output". Constrained to `tools: Bash` only, capped at `maxTurns: 20`, and guarded by a `hooks.PreToolUse` script that denies git write operations — see `docs/design-decisions.md` §10.
+**`check-runner`** — a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts. Dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output". Constrained to `tools: Bash` only and capped at `maxTurns: 20`; its checks-only charter and the reasoning behind every constraint are in `docs/design-decisions.md` §10.
 
-**`code-writer`** — a non-reviewer Sonnet agent that implements delegated code changes and self-reviews its own diff before returning, verifying it against the relevant `staff-*` reviewer angles so review-finding-class defects are caught in its own context rather than as a parent round-trip. Dispatched by the parent in place of `general-purpose` for code-writing; see `claude/.claude/CLAUDE.md` "Model Routing" and `docs/design-decisions.md` §14.
+**`code-writer`** — a non-reviewer Sonnet agent that implements delegated code changes and self-reviews its own diff before returning, verifying it against the relevant `staff-*` reviewer angles so review-finding-class defects are caught in its own context rather than as a parent round-trip. Dispatched by the parent in place of `general-purpose` for code-writing; see `claude/.claude/CLAUDE.md` "Model Routing" and `docs/design-decisions.md` §11.
 
 ### Configuration files
 
