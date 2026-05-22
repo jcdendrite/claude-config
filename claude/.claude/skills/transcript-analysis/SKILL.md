@@ -1,6 +1,6 @@
 ---
 name: transcript-analysis
-description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, or PR-to-branch mapping. For token-cost or cache-efficiency analysis use token-analyzer.py directly.
+description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, PR-to-branch mapping, or per-session review-activity timelines (skill invocations, hook denials, reviewer spawns). For token-cost or cache-efficiency analysis use token-analyzer.py directly.
 disable-model-invocation: true
 ---
 
@@ -16,6 +16,7 @@ The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly
 | How much logged time was active vs idle gaps? | `duration --branches <branch>` |
 | How much work went through subagents vs the main thread? | `subagents --branches <branch>` |
 | Map branches to PRs; count per-author review comments | `pr-link --repo owner/repo --branches <branch>` |
+| Which sessions ran review skills, hit a hook denial, or spawned reviewer agents? | `review-trace` |
 
 ## Reading fail-seq output
 
@@ -35,6 +36,7 @@ Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
 - Durations from `duration` are wall-clock dominated by idle gaps. Look at `Active(min)`, not `Span(min)`.
 - `pr-link` requires `gh` and network access. All other subcommands are local-only and make no writes.
 - A model-vs-model comparison is only meaningful when there are multiple all-Opus and all-Sonnet execution branches. One or two branches per model is directional, not a controlled A/B.
+- `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis and `--deny-only` to isolate sessions that hit an enforcement hook.
 
 ## Example usage
 
@@ -51,4 +53,10 @@ python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET
 # Link branches to PRs and count one author's review comments
 python3 ~/.claude/scripts/transcript-analysis.py pr-link \
   --repo owner/repo --branches feat-TICKET-101,feat-TICKET-202 --author alice
+
+# Find sessions that hit an enforcement-hook denial
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only
+
+# Review activity in a date window (e.g. before vs after a skill landed)
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --since 2026-01-01 --until 2026-03-31
 ```
