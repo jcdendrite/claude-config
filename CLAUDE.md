@@ -23,7 +23,11 @@ python3 -m venv .venv                                        # one-time contribu
 Worktree enforcement is active. `.claude/worktree-required` is committed, so
 non-read-only git operations must run inside a linked worktree
 (`git worktree add .claude/worktrees/<branch> -b <branch>`) or an agent with
-`isolation: worktree`. See README "Worktree enforcement" for why.
+`isolation: worktree`. See README "Worktree enforcement" for why. The
+contributor `.venv` lives at the main worktree root only — it is gitignored,
+so linked worktrees never inherit it. That path is exactly three levels deep,
+so run tests and lint from a worktree via `../../../.venv/bin/pytest` and
+`../../../.venv/bin/ruff`.
 
 `claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on
 `git pull` — no re-install needed.
