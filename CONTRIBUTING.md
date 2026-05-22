@@ -30,18 +30,7 @@ This repo is public. Do not commit anything that identifies a private project, o
 
 ## Tests and lint
 
-Pins live in [`requirements-dev.txt`](./requirements-dev.txt) — the same file CI's install step reads, so versions stay in sync.
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pytest claude/.claude/    # hook and skill tests
-.venv/bin/ruff check claude/.claude/  # lint
-```
-
-The `.venv` lives only in the main worktree root. Linked worktrees live at `.claude/worktrees/<branch>/` — exactly three levels deep — so from inside a worktree invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
-
-`./install.sh` does not install anything into the host Python — the `.venv` above is the contributor setup. CI runs both commands on every PR and main push; both must pass before the PR can be reviewed.
+See [Tests](./README.md#tests) for the contributor `.venv` setup, the pinned `pytest` / `ruff` commands, and cross-worktree invocation. Run both before opening a PR — CI runs them on every PR and main push, and both must pass before the PR can be reviewed.
 
 ## Skill evals
 
