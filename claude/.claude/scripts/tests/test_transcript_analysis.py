@@ -1,4 +1,5 @@
 """Tests for transcript-analysis.py."""
+import argparse
 import importlib.util
 import json
 import subprocess
@@ -107,6 +108,17 @@ class TestHelpers:
 
     def test_parse_ts_invalid_string(self):
         assert _mod._parse_ts("not-a-date") is None
+
+    def test_iso_date_valid_returns_string(self):
+        assert _mod._iso_date("2026-05-19") == "2026-05-19"
+
+    def test_iso_date_invalid_month_raises_type_error(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _mod._iso_date("2026-13-01")
+
+    def test_iso_date_garbage_raises_type_error(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _mod._iso_date("garbage")
 
 
 # ---------------------------------------------------------------------------
@@ -1068,3 +1080,249 @@ class TestCommitGate:
         data_lines2 = [ln for ln in out2.splitlines() if "2026-W" in ln]
         # Still only 1 session (feat-b-only session excluded)
         assert int(data_lines2[0].split()[1]) == 1
+
+
+# ---------------------------------------------------------------------------
+# review-trace
+# ---------------------------------------------------------------------------
+
+
+def _hook_deny(hook_name: str, *, stringified: bool = False) -> dict:
+    """Build an attachment/hook_blocking_error record using the real transcript shape.
+
+    Real transcripts nest the human-readable denial text in a "blockingError" key
+    inside the blockingError dict (alongside a "command" key).
+
+    When stringified=True, the outer blockingError value is a JSON-encoded string
+    of that dict rather than the dict itself (as seen in some real transcripts).
+    """
+    human_message = f"Hook '{hook_name}' blocked the operation"
+    error_dict = {"blockingError": human_message, "command": "git commit -m x"}
+    blocking_error = json.dumps(error_dict) if stringified else error_dict
+    return {
+        "type": "attachment",
+        "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": hook_name,
+            "toolUseID": f"toolu_{hook_name[:8]}",
+            "blockingError": blocking_error,
+        },
+    }
+
+
+def _review_trace_args(
+    *,
+    projects: str = "*",
+    branches: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    deny_only: bool = False,
+    skill: str | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "branches": branches,
+        "since": since,
+        "until": until,
+        "deny_only": deny_only,
+        "skill": skill,
+    })()
+
+
+class TestReviewTrace:
+    def test_skill_invocation_appears_in_output(self, fake_projects, capsys):
+        """Main-thread Skill call for a review skill produces a 'skill' event in output."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "skill" in out
+        assert "code-review" in out
+
+    def test_denial_dict_blockingError_parsed(self, fake_projects, capsys):
+        """hook_blocking_error with blockingError as a dict produces a denial event."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny("require-code-review", stringified=False),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "denial" in out
+        assert "require-code-review" in out
+
+    def test_denial_stringified_blockingError_parsed_identically(self, fake_projects, capsys):
+        """hook_blocking_error with blockingError as a JSON string produces identical output to dict form."""
+        _write_jsonl(fake_projects / "dict_form.jsonl", [
+            _hook_deny("require-code-review", stringified=False),
+        ])
+        _write_jsonl(fake_projects / "str_form.jsonl", [
+            _hook_deny("require-code-review", stringified=True),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        # Event lines have leading whitespace followed by a timestamp bracket.
+        sections = out.split("### ")
+        dict_section = next((s for s in sections if "dict_form" in s), "")
+        str_section = next((s for s in sections if "str_form" in s), "")
+        # Each section should have exactly one event line tagged 'denial'.
+        dict_denial_lines = [ln for ln in dict_section.splitlines() if ln.startswith("  [") and "denial" in ln]
+        str_denial_lines = [ln for ln in str_section.splitlines() if ln.startswith("  [") and "denial" in ln]
+        assert len(dict_denial_lines) == 1
+        assert len(str_denial_lines) == 1
+        # The hook name and message content should be identical between both forms.
+        assert "require-code-review" in dict_denial_lines[0]
+        assert "require-code-review" in str_denial_lines[0]
+        # The human-readable message text must appear in both forms, not a dict repr.
+        assert "blocked the operation" in dict_denial_lines[0]
+        assert "blocked the operation" in str_denial_lines[0]
+        # Must NOT be showing a raw dict repr.
+        assert "{'blockingError'" not in dict_denial_lines[0]
+        assert "{'blockingError'" not in str_denial_lines[0]
+
+    def test_hook_non_blocking_error_produces_zero_denial_events(self, fake_projects, capsys):
+        """hook_non_blocking_error records must NOT appear as denial events."""
+        non_blocking_rec = {
+            "type": "attachment",
+            "attachment": {
+                "type": "hook_non_blocking_error",
+                "hookName": "some-hook",
+                "toolUseID": "toolu_abc",
+                "blockingError": {"message": "non-fatal"},
+            },
+        }
+        _write_jsonl(fake_projects / "sess.jsonl", [non_blocking_rec])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        # No sessions should be emitted — the non-blocking record is not a review event.
+        assert "denial" not in out
+        assert "denials=1" not in out
+
+    def test_reviewer_spawn_detected_general_purpose_excluded(self, fake_projects, capsys):
+        """staff-backend-engineer spawn appears; general-purpose spawn is excluded."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[
+                      _agent_use("a1", "staff-backend-engineer"),
+                      _agent_use("a2", "general-purpose"),
+                  ]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "staff-backend-engineer" in out
+        assert "general-purpose" not in out
+        # Exactly one reviewer-spawn event (event lines start with "  [").
+        reviewer_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "reviewer" in ln]
+        assert len(reviewer_lines) == 1
+
+    def test_sidechain_skill_invocation_excluded(self, fake_projects, capsys):
+        """A code-review Skill call inside a sidechain record must not appear as a skill event."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  sidechain=True,
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        # Sidechain skill produces no events → the session block is not printed at all.
+        assert out.strip() == ""
+
+    def test_since_boundary_inclusive_record_included(self, fake_projects, capsys):
+        """A record whose timestamp matches exactly --since is included."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T00:00:00Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(since="2026-05-19"))
+        out = capsys.readouterr().out
+        assert "skill" in out
+        assert "code-review" in out
+
+    def test_until_boundary_inclusive_record_included(self, fake_projects, capsys):
+        """A record whose timestamp matches exactly --until is included."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T23:59:59Z",
+                  content=[_skill_use("s1", "plan-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(until="2026-05-19"))
+        out = capsys.readouterr().out
+        assert "skill" in out
+        assert "plan-review" in out
+
+    def test_record_with_no_timestamp_excluded_no_crash(self, fake_projects, capsys):
+        """A record with no parseable timestamp is excluded when a date filter is active; no crash."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  content=[_skill_use("s1", "code-review")]),  # no ts field
+        ])
+        # No exception must be raised; the missing-timestamp record is silently skipped.
+        _mod.cmd_review_trace(_review_trace_args(since="2026-05-01"))
+        # No crash; output may be empty (no matching events survive the date filter).
+        capsys.readouterr()  # consume; success if no exception raised above
+
+    def test_deny_only_restricts_to_denial_sessions(self, fake_projects, capsys):
+        """--deny-only: only sessions with at least one hook denial appear."""
+        # Session A: has a denial.
+        _write_jsonl(fake_projects / "with_denial.jsonl", [
+            _hook_deny("require-code-review"),
+        ])
+        # Session B: only a reviewer spawn, no denial.
+        _write_jsonl(fake_projects / "no_denial.jsonl", [
+            _asst("claude-opus-4-7", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_only=True))
+        out = capsys.readouterr().out
+        assert "with_denial" in out
+        assert "no_denial" not in out
+
+    def test_until_subsecond_record_included(self, fake_projects, capsys):
+        """A record at T23:59:59.500Z on the --until date IS included (sub-second gap fix)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-10T23:59:59.500Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(until="2026-05-10"))
+        out = capsys.readouterr().out
+        assert "skill" in out
+        assert "code-review" in out
+
+    def test_denial_blockingError_key_used_for_display_message(self, fake_projects, capsys):
+        """Denial message displays the nested blockingError string, not a dict repr."""
+        human_message = "Hook 'require-code-review' blocked the operation"
+        error_dict = {"blockingError": human_message, "command": "git commit -m x"}
+        denial_rec = {
+            "type": "attachment",
+            "attachment": {
+                "type": "hook_blocking_error",
+                "hookName": "require-code-review",
+                "toolUseID": "toolu_abc",
+                "blockingError": error_dict,
+            },
+        }
+        _write_jsonl(fake_projects / "sess.jsonl", [denial_rec])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_lines = [ln for ln in out.splitlines() if "denial" in ln and ln.startswith("  [")]
+        assert len(denial_lines) == 1
+        # Human-readable text must appear, not a raw dict repr.
+        assert "blocked the operation" in denial_lines[0]
+        assert "{'blockingError'" not in denial_lines[0]
+
+    def test_no_match_session_produces_no_output(self, fake_projects, capsys):
+        """A session with only non-review tool_use (Bash) produces no output block."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", "git status")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert out.strip() == ""

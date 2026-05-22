@@ -32,11 +32,12 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   token-analyzer --since 7d  # include token activity from the last N days (e.g. 2d, 7d)
   ```
 
-- **`transcript-analysis.py`** — analysis toolkit for Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). Six subcommands: `buckets` (assistant turns by branch × model family), `fail-seq` (ordered test-failure-count sequence per branch — convergence vs thrashing), `struggle` (correction/frustration phrase frequency split by model), `duration` (active vs idle-gap time per branch), `subagents` (`isSidechain` vs main-thread turn split), `pr-link` (map branches to GitHub PRs and count per-author comments). All subcommands are local-only reads except `pr-link`, which calls `gh`. Invoked directly from the shell (no `~/.local/bin/` wrapper); the `/transcript-analysis` skill documents which subcommand answers which question.
+- **`transcript-analysis.py`** — analysis toolkit for Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). Ten subcommands: `buckets` (assistant turns by branch × model family), `fail-seq` (ordered test-failure-count sequence per branch — convergence vs thrashing), `struggle` (correction/frustration phrase frequency split by model), `duration` (active vs idle-gap time per branch), `subagents` (`isSidechain` vs main-thread turn split), `subagent-mix` (per-branch subagent/Task spawn types and review-skill spawn counts), `skill-pair` (leader→follower skill-invocation pairing rate, binned by ISO week), `commit-gate` (review-skill vs git-commit ordering per ISO week, with `--no-verify` detection), `pr-link` (map branches to GitHub PRs and count per-author comments), `review-trace` (per-session timeline of review-skill invocations, hook denials, and reviewer-agent spawns). All subcommands are local-only reads except `pr-link`, which calls `gh`. Invoked directly from the shell (no `~/.local/bin/` wrapper); the `/transcript-analysis` skill documents which subcommand answers which question.
 
   ```bash
   python3 ~/.claude/scripts/transcript-analysis.py buckets
   python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches <branch>
+  python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only
   python3 ~/.claude/scripts/transcript-analysis.py pr-link --repo owner/repo --branches <branch>
   ```
 

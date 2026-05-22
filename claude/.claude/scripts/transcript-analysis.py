@@ -82,6 +82,15 @@ def _parse_ts(ts_str: str | None) -> float | None:
         return None
 
 
+def _iso_date(s: str) -> str:
+    """argparse type: validate a YYYY-MM-DD date string."""
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a valid YYYY-MM-DD date: {s!r}") from None
+    return s
+
+
 def _fmt_date(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%d")
 
@@ -362,6 +371,184 @@ def cmd_subagents(args: argparse.Namespace) -> None:
 
 
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
+
+# Skills counted as review invocations in review-trace.
+REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
+    {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
+)
+
+# Reviewer-agent subagent_type prefixes/names counted in review-trace.
+_REVIEWER_PREFIX = "staff-"
+_REVIEWER_EXACT = "ciso-reviewer"
+
+
+def _normalize_blocking_error(raw) -> dict | str:
+    """Normalize blockingError — may arrive as a dict or a JSON-stringified dict."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return raw
+        if isinstance(parsed, dict):
+            return parsed
+        return raw
+    return raw if raw is not None else {}
+
+
+def cmd_review_trace(args: argparse.Namespace) -> None:
+    """Emit an ordered review-event timeline per session.
+
+    Three event types are detected per session:
+    - skill: main-thread Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
+    - denial: attachment record with type==hook_blocking_error
+    - reviewer: Agent/Task spawn where subagent_type starts with 'staff-' or == 'ciso-reviewer'
+    """
+    projects_glob = _projects_glob(args)
+    branch_filter = _branch_filter(args)
+    deny_only: bool = bool(getattr(args, "deny_only", False))
+    skill_filter: str | None = getattr(args, "skill", None) or None
+
+    since_str: str | None = getattr(args, "since", None) or None
+    until_str: str | None = getattr(args, "until", None) or None
+    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
+    # Inclusive-day boundary: compute start of the *next* day and compare with strict <.
+    # Adding 86400 seconds covers the entire until-day at any sub-second precision.
+    until_epoch: float | None = None
+    if until_str:
+        day_start = _parse_ts(f"{until_str}T00:00:00Z")
+        if day_start is not None:
+            until_epoch = day_start + 86400
+
+    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+        events: list[dict] = []  # ordered, tagged with type/ts/line_no
+
+        # Determine session model family from first non-empty main-thread assistant record.
+        session_model = ""
+        for rec in records:
+            if rec.get("type") == "assistant" and not bool(rec.get("isSidechain")):
+                session_model = (rec.get("message") or {}).get("model", "")
+                if session_model:
+                    break
+        fam = _fam(session_model)
+
+        # Determine primary branch from first main-thread record that has one.
+        session_branch = ""
+        for rec in records:
+            if not bool(rec.get("isSidechain")):
+                b = rec.get("gitBranch") or ""
+                if b:
+                    session_branch = b
+                    break
+
+        if branch_filter and session_branch not in branch_filter:
+            continue
+
+        for line_no, rec in enumerate(records, start=1):
+            rec_ts_str: str | None = rec.get("timestamp")
+            rec_ts: float | None = _parse_ts(rec_ts_str)
+
+            # Apply date filter: records with no parseable timestamp are excluded when
+            # a date boundary is active.
+            if (since_ts is not None or until_epoch is not None):
+                if rec_ts is None:
+                    continue
+                if since_ts is not None and rec_ts < since_ts:
+                    continue
+                if until_epoch is not None and rec_ts >= until_epoch:
+                    continue
+
+            rec_type = rec.get("type", "")
+
+            # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
+            # Both are main-thread assistant tool_use blocks; a single pass over
+            # content dispatches on tool name to avoid iterating the list twice.
+            if rec_type == "assistant" and not bool(rec.get("isSidechain")):
+                for block in ((rec.get("message") or {}).get("content") or []):
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    block_name = block.get("name")
+                    if block_name == "Skill":
+                        skill_name = (block.get("input") or {}).get("skill") or ""
+                        if skill_name not in REVIEW_TRACE_SKILLS:
+                            continue
+                        if skill_filter and skill_name != skill_filter:
+                            continue
+                        events.append({
+                            "kind": "skill",
+                            "skill": skill_name,
+                            "ts": rec_ts_str,
+                            "line_no": line_no,
+                        })
+                    elif block_name in ("Agent", "Task"):
+                        stype = (block.get("input") or {}).get("subagent_type") or ""
+                        if not (stype.startswith(_REVIEWER_PREFIX) or stype == _REVIEWER_EXACT):
+                            continue
+                        events.append({
+                            "kind": "reviewer-spawn",
+                            "subagent_type": stype,
+                            "ts": rec_ts_str,
+                            "line_no": line_no,
+                        })
+
+            # --- Signal 2: hook denials (attachment records only) ---
+            if rec_type == "attachment":
+                att = rec.get("attachment") or {}
+                if att.get("type") != "hook_blocking_error":
+                    continue
+                raw_error = att.get("blockingError")
+                normalized = _normalize_blocking_error(raw_error)
+                hook_name = att.get("hookName") or ""
+                tool_use_id = att.get("toolUseID") or ""
+                if isinstance(normalized, dict):
+                    # Real transcripts nest the human-readable text in a "blockingError"
+                    # key alongside a "command" key; fall back to "message" then repr.
+                    message = (
+                        normalized.get("blockingError")
+                        or normalized.get("message")
+                        or str(normalized)
+                    )
+                else:
+                    message = str(normalized) if normalized else ""
+                events.append({
+                    "kind": "denial",
+                    "hook_name": hook_name,
+                    "tool_use_id": tool_use_id,
+                    "message": message,
+                    "ts": rec_ts_str,
+                    "line_no": line_no,
+                })
+
+        if not events:
+            continue
+
+        has_denial = any(e["kind"] == "denial" for e in events)
+        if deny_only and not has_denial:
+            continue
+
+        skill_count = sum(1 for e in events if e["kind"] == "skill")
+        denial_count = sum(1 for e in events if e["kind"] == "denial")
+        spawn_count = sum(1 for e in events if e["kind"] == "reviewer-spawn")
+
+        print(f"\n### {jsonl}")
+        print(
+            f"branch={session_branch}  model={fam}  skills={skill_count}"
+            f"  denials={denial_count}  reviewer-spawns={spawn_count}"
+        )
+        for evt in events:
+            ts_label = evt.get("ts") or "?"
+            lno = evt["line_no"]
+            kind = evt["kind"]
+            if kind == "skill":
+                print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}")
+            elif kind == "denial":
+                hook = evt['hook_name']
+                uid = evt['tool_use_id']
+                msg = evt['message']
+                print(f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  id={uid}  msg={msg!r}")
+            elif kind == "reviewer-spawn":
+                print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}")
 
 
 def cmd_subagent_mix(args: argparse.Namespace) -> None:
@@ -824,6 +1011,27 @@ def main() -> None:
     )
     p_gate.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
     p_gate.set_defaults(func=cmd_commit_gate)
+
+    p_review_trace = sub.add_parser(
+        "review-trace",
+        help=(
+            "Ordered review-event timeline per session: skill invocations, hook denials,"
+            " and reviewer-agent spawns."
+        ),
+    )
+    p_review_trace.add_argument("--projects", default="*", metavar="GLOB")
+    p_review_trace.add_argument("--branches", metavar="B1,B2,...")
+    p_review_trace.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
+    p_review_trace.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
+    p_review_trace.add_argument(
+        "--deny-only", action="store_true",
+        help="Restrict output to sessions that contain at least one hook denial.",
+    )
+    p_review_trace.add_argument(
+        "--skill", metavar="NAME",
+        help="Restrict skill-invocation matching to one skill name.",
+    )
+    p_review_trace.set_defaults(func=cmd_review_trace)
 
     parsed = parser.parse_args()
     parsed.func(parsed)
