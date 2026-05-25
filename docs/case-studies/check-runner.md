@@ -1,0 +1,77 @@
+# check-runner: charter scoping over command-pattern hardening
+
+*Part of the [claude-config case studies](../case-studies.md).*
+
+`check-runner` is a Haiku subagent that runs a project's check suite (test, lint, typecheck, build) and returns a structured per-command verdict. Because it runs arbitrary project commands, it needs constraints. Over one week in May 2026, five operational incidents each surfaced a way it could go wrong — and each time the obvious fix was a regex denying some command string. Each was instead resolved by *charter scoping*: narrowing what the agent is for, or removing the input that let it fail. A sixth finding — a measurement — then re-grounded why check-runner exists at all.
+
+This case study is the empirical record of those six findings. The design they produced, stated without the incident narrative, is [`design-decisions.md` §10](../design-decisions.md). The throughline: stacking command-pattern regexes is the compounding-defensive-layers tell the global `CLAUDE.md` flags as a wrong-foundation signal — every such layer exists to close a gap the previous layer left. The durable fix was always to change what the agent *is*, not to filter what it is handed.
+
+## Incident 1 — rogue investigation run (2026-05-14)
+
+A check-runner invocation iterated for ~90 minutes / ~120 tool calls, creating an unauthorized SQL migration and modifying production source in a downstream project while attempting to "fix" a failing test it was verifying. Three gaps enabled it: (a) `tools: Bash, Write` with no path scoping on Write, (b) prose that forbade *recommending* fixes but not *applying* them, (c) no turn cap.
+
+Resolved by three layers: (1) drop `Write` from tools — spool files flow through Bash redirect to `${TMPDIR:-/tmp}/`, and no other write is legitimate; (2) add `maxTurns: 20` — ~2× the expected turn count for a typical three-command dispatch, hard-stops runaway iteration; (3) add reviewer-style "You do not modify project files" prose + single-shot per-command protocol + require `timeout: 600000` on every Bash call.
+
+`check-runner-bash-guard.sh` was authored to deny `git` write subcommands and is verified correct, sourcing the 32-entry read-only allowlist from `_lib.sh` (`_lib_readonly_git_subcmds`), which is also consumed by `require-worktree-for-git-writes.sh`. However, agent-frontmatter `hooks:` does not fire when a subagent is spawned via the Agent tool (verified 2026-05-14 against Claude Code CLI). The script is kept as a reference implementation; wire via `settings.json` if a future invocation path supports agent-scoped hooks — but note that `settings.json` wiring fires globally for all sessions, not only check-runner.
+
+Non-git mutation vectors (`rm`/`mv`/stray redirects) are not separately fenced — `maxTurns` plus dropped `Write` plus prose are sufficient. Stacking pattern-regex for those would compound defensive layers without a foundational reason: every such layer exists because a prior layer left a gap, which is the tell that the foundation needs changing, not more hardening. Git mutations get a dedicated harness block because commits land in history and pushes can't be undone; `require-worktree-for-git-writes.sh` in `settings.json` covers worktree-required repos for all sessions including check-runner.
+
+## Incident 2 — wrong-directory database reset (2026-05-15)
+
+A check-runner dispatch included `supabase db reset` alongside `npm run verify`. check-runner ran the reset from the wrong worktree's directory — it applied a different worktree's migration set to the shared local Supabase DB, so the migration under test was never applied. `npm run verify` then failed with "Could not find the function … in the schema cache" — a PostgREST schema-cache miss that reads like a genuine test failure. The parent spent ~18 minutes of agent runtime plus a long diagnostic session tracing it to a wrong-directory reset.
+
+Two gaps: (a) `supabase db reset` is environment setup — directory-sensitive and shared-state-mutating — not a check, but check-runner's charter never excluded state-mutating or setup commands; (b) check-runner runs in its own subagent session with no guaranteed cwd; the dispatch passed a worktree only as vague prose, not an absolute path.
+
+Resolved with prose: (1) charter narrowed — check-runner explicitly refuses setup/state-mutating commands (`supabase db reset`, migration apply, `docker` lifecycle, DB seed, package installs) and reports each as `NOT RUN — out of charter` in the structured per-command verdict; (2) cwd anchoring — check-runner must `cd` to a parent-supplied absolute path as its first standalone Bash call and run all checks from there; if no path is given, it returns FAIL rather than guessing; (3) `CLAUDE.md` updated — dispatch prompt must now include the absolute working directory and must not enumerate setup commands.
+
+A hook was rejected for the same reason as in Incident 1: agent-frontmatter `hooks:` do not fire for Agent-spawned subagents, and a `settings.json` hook fires globally including the parent that legitimately runs `db reset`. The foundational fix is scoping the charter and anchoring the cwd — not pattern-matching on command strings.
+
+**`isolation: worktree` rejected.** A worktree-isolated subagent has a guaranteed cwd, which would dissolve the cwd-anchoring rule. It is still the wrong primitive: an `isolation: worktree` agent runs in a fresh `git worktree` checkout at a committed ref — it does not carry the parent's uncommitted working-tree changes, and a bare checkout has no installed dependencies, build artifacts, or local environment. check-runner exists to verify the parent's *current* working tree in its *prepared* environment; an isolated checkout would verify neither. It also would not have prevented this incident: the wrong-directory `supabase db reset` corrupted the shared local Supabase DB, which a git-worktree boundary does not isolate. The right fix is charter scoping plus cwd anchoring on a plain `Agent`, not filesystem isolation.
+
+## Incident 3 — invented sub-suite test counts (2026-05-15)
+
+A check-runner invocation of `npm run verify` in a consuming project returned invented per-suite test counts. Both numbers were wrong. `npm run verify` is one enumerated command from the agent's view but internally runs multiple sub-suites, each printing its own summary block in a different format. The agent (haiku model) free-form-summarized the full spool file, grabbed salient-looking numbers with no grounding in which runner emitted each line, and mislabeled them. The wrong counts were propagated into a PR body before discovery.
+
+The return contract never asks for test counts — it defines per-command exit code, pass/fail, failure excerpt, and spool path. Volunteering a per-sub-suite breakdown was outside the contract; haiku had no grounding procedure for doing it correctly.
+
+Resolved with prose — an umbrella-command-discipline paragraph: for any single enumerated command that internally runs multiple sub-suites, check-runner returns exactly one verdict entry (name, exit code, overall pass/fail) — no per-sub-suite breakdown, no test counts, no characterization of individual sub-results. The parent reads the spool file if counts are needed. A grounded count-extraction procedure was considered and rejected: runner formats differ across tools (test frameworks, hook scripts, build tools all emit different summary shapes); an umbrella command emits N summary blocks with no single canonical "count"; the result is still a haiku model extracting structured data from free-form text — compounding complexity. Consistent with the Incident 1 and Incident 2 stance of foundational scoping over layered heuristic hardening.
+
+## Incident 4 — verdict contamination from stale spool files (2026-05-16)
+
+check-runner writes command output to `${TMPDIR:-/tmp}/<slug>-<epoch-ms>.txt`. In environments with multiple sessions or worktrees — e.g., a shared developer machine running parallel Claude Code sessions — spool files accumulate across sessions. The slug component is stable across runs for a given command (`npm-run-verify`, `ruff-check`, etc.), so prior runs' spool files share the slug prefix. When the agent read the spool in a separate Bash call using a glob (`${TMPDIR:-/tmp}/<slug>-*.txt`), it matched all stale files from prior sessions. In one incident, ~85 stale files matched and produced a 67 MB read; the agent confabulated a verdict from the mixture rather than from the current run's output.
+
+Two contributing factors: (a) the procedure described two steps (run the command, then write/read the spool), opening a window for glob-based recovery to substitute stale content; (b) no prohibition on glob-based spool recovery existed.
+
+Resolved: (1) the per-command procedure now uses one self-contained Bash call that emits the spool path *before* the command runs, then redirects the command's output to the spool, captures the exit code, and emits a bounded `tail` — all in the same call. Emitting the path first ensures it survives a Bash-tool timeout kill: if the harness terminates the call mid-command, the pre-run echo has already landed in the call's output and the TIMEOUT verdict can reference the partial spool. (2) An explicit prohibition added: never locate a spool file by glob or `ls`; the only spool content included in the verdict is what the creating call emits inline.
+
+Consistent with Incidents 1–3: foundational scoping (one-call discipline + inline-output prohibition) over layered detection heuristics.
+
+## Incident 5 — count over-reporting recurs (2026-05-19)
+
+Incident 3's umbrella-command-discipline paragraph did not hold. A later `npm run verify` dispatch produced the same failure: the parent reported a per-sub-suite breakdown with test counts ("81 unit tests … 6 integration tests"), the unit count was too low, and the figures reached the user as verified fact. Incident 3's prose forbade check-runner from characterizing counts; the recurrence shows prose prohibition is the wrong instrument.
+
+The reason it cannot hold: check-runner's per-command wrapper ran `tail -50` on the spool *unconditionally* — on a passing run as well as a failing one. So on a green `npm run verify` the haiku agent's own context contained the sub-suites' summary lines (`Tests 81 passed`, etc.). The agent's job is to write a verdict from what it saw; a prohibition against repeating the most salient lines of its own input competes against the act of summarizing and loses. This is the compounding-defensive-layers tell again — Incidents 1 through 4 each added prose to one agent — now applied to Incident 3 itself: that incident called its prose fix "foundational scoping," but it was another prohibition layer.
+
+Resolved structurally, in two parts. (1) **Silent on success.** The wrapper's `tail` is now conditional on a non-zero exit. A passing command's verdict is its exit code; the agent never sees the sub-suite summary lines on a green run, so it cannot report a count it never read. (2) **Count-reporting relocated to the parent.** When the parent needs to tell the user how many tests passed or a per-type breakdown, it `grep`s the *full* spool file for the runner's own summary lines and quotes them verbatim — it does not take a number from the verdict or from memory.
+
+This is not the "grounded count-extraction procedure" Incident 3 considered and rejected. That rejected design had the haiku check-runner extract structured counts from free-form text. This moves extraction out of check-runner entirely: the agent reports only exit codes, and the parent — running a more capable model — does a `grep` over the whole spool. `grep` over the full file (not a 50-line tail) surfaces every sub-suite's own summary line regardless of interleaving, so the umbrella command's mixed output stops being an obstacle. No model summarizes anything; the parent quotes verbatim `grep` output. The accurate counts always existed in the spool — the fix is deterministic extraction from it, not model summarization of it.
+
+Consistent with Incidents 1–4: remove the count-bearing input from the agent's context (foundational) rather than add another prohibition (layered hardening).
+
+## Re-grounding: verdict quality, not context cost (2026-05-22)
+
+The five incidents above narrowed check-runner's *charter*. This final finding re-grounds its *justification*, after a measurement.
+
+check-runner redirects each command's output to a spool file and returns a short verdict, on the premise that running a suite *inline* — through the parent's own Bash tool — would dump the full output into the parent context, where it re-bills as a cache read on every later turn. A measurement of the local transcript corpus (2026-05-22) does not support that premise as a cost argument.
+
+The Claude Code harness already truncates Bash tool output at 30 KB (30,720 bytes): anything larger is replaced in context by a ~2 KB preview wrapped in a `<persisted-output>` marker, with the full output written to a `tool-results/` file the model does not auto-read. So an inline heavy run costs the parent ~2 KB of context, not the hundreds of thousands of tokens the suite actually printed — and across the corpus no large inline test result was followed by a compaction (compaction is driven by cumulative context pressure, not by one tool result). The context flood check-runner appears to prevent is already prevented by the platform. The common case is smaller still: most inline test runs print well under 30 KB and sit in context whole, a median of roughly 100 tokens — which check-runner's ~200-token verdict does not undercut. Neither regime is a context-cost win; the difference is cents per run.
+
+What check-runner still does that the harness truncation does not: the harness preview is the *first* 2 KB of output — for a test run, the startup banner, not the failures, which land at the end — and learning pass/fail from it takes a follow-up `Read` or `grep` of the persisted file at the parent's model rate. check-runner returns a *curated* verdict — per-command pass/fail plus the failure *tail* — and handles the output on haiku. The decision: keep check-runner, justified as a signal-quality and verdict-ergonomics tool. Framing it as a token-cost optimization is not supported by the data.
+
+## Sources
+
+- **`claude/.claude/agents/check-runner.md`** — the agent definition: `tools: Bash` only, `maxTurns: 20`, the checks-only charter, the cwd-anchoring rule, and the one-call-per-command spool protocol.
+- **`claude/.claude/hooks/check-runner-bash-guard.sh`** and **`_lib.sh`** (`_lib_readonly_git_subcmds`) — the reference-implementation git-write guard and its shared 32-entry read-only allowlist; not wired, because agent-frontmatter `hooks:` do not fire for Agent-spawned subagents.
+- **`claude/.claude/CLAUDE.md`** "Heavy command output" — the dispatch contract: the parent must pass an absolute working directory and must not enumerate setup commands.
+- Claude Code Bash-tool output truncation at 30 KB, with overflow persisted to a `tool-results/` file and a ~2 KB `<persisted-output>` preview returned in context — observed harness behavior, measured 2026-05-22; subject to change across Claude Code versions.
+- Transcript-corpus measurement — inline test-run output sizes, 30 KB-truncation incidence, and the absence of any large-result-to-compaction correlation; ad hoc scans of the local session JSONL logs, complementing `claude/.claude/scripts/transcript-analysis.py`.
