@@ -197,4 +197,4 @@ Avoid these when writing new tests:
 | Over-mocking (test encodes implementation, not behavior) | Mock only direct dependencies; let integration tests cover wiring |
 | Mocking third-party internals (library's private API) | Use the library's test utilities or mock at your own abstraction boundary |
 | Testing the test double (asserting stub's own return value) | Assert on values the code computed or transformed |
-| Stub or vacuous assertion when blocked by credentials/env/external state | Surface the blocker explicitly (PR description, comment on the test, or chat message) and test what you *can* — input validation, error shaping, request payload construction, response decoding. Use the framework's skip/todo marker for the parts that genuinely need the blocked dependency; never commit an always-passing assertion as a placeholder. |
+| Stub or vacuous assertion when blocked by credentials/env/external state | Surface the blocker; test what you *can*; use skip/todo for the rest. |
