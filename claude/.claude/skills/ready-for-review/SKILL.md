@@ -150,6 +150,7 @@ Steps 3 and 4 may have produced new commits or body edits. Reconfirm:
   the user does not need to re-authorize the push. After pushing,
   re-verify the branch is no longer ahead.
 - PR body edit (if any) landed — re-fetch with `gh pr view` and confirm.
+- Branch is not behind the base branch — if steps 3–5 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
 
 ## 7. CI status (warn only)
 
@@ -190,8 +191,7 @@ Removes only this session's file. If the skill errors before reaching this step,
 
 ## Completion
 
-Summarize for the user, then (and only then) signal that the branch
-is ready for human review:
+Summarize for the user, then (and only then) signal that the branch is ready for human review:
 
 - Verification: commands run and their results.
 - Code review: findings fixed, or "none."
