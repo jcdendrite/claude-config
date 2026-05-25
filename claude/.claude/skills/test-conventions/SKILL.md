@@ -189,7 +189,6 @@ If an assertion checks a value that was set up directly in the test double rathe
 ## 9. Common authoring mistakes
 
 Avoid these when writing new tests:
-
 | Mistake | Fix |
 |---|---|
 | Assertion-free tests (code runs but nothing is asserted) | Every test must assert on a specific expected outcome |
@@ -198,3 +197,4 @@ Avoid these when writing new tests:
 | Over-mocking (test encodes implementation, not behavior) | Mock only direct dependencies; let integration tests cover wiring |
 | Mocking third-party internals (library's private API) | Use the library's test utilities or mock at your own abstraction boundary |
 | Testing the test double (asserting stub's own return value) | Assert on values the code computed or transformed |
+| Stub or vacuous assertion when blocked by credentials/env/external state | Surface the blocker explicitly (PR description, comment on the test, or chat message) and test what you *can* — input validation, error shaping, request payload construction, response decoding. Use the framework's skip/todo marker for the parts that genuinely need the blocked dependency; never commit an always-passing assertion as a placeholder. |
