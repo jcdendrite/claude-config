@@ -115,6 +115,8 @@ Propose an updated body and apply with `gh pr edit <n> --body`. Keep
 the project's template structure intact — refresh content inside
 existing sections, don't restructure.
 
+**Coordination-step preservation.** Before applying `gh pr edit <n> --body`, enumerate every action item the existing body carries — coordination steps, pre-deploy commands, manual external-system setup, sync workflows. For each, give it an explicit disposition: survive into the new body, answer-and-strip (Claude resolved it — see the "Reviewer-action items Claude can answer itself" bullet above), or strip-as-stale (no longer applies — see the "Stale prose" bullet above). Deliberate removal is fine; silent loss during a wholesale restructure is the failure mode.
+
 **Backtick hygiene.** When constructing the new body via
 `gh pr edit <n> --body "$(cat <<'EOF' … EOF )"`, write backticks
 literally inside the heredoc. Do NOT write `\``. The single-quoted
@@ -148,8 +150,6 @@ Steps 3 and 4 may have produced new commits or body edits. Reconfirm:
   the user does not need to re-authorize the push. After pushing,
   re-verify the branch is no longer ahead.
 - PR body edit (if any) landed — re-fetch with `gh pr view` and confirm.
-
-Confirm PR #N (created in step 5 if newly opened) is up to date with the branch HEAD.
 
 ## 7. CI status (warn only)
 
