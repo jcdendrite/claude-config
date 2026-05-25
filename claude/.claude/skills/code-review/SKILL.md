@@ -219,6 +219,13 @@ The Change type column keys on what the change *does* for an operator or consume
 | Changes runtime config (env vars, secrets, feature flags) | `staff-platform-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
 | Reshapes reviewer ownership (substantive edits to plan-review/code-review skill routing tables, or scope language in `agents/*.md`) | Spawn every persona named in the pre- or post-edit table — each evaluates whether their row (or its removal) is accurate, scoped, and not bleeding into another lane. The pre/post union ensures a row deletion still spawns the affected persona. For an `agents/*.md` edit, spawn the edited persona plus their Item-ownership co-owners. Skip whitespace / typo / copy-edit-only diffs. |
 
+**Invalid skip rationales.** These look like the DEFER criteria below but apply to a different decision — the spawn-dispatch step, not the finding-disposition step. Do not use them to skip a matched row:
+
+- **"Prior reviewer covered this."** — Prior spawns covered prior diffs; the current `/code-review` runs against the current staged diff. If prior findings are still relevant, pass them to the new spawn as prior context — do not substitute for the spawn.
+- **"Self-review sufficient."** — The orchestrator's self-review supplements specialist depth — it does not replace it.
+- **"Verified inline."** — Inline orchestrator verification is the generalist read the spawn exists to escalate from, not a substitute for specialist scrutiny.
+- **"New helper, not a modification."** — `Modifies shared utilities` covers additions to and extensions of the shared module that introduce new caller dependencies — not only edits to existing utility files.
+
 Report every matched row's verdict via the **Spawn decisions:** line in the *Output format* section above. Empty rationale is the under-spawn failure mode the format closes — write the read, don't omit it.
 
 When you do spawn a specialist, be specific. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer` and ask it to verify the checkout flow in CheckoutPage.tsx still enforces ownership after the new validation" is actionable.

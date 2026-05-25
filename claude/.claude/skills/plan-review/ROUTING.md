@@ -17,6 +17,13 @@ The criteria below stay — but are reframed as *reasons a matched row is non-ne
 - **Convergence-as-design-tell** from a prior round (see Reconciliation).
 - **Explicit user request.**
 
+**Invalid skip rationales.** These look like finding-disposition DEFER criteria but are not valid reasons to skip spawning a matched reviewer at the spawn-dispatch step. Do not use them to skip a matched reviewer:
+
+- **"Prior reviewer covered this."** — Prior review rounds covered prior plan versions; the current `/plan-review` runs against the current plan. If prior findings are still relevant, pass them to the new spawn as prior context — do not substitute for the spawn.
+- **"Self-review sufficient."** — The orchestrator's self-review supplements specialist depth — it does not replace it.
+- **"Verified inline."** — Inline orchestrator verification is the generalist read the spawn exists to escalate from, not a substitute for specialist scrutiny.
+- **"New helper, not a modification."** — A plan introducing a new shared utility that creates new caller dependencies falls within the `Modifies shared utilities` criterion — not only plans that modify existing utilities.
+
 Always spawn `ciso-reviewer` when the plan touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the Step 4 user-surface declaration puts the change outside `ciso-reviewer`'s threat model (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. The ciso-reviewer rule is one instance of the general default-fire pattern above, not the exception. Always spawn `staff-product-engineer` when the plan changes any end-user-visible surface: user interface, transactional or lifecycle email, push notification, SMS, in-app notification, billing artifact, exported file, webhook payload to a customer integration, OAuth consent screen, embedded widget or iframe surface, or end-user-visible log/audit entry. The trigger fires on the *channel*, not on the file-path domain. Indirect channel effects count: a data or logic change that determines which channel fires or what it contains (a new user-status enum value that triggers a different lifecycle email, a field added to a user record that an existing template reads) changes user-facing behavior even when the plan touches no channel template file.
 
 Spawn per question (not per file-path domain) — "plan touches backend" isn't enough; the question needs a specific shape.
