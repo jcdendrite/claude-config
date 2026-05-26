@@ -152,6 +152,8 @@ flowchart LR
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
 | `cleanup-session-id.sh` | — (SessionEnd, no gate) | Removes the session-id lookup file its paired SessionStart hook wrote |
+| `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit, advisory) | Injects a one-shot context reminder when estimated carried tokens exceed 120k; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
+| `cleanup-handoff-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session handoff-nudge marker files written by its paired UserPromptSubmit hook |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>` so the agent can offer to invoke `/git-feature-branch-sync` |
 
 See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all hooks, skills, scripts, and project-scoped plugins, see [`docs/hooks.md`](docs/hooks.md), [`docs/skills.md`](docs/skills.md), and [`docs/scripts.md`](docs/scripts.md).
