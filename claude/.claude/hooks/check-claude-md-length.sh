@@ -1,17 +1,21 @@
 #!/bin/bash
-# Gate: block git commit when a staged SKILL.md grows past its per-skill ceiling.
+set -uo pipefail
+# Gate: block git commit when a staged CLAUDE.md or AGENTS.md grows past its limit.
 #
 # Policy: deny when the staged file is over its limit AND longer than the
 # previously committed version. This allows reducing an already-over-limit
 # file commit by commit without blocking the work, while still catching new
 # bloat.
 #
-# Default limit is 200 lines. Structural-dispatcher skills (code-review,
-# plan-review) carry item-ownership / routing tables that legitimately run
-# longer and are capped at Anthropic's documented 500-line ceiling instead.
-# Plugin-scoped skills (plugins/*/skills/) currently have no override path
-# and all fall to the 200-line default — extend limit_for() if a plugin
-# skill earns the same exception.
+# Fail posture: fail-open — tool absence (jq missing, not in a git repo) and
+# parse errors allow the commit through. This gate enforces a style rule, not
+# a security boundary.
+#
+# Default limit is 200 lines, matching the Anthropic-documented threshold for
+# CLAUDE.md/AGENTS.md files (Claude Code — memory: "Longer files consume more
+# context and reduce adherence"). No per-file overrides exist today; the case
+# structure is kept so future exceptions can slot in without touching the
+# surrounding logic.
 #
 # The "if" field in settings.json is unreliable — the internal grep is the
 # actual gate. See require-code-review.sh for the same pattern and rationale.
@@ -27,11 +31,9 @@ fi
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 [ -z "$REPO_ROOT" ] && exit 0
 
-# Per-skill limit override. Listed paths are repo-root-relative.
+# Per-file limit override. Listed paths are repo-root-relative.
 limit_for() {
   case "$1" in
-    claude/.claude/skills/code-review/SKILL.md|claude/.claude/skills/plan-review/SKILL.md)
-      echo 500 ;;
     *)
       echo 200 ;;
   esac
@@ -47,13 +49,13 @@ while IFS= read -r f; do
     MESSAGES="${MESSAGES}  $f: $new lines (was $old, limit $limit)\n"
     FAIL=1
   fi
-# Path prefixes are repo-root-relative for this repo's layout.
-# Covers both stowed skills (claude/.claude/skills/) and project-scoped plugins (plugins/*/skills/).
-# In other repos this grep matches nothing and the hook exits 0 silently.
-done < <(git diff --cached --name-only | grep -E '(claude/.claude/skills/|plugins/[^/]+/skills/).+/SKILL\.md')
+# Matches CLAUDE.md and AGENTS.md at the repo root, inside any .claude/ directory,
+# or at any depth inside a .claude/ directory. Does NOT match files in arbitrary
+# subdirectories (e.g. foo/CLAUDE.md) — only root-level and .claude/-scoped files.
+done < <(git diff --cached --name-only 2>/dev/null | grep -E '^(CLAUDE\.md|AGENTS\.md|(.*/)?\.claude/(CLAUDE|AGENTS)\.md)$')
 
 if [ "$FAIL" -eq 1 ]; then
-  REASON=$(printf 'Skill length gate: one or more SKILL.md files grew past their per-skill limit. Reduce to the limit or fewer lines before committing:\n%b' "$MESSAGES")
+  REASON=$(printf 'CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. Reduce to the limit or fewer lines before committing:\n%b' "$MESSAGES")
   REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
 fi
