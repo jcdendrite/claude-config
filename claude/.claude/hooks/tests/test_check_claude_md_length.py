@@ -5,7 +5,6 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
