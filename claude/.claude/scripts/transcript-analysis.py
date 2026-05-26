@@ -1353,6 +1353,318 @@ def _print_nudge_log_diagnostic() -> None:
         print("  The field paths in nudge-handoff-near-context-cap.sh may need updating.")
 
 
+def _count_read_file_paths(content: list) -> int:
+    """Count distinct file_path values across Read tool_use blocks in a turn's content.
+
+    Only Read blocks are counted — Grep/Glob/Bash are intentionally excluded (conservative
+    undercount). Returns 0 if there are no Read blocks.
+    """
+    file_paths: set[str] = set()
+    for block in content:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "tool_use"
+            and block.get("name") == "Read"
+        ):
+            fp = (block.get("input") or {}).get("file_path")
+            if fp:
+                file_paths.add(fp)
+    return len(file_paths)
+
+
+def _d1_bucket(file_count: int) -> str:
+    """Map a Read file-path count to the D1 histogram bucket label."""
+    if file_count == 0:
+        return "0"
+    if file_count == 1:
+        return "1"
+    if file_count <= 3:
+        return "2-3"
+    if file_count <= 7:
+        return "4-7"
+    return "8+"
+
+
+def _d2_bucket(streak_len: int) -> str:
+    """Map a code-read streak length to the D2 histogram bucket label."""
+    if streak_len == 1:
+        return "1"
+    if streak_len == 2:
+        return "2"
+    if streak_len <= 5:
+        return "3-5"
+    if streak_len <= 10:
+        return "6-10"
+    return "11+"
+
+
+_D1_BUCKETS: tuple[str, ...] = ("0", "1", "2-3", "4-7", "8+")
+_D2_BUCKETS: tuple[str, ...] = ("1", "2", "3-5", "6-10", "11+")
+_D3_CASES: tuple[str, ...] = ("inline-edit", "dispatched", "neither")
+
+# Buckets / cases that satisfy the dispatchable criterion for the summary line
+_D1_DISPATCHABLE_BUCKETS: frozenset[str] = frozenset({"2-3", "4-7", "8+"})
+_D3_DISPATCHABLE_CASES: frozenset[str] = frozenset({"dispatched", "neither"})
+
+
+def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
+    """Turn-shape distributions for Opus code-read turns: files-Read per turn (D1),
+    code-read streak lengths (D2), and read-then-edit ratio (D3).
+
+    Only code-read and code-write turns outside judgment spans are analysed. The
+    judgment-span state machine is intentionally duplicated from cmd_audit_routing —
+    tests cross-validate the two copies to guard against drift.
+    """
+    projects_glob = _projects_glob(args)
+
+    since_ts: float | None = None
+    since_label: str = ""
+    since_raw: str | None = getattr(args, "since", None) or None
+    if since_raw:
+        try:
+            days = float(since_raw.rstrip("d"))
+            since_ts = time.time() - days * 86400
+            since_label = since_raw
+        except ValueError:
+            print(f"audit-routing-shape: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
+            sys.exit(1)
+
+    # D1: file-count bucket → {turns, out}
+    d1_turns: dict[str, int] = {b: 0 for b in _D1_BUCKETS}
+    d1_out: dict[str, int] = {b: 0 for b in _D1_BUCKETS}
+
+    # D2: streak-length bucket → {streak_count, out}
+    d2_streaks: dict[str, int] = {b: 0 for b in _D2_BUCKETS}
+    d2_out: dict[str, int] = {b: 0 for b in _D2_BUCKETS}
+
+    # D3: case → {turns, out}
+    d3_turns: dict[str, int] = {c: 0 for c in _D3_CASES}
+    d3_out: dict[str, int] = {c: 0 for c in _D3_CASES}
+
+    # D3 cross-tab: (case, d1_bucket) → {turns, out}
+    d3_xtab_turns: dict[tuple[str, str], int] = {
+        (case, bkt): 0 for case in _D3_CASES for bkt in _D1_BUCKETS
+    }
+    d3_xtab_out: dict[tuple[str, str], int] = {
+        (case, bkt): 0 for case in _D3_CASES for bkt in _D1_BUCKETS
+    }
+
+    # Per-turn records collected per session. Each entry:
+    #   class      — routing class string (or "user" for user-turn separators)
+    #   out        — output_tokens; 0 for user-turn separators and non-qualifying Opus turns
+    #   d1_bucket  — D1 file-count bucket (empty string for non-code-read turns)
+    # code-read turns are qualifying entries that feed D1/D2/D3. All Opus-with-usage turns
+    # plus user-turn separators are recorded so D2 streaks and D3 lookahead work correctly.
+    # User-turn separators break D2 streaks but are skipped in D3's 3-turn Opus window.
+
+    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+        session_turns: list[dict] = []
+
+        # Judgment span state machine — duplicated from cmd_audit_routing intentionally.
+        in_judgment_span: bool = False
+        plan_mode_active: bool = False
+
+        for rec in records:
+            rtype = rec.get("type", "")
+            msg = rec.get("message") or {}
+
+            if rtype in ("user", "human"):
+                in_judgment_span = False
+                content_text = _content_text(msg.get("content", ""))
+                if "Plan mode is active" in content_text:
+                    plan_mode_active = True
+                # User turns act as streak breakers for D2 (recorded as spacers; out=0 so
+                # D3 lookahead does not count them against the 3-Opus-turn window).
+                session_turns.append({"class": "user", "out": 0, "d1_bucket": ""})
+                continue
+
+            if rtype != "assistant":
+                continue
+
+            model = msg.get("model", "")
+            if _fam(model) != "opus":
+                # Still check for ExitPlanMode in non-Opus turns
+                content = msg.get("content") or []
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        and block.get("name") == "ExitPlanMode"
+                    ):
+                        plan_mode_active = False
+                continue
+
+            usage = msg.get("usage")
+            if not usage:
+                continue
+
+            if since_ts is not None:
+                rec_ts = _parse_ts(rec.get("timestamp"))
+                if rec_ts is None or rec_ts < since_ts:
+                    continue
+
+            content = msg.get("content") or []
+            out_tokens: int = usage.get("output_tokens", 0)
+
+            # Open judgment span before classification (same logic as cmd_audit_routing)
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == "Skill"
+                    and (block.get("input") or {}).get("skill") in AUDIT_JUDGMENT_SKILLS
+                ):
+                    in_judgment_span = True
+                    break
+
+            turn_class = _classify_opus_turn(content, in_judgment_span, plan_mode_active)
+
+            # ExitPlanMode clears plan-mode for next turn
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == "ExitPlanMode"
+                ):
+                    plan_mode_active = False
+                    break
+
+            # code-read turns outside judgment spans qualify for D1/D2/D3 distributions.
+            # code-write turns outside judgment spans are recorded so the D3 inline-edit
+            # case can be detected in the lookahead window.
+            # All other Opus-with-usage turns are recorded as spacers so D3 lookahead
+            # correctly counts them against the 3-turn window.
+            if turn_class == "code-read":
+                file_count = _count_read_file_paths(content)
+                bucket = _d1_bucket(file_count)
+                session_turns.append({
+                    "class": "code-read",
+                    "out": out_tokens,
+                    "d1_bucket": bucket,
+                })
+                d1_turns[bucket] += 1
+                d1_out[bucket] += out_tokens
+            else:
+                session_turns.append({
+                    "class": turn_class,
+                    "out": out_tokens,
+                    "d1_bucket": "",
+                })
+
+        # --- D2: streak analysis within this session ---
+        # A streak is a maximal consecutive run of code-read turns (no non-code-read
+        # Opus turn in between, per the recorded session_turns sequence).
+        current_streak_len: int = 0
+        current_streak_out: int = 0
+        for turn in session_turns:
+            if turn["class"] == "code-read":
+                current_streak_len += 1
+                current_streak_out += turn["out"]
+            else:
+                if current_streak_len > 0:
+                    bkt = _d2_bucket(current_streak_len)
+                    d2_streaks[bkt] += 1
+                    d2_out[bkt] += current_streak_out
+                current_streak_len = 0
+                current_streak_out = 0
+        # Flush trailing streak
+        if current_streak_len > 0:
+            bkt = _d2_bucket(current_streak_len)
+            d2_streaks[bkt] += 1
+            d2_out[bkt] += current_streak_out
+
+        # --- D3: read-then-edit lookahead within this session ---
+        # For each code-read turn, look ahead up to 3 Opus turns with usage.
+        # User-turn separator entries (class="user", out=0) are skipped in the
+        # lookahead count — they are not Opus turns with usage.
+        for idx, turn in enumerate(session_turns):
+            if turn["class"] != "code-read":
+                continue
+            lookahead_count = 0
+            d3_case = "neither"
+            for j in range(idx + 1, len(session_turns)):
+                next_turn = session_turns[j]
+                if next_turn["class"] == "user":
+                    # Not an Opus turn with usage — skip without consuming the 3-turn budget.
+                    # A user turn between a code-read and a code-write does not weaken the
+                    # causal link; only Opus turns count against the lookahead window.
+                    continue
+                lookahead_count += 1
+                if lookahead_count > 3:
+                    break
+                if next_turn["class"] == "code-write":
+                    d3_case = "inline-edit"
+                    break
+                if next_turn["class"] == "orchestration":
+                    d3_case = "dispatched"
+                    break
+
+            d3_turns[d3_case] += 1
+            d3_out[d3_case] += turn["out"]
+            d3_xtab_turns[(d3_case, turn["d1_bucket"])] += 1
+            d3_xtab_out[(d3_case, turn["d1_bucket"])] += turn["out"]
+
+    # --- Dispatchable share summary ---
+    # A code-read turn is dispatchable via D1 (file-count bucket 2-3, 4-7, or 8+) or
+    # D3 (case dispatched or neither). Their union is computed via the D3 cross-tab.
+    # D2 streak data is shown separately above as a complementary view.
+    total_code_read_out = sum(d1_out.values())
+    d1_dispatch_out = sum(d1_out[b] for b in _D1_DISPATCHABLE_BUCKETS)
+    d3_dispatch_out = sum(d3_out[c] for c in _D3_DISPATCHABLE_CASES)
+    # Intersection of D1 and D3 dispatchable (via cross-tab)
+    d1_and_d3_dispatch_out = sum(
+        d3_xtab_out[(c, b)]
+        for c in _D3_DISPATCHABLE_CASES
+        for b in _D1_DISPATCHABLE_BUCKETS
+    )
+    union_dispatch_out = d1_dispatch_out + d3_dispatch_out - d1_and_d3_dispatch_out
+    dispatch_pct = f"{100 * union_dispatch_out / total_code_read_out:.0f}%" if total_code_read_out else "—"
+
+    # --- Emit output ---
+    title_since = f"last {since_label}" if since_label else "all time"
+    print(f"\n## Opus code-read turn-shape distributions ({title_since})\n")
+
+    # D1
+    print("### D1 — Files Read per turn (code-read turns, outside judgment spans)\n")
+    d1_header = f"{'Bucket':<8} {'Turns':>8} {'Output tokens':>15}"
+    print(d1_header)
+    print("─" * len(d1_header))
+    for bkt in _D1_BUCKETS:
+        print(f"{bkt:<8} {d1_turns[bkt]:>8,} {d1_out[bkt]:>15,}")
+
+    # D2
+    print("\n### D2 — Code-read streak length\n")
+    d2_header = f"{'Bucket':<8} {'Streaks':>8} {'Output tokens':>15}"
+    print(d2_header)
+    print("─" * len(d2_header))
+    for bkt in _D2_BUCKETS:
+        print(f"{bkt:<8} {d2_streaks[bkt]:>8,} {d2_out[bkt]:>15,}")
+
+    # D3
+    print("\n### D3 — Read-then-edit ratio (lookahead up to 3 Opus turns)\n")
+    d3_header = f"{'Case':<14} {'Turns':>8} {'Output tokens':>15}"
+    print(d3_header)
+    print("─" * len(d3_header))
+    for case in _D3_CASES:
+        print(f"{case:<14} {d3_turns[case]:>8,} {d3_out[case]:>15,}")
+
+    print("\n#### D3 × D1 cross-tab\n")
+    d3x_header = f"{'Case':<14} {'D1 bucket':<10} {'Turns':>8} {'Output tokens':>15}"
+    print(d3x_header)
+    print("─" * len(d3x_header))
+    for case in _D3_CASES:
+        for bkt in _D1_BUCKETS:
+            turns_val = d3_xtab_turns[(case, bkt)]
+            out_val = d3_xtab_out[(case, bkt)]
+            if turns_val > 0:
+                print(f"{case:<14} {bkt:<10} {turns_val:>8,} {out_val:>15,}")
+
+    print(
+        f"\nDispatchable share: {dispatch_pct} of code-read output tokens"
+        " (D1≥2 OR D3-neither/dispatched; D2-streak≥3 shown separately above)"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Claude Code transcript analysis toolkit.")
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -1499,6 +1811,20 @@ def main() -> None:
         help="Print candidate compaction records for inspection (useful when schema is uncertain).",
     )
     p_handoff_ratio.set_defaults(func=cmd_handoff_ratio)
+
+    p_audit_shape = sub.add_parser(
+        "audit-routing-shape",
+        help=(
+            "Turn-shape distributions for Opus code-read turns: files-Read per turn (D1),"
+            " code-read streak lengths (D2), and read-then-edit ratio (D3)."
+        ),
+    )
+    p_audit_shape.add_argument("--projects", default="*", metavar="GLOB")
+    p_audit_shape.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_audit_shape.set_defaults(func=cmd_audit_routing_shape)
 
     parsed = parser.parse_args()
     parsed.func(parsed)
