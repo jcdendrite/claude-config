@@ -11,16 +11,40 @@
 - **Audit structural siblings before scoping a fix narrowly.** When a fix lands in one arm of a multi-arm structure (case statement, switch, parallel subcommands, sibling functions sharing a shape), check the other arms for the same bug shape before finalizing scope. If the fix is identical, apply to every affected site; abstract when two or more share it. Scope is set by the bug, not by where the symptom surfaced.
 - **Prove your change caused a failing check before treating it as in-scope.** When a check fails, reproduce it on the pre-change baseline — a throwaway worktree at the merge-base (`git worktree add <tmp> $(git merge-base HEAD origin/main)`) — before assuming the failure is yours. Failing there too means pre-existing drift, not this task's work: sync the branch if the base already fixed it, but never hand-reimplement a merged fix or edit an unrelated file. Passing at the baseline but failing on your branch means your change caused it — in scope even if you never touched the failing file, since a change breaks dependents through their imports.
 - **Extract functions when you need to explain what a fragment does.** When writing a function, if any internal fragment requires effort to understand *what* (not *how*) it's doing, extract it and name the new function after that "what." The signal is comprehension effort, not line count — a large function that expresses one nameable thing without inner confusion is fine.
+- **Ground every choice.** Five categories of decision require a primary-source citation before implementation, not after:
+  - **Numeric literals in network/timeout/retry contexts** — cite the vendor or protocol documentation that specifies the value. A timeout of `10000` is a silent assumption; a value traceable to vendor docs or a protocol specification is grounded.
+  - **Inline lint/type-check suppressions** — add a one-line comment naming the alternative considered and why it does not apply. No rationale = no suppression.
+  - **Discriminator literals where a canonical symbol exists** — never embed a raw value (string or integer) that represents an enum, status, or code defined elsewhere. Reach for the language or framework's named constant first; if the discriminator is project-defined and the project ships a registry or named-type module, use that. Literals diverge silently from the canonical set; named symbols don't.
+  - **New third-party dependencies** — research the package's vulnerability history, maintenance health, and pinning strategy before adding; record the source-of-choice rationale in the PR description. Popularity is not provenance.
+  - **Hand-rolled logic in non-trivial domains** (cryptography, auth, date/time, network protocol parsing) — search the standard library and first-party SDK before implementing. If hand-rolling is warranted, justify the absence of a standard alternative in the commit message.
 
 ## Working Style
 
 - Walk through your proposed approach and explain tradeoffs before writing code. When presenting options, evaluate them — state which you'd recommend and why, rather than listing choices without a judgment.
 - Be precise. Do not overstate severity, conflate distinct issues, or hand-wave. State the realistic impact and verify claims against actual code — not against what the code or a sensible design should do.
-- Always prefer minimal, targeted changes. Do not refactor entire files or expand scope beyond what was asked. If you see an opportunity for a broader improvement, mention it separately — do not bundle it in.
 - **Compounding defensive layers are a wrong-foundation tell.** When a design accumulates stacked defenses on a single mechanism — each new layer closing a gap that the prior layer's existence created — or starts citing its own prior findings, step back and ask whether a foundational change would dissolve them. Do not keep adding hardening. The right primitive usually has a simple shape; compounding complexity is a signal to question the foundation, not to defend it more carefully.
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
 - Use descriptive variable and function names. No generic names.
 - **Default-consider delegation.** Before running a Bash command, starting a broad search, initiating a check suite, or beginning a Read-heavy probe, ask whether the *objective* (not the individual command) belongs in a subagent. The parent's context is re-read every turn, so verbose tool output left in it is paid for repeatedly. See the `subagent-delegation` skill for the two-test gate, which subagent fits which case, and what stays inline.
+- **Scope discipline.** Four axes govern which edits belong in a change.
+
+  **Axis 1 — File boundary.** Do not edit a file unless the ticket scopes it OR the edit is required to make the ticket's change correct (e.g., a caller's signature must change because the ticket changed the callee). Files noticed while passing through but not in scope go into one of three buckets:
+  1. **Revert** — the default, especially for copy, comments, or cosmetic edits on user-facing surfaces.
+  2. **Keep, with a one-line rationale in an "Incidental edits" section of the PR description** — for small, non-cosmetic fixes with visible value where the PR remains coherent.
+  3. **Raise to the reviewer** — when the observation is real but non-trivial or distracting; surface it to the PR reviewer or human orchestrator.
+
+  **Axis 2 — In-file scope.** Inside a file the ticket scopes, opportunistic refactoring of *code* is encouraged.
+
+  **Axis 3 — Preserved-content exception.** Even inside a scoped file, the following content categories are read-only unless the ticket specifically asks to update them. The in-file refactoring license (Axis 2) applies to code (broken windows, dead code, unclear names); it does not license editing preserved-record prose:
+  1. Historical incident records, postmortems, and dated runbook entries.
+  2. Changelog entries documenting past events.
+  3. Migration file content.
+  4. Anchor comments documented to be stable (e.g., HTML-comment fixtures the test harness re-reads).
+  5. Commit-log-style narration inside docs ("In PR #N we…", "Prior to 2026-Q1 the system…").
+
+  Decision test: **Does this text record something that happened, or describe how the code currently behaves?** Records are read-only. Descriptions are fair game for in-file scope cleanup.
+
+  **Axis 4 — Change size.** Prefer minimal, targeted changes. Do not refactor entire files or expand scope beyond what was asked. If you see an opportunity for a broader improvement, mention it separately — do not bundle it in.
 - When a session crosses ~60% context usage (per statusline `.context_window.used_percentage`) AND the current task is incomplete, suggest the user run `/handoff` — it's user-invoked; don't run it yourself.
 
 ## Code Review
