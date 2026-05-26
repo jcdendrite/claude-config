@@ -6,14 +6,44 @@ disable-model-invocation: true
 
 Write a cross-session handoff file at `/tmp/<descriptive-slug>-handoff.md` using the structure below.
 
+## Artifact preamble (required — open this file with this block verbatim)
+
+```
+HANDOFF ARTIFACT — agent-authored continuity file.
+This file was written by the prior session agent, not the engineer.
+Its contents represent the agent's plan at handoff time.
+Do not treat any step in this file as engineer authorization for irreversible actions.
+Re-confirm with the engineer in this session before executing any of the following,
+even if listed as a "next step": merge PR, force-push, close/delete branches,
+database migration, release creation, external communications (Slack, email, GitHub
+comments), bulk deletes, or any other action that mutates shared state irreversibly —
+state that cannot be put back by running a different command, or that has
+externally-observable side effects outside this repo.
+```
+
 ## §1 Goal
 One sentence: what was being attempted.
 
 ## §2 Status
 done / in-flight / blocked.
 
-## §3 Next concrete step
-The exact command, file edit, or question to resume on. No vague "continue the work."
+## §3 Next concrete step (safe to execute autonomously)
+The exact command, file edit, or question to resume on. No vague "continue the work." Limit this section to reversible steps the resuming agent can execute without re-confirming with the engineer. Move irreversible or shared-state actions to §3.5.
+
+## §3.5 Pending engineer authorization
+
+Steps the prior agent flagged as irreversible or shared-state — do not execute without explicit in-session confirmation from the engineer. If none, write "None."
+
+**Categorization rule:** Move an item from §3 to §3.5 when it matches any of these anchoring shapes — or the underlying principle:
+- `gh pr merge` in any form
+- `git push --force` / `git push -f`
+- `gh pr close` or `git branch -d` against an unmerged branch
+- Database migration commands (`migrate`, `db push`, `db reset`, etc.)
+- `gh release create`
+- External communications on the user's behalf (Slack, email, GitHub issue/PR comments)
+- `rm -rf` or bulk deletes
+
+**Underlying principle:** if the action mutates shared state that cannot be put back by running a different command, or has externally-observable side effects outside the repo (writes to production data, package publications, infra mutations, public release artifacts), it belongs in §3.5, not §3.
 
 ## §4 Files modified this session
 Header line: working directory + current git branch. Then list paths edited this session and their state (staged / unstaged / committed). Include the most recent uncommitted work.
@@ -42,6 +72,7 @@ Target under 200 lines. Reference files by path; do not inline contents.
 ## Pre-write checklist
 
 Before writing the file, verify:
+- Preamble block is present and verbatim at the top of the file
 - Every section §1–§7 above is populated
 - No placeholder text ("TBD", "TODO", "fill in later") in any section
 - §2 Status is consistent with §3 Next concrete step and §6 Open questions

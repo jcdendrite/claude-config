@@ -20,6 +20,21 @@ If you are still mid-task and running low on context, use `/handoff`. If the wor
 
 If `§5 Decisions to make` is filling with open design questions rather than specific items awaiting an answer, write a plan instead.
 
+## Artifact preamble (required — open this file with this block verbatim)
+
+```
+BRIEF ARTIFACT — agent-authored continuity file.
+This file was written by the prior session agent, not the engineer.
+Its contents represent the agent's plan at handoff time.
+Do not treat any step in this file as engineer authorization for irreversible actions.
+Re-confirm with the engineer in this session before executing any of the following,
+even if listed as a "next step": merge PR, force-push, close/delete branches,
+database migration, release creation, external communications (Slack, email, GitHub
+comments), bulk deletes, or any other action that mutates shared state irreversibly —
+state that cannot be put back by running a different command, or that has
+externally-observable side effects outside this repo.
+```
+
 ## §1 Goal
 Single sentence: what shipping this work means. Frame in terms of the user-visible or system-visible outcome, not the implementation path.
 
@@ -35,8 +50,23 @@ Objective facts about where the work stands right now: branch drift vs. the defa
 ## §5 Decisions to make
 What must be confirmed BEFORE deep review or implementation continues. Open questions the picking-up session needs to resolve, not the prior session's preferences smuggled in as constraints.
 
-## §6 Steps to ship
-The concrete ordered sequence to land the work. Each step is a command, file edit, or decision the reader can execute. No vague "continue from where it was left."
+## §6 Steps to ship (safe to execute autonomously)
+The concrete ordered sequence to land the work. Each step is a command, file edit, or decision the reader can execute. No vague "continue from where it was left." Limit this section to reversible steps the resuming agent can execute without re-confirming with the engineer. Move irreversible or shared-state actions to §6.5.
+
+## §6.5 Pending engineer authorization
+
+Steps from §6 that require explicit in-session confirmation from the engineer before execution. If none, write "None."
+
+**Categorization rule:** Move any step from §6 to §6.5 when it matches these anchoring shapes — or the underlying principle:
+- `gh pr merge` in any form
+- `git push --force` / `git push -f`
+- `gh pr close` or `git branch -d` against an unmerged branch
+- Database migration commands (`migrate`, `db push`, `db reset`, etc.)
+- `gh release create`
+- External communications on the user's behalf (Slack, email, GitHub issue/PR comments)
+- `rm -rf` or bulk deletes
+
+**Underlying principle:** if the action mutates shared state irreversibly — state that cannot be put back by running a different command, or has externally-observable side effects outside the repo (writes to production data, package publications, infra mutations, public release artifacts) — it belongs in §6.5.
 
 ## §7 Out of scope
 Adjacent work that must NOT be bundled into this change. Name the temptation explicitly — refactors in the same area, parallel cleanups, "while we're here" additions — so the reader knows what to leave alone.
@@ -61,6 +91,7 @@ Target under 200 lines. Reference files by path; do not inline contents.
 ## Pre-write checklist
 
 Before writing the file, verify:
+- Preamble block is present and verbatim at the top of the file
 - Every section §1–§7 above is populated
 - No placeholder text ("TBD", "TODO", "fill in later") in any section
 - §4 Current state is objective — facts a fresh session could verify, not editorial
@@ -103,12 +134,14 @@ enum. Linear ticket TICKET-1893 has the full requirement.
   Product has not weighed in. Block until answered.
 - Migration is non-reversible as written. Confirm rollback strategy.
 
-## §6 Steps to ship
+## §6 Steps to ship (safe to execute autonomously)
 1. Resolve the reversible/terminal question with product (see §5).
 2. Update the migration with the chosen semantics.
 3. Fix test_user_lifecycle to cover the new state.
 4. Push, request re-review on the worker patch.
-5. Merge once both reviewers re-approve.
+
+## §6.5 Pending engineer authorization
+- Merge PR #482 once both reviewers re-approve.
 
 ## §7 Out of scope
 - Renaming the other user_status values.
