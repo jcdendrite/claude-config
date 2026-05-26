@@ -111,6 +111,23 @@ reset and harmless — Lovable duplicates run later in timestamp order
 than the originals did, so the reset replays the originals' creation
 against the duplicates' drops.
 
+**Ordering-artifact failures: delete first, then reset.** If `supabase db reset`
+fails with an "already exists" error for an object the Lovable duplicate creates —
+because the original ran first in timestamp order and the duplicate's `CREATE`
+fires without a preceding `DROP` — this is a local ordering artifact, not a logic
+error in the Lovable duplicate. On Lovable Cloud (where only the duplicate runs)
+this works correctly.
+
+The fix: delete the original (step 6 below) first, then re-run `supabase db reset`
+with only the Lovable duplicate present. Do **not** modify the Lovable duplicate
+to add `DROP IF EXISTS` guards as a workaround — the duplicate must match exactly
+what Lovable Cloud executed. Editing it creates repo/production divergence even
+when the edit is a harmless no-op DROP.
+
+The "do not proceed on FAIL" rule applies to logic errors in the duplicate (wrong
+predicates, missing DDL, weakened security checks), not to ordering artifacts that
+disappear once the original is deleted.
+
 Once the reset completes, dispatch your project's verify entry point
 (e.g. `npm run verify`, `pytest`, `make verify` — whatever its
 verification command is) via the `Agent` tool with
