@@ -137,11 +137,9 @@ than running it inline:
 
 Discovery output inhales into the parent context exactly like a check
 suite does, and an auto-mode parent on Opus pays that in the most
-expensive tokens — for output it only needed an *answer* from. A lookup
-stays inline when you already know the target — one `grep` for a
-specific symbol, one `Read` of a path you have already identified.
-Dispatch any read whose purpose is to explore, map, or locate — even a
-single command. The ~3-query threshold is a trailing indicator; by the
+expensive tokens — for output it only needed an *answer* from. Dispatch
+any read whose purpose is to explore, map, or locate — even a single
+command. The ~3-query threshold is a trailing indicator; by the
 time a third command fires, multiple turns of exploratory output have
 already landed in context.
 
