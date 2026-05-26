@@ -1,0 +1,41 @@
+{
+  "skill_name": "subagent-delegation",
+  "method": "description-fidelity",
+  "cases": [
+    {
+      "id": "comprehension-read-feeding-edit",
+      "query": "Add a docstring to the `parse_config` function in `src/utils.py`.",
+      "should_trigger": false
+    },
+    {
+      "id": "targeted-lookup-known-path",
+      "query": "Show me the implementation of `render_widget` in `src/ui/widgets.py`.",
+      "should_trigger": false
+    },
+    {
+      "id": "targeted-grep-known-symbol",
+      "query": "Where is `render_widget` called in this codebase?",
+      "should_trigger": false
+    },
+    {
+      "id": "edit-sequence",
+      "query": "Bump the version field in `package.json` from 1.0.0 to 1.1.0.",
+      "should_trigger": false
+    },
+    {
+      "id": "exploratory-search-unknown-target",
+      "query": "Find every place we render widgets across the codebase.",
+      "should_trigger": true
+    },
+    {
+      "id": "exploratory-one-command",
+      "query": "What's in the `utils/` directory?",
+      "should_trigger": true
+    },
+    {
+      "id": "full-check-suite",
+      "query": "Run the full test suite and tell me what's failing.",
+      "should_trigger": true
+    }
+  ]
+}
