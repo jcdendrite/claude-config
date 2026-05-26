@@ -269,6 +269,23 @@ Format: inline `ADDRESS:` / `DEFER (<criterion>):` tags when there are ≤2 find
 
 If you find yourself tagging 3+ findings DEFER in a single review, re-read the criteria — the default is ADDRESS, and a heavy DEFER list is usually a sign the criteria are being stretched.
 
+## DEFER persistence
+
+When the disposition step produces ≥1 DEFER finding, persist the DEFER rows (and only the DEFER rows) to the PR description as a `## Deferred review findings` section. ADDRESS findings are not persisted — they are visible in the diff the reviewer is reading.
+
+Row format: `Finding | Source | DEFER criterion | Rationale` (four columns, same shape as the disposition table filtered to non-ADDRESS rows).
+
+**If a PR is already open** (`gh pr view --json number,body` succeeds): update the PR description idempotently with `gh pr edit --body`. Delimit the section with HTML comment markers so it can be mechanically replaced on re-runs:
+
+Opening delimiter: `<!-- code-review:deferred:start -->`
+Closing delimiter: `<!-- code-review:deferred:end -->`
+
+Append the delimited block if absent; replace the existing delimited block if present (idempotent across repeated `/code-review` runs as fix commits collapse DEFERs into ADDRESSes or introduce new ones). Preserve all PR description content outside the delimiters.
+
+**If no PR is open yet** (pre-`/ready-for-review` path): return the rendered `## Deferred review findings` block as part of the orchestrator output. The `/ready-for-review` step 5 splices it into the PR body at PR-creation time.
+
+**If zero DEFERs**: do not add the section. If a prior run wrote the delimited block and the latest run produces zero DEFERs, remove the delimited block from the PR description.
+
 ## Item ownership
 
 Routes each checklist item to the reviewer subagent(s) that file findings on it. Bold shorthands match titles above; numbers are the dispatcher's primary key. **Primary owner** files findings; **co-owners** are spawned where the item touches their turf. When in doubt, this table wins over inline mentions.

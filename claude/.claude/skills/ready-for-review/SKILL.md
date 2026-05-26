@@ -129,16 +129,16 @@ they would otherwise trigger command substitution.
 ## 5. Create PR if missing (skip if PR already exists)
 
 Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
-Body (omit `$ARGUMENTS` if empty; use single-quoted `<<'EOF'` heredoc; capture PR number for step 6):
+Body (omit `$ARGUMENTS` if empty; use single-quoted `<<'EOF'` heredoc; capture PR number for step 6). If `/code-review` returned a `## Deferred review findings` block at review time (≥1 DEFER, no open PR), assign it to `DEFERRED_FINDINGS` and it will be spliced in above; otherwise set `DEFERRED_FINDINGS` to empty string:
 ```
 ## Summary
 $(git log $(git merge-base origin/$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main) HEAD)..HEAD --format="- %s")
 $ARGUMENTS
 ## Test plan
 - [ ] (fill in manual verification steps)
+$DEFERRED_FINDINGS
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
-
 ## 6. Final hygiene recheck (halt on fail)
 
 Steps 3 and 4 may have produced new commits or body edits. Reconfirm:
