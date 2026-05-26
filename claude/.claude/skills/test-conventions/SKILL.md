@@ -142,7 +142,6 @@ For tests that guard against a specific past bug, include a comment or docstring
 - Run when either side changes; no need for a live instance of the other service
 
 **E2E tests:**
-- Complete user flows across the full stack
 - Run pre-merge or on a schedule, not on every commit
 - Use test/sandbox accounts and environments
 
@@ -197,4 +196,5 @@ Avoid these when writing new tests:
 | Over-mocking (test encodes implementation, not behavior) | Mock only direct dependencies; let integration tests cover wiring |
 | Mocking third-party internals (library's private API) | Use the library's test utilities or mock at your own abstraction boundary |
 | Testing the test double (asserting stub's own return value) | Assert on values the code computed or transformed |
+| Source-scanning the file under test (reading it as a string and asserting substrings) instead of executing it | Reading source proves the literal text exists, not that it runs, is reachable, or behaves correctly; the assertion passes on dead code and fails on cosmetic renames. Use a behavioral test: execute the function/hook/component with mocked dependencies and assert observable behavior. Source-scans are a tripwire for *wiring presence only*, never a substitute for a behavioral assertion. |
 | Stub or vacuous assertion when blocked by credentials/env/external state | Mock or fake the credential boundary; don't commit a permanently-passing assertion. |
