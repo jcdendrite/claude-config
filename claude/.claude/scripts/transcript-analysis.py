@@ -9,6 +9,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -376,6 +377,15 @@ REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-revie
 REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
 )
+
+# Skills that open a judgment span in audit-routing: any turn within an active span
+# (from skill invocation until the next user turn) is classified as `judgment`, not
+# by its tool-use contents. Extends REVIEW_TRACE_SKILLS with security-review,
+# respond-pr, and ultrareview.
+AUDIT_JUDGMENT_SKILLS: frozenset[str] = frozenset({
+    "code-review", "plan-review", "ready-for-review", "skill-review",
+    "agent-review", "security-review", "respond-pr", "ultrareview", "plan-it",
+})
 
 # Reviewer-agent subagent_type prefixes/names counted in review-trace.
 _REVIEWER_PREFIX = "staff-"
@@ -981,6 +991,254 @@ def cmd_commit_gate(args: argparse.Namespace) -> None:
             )
 
 
+_AUDIT_CLASSES: tuple[str, ...] = (
+    "orchestration", "judgment", "code-write", "code-read", "pure-thinking", "other"
+)
+
+_ORCHESTRATION_TOOLS: frozenset[str] = frozenset({"Agent", "Task"})
+_CODE_WRITE_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+_CODE_READ_TOOLS: frozenset[str] = frozenset({"Read", "Grep", "Glob", "Bash"})
+
+
+def _classify_opus_turn(
+    content: list,
+    in_judgment_span: bool,
+    plan_mode_active: bool,
+) -> str:
+    """Classify one Opus assistant turn into an audit routing class.
+
+    Classification is first-match among:
+      orchestration  — any Agent/Task tool_use
+      judgment       — turn is within an active judgment span (skill or plan-mode)
+      code-write     — any Edit/Write/MultiEdit/NotebookEdit tool_use
+      code-read      — at least one tool_use, all from Read/Grep/Glob/Bash
+      pure-thinking  — thinking blocks only, no tool_use
+      other          — none of the above
+    """
+    tool_use_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+    tool_names = {b.get("name") for b in tool_use_blocks}
+
+    if tool_names & _ORCHESTRATION_TOOLS:
+        return "orchestration"
+    if in_judgment_span or plan_mode_active:
+        return "judgment"
+    if tool_names & _CODE_WRITE_TOOLS:
+        return "code-write"
+    if tool_use_blocks and tool_names <= _CODE_READ_TOOLS:
+        return "code-read"
+    has_thinking = any(isinstance(b, dict) and b.get("type") == "thinking" for b in content)
+    if has_thinking and not tool_use_blocks:
+        return "pure-thinking"
+    return "other"
+
+
+def _derive_proj_label(jsonl: Path) -> str:
+    """Derive a short project label from a jsonl path, matching token-analyzer.py's convention."""
+    return jsonl.parent.name.lstrip("-").replace("-", "/", 2).split("/", 2)[-1]
+
+
+def _redact_proj_label(proj_label: str, redact_map: dict[str, str]) -> str:
+    """Apply the redact map to a project label, preserving 'claude-config' as-is."""
+    if proj_label == "claude-config":
+        return proj_label
+    return redact_map.get(proj_label, proj_label)
+
+
+def cmd_audit_routing(args: argparse.Namespace) -> None:
+    """Per-turn Opus token breakdown by routing class across all sessions.
+
+    Classifies every Opus assistant turn into: orchestration, judgment,
+    code-write, code-read, pure-thinking, or other — then aggregates
+    output_tokens and cache_read_input_tokens per class. Emits per-session
+    rows sorted descending by total output tokens, plus a corpus aggregate.
+    """
+    projects_glob = _projects_glob(args)
+    top_n: int = getattr(args, "top", 20) or 20
+    redact: bool = bool(getattr(args, "redact", False))
+
+    since_ts: float | None = None
+    since_label: str = ""
+    since_raw: str | None = getattr(args, "since", None) or None
+    if since_raw:
+        try:
+            days = float(since_raw.rstrip("d"))
+            since_ts = time.time() - days * 86400
+            since_label = since_raw
+        except ValueError:
+            print(f"audit-routing: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
+            sys.exit(1)
+
+    # --- First pass: collect all project labels for redact mapping ---
+    all_proj_labels: list[str] = []
+    if redact:
+        for jsonl, _ in iter_sessions(PROJECTS_DIR, projects_glob):
+            label = _derive_proj_label(jsonl)
+            if label not in all_proj_labels:
+                all_proj_labels.append(label)
+        all_proj_labels.sort()
+        # Build stable numeric mapping; claude-config is kept as-is.
+        num_index = 1
+        redact_map: dict[str, str] = {}
+        for label in all_proj_labels:
+            if label == "claude-config":
+                redact_map[label] = label
+            else:
+                redact_map[label] = f"private-project-{num_index}"
+                num_index += 1
+    else:
+        redact_map = {}
+
+    # Per-session accumulators: session_key → {class → {out, cr}}
+    session_rows: list[dict] = []
+    # Corpus totals: class → {out, cr}
+    corpus_totals: dict[str, dict[str, int]] = {cls: {"out": 0, "cr": 0} for cls in _AUDIT_CLASSES}
+
+    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+        proj_label = _derive_proj_label(jsonl)
+        session_id = jsonl.stem[:12]
+
+        # Per-session class token accumulators
+        session_class_tokens: dict[str, dict[str, int]] = {
+            cls: {"out": 0, "cr": 0} for cls in _AUDIT_CLASSES
+        }
+
+        # Judgment span state machine (reset per session)
+        in_judgment_span: bool = False
+        plan_mode_active: bool = False
+
+        for rec in records:
+            rtype = rec.get("type", "")
+            msg = rec.get("message") or {}
+
+            # --- State machine updates for user/human records ---
+            if rtype in ("user", "human"):
+                # Judgment span closes at next user turn
+                in_judgment_span = False
+                # Detect plan-mode activation
+                content_text = _content_text(msg.get("content", ""))
+                if "Plan mode is active" in content_text:
+                    plan_mode_active = True
+                continue
+
+            if rtype != "assistant":
+                continue
+
+            # Filter to Opus turns with usage data
+            model = msg.get("model", "")
+            if _fam(model) != "opus":
+                # Still update span state from non-Opus assistant turns (ExitPlanMode)
+                content = msg.get("content") or []
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        and block.get("name") == "ExitPlanMode"
+                    ):
+                        plan_mode_active = False
+                continue
+
+            usage = msg.get("usage")
+            if not usage:
+                continue
+
+            # Apply --since filter
+            if since_ts is not None:
+                rec_ts = _parse_ts(rec.get("timestamp"))
+                if rec_ts is None or rec_ts < since_ts:
+                    continue
+
+            content = msg.get("content") or []
+            out_tokens: int = usage.get("output_tokens", 0)
+            cr_tokens: int = usage.get("cache_read_input_tokens", 0)
+
+            # Open a judgment span if this turn invokes a judgment skill — evaluated
+            # before classification so the invoking turn itself counts as judgment.
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == "Skill"
+                    and (block.get("input") or {}).get("skill") in AUDIT_JUDGMENT_SKILLS
+                ):
+                    in_judgment_span = True
+                    break
+
+            turn_class = _classify_opus_turn(content, in_judgment_span, plan_mode_active)
+
+            # ExitPlanMode clears plan-mode on the *next* turn (the current turn is still in-span).
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == "ExitPlanMode"
+                ):
+                    plan_mode_active = False
+                    break
+
+            session_class_tokens[turn_class]["out"] += out_tokens
+            session_class_tokens[turn_class]["cr"] += cr_tokens
+
+        session_total_out = sum(v["out"] for v in session_class_tokens.values())
+        if not session_total_out:
+            continue
+
+        session_rows.append({
+            "session_id": session_id,
+            "proj_label": proj_label,
+            "classes": session_class_tokens,
+            "total_out": session_total_out,
+        })
+
+        for cls in _AUDIT_CLASSES:
+            corpus_totals[cls]["out"] += session_class_tokens[cls]["out"]
+            corpus_totals[cls]["cr"] += session_class_tokens[cls]["cr"]
+
+    # --- Emit per-session table ---
+    title_since = f"last {since_label}" if since_label else "all time"
+    print(f"\n## Opus turn-class breakdown ({title_since})\n")
+
+    header = (
+        f"{'Session':<16} {'Proj':<20} "
+        f"{'orch':>8} {'judgment':>9} {'code-write':>11} {'code-read':>10} "
+        f"{'thinking':>9} {'other':>7} {'total_out':>11} {'cache_rd':>10}"
+    )
+    print(header)
+    print("─" * len(header))
+
+    sorted_rows = sorted(session_rows, key=lambda r: r["total_out"], reverse=True)
+    for row in sorted_rows[:top_n]:
+        sid = row["session_id"]
+        proj = _redact_proj_label(row["proj_label"], redact_map) if redact else row["proj_label"]
+        cls = row["classes"]
+        total_cr = sum(v["cr"] for v in cls.values())
+        print(
+            f"{sid:<16} {proj:<20} "
+            f"{cls['orchestration']['out']:>8,} {cls['judgment']['out']:>9,} "
+            f"{cls['code-write']['out']:>11,} {cls['code-read']['out']:>10,} "
+            f"{cls['pure-thinking']['out']:>9,} {cls['other']['out']:>7,} "
+            f"{row['total_out']:>11,} {total_cr:>10,}"
+        )
+
+    # --- Emit corpus aggregate ---
+    print("\n## Corpus aggregate\n")
+    print(f"{'Class':<16} {'Output tokens':>15} {'Cache read tokens':>18}")
+    total_out_all = 0
+    total_cr_all = 0
+    for cls in _AUDIT_CLASSES:
+        out_val = corpus_totals[cls]["out"]
+        cr_val = corpus_totals[cls]["cr"]
+        print(f"{cls:<16} {out_val:>15,} {cr_val:>18,}")
+        total_out_all += out_val
+        total_cr_all += cr_val
+    print("─" * 51)
+    print(f"{'total':<16} {total_out_all:>15,} {total_cr_all:>18,}")
+
+    sonnet_tier_out = corpus_totals["code-write"]["out"] + corpus_totals["code-read"]["out"]
+    sonnet_pct = f"{100 * sonnet_tier_out / total_out_all:.0f}%" if total_out_all else "—"
+    print(f"\nSonnet-tier estimate: {sonnet_tier_out:,} output tokens")
+    print(f"  = {sonnet_pct} of Opus output in this window")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Claude Code transcript analysis toolkit.")
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -1085,6 +1343,32 @@ def main() -> None:
         help="Restrict skill-invocation matching to one skill name.",
     )
     p_review_trace.set_defaults(func=cmd_review_trace)
+
+    p_audit = sub.add_parser(
+        "audit-routing",
+        help=(
+            "Per-turn Opus token breakdown by routing class (orchestration, judgment, code-write,"
+            " code-read, pure-thinking, other). Aggregates output_tokens and cache_read_input_tokens"
+            " per class across all sessions."
+        ),
+    )
+    p_audit.add_argument("--projects", default="*", metavar="GLOB")
+    p_audit.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_audit.add_argument(
+        "--top", type=int, default=20, metavar="N",
+        help="Maximum number of per-session rows to emit (default: 20).",
+    )
+    p_audit.add_argument(
+        "--redact", action="store_true",
+        help=(
+            "Replace project dir names with anonymized labels (private-project-1, private-project-2, …)"
+            " for public reporting. 'claude-config' is preserved as-is."
+        ),
+    )
+    p_audit.set_defaults(func=cmd_audit_routing)
 
     parsed = parser.parse_args()
     parsed.func(parsed)

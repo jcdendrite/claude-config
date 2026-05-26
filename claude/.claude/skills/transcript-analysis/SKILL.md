@@ -17,6 +17,7 @@ The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly
 | How much work went through subagents vs the main thread? | `subagents --branches <branch>` |
 | Map branches to PRs; count per-author review comments | `pr-link --repo owner/repo --branches <branch>` |
 | Which sessions ran review skills, hit a hook denial, or spawned reviewer agents? | `review-trace` |
+| Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 
 ## Reading fail-seq output
 
@@ -37,6 +38,7 @@ Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
 - `pr-link` requires `gh` and network access. All other subcommands are local-only and make no writes.
 - A model-vs-model comparison is only meaningful when there are multiple all-Opus and all-Sonnet execution branches. One or two branches per model is directional, not a controlled A/B.
 - `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis and `--deny-only` to isolate sessions that hit an enforcement hook.
+- `audit-routing --redact` remaps project names to anonymized labels for public reporting — use this flag when posting output to GitHub issues.
 
 ## Example usage
 
