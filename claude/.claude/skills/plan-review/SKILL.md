@@ -115,7 +115,7 @@ B10. **Test realism** — Are the planned test assertions realistic? Will existi
 
 B11. **Rollback strategy** — For destructive or hard-to-reverse changes (data migrations, API format changes, dependency removals), is there a rollback plan, or is the change structured to be safely reversible by default?
 
-B12. **Dependency risk** — Does the plan add, upgrade, or remove dependencies? If so, does it account for transitive conflicts, license implications, and the maintenance health of new dependencies?
+B12. **Dependency risk** — Does the plan add, upgrade, or remove dependencies? If so, does it account for transitive conflicts, license implications, and the maintenance health of new dependencies? When a plan removes a direct dependency and asserts the package remains available via transitive resolution, require verification that the project's package manager isolation model actually makes it visible to build tools — not all package managers hoist transitives to root-level resolution paths.
 
 ### Clarity
 
