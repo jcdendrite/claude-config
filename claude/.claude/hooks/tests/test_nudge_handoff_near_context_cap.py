@@ -267,13 +267,14 @@ class TestNudgeHandoffNearContextCap:
             # Restore permissions so pytest cleanup can delete tmp_path.
             marker_dir.chmod(0o755)
 
-    def test_latency_under_100ms(self, tmp_path):
-        """Hook completes in under 100ms even with a ~10 MB transcript (10000 valid JSONL lines).
+    def test_latency_under_500ms(self, tmp_path):
+        """Hook completes in under 500ms even with a ~10 MB transcript (10000 valid JSONL lines).
 
         The tail -n 200 in the hook prevents the read from being O(file_size),
-        so runtime is dominated by shell+jq startup (~25-30ms), not file size.
-        The 100ms bound guards against an accidental regression to full-file reads
-        while staying well above typical process-startup variance (30-50ms).
+        so runtime is dominated by shell+jq startup (~25-50ms), not file size.
+        The 500ms bound guards against an accidental regression to full-file reads
+        while tolerating CI-runner jitter (bash+jq startup can reach 150-200ms
+        under memory pressure on loaded runners).
         """
         transcript = tmp_path / "large.jsonl"
         single_line = json.dumps(_assistant_record(input_tok=5000, output_tok=1000))
@@ -283,7 +284,7 @@ class TestNudgeHandoffNearContextCap:
         result = _run_hook(payload, tmp_path)
         elapsed = time.perf_counter() - start
         assert result.returncode == 0
-        assert elapsed < 0.100, f"Hook took {elapsed:.3f}s — expected < 100ms (tail -n 200 should prevent O(file) reads)"
+        assert elapsed < 0.500, f"Hook took {elapsed:.3f}s — expected < 500ms (tail -n 200 should prevent O(file) reads)"
 
     def test_partial_usage_block_falls_to_below_threshold(self, tmp_path):
         """A usage block with only output_tokens present sums to 500 — below threshold. No schema-drift, no nudge."""

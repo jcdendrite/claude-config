@@ -1767,11 +1767,13 @@ class TestHandoffRatio:
         out = capsys.readouterr().out
         assert "Handoffs" in out
         assert "Compactions" in out
-        # Totals row: 2 handoffs, 2 compactions
+        # Totals row: 2 handoffs, 2 compactions, 50% ratio.
         total_line = [ln for ln in out.splitlines() if ln.startswith("Total")]
         assert total_line
-        # 2 handoffs out of 4 total = 50%
-        assert "50.0%" in out or "2" in total_line[0]
+        parts = total_line[0].split()
+        assert int(parts[1]) == 2, f"Expected 2 handoffs in Total row, got: {total_line[0]!r}"
+        assert int(parts[2]) == 2, f"Expected 2 compactions in Total row, got: {total_line[0]!r}"
+        assert "50.0%" in out
 
     def test_handoff_ratio_empty_corpus_no_divide_by_zero(self, fake_projects, capsys):
         """Empty corpus (no handoffs or compactions) prints a graceful 'no data' message."""
