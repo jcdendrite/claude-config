@@ -45,8 +45,6 @@
   Decision test: **Does this text record something that happened, or describe how the code currently behaves?** Records are read-only. Descriptions are fair game for in-file scope cleanup.
 
   **Axis 4 — Change size.** Prefer minimal, targeted changes. Do not refactor entire files or expand scope beyond what was asked. If you see an opportunity for a broader improvement, mention it separately — do not bundle it in.
-- When a session crosses ~60% context usage (per statusline `.context_window.used_percentage`) AND the current task is incomplete, suggest the user run `/handoff` — it's user-invoked; don't run it yourself.
-
 ## Code Review
 
 - After writing or modifying code, run `/code-review` before presenting the code to the user. If the review finds issues, fix them first, then present the final version.

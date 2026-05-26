@@ -1718,3 +1718,89 @@ class TestAuditRouting:
         out = capsys.readouterr().out
         # Turn with no timestamp is excluded by the --since filter
         assert _extract_corpus_class_tokens(out, "code-write") == 0
+
+
+# ---------------------------------------------------------------------------
+# handoff-ratio
+# ---------------------------------------------------------------------------
+
+
+def _handoff_skill_block() -> dict:
+    """Build a Skill tool_use block for /handoff."""
+    return {"type": "tool_use", "id": "tool-handoff-1", "name": "Skill", "input": {"skill": "handoff"}}
+
+
+def _compaction_record(ts: str = "2026-05-19T10:00:00.000Z") -> dict:
+    """Build a compact_boundary system record (the shape Claude Code writes on auto-compaction)."""
+    return {
+        "type": "system",
+        "subtype": "compact_boundary",
+        "content": "Conversation compacted",
+        "timestamp": ts,
+        "compactMetadata": {"trigger": "auto", "preTokens": 160000, "postTokens": 11000, "durationMs": 145000},
+    }
+
+
+def _handoff_args(since: str | None = None, projects: str = "*") -> argparse.Namespace:
+    return type("A", (), {"projects": projects, "since": since, "debug_detector": False})()
+
+
+class TestHandoffRatio:
+    def test_handoff_ratio_counts_handoffs_and_compactions(self, fake_projects, capsys):
+        """Sessions with handoff skill calls and compaction events are counted correctly."""
+        # Session 1: has handoff
+        _write_jsonl(fake_projects / "sess1.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-11T09:00:00.000Z",
+                  content=[_handoff_skill_block()]),
+        ])
+        # Session 2: has compaction
+        _write_jsonl(fake_projects / "sess2.jsonl", [
+            _compaction_record("2026-05-11T10:00:00.000Z"),
+        ])
+        # Session 3: both handoff and compaction (counts in both columns)
+        _write_jsonl(fake_projects / "sess3.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts="2026-05-11T10:00:00.000Z",
+                  content=[_handoff_skill_block()]),
+            _compaction_record("2026-05-11T11:00:00.000Z"),
+        ])
+        _mod.cmd_handoff_ratio(_handoff_args())
+        out = capsys.readouterr().out
+        assert "Handoffs" in out
+        assert "Compactions" in out
+        # Totals row: 2 handoffs, 2 compactions
+        total_line = [ln for ln in out.splitlines() if ln.startswith("Total")]
+        assert total_line
+        # 2 handoffs out of 4 total = 50%
+        assert "50.0%" in out or "2" in total_line[0]
+
+    def test_handoff_ratio_empty_corpus_no_divide_by_zero(self, fake_projects, capsys):
+        """Empty corpus (no handoffs or compactions) prints a graceful 'no data' message."""
+        # Write a session with no handoff or compaction records.
+        _write_jsonl(fake_projects / "plain.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod.cmd_handoff_ratio(_handoff_args())
+        out = capsys.readouterr().out
+        assert "No handoff or compaction events found" in out
+
+    def test_handoff_ratio_since_filter_excludes_older(self, fake_projects, capsys):
+        """Events with timestamps before --since are excluded from counts."""
+        # Old session: before cutoff
+        _write_jsonl(fake_projects / "old.jsonl", [
+            _compaction_record("2026-01-15T10:00:00.000Z"),
+        ])
+        # New session: after cutoff
+        _write_jsonl(fake_projects / "new.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_handoff_skill_block()]),
+        ])
+        _mod.cmd_handoff_ratio(_handoff_args(since="2026-05-01"))
+        out = capsys.readouterr().out
+        # Only the new session (handoff) should appear; old compaction excluded.
+        assert "Handoffs" in out
+        total_line = [ln for ln in out.splitlines() if ln.startswith("Total")]
+        assert total_line
+        # Total row: "Total  <handoffs>  <compactions>  <ratio%>"
+        parts = total_line[0].split()
+        assert int(parts[1]) == 1, f"Expected 1 handoff in Total row, got: {total_line[0]!r}"
+        assert int(parts[2]) == 0, f"Expected 0 compactions in Total row, got: {total_line[0]!r}"

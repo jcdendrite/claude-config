@@ -1239,6 +1239,120 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     print(f"  = {sonnet_pct} of Opus output in this window")
 
 
+def cmd_handoff_ratio(args: argparse.Namespace) -> None:
+    """Per-week handoff-vs-compaction ratio.
+
+    Detects two events per session:
+    - handoff: main-thread assistant Skill tool_use where input.skill == "handoff"
+    - compaction: type == "system" and subtype == "compact_boundary"
+      (the record Claude Code writes when auto-compaction fires)
+
+    Output: per-ISO-week table with columns: week, handoffs, compactions, ratio.
+    Also reads ~/.claude/.handoff-nudge.log if present and reports schema-drift
+    count as a diagnostic footer.
+    """
+    projects_glob = _projects_glob(args)
+    since_str: str | None = getattr(args, "since", None) or None
+    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
+    debug_detector: bool = bool(getattr(args, "debug_detector", False))
+
+    # week_str -> {"handoffs": int, "compactions": int}
+    data: dict[str, dict[str, int]] = defaultdict(lambda: {"handoffs": 0, "compactions": 0})
+
+    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+        session_has_handoff = False
+        session_has_compaction = False
+        # Use the first timestamp from a main-thread record for week bucketing.
+        session_first_ts: float | None = None
+
+        for rec in records:
+            rec_ts = _parse_ts(rec.get("timestamp"))
+            if since_ts is not None and rec_ts is not None and rec_ts < since_ts:
+                continue
+
+            # Track the earliest parseable timestamp for week bucketing.
+            if rec_ts is not None and session_first_ts is None:
+                session_first_ts = rec_ts
+
+            rec_type = rec.get("type", "")
+
+            # Handoff detection: main-thread assistant Skill tool_use with skill == "handoff".
+            if rec_type == "assistant" and not bool(rec.get("isSidechain")):
+                for block in ((rec.get("message") or {}).get("content") or []):
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        and block.get("name") == "Skill"
+                        and (block.get("input") or {}).get("skill") == "handoff"
+                    ):
+                        session_has_handoff = True
+
+            # Compaction detection: system record with subtype == "compact_boundary".
+            # Shape confirmed from transcripts: {"type": "system", "subtype": "compact_boundary", ...}
+            if rec_type == "system" and rec.get("subtype") == "compact_boundary":
+                session_has_compaction = True
+                if debug_detector:
+                    print(f"[debug] compaction: {jsonl} ts={rec.get('timestamp')} keys={list(rec.keys())}")
+
+        if not (session_has_handoff or session_has_compaction):
+            continue
+        if session_first_ts is None:
+            continue
+
+        iso = datetime.fromtimestamp(session_first_ts, tz=UTC).isocalendar()
+        week_str = f"{iso.year}-W{iso.week:02d}"
+        if session_has_handoff:
+            data[week_str]["handoffs"] += 1
+        if session_has_compaction:
+            data[week_str]["compactions"] += 1
+
+    if not data:
+        print("No handoff or compaction events found.")
+        print("  (0 handoffs, 0 compactions — ratio is undefined)")
+        _print_nudge_log_diagnostic()
+        return
+
+    print(f"{'Week':<10} {'Handoffs':>9} {'Compactions':>12} {'Ratio':>7}")
+    print("-" * 43)
+    total_handoffs = total_compactions = 0
+    for week_str in sorted(data):
+        d = data[week_str]
+        h = d["handoffs"]
+        c = d["compactions"]
+        total_handoffs += h
+        total_compactions += c
+        denom = h + c
+        ratio_str = f"{100.0 * h / denom:.1f}%" if denom else "—"
+        print(f"{week_str:<10} {h:>9} {c:>12} {ratio_str:>7}")
+
+    print("-" * 43)
+    all_denom = total_handoffs + total_compactions
+    all_ratio = f"{100.0 * total_handoffs / all_denom:.1f}%" if all_denom else "—"
+    print(f"{'Total':<10} {total_handoffs:>9} {total_compactions:>12} {all_ratio:>7}")
+    _print_nudge_log_diagnostic()
+
+
+def _print_nudge_log_diagnostic() -> None:
+    """Read ~/.claude/.handoff-nudge.log and report schema-drift count if present."""
+    log_path = Path.home() / ".claude" / ".handoff-nudge.log"
+    if not log_path.exists():
+        return
+    try:
+        MAX_LOG_READ = 2 * 1024 * 1024  # 2 MB
+        if log_path.stat().st_size > MAX_LOG_READ:
+            raw = log_path.read_bytes()[-MAX_LOG_READ:]
+            lines = raw.decode(errors="ignore").splitlines()
+        else:
+            lines = log_path.read_text().splitlines()
+    except OSError:
+        return
+    drift_count = sum(1 for ln in lines if ln.startswith("schema-drift"))
+    if drift_count:
+        print(f"\nDiagnostic: {drift_count} schema-drift line(s) in {log_path}")
+        print("  Schema-drift means the usage block was found but all token fields were 0 or null.")
+        print("  The field paths in nudge-handoff-near-context-cap.sh may need updating.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Claude Code transcript analysis toolkit.")
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -1369,6 +1483,22 @@ def main() -> None:
         ),
     )
     p_audit.set_defaults(func=cmd_audit_routing)
+
+    p_handoff_ratio = sub.add_parser(
+        "handoff-ratio",
+        help=(
+            "Per-week handoff-vs-compaction ratio: how often sessions use /handoff"
+            " versus waiting for auto-compaction."
+        ),
+    )
+    p_handoff_ratio.add_argument("--projects", default="*", metavar="GLOB")
+    p_handoff_ratio.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
+    p_handoff_ratio.add_argument(
+        "--debug-detector",
+        action="store_true",
+        help="Print candidate compaction records for inspection (useful when schema is uncertain).",
+    )
+    p_handoff_ratio.set_defaults(func=cmd_handoff_ratio)
 
     parsed = parser.parse_args()
     parsed.func(parsed)
