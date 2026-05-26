@@ -89,7 +89,7 @@ attention decays in the middle ("lost in the middle"). Apply the
 **behavior test** below per line; place critical rules near start or end. CLAUDE.md is **advisory** while
 hooks are **deterministic** ([Claude Code Best Practices](https://code.claude.com/docs/en/best-practices):
 hooks "guarantee the action happens") — prefer a hook or structural
-test when a rule can be encoded as one.
+test when a rule can be encoded as one. The 200-line cap is hook-enforced at commit time by `check-claude-md-length.sh` for CLAUDE.md and AGENTS.md.
 
 ### The behavior test
 
