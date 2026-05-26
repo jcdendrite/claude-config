@@ -1444,3 +1444,277 @@ class TestReviewTrace:
         out = capsys.readouterr().out
         assert "cur.jsonl" in out
         assert "none.jsonl" not in out
+
+
+# ---------------------------------------------------------------------------
+# audit-routing
+# ---------------------------------------------------------------------------
+
+
+def _opus(content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T10:00:00.000Z") -> dict:
+    """Build an Opus assistant record with explicit usage values for audit-routing tests."""
+    rec = _asst(
+        "claude-opus-4-7",
+        branch="main",
+        ts=ts,
+        content=content,
+    )
+    rec["message"]["usage"] = {
+        "input_tokens": 50,
+        "output_tokens": out,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cr,
+    }
+    return rec
+
+
+def _exit_plan_mode(tool_id: str = "epm1") -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "ExitPlanMode", "input": {}}
+
+
+def _thinking_block() -> dict:
+    return {"type": "thinking", "thinking": "some thought"}
+
+
+def _audit_routing_args(
+    *,
+    projects: str = "*",
+    since: str | None = None,
+    top: int = 20,
+    redact: bool = False,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "since": since,
+        "top": top,
+        "redact": redact,
+    })()
+
+
+def _extract_corpus_class_tokens(out: str, cls: str) -> int:
+    """Parse output-token value for a class from the corpus aggregate section."""
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(cls):
+            parts = stripped.split()
+            # Format: "class-name  output_tokens  cache_read_tokens"
+            # Output tokens come after the class name (may have commas)
+            if len(parts) >= 2:
+                return int(parts[1].replace(",", ""))
+    return 0
+
+
+class TestAuditRouting:
+    def test_basic_per_class_routing(self, fake_projects, capsys):
+        """One Opus turn of each class; corpus aggregate totals must match synthesized usage."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            # orchestration: Agent tool_use
+            _opus([_agent_use("a1", "code-writer")], out=100),
+            # judgment: Skill tool_use (opens span, turn itself is judgment)
+            _opus([_skill_use("s1", "code-review")], out=200),
+            # user turn resets span
+            _user_msg("hi", branch="main"),
+            # code-write: Edit tool_use (span closed)
+            _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=300),
+            # code-read: only Read tool_use
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400),
+            # pure-thinking: thinking block, no tool_use
+            _opus([_thinking_block()], out=500),
+            # other: no tool_use, no thinking
+            _opus([], out=600),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        assert _extract_corpus_class_tokens(out, "orchestration") == 100
+        assert _extract_corpus_class_tokens(out, "judgment") == 200
+        assert _extract_corpus_class_tokens(out, "code-write") == 300
+        assert _extract_corpus_class_tokens(out, "code-read") == 400
+        assert _extract_corpus_class_tokens(out, "pure-thinking") == 500
+        assert _extract_corpus_class_tokens(out, "other") == 600
+
+    def test_judgment_span_covers_subsequent_read_and_write_turns(self, fake_projects, capsys):
+        """Skill invocation opens a span; Read/Write turns inside span → judgment, not code-read/write.
+        User turn resets span; Edit turn after reset → code-write."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            # User turn (normal) — no plan-mode text
+            _user_msg("start", branch="main"),
+            # Skill invocation: opens span; turn itself → judgment
+            _opus([_skill_use("s1", "code-review")], out=10),
+            # Read turn inside span → judgment (not code-read)
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=20),
+            # Write turn inside span → judgment (not code-write)
+            _opus([{"type": "tool_use", "id": "w1", "name": "Write", "input": {}}], out=30),
+            # User turn resets span
+            _user_msg("continue", branch="main"),
+            # Edit turn after span closed → code-write
+            _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=40),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        # judgment = skill turn (10) + read inside span (20) + write inside span (30) = 60
+        assert _extract_corpus_class_tokens(out, "judgment") == 60
+        # code-write = edit after reset = 40
+        assert _extract_corpus_class_tokens(out, "code-write") == 40
+        # code-read = 0 (the Read turn was inside the span → judgment)
+        assert _extract_corpus_class_tokens(out, "code-read") == 0
+
+    def test_plan_mode_span_and_exit_plan_mode(self, fake_projects, capsys):
+        """Plan-mode activation → subsequent turns are judgment until ExitPlanMode.
+        ExitPlanMode turn itself is still judgment; Edit after exit → code-write."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            # User turn that activates plan mode
+            _user_msg([{"type": "text", "text": "Plan mode is active"}], branch="main"),
+            # Read turn inside plan-mode → judgment
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=50),
+            # ExitPlanMode turn: still in plan-mode span → judgment; clears flag for next turn
+            _opus([_exit_plan_mode("epm1")], out=75),
+            # Edit turn after plan-mode cleared → code-write
+            _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=90),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        # judgment = read (50) + ExitPlanMode (75) = 125
+        assert _extract_corpus_class_tokens(out, "judgment") == 125
+        # code-write = edit after exit = 90
+        assert _extract_corpus_class_tokens(out, "code-write") == 90
+        # code-read = 0
+        assert _extract_corpus_class_tokens(out, "code-read") == 0
+
+    def test_redact_flag_anonymizes_project_names(self, fake_projects, capsys):
+        """--redact replaces project dir names with private-project-1/2/…; claude-config kept."""
+        # Session in the default project (-home-user-testrepo → 'home/testrepo' via derivation)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_agent_use("a1", "code-writer")], out=100),
+        ])
+        # A second project whose derived name is 'claude-config'
+        proj_cc = fake_projects.parent / "-home-user-claude-config"
+        proj_cc.mkdir(parents=True)
+        _write_jsonl(proj_cc / "sess.jsonl", [
+            _opus([_agent_use("a2", "code-writer")], out=200),
+        ])
+        args = _audit_routing_args(redact=True)
+        _mod.cmd_audit_routing(args)
+        out = capsys.readouterr().out
+        # claude-config must appear without redaction
+        assert "claude-config" in out
+        # The default project name should NOT appear verbatim (redacted)
+        # (the derived label for -home-user-testrepo is 'user/testrepo' or 'testrepo')
+        # We just verify that private-project labels appear in the output
+        assert "private-project-" in out
+
+    def test_since_filter_excludes_out_of_window_turns(self, fake_projects, capsys):
+        """--since filter: turn outside window excluded; only in-window turn appears in aggregate."""
+        old_ts = "2020-01-01T00:00:00.000Z"   # far in the past — always out-of-window
+        new_ts = "2099-12-31T00:00:00.000Z"   # far in the future — always in-window
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_agent_use("a1", "code-writer")], out=111, ts=old_ts),
+            _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=222, ts=new_ts),
+        ])
+        # Use "1d" window: old_ts is excluded, new_ts is included
+        args = _audit_routing_args(since="1d")
+        _mod.cmd_audit_routing(args)
+        out = capsys.readouterr().out
+        # Only the new_ts turn (code-write, 222) should appear
+        assert _extract_corpus_class_tokens(out, "code-write") == 222
+        assert _extract_corpus_class_tokens(out, "orchestration") == 0
+
+    def test_no_opus_turns_produces_empty_aggregate(self, fake_projects, capsys):
+        """Session with only Sonnet turns produces no rows and zero corpus totals."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00Z",
+                  content=[{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}]),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        # Corpus aggregate section must be present but all classes are zero
+        assert "Corpus aggregate" in out
+        assert _extract_corpus_class_tokens(out, "code-write") == 0
+
+    def test_sonnet_tier_estimate_printed(self, fake_projects, capsys):
+        """Sonnet-tier estimate line appears and reflects code-write + code-read total."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=300),
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        assert "Sonnet-tier estimate: 700" in out
+
+    def test_orchestration_takes_priority_over_active_judgment_span(self):
+        """orchestration is first-match: Agent turn inside an open span → orchestration, not judgment."""
+        result = _mod._classify_opus_turn(
+            [_agent_use("a1", "code-writer")],
+            in_judgment_span=True,
+            plan_mode_active=False,
+        )
+        assert result == "orchestration"
+
+    def test_opus_turn_with_empty_usage_is_skipped(self, fake_projects, capsys):
+        """Opus turn with empty usage dict is excluded; corpus totals stay zero."""
+        rec = _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z",
+                    content=[{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}])
+        # usage is {} by default from _asst — cmd_audit_routing skips falsy usage
+        _write_jsonl(fake_projects / "sess.jsonl", [rec])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        assert _extract_corpus_class_tokens(out, "code-write") == 0
+
+    def test_judgment_span_persists_across_unrecognized_skill_invocation(self, fake_projects, capsys):
+        """An unrecognized Skill call inside an open span does not close the span."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            # Opens span
+            _opus([_skill_use("s1", "code-review")], out=10),
+            # Unrecognized skill — span stays open; turn is still judgment
+            _opus([_skill_use("s2", "some-unknown-skill")], out=20),
+            # Read turn inside still-open span → judgment, not code-read
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=30),
+            # User turn closes span
+            _user_msg("continue", branch="main"),
+            # Read turn after span closed → code-read
+            _opus([{"type": "tool_use", "id": "r2", "name": "Read", "input": {}}], out=40),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        # All three turns inside the span (10 + 20 + 30) → judgment
+        assert _extract_corpus_class_tokens(out, "judgment") == 60
+        # Only the post-span Read turn → code-read
+        assert _extract_corpus_class_tokens(out, "code-read") == 40
+
+    def test_combined_plan_mode_and_judgment_span_independent_tracking(self, fake_projects, capsys):
+        """ExitPlanMode clears plan_mode_active but an open judgment span keeps the classification."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            # Activate plan-mode
+            _user_msg([{"type": "text", "text": "Plan mode is active"}], branch="main"),
+            # Judgment-skill invocation: opens span AND plan-mode is active
+            _opus([_skill_use("s1", "code-review")], out=10),
+            # ExitPlanMode: clears plan_mode_active; span from code-review still open
+            _opus([_exit_plan_mode("epm1")], out=20),
+            # Turn after ExitPlanMode: span still open (no user turn yet) → judgment
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=30),
+            # User turn resets span
+            _user_msg("done", branch="main"),
+            # Read turn after both flags cleared → code-read
+            _opus([{"type": "tool_use", "id": "r2", "name": "Read", "input": {}}], out=40),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        # judgment = skill-open (10) + ExitPlanMode (20) + post-exit-still-in-span read (30) = 60
+        assert _extract_corpus_class_tokens(out, "judgment") == 60
+        # code-read = post-user-reset read = 40
+        assert _extract_corpus_class_tokens(out, "code-read") == 40
+
+    def test_since_filter_excludes_turn_with_missing_timestamp(self, fake_projects, capsys):
+        """With --since active, turns lacking a timestamp field are excluded."""
+        rec_no_ts = _asst("claude-opus-4-7", branch="main",
+                           content=[{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}])
+        rec_no_ts["message"]["usage"] = {"input_tokens": 50, "output_tokens": 200,
+                                          "cache_creation_input_tokens": 0,
+                                          "cache_read_input_tokens": 0}
+        # No "timestamp" key on the record
+        assert "timestamp" not in rec_no_ts
+        _write_jsonl(fake_projects / "sess.jsonl", [rec_no_ts])
+        args = _audit_routing_args(since="1d")
+        _mod.cmd_audit_routing(args)
+        out = capsys.readouterr().out
+        # Turn with no timestamp is excluded by the --since filter
+        assert _extract_corpus_class_tokens(out, "code-write") == 0

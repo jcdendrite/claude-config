@@ -181,6 +181,7 @@ def main():
             print(f"{s['id']:>12}  {s['out']:>10,}  {s['inp']:>10,}  {s['proj']}")
     else:
         print("None found.")
+    print("\n(For per-turn analysis use: transcript-analysis.py audit-routing)")
 
 
 if __name__ == "__main__":
