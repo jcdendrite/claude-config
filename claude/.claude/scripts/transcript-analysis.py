@@ -6,6 +6,7 @@ No writes; pr-link is the only subcommand that touches the network (via gh).
 import argparse
 import fnmatch
 import json
+import random
 import re
 import subprocess
 import sys
@@ -1665,6 +1666,184 @@ def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
+    """Emit a random sample of Opus code-read turns with prior-user context and next-turn
+    lookahead classification, as a JSON array to stdout.
+
+    Each element provides a verbatim prior user message, the first tool_use block of the
+    code-read turn, and the kind of action taken in the next non-user Opus turn. Designed
+    for manual curation of which turns should/should not have been delegated.
+
+    The judgment-span state machine is intentionally duplicated from cmd_audit_routing —
+    tests cross-validate the two copies to guard against drift.
+    """
+    projects_glob = _projects_glob(args)
+
+    since_ts: float | None = None
+    since_raw: str | None = getattr(args, "since", None) or None
+    if since_raw:
+        try:
+            days = float(since_raw.rstrip("d"))
+            since_ts = time.time() - days * 86400
+        except ValueError:
+            print(f"audit-routing-samples: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
+            sys.exit(1)
+
+    sample_n: int = getattr(args, "sample", 30) or 30
+    seed: int | None = getattr(args, "seed", None)
+
+    candidates: list[dict] = []
+
+    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+        session_id = jsonl.stem
+
+        # Build per-session records list with kind classification.
+        # Judgment span state machine — duplicated from cmd_audit_routing intentionally.
+        in_judgment_span: bool = False
+        plan_mode_active: bool = False
+
+        session_records: list[dict] = []
+
+        for rec in records:
+            rtype = rec.get("type", "")
+            msg = rec.get("message") or {}
+
+            if rtype in ("user", "human"):
+                in_judgment_span = False
+                content_text = _content_text(msg.get("content", ""))
+                if "Plan mode is active" in content_text:
+                    plan_mode_active = True
+                user_text = _content_text(msg.get("content", ""))
+                session_records.append({
+                    "kind": "user",
+                    "content": [],
+                    "user_text": user_text,
+                })
+                continue
+
+            if rtype != "assistant":
+                continue
+
+            model = msg.get("model", "")
+            content = msg.get("content") or []
+
+            if _fam(model) != "opus":
+                # Still update span state from non-Opus assistant turns (ExitPlanMode)
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        and block.get("name") == "ExitPlanMode"
+                    ):
+                        plan_mode_active = False
+                continue
+
+            usage = msg.get("usage")
+            if not usage:
+                continue
+
+            # Open judgment span before classification (same logic as cmd_audit_routing)
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == "Skill"
+                    and (block.get("input") or {}).get("skill") in AUDIT_JUDGMENT_SKILLS
+                ):
+                    in_judgment_span = True
+                    break
+
+            turn_class = _classify_opus_turn(content, in_judgment_span, plan_mode_active)
+
+            # ExitPlanMode clears plan-mode for next turn
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == "ExitPlanMode"
+                ):
+                    plan_mode_active = False
+                    break
+
+            session_records.append({
+                "kind": turn_class,
+                "content": content,
+                "user_text": "",
+                "rec_ts": rec.get("timestamp"),
+            })
+
+        # Scan for code-read entries and collect sample candidates.
+        for turn_idx, turn in enumerate(session_records):
+            if turn["kind"] != "code-read":
+                continue
+
+            # Apply --since filter using record timestamp
+            if since_ts is not None:
+                rec_ts = _parse_ts(turn.get("rec_ts"))
+                if rec_ts is None or rec_ts < since_ts:
+                    continue
+
+            # prior_user_message: walk backward to find the nearest user turn.
+            prior_user_message = ""
+            for i in range(turn_idx - 1, -1, -1):
+                if session_records[i]["kind"] == "user":
+                    prior_user_message = session_records[i]["user_text"]
+                    break
+
+            # assistant_tool_call: first tool_use block in this turn's content.
+            assistant_tool_call: dict = {"name": "", "input": {}}
+            for block in turn["content"]:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    assistant_tool_call = {
+                        "name": block.get("name", ""),
+                        "input": block.get("input") or {},
+                    }
+                    break
+
+            # next_assistant_action and next_turn_excerpt: first non-user entry after this turn.
+            next_assistant_action = "other"
+            next_turn_excerpt = ""
+            for j in range(turn_idx + 1, len(session_records)):
+                next_entry = session_records[j]
+                if next_entry["kind"] == "user":
+                    continue
+                # Classify the next non-user entry.
+                if next_entry["kind"] == "code-write":
+                    next_assistant_action = "edit"
+                elif next_entry["kind"] == "orchestration":
+                    next_assistant_action = "dispatch"
+                elif next_entry["kind"] == "code-read":
+                    next_assistant_action = "another-read"
+                elif next_entry["kind"] == "other":
+                    # "respond-to-user" if text-only (no tool_use blocks)
+                    has_tool_use = any(
+                        isinstance(b, dict) and b.get("type") == "tool_use"
+                        for b in next_entry["content"]
+                    )
+                    next_assistant_action = "other" if has_tool_use else "respond-to-user"
+                else:
+                    next_assistant_action = "other"
+                next_turn_text = _content_text(next_entry["content"])
+                next_turn_excerpt = next_turn_text[:200]
+                break
+
+            candidates.append({
+                "session_id": session_id,
+                "turn_index": turn_idx,
+                "prior_user_message": prior_user_message,
+                "assistant_tool_call": assistant_tool_call,
+                "next_assistant_action": next_assistant_action,
+                "next_turn_excerpt": next_turn_excerpt,
+            })
+
+    # Apply reproducible sampling.
+    rng = random.Random(seed)
+    rng.shuffle(candidates)
+    candidates = candidates[:sample_n]
+
+    print(json.dumps(candidates, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Claude Code transcript analysis toolkit.")
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -1825,6 +2004,28 @@ def main() -> None:
         help="Limit to turns with timestamp in the last N days (e.g. 35d).",
     )
     p_audit_shape.set_defaults(func=cmd_audit_routing_shape)
+
+    p_audit_samples = sub.add_parser(
+        "audit-routing-samples",
+        help=(
+            "Emit a random sample of Opus code-read turns with prior-user context and"
+            " next-turn lookahead classification. JSON array output for manual curation."
+        ),
+    )
+    p_audit_samples.add_argument("--projects", default="*", metavar="GLOB")
+    p_audit_samples.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_audit_samples.add_argument(
+        "--sample", type=int, default=30, metavar="N",
+        help="Maximum number of sample turns to emit (default: 30).",
+    )
+    p_audit_samples.add_argument(
+        "--seed", type=int, default=None, metavar="N",
+        help="Random seed for reproducible sampling.",
+    )
+    p_audit_samples.set_defaults(func=cmd_audit_routing_samples)
 
     parsed = parser.parse_args()
     parsed.func(parsed)

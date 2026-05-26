@@ -19,6 +19,7 @@ The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly
 | Which sessions ran review skills, hit a hook denial, or spawned reviewer agents? | `review-trace` |
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | What fraction of Opus code-read turns are clearly dispatchable vs. read-then-edit loops? | `audit-routing-shape --since 35d` |
+| Pull a random sample of Opus code-read turns for delegation judgment curation | `audit-routing-samples --since 35d --sample 50 --seed 1` |
 
 ## Reading fail-seq output
 

@@ -2214,3 +2214,284 @@ class TestAuditRoutingShape:
         _mod.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         assert "Dispatchable share: —" in out
+
+
+# ---------------------------------------------------------------------------
+# audit-routing-samples
+# ---------------------------------------------------------------------------
+
+
+def _edit_use(tool_id: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Edit", "input": {"file_path": "/foo.py"}}
+
+
+def _audit_routing_samples_args(
+    *,
+    projects: str = "*",
+    since: str | None = None,
+    sample: int = 100,
+    seed: int | None = 42,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "since": since,
+        "sample": sample,
+        "seed": seed,
+    })()
+
+
+class TestAuditRoutingSamples:
+    def test_code_read_turn_emitted(self, fake_projects, capsys):
+        """A single code-read turn produces one record; verify session_id, turn_index,
+        and assistant_tool_call fields."""
+        _write_jsonl(fake_projects / "abc12345-test.jsonl", [
+            _opus([_read_use("r1", "/foo/bar.py")], out=100),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["session_id"] == "abc12345-test"
+        assert rec["turn_index"] == 0
+        assert rec["assistant_tool_call"] == {"name": "Read", "input": {"file_path": "/foo/bar.py"}}
+
+    def test_prior_user_message_captured(self, fake_projects, capsys):
+        """A user message immediately before the code-read turn is captured in prior_user_message."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _user_msg([{"type": "text", "text": "Please read the file"}]),
+            _opus([_read_use("r1", "/a.py")], out=100),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert records[0]["prior_user_message"] == "Please read the file"
+
+    def test_prior_user_message_empty_when_none(self, fake_projects, capsys):
+        """No preceding user turn → prior_user_message is empty string."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert records[0]["prior_user_message"] == ""
+
+    def test_next_action_edit(self, fake_projects, capsys):
+        """Next Opus turn is Edit (code-write) → next_assistant_action is 'edit'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+            _opus([_edit_use("e1")], out=200),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert records[0]["next_assistant_action"] == "edit"
+
+    def test_next_action_dispatch(self, fake_projects, capsys):
+        """Next Opus turn spawns an Agent (orchestration) → next_assistant_action is 'dispatch'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+            _opus([_agent_use("a1", "code-writer")], out=200),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert records[0]["next_assistant_action"] == "dispatch"
+
+    def test_next_action_another_read(self, fake_projects, capsys):
+        """Next Opus turn is another Read (code-read) → next_assistant_action is 'another-read'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+            _opus([_read_use("r2", "/b.py")], out=150),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        # Two code-read turns produce two records; only check the first turn here
+        first = next(r for r in records if r["turn_index"] == 0)
+        assert first["next_assistant_action"] == "another-read"
+
+    def test_next_action_respond_to_user(self, fake_projects, capsys):
+        """Next Opus turn has no tool_use (text-only 'other' class) → next_assistant_action is 'respond-to-user'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+            _opus([{"type": "text", "text": "Here is what I found"}], out=50),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert records[0]["next_assistant_action"] == "respond-to-user"
+
+    def test_next_action_other_when_no_next(self, fake_projects, capsys):
+        """Code-read is the last turn in the session → next_assistant_action is 'other'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert records[0]["next_assistant_action"] == "other"
+
+    def test_next_turn_excerpt_populated(self, fake_projects, capsys):
+        """next_turn_excerpt contains text from the next Opus turn."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+            _opus([{"type": "text", "text": "I read the file and found the answer"}], out=50),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert "I read the file" in records[0]["next_turn_excerpt"]
+
+    def test_sample_limit_respected(self, fake_projects, capsys):
+        """10 eligible turns with sample=5 → exactly 5 records returned."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use(f"r{i}", f"/f{i}.py")], out=100) for i in range(10)
+        ])
+        args = _audit_routing_samples_args(sample=5, seed=0)
+        _mod.cmd_audit_routing_samples(args)
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 5
+
+    def test_seed_produces_deterministic_output(self, fake_projects, capsys):
+        """Same seed on the same corpus produces the same turn selection."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use(f"r{i}", f"/f{i}.py")], out=100) for i in range(20)
+        ])
+        args_a = _audit_routing_samples_args(sample=5, seed=7)
+        _mod.cmd_audit_routing_samples(args_a)
+        records_a = json.loads(capsys.readouterr().out)
+
+        args_b = _audit_routing_samples_args(sample=5, seed=7)
+        _mod.cmd_audit_routing_samples(args_b)
+        records_b = json.loads(capsys.readouterr().out)
+
+        assert [r["turn_index"] for r in records_a] == [r["turn_index"] for r in records_b]
+
+    def test_judgment_span_excluded(self, fake_projects, capsys):
+        """Read turns inside a judgment span (opened by a judgment skill) are NOT included."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            # Opens judgment span; turn itself → judgment
+            _opus([_skill_use("s1", "code-review")], out=50),
+            # Read inside judgment span — must be excluded
+            _opus([_read_use("r1", "/span-file.py")], out=99),
+            # User turn closes span
+            _user_msg([{"type": "text", "text": "continue"}]),
+            # Read after span closed — must be included
+            _opus([_read_use("r2", "/normal.py")], out=77),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        # Only the post-span Read should appear
+        assert len(records) == 1
+        assert records[0]["assistant_tool_call"]["input"]["file_path"] == "/normal.py"
+
+    def test_since_filter_excludes_old_turns(self, fake_projects, capsys):
+        """Turns with timestamps older than --since Nd are excluded."""
+        old_ts = "2020-01-01T00:00:00.000Z"
+        new_ts = "2099-12-31T00:00:00.000Z"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/old.py")], out=100, ts=old_ts),
+            _opus([_read_use("r2", "/new.py")], out=100, ts=new_ts),
+        ])
+        args = _audit_routing_samples_args(since="1d")
+        _mod.cmd_audit_routing_samples(args)
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert records[0]["assistant_tool_call"]["input"]["file_path"] == "/new.py"
+
+    def test_non_code_read_turns_not_in_output(self, fake_projects, capsys):
+        """code-write, orchestration, and other turns produce no records."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_edit_use("e1")], out=100),
+            _opus([_agent_use("a1", "code-writer")], out=200),
+            _opus([], out=50),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 0
+
+    def test_cross_validation_with_audit_routing(self, fake_projects, capsys):
+        """The count of code-read samples (with sample large enough) equals the D1 total turn
+        count from cmd_audit_routing_shape for the same fixture.
+
+        This guards against state-machine drift between the two subcommands. A Read turn
+        inside a judgment span (99 tokens) must be excluded from both counts."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            # Skill invocation opens a judgment span; turn itself → judgment (50 tokens)
+            _opus([_skill_use("s1", "code-review")], out=50),
+            # Read inside judgment span → excluded from both subcommands
+            _opus([_read_use("rx", "/span-file.txt")], out=99),
+            # User turn resets span
+            _user_msg("done"),
+            # 3 code-read turns outside span + 1 code-write
+            _opus([_read_use("r1", "/a.txt")], out=100),
+            _opus([_read_use("r2", "/b.txt")], out=100),
+            _opus([_read_use("r3", "/c.txt")], out=100),
+            _opus([_edit_use("e1")], out=200),
+        ])
+
+        # Run audit-routing-shape: sum D1 turn counts across all buckets
+        _mod.cmd_audit_routing_shape(_audit_routing_shape_args())
+        shape_out = capsys.readouterr().out
+        d1_total_turns = sum(_extract_shape_d1(shape_out, bkt)[0] for bkt in _mod._D1_BUCKETS)
+
+        # Run audit-routing-samples with a large sample to capture all eligible turns
+        args = _audit_routing_samples_args(sample=1000, seed=0)
+        _mod.cmd_audit_routing_samples(args)
+        samples = json.loads(capsys.readouterr().out)
+
+        assert len(samples) == d1_total_turns  # both should be 3
+
+    def test_user_turn_skipped_in_forward_scan(self, fake_projects, capsys):
+        """A user turn between a code-read and a code-write is skipped in the forward scan;
+        next_assistant_action must still be 'edit' not 'other'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+            _user_msg([{"type": "text", "text": "looks good"}]),
+            _opus([_edit_use("e1")], out=200),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert records[0]["next_assistant_action"] == "edit"
+
+    def test_prior_user_message_nonadjacent(self, fake_projects, capsys):
+        """The backward walk finds the most recent user turn even with intervening code-read turns."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _user_msg([{"type": "text", "text": "investigate this"}]),
+            _opus([_read_use("r1", "/first.py")], out=100),
+            _opus([_read_use("r2", "/second.py")], out=100),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 2
+        # Both reads should trace back to the same user message
+        assert records[0]["prior_user_message"] == "investigate this"
+        assert records[1]["prior_user_message"] == "investigate this"
+
+    def test_next_turn_excerpt_truncated_at_200(self, fake_projects, capsys):
+        """next_turn_excerpt is truncated to at most 200 characters."""
+        long_text = "x" * 400
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+            _opus([{"type": "text", "text": long_text}], out=50),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert len(records[0]["next_turn_excerpt"]) == 200
+
+    def test_different_seed_produces_different_output(self, fake_projects, capsys):
+        """Different seeds on the same corpus produce different selections (shuffle is live)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use(f"r{i}", f"/f{i}.py")], out=100) for i in range(20)
+        ])
+        args_a = _audit_routing_samples_args(sample=5, seed=1)
+        _mod.cmd_audit_routing_samples(args_a)
+        records_a = json.loads(capsys.readouterr().out)
+
+        args_b = _audit_routing_samples_args(sample=5, seed=99)
+        _mod.cmd_audit_routing_samples(args_b)
+        records_b = json.loads(capsys.readouterr().out)
+
+        assert [r["turn_index"] for r in records_a] != [r["turn_index"] for r in records_b]
