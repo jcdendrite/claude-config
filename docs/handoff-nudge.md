@@ -22,11 +22,10 @@ The hook checks for this file before reading the transcript. It is useful when r
 
 ## Log location
 
-The hook appends one line per significant event to `~/.claude/.handoff-nudge.log`. Three line types appear:
+The hook appends one line per significant event to `~/.claude/.handoff-nudge.log`. Two line types appear:
 
 | Line prefix | Meaning |
 |---|---|
-| `skip session=<id> est=<n>` | Token estimate was below 120 000; no nudge emitted |
 | `nudged session=<id> est=<n>` | Threshold crossed for the first time this session; nudge emitted |
 | `schema-drift session=<id>` | Usage block was found but all four token fields were 0 or null, suggesting the transcript schema changed; see [Known limitations](#known-limitations) |
 
