@@ -153,6 +153,11 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/block-gh-pr-merge.sh",
+            "statusMessage": "Checking gh-pr-merge block..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/require-respond-pr.sh",
             "statusMessage": "Checking respond-pr gate..."
           },
