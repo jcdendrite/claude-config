@@ -3,8 +3,9 @@ name: subagent-delegation
 description: >
   When to dispatch to a subagent vs inline. TRIGGER when: full
   check suite or full-project verification; broad codebase search;
-  2nd/3rd Bash command toward same question; delegating
-  implementation; reporting check-runner test counts.
+  first exploratory read (target unknown); 2nd/3rd Bash command
+  toward same question; delegating implementation; reporting
+  check-runner test counts.
   DO NOT TRIGGER when: single targeted lookup; comprehension read
   feeding your own writing/review/design; Edit/Write sequences;
   output requiring line-by-line reasoning.
@@ -40,8 +41,10 @@ dispatch the question instead of continuing inline.
 
 **Stays inline — do not over-delegate:**
 
-- A single targeted lookup; one `grep` for a known symbol; one `Read`
-  of a known path.
+- A lookup where you already know the target — one `grep` for a
+  specific known symbol, one `Read` of a specific known path. If you
+  do not yet know what you are looking for, that is exploratory —
+  dispatch it even if you only planned one command.
 - A comprehension read whose content feeds your own writing, review, or
   design.
 - `Edit`/`Write` sequences (judgment-dense, not scratch).
@@ -134,10 +137,13 @@ than running it inline:
 
 Discovery output inhales into the parent context exactly like a check
 suite does, and an auto-mode parent on Opus pays that in the most
-expensive tokens — for output it only needed an *answer* from. A single
-targeted lookup — one `grep` for a known symbol, one `Read` of a known
-path — stays inline; dispatch when the search is broad or spans more
-than ~3 queries.
+expensive tokens — for output it only needed an *answer* from. A lookup
+stays inline when you already know the target — one `grep` for a
+specific symbol, one `Read` of a path you have already identified.
+Dispatch any read whose purpose is to explore, map, or locate — even a
+single command. The ~3-query threshold is a trailing indicator; by the
+time a third command fires, multiple turns of exploratory output have
+already landed in context.
 
 This does not apply to *comprehension* reads: when you need a file's
 content in your own reasoning — to write or modify it, review it, or
