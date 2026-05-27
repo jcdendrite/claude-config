@@ -2,6 +2,7 @@
 import argparse
 import importlib.util
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -2231,12 +2232,14 @@ def _audit_routing_samples_args(
     since: str | None = None,
     sample: int = 100,
     seed: int | None = 42,
+    output_format: str = "json",
 ) -> object:
     return type("A", (), {
         "projects": projects,
         "since": since,
         "sample": sample,
         "seed": seed,
+        "output_format": output_format,
     })()
 
 
@@ -2495,3 +2498,139 @@ class TestAuditRoutingSamples:
         records_b = json.loads(capsys.readouterr().out)
 
         assert [r["turn_index"] for r in records_a] != [r["turn_index"] for r in records_b]
+
+    def test_format_md_emits_markdown_document(self, fake_projects, capsys):
+        """--format md produces a markdown document, not a JSON array."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/foo/bar.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert out.startswith("# audit-routing-samples curation")
+
+    def test_format_md_one_section_per_record(self, fake_projects, capsys):
+        """--format md produces exactly one ## section header per sampled record."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/a.py")], out=100),
+            _opus([_read_use("r2", "/b.py")], out=100),
+            _opus([_read_use("r3", "/c.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md", sample=10)
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        # Count lines that start with '## ' (section headers, not the h1)
+        section_headers = [line for line in out.splitlines() if line.startswith("## ")]
+        assert len(section_headers) == 3
+
+    def test_format_md_renders_read_tool_call(self, fake_projects, capsys):
+        """--format md renders a Read tool call as **Read:** `<file_path>`."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "src/foo/bar.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert "**Read:** `src/foo/bar.py`" in out
+
+    def test_format_md_renders_grep_tool_call(self, fake_projects, capsys):
+        """--format md renders a Grep tool call as **Grep:** `<pattern>` in `<path>`."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([{"type": "tool_use", "id": "g1", "name": "Grep",
+                    "input": {"pattern": "render_widget", "path": "src/"}}], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert "**Grep:** `render_widget` in `src/`" in out
+
+    def test_format_md_renders_bash_tool_call_truncated(self, fake_projects, capsys):
+        """--format md truncates a Bash command longer than 80 chars to exactly 80 chars + '…'."""
+        long_command = "a" * 100
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([{"type": "tool_use", "id": "b1", "name": "Bash",
+                    "input": {"command": long_command}}], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert "**Bash:**" in out
+        # Extract the backtick-delimited command portion
+        match = re.search(r"\*\*Bash:\*\* `([^`]*)`", out)
+        assert match is not None
+        rendered_command = match.group(1)
+        assert rendered_command == "a" * _mod._BASH_COMMAND_DISPLAY_CHARS + "…"
+
+    def test_format_md_fallback_for_unknown_tool(self):
+        """_pretty_tool_call renders an unrecognised tool name using the **<Name>:** fallback."""
+        # SomeOtherTool is not in _CODE_READ_TOOLS, so a turn using only it would never
+        # be classified as code-read and would not reach _pretty_tool_call via the full
+        # pipeline.  Testing the helper directly exercises the fallback rendering path.
+        rendered = _mod._pretty_tool_call({"name": "SomeOtherTool", "input": {"x": 1}})
+        assert "**SomeOtherTool:**" in rendered
+
+    def test_format_md_blockquotes_multiline_user_message(self, fake_projects, capsys):
+        """--format md blockquotes each line of a multiline prior user message."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _user_msg([{"type": "text", "text": "line one\nline two"}]),
+            _opus([_read_use("r1", "/a.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert "> line one" in out
+        assert "> line two" in out
+
+    def test_format_json_unchanged_by_default(self, fake_projects, capsys):
+        """Default output (no --format flag) is a JSON array starting with '['."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/foo/bar.py")], out=100),
+        ])
+        args = _audit_routing_samples_args()  # output_format defaults to "json"
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert out.strip().startswith("[")
+
+    def test_format_md_renders_glob_tool_call(self, fake_projects, capsys):
+        """--format md renders a Glob tool call as **Glob:** `<pattern>` in `<path>`."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([{"type": "tool_use", "id": "gl1", "name": "Glob",
+                    "input": {"pattern": "**/*.ts", "path": "src/"}}], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert "**Glob:** `**/*.ts` in `src/`" in out
+
+    def test_format_md_renders_bash_tool_call_short(self, fake_projects, capsys):
+        """--format md renders a short Bash command without truncation or ellipsis."""
+        short_command = "git status"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([{"type": "tool_use", "id": "b2", "name": "Bash",
+                    "input": {"command": short_command}}], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert f"**Bash:** `{short_command}`" in out
+        assert "…" not in out
+
+    def test_format_md_blockquotes_blank_lines_in_user_message(self, fake_projects, capsys):
+        """--format md preserves blank-line continuity: blank lines render as '>' not bare empty."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _user_msg([{"type": "text", "text": "para one\n\npara two"}]),
+            _opus([_read_use("r1", "/a.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        # Find the blockquoted user section; the blank line between paragraphs must be ">"
+        # (not an empty string), so blockquote continuity is preserved in markdown renderers.
+        assert ">" in lines   # at least one plain ">" line exists
+        # Verify the blank line between the two paragraphs is ">" not ""
+        # by finding the two paragraph lines and checking what's between them
+        para1_idx = next(i for i, ln in enumerate(lines) if ln == "> para one")
+        para2_idx = next(i for i, ln in enumerate(lines) if ln == "> para two")
+        for between_line in lines[para1_idx + 1:para2_idx]:
+            assert between_line == ">"

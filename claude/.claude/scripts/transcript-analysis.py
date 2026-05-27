@@ -13,7 +13,7 @@ import sys
 import time
 from collections import defaultdict
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -67,12 +67,114 @@ def _fam(model: str) -> str:
     return "other"
 
 
+_BASH_COMMAND_DISPLAY_CHARS = 80
+
+
 def _content_text(content) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         return " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
     return ""
+
+
+def _pretty_tool_call(tool_call: dict) -> str:
+    """Render a tool call dict as a concise markdown-inline string for curation review."""
+    name = tool_call.get("name", "")
+    inp = tool_call.get("input") or {}
+    if name == "Read":
+        file_path = inp.get("file_path", "")
+        return f"**Read:** `{file_path}`"
+    if name == "Grep":
+        pattern = inp.get("pattern", "")
+        path = inp.get("path")
+        if path:
+            return f"**Grep:** `{pattern}` in `{path}`"
+        return f"**Grep:** `{pattern}` (repo-wide)"
+    if name == "Glob":
+        pattern = inp.get("pattern", "")
+        path = inp.get("path")
+        if path:
+            return f"**Glob:** `{pattern}` in `{path}`"
+        return f"**Glob:** `{pattern}` (repo-wide)"
+    if name == "Bash":
+        command = inp.get("command", "")
+        truncated = command[:_BASH_COMMAND_DISPLAY_CHARS] + "…" if len(command) > _BASH_COMMAND_DISPLAY_CHARS else command
+        return f"**Bash:** `{truncated}`"
+    compact = json.dumps(inp, separators=(",", ":"))
+    return f"**{name}:** `{compact}`"
+
+
+def _blockquote_user_message(text: str) -> str:
+    """Prefix each line of text with '> ' for markdown blockquoting.
+
+    Blank lines render as '>' (no trailing space) to preserve blockquote
+    continuity in standard markdown renderers.
+    """
+    if not text:
+        return "> (no preceding user message)"
+    lines = text.split("\n")
+    return "\n".join((f"> {line}").rstrip() for line in lines)
+
+
+def _format_samples_as_markdown(
+    records: list[dict],
+    *,
+    since_raw: str | None,
+    sample_n: int,
+    seed: int | None,
+) -> str:
+    """Return a full markdown document for human curation of audit-routing-samples output."""
+    today = date.today().isoformat()
+    since_display = since_raw or "(none)"
+    seed_display = str(seed) if seed is not None else "(none)"
+    filter_line = f"`--since {since_display}  --sample {sample_n}  --seed {seed_display}`"
+
+    header = (
+        f"# audit-routing-samples curation — {len(records)} turns\n"
+        f"\n"
+        f"Generated: {today}  ·  Filter: {filter_line}\n"
+        f"\n"
+        f"For each turn: read the three context blocks, then check ONE verdict box.\n"
+        f"- `true (delegate)` — content sat in context with no immediate consumer;"
+        f" delegation would have saved tokens\n"
+        f"- `false (inline correct)` — content fed an immediate edit or comprehension-driven response\n"
+        f"- `skip` — ambiguous or noise; drop from curated set\n"
+    )
+
+    sections: list[str] = []
+    total = len(records)
+    for i, rec in enumerate(records):
+        session_id = rec.get("session_id", "")
+        turn_index = rec.get("turn_index", 0)
+        prior_user_message = rec.get("prior_user_message", "")
+        assistant_tool_call = rec.get("assistant_tool_call") or {"name": "", "input": {}}
+        next_assistant_action = rec.get("next_assistant_action", "")
+        next_turn_excerpt = rec.get("next_turn_excerpt", "")
+
+        blockquoted = _blockquote_user_message(prior_user_message)
+        tool_line = _pretty_tool_call(assistant_tool_call)
+        next_excerpt_line = next_turn_excerpt.replace("\n", " ") if next_turn_excerpt else "(none)"
+
+        section = (
+            f"## {i + 1}/{total} — session `{session_id}` turn {turn_index}\n"
+            f"\n"
+            f"**User:**\n"
+            f"{blockquoted}\n"
+            f"\n"
+            f"{tool_line}\n"
+            f"\n"
+            f"**Next:** `{next_assistant_action}`\n"
+            f"> {next_excerpt_line}\n"
+            f"\n"
+            f"**Verdict** (check one):\n"
+            f"- [ ] true (delegate)\n"
+            f"- [ ] false (inline correct)\n"
+            f"- [ ] skip\n"
+        )
+        sections.append(section)
+
+    return header + "\n---\n\n" + "\n---\n\n".join(sections)
 
 
 def _parse_ts(ts_str: str | None) -> float | None:
@@ -1841,7 +1943,16 @@ def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
     rng.shuffle(candidates)
     candidates = candidates[:sample_n]
 
-    print(json.dumps(candidates, indent=2))
+    output_format: str = getattr(args, "output_format", "json") or "json"
+    if output_format == "md":
+        print(_format_samples_as_markdown(
+            candidates,
+            since_raw=since_raw,
+            sample_n=sample_n,
+            seed=seed,
+        ))
+    else:
+        print(json.dumps(candidates, indent=2))
 
 
 def main() -> None:
@@ -2024,6 +2135,10 @@ def main() -> None:
     p_audit_samples.add_argument(
         "--seed", type=int, default=None, metavar="N",
         help="Random seed for reproducible sampling.",
+    )
+    p_audit_samples.add_argument(
+        "--format", choices=["json", "md"], default="json", dest="output_format",
+        help="Output format: json (default) or md (human-readable markdown for curation).",
     )
     p_audit_samples.set_defaults(func=cmd_audit_routing_samples)
 
