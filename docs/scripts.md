@@ -32,7 +32,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   token-analyzer --since 7d  # include token activity from the last N days (e.g. 2d, 7d)
   ```
 
-- **`transcript-analysis.py`** — analysis toolkit for Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). Fourteen subcommands; local-only reads except `pr-link`, which calls `gh`. Invoked directly: `python3 ~/.claude/scripts/transcript-analysis.py <subcommand>`. See [`docs/transcript-analysis.md`](transcript-analysis.md) for per-subcommand reference; the `/transcript-analysis` skill documents which subcommand answers which question.
+- **`transcript-analysis.py`** — analysis toolkit for Claude Code transcripts (`~/.claude/projects/*/*.jsonl`); local-only reads except `pr-link`, which calls `gh`. Invoked directly: `python3 ~/.claude/scripts/transcript-analysis.py <subcommand>`. See [`docs/transcript-analysis.md`](transcript-analysis.md) for per-subcommand reference; the `/transcript-analysis` skill documents which subcommand answers which question.
 
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. The 12 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval; shape validation is enforced by `enforce-marker-script-shape.sh` (see [`docs/hooks.md`](hooks.md)).
 

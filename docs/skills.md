@@ -8,7 +8,7 @@ Full descriptions for skills, slash commands, and project-scoped plugins in this
 - **`/plan-review`** — review implementation plans before presenting, with domain-specific reviewer roles.
 - **`/code-review`** — principal engineer code review checklist with ripple-effect triage and domain-specific audits (backend, frontend, security, infrastructure, data).
 - **`/ready-for-review`** — pre-handoff gate: verifies tests/lint/typecheck, runs `/code-review` against the cumulative PR diff (all commits vs default branch), and syncs the PR description; required before `git push` on a branch with an open PR.
-- **`/review-permissions`** — security audit of `permissions.allow` rules with a 21-item checklist.
+- **`/review-permissions`** — security audit of `permissions.allow` rules against a structured checklist.
 - **`/respond-pr`** — fetch and address PR review comments, with `[Claude Code]` attribution on all replies.
 - **`/subagent-delegation`** — when to dispatch work to a subagent rather than running it inline: the two-test gate (output test, judgment test), which subagent fits which case (`check-runner` for check suites, `Explore` / `general-purpose` for codebase discovery, `code-writer` for implementation work), and what stays inline (Edit/Write, single targeted reads, content you must reason over line by line). Auto-triggers on the relevant dispatch decisions; the rationale (parent context is re-read every turn) lives in the skill body, not the description.
 - **`/branch-creation`** — naming conventions (`<TICKET-ID>/<topic-slug>` for ticketed projects, `<topic-slug>` alone otherwise), anti-patterns to reject (tracker `<user>/` defaults), and branching from a fresh default-branch tip.
