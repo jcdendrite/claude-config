@@ -99,7 +99,10 @@ def _pretty_tool_call(tool_call: dict) -> str:
         return f"**Glob:** `{pattern}` (repo-wide)"
     if name == "Bash":
         command = inp.get("command", "")
+        description = inp.get("description", "")
         truncated = command[:_BASH_COMMAND_DISPLAY_CHARS] + "…" if len(command) > _BASH_COMMAND_DISPLAY_CHARS else command
+        if description:
+            return f"**Bash:** {description} — `{truncated}`"
         return f"**Bash:** `{truncated}`"
     compact = json.dumps(inp, separators=(",", ":"))
     return f"**{name}:** `{compact}`"
@@ -115,6 +118,92 @@ def _blockquote_user_message(text: str) -> str:
         return "> (no preceding user message)"
     lines = text.split("\n")
     return "\n".join((f"> {line}").rstrip() for line in lines)
+
+
+_NARRATION_EXCERPT_CHARS = 280
+_TRAIL_CMD_DISPLAY_CHARS = 100
+_RECENT_LOOKBACK_N = 3
+
+
+def _recent_assistant_text(
+    session_records: list[dict], turn_idx: int, n: int
+) -> list[str]:
+    """Return up to n most-recent assistant text excerpts before turn_idx.
+
+    Walks backward through session_records, collects the last text block
+    from each assistant turn (kind != 'user'), skips turns with no text
+    block. Returns entries in chronological order (oldest first).
+    Newlines in each excerpt are replaced with spaces so the caller can
+    render each as a single blockquote line.
+    """
+    excerpts: list[str] = []
+    for i in range(turn_idx - 1, -1, -1):
+        if len(excerpts) >= n:
+            break
+        entry = session_records[i]
+        if entry["kind"] == "user":
+            continue
+        last_text = ""
+        for block in entry.get("content", []):
+            if isinstance(block, dict) and block.get("type") == "text":
+                last_text = block.get("text") or ""
+        if not last_text:
+            continue
+        flat = last_text.replace("\n", " ")
+        if len(flat) > _NARRATION_EXCERPT_CHARS:
+            flat = flat[:_NARRATION_EXCERPT_CHARS] + "…"
+        excerpts.append(flat)
+    excerpts.reverse()
+    return excerpts
+
+
+def _recent_tool_trail(
+    session_records: list[dict], turn_idx: int, n: int
+) -> list[str]:
+    """Return up to n most-recent tool-call summary strings before turn_idx.
+
+    Walks backward through session_records collecting the first tool_use
+    block in each assistant turn, oldest-first in the returned list. Each
+    entry is a one-line human-readable label:
+      - Read: <file_path>
+      - Grep: <pattern> in <path>  /  Grep: <pattern> (repo-wide)
+      - Glob: <pattern> in <path>  /  Glob: <pattern> (repo-wide)
+      - Bash: <description> — `<truncated_command>`  (or just `<cmd>` if no description)
+      - <Name>: <compact_json_input>  (fallback)
+    """
+    trail: list[str] = []
+    for i in range(turn_idx - 1, -1, -1):
+        if len(trail) >= n:
+            break
+        entry = session_records[i]
+        if entry["kind"] == "user":
+            continue
+        for block in entry.get("content", []):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                name = block.get("name", "")
+                inp = block.get("input") or {}
+                if name == "Read":
+                    label = f"Read: {inp.get('file_path', '')}"
+                elif name == "Grep":
+                    pat = inp.get("pattern", "")
+                    path = inp.get("path")
+                    label = f"Grep: {pat} in {path}" if path else f"Grep: {pat} (repo-wide)"
+                elif name == "Glob":
+                    pat = inp.get("pattern", "")
+                    path = inp.get("path")
+                    label = f"Glob: {pat} in {path}" if path else f"Glob: {pat} (repo-wide)"
+                elif name == "Bash":
+                    command = inp.get("command", "")
+                    description = (inp.get("description") or "").replace("\n", " ")
+                    truncated = command[:_TRAIL_CMD_DISPLAY_CHARS] + "…" if len(command) > _TRAIL_CMD_DISPLAY_CHARS else command
+                    label = f"Bash: {description} — `{truncated}`" if description else f"Bash: `{truncated}`"
+                else:
+                    compact = json.dumps(inp, separators=(",", ":"))
+                    label = f"{name}: {compact}"
+                trail.append(label)
+                break
+    trail.reverse()
+    return trail
 
 
 def _format_samples_as_markdown(
@@ -156,6 +245,19 @@ def _format_samples_as_markdown(
         tool_line = _pretty_tool_call(assistant_tool_call)
         next_excerpt_line = next_turn_excerpt.replace("\n", " ") if next_turn_excerpt else "(none)"
 
+        recent_text = rec.get("recent_assistant_text") or []
+        recent_trail = rec.get("recent_tool_trail") or []
+
+        narration_block = ""
+        if recent_text:
+            lines = "\n".join(f"> {t}" for t in recent_text)
+            narration_block = f"\n**Recent agent narration:**\n{lines}\n"
+
+        trail_block = ""
+        if recent_trail:
+            lines = "\n".join(f"- {t}" for t in recent_trail)
+            trail_block = f"\n**Recent tool trail:**\n{lines}\n"
+
         section = (
             f"## {i + 1}/{total} — session `{session_id}` turn {turn_index}\n"
             f"\n"
@@ -163,6 +265,8 @@ def _format_samples_as_markdown(
             f"{blockquoted}\n"
             f"\n"
             f"{tool_line}\n"
+            f"{narration_block}"
+            f"{trail_block}"
             f"\n"
             f"**Next:** `{next_assistant_action}`\n"
             f"> {next_excerpt_line}\n"
@@ -1936,6 +2040,8 @@ def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
                 "assistant_tool_call": assistant_tool_call,
                 "next_assistant_action": next_assistant_action,
                 "next_turn_excerpt": next_turn_excerpt,
+                "recent_assistant_text": _recent_assistant_text(session_records, turn_idx, _RECENT_LOOKBACK_N),
+                "recent_tool_trail": _recent_tool_trail(session_records, turn_idx, _RECENT_LOOKBACK_N),
             })
 
     # Apply reproducible sampling.
