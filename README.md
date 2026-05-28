@@ -8,7 +8,7 @@
 
 Portable [Claude Code](https://claude.ai/claude-code) global configuration: custom skills, PreToolUse hooks that gate `git commit` and PR-comment flows, and a custom statusline. Runs on any Unix-like system (Linux, macOS, WSL). Managed with [GNU Stow](https://www.gnu.org/software/stow/).
 
-Install it to wire in 19 pre-built hooks that gate commits, pushes, and PR comments until explicit review steps are satisfied; a full contribution pipeline from `/plan-it` through `/respond-pr`; 8 specialist reviewer agents auto-triggered from code review; and a three-tier private-project redaction system that blocks sensitive identifiers before they land in public commits. See [Philosophy](#philosophy) for the design rationale.
+Install it to wire in a set of pre-built hooks that gate commits, pushes, and PR comments until explicit review steps are satisfied; a full contribution pipeline from `/plan-it` through `/respond-pr`; a roster of specialist reviewer agents auto-triggered from code review; and a three-tier private-project redaction system that blocks sensitive identifiers before they land in public commits. See [Philosophy](#philosophy) for the design rationale.
 
 Maintained by [Cordova Strategy](https://cordovastrategy.com).
 
@@ -48,7 +48,7 @@ Claude Code without enforcement will claim code is done before tests pass, skip 
 
 A CLAUDE.md instruction says "you should run code-review before committing." A PreToolUse hook says "the commit is denied until code-review ran on this exact diff in this session." This distinction is the core design choice: enforce at the tool-call boundary, not at the prompt layer, because prompt-layer instructions are advisory — the model can disregard them on any change it judges simple enough not to need review.
 
-`claude-config` is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. It also disables seven bundled Claude Code skills that overlap with its review pipeline or are one-time setup utilities (see [docs/skills.md — Bundled skills disabled by default](docs/skills.md#bundled-skills-disabled-by-default)); stow users can re-enable any of them via `skillOverrides` in `~/.claude/settings.local.json`. `claude-config` ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns `claude-config` systematizes: per-session marker keying, specialist reviewer routing, and three-tier redaction.
+`claude-config` is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. It also disables a set of bundled Claude Code skills that overlap with its review pipeline or are one-time setup utilities (see [docs/skills.md — Bundled skills disabled by default](docs/skills.md#bundled-skills-disabled-by-default)); stow users can re-enable any of them via `skillOverrides` in `~/.claude/settings.local.json`. `claude-config` ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns `claude-config` systematizes: per-session marker keying, specialist reviewer routing, and three-tier redaction.
 
 ## Docs
 
@@ -100,7 +100,7 @@ Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 ```
 claude/        # stow package — claude/.claude/ → ~/.claude/
-plugins/       # marketplace plugins (lovable-cloud, skill-management, claude-hook-review)
+plugins/       # marketplace plugins (see Plugins section below)
 docs/          # design-decisions, walkthrough, hooks, skills, scripts, auto-mode, redaction
 .github/       # workflows, dependabot
 .claude/       # repo-local plans, settings, worktrees (gitignored)
@@ -181,7 +181,8 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
   **Plugin dependency:** the structural validator imports `pyyaml`. On first session in a consumer repo, the plugin's `SessionStart` hook provisions a persistent venv at `${CLAUDE_PLUGIN_DATA}/venv` and installs `pyyaml` into it; the commit-time hook prefers that venv's `python` and falls back to system `python3`. `./install.sh` does not install anything into the host Python — contributors who run the test suite set up a repo-local `.venv` per [Tests](#tests).
 
-- **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the 9-item review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
+- **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
+- **`plugin-semver`** — Semver and version-field discipline for Claude Code plugin changes: when to bump major/minor/patch, which fields must be kept in sync, and how to catch version drift before pushing. `claude plugin install plugin-semver@claude-config --scope project`
 
 ### Agents
 
@@ -198,9 +199,9 @@ Three agent types ship in `claude/.claude/agents/`:
 - **`staff-product-engineer`** — spec-to-user-problem fidelity, critical spec reading, telemetry semantics, adjacent-regression, backward compat, accessibility-as-spec-fidelity.
 - **`staff-sdet`** — testability of the design, pyramid shape, edge cases, mock design, fixture realism, security-invariant coverage, production code that lacks tests.
 
-Schema-change diffs nominally route three ways — `staff-backend-engineer` (designs), `staff-data-engineer` (operational / pipeline impact, DDL shape), `staff-analytics-engineer` (ELT-readiness). Trigger discipline in the skill bodies prevents three-persona fire on trivial additive changes. The decision criteria for adding, splitting, or excluding a persona — including why DBRE, data platform engineer, and data steward are deliberately not in the roster — are in [Designing reviewer personas](#designing-reviewer-personas) below.
+Schema-change diffs nominally route three ways — `staff-backend-engineer` (designs), `staff-data-engineer` (operational / pipeline impact, DDL shape), `staff-analytics-engineer` (ELT-readiness). Trigger discipline in the skill bodies prevents three-persona fire on trivial additive changes. The decision criteria for adding, splitting, or excluding a persona — including why DBRE, data platform engineer, and data steward are deliberately not in the roster — are in [docs/design-decisions.md §3](docs/design-decisions.md#3-specialist-reviewer-roster-8-personas).
 
-For guidance on extending, splitting, or spawning personas, see [design-decisions.md §9](docs/design-decisions.md).
+For guidance on extending, splitting, or spawning personas, see [design-decisions.md §9](docs/design-decisions.md#9-reviewer-persona-roster-operations).
 
 **`check-runner`** — a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts. Dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output". Constrained to `tools: Bash` only and capped at `maxTurns: 20`; its checks-only charter and the reasoning behind every constraint are in `docs/design-decisions.md` §10.
 
