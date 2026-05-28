@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Principal-engineer review before presenting code. TRIGGER when: code is about to be presented, or the user asks for a code review. DO NOT TRIGGER when: cosmetic-only changes (typo, formatting, CSS tweaks with no behavioral delta); only SKILL.md staged (use skill-review); only agent files staged (use agent-review); only plan files staged (use plan-review); fresh review-markers/ entry covers the diff."
+description: "Principal-engineer review before presenting code. TRIGGER when: code is about to be presented, or the user asks for a code review. DO NOT TRIGGER when: cosmetic-only changes (typo, formatting, CSS tweaks with no behavioral delta); only SKILL.md staged (use skill-review); only agent files staged (use agent-review); only plan files staged (use plan-review); only CLAUDE.md/AGENTS.md/auto-memory files staged (use ai-instruction-and-memory-files); fresh review-markers/ entry covers the diff."
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
@@ -146,6 +146,8 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 For `.claude/skills/**/SKILL.md` review, invoke `skill-review`. For `claude/.claude/agents/*.md` and `plugins/*/agents/*.md` review, invoke `agent-review`. Each owns frontmatter contract, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions for its file type — do not assert behavioral equivalence on prose compressions yourself; that audit belongs to the dispatched skill.
 
+For `CLAUDE.md`, `AGENTS.md`, and `~/.claude/projects/*/memory/` review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), altitude, duplication, length cap, and behavior test for instruction and memory files.
+
 35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
 For hook reviews (`claude/.claude/hooks/*.sh`, hook entries in `settings.json`), invoke the `claude-hook-review` skill.
@@ -216,7 +218,7 @@ The Change type column keys on what the change *does* for an operator or consume
 | Adds or changes warehouse models / dbt transformations / semantic-layer files | `staff-analytics-engineer` (modeling, transformation correctness, materialization, test coverage) |
 | Adds or changes CDC / change-stream / ETL/ELT pipeline / warehouse ingestion connector | `staff-data-engineer` (transport, schema-drift, observability) + `staff-platform-engineer` (operational footprint) |
 | Modifies CI/CD pipelines or deploy config | `staff-platform-engineer` + `staff-backend-engineer` — verify pipelines and environment consistency |
-| Adds or modifies a skill, agent, instruction-file rule, or hook | `/skill-review` or `/agent-review` per the dispatcher (Domain: Claude Code config); additionally spawn a `staff-*` persona only when the edit demonstrably changes the *output* or *decision* that lane's specialist would review — not merely because the lane's name appears in the edited rule (e.g., a rule change that alters when `staff-backend-engineer` is consulted → spawn `staff-backend-engineer`; a typo or formatting fix in the same rule → do not spawn). For substantive routing-table edits specifically, defer to the *Reshapes reviewer ownership* row below, which has the precise pre/post-edit-union spawn rule. |
+| Adds or modifies a skill, agent, instruction-file rule, or hook | `/skill-review`, `/agent-review`, `ai-instruction-and-memory-files`, or `claude-hook-review` per the dispatcher (Domain: Claude Code config); additionally spawn a `staff-*` persona only when the edit demonstrably changes the *output* or *decision* that lane's specialist would review — not merely because the lane's name appears in the edited rule (e.g., a rule change that alters when `staff-backend-engineer` is consulted → spawn `staff-backend-engineer`; a typo or formatting fix in the same rule → do not spawn). For substantive routing-table edits specifically, defer to the *Reshapes reviewer ownership* row below, which has the precise pre/post-edit-union spawn rule. |
 | Changes runtime config (env vars, secrets, feature flags) | `staff-platform-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
 | Reshapes reviewer ownership (substantive edits to plan-review/code-review skill routing tables, or scope language in `agents/*.md`) | Spawn every persona named in the pre- or post-edit table — each evaluates whether their row (or its removal) is accurate, scoped, and not bleeding into another lane. The pre/post union ensures a row deletion still spawns the affected persona. For an `agents/*.md` edit, spawn the edited persona plus their Item-ownership co-owners. Skip whitespace / typo / copy-edit-only diffs. |
 

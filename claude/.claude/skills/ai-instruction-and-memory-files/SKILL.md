@@ -1,9 +1,9 @@
 ---
 name: ai-instruction-and-memory-files
 description: >
-  Editing rules for CLAUDE.md, AGENTS.md, and Claude Code auto-memory files.
-  TRIGGER when: editing or auditing CLAUDE.md, AGENTS.md, or
-  ~/.claude/projects/*/memory/, or deciding which surface a rule
+  Audit of CLAUDE.md, AGENTS.md, and Claude Code auto-memory files.
+  TRIGGER when: authoring/reviewing a CLAUDE.md, AGENTS.md, or
+  ~/.claude/projects/*/memory/ change, or deciding which surface a rule
   belongs in. DO NOT TRIGGER when: editing .lovable/*.md, .cursorrules,
   .github/copilot-instructions.md, README.md, or writing code.
 user-invocable: false
