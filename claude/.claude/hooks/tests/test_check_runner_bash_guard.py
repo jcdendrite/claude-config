@@ -381,11 +381,18 @@ class TestFileReadDenies:
         [
             "cat /path/to/file",
             "head -10 README.md",
+            "less /path/to/file",
+            "more /path/to/file",
+            "view file.txt",
             "grep PATTERN file.py",
+            "egrep PATTERN file.py",
+            "fgrep PATTERN file.py",
             "awk '/foo/' file",
             "sed -n '1,10p' file",
             "rg pattern src/",
+            "fd --type f",
             "find . -name '*.ts' -print",
+            "find . -name '*.key' -exec cat {} ;",
             # tail against a non-SPOOL target — not the carve-out shape.
             "tail -20 README.md",
         ],
@@ -413,6 +420,12 @@ class TestFileReadDenies:
             'tail -50 "$SPOOL"',
             # carve-out shape — unquoted $SPOOL
             "tail -100 $SPOOL",
+            # carve-out shape — `then` prefix from if-then-fi template splitting.
+            # The if-then-fi in the per-command template splits on `;` to yield
+            # a fragment like `then tail -50 "$SPOOL"` — the carve-out regex
+            # accepts the optional leading `then` keyword.
+            'then tail -50 "$SPOOL"',
+            "then tail -100 $SPOOL",
         ],
     )
     def test_spool_tail_carveout_allowed(self, command):
@@ -437,9 +450,33 @@ class TestFileReadDenies:
         # Parent (no agent_type) also passes through.
         assert run_hook(GUARD_HOOK, bash_input(command)) == "allow"
 
+    def test_gitignore_cat_produces_file_read_deny(self):
+        # `cat .gitignore` must be denied as a file-read, not misrouted to
+        # the git-allowlist check because of the git-named path.
+        reason = run_hook_reason(GUARD_HOOK, cr_input("cat .gitignore"))
+        assert reason is not None
+        assert "file-read" in reason
+
+    def test_file_read_deny_fires_before_project_layer_deny(self, tmp_path):
+        # When a command matches both the file-read deny category and a
+        # project-layer pattern, the file-read deny fires first (hook
+        # evaluation order: GLOBAL_FILE_READ_PATTERNS checked before
+        # PROJECT_DENY_PATTERNS). The deny message must cite "file-read",
+        # not the project-layer pattern file.
+        repo = tmp_path / "proj"
+        (repo / ".claude").mkdir(parents=True)
+        (repo / ".claude" / "check-runner-deny-patterns.txt").write_text(r"\bgrep\b" + "\n")
+        reason = run_hook_reason(GUARD_HOOK, cr_input("grep PATTERN file.py"), cwd=repo)
+        assert reason is not None
+        assert "file-read" in reason
+        assert ".claude/check-runner-deny-patterns.txt" not in reason
+
     def test_full_template_end_to_end_not_denied(self):
-        # The complete per-command template from check-runner.md must not
-        # be denied: the tail fragment inside it hits the carve-out.
+        # The complete per-command template from check-runner.md must not be
+        # denied. The template's `if [ ... ]; then tail -50 "$SPOOL"; fi`
+        # splits on `;` to yield a `then tail -50 "$SPOOL"` fragment —
+        # that fragment must hit the carve-out (not the tail deny), confirming
+        # that _lib_split_fragments + carve-out ordering work end-to-end.
         sample_dispatch_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         sample_slug = "npm-run-verify"
         template = (

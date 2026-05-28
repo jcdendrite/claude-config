@@ -30,12 +30,20 @@
 # The agent's only legitimate write is its spool file under
 # ${TMPDIR:-/tmp}/; everything else is reportable as a verdict, not
 # resolvable by mutation.
+# Known gaps not closed by this hook:
+#   - Shell quoting variants (e.g. c''at file) pass the \b-anchored deny
+#     patterns. The threat model is prose-drift prevention by a good-faith
+#     model; adversarial quoting bypasses are out-of-scope for this hook.
+#   - Scripting-language one-liners (python3 -c, node -e, ruby -e) are not
+#     denied. The check-runner's enumerated-commands-only posture is the
+#     primary control for this surface.
 set -uo pipefail
 
 emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  printf 'check-runner-bash-guard: DENY: %s\n' "$reason" >&2
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' \
     "$reason_json"
 }
