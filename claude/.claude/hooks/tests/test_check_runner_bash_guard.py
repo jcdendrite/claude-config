@@ -93,7 +93,6 @@ class TestCheckRunnerBashGuardAllows:
             "npm run verify",
             "npm run lint",
             "echo hello",
-            "cat file.txt",
             "ls -la",
             "python -m pytest",
             # Proves the global pattern is verb-pair-scoped — does not
@@ -118,8 +117,10 @@ class TestCheckRunnerBashGuardAllows:
     def test_git_in_path_does_not_trigger(self):
         assert run_hook(GUARD_HOOK, cr_input("ls .github/workflows/")) == "allow"
 
-    def test_gitignore_does_not_trigger(self):
-        assert run_hook(GUARD_HOOK, cr_input("cat .gitignore")) == "allow"
+    def test_gitignore_path_does_not_trigger_git_allowlist(self):
+        # Verifies a git-named path doesn't invoke the git-write allowlist;
+        # `ls` is used since `cat` is denied by the file-read deny category.
+        assert run_hook(GUARD_HOOK, cr_input("ls .gitignore")) == "allow"
 
 
 class TestGlobalGenericShapeDenies:
@@ -367,3 +368,86 @@ class TestCheckRunnerBashGuardFailClosed:
         # agent_type present, but no command — nothing to enforce.
         payload = {"tool_name": "Bash", "tool_input": {}, "agent_type": "check-runner"}
         assert run_hook(GUARD_HOOK, payload) == "allow"
+
+
+class TestFileReadDenies:
+    """File-read commands are denied inside check-runner. The agent's
+    chartered Bash calls are `cd <path>` and the per-command spool
+    template — free-standing reads of project files have no
+    checks-only justification."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat /path/to/file",
+            "head -10 README.md",
+            "grep PATTERN file.py",
+            "awk '/foo/' file",
+            "sed -n '1,10p' file",
+            "rg pattern src/",
+            "find . -name '*.ts' -print",
+            # tail against a non-SPOOL target — not the carve-out shape.
+            "tail -20 README.md",
+        ],
+    )
+    def test_file_read_commands_denied(self, command):
+        assert run_hook(GUARD_HOOK, cr_input(command)) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat /path/to/file",
+            "head -10 README.md",
+            "grep PATTERN file.py",
+        ],
+    )
+    def test_file_read_deny_reason_mentions_file_read(self, command):
+        reason = run_hook_reason(GUARD_HOOK, cr_input(command))
+        assert reason is not None
+        assert "file-read" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # carve-out shape — quoted $SPOOL
+            'tail -50 "$SPOOL"',
+            # carve-out shape — unquoted $SPOOL
+            "tail -100 $SPOOL",
+        ],
+    )
+    def test_spool_tail_carveout_allowed(self, command):
+        # tail -<N> "$SPOOL" or $SPOOL is the per-command-template
+        # failure-excerpt shape; the hook must not deny it.
+        assert run_hook(GUARD_HOOK, cr_input(command)) == "allow"
+
+    def test_cd_anchor_allowed(self):
+        # cwd anchor — the first Bash call check-runner makes.
+        assert run_hook(GUARD_HOOK, cr_input("cd /home/user/some-repo")) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat /path/to/file",
+            "grep pattern file.py",
+        ],
+    )
+    def test_file_read_passthrough_for_non_check_runner(self, command):
+        # Non-check-runner agents are not subject to the file-read deny.
+        assert run_hook(GUARD_HOOK, bash_input(command, agent_type="some-other-agent")) == "allow"
+        # Parent (no agent_type) also passes through.
+        assert run_hook(GUARD_HOOK, bash_input(command)) == "allow"
+
+    def test_full_template_end_to_end_not_denied(self):
+        # The complete per-command template from check-runner.md must not
+        # be denied: the tail fragment inside it hits the carve-out.
+        sample_dispatch_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        sample_slug = "npm-run-verify"
+        template = (
+            f'EPOCH=$(date +%s%3N); '
+            f'SPOOL="${{TMPDIR:-/tmp}}/{sample_dispatch_id}-{sample_slug}-${{EPOCH}}.txt"; '
+            f'echo "SPOOL:$SPOOL"; '
+            f'npm run verify > "$SPOOL" 2>&1; '
+            f'EXIT=$?; echo "EXIT:$EXIT"; '
+            f'if [ "$EXIT" -ne 0 ]; then tail -50 "$SPOOL"; fi'
+        )
+        assert run_hook(GUARD_HOOK, cr_input(template)) == "allow"

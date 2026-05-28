@@ -10,7 +10,7 @@
 # logs to stderr and continues with global-only enforcement (the
 # global hook does not own a stack-specific extension and must not
 # fail-closed on its absence or shape).
-# Purpose: deny two categories of Bash command when invoked from
+# Purpose: deny three categories of Bash command when invoked from
 # check-runner:
 #   1. git mutations — any `git` subcommand not on the read-only
 #      allowlist in _lib.sh (_lib_readonly_git_subcmds).
@@ -22,6 +22,11 @@
 #      exists. The global patterns are vendor-name-free; vendor-named
 #      categories (package installs, container lifecycle, cloud CLIs)
 #      live in the per-project extension file.
+#   3. file-read commands — `cat`, `head`, `tail` (except the
+#      per-command-template failure-excerpt shape), `less`, `more`,
+#      `view`, `grep`/`egrep`/`fgrep`, `awk`, `sed`, `rg`, `fd`,
+#      `find -print|-exec`. The agent's only legitimate file read is
+#      `tail -<N> "$SPOOL"` inside the same call that defined $SPOOL.
 # The agent's only legitimate write is its spool file under
 # ${TMPDIR:-/tmp}/; everything else is reportable as a verdict, not
 # resolvable by mutation.
@@ -82,6 +87,12 @@ deny_with_advice() {
   emit_deny "check-runner-bash-guard: command fragment '$fragment' matches $layer — check-runner is checks-only and must not run state-mutating commands. Do NOT retry with a modified shape, do NOT propose an allow-rule, do NOT propose any fix; return BLOCKED (block_type: HOOK_BLOCK) for this command with this stderr message verbatim and proceed to the next enumerated command."
 }
 
+deny_file_read() {
+  local layer="$1"
+  local fragment="$2"
+  emit_deny "check-runner-bash-guard: command fragment '$fragment' matches $layer (file-read) — check-runner's only chartered Bash calls are \`cd <path>\` and the per-command spool template. Free-standing file reads are out-of-charter. Do NOT retry with a modified shape, do NOT propose an allow-rule, do NOT propose any fix; return BLOCKED (block_type: HOOK_BLOCK) for this command with this stderr message verbatim and proceed to the next enumerated command."
+}
+
 # Global generic-shape deny patterns. Vendor-name-free by design — the
 # stow target is public and must not name specific vendor binaries
 # (see CLAUDE.md "Global skill bodies stay platform-agnostic" — the
@@ -102,6 +113,24 @@ GLOBAL_DENY_PATTERNS=(
   'rm -rf /([[:space:]]|$)'
   'rm -rf \$HOME([[:space:]]|/|$)'
   'rm -rf ~([[:space:]]|/|$)'
+)
+
+# File-read deny patterns. Kept separate from GLOBAL_DENY_PATTERNS so the
+# deny message can identify them as file-read violations (deny_file_read)
+# rather than state-mutating violations (deny_with_advice). check-runner's
+# chartered Bash calls are `cd <path>` and the per-command template
+# (check-runner.md). The template's only legitimate file read is
+# `tail -<N> "$SPOOL"` on failure, inside the same call that defined $SPOOL.
+# Free-standing reads of project files pull material into the agent's context
+# that fuels prose-drift verdicts (see docs/case-studies/check-runner.md
+# Incident 6). A positive-match carve-out for the template shape is checked
+# before this array is tested.
+GLOBAL_FILE_READ_PATTERNS=(
+  '\b(cat|head|less|more|view)\b'
+  '\b(grep|egrep|fgrep|awk|sed)\b'
+  '\b(rg|fd)\b'
+  '\btail\b'
+  '\bfind\b.+(-print|-exec)'
 )
 
 # Project-layer extension. Read at decision time from the worktree's
@@ -147,10 +176,28 @@ FRAGMENTS=$(_lib_split_fragments "$COMMAND")
 while IFS= read -r fragment; do
   [ -z "$fragment" ] && continue
 
+  # Carve-out: per-command-template failure-excerpt shape.
+  # Authorized by check-runner.md: tail -<N> "$SPOOL" or $SPOOL (unquoted).
+  # The if-then-fi form in the template splits on `;` to yield a fragment
+  # like `then tail -50 "$SPOOL"` — the optional `then` keyword is accepted.
+  # This must run before the file-read deny patterns below.
+  if [[ "$fragment" =~ ^[[:space:]]*(then[[:space:]]+)?tail[[:space:]]+-[0-9]+[[:space:]]+(\"?\$SPOOL\"?)[[:space:]]*$ ]]; then
+    continue
+  fi
+
   # Global generic-shape match.
   for pattern in "${GLOBAL_DENY_PATTERNS[@]}"; do
     if [[ "$fragment" =~ $pattern ]]; then
       deny_with_advice "global generic-shape pattern (/$pattern/)" "$fragment"
+      exit 0
+    fi
+  done
+
+  # Global file-read match (separate from mutation patterns so the deny
+  # message identifies the violation as file-read, not state-mutating).
+  for pattern in "${GLOBAL_FILE_READ_PATTERNS[@]}"; do
+    if [[ "$fragment" =~ $pattern ]]; then
+      deny_file_read "global file-read pattern (/$pattern/)" "$fragment"
       exit 0
     fi
   done
