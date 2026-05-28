@@ -150,11 +150,7 @@ working tree — never a place for team rules. From
 | Loaded into      | Every session                                     | Every session (first 200 lines or 25KB of `MEMORY.md`)           |
 | Use for          | Coding standards, workflows, project architecture | Build commands, debugging insights, preferences Claude discovers |
 
-See REFERENCES.md — "Claude Code — How Claude remembers your project" for the source quote on CLAUDE.md vs auto-memory roles.
-
 ### `MEMORY.md` is an index, not a memory
-
-See REFERENCES.md — "Claude Code — How Claude remembers your project" for the MEMORY.md 200-line/25KB load-limit source quote.
 
 Index discipline:
 
