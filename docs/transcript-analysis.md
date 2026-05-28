@@ -1,0 +1,389 @@
+# transcript-analysis.py reference
+
+`transcript-analysis.py` is an analysis toolkit for Claude Code transcripts at `~/.claude/projects/*/*.jsonl`. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
+
+All subcommands are local-only reads except `pr-link`, which calls `gh`. No subcommand writes to disk.
+
+For question-driven routing ("which subcommand answers X?"), use the `/transcript-analysis` skill. This page is the per-subcommand reference: flags, output shape, and when to reach for each one.
+
+---
+
+## buckets
+
+**Purpose.** Show assistant-turn counts bucketed by git branch × model family, with session count and date range.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`, all projects)
+- `--branches B1,B2,...` — filter to specific branches (default: all)
+
+**Sample output.**
+```
+Branch                                    Sess   Total   Opus  Sonnet  Haiku  Other  Date range
+------------------------------------------------------------------------------------------------------------
+GH-333/audit-routing-samples-subcommand     2     237     78     159      0      0  2026-05-26..2026-05-28
+GH-315/audit-routing-shape                  5     375     45     330      0      0  2026-05-26..2026-05-26
+add-actionlint-pr-gate                      5     444      0     444      0      0  2026-05-25..2026-05-26
+HEAD                                      401    3664   1261    2278    120      5  2026-04-23..2026-05-28
+```
+
+**When to reach for it.** Survey all branches and spot which ones used which models. Usually the first command to run on any transcript analysis session.
+
+---
+
+## fail-seq
+
+**Purpose.** Emit the ordered sequence of test-failure counts per branch/model to distinguish convergent debugging (spike then zeros) from thrashing (sustained oscillation).
+
+**Flags.**
+- `--branches B1,B2,...` *(required)* — branches to analyze
+- `--projects GLOB` — project directory glob (default: `*`)
+
+**Sample output.**
+```
+### my-feature-branch
+Total runs: 12  Failing: 3 (25.0%)  Longest consecutive-failing streak: 2
+  opus    : 8 runs, 2 failing (25.0%)
+  sonnet  : 4 runs, 1 failing (25.0%)
+Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
+```
+
+- **Convergent** (expected): a spike followed by zeros — the root-cause fix lands and holds.
+- **Thrashing** (flag for review): oscillation like `8 6 9 7 8` with no sustained run of zeros.
+- The `longest consecutive-failing streak` is the load-bearing metric. A streak of 5+ warrants a closer look.
+
+**When to reach for it.** After a branch completes: verify the debugging loop converged. Compare two branches side by side with a comma-separated `--branches` list.
+
+---
+
+## struggle
+
+**Purpose.** Count correction and frustration signal phrases in user turns, split by model, to surface whether one model generated more rework prompts.
+
+**Flags.**
+- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--projects GLOB` — project directory glob (default: `*`)
+
+**Sample output.**
+```
+Branch                          Opus  Sonnet  Haiku  Other  Unknown
+---------------------------------------------------------------------
+some-feature-branch                1       3      0      0        0
+another-branch                     0       2      0      0        0
+```
+
+Each cell is the count of signal phrases ("no, that's wrong", "stop doing", "you misunderstood", etc.) in user turns that follow an assistant turn from that model family.
+
+**When to reach for it.** A/B model comparison: run on two branches worked with different models to see if one generated more correction prompts. One or two branches per model is directional, not controlled.
+
+---
+
+## duration
+
+**Purpose.** Decompose branch time into active work spans versus idle gaps.
+
+**Flags.**
+- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--gap-minutes N` — threshold (in minutes) for classifying an inter-turn gap as idle (default: 30)
+
+**Sample output.**
+```
+Branch                                    Span(min) Active(min)  Idle(min)  Sessions  GapMin
+-----------------------------------------------------------------------------------------------
+GH-333/audit-routing-samples-subcommand        1553         112       1442         5      30
+```
+
+**When to reach for it.** Estimate how many hours were actually spent on a branch, stripping calendar time. Use `Active(min)`, not `Span(min)` — the span is wall-clock dominated by idle gaps.
+
+---
+
+## subagents
+
+**Purpose.** Show `isSidechain` (subagent) versus main-thread turn counts per branch, split by model family.
+
+**Flags.**
+- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--projects GLOB` — project directory glob (default: `*`)
+
+**Sample output.**
+```
+Branch                                   Thread       Opus  Sonnet  Haiku  Other
+-----------------------------------------------------------------------------------
+GH-333/audit-routing-samples-subcommand  main           78     159      0      0
+GH-333/audit-routing-samples-subcommand  sidechain       0      78      0      0
+```
+
+**When to reach for it.** Understand how much work was delegated versus inline. Compare against `subagent-mix` for a breakdown of what *kind* of subagents were spawned.
+
+---
+
+## subagent-mix
+
+**Purpose.** Show per-branch subagent spawn type counts and code/plan/ready-for-review review-skill spawn counts.
+
+**Flags.**
+- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--per-session` — break out by individual session instead of aggregating per branch
+
+**Sample output.**
+```
+Branch                                         Sess  Spawns  CR  PR  RR  Top subagent types
+------------------------------------------------------------------------------------------------------------------------
+GH-333/audit-routing-samples-subcommand           2      11   2   1   2  staff-sdet(4), code-writer(3), check-runner(2), staff-backend-engineer(2)
+```
+
+Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/ready-for-review` spawns.
+
+**When to reach for it.** Audit which reviewer agents fired on a branch, or compare how delegation patterns differ across branches.
+
+---
+
+## pr-link
+
+**Purpose.** Map branches to GitHub PRs and pull per-PR comment counts. Requires `gh` and network access.
+
+**Flags.**
+- `--repo OWNER/REPO` *(required)* — GitHub repository
+- `--branches B1,B2,...` *(required)* — branches to look up
+- `--author LOGIN` — filter comment counts to one GitHub login
+- `--projects GLOB` — project directory glob (default: `*`)
+
+**Sample output.**
+```
+Branch                    PR#   Title                              Author comments  Total comments
+---------------------------------------------------------------------------------------------------
+feat-TICKET-101           #42   Add new widget component                         3              8
+feat-TICKET-202           #47   Refactor auth middleware                          1              5
+```
+
+**When to reach for it.** After a set of branches lands: measure review engagement per branch or filter to one author's comments to count their review activity.
+
+---
+
+## skill-pair
+
+**Purpose.** Measure the pairing rate between two skills — how often the follower fires in the same session as the leader — bucketed by ISO week.
+
+**Positional args.**
+- `LEADER` — leading skill name (exact match on `input.skill`)
+- `FOLLOWER` — following skill name (exact match on `input.skill`)
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--exclude-projects GLOB` — skip project dirs matching this glob
+- `--branches B1,B2,...` — filter to specific branches
+
+**Sample output.**
+```
+Bin         Lead  Main  Side   Pair%
+-------     ----  ----  ----   -----
+2026-W18      39    18     0   46.2%
+2026-W19     108    56     0   51.9%
+2026-W20     149    95     0   63.8%
+2026-W21     161   113     0   70.2%
+```
+
+`Lead` = sessions where the leader fired. `Main` = of those, sessions where the follower also fired on the main thread. `Pair%` = `Main / Lead`.
+
+**When to reach for it.** Track whether a skill pairing (e.g. `code-review` → `ready-for-review`) is gaining compliance over time, or measure the effect of a new convention.
+
+---
+
+## commit-gate
+
+**Purpose.** Per-week gate-compliance: did a given skill precede each `git commit` in the same session? Detects `--no-verify` usage.
+
+**Positional args.**
+- `skill` — skill name to check (byte-equal match against Skill tool_use `input.skill`)
+
+**Flags.**
+- `--by-permission-mode` — split rows by `permissionMode`
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--exclude-projects GLOB` — exclude project dirs matching this glob
+- `--branches B1,B2,...` — branch name filter (default: all)
+
+**Sample output.**
+```
+bin          sessions   turns  skill-inv  skill/1k commits  w-skill  wo-skill  no-verify
+----------------------------------------------------------------------------------------
+2026-W18           72   13920         97               7.0      166       86        80          0
+2026-W19          202   24828        175               7.0      215      134        81          0
+2026-W20          484   29588        216               7.3      230      134        96          0
+```
+
+`w-skill` = commits preceded by the skill in the same session. `wo-skill` = commits without it. `no-verify` = `git commit --no-verify` calls detected.
+
+**When to reach for it.** Measure whether a review skill is consistently running before commits, and whether hook bypasses are occurring.
+
+---
+
+## review-trace
+
+**Purpose.** Emit an ordered event timeline per session — skill invocations, hook denials, and reviewer-agent spawns.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--branches B1,B2,...` — filter to specific branches
+- `--since DATE` — inclusive start date (`YYYY-MM-DD`)
+- `--until DATE` — inclusive end date (`YYYY-MM-DD`)
+- `--deny-only` — restrict to sessions containing at least one hook denial
+- `--skill NAME` — restrict skill-invocation matching to one skill name
+
+**Sample output.**
+```
+### ~/.claude/projects/my-project/abc123.jsonl
+branch=my-feature  model=opus  skills=3  denials=1  reviewer-spawns=4
+  [2026-05-20T10:15:00.000Z] line   45  skill        plan-review
+  [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer
+  [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet
+  [2026-05-20T10:45:00.000Z] line  120  denial       hook=  id=toolu_abc  msg='marker.sh invocation denied...'
+  [2026-05-20T11:02:00.000Z] line  145  skill        code-review
+```
+
+**When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read.
+
+---
+
+## audit-routing
+
+**Purpose.** Per-turn Opus token breakdown by routing class (`orchestration`, `judgment`, `code-write`, `code-read`, `pure-thinking`, `other`), aggregated across sessions with a Sonnet-tier estimate.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--since Nd` — limit to the last N days (e.g. `35d`)
+- `--top N` — maximum per-session rows to emit (default: 20)
+- `--redact` — replace project dir names with anonymized labels (`private-project-1`, `private-project-2`, …); `claude-config` is preserved. Use this flag when posting output to GitHub issues.
+
+**Sample output.**
+```
+## Opus turn-class breakdown (last 7d)
+
+Session          Proj                     orch  judgment  code-write  code-read  thinking   other   total_out   cache_rd
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+875cfbeb-f03     private-project-13     24,755       810     145,450    120,194   231,809 231,860     754,878 38,243,901
+2a0ff669-a0d     private-project-2     149,000     2,495      54,070      6,071   125,343 147,887     484,866 10,169,069
+
+## Corpus aggregate
+
+Class              Output tokens  Cache read tokens
+code-read              2,118,996        253,033,256
+code-write             1,656,358         76,694,724
+pure-thinking          3,863,382        220,641,203
+other                  3,923,547        220,513,484
+orchestration            792,294         15,917,519
+judgment                  65,038         13,974,791
+───────────────────────────────────────────────────
+total                 12,419,615        800,774,977
+
+Sonnet-tier estimate: 3,775,354 output tokens
+  = 30% of Opus output in this window
+```
+
+**When to reach for it.** Answer "is Opus spend doing Sonnet-tier code-read/write in parent sessions?" — the `Sonnet-tier estimate` row summarizes the delegation opportunity. Always use `--redact` before posting output publicly.
+
+---
+
+## handoff-ratio
+
+**Purpose.** Per-week ratio of explicit `/handoff` invocations versus auto-compaction events.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--since DATE` — inclusive start date (`YYYY-MM-DD`)
+- `--debug-detector` — print candidate compaction records for schema-drift inspection
+
+**Sample output.**
+```
+Week        Handoffs  Compactions   Ratio
+-------------------------------------------
+2026-W19           5           39   11.4%
+2026-W20          10           50   16.7%
+2026-W21           5           16   23.8%
+-------------------------------------------
+Total             22          141   13.5%
+```
+
+**When to reach for it.** Check whether context-cap management is proactive (handoffs) or reactive (compaction). A low ratio means most context resets are happening automatically rather than at deliberate checkpoints.
+
+---
+
+## audit-routing-shape
+
+**Purpose.** Turn-shape distributions for Opus code-read turns across three dimensions: files-Read per turn (D1), code-read streak lengths (D2), and read-then-edit ratio (D3).
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--since Nd` — limit to the last N days (e.g. `35d`)
+
+**Sample output.**
+```
+## Opus code-read turn-shape distributions (last 7d)
+
+### D1 — Files Read per turn (code-read turns, outside judgment spans)
+
+Bucket      Turns   Output tokens
+─────────────────────────────────
+0           1,958       1,750,876
+1             549         366,426
+2-3             0               0
+4-7             1           1,694
+
+### D2 — Code-read streak length
+
+Bucket    Streaks   Output tokens
+─────────────────────────────────
+1           2,407       2,007,741
+2              49         106,950
+3-5             1           4,305
+
+### D3 — Read-then-edit ratio (lookahead up to 3 Opus turns)
+
+Case              Turns   Output tokens
+───────────────────────────────────────
+inline-edit         280         293,110
+dispatched           61          62,899
+neither           2,167       1,762,987
+```
+
+**When to reach for it.** Calibrate delegation-rule strength: D1 shows how many files are read per turn (higher = stronger delegation candidate), D2 shows streak length (longer streaks = more exploration than necessary inline), D3 shows what fraction of code-read turns are immediately followed by an edit (inline-edit) versus dispatched.
+
+---
+
+## audit-routing-samples
+
+**Purpose.** Emit a random sample of Opus code-read turns with prior-user context, recent agent narration, a tool trail, and a next-turn lookahead classification for manual delegation curation.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--since Nd` — limit to the last N days (e.g. `35d`)
+- `--sample N` — maximum turns to emit (default: 30)
+- `--seed N` — random seed for reproducible sampling
+- `--format json|md` — output format: `json` (default, machine-readable array) or `md` (human-readable curation cards with verdict checkboxes)
+
+**Sample output (`--format md`).**
+```markdown
+## 1/2 — session `abc123` turn 45
+
+**User:**
+> Implement the new auth middleware
+
+**Recent agent narration:**
+> Reading the existing middleware to understand the shape before writing...
+
+**Recent tool trail:**
+- Read: `src/middleware/auth.ts`
+- Read: `src/middleware/rate-limit.ts`
+
+**Next:** `code-write`
+> (writes new middleware file)
+
+**Verdict** (check one):
+- [ ] true (delegate)
+- [ ] false (inline correct)
+- [ ] skip
+```
+
+Verdict meanings: `true (delegate)` — the reads sat in context with no immediate consumer, delegation would have saved tokens; `false (inline correct)` — the reads fed an immediate edit or comprehension-driven response; `skip` — ambiguous or noise.
+
+**When to reach for it.** Build a labeled training set for delegation-rule calibration. Use `--seed` for reproducible samples across sessions; use `--format md` for human curation review; use `--format json` to feed a downstream scoring script.
