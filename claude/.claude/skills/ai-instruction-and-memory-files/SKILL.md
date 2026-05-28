@@ -74,10 +74,6 @@ instructions are additive, not overridden. In monorepos this means
 root-level CLAUDE.md, team-directory CLAUDE.md, and project-level
 CLAUDE.md all load together.
 
-For Lovable's UI knowledge fields (Project Knowledge, Workspace
-Knowledge), the `.lovable/*.md` repo-mirror workflow, and review
-criteria for `.lovable/**` changes, see the `lovable-cloud-knowledge` skill.
-
 ## 2. Length targets
 
 Official threshold: **under 200 lines per CLAUDE.md file** ([Claude Code
@@ -98,6 +94,14 @@ input. If removing the line wouldn't change any behavior, cut it.
 Specific incident references, editorial meta-commentary, and narrative
 case studies almost always fail this test; rationale that arms Claude
 for an unenumerated edge case almost always passes.
+
+**Compression-diff audit.** For any diff that removes or shortens lines, fill this table before declaring the review complete:
+
+| Removed/shortened text | Surviving line | Behavior-preserving? |
+|---|---|---|
+| (quote) | (cite) | Y — (quote surviving line) / N — (what is lost) |
+
+Any N is a finding; restore the dropped instruction. Y requires citing the specific surviving line — "the meaning is the same" is not sufficient. Typical CLAUDE.md/AGENTS.md/memory drops: symptom triggers, explicit action instructions, escape-hatch exceptions, verification commands.
 
 ### Don't embed PR or ticket refs in always-loaded files
 
@@ -146,16 +150,7 @@ working tree — never a place for team rules. From
 | Loaded into      | Every session                                     | Every session (first 200 lines or 25KB of `MEMORY.md`)           |
 | Use for          | Coding standards, workflows, project architecture | Build commands, debugging insights, preferences Claude discovers |
 
-> "Use CLAUDE.md files when you want to guide Claude's behavior.
-> Auto memory lets Claude learn from your corrections without manual
-> effort."
-
 ### `MEMORY.md` is an index, not a memory
-
-> "The first 200 lines of `MEMORY.md`, or the first 25KB, whichever comes
-> first, are loaded at the start of every conversation... Topic files
-> like `debugging.md` or `patterns.md` are not loaded at startup. Claude
-> reads them on demand..."
 
 Index discipline:
 

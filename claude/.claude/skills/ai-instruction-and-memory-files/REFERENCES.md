@@ -10,6 +10,15 @@ citing a claim.
 - [Claude Code — How Claude remembers your project](https://code.claude.com/docs/en/memory)
   — the "under 200 lines per CLAUDE.md file" size threshold, CLAUDE.md-loaded-not-AGENTS.md,
   the `@AGENTS.md` import pattern, the auto-memory role split, the MEMORY.md 200-line/25KB load limit.
+
+  > "Use CLAUDE.md files when you want to guide Claude's behavior.
+  > Auto memory lets Claude learn from your corrections without manual
+  > effort."
+
+  > "The first 200 lines of `MEMORY.md`, or the first 25KB, whichever comes
+  > first, are loaded at the start of every conversation... Topic files
+  > like `debugging.md` or `patterns.md` are not loaded at startup. Claude
+  > reads them on demand..."
 - [Claude Code — Best Practices](https://code.claude.com/docs/en/best-practices)
   — CLAUDE.md is advisory while hooks are deterministic; the over-specified-CLAUDE.md failure mode.
 - [claude-code CHANGELOG.md](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)
