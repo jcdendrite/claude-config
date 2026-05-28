@@ -32,14 +32,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   token-analyzer --since 7d  # include token activity from the last N days (e.g. 2d, 7d)
   ```
 
-- **`transcript-analysis.py`** — analysis toolkit for Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). Thirteen subcommands: `buckets` (assistant turns by branch × model family), `fail-seq` (ordered test-failure-count sequence per branch — convergence vs thrashing), `struggle` (correction/frustration phrase frequency split by model), `duration` (active vs idle-gap time per branch), `subagents` (`isSidechain` vs main-thread turn split), `subagent-mix` (per-branch subagent/Task spawn types and review-skill spawn counts), `skill-pair` (leader→follower skill-invocation pairing rate, binned by ISO week), `commit-gate` (review-skill vs git-commit ordering per ISO week, with `--no-verify` detection), `pr-link` (map branches to GitHub PRs and count per-author comments), `review-trace` (per-session timeline of review-skill invocations, hook denials, and reviewer-agent spawns), `audit-routing` (per-turn Opus token-class breakdown with `--redact` for public reporting), `audit-routing-shape` (turn-shape distributions — files-Read per turn, code-read streak lengths, read-then-edit ratio — to pick delegation-rule strength), `audit-routing-samples` (random sample of Opus code-read turns with prior-user context and next-turn action label for manual delegation curation; supports `--format md` for human-readable curation review; `--format md` curation cards include recent agent narration and tool trail for the turns immediately preceding each sample). All subcommands are local-only reads except `pr-link`, which calls `gh`. Invoked directly from the shell (no `~/.local/bin/` wrapper); the `/transcript-analysis` skill documents which subcommand answers which question.
-
-  ```bash
-  python3 ~/.claude/scripts/transcript-analysis.py buckets
-  python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches <branch>
-  python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only
-  python3 ~/.claude/scripts/transcript-analysis.py pr-link --repo owner/repo --branches <branch>
-  ```
+- **`transcript-analysis.py`** — analysis toolkit for Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). Fourteen subcommands; local-only reads except `pr-link`, which calls `gh`. Invoked directly: `python3 ~/.claude/scripts/transcript-analysis.py <subcommand>`. See [`docs/transcript-analysis.md`](transcript-analysis.md) for per-subcommand reference; the `/transcript-analysis` skill documents which subcommand answers which question.
 
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. The 12 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval; shape validation is enforced by `enforce-marker-script-shape.sh` (see [`docs/hooks.md`](hooks.md)).
 
