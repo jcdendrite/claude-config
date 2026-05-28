@@ -122,10 +122,16 @@ if [ -e "$PROJECT_PATTERNS_FILE" ]; then
       line="${line%"${line##*[![:space:]]}"}"
       [ -z "$line" ] && continue
       case "$line" in '#'*) continue ;; esac
-      # Validate the regex compiles before adding it. grep exits 0 on
-      # match, 1 on no-match (valid regex), 2 on regex-parse error —
-      # use exit==2 to mean malformed, not exit!=0.
-      printf '' | grep -E -- "$line" >/dev/null 2>/dev/null
+      # Validate the regex compiles before adding it. bash [[ =~ ]] exits 2
+      # on a malformed ERE (same as grep -E), verified on bash >= 3.2
+      # (macOS /bin/bash minimum); braces scope the stderr redirect so
+      # bash's "syntax error" diagnostic is suppressed and only the
+      # explicit printf below reaches stderr.
+      # RHS must stay unquoted inside [[: quoting $line forces literal-string
+      # match, silently breaking every ERE pattern. Word-splitting does not
+      # apply to the RHS of [[ =~ ]], so ERE patterns with spaces are safe
+      # here — do not copy this unquoted form into [ ] or test contexts.
+      { [[ "" =~ $line ]]; } 2>/dev/null
       grep_status=$?
       if [ "$grep_status" -ge 2 ]; then
         printf 'check-runner-bash-guard: skipping malformed regex on %s line %d: %s\n' \
@@ -160,7 +166,9 @@ while IFS= read -r fragment; do
   i=0
   while [ "$i" -lt "${#PROJECT_DENY_PATTERNS[@]}" ]; do
     pattern="${PROJECT_DENY_PATTERNS[$i]}"
-    if printf '%s' "$fragment" | grep -qE -- "$pattern" 2>/dev/null; then
+    # RHS must stay unquoted inside [[: quoting $pattern forces literal-string
+    # match. Do not copy this form into [ ] or test contexts.
+    if [[ "$fragment" =~ $pattern ]]; then
       deny_with_advice "$PROJECT_PATTERNS_FILE line ${PROJECT_DENY_LINENOS[$i]}" "$fragment"
       exit 0
     fi
