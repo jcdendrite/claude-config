@@ -31,6 +31,7 @@ emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  printf 'check-runner-bash-guard: DENY: %s\n' "$reason" >&2
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' \
     "$reason_json"
 }

@@ -367,3 +367,5 @@ class TestCheckRunnerBashGuardFailClosed:
         # agent_type present, but no command — nothing to enforce.
         payload = {"tool_name": "Bash", "tool_input": {}, "agent_type": "check-runner"}
         assert run_hook(GUARD_HOOK, payload) == "allow"
+
+
