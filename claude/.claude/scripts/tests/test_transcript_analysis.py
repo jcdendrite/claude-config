@@ -2634,3 +2634,181 @@ class TestAuditRoutingSamples:
         para2_idx = next(i for i, ln in enumerate(lines) if ln == "> para two")
         for between_line in lines[para1_idx + 1:para2_idx]:
             assert between_line == ">"
+
+    def test_pretty_tool_call_bash_with_description(self):
+        """_pretty_tool_call renders Bash with description as 'description — `cmd`'."""
+        result = _mod._pretty_tool_call({
+            "name": "Bash",
+            "input": {"command": "grep -rn foo bar/", "description": "Find foo"},
+        })
+        assert result == "**Bash:** Find foo — `grep -rn foo bar/`"
+
+    def test_pretty_tool_call_bash_without_description(self):
+        """_pretty_tool_call Bash without description falls back to bare command."""
+        result = _mod._pretty_tool_call({
+            "name": "Bash",
+            "input": {"command": "ls /tmp"},
+        })
+        assert result == "**Bash:** `ls /tmp`"
+
+    def test_format_md_narration_section_present(self, fake_projects, capsys):
+        """--format md includes **Recent agent narration:** when prior text exists."""
+        # Two Opus turns: first has text, second is the code-read (sampled).
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([{"type": "text", "text": "Checking dependencies first."},
+                   _read_use("r0", "/other.py")], out=100),
+            _opus([_read_use("r1", "/foo/bar.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert "**Recent agent narration:**" in out
+        assert "Checking dependencies first." in out
+
+    def test_format_md_narration_section_absent_when_no_prior_text(self, fake_projects, capsys):
+        """--format md omits **Recent agent narration:** when there is no prior assistant text."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/foo/bar.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert "**Recent agent narration:**" not in out
+
+    def test_format_md_tool_trail_section_present(self, fake_projects, capsys):
+        """--format md includes **Recent tool trail:** when prior tool calls exist."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r0", "/other.py")], out=100),
+            _opus([_read_use("r1", "/foo/bar.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert "**Recent tool trail:**" in out
+        assert "Read: /other.py" in out
+
+    def test_format_md_tool_trail_section_absent_at_session_start(self, fake_projects, capsys):
+        """--format md omits **Recent tool trail:** when candidate is the first turn."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/foo/bar.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        assert "**Recent tool trail:**" not in out
+
+    def test_format_md_trail_and_narration_cap_at_n(self, fake_projects, capsys):
+        """Lookback caps at 3: 10 prior assistant turns yields exactly 3 narration/trail entries."""
+        prior_turns = [
+            _opus([{"type": "text", "text": f"Step {i}."},
+                   _read_use(f"r{i}", f"/f{i}.py")], out=100)
+            for i in range(10)
+        ]
+        candidate = _opus([_read_use("rc", "/candidate.py")], out=100)
+        _write_jsonl(fake_projects / "sess.jsonl", prior_turns + [candidate])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        # Isolate only the card for /candidate.py (the last candidate turn)
+        sections = out.split("---")
+        candidate_section = next((s for s in sections if "/candidate.py" in s), None)
+        assert candidate_section is not None, "No section found for /candidate.py"
+        # Count narration blockquote lines starting with "> " that contain "Step"
+        narration_lines = [ln for ln in candidate_section.splitlines() if ln.startswith("> ") and "Step" in ln]
+        assert len(narration_lines) == 3
+        # Count trail bullet lines
+        trail_lines = [ln for ln in candidate_section.splitlines() if ln.startswith("- Read:") or ln.startswith("- Bash:")]
+        assert len(trail_lines) == 3
+
+    def test_format_md_fewer_than_3_priors(self, fake_projects, capsys):
+        """Lookback with 1 prior turn yields exactly 1 narration and 1 trail entry."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([{"type": "text", "text": "Only prior."},
+                   _read_use("r0", "/only.py")], out=100),
+            _opus([_read_use("rc", "/candidate.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        narration_lines = [ln for ln in out.splitlines() if ln.startswith("> ") and "Only prior." in ln]
+        assert len(narration_lines) == 1
+        trail_lines = [ln for ln in out.splitlines() if "Read: /only.py" in ln]
+        assert len(trail_lines) == 1
+
+    def test_format_md_tool_only_turns_skipped_by_narration(self, fake_projects, capsys):
+        """Narration walker skips turns with no text block; still collects text-bearing turns."""
+        # 3 text-bearing turns, then 3 tool-only turns, then candidate.
+        # Walking backward from candidate: hit 3 tool-only (skipped), then 3 text-bearing (collected).
+        tool_only = [_opus([_read_use(f"r{i}", f"/t{i}.py")], out=100) for i in range(3)]
+        text_bearing = [
+            _opus([{"type": "text", "text": f"Text {i}."}, _read_use(f"rt{i}", f"/tb{i}.py")], out=100)
+            for i in range(3)
+        ]
+        candidate = _opus([_read_use("rc", "/candidate.py")], out=100)
+        _write_jsonl(fake_projects / "sess.jsonl", text_bearing + tool_only + [candidate])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        # Isolate the candidate card and assert narration contains the text-bearing entries
+        sections = out.split("---")
+        candidate_section = next((s for s in sections if "/candidate.py" in s), None)
+        assert candidate_section is not None, "No section found for /candidate.py"
+        for i in range(3):
+            assert f"Text {i}." in candidate_section
+
+    def test_format_md_newlines_stripped_in_narration(self, fake_projects, capsys):
+        """Newlines in narration text are replaced with spaces (no blockquote corruption)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([{"type": "text", "text": "Line one.\nLine two."},
+                   _read_use("r0", "/a.py")], out=100),
+            _opus([_read_use("rc", "/candidate.py")], out=100),
+        ])
+        args = _audit_routing_samples_args(output_format="md")
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        # Should appear as a single blockquote line with a space, not two separate lines
+        assert "> Line one. Line two." in out
+
+    def test_format_md_cross_session_isolation(self, fake_projects, capsys):
+        """Candidate in session B does not pick up session A's narration or trail."""
+        # Session A: has a text turn with distinctive content.
+        (fake_projects / "sess_a.jsonl").write_text(
+            "\n".join(
+                json.dumps(r) for r in [
+                    _opus([{"type": "text", "text": "Session A unique text."},
+                           _read_use("ra", "/a.py")], out=100),
+                ]
+            ) + "\n"
+        )
+        # Session B: single code-read candidate, no prior turns.
+        (fake_projects / "sess_b.jsonl").write_text(
+            "\n".join(
+                json.dumps(r) for r in [
+                    _opus([_read_use("rb", "/b.py")], out=100),
+                ]
+            ) + "\n"
+        )
+        args = _audit_routing_samples_args(output_format="md", sample=10)
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        # Split by section headers and check B's card specifically.
+        sections = out.split("---")
+        b_section = next((s for s in sections if "/b.py" in s), None)
+        if b_section:  # only assert if B was sampled
+            assert "Session A unique text." not in b_section
+
+    def test_format_json_record_key_set(self, fake_projects, capsys):
+        """JSON output record has exactly the expected key set (no missing, no extra)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_read_use("r1", "/foo.py")], out=100),
+        ])
+        args = _audit_routing_samples_args()  # default JSON format
+        _mod.cmd_audit_routing_samples(args)
+        out = capsys.readouterr().out
+        records = json.loads(out)
+        assert len(records) == 1
+        assert set(records[0].keys()) == {
+            "session_id", "turn_index", "prior_user_message",
+            "assistant_tool_call", "next_assistant_action", "next_turn_excerpt",
+            "recent_assistant_text", "recent_tool_trail",
+        }
