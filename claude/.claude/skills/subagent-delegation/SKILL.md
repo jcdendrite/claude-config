@@ -77,10 +77,11 @@ parent directly.
 - Commands scoped to a single test file or single test name during
   interactive debugging can stay inline.
 - **Generate a dispatch-id per invocation and include it in the prompt**
-  as `dispatch-id: <uuid>` (one line, hex token from `uuidgen` or
-  equivalent). The agent uses it as the spool filename prefix and echoes
-  it back in the verdict, so the parent can both verify the verdict's
-  origin and locate the spool unambiguously if needed.
+  as `dispatch-id: <uuid>` (one line, hex token from any UUID generator
+  — `uuidgen`, `python3 -c "import uuid; print(uuid.uuid4())"`, etc.).
+  The agent uses it as the spool filename prefix and echoes it back in
+  the verdict, so the parent can both verify the verdict's origin and
+  locate the spool unambiguously if needed.
 
 The subagent writes full output to
 `${TMPDIR:-/tmp}/<dispatch-id>-<command-slug>-<epoch-ms>.txt` and returns
@@ -102,8 +103,8 @@ structure off, prose where a structured verdict was expected, or fix
 prescriptions the charter forbids — the recovery is to `cat` the spool,
 not re-run the command in the parent. The dispatch-id you emitted makes
 locating the spool deterministic: `ls "${TMPDIR:-/tmp}/<dispatch-id>"-*.txt`
-matches exactly the files this dispatch wrote, immune to the stale-glob
-collision the slug-only pattern in Incident 4 produced. Verify the
+matches exactly the files this dispatch wrote — a UUID prefix is globally
+unique, so prior sessions' spools cannot share it. Verify the
 agent's verdict echoed back the same dispatch-id you sent — a mismatch
 (or absence) is the unambiguous signal that the verdict text is not from
 your dispatch. Re-running the command in the parent inhales the output
