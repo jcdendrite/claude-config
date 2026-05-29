@@ -1,7 +1,6 @@
 ---
 name: transcript-analysis
 description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, PR-to-branch mapping, or per-session review-activity timelines (skill invocations, hook denials, reviewer spawns). For token-cost or cache-efficiency analysis use token-analyzer.py directly.
-disable-model-invocation: true
 ---
 
 The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly from the shell.

@@ -1,7 +1,6 @@
 ---
 name: handoff
 description: Write a cross-session handoff file at /tmp/<descriptive-slug>-handoff.md capturing goal, status, next step, files modified, active markers, open questions, and resume command.
-disable-model-invocation: true
 ---
 
 Write a cross-session handoff file at `/tmp/<descriptive-slug>-handoff.md` using the structure below.

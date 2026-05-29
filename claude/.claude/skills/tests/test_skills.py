@@ -1,13 +1,18 @@
 """Static contract tests for skill SKILL.md description fields.
 
-Skills in this repo fall into three invocation categories:
+Skills in this repo fall into four invocation categories:
 - Model-invokable (default): the Claude Code harness reads the frontmatter
   `description` at session start and auto-loads the skill body when the
   description matches context. These skills MUST carry TRIGGER when: /
   DO NOT TRIGGER when: discipline so the harness fires at the right time.
-- User-only commands (disable-model-invocation: true): descriptions are
-  suppressed from the always-loaded listing budget; the user invokes directly
-  via /skill-name. These skills must be registered in COMMAND_SKILLS.
+- name-only (skillOverrides: name-only in settings.json): description excluded
+  from the always-loaded listing budget; the model can still invoke by exact
+  name when referenced in conversation. No TRIGGER discipline required (no
+  description to match on). Also slash-invocable by the user. Controlled via
+  settings.json, not frontmatter — must NOT carry disable-model-invocation: true.
+- User-only commands (disable-model-invocation: true): description excluded from
+  the listing budget; only the user can invoke via /skill-name. Must be
+  registered in COMMAND_SKILLS.
 - Model-only reference (user-invocable: false): invoked by model auto-trigger
   only; same TRIGGER discipline requirement as default.
 
@@ -23,6 +28,7 @@ docs/skills.md "Project-specific layers" for rationale.
 Contracts enforced:
 (a) Every model-invokable skill has TRIGGER when: and DO NOT TRIGGER when:.
 (b) Every registered command skill carries disable-model-invocation: true.
+(c) Every name-only skill does NOT carry disable-model-invocation: true.
 
 Run with: pytest claude/.claude/
 """
@@ -109,18 +115,48 @@ def _specialist_skills() -> list[str]:
     return skills
 
 
-def _model_invokable_skills() -> list[str]:
-    """Discover all skills the model can auto-load — i.e., NOT disable-model-invocation: true.
+def _settings_skill_overrides() -> dict[str, str]:
+    """Read skillOverrides from the stowed settings.json.
 
-    Any skill without disable-model-invocation: true is presented to the model
-    in the always-loaded skill listing and must carry TRIGGER when: / DO NOT
-    TRIGGER when: discipline so the harness fires it at the right time.
+    Returns the override map keyed by skill name. Skills absent from the map
+    default to "on" (fully model-invokable with description in budget).
     """
+    settings_path = Path(__file__).resolve().parents[4] / "claude/.claude/settings.json"
+    settings = json.loads(settings_path.read_text())
+    return settings.get("skillOverrides", {})
+
+
+def _name_only_skills() -> list[str]:
+    """Skills with skillOverrides: name-only in settings.json.
+
+    These skills are model-invokable by exact name but their descriptions are
+    excluded from the always-loaded listing budget — the harness shows only the
+    skill name to the model, so auto-triggering from description matching is
+    disabled. Also slash-invocable by the user. No TRIGGER discipline required.
+    """
+    overrides = _settings_skill_overrides()
+    return [name for name, state in overrides.items() if state == "name-only"]
+
+
+def _model_invokable_skills() -> list[str]:
+    """Discover all skills whose descriptions auto-load into the model's context budget.
+
+    A skill auto-loads when its frontmatter does NOT contain
+    disable-model-invocation: true AND it is not listed as name-only in
+    skillOverrides. These skills must carry TRIGGER when: / DO NOT TRIGGER
+    when: discipline so the harness fires them at the right time.
+
+    name-only skills are excluded: their descriptions are not in the budget, so
+    description-based auto-triggering is disabled and no TRIGGER blocks apply.
+    """
+    budget_excluded = set(_name_only_skills())
     skills = []
     for skill_dir in sorted(SKILLS_DIR.iterdir()):
         if not skill_dir.is_dir():
             continue
         if not (skill_dir / "SKILL.md").exists():
+            continue
+        if skill_dir.name in budget_excluded:
             continue
         frontmatter = _skill_description(skill_dir.name)
         if frontmatter and "disable-model-invocation: true" not in frontmatter:
@@ -135,6 +171,8 @@ def _model_invokable_skills() -> list[str]:
                     continue
                 if not (skill_dir / "SKILL.md").exists():
                     continue
+                if skill_dir.name in budget_excluded:
+                    continue
                 frontmatter = _skill_description(skill_dir.name)
                 if (
                     frontmatter
@@ -145,12 +183,14 @@ def _model_invokable_skills() -> list[str]:
     return skills
 
 
-# Explicit registry of user-only command skills. Each must carry
-# disable-model-invocation: true in its frontmatter so the description is
-# suppressed from the model's always-loaded listing budget. Add to this list
-# whenever a new command-style skill (user-invoked slash workflow, no model
-# auto-discovery needed) is created under skills/.
-COMMAND_SKILLS = ["handoff", "read-docx-comments", "transcript-analysis"]
+# Explicit registry of user-only command skills that use the frontmatter
+# disable-model-invocation: true flag. Currently empty — the four former command
+# skills (brief, handoff, read-docx-comments, transcript-analysis) now use
+# skillOverrides: name-only, making them model-invokable by name while keeping
+# their descriptions out of the budget. Add to this list only when a new skill
+# needs strict slash-only access (no model invocation at all) via frontmatter
+# rather than skillOverrides.
+COMMAND_SKILLS: list[str] = []
 
 
 class TestSpecialistSkillTriggerContracts:
@@ -228,6 +268,39 @@ class TestSpecialistSkillTriggerContracts:
         assert "disable-model-invocation: true" in desc, (
             f"{skill_name}/SKILL.md is registered as a command skill but is missing "
             f"disable-model-invocation: true; add it or remove from COMMAND_SKILLS"
+        )
+
+
+class TestNameOnlySkillContracts:
+    """Contract tests for skills with skillOverrides: name-only.
+
+    These skills are model-invokable by exact name (the harness lists them by
+    name only, no description) but their descriptions are excluded from the
+    always-loaded listing budget. They must NOT carry disable-model-invocation:
+    true — skillOverrides: name-only is the single source of truth for their
+    invocation mode, and stacking the frontmatter flag would create ambiguous
+    precedence. See docs/skills.md "Skills available by name" for rationale.
+    """
+
+    NAME_ONLY_SKILLS = _name_only_skills()
+
+    @pytest.mark.parametrize("skill_name", NAME_ONLY_SKILLS)
+    def test_name_only_skill_has_skill_file(self, skill_name):
+        """name-only skills listed in skillOverrides must have an existing SKILL.md."""
+        skill_path = _skill_file(skill_name)
+        assert skill_path.exists(), (
+            f"{skill_name} is listed as name-only in skillOverrides but has no "
+            f"SKILL.md at {skill_path}. Remove the skillOverrides entry or create the SKILL.md."
+        )
+
+    @pytest.mark.parametrize("skill_name", NAME_ONLY_SKILLS)
+    def test_name_only_skill_does_not_carry_disable_flag(self, skill_name):
+        """name-only skills must not carry disable-model-invocation: true."""
+        desc = _skill_description(skill_name)
+        assert "disable-model-invocation: true" not in desc, (
+            f"{skill_name}/SKILL.md carries disable-model-invocation: true but is also "
+            f"set to name-only in skillOverrides. Remove the frontmatter flag — "
+            f"skillOverrides: name-only is the single source of truth for invocation control."
         )
 
 
@@ -500,14 +573,21 @@ def test_trigger_cases_files_well_formed() -> None:
 
 
 def test_skill_overrides_documented_in_docs_skills_md() -> None:
-    """Every disabled bundled skill in skillOverrides must have a row in docs/skills.md."""
+    """Every non-on skillOverride must have a table row in docs/skills.md.
+
+    Covers both "off" entries (bundled skills disabled) and "name-only" entries
+    (repo skills available by name without description budget cost). Each must
+    appear as a | `/<name>` | table row so its rationale is visible to contributors.
+    """
     repo_root = Path(__file__).resolve().parents[4]
     settings = json.loads((repo_root / "claude/.claude/settings.json").read_text())
     docs_text = (repo_root / "docs/skills.md").read_text()
-    for skill_name in settings.get("skillOverrides", {}):
+    for skill_name, state in settings.get("skillOverrides", {}).items():
+        if state == "on":
+            continue
         marker = f"| `/{skill_name}` |"
         assert marker in docs_text, (
-            f"skillOverrides has {skill_name!r} but docs/skills.md has no "
-            f"`{marker}` row. Every disabled bundled skill needs a rationale "
-            'row in the "Bundled skills disabled by default" table.'
+            f"skillOverrides has {skill_name!r} ({state!r}) but docs/skills.md has no "
+            f"`{marker}` row. Every non-on skillOverride entry needs a rationale row "
+            "in docs/skills.md."
         )

@@ -1,7 +1,6 @@
 ---
 name: brief
 description: Produce a cold-start task briefing at /tmp/<slug>-task.md for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, ticket whose scope is settled). Distinct from /handoff, which captures mid-flight session state.
-disable-model-invocation: true
 ---
 
 Write a cold-start task briefing at `/tmp/<descriptive-slug>-task.md` using the structure below. A fresh session — with no memory of the originating conversation — must be able to read the file and execute the work.
