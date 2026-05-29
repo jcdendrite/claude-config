@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: deny Claude's Read tool on data-shaped files before their content
 # enters the conversation context. A data dump (CSV export, database
 # backup, statistical dataset) read into context is PII/PHI exposure.
@@ -52,18 +53,17 @@ emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
-JQ_EXIT=$?
-
-if [ "$JQ_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by data-file read gate: could not parse tool-input JSON. Refusing to evaluate the Read under malformed input."
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by data-file read gate: could not source _lib.sh."
   exit 0
 fi
+
+_lib_parse_tool_input_or_deny "Blocked by data-file read gate: could not parse tool-input JSON. Refusing to evaluate the Read under malformed input."
 
 # Defense-in-depth: only act on Read calls. Edit/Write/MultiEdit also carry
 # a file_path field; settings.json matches Read, this re-checks it.

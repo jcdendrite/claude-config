@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: informational
 # SessionEnd hook: remove the per-session handoff-nudge marker files written
 # by nudge-handoff-near-context-cap.sh when the session ends.
 #

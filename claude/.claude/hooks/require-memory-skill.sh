@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # set -uo pipefail but NOT -e: hooks inspect exit codes rather than aborting on them.
 set -uo pipefail
 # PreToolUse hook: block Write/Edit/MultiEdit to Claude Code auto-memory files
@@ -26,10 +27,8 @@ set -uo pipefail
 # Orphaned markers (session errored before cleanup) are evicted automatically:
 # dead PID → rm on next gate hit.
 #
-# Fail-open conditions (exit 0 without denying):
-#   - session_id absent from input — cannot key a per-session marker
-#   - unbound variable encountered (set -u) — exits non-zero but falls through
-#     to allow, since no JSON is emitted on an unbound-variable exit
+# Fail-closed on parse error — if the hook cannot parse its input it denies
+# rather than allowing through.
 #
 # Bash-tool bypass: Bash writes (e.g. echo > file) bypass this gate because
 # the hook only intercepts Write/Edit/MultiEdit tool calls.
@@ -41,8 +40,21 @@ set -uo pipefail
 #   0      — allow (no opinion)
 #   0+JSON — deny (memory write without active skill session)
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by memory-skill gate: could not source _lib.sh."
+  exit 0
+fi
+
+_lib_parse_tool_input_or_deny "Blocked by memory-skill gate: could not parse tool-input JSON."
 
 # Only gate Write, Edit, and MultiEdit tool calls.
 case "$TOOL_NAME" in
@@ -97,6 +109,4 @@ if [ -f "$ACTIVE_MARKER" ]; then
   rm -f "$ACTIVE_MARKER" 2>/dev/null
 fi
 
-REASON="Memory write blocked by ai-instruction-and-memory-files gate. You are writing to $FILE_PATH, which is part of Claude Code's auto-memory file system (MEMORY.md index or a new topic file). Invoke the ai-instruction-and-memory-files skill via the Skill tool first — it covers MEMORY.md index format, topic-file frontmatter, length budgets, and the type classification (user / feedback / project / reference). The skill's Step 0 activates a bypass marker so all memory writes in the session pass through after the skill is loaded."
-REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+emit_deny "Memory write blocked by ai-instruction-and-memory-files gate. You are writing to $FILE_PATH, which is part of Claude Code's auto-memory file system (MEMORY.md index or a new topic file). Invoke the ai-instruction-and-memory-files skill via the Skill tool first — it covers MEMORY.md index format, topic-file frontmatter, length budgets, and the type classification (user / feedback / project / reference). The skill's Step 0 activates a bypass marker so all memory writes in the session pass through after the skill is loaded."

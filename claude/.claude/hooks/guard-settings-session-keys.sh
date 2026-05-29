@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # PreToolUse hook: block git commit when claude/.claude/settings.json has
 # session-scoped keys (model, effortLevel, skipAutoPermissionPrompt) staged
 # relative to main.
@@ -29,15 +30,26 @@ git_capped() {
   timeout 5 git "$@"
 }
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by settings session-keys gate: could not source _lib.sh."
+  exit 0
+fi
+
+_lib_parse_tool_input_or_deny "Blocked by settings session-keys gate: could not parse tool-input JSON."
 
 # Only gate Bash tool calls.
 if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
-
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
 
 # Only gate commands that contain a git commit invocation.
 if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'; then
@@ -67,6 +79,9 @@ else
 fi
 
 # Extract the guarded keys from both versions using jq.
+# These 6 jq calls parse settings.json content, not hook input — they are
+# fail-open by design (a settings.json that can't be parsed doesn't block
+# the commit; the commit's own schema validation handles that).
 STAGED_MODEL=$(printf '%s\n' "$STAGED_CONTENT" | jq -r '.model // ""' 2>/dev/null)
 STAGED_EFFORT=$(printf '%s\n' "$STAGED_CONTENT" | jq -r '.effortLevel // ""' 2>/dev/null)
 STAGED_SKIP_AUTO_PROMPT=$(printf '%s\n' "$STAGED_CONTENT" | jq -r '.skipAutoPermissionPrompt // ""' 2>/dev/null)
@@ -89,6 +104,4 @@ if [ "$CHANGED" -eq 0 ]; then
   exit 0
 fi
 
-REASON="settings.json has session-scoped keys changed — commit these only if intentional. The staged settings.json differs from main on model, effortLevel, or skipAutoPermissionPrompt. These keys are typically ephemeral session state — model/effortLevel set via /config, and skipAutoPermissionPrompt written automatically by Claude Code — and should not be committed unless you are intentionally shipping a config change. Unstage the file (git restore --staged claude/.claude/settings.json) to allow the commit, or proceed only if this is a deliberate update."
-REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+emit_deny "settings.json has session-scoped keys changed — commit these only if intentional. The staged settings.json differs from main on model, effortLevel, or skipAutoPermissionPrompt. These keys are typically ephemeral session state — model/effortLevel set via /config, and skipAutoPermissionPrompt written automatically by Claude Code — and should not be committed unless you are intentionally shipping a config change. Unstage the file (git restore --staged claude/.claude/settings.json) to allow the commit, or proceed only if this is a deliberate update."

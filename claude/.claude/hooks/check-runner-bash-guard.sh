@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # PreToolUse(Bash) guard for the check-runner subagent.
 # Scope: wired via settings.json PreToolUse(Bash). The `.agent_type`
 # field in the hook payload scopes enforcement to calls originating
@@ -32,21 +33,21 @@ emit_deny() {
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
   printf 'check-runner-bash-guard: DENY: %s\n' "$reason" >&2
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
-INPUT=$(cat)
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "check-runner-bash-guard: could not source _lib.sh — refusing to evaluate under degraded state."
+  exit 0
+fi
+
+_lib_parse_tool_input_or_deny "check-runner-bash-guard: could not parse hook payload JSON — refusing to evaluate under malformed input."
 
 # Defense in depth: only act on Bash tool calls regardless of how the
 # hook is wired in settings.json. A misconfigured matcher must not
 # cause the hook to read fields off the wrong payload shape.
-TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
-JQ_TOOL_EXIT=$?
-if [ "$JQ_TOOL_EXIT" -ne 0 ]; then
-  emit_deny "check-runner-bash-guard: could not parse hook payload JSON — refusing to evaluate under malformed input."
-  exit 0
-fi
 if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
@@ -58,18 +59,6 @@ fi
 # other subagents.
 AGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
 if [ "$AGENT_TYPE" != "check-runner" ]; then
-  exit 0
-fi
-
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  emit_deny "check-runner-bash-guard: could not source _lib.sh — refusing to evaluate under degraded state."
-  exit 0
-fi
-
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-JQ_CMD_EXIT=$?
-if [ "$JQ_CMD_EXIT" -ne 0 ]; then
-  emit_deny "check-runner-bash-guard: could not parse tool-input JSON — refusing to evaluate under malformed input."
   exit 0
 fi
 

@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: require /code-review before git commit, verified via marker file.
 #
 # WARNING: Do NOT remove the internal git commit check below.
@@ -25,10 +26,28 @@
 # - The marker auto-invalidates as soon as the staging area changes, so
 #   re-staging after review correctly forces a re-review.
 
-. "$(dirname "$0")/_lib.sh"
+set -uo pipefail
 
-INPUT=$(cat)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by code-review gate: could not source _lib.sh."
+  exit 0
+fi
+
+_lib_parse_tool_input_or_deny "Blocked by code-review gate: could not parse tool-input JSON."
+
+# Only gate Bash tool calls — exit 0 (no opinion) for everything else.
+if [ "$TOOL_NAME" != "Bash" ]; then
+  exit 0
+fi
 
 # Only gate git commit commands — exit 0 (no opinion) for everything else.
 # Match `git commit` at the start of the command OR after a shell separator
@@ -82,6 +101,4 @@ fi
 # Build the reason as a bash variable so the conditional marker-chain
 # note can be interpolated; jq -Rs handles JSON-encoding safely
 # regardless of what characters appear in the appended note.
-REASON="Commit blocked by code-review gate: the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit."
-REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+emit_deny "Commit blocked by code-review gate: the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit."

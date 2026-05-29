@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: informational
 # SessionStart hook: surface active gate-bypass marker state to the resuming
 # Claude session.
 #

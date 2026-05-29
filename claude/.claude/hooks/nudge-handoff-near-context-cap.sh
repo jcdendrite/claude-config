@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: informational
 # UserPromptSubmit hook: injects a one-shot context-window nudge when the
 # estimated token count crosses 60% of the model's context window, prompting
 # the agent to suggest /handoff if the current task is not near completion.

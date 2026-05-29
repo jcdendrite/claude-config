@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: require /ready-for-review to have run before pushing to a branch
 # with an open PR (or marking a draft PR ready). Verified via marker file.
 #
@@ -35,15 +36,28 @@
 # - gh pr view fails (network issue, gh not configured, etc.) — fail-open
 #   to keep the user unblocked; the skill's prose triggers still fire.
 
-. "$(dirname "$0")/_lib.sh"
+set -uo pipefail
 
-INPUT=$(cat)
-TOOL=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
-if [ "$TOOL" != "Bash" ]; then
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by ready-for-review gate: could not source _lib.sh."
   exit 0
 fi
 
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
+_lib_parse_tool_input_or_deny "Blocked by ready-for-review gate: could not parse tool-input JSON."
+
+if [ "$TOOL_NAME" != "Bash" ]; then
+  exit 0
+fi
+
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty')
 [ -z "$CWD" ] && CWD="$PWD"
@@ -162,9 +176,7 @@ fi
 # No active marker, no matching completion marker, gh pr view confirmed
 # the branch has an open PR — block.
 if $is_gh_pr_ready; then
-  REASON="PR ready-for-review marking blocked by ready-for-review gate: this PR has not been gated by /ready-for-review in THIS session, or HEAD has moved since the gate ran. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
+  emit_deny "PR ready-for-review marking blocked by ready-for-review gate: this PR has not been gated by /ready-for-review in THIS session, or HEAD has moved since the gate ran. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
 else
-  REASON="Push to a branch with an open PR blocked by ready-for-review gate: this branch's HEAD has not been gated by /ready-for-review in THIS session, or HEAD has moved since the gate ran. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
+  emit_deny "Push to a branch with an open PR blocked by ready-for-review gate: this branch's HEAD has not been gated by /ready-for-review in THIS session, or HEAD has moved since the gate ran. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
 fi
-REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"

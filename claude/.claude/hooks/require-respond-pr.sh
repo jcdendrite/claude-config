@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: require /respond-pr when fetching or posting PR comments.
 #
 # Why: Claude habitually fetches only inline file comments
@@ -23,15 +24,28 @@
 # a comment in place; gating it forces any edit to flow through
 # /respond-pr's verified-author guidance.
 
-INPUT=$(cat)
-TOOL=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
+set -uo pipefail
 
-# Only gate Bash tool use
-if [ "$TOOL" != "Bash" ]; then
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by respond-pr gate: could not source _lib.sh."
   exit 0
 fi
 
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
+_lib_parse_tool_input_or_deny "Blocked by respond-pr gate: could not parse tool-input JSON."
+
+# Only gate Bash tool use
+if [ "$TOOL_NAME" != "Bash" ]; then
+  exit 0
+fi
 
 # Bypass: fresh marker for THIS session's session_id means we're inside the
 # skill and should let its own gh commands through. Empty session_id (older
@@ -92,4 +106,4 @@ if [ -n "$COMMAND_REPO" ]; then
   fi
 fi
 
-echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"PR comment access blocked by respond-pr gate. Run the /respond-pr skill instead — it fetches inline file comments, top-level review bodies, AND issue-level comments (Claude habitually fetches only the first and misses real feedback), and it enforces the [Claude Code] attribution prefix on replies so comments posted through the GitHub token are clearly labeled as AI-generated. Do not ask the user for permission — run /respond-pr and let it handle this operation."}}'
+emit_deny "PR comment access blocked by respond-pr gate. Run the /respond-pr skill instead — it fetches inline file comments, top-level review bodies, AND issue-level comments (Claude habitually fetches only the first and misses real feedback), and it enforces the [Claude Code] attribution prefix on replies so comments posted through the GitHub token are clearly labeled as AI-generated. Do not ask the user for permission — run /respond-pr and let it handle this operation."

@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: reject `git commit`, `gh pr create`, `gh pr edit`, and mutating
 # `gh api` calls if their content (staged diff, commit message, PR
 # title/body, body-source file contents, gh-api JSON body, or
@@ -146,8 +147,9 @@ emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
 # emit_deny is defined before sourcing _lib.sh so a missing _lib.sh can
@@ -157,22 +159,7 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-JQ_EXIT=$?
-
-# Fail-closed on malformed input. Matches the posture of
-# require-worktree-for-git-writes.sh: if we can't parse stdin, we can't
-# tell what's about to run, so deny rather than silently allow. JQ_EXIT
-# is captured from the .tool_input.command extraction deliberately: jq
-# parses the whole document, and that filter additionally surfaces a
-# type error when .tool_input is not an object — so a zero exit here
-# means both extractions ran against well-formed JSON.
-if [ "$JQ_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by redaction gate: could not parse tool-input JSON. Refusing to evaluate redaction under malformed input."
-  exit 0
-fi
+_lib_parse_tool_input_or_deny "Blocked by redaction gate: could not parse tool-input JSON. Refusing to evaluate redaction under malformed input."
 
 # Defense-in-depth: only act on Bash calls. settings.json already matches
 # the Bash tool, but the hook does not rely on that alone (see repo

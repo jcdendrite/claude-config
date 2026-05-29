@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: deny `git commit` when the commit's content — added lines of the
 # staged diff, the commit message, or a referenced commit-message file —
 # contains personally-identifying or protected health information (PII/PHI).
@@ -99,8 +100,9 @@ emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
 # emit_deny is defined before sourcing _lib.sh so a missing _lib.sh can
@@ -110,18 +112,7 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
-JQ_EXIT=$?
-
-# Fail-closed on unparseable input. jq parses the whole stdin document in
-# one pass: if INPUT is valid JSON every later field extraction succeeds,
-# and if it is malformed this first extraction already fails — so this
-# single check fully covers the malformed-JSON case.
-if [ "$JQ_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by PII commit gate: could not parse tool-input JSON. Refusing to evaluate the commit under malformed input."
-  exit 0
-fi
+_lib_parse_tool_input_or_deny "Blocked by PII commit gate: could not parse tool-input JSON. Refusing to evaluate the commit under malformed input."
 
 # Defense-in-depth: only act on Bash calls (settings.json already matches Bash).
 if [ "$TOOL_NAME" != "Bash" ]; then
@@ -138,8 +129,6 @@ PII_PATTERNS_FILE="${HOME}/.claude/pii-patterns.md"
 if [ ! -f "$PII_PATTERNS_FILE" ] || [ ! -r "$PII_PATTERNS_FILE" ]; then
   exit 0
 fi
-
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 
 # --- Detect `git commit`; decide whether `git diff HEAD` is also needed --
 # `-a`/`--all`, a `--` pathspec separator, or a bare pathspec argument all

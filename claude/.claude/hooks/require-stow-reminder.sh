@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: when a PR being opened/edited against claude-config introduces a
 # new top-level entry under `claude/.claude/`, require the PR body (or a
 # referenced body-source file, or a referenced commit message via
@@ -51,25 +52,24 @@
 
 set -uo pipefail
 
-INPUT=$(cat)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-JQ_EXIT=$?
-CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
-[ -z "$CWD" ] && CWD="$PWD"
-
 emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
-# Fail-closed on malformed input. Same posture as the other gates.
-if [ "$JQ_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by stow-reminder gate: could not parse tool-input JSON. Refusing to evaluate under malformed input."
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by stow-reminder gate: could not source _lib.sh."
   exit 0
 fi
+
+_lib_parse_tool_input_or_deny "Blocked by stow-reminder gate: could not parse tool-input JSON. Refusing to evaluate under malformed input."
+
+CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+[ -z "$CWD" ] && CWD="$PWD"
 
 # Internal filter (defense-in-depth against settings.json `if` drift).
 # Only fire on `gh pr create` or `gh pr edit` invocations.

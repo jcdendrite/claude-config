@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: deny Claude's Read tool on .env* files that commonly hold secrets.
 # Allows the three conventional non-secret template suffixes:
 #   .env.example  .env.template  .env.sample
@@ -27,22 +28,21 @@
 
 set -uo pipefail
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
-JQ_EXIT=$?
-
 emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
-if [ "$JQ_EXIT" -ne 0 ]; then
-  emit_deny "Blocked: could not parse tool-input JSON for env-read gate."
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by env-read gate: could not source _lib.sh."
   exit 0
 fi
+
+_lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON for env-read gate."
 
 # Defense-in-depth: only act on Read calls (settings.json already matches Read).
 if [ "$TOOL_NAME" != "Read" ]; then

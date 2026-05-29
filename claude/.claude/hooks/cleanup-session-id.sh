@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: informational
 # SessionEnd hook: delete the session_id ↔ claude-PID lookup file that
 # capture-session-id.sh wrote for this session. It is the destructor
 # capture-session-id.sh never had — without it, ~/.claude/sessions/ gains

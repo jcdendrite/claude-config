@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: informational
 set -uo pipefail
 # PostToolUse: when plan-review is active and ROUTING.md is Read, write a
 # routing-read marker so require-routing-read.sh can verify consultation

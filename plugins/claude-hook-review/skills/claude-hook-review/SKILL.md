@@ -32,7 +32,7 @@ Rejected forms: bare `./<rest>`, `../<rest>`, or unprefixed script names. Concre
 
 ## 3. Script skeleton
 
-The idiomatic pattern from `deny-private-project-refs.sh` and `require-stow-reminder.sh`:
+New gate hooks must follow the canonical pattern in Section 4 (`_lib_parse_tool_input_or_deny`) rather than reimplementing this inline form. The structural conventions — `set -uo pipefail`, `emit_deny` defined before sourcing `_lib.sh`, exit-0 contract — still apply:
 
 ```bash
 #!/bin/bash
@@ -42,37 +42,65 @@ set -uo pipefail   # explicit failure modes: unbound vars fail loudly,
                    # Older hooks predate this convention; don't perpetuate
                    # the gap in new gates.
 
-INPUT=$(cat)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-JQ_EXIT=$?
-
 emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
-if [ "$JQ_EXIT" -ne 0 ]; then
-  emit_deny "Blocked: could not parse tool-input JSON."
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by <gate-name> gate: could not source _lib.sh."
   exit 0
 fi
+
+_lib_parse_tool_input_or_deny "Blocked by <gate-name> gate: could not parse tool-input JSON."
+# INPUT, TOOL_NAME, COMMAND now set. Gate logic follows.
 ```
 
 Exit code is always `0`; the hook signals via stdout JSON, not via exit code.
 
 Two non-obvious constraints for new gates:
 - `"permissionDecision"` must be exactly `"deny"` (lowercase) — the runtime is case-sensitive; `"Deny"`, `"block"`, or any variant silently allows.
-- `jq -r '... // empty'` exits **0** on missing fields (empty string, not a non-zero exit). `JQ_EXIT` guards against JSON parse failures only. For allow-list-style gates (deny anything outside a known set), also guard on `[ -z "$COMMAND" ]`. For deny-list-style gates (deny specific operations, allow all else), empty `COMMAND` correctly falls through.
+- After `_lib_parse_tool_input_or_deny`, `COMMAND` may still be empty: `jq -r '... // empty'` exits **0** on missing fields (empty string, not non-zero). For allow-list-style gates (deny anything outside a known set), guard on `[ -z "$COMMAND" ]`. For deny-list-style gates (deny specific operations, allow all else), empty `COMMAND` correctly falls through.
 
 ## 4. Fail-open vs fail-closed posture
 
-**Fail-closed** when the gate prevents a leak: parse failure → deny (a hook that can't read its input can't verify the operation is safe). Example: `deny-private-project-refs.sh:101–104`.
+**Fail-closed** when the gate prevents a leak: parse failure → deny (a hook that can't read its input can't verify the operation is safe). All gate-class hooks use `_lib.sh::_lib_parse_tool_input_or_deny` as the canonical fail-closed pattern — source that function rather than reimplementing the inline JQ_EXIT check.
+
+The helper uses a single `_lib_jq` call to extract both `.tool_name` and `.tool_input.command`. Three deny paths protect against silent-allow:
+- **(a) jq non-zero exit** — parse failure, `timeout` exit=124, or missing jq binary; also fires when `.tool_input` is not an object (jq structural-type error). Per [Anthropic's PreToolUse hook contract](https://docs.claude.com/en/docs/claude-code/hooks#pretooluse), `.tool_name` and `.tool_input` are always present on a real hook event; jq failure indicates malformed or spoofed input.
+- **(b) empty INPUT** — stdin EOF, closed pipe, or harness misbehavior.
+- **(c) empty TOOL_NAME** — valid JSON but `.tool_name` absent (e.g. `{}`), indicating the call did not originate from a real tool invocation.
+
+The helper uses a 5s `timeout` backstop around every jq call (citing `guard-settings-session-keys.sh`'s `git_capped` precedent). On systems without `timeout` (BSD/macOS default), the helper falls back to bare `jq`; `install.sh` warns at onboarding time (including the `gtimeout` macOS alias case). This is a latency backstop, not a correctness boundary.
+
+The canonical pattern — define `emit_deny` **before** sourcing `_lib.sh`, then call the helper:
+
+```bash
+emit_deny() { ... }  # defined before sourcing so a missing _lib.sh can still deny
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by <gate-name> gate: could not source _lib.sh."
+  exit 0
+fi
+
+_lib_parse_tool_input_or_deny "Blocked by <gate-name> gate: could not parse tool-input JSON."
+```
+
+After the helper call, `INPUT`, `TOOL_NAME`, and `COMMAND` are set as globals. Hooks that perform **post-validation** extracts from `$INPUT` (e.g. `.session_id`, `.tool_input.file_path`) still need `// empty` defaults and explicit presence checks for required fields — the helper validates parse-shape, not semantic completeness.
 
 **Fail-open** when the gate is advisory and absence of input is normal: if `~/.claude/private-projects.md` is missing, allow normally (`deny-private-project-refs.sh:259–260`).
 
 State the chosen posture in the script header. Reviewers shouldn't have to re-derive it from the code.
+
+**`# hook-class:` header** — every hook must declare its class on the second line:
+- `# hook-class: gate` — fires PreToolUse and may deny. Required on all guard hooks.
+- `# hook-class: informational` — fires PostToolUse/SessionStart/etc. and never denies. The label describes the hardening posture (cannot deny), not functional importance — an essential workflow hook (e.g., `capture-session-id.sh`) and a purely advisory one both carry this label if neither issues a PreToolUse denial.
+
+Flipping a marker from `gate` to `informational` is a security-class change that removes a deny path; the commit message must state the rationale.
 
 ## 5. Dispatch design and drift risk
 
@@ -90,6 +118,8 @@ Prefer named variables over magic strings buried in a regex; future contributors
 ## 7. Performance budget
 
 Hooks fire on every matching tool call. Budget <100ms per fire. Subprocess spawns (`jq`, `grep`) add up — avoid loops over them. No network calls. No unbounded file I/O. If the hook reads user-controlled input, cap the read before scanning. External commands that contact a daemon, socket, or network (`docker`, `systemctl`, `curl`, package managers) must run under an explicit timeout — a hanging external call blocks the entire tool invocation until the OS timeout fires.
+
+The `_lib_jq` wrapper in `_lib.sh` applies a 5s `timeout` to every jq call inside `_lib_parse_tool_input_or_deny`. Hooks that call jq directly for post-validation extracts (e.g. `.session_id`, `.tool_input.file_path`) do not need an additional timeout on those calls — they operate on content already proven parseable by the helper, so the only failure mode is a slow or missing jq binary, both of which are benign (field is missing → `// empty` → gate falls through to allow).
 
 ## 8. Test patterns
 
