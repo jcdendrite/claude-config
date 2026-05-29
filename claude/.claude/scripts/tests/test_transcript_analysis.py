@@ -19,6 +19,15 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
 
+def _write_subagent_jsonl(
+    proj: Path, session_id: str, agent_id: str, records: list[dict]
+) -> None:
+    """Write records to the split subagent layout: <session_id>/subagents/<agent_id>.jsonl."""
+    subdir = proj / session_id / _mod.SUBAGENT_SUBDIR
+    subdir.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(subdir / f"{agent_id}.jsonl", records)
+
+
 def _asst(
     model: str,
     *,
@@ -3242,3 +3251,319 @@ class TestSkillInvocation:
                 break
         else:
             pytest.fail("code-review data row not found in output")
+
+
+# ---------------------------------------------------------------------------
+# iter_sessions subagent merge
+# ---------------------------------------------------------------------------
+
+
+class TestIterSessionsSubagentMerge:
+    def test_include_subagents_false_ignores_subdir(self, fake_projects):
+        """include_subagents=False must not read the subagents/ subdirectory."""
+        session_id = "sess-abc"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=False))
+        assert len(results) == 1
+        _path, records = results[0]
+        # Only the main record; sidechain record must not appear.
+        assert len(records) == 1
+        assert records[0].get("isSidechain") is False
+
+    def test_include_subagents_true_merges_subagent_records(self, fake_projects):
+        """include_subagents=True appends subagent file records to the session's record list."""
+        session_id = "sess-def"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        assert len(results) == 1
+        _path, records = results[0]
+        assert len(records) == 2
+        types = [r.get("isSidechain") for r in records]
+        assert False in types
+        assert True in types
+
+    def test_missing_subagent_dir_is_safe(self, fake_projects):
+        """A session with no subagents/ directory yields normally with include_subagents=True."""
+        _write_jsonl(fake_projects / "lone-session.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        # No subagents/ dir for this session.
+        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        assert len(results) == 1
+        _path, records = results[0]
+        assert len(records) == 1
+
+    def test_multiple_subagent_files_all_merged(self, fake_projects):
+        """All *.jsonl files in the subagents/ dir are merged into one record list."""
+        session_id = "sess-multi"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-2", [
+            _asst("claude-haiku-4-5", branch="main", sidechain=True),
+        ])
+        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        assert len(results) == 1
+        _path, records = results[0]
+        assert len(records) == 3, "expected main + 2 subagent records"
+        models = [(r.get("message") or {}).get("model") for r in records]
+        assert "claude-opus-4-7" in models
+        assert "claude-sonnet-4-6" in models
+        assert "claude-haiku-4-5" in models
+
+    def test_corrupt_line_in_subagent_file_skipped_gracefully(self, fake_projects):
+        """A corrupt JSON line in a subagent file is skipped; valid records still merge."""
+        session_id = "sess-corrupt"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        # Write a subagent file with one valid record and one corrupt line.
+        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        (subdir / "agent-corrupt.jsonl").write_text(
+            '{"type":"assistant","isSidechain":true,"gitBranch":"main",'
+            '"message":{"model":"claude-sonnet-4-6","content":[],"usage":{}}}\n'
+            'THIS IS NOT JSON\n'
+        )
+        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        assert len(results) == 1
+        _path, records = results[0]
+        sidechain = [r for r in records if r.get("isSidechain")]
+        assert len(sidechain) == 1, "corrupt line skipped; valid sidechain record present"
+
+
+# ---------------------------------------------------------------------------
+# subagents (cmd_subagents)
+# ---------------------------------------------------------------------------
+
+
+def _subagents_args(*, projects: str = "*", branches: str | None = None) -> object:
+    return type("A", (), {"projects": projects, "branches": branches})()
+
+
+class TestSubagents:
+    def test_split_subagent_file_populates_sidechain_row(self, fake_projects, capsys):
+        """Sidechain records from a split subagent file appear in the sidechain row."""
+        session_id = "sess-split"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="test-branch"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="test-branch", sidechain=True),
+        ])
+        _mod.cmd_subagents(_subagents_args(branches="test-branch"))
+        out = capsys.readouterr().out
+        main_lines = [ln for ln in out.splitlines() if "main" in ln]
+        sidechain_lines = [ln for ln in out.splitlines() if "sidechain" in ln]
+        assert main_lines, "expected a main row in output"
+        assert sidechain_lines, "expected a sidechain row in output"
+        # Verify actual counts: 1 opus main turn, 1 sonnet sidechain turn.
+        # main row format: branch thread opus sonnet haiku other
+        main_cols = main_lines[0].split()
+        assert main_cols[2] == "1", "expected 1 opus main turn"
+        assert main_cols[3] == "0", "expected 0 sonnet main turns"
+        # sidechain row: branch label absent on second row → thread opus sonnet haiku other
+        sidechain_cols = sidechain_lines[0].split()
+        assert sidechain_cols[1] == "0", "expected 0 opus sidechain turns"
+        assert sidechain_cols[2] == "1", "expected 1 sonnet sidechain turn"
+
+    def test_branch_filter_still_applies_to_output(self, fake_projects, capsys):
+        """Branch filter limits the output rows even with split subagent files."""
+        session_id = "sess-two-branches"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="branch-a"),
+            _asst("claude-opus-4-7", branch="branch-b"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="branch-a", sidechain=True),
+        ])
+        _mod.cmd_subagents(_subagents_args(branches="branch-a"))
+        out = capsys.readouterr().out
+        assert "branch-a" in out
+        assert "branch-b" not in out
+
+
+# ---------------------------------------------------------------------------
+# skill-pair: subagent file support
+# ---------------------------------------------------------------------------
+
+
+class TestSkillPairSubagentFile:
+    def test_follower_in_subagent_file_increments_sidechain_only(self, fake_projects, capsys):
+        """Follower skill in a split subagent file (isSidechain=True) counts as Side, not Main."""
+        session_id = "sess-pair"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
+                _skill_use("s1", "plan-it"),
+            ]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, sidechain=True, content=[
+                _skill_use("s2", "plan-review"),
+            ]),
+        ])
+        _mod.cmd_skill_pair(_skill_pair_args())
+        out = capsys.readouterr().out
+        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
+        assert len(lines) == 1
+        cols = lines[0].split()
+        assert cols[1] == "1"   # Lead=1
+        assert cols[2] == "0"   # Main=0
+        assert cols[3] == "1"   # Side=1
+
+
+# ---------------------------------------------------------------------------
+# format-drift canary
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDriftCanary:
+    def test_drift_warning_emitted_when_spawns_but_no_sidechain_turns(
+        self, fake_projects, capsys
+    ):
+        """Spawn tool_use with no subagent files → WARNING on stderr."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "isSidechain" in captured.err
+        # The warning must not bleed into stdout table rows.
+        assert "WARNING" not in captured.out
+
+    def test_no_warning_when_no_spawns(self, fake_projects, capsys):
+        """No Agent/Task tool_uses → no drift warning."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main"),
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_old_inlined_format(self, fake_projects, capsys):
+        """Agent spawn + isSidechain records inlined in the top-level file → no warning."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_drift_warning_also_fires_in_skill_pair(self, fake_projects, capsys):
+        """cmd_skill_pair also emits the drift warning when spawns have no sidechain turns."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
+                _skill_use("s1", "plan-it"),
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _mod.cmd_skill_pair(_skill_pair_args())
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_subagent_records_without_issidechain_field_treated_as_main_thread(
+        self, fake_projects, capsys
+    ):
+        """Subagent records missing the isSidechain field are counted as main-thread.
+
+        This documents the failure mode if the transcript format drifts to drop
+        isSidechain — subagent turns silently appear in the main row, not sidechain.
+        """
+        session_id = "sess-no-sidechain-field"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "check-runner"),
+            ]),
+        ])
+        # Subagent file record WITHOUT isSidechain field.
+        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        rec = _asst("claude-sonnet-4-6", branch="main", sidechain=True)
+        del rec["isSidechain"]  # simulate format drift
+        (subdir / "agent-drifted.jsonl").write_text(json.dumps(rec) + "\n")
+        _mod.cmd_subagents(_subagents_args())
+        captured = capsys.readouterr()
+        sidechain_lines = [ln for ln in captured.out.splitlines() if "sidechain" in ln]
+        # Without isSidechain=True, the subagent record is not a sidechain turn.
+        assert not sidechain_lines, (
+            "subagent records without isSidechain field must not appear in sidechain row"
+        )
+        # The drift canary fires: spawns=1 (main-thread Agent), sidechain_turns=0
+        # (subagent record has no isSidechain field → not counted as sidechain).
+        assert "WARNING" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# subagent format contract
+# ---------------------------------------------------------------------------
+
+
+class TestSubagentFormatContract:
+    """Pin the on-disk subagent transcript format the reader depends on.
+
+    These assertions describe what the code EXPECTS from the JSONL on disk.
+    If any of these fail on a real corpus run (not in CI), the transcript format
+    has drifted — update the reader (and iter_sessions) before trusting metric output.
+    """
+
+    def test_subagent_dir_path_convention(self, fake_projects):
+        """Subagent files live at <session_id>/subagents/*.jsonl relative to project dir."""
+        session_id = "abc123"
+        agent_id = "agent-xyz"
+        _write_subagent_jsonl(
+            fake_projects, session_id, agent_id,
+            [_asst("claude-sonnet-4-6", sidechain=True)]
+        )
+        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        assert subdir.is_dir(), f"Expected subagent dir at {subdir}"
+        files = list(subdir.glob("*.jsonl"))
+        assert len(files) == 1
+
+    def test_subagent_assistant_record_carries_required_fields(self, fake_projects):
+        """Assistant-type subagent records carry isSidechain, gitBranch, type, message.model
+        when read back through iter_sessions with include_subagents=True."""
+        session_id = "contract-sess"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="feat"),
+        ])
+        _write_subagent_jsonl(
+            fake_projects, session_id, "agent-contract",
+            [_asst("claude-sonnet-4-6", branch="feat", sidechain=True)]
+        )
+        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        assert len(results) == 1
+        _path, records = results[0]
+        sidechain_records = [r for r in records if r.get("isSidechain")]
+        assert len(sidechain_records) == 1, "expected one sidechain record from subagent file"
+        rec = sidechain_records[0]
+        assert rec.get("isSidechain") is True
+        assert rec.get("gitBranch") == "feat"
+        assert rec.get("type") == "assistant"
+        assert (rec.get("message") or {}).get("model") == "claude-sonnet-4-6"
+
+    def test_user_msg_helper_has_no_message_model(self):
+        """User-type records from _user_msg() have no message.model.
+
+        This documents the helper's shape, not an iter_sessions invariant — user
+        records in subagent files are not relied on by the script's analysis paths.
+        """
+        rec = _user_msg("some content", branch="feat")
+        # isSidechain may be absent on user records; message.model must not be asserted on them
+        assert rec.get("type") == "user"
+        assert (rec.get("message") or {}).get("model") is None
