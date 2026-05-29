@@ -829,6 +829,106 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}")
 
 
+def cmd_skill_invocation(args: argparse.Namespace) -> None:
+    """Per-skill invocation-source tally across the full corpus.
+
+    Three invocation buckets are counted per skill:
+    - top-level: Skill tool_use on a main-thread assistant turn with no attributionSkill.
+    - routed: Skill tool_use on a main-thread assistant turn where attributionSkill is
+      non-empty (the call was fired while another skill's body was active).
+    - user-slash: user record whose message content contains a
+      <command-name>/skillname</command-name> tag (the /slash invocation path, which
+      injects the skill body directly without a Skill tool_use).
+
+    Identifies routed-only candidates (zero top-level or slash) and slash-only candidates
+    (zero top-level or routed) for skill-description budget analysis.
+    """
+    projects_glob = _projects_glob(args)
+
+    skill_top: dict[str, int] = defaultdict(int)    # skill -> top-level invocation count
+    skill_routed: dict[str, int] = defaultdict(int)  # skill -> routed invocation count
+    skill_slash: dict[str, int] = defaultdict(int)   # skill -> user-slash invocation count
+    routed_pairs: dict[tuple[str, str], int] = defaultdict(int)  # (parent, child) -> count
+
+    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+        for rec in records:
+            if rec.get("type") == "assistant" and not bool(rec.get("isSidechain")):
+                for block in ((rec.get("message") or {}).get("content") or []):
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    if block.get("name") != "Skill":
+                        continue
+                    skill = (block.get("input") or {}).get("skill") or ""
+                    if not skill:
+                        continue
+                    attribution = rec.get("attributionSkill") or ""
+                    if attribution:
+                        skill_routed[skill] += 1
+                        routed_pairs[(attribution, skill)] += 1
+                    else:
+                        skill_top[skill] += 1
+            elif rec.get("type") == "user":
+                content_raw = (rec.get("message") or {}).get("content", "")
+                content_str = content_raw if isinstance(content_raw, str) else _content_text(content_raw)
+                for m in re.finditer(r"<command-name>/([^<]+)</command-name>", content_str):
+                    skill_slash[m.group(1)] += 1
+
+    all_skills: set[str] = set(skill_top) | set(skill_routed) | set(skill_slash)
+
+    if not all_skills:
+        print("No skill invocations found.")
+        return
+
+    # Sort by total descending, then alphabetically for ties.
+    def _skill_total(s: str) -> int:
+        return skill_top[s] + skill_routed[s] + skill_slash[s]
+
+    sorted_skills = sorted(all_skills, key=lambda s: (-_skill_total(s), s))
+
+    print("SKILL INVOCATION SOURCES (full corpus)")
+    header = f"{'skill':<40} {'top-level':>10}  {'routed':>6}  {'user-slash':>10}  {'total':>7}"
+    print(header)
+    print("-" * len(header))
+    for skill in sorted_skills:
+        top = skill_top[skill]
+        routed = skill_routed[skill]
+        slash = skill_slash[skill]
+        total = top + routed + slash
+        print(f"{skill:<40} {top:>10}  {routed:>6}  {slash:>10}  {total:>7}")
+
+    if routed_pairs:
+        print("\nROUTED PAIRS (parent -> child : count)")
+        for (parent, child), count in sorted(routed_pairs.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"  {parent} -> {child} : {count}")
+
+    # Classification summary: load-bearing, routed-only, slash-only.
+    load_bearing = [s for s in sorted_skills if skill_top[s] > 0 or skill_slash[s] > 0]
+    routed_only = [s for s in sorted_skills if skill_top[s] == 0 and skill_slash[s] == 0 and skill_routed[s] > 0]
+    slash_only = [s for s in sorted_skills if skill_top[s] == 0 and skill_routed[s] == 0 and skill_slash[s] > 0]
+
+    print("\nCLASSIFICATION SUMMARY")
+    print("  Load-bearing (any top-level or slash invocations):")
+    if load_bearing:
+        for s in load_bearing:
+            print(f"    {s} ({skill_top[s]} top, {skill_slash[s]} slash)")
+    else:
+        print("    (none)")
+
+    print("  Routed-only candidates (zero top-level and zero slash — name-only eligible):")
+    if routed_only:
+        for s in routed_only:
+            print(f"    {s} (0 top, {skill_routed[s]} routed, 0 slash)")
+    else:
+        print("    (none)")
+
+    print("  Slash-only candidates (zero top, zero routed — disable-model-invocation eligible):")
+    if slash_only:
+        for s in slash_only:
+            print(f"    {s} (0 top, 0 routed, {skill_slash[s]} slash)")
+    else:
+        print("    (none)")
+
+
 def cmd_subagent_mix(args: argparse.Namespace) -> None:
     projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
@@ -2152,6 +2252,17 @@ def main() -> None:
     )
     p_gate.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
     p_gate.set_defaults(func=cmd_commit_gate)
+
+    p_skill_inv = sub.add_parser(
+        "skill-invocation",
+        help=(
+            "Per-skill invocation-source tally: top-level (description-dependent auto-trigger),"
+            " routed (fired while another skill's body was active), and user /slash commands."
+            " Identifies name-only and disable-model-invocation candidates for budget relief."
+        ),
+    )
+    p_skill_inv.add_argument("--projects", default="*", metavar="GLOB")
+    p_skill_inv.set_defaults(func=cmd_skill_invocation)
 
     p_review_trace = sub.add_parser(
         "review-trace",
