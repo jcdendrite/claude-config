@@ -39,6 +39,10 @@
   },
   "model": "opusplan",
   "skillOverrides": {
+    "brief": "name-only",
+    "handoff": "name-only",
+    "read-docx-comments": "name-only",
+    "transcript-analysis": "name-only",
     "claude-api": "off",
     "fewer-permission-prompts": "off",
     "init": "off",

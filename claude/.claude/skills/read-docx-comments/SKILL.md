@@ -2,7 +2,6 @@
 name: read-docx-comments
 description: Extract all comments from a .docx file (Google Docs / Word feedback) and present them grouped by document location with author and anchored text.
 argument-hint: "<path/to/file.docx>"
-disable-model-invocation: true
 ---
 
 Extract all comments from the provided .docx file. The user uses this to give feedback on plans and documents by adding comments in Google Docs / Word.

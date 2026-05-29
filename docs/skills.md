@@ -19,12 +19,34 @@ Full descriptions for skills, slash commands, and project-scoped plugins in this
 - **`/sql-query-conventions`** — read-path conventions for SQL and PostgREST/Supabase queries: pagination, limits, N+1 avoidance, batch-size ceilings, explicit column selection.
 - **`/ai-instruction-and-memory-files`** — how AI coding agents load instruction files (CLAUDE.md, AGENTS.md, Cursor rules, Lovable knowledge) and Claude Code auto-memory: precedence, duplication rules, length targets, import patterns.
 - **`/verify-primary-sources`** — when web research informs a code or design decision, read the primary documentation directly rather than trusting agent summaries or secondary sources.
-- **`/handoff`** — write a structured cross-session handoff file at `/tmp/<slug>-handoff.md` capturing goal, status, next step, modified files, active markers, open questions, and the resume incantation. User-invoked only — implemented at `claude/.claude/skills/handoff/SKILL.md` with `disable-model-invocation: true`, which suppresses the description from the always-loaded skill listing budget while preserving slash invocation.
-- **`/brief`** — write a cold-start task briefing at `/tmp/<slug>-task.md` for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, settled-scope ticket) — covers goal, scope, anchors, current state, decisions to make, steps to ship, out of scope. Distinct from `/handoff`, which captures mid-flight session state; `/brief` is for work the current session is *not* going to do. User-invoked only — implemented at `claude/.claude/skills/brief/SKILL.md` with `disable-model-invocation: true`.
-- **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context. User-invoked only — implemented at `claude/.claude/skills/read-docx-comments/SKILL.md` with `disable-model-invocation: true`, which suppresses the description from the always-loaded skill listing budget while preserving slash invocation.
-- **`/transcript-analysis`** — reference guidance for the `transcript-analysis.py` toolkit: which subcommand answers which analysis question, how to read `fail-seq` convergence-vs-thrashing output, and the measurement caveats. `disable-model-invocation: true` — user-invoked only.
+- **`/handoff`** — write a structured cross-session handoff file at `/tmp/<slug>-handoff.md` capturing goal, status, next step, modified files, active markers, open questions, and the resume incantation. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only` — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
+- **`/brief`** — write a cold-start task briefing at `/tmp/<slug>-task.md` for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, settled-scope ticket) — covers goal, scope, anchors, current state, decisions to make, steps to ship, out of scope. Distinct from `/handoff`, which captures mid-flight session state; `/brief` is for work the current session is *not* going to do. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
+- **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
+- **`/transcript-analysis`** — reference guidance for the `transcript-analysis.py` toolkit: which subcommand answers which analysis question, how to read `fail-seq` convergence-vs-thrashing output, and the measurement caveats. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 
 Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain co-located auxiliary files — see architecture notes below for the two distinct roles they play. Skills that primarily apply to this repo's own workflow (editing SKILL.md files, authoring hooks) live as project-scoped plugins instead — see [Project-scoped plugins](#project-scoped-plugins) below.
+
+## Skills available by name (no description budget cost)
+
+Four repo skills use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older clients the override is silently ignored and these skills fall back to `on` (description loaded, weak auto-trigger since they carry no TRIGGER blocks).
+
+| Skill | Role |
+|---|---|
+| `/brief` | Cold-start task briefing for a fresh session to pick up well-scoped work |
+| `/handoff` | Cross-session handoff file capturing mid-flight session state |
+| `/read-docx-comments` | Extract comments from `.docx` files (Google Docs / Word feedback) |
+| `/transcript-analysis` | Reference guide for the `transcript-analysis.py` toolkit |
+
+The `skillOverrides` setting controls skill visibility from settings rather than frontmatter. The four values (Claude Code v2.1.129+):
+
+| Override value | Listed to model | Model can invoke | Description in budget | In `/` menu |
+|---|---|---|---|---|
+| `on` (default) | name + description | yes (auto-triggers) | yes | yes |
+| `name-only` | name only | yes, by name | no | yes |
+| `user-invocable-only` | hidden | no | no | yes |
+| `off` | hidden | no | no | no |
+
+Source: [Claude Code settings — skillOverrides](https://code.claude.com/docs/en/settings) · [Override skill visibility from settings](https://code.claude.com/docs/en/skills#override-skill-visibility-from-settings).
 
 ## Bundled skills disabled by default
 
