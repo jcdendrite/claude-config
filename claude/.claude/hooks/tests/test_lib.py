@@ -202,6 +202,14 @@ def test_missing_emit_deny_loud_fail() -> None:
         "Calling _lib_parse_tool_input_or_deny without emit_deny must not "
         "silently allow — SHOULD_NOT_REACH must never appear in stdout"
     )
+    # An undefined emit_deny causes bash to write "command not found" to stderr.
+    # Verifies loudness: the failure is observable (even without a deny JSON),
+    # so a hook author who forgets to define emit_deny gets an immediate signal.
+    assert result.stderr, (
+        "Calling _lib_parse_tool_input_or_deny without emit_deny must produce "
+        "a bash 'command not found' error on stderr — per the CALLER MUST define "
+        "emit_deny contract in _lib.sh"
+    )
 
 
 def test_null_literal_input_denied() -> None:
@@ -222,11 +230,10 @@ def test_newline_injection_in_tool_name_denied() -> None:
     """tool_name with embedded newline → DENY (path d: invalid TOOL_NAME shape).
 
     A JSON string value with an escaped newline (e.g. "Bash\\ninjected") is
-    decoded by jq -r into a real newline. The helper uses a unit-separator
-    delimiter to split TOOL_NAME from COMMAND, so TOOL_NAME receives
-    "Bash\\ninjected" rather than "Bash". The post-extraction newline check
-    detects the embedded newline and denies rather than allowing with a
-    corrupted TOOL_NAME or COMMAND.
+    decoded by jq -r into a real newline. The 0x1f delimiter split correctly
+    extracts TOOL_NAME = "Bash\\ninjected" (the full multi-line string) and
+    COMMAND = "echo safe". The deny fires from the post-extraction
+    `case "$TOOL_NAME" in *$'\\n'*)` check (path d), not from the split itself.
     """
     result = _run_harness('{"tool_name":"Bash\\ninjected","tool_input":{"command":"echo safe"}}')
     assert result.returncode == 0

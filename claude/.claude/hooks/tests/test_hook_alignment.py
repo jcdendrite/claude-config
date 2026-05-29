@@ -122,6 +122,45 @@ class TestHookClassHeader:
             f"but declared '{value}'"
         )
 
+    def test_emit_deny_defined_before_lib_source(self, hook: Path) -> None:
+        """Gate hooks must define emit_deny before sourcing _lib.sh.
+
+        _lib_parse_tool_input_or_deny calls emit_deny at source time if parse
+        fails. If emit_deny is not yet defined when _lib.sh is sourced, all
+        three deny paths silently no-op (bash 'command not found' to stderr,
+        exit 0 without deny JSON). Static ordering check closes this gap.
+        """
+        if _hook_class(hook) != "gate":
+            pytest.skip("not a gate hook")
+        lines = hook.read_text().splitlines()
+        emit_deny_line = next(
+            (
+                i for i, ln in enumerate(lines)
+                if re.search(r"emit_deny\s*\(\s*\)", ln) and not ln.strip().startswith("#")
+            ),
+            None,
+        )
+        lib_source_line = next(
+            (
+                i for i, ln in enumerate(lines)
+                if re.search(r'[.]\s+.*_lib\.sh', ln) and not ln.strip().startswith("#")
+            ),
+            None,
+        )
+        assert emit_deny_line is not None, (
+            f"{hook.name}: emit_deny() definition not found — "
+            "gate hooks must define emit_deny before sourcing _lib.sh"
+        )
+        assert lib_source_line is not None, (
+            f"{hook.name}: _lib.sh source line not found — "
+            "gate hooks must source _lib.sh via '. \"$(dirname \"$0\")/_lib.sh\"'"
+        )
+        assert emit_deny_line < lib_source_line, (
+            f"{hook.name}: emit_deny() defined at line {emit_deny_line + 1} but "
+            f"_lib.sh sourced at line {lib_source_line + 1} — "
+            "emit_deny must be defined BEFORE sourcing _lib.sh"
+        )
+
 
 # ------------------------------------------------------------------ #
 # Layer 2 — Behavior checks                                          #

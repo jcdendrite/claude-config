@@ -98,6 +98,11 @@ class TestRequireMemorySkill:
         payload = _memory_input(edit_input(readme), "sess-non-memory")
         assert run_hook(HOOK_PATH, payload) == "allow"
 
+    def test_empty_json_object_denied(self):
+        """'{}' → DENY (empty TOOL_NAME; path c: no .tool_name in payload)."""
+        payload = {}
+        assert run_hook(HOOK_PATH, payload) == "deny"
+
     def test_bash_tool_allowed(self, isolated_home):
         """Bash input passes through — self-filter by tool name."""
         payload = bash_input("echo hello", session_id="sess-bash")

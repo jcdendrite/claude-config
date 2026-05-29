@@ -54,6 +54,10 @@ _lib_parse_tool_input_or_deny() {
   # error when .tool_input is non-object (e.g. "Cannot index string with string
   # 'command'"), returning non-zero.
   local jq_out
+  # WARNING: the format string below contains a literal 0x1f (ASCII Unit Separator)
+  # byte between the two interpolated fields - invisible in editors and diff views.
+  # Do not remove it. test_lib.py::test_valid_bash_payload_returns_ok will fail
+  # immediately if the delimiter is absent, catching accidental deletion.
   jq_out=$(printf '%s\n' "$INPUT" | _lib_jq -r '"\(.tool_name // "")\(.tool_input.command // "")"' 2>/dev/null)
   local jq_exit=$?
   if [ "$jq_exit" -ne 0 ]; then
