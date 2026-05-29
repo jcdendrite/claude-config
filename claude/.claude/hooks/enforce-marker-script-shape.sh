@@ -135,12 +135,6 @@ Valid shapes:
   ~/.claude/scripts/marker.sh deactivate memory-skill
   ~/.claude/scripts/marker.sh clear-stale
   ~/.claude/scripts/marker.sh clear-stale --dry-run
-  ~/.claude/scripts/marker.sh write plan-review && ~/.claude/scripts/marker.sh deactivate plan-review
-  ~/.claude/scripts/marker.sh deactivate plan-review && ~/.claude/scripts/marker.sh write plan-review
-  ~/.claude/scripts/marker.sh write ready-for-review && ~/.claude/scripts/marker.sh deactivate ready-for-review
-  ~/.claude/scripts/marker.sh deactivate ready-for-review && ~/.claude/scripts/marker.sh write ready-for-review
 
-No chains except: marker.sh write/deactivate <skill> && marker.sh deactivate/write <skill>
-(plan-review and ready-for-review only), and marker.sh write <skill> && git commit.
-No ||, ;, redirects, extra args, or embedded newlines. Env-var prefix, bash wrapper,
+No chains (&&, ||, ;), redirects, or extra args. Env-var prefix, bash wrapper,
 and relative-path forms are not gated here — they are denied by permissions.allow."
