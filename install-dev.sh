@@ -33,7 +33,7 @@ if ! python3 -c "import ensurepip" 2>/dev/null; then
     fi
   fi
   if [ "${_is_debian}" = "true" ]; then
-    py_ver="$(python3 --version 2>&1 | grep -oE '3\.[0-9]+')"
+    py_ver="$(python3 --version 2>&1 | grep -oE '3\.[0-9]+' || true)"
     if [ -z "${py_ver}" ]; then
       echo "ERROR: could not parse python3 version from 'python3 --version'" >&2
       exit 1

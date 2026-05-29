@@ -1,16 +1,20 @@
 """Tests for install-dev.sh.
 
 The script bootstraps a contributor Python venv from requirements-dev.txt.
-Tests exercise the four critical branches:
+Tests exercise the critical branches:
 
-1. ensurepip-missing on a Debian system → non-zero exit + apt guidance with
+1. CWD anchor checks: requirements-dev.txt absent → non-zero exit; .venv is a
+   symlink → non-zero exit with symlink guidance.
+2. ensurepip-missing on a Debian system → non-zero exit + apt guidance with
    version-specific package name (python3.NN-venv).
-2. ensurepip-missing on a non-Debian system → non-zero exit + generic guidance,
+3. ensurepip-missing on a non-Debian system → non-zero exit + generic guidance,
    no apt mention.
-3. An unhealthy existing .venv (pip-less stub) → removed and recreated without
+4. An unhealthy existing .venv (pip-less stub) → removed and recreated without
    touching adjacent files.
-4. Apt package-name derivation from `python3 --version` output → version token
-   matches the parsed version.
+5. Idempotency: a healthy .venv is not recreated on a second run.
+6. pip install failure → non-zero exit (set -e propagates pip's exit code).
+7. Apt package-name derivation from `python3 --version` output → version token
+   matches the parsed version, including two-digit minors (3.10+).
 
 PATH stubs replace system python3/ruff so tests run in isolation without
 mutating the real .venv.
@@ -76,14 +80,27 @@ def repo_root_stub(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _make_healthy_venv_stub(repo_root_stub: Path) -> None:
+    """Create a minimal stub .venv whose health probe passes: python exits 0
+    for any -c argument, pip exits 0, ruff prints a version line."""
+    venv_bin = repo_root_stub / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").write_text("#!/bin/bash\nexit 0\n")
+    (venv_bin / "python").chmod(0o755)
+    (venv_bin / "pip").write_text("#!/bin/bash\nexit 0\n")
+    (venv_bin / "pip").chmod(0o755)
+    (venv_bin / "ruff").write_text('#!/bin/bash\necho "ruff 0.6.0"\nexit 0\n')
+    (venv_bin / "ruff").chmod(0o755)
+
+
 # ---------------------------------------------------------------------------
-# Test class: ensurepip-missing on Debian → apt guidance with version token
+# Test class: CWD anchor and symlink guard
 # ---------------------------------------------------------------------------
 
 class TestCwdAnchorCheck:
-    """The script must refuse with a clear error when requirements-dev.txt is
-    absent — this proves the caller is at the repo root and guards the rm -rf
-    against wrong-directory invocations."""
+    """The script must refuse with a clear error when the CWD anchor fails —
+    either requirements-dev.txt is absent (wrong directory) or .venv is a
+    symlink (worktree mishap). Both guards protect the rm -rf .venv operation."""
 
     def test_absent_requirements_exits_nonzero_with_guidance(self, tmp_path: Path):
         """Running from a directory with no requirements-dev.txt must exit non-zero
@@ -97,6 +114,27 @@ class TestCwdAnchorCheck:
             f"Error message must name the missing file; got: {result.stderr!r}"
         )
 
+    def test_dotenv_symlink_exits_nonzero_with_guidance(self, repo_root_stub: Path):
+        """Running when .venv is a symlink must exit non-zero and name the
+        symlink concern so the contributor knows to check their worktree setup.
+        This guards against rm -rf accidentally following a symlink."""
+        target = repo_root_stub / "other_venv"
+        target.mkdir()
+        symlink = repo_root_stub / ".venv"
+        symlink.symlink_to(target)
+
+        result = _run_script(repo_root_stub)
+        assert result.returncode != 0, (
+            f"Expected non-zero exit when .venv is a symlink; got {result.returncode}"
+        )
+        assert "symlink" in result.stderr, (
+            f"Error message must mention symlink; got: {result.stderr!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test class: ensurepip-missing on Debian → apt guidance with version token
+# ---------------------------------------------------------------------------
 
 class TestEnsurepipMissingDebian:
     """On a Debian system (apt-get present or /etc/debian_version present),
@@ -110,7 +148,7 @@ class TestEnsurepipMissingDebian:
         bin_dir = repo_root_stub / "bin"
         # python3 stub: `import ensurepip` fails; `--version` reports 3.11.
         _write_stub(bin_dir, "python3", textwrap.dedent("""\
-            if [ "$1" = "-c" ] && echo "$*" | grep -q "ensurepip"; then
+            if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
               exit 1
             fi
             if [ "$1" = "--version" ]; then
@@ -138,7 +176,7 @@ class TestEnsurepipMissingDebian:
         """Apt package name must embed the major.minor from python3 --version."""
         bin_dir = repo_root_stub / "bin"
         _write_stub(bin_dir, "python3", textwrap.dedent("""\
-            if [ "$1" = "-c" ] && echo "$*" | grep -q "ensurepip"; then
+            if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
               exit 1
             fi
             if [ "$1" = "--version" ]; then
@@ -172,7 +210,7 @@ class TestEnsurepipMissingNonDebian:
     def test_exit_nonzero_and_generic_guidance(self, repo_root_stub: Path):
         bin_dir = repo_root_stub / "bin"
         _write_stub(bin_dir, "python3", textwrap.dedent("""\
-            if [ "$1" = "-c" ] && echo "$*" | grep -q "ensurepip"; then
+            if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
               exit 1
             fi
             exit 0
@@ -223,7 +261,7 @@ class TestUnhealthyVenvIsRecreated:
         # recreation. ruff is created inside the venv because check_venv_healthy
         # calls .venv/bin/ruff directly — it cannot be satisfied by the PATH stub.
         _write_stub(bin_dir, "python3", textwrap.dedent("""\
-            if [ "$1" = "-c" ] && echo "$*" | grep -q "ensurepip"; then
+            if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
               exit 0
             fi
             if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
@@ -260,6 +298,82 @@ class TestUnhealthyVenvIsRecreated:
 
 
 # ---------------------------------------------------------------------------
+# Test class: idempotency — healthy .venv is not recreated on a second run
+# ---------------------------------------------------------------------------
+
+class TestIdempotency:
+    """Running install-dev.sh on an already-healthy .venv must not remove or
+    recreate it — pip install (no-op when pins are satisfied) should be the
+    only write operation."""
+
+    def test_healthy_venv_not_recreated(self, repo_root_stub: Path):
+        """A second run when .venv is already healthy must exit 0 and skip
+        the python3 -m venv creation step."""
+        _make_healthy_venv_stub(repo_root_stub)
+
+        # Sentinel: touched by the stub if python3 -m venv is called.
+        sentinel = repo_root_stub / "venv_created.flag"
+        bin_dir = repo_root_stub / "bin"
+        _write_stub(bin_dir, "python3", textwrap.dedent(f"""\
+            if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
+              exit 0
+            fi
+            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+              touch '{sentinel}'
+              exit 0
+            fi
+            exit 0
+        """))
+
+        result = _run_script(repo_root_stub, stub_bin=bin_dir)
+
+        assert result.returncode == 0, (
+            f"Expected exit 0 on a healthy venv; got {result.returncode}\n"
+            f"stderr: {result.stderr}\nstdout: {result.stdout}"
+        )
+        assert not sentinel.exists(), (
+            "python3 -m venv must not be called when .venv is already healthy"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test class: pip install failure propagates as non-zero exit
+# ---------------------------------------------------------------------------
+
+class TestPipInstallFailure:
+    """If pip install fails after venv creation, set -e propagates the
+    non-zero exit code — the script must not silently succeed."""
+
+    def test_pip_failure_exits_nonzero(self, repo_root_stub: Path):
+        bin_dir = repo_root_stub / "bin"
+        # python3 stub: ensurepip passes; -m venv creates a venv whose pip exits 1.
+        _write_stub(bin_dir, "python3", textwrap.dedent("""\
+            if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
+              exit 0
+            fi
+            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+              venv_dir="$3"
+              mkdir -p "$venv_dir/bin"
+              printf '%s\\n' '#!/bin/bash' 'exit 0' > "$venv_dir/bin/python"
+              chmod +x "$venv_dir/bin/python"
+              printf '%s\\n' '#!/bin/bash' 'exit 1' > "$venv_dir/bin/pip"
+              chmod +x "$venv_dir/bin/pip"
+              printf '%s\\n' '#!/bin/bash' 'echo "ruff 0.6.0"' 'exit 0' > "$venv_dir/bin/ruff"
+              chmod +x "$venv_dir/bin/ruff"
+              exit 0
+            fi
+            exit 0
+        """))
+
+        result = _run_script(repo_root_stub, stub_bin=bin_dir)
+
+        assert result.returncode != 0, (
+            f"Expected non-zero exit when pip install fails; got {result.returncode}\n"
+            f"stderr: {result.stderr}\nstdout: {result.stdout}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Test class: apt package-name derivation from python3 --version
 # ---------------------------------------------------------------------------
 
@@ -276,7 +390,7 @@ class TestAptPackageNameVersionDerivation:
     def _run_with_python_version(self, repo_root_stub: Path, version_string: str) -> subprocess.CompletedProcess:
         bin_dir = repo_root_stub / "stub_bin" / version_string.replace(".", "_")
         _write_stub(bin_dir, "python3", textwrap.dedent(f"""\
-            if [ "$1" = "-c" ] && echo "$*" | grep -q "ensurepip"; then
+            if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
               exit 1
             fi
             if [ "$1" = "--version" ]; then
@@ -309,4 +423,26 @@ class TestAptPackageNameVersionDerivation:
         )
         assert "python3.1-venv" not in result.stderr, (
             "Single-digit truncation: grep must not stop at the first digit"
+        )
+
+    def test_unparseable_version_exits_nonzero_with_guidance(self, repo_root_stub: Path):
+        """If python3 --version output does not match the 3.X pattern, the
+        script must exit non-zero and emit a 'could not parse' error."""
+        bin_dir = repo_root_stub / "stub_bin" / "unparseable"
+        _write_stub(bin_dir, "python3", textwrap.dedent("""\
+            if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
+              exit 1
+            fi
+            if [ "$1" = "--version" ]; then
+              echo "Python unknown"
+              exit 0
+            fi
+            exit 0
+        """))
+        result = _run_script(
+            repo_root_stub, stub_bin=bin_dir, extra_env={"_INSTALL_DEV_IS_DEBIAN": "true"}
+        )
+        assert result.returncode != 0
+        assert "could not parse" in result.stderr, (
+            f"Expected 'could not parse' in stderr; got: {result.stderr!r}"
         )
