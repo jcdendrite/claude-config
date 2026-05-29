@@ -68,7 +68,7 @@ Two non-obvious constraints for new gates:
 
 ## 4. Fail-open vs fail-closed posture
 
-**Fail-closed** when the gate prevents a leak: parse failure → deny (a hook that can't read its input can't verify the operation is safe). All 21 gate-class hooks use `_lib.sh::_lib_parse_tool_input_or_deny` as the canonical fail-closed pattern — source that function rather than reimplementing the inline JQ_EXIT check.
+**Fail-closed** when the gate prevents a leak: parse failure → deny (a hook that can't read its input can't verify the operation is safe). All gate-class hooks use `_lib.sh::_lib_parse_tool_input_or_deny` as the canonical fail-closed pattern — source that function rather than reimplementing the inline JQ_EXIT check.
 
 The helper uses a single `_lib_jq` call to extract both `.tool_name` and `.tool_input.command`. Three deny paths protect against silent-allow:
 - **(a) jq non-zero exit** — parse failure, `timeout` exit=124, or missing jq binary; also fires when `.tool_input` is not an object (jq structural-type error). Per [Anthropic's PreToolUse hook contract](https://docs.claude.com/en/docs/claude-code/hooks#pretooluse), `.tool_name` and `.tool_input` are always present on a real hook event; jq failure indicates malformed or spoofed input.
@@ -97,8 +97,8 @@ After the helper call, `INPUT`, `TOOL_NAME`, and `COMMAND` are set as globals. H
 State the chosen posture in the script header. Reviewers shouldn't have to re-derive it from the code.
 
 **`# hook-class:` header** — every hook must declare its class on the second line:
-- `# hook-class: gate` — fires PreToolUse and may deny. Required on all 21 guard hooks.
-- `# hook-class: informational` — fires PostToolUse/SessionStart/etc. and never denies.
+- `# hook-class: gate` — fires PreToolUse and may deny. Required on all guard hooks.
+- `# hook-class: informational` — fires PostToolUse/SessionStart/etc. and never denies. The label describes the hardening posture (cannot deny), not functional importance — an essential workflow hook (e.g., `capture-session-id.sh`) and a purely advisory one both carry this label if neither issues a PreToolUse denial.
 
 Flipping a marker from `gate` to `informational` is a security-class change that removes a deny path; the commit message must state the rationale.
 
