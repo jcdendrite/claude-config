@@ -334,13 +334,10 @@ Claude Code compresses conversation history when the context window fills up. Th
 Pytest suite covering hooks (allow, deny, and ask paths) and skill description contracts. Pins live in [`requirements-dev.txt`](./requirements-dev.txt) (single source for CI + contributors):
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
+./install-dev.sh   # creates .venv and installs requirements-dev.txt (contributor only)
 .venv/bin/pytest claude/.claude/
 .venv/bin/ruff check claude/.claude/
 ```
-
-**Debian/Ubuntu:** `python3 -m venv` needs the `python3-venv` apt package (or the version-specific `python3.12-venv`). Without it, venv creation exits 0 but produces no `pip`, so the second command fails. If `.venv/bin/pip` is missing after the first command, run `sudo apt install python3.12-venv`, delete `.venv`, and re-run. macOS (python.org or Homebrew) bundles `ensurepip` and is unaffected.
 
 The `.venv` lives only in the main worktree root. Linked worktrees live at `.claude/worktrees/<branch>/` — exactly three levels deep — so from inside a worktree invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
 

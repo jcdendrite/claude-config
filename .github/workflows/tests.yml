@@ -55,7 +55,7 @@ jobs:
           # Include any directory that contains test files or whose contents are
           # read by tests. Update this list when a new test or test-input
           # directory appears under claude/.claude/ or plugins/skill-management/.
-          REGEX='^(claude/\.claude/(hooks|skills|scripts|tests)/|plugins/skill-management/|\.github/workflows/tests\.yml|pyproject\.toml)'
+          REGEX='^(claude/\.claude/(hooks|skills|scripts|tests)/|plugins/skill-management/|\.github/workflows/tests\.yml|pyproject\.toml|install-dev\.sh)'
 
           MATCHED=$(echo "$CHANGED" | grep -E "$REGEX" || true)
           UNMATCHED=$(echo "$CHANGED" | grep -vE "$REGEX" || true)

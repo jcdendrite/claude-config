@@ -97,6 +97,6 @@ if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
 fi
 
 echo ""
-echo "Done. Optional: run the hook test suite (see CONTRIBUTING.md 'Tests and lint'):"
-echo "  python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt"
+echo "Done. Optional (contributors): run the hook test suite:"
+echo "  ./install-dev.sh   # creates .venv from requirements-dev.txt"
 echo "  .venv/bin/pytest claude/.claude/"
