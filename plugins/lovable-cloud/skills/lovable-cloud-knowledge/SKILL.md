@@ -76,7 +76,7 @@ When reviewing a PR that touches `.lovable/*.md` or `.lovable/skills/*.md`:
 3. **Scope** — Cross-project conventions → `workspace-knowledge.md`;
    this-app-specific → `project-knowledge.md`. Project knowledge wins
    on conflict.
-4. **Char budget** — Is the knowledge file approaching the 10,000-char limit?
+4. **Char budget** — Is the file approaching its char limit? (Check the table above.)
 5. **Sync status** — If `project-knowledge.md` or
    `workspace-knowledge.md` changed, has the "Last synced" date been
    bumped in the same PR? Does the PR description note that the human
@@ -87,7 +87,5 @@ For `.lovable/skills/*.md` changes, also check:
 6. **Skill name** — Is the name 1–64 chars, lowercase letters / numbers /
    hyphens only, not starting or ending with a hyphen, with no consecutive
    hyphens?
-7. **Skill body char budget** — Is the body (description + instructions)
-   within the 100,000-char limit?
-8. **Skills sync status** — Does the PR description note that the skill
+7. **Skills sync status** — Does the PR description note that the skill
    body must be pasted into Lovable Settings → Skills to take effect?
