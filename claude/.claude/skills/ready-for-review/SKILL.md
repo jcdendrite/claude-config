@@ -45,9 +45,7 @@ commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
 `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
 test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
-**Run the commands via the `Agent` tool with `subagent_type: check-runner`** — not inline Bash. Suite-level output displaces parent working state and invalidates the prompt cache. **Enumerate the exact command strings in the dispatch prompt, and include `dispatch-id: <uuid>` (one line, hex from any UUID generator — `uuidgen`, `python3 -c "import uuid; print(uuid.uuid4())"`, etc.) so the parent can verify the verdict's origin and locate the spool deterministically.** (e.g. "Run these commands: `pytest claude/.claude/`, `ruff check claude/.claude/`") — not "run the checks" or "run the suite". The subagent writes each command's full output to `${TMPDIR:-/tmp}/<dispatch-id>-<slug>-<epoch-ms>.txt` (dispatch-id from the prompt; slug = command lowercased with non-alphanumeric runs collapsed to `-`, e.g. `npm test` → `npm-test`; epoch-ms via `date +%s%3N`), then returns: per-command name/exit code/pass-fail, smallest failure excerpt (last ~50 lines or runner summary), overall PASS or FAIL, and the output file paths. If the parent needs more detail, Read the file — do not re-run.
-
-**Inline exception.** Run a command directly only when scoped to a single test file or test name — e.g. `npx vitest run src/components/X.test.tsx` or `pytest -k test_y`. Suite-level runs always go through the subagent.
+**Run the checks via `check-runner`, not inline Bash** — dispatch per `subagent-delegation/SKILL.md` § "Heavy command output → check-runner".
 
 **Scope exceptions — skip step 2 entirely:** skip when the diff
 contains no executable code — only markdown, plans, or non-executable
@@ -104,12 +102,12 @@ Flag and fix:
   CI placeholders (step 7 covers those). Keep items requiring
   reviewer judgment: deploy coordination, security-invariant catalog
   approval, architectural sign-off.
-- Stale prose left behind by code changes — a removed guard, an
-  abandoned approach, a deleted file must also disappear from the
-  migration-ordering note, test plan, and "remaining concerns" list.
+- **Content-claim verification.** Read each file the body describes at
+  its final state (clean tree = HEAD) and confirm its claims about that
+  content (deployment order, feature names, step numbers) still match —
+  a removed guard or deleted structure must be gone from the body too.
 - `TBD` / `pending` / "to be updated" markers still in the body.
-- Files listed in the body that are no longer in the diff, or files
-  in the diff absent from the body.
+- Files in the diff absent from the body.
 
 Propose an updated body and apply with `gh pr edit <n> --body`. Keep
 the project's template structure intact — refresh content inside
