@@ -2909,7 +2909,7 @@ class TestCmdStruggle:
 
 
 class TestSkillInvocation:
-    def _run(self, fake_projects, capsys):
+    def _run(self, capsys):
         args = argparse.Namespace(projects="*")
         _mod.cmd_skill_invocation(args)
         return capsys.readouterr().out
@@ -2921,7 +2921,7 @@ class TestSkillInvocation:
         ])
         # No attributionSkill field → top-level
         _write_jsonl(fake_projects / "s1.jsonl", [asst_rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         assert "code-review" in out
         # Top-level column should be ≥1; find the data row for code-review
         for line in out.splitlines():
@@ -2942,7 +2942,7 @@ class TestSkillInvocation:
         ])
         asst_rec["attributionSkill"] = "ready-for-review"
         _write_jsonl(fake_projects / "s2.jsonl", [asst_rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         # Routed pair must appear in the ROUTED PAIRS section
         assert "ready-for-review -> code-review" in out
 
@@ -2953,7 +2953,7 @@ class TestSkillInvocation:
         ])
         asst_rec["attributionSkill"] = "plan-it"
         _write_jsonl(fake_projects / "s3.jsonl", [asst_rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         for line in out.splitlines():
             if line.startswith("plan-review"):
                 parts = line.split()
@@ -2968,7 +2968,7 @@ class TestSkillInvocation:
             branch="main",
         )
         _write_jsonl(fake_projects / "s4.jsonl", [user_rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         # plan-it must appear in the table
         assert "plan-it" in out
         # The slash column for plan-it should be ≥1
@@ -2984,7 +2984,7 @@ class TestSkillInvocation:
             _skill_use("t5", "code-review")
         ])
         _write_jsonl(fake_projects / "s5.jsonl", [asst_rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         # No non-sidechain invocations → no data → "No skill invocations found."
         assert "No skill invocations found." in out
 
@@ -2996,7 +2996,7 @@ class TestSkillInvocation:
         rec2 = _asst("claude-haiku-4-5", branch="main", content=[_skill_use("t6b", "code-review")])
         rec2["attributionSkill"] = "ready-for-review"
         _write_jsonl(fake_projects / "s6.jsonl", [rec1, rec2])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         # The pair should appear exactly once in the routed pairs section with count 2
         pair_lines = [ln for ln in out.splitlines() if "ready-for-review -> code-review" in ln]
         assert len(pair_lines) == 1, f"Expected exactly one pair line, got: {pair_lines}"
@@ -3007,7 +3007,7 @@ class TestSkillInvocation:
         rec = _asst("claude-haiku-4-5", branch="main", content=[_skill_use("t7", "agent-review")])
         rec["attributionSkill"] = "code-review"
         _write_jsonl(fake_projects / "s7.jsonl", [rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         assert "Routed-only candidates" in out, f"section header not found in output: {out!r}"
         assert "agent-review" in out
         # agent-review must appear in the routed-only section, not load-bearing
@@ -3022,7 +3022,7 @@ class TestSkillInvocation:
         """A skill with top-level invocations appears in the 'Load-bearing' section."""
         rec = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("t8", "skill-review")])
         _write_jsonl(fake_projects / "s8.jsonl", [rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         load_bearing_start = out.find("Load-bearing")
         routed_only_start = out.find("Routed-only candidates")
         assert load_bearing_start != -1, "Load-bearing section not found"
@@ -3037,7 +3037,7 @@ class TestSkillInvocation:
             branch="main",
         )
         _write_jsonl(fake_projects / "s9.jsonl", [user_rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         slash_only_start = out.find("Slash-only candidates")
         assert slash_only_start != -1, "Slash-only candidates section not found"
         slash_only_section = out[slash_only_start:]
@@ -3051,7 +3051,7 @@ class TestSkillInvocation:
                 _bash_use("b1", "git status")
             ])
         ])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         assert "No skill invocations found." in out
 
     def test_projects_filter_restricts_to_named_project(self, tmp_path, monkeypatch, capsys):
@@ -3083,7 +3083,7 @@ class TestSkillInvocation:
             {"type": "tool_use", "id": "te2", "name": "Skill", "input": {}},
         ])
         _write_jsonl(fake_projects / "s_empty_skill.jsonl", [rec_empty, rec_absent])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         assert "No skill invocations found." in out
 
     def test_multiple_skills_in_one_assistant_record(self, fake_projects, capsys):
@@ -3093,7 +3093,7 @@ class TestSkillInvocation:
             _skill_use("tm2", "plan-review"),
         ])
         _write_jsonl(fake_projects / "s_multi_skill.jsonl", [rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         for line in out.splitlines():
             if line.startswith("code-review"):
                 assert int(line.split()[1]) == 1, f"code-review top-level count should be 1: {line!r}"
@@ -3107,7 +3107,7 @@ class TestSkillInvocation:
             branch="main",
         )
         _write_jsonl(fake_projects / "s_multi_slash.jsonl", [user_rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         for line in out.splitlines():
             if line.startswith("plan-it"):
                 assert int(line.split()[3]) >= 1, f"plan-it slash count should be ≥1: {line!r}"
@@ -3126,7 +3126,7 @@ class TestSkillInvocation:
             },
         }
         _write_jsonl(fake_projects / "s_list_content.jsonl", [user_rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         assert "plan-it" in out
         for line in out.splitlines():
             if line.startswith("plan-it"):
@@ -3140,13 +3140,86 @@ class TestSkillInvocation:
         routed_rec = _asst("claude-haiku-4-5", branch="main", content=[_skill_use("t10b", "code-review")])
         routed_rec["attributionSkill"] = "ready-for-review"
         _write_jsonl(fake_projects / "s10.jsonl", [top_rec, routed_rec])
-        out = self._run(fake_projects, capsys)
+        out = self._run(capsys)
         for line in out.splitlines():
             if line.startswith("code-review"):
                 parts = line.split()
                 assert int(parts[1]) == 1, f"expected top-level=1, got: {line!r}"
                 assert int(parts[2]) == 1, f"expected routed=1, got: {line!r}"
                 assert int(parts[4]) == 2, f"expected total=2, got: {line!r}"
+                break
+        else:
+            pytest.fail("code-review data row not found in output")
+
+    def test_sidechain_user_records_excluded_from_slash(self, fake_projects, capsys):
+        """User records with isSidechain=True are not scanned for slash invocations."""
+        sidechain_user = {
+            "type": "user",
+            "isSidechain": True,
+            "gitBranch": "main",
+            "message": {"content": "<command-name>/code-review</command-name>"},
+        }
+        _write_jsonl(fake_projects / "s_sidechain_user.jsonl", [sidechain_user])
+        out = self._run(capsys)
+        assert "No skill invocations found." in out
+
+    def test_sidechain_user_excluded_main_thread_user_counted(self, fake_projects, capsys):
+        """Mixed session: sidechain user slash is excluded, main-thread user slash is counted."""
+        sidechain_user = {
+            "type": "user",
+            "isSidechain": True,
+            "gitBranch": "main",
+            "message": {"content": "<command-name>/plan-review</command-name>"},
+        }
+        main_user = _user_msg("<command-name>/code-review</command-name>", branch="main")
+        _write_jsonl(fake_projects / "s_sidechain_mixed.jsonl", [sidechain_user, main_user])
+        out = self._run(capsys)
+        assert "code-review" in out, "main-thread slash should be counted"
+        assert "plan-review" not in out, "sidechain slash should be excluded"
+        for line in out.splitlines():
+            if line.startswith("code-review"):
+                assert int(line.split()[3]) == 1, f"expected slash=1, got: {line!r}"
+                break
+        else:
+            pytest.fail("code-review data row not found in output")
+
+    def test_multiple_skill_blocks_on_routed_record(self, fake_projects, capsys):
+        """An attributed record with two Skill tool_use blocks counts both as routed, not top-level."""
+        rec = _asst("claude-haiku-4-5", branch="main", content=[
+            _skill_use("tr1", "code-review"),
+            _skill_use("tr2", "plan-review"),
+        ])
+        rec["attributionSkill"] = "ready-for-review"
+        _write_jsonl(fake_projects / "s_multi_routed.jsonl", [rec])
+        out = self._run(capsys)
+        for line in out.splitlines():
+            if line.startswith("code-review"):
+                parts = line.split()
+                assert int(parts[1]) == 0, f"code-review top-level should be 0: {line!r}"
+                assert int(parts[2]) == 1, f"code-review routed should be 1: {line!r}"
+            if line.startswith("plan-review"):
+                parts = line.split()
+                assert int(parts[1]) == 0, f"plan-review top-level should be 0: {line!r}"
+                assert int(parts[2]) == 1, f"plan-review routed should be 1: {line!r}"
+
+    def test_cross_project_aggregation(self, tmp_path, monkeypatch, capsys):
+        """Default glob aggregates counts across multiple project directories."""
+        projects = tmp_path / "projects"
+        proj_a = projects / "-home-user-repoA"
+        proj_b = projects / "-home-user-repoB"
+        proj_a.mkdir(parents=True)
+        proj_b.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        rec_a = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tc1", "code-review")])
+        rec_b = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tc2", "code-review")])
+        _write_jsonl(proj_a / "s_a.jsonl", [rec_a])
+        _write_jsonl(proj_b / "s_b.jsonl", [rec_b])
+        args = argparse.Namespace(projects="*")
+        _mod.cmd_skill_invocation(args)
+        out = capsys.readouterr().out
+        for line in out.splitlines():
+            if line.startswith("code-review"):
+                assert int(line.split()[1]) == 2, f"expected 2 top-level from both projects: {line!r}"
                 break
         else:
             pytest.fail("code-review data row not found in output")

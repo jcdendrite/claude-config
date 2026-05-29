@@ -867,7 +867,7 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
                         routed_pairs[(attribution, skill)] += 1
                     else:
                         skill_top[skill] += 1
-            elif rec.get("type") == "user":
+            elif rec.get("type") == "user" and not bool(rec.get("isSidechain")):
                 content_raw = (rec.get("message") or {}).get("content", "")
                 content_str = content_raw if isinstance(content_raw, str) else _content_text(content_raw)
                 for m in re.finditer(r"<command-name>/([^<]+)</command-name>", content_str):
