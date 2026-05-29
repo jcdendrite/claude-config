@@ -8,8 +8,7 @@ govern any contribution (human or agent).
 
 ```bash
 ./install.sh                                                 # first-time setup (stow + plugin registration)
-python3 -m venv .venv                                        # one-time contributor venv (pins in requirements-dev.txt)
-.venv/bin/pip install -r requirements-dev.txt                # pytest + ruff + pyyaml
+./install-dev.sh                                             # contributor venv setup from requirements-dev.txt (one-time, run from repo root)
 .venv/bin/pytest claude/.claude/                             # test suite (hooks + skills)
 .venv/bin/ruff check claude/.claude/                         # lint
 ```
