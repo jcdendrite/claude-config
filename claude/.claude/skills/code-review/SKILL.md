@@ -44,6 +44,14 @@ If over-elaborated: stop. Surface the simpler implementation as the primary revi
 
 Question implementation choices, not feature scope. Feature scope is fixed by the ticket; implementation choice is reviewer-tunable.
 
+## Step 1.5 — Judgment-activation pass
+
+Evaluate the diff against CLAUDE.md §Engineering Judgment and §Working Style — being loaded is not the same as being applied. The tripwires below fire on **diff surface**, not on internal reasoning, so they catch judgment-class defects even when the author's reasoning reads as coherent:
+
+- **Unverified external-state claim** — the diff or its commit message asserts state the author cannot observe (which env vars or secrets exist, CI/config contents, whether a migration was already applied, git blame or authorship, that a referenced file exists on `main`) without tool output or an explicit "unverified" flag. Default to flag — the model cannot observe external state by reading source files.
+- **Out-of-scope file edits** — files changed that the stated task did not require, especially copy, comment, or cosmetic edits on unrelated files (operationalizes §Working Style Scope discipline Axis 1). Distinct from item 14 (don't *fix* unchanged code): this is having *edited* what was out of scope.
+- **Preserved-record edits** — edits to already-applied migrations, changelog or incident records, or anchor fixtures (operationalizes Axis 3).
+
 ## Base checklist
 
 Evaluate the code against each item. Only flag items where there is a concrete issue — do not flag items just to show you checked them.
@@ -70,11 +78,17 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 8. **Inline business logic where a library method exists** — Is there hand-rolled logic (regex parsing, string manipulation, date math, data structure ops) where the project's existing dependencies already provide a tested function for the same thing?
 
-9. **Repeated in-house logic that should be extracted** — Is the same non-trivial logic block (≥~5 lines, or any block with semantic identity beyond formatting) repeated in three or more sites in this codebase, where a single shared helper would carry the same behavior? The default threshold is three instances, but it's a default, not a rule: a 2-instance extraction can be right when the logic is obviously a single domain concept (Stripe error shaping, retry with backoff, auth-error mapping) and a 5-instance repetition can be wrong to extract when the bodies are coincidentally similar but semantically distinct (each one will diverge under its own pressure). Suggest the extraction site (`_shared/<helper>.ts`, `lib/<helper>.ts`, or the codebase's established shared-utility location) and name what the helper should encapsulate, not just "DRY this up." Carve-out: production code is DRY; **test code is DAMP** — repeated arrange/assert blocks in tests often aid readability over abstraction, so do not flag test-file duplication unless the repeated block is large enough to obscure the test's intent.
+9. **Repeated in-house logic that should be extracted** — Is the same non-trivial logic block (≥~5 lines, or any block with semantic identity beyond formatting) repeated in three or more sites in this codebase, where a single shared helper would carry the same behavior? The default threshold is three instances, but it's a default, not a rule: a 2-instance extraction can be right when the logic is obviously a single domain concept (Stripe error shaping, retry with backoff, auth-error mapping) and a 5-instance repetition can be wrong to extract when the bodies are coincidentally similar but semantically distinct (each one will diverge under its own pressure). Suggest the extraction site (`_shared/<helper>.ts`, `lib/<helper>.ts`, or the codebase's established shared-utility location) and name what the helper should encapsulate, not just "DRY this up." Carve-out: production code is DRY; **test code is DAMP** — repeated arrange/assert blocks in tests often aid readability over abstraction, so do not flag test-file duplication unless the repeated block is large enough to obscure the test's intent. (Operationalizes CLAUDE.md §Engineering Judgment — Single source of truth.)
 
-9a. **Repeated domain discriminants without a shared type** — Is the same string literal representing a domain concept (tier, role, status, event type) used as a discriminator at 3 or more sites without a shared named type? Flag and suggest the language's idiomatic named-type construct (TypeScript string-literal union, Java/Kotlin/C# enum, Python `Literal[...]` or `Enum`, Rust enum, Go typed-string constant set) declared at the canonical module for that domain, with call sites replaced by the named type.
+9a. **Repeated domain discriminants without a shared type** — Is the same string literal representing a domain concept (tier, role, status, event type) used as a discriminator at 3 or more sites without a shared named type? Flag and suggest the language's idiomatic named-type construct (TypeScript string-literal union, Java/Kotlin/C# enum, Python `Literal[...]` or `Enum`, Rust enum, Go typed-string constant set) declared at the canonical module for that domain, with call sites replaced by the named type. (Operationalizes CLAUDE.md §Engineering Judgment: Ground every choice — discriminator literals where a canonical symbol exists.)
 
 9b. **Unnamed semantic bounds in slicing/truncation** — Does the code pass a bare numeric literal as a length, prefix, or offset bound when slicing, truncating, or windowing a string or collection in non-test code? If the number represents a semantic bound (prefix length for redaction, maximum field width, ID segment length), it should be a named constant expressing the intent, not a bare number. Suggest a named constant at the shared-utility level if the bound is used across files, or at the top of the file in the language's idiomatic constant declaration if local.
+
+9c. **Ungrounded numeric literal in network/timeout/retry context** — Does the diff introduce a bare numeric literal as a timeout, retry count, interval, or network parameter without a citation of the vendor or protocol documentation that specifies the value? Flag and require a primary-source citation or a named constant with a link in a comment.
+
+9d. **Lint or type-check suppression without rationale** — Does the diff add a suppression directive (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `# noqa`, `# type: ignore`, `//nolint`, `# pylint: disable`) without a one-line comment naming the alternative considered and why it does not apply? Flag — presence of a reason, not its quality, is the check.
+
+9e. **New third-party dependency without provenance research** — Does the diff add a new runtime or dev dependency (any package.json, requirements.txt, go.mod, Cargo.toml addition) without evidence of vulnerability-history and maintenance-health research? Flag and require the source-of-choice rationale to be named (in the PR description, a comment, or a commit message note).
 
 ### Clarity
 
@@ -304,6 +318,9 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **6–9. Hygiene** (dead exports, unnecessary wrappers, inline business logic, repeated in-house logic) | judgment (any reviewer) | — |
 | **9a. Repeated domain discriminants without a shared type** | judgment (any reviewer) | — |
 | **9b. Unnamed semantic bounds in slicing/truncation** | judgment (any reviewer) | — |
+| **9c. Ungrounded numeric literal in network/timeout/retry context** | `staff-backend-engineer` (timeout/retry in server paths), `staff-platform-engineer` (CI/infra timeouts) | — |
+| **9d. Lint or type-check suppression without rationale** | judgment (any reviewer) | — |
+| **9e. New third-party dependency without provenance research** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (build/CI deps) |
 | **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
 | **12. Stripped WHY comments** | judgment (any reviewer) | — |

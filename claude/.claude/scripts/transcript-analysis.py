@@ -41,9 +41,17 @@ STRUGGLE_PHRASES: list[str] = [
     "you missed",
     "incorrect",
     "not what i asked",
+    "not what i wanted",
     "wrong approach",
     "that doesn't work",
     "please don't",
+    # attested in transcripts but missed by prior lexicon (see test_transcript_analysis.py)
+    # Excluded: bare "stale" — legitimate technical term with high false-positive risk
+    "hallucinat",  # matches "hallucinated", "hallucinating", etc.
+    "are you saying",
+    "you should be able to",
+    "that doesn't exist",
+    "that doesn't match",
 ]
 
 
