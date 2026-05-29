@@ -2943,8 +2943,10 @@ class TestSkillInvocation:
         asst_rec["attributionSkill"] = "ready-for-review"
         _write_jsonl(fake_projects / "s2.jsonl", [asst_rec])
         out = self._run(capsys)
-        # Routed pair must appear in the ROUTED PAIRS section
-        assert "ready-for-review -> code-review" in out
+        # Routed pair must appear in the ROUTED PAIRS section with count 1
+        pair_lines = [ln for ln in out.splitlines() if "ready-for-review -> code-review" in ln]
+        assert pair_lines, "ready-for-review -> code-review pair line not found in output"
+        assert ": 1" in pair_lines[0], f"expected count=1 in pair line: {pair_lines[0]!r}"
 
     def test_routed_column_count_correct(self, fake_projects, capsys):
         """Routed invocation increments the routed column and not top-level."""
@@ -2960,6 +2962,8 @@ class TestSkillInvocation:
                 assert int(parts[1]) == 0, f"expected top-level=0, got: {line!r}"
                 assert int(parts[2]) >= 1, f"expected routed≥1, got: {line!r}"
                 break
+        else:
+            pytest.fail("plan-review data row not found in output")
 
     def test_slash_invocation_counted(self, fake_projects, capsys):
         """User record whose content contains <command-name>/plan-it</command-name> → user-slash count."""
@@ -3094,11 +3098,16 @@ class TestSkillInvocation:
         ])
         _write_jsonl(fake_projects / "s_multi_skill.jsonl", [rec])
         out = self._run(capsys)
+        found_code_review = found_plan_review = False
         for line in out.splitlines():
             if line.startswith("code-review"):
+                found_code_review = True
                 assert int(line.split()[1]) == 1, f"code-review top-level count should be 1: {line!r}"
             if line.startswith("plan-review"):
+                found_plan_review = True
                 assert int(line.split()[1]) == 1, f"plan-review top-level count should be 1: {line!r}"
+        assert found_code_review, "code-review data row not found in output"
+        assert found_plan_review, "plan-review data row not found in output"
 
     def test_multiple_slash_tags_in_one_user_record(self, fake_projects, capsys):
         """Two <command-name> tags in a single user record → both skill names counted in slash column."""
@@ -3108,11 +3117,16 @@ class TestSkillInvocation:
         )
         _write_jsonl(fake_projects / "s_multi_slash.jsonl", [user_rec])
         out = self._run(capsys)
+        found_plan_it = found_code_review = False
         for line in out.splitlines():
             if line.startswith("plan-it"):
+                found_plan_it = True
                 assert int(line.split()[3]) >= 1, f"plan-it slash count should be ≥1: {line!r}"
             if line.startswith("code-review"):
+                found_code_review = True
                 assert int(line.split()[3]) >= 1, f"code-review slash count should be ≥1: {line!r}"
+        assert found_plan_it, "plan-it data row not found in output"
+        assert found_code_review, "code-review data row not found in output"
 
     def test_slash_detection_with_list_form_user_content(self, fake_projects, capsys):
         """User record whose content is a list-of-blocks → slash command still detected via _content_text."""
@@ -3192,15 +3206,20 @@ class TestSkillInvocation:
         rec["attributionSkill"] = "ready-for-review"
         _write_jsonl(fake_projects / "s_multi_routed.jsonl", [rec])
         out = self._run(capsys)
+        found_code_review = found_plan_review = False
         for line in out.splitlines():
             if line.startswith("code-review"):
+                found_code_review = True
                 parts = line.split()
                 assert int(parts[1]) == 0, f"code-review top-level should be 0: {line!r}"
                 assert int(parts[2]) == 1, f"code-review routed should be 1: {line!r}"
             if line.startswith("plan-review"):
+                found_plan_review = True
                 parts = line.split()
                 assert int(parts[1]) == 0, f"plan-review top-level should be 0: {line!r}"
                 assert int(parts[2]) == 1, f"plan-review routed should be 1: {line!r}"
+        assert found_code_review, "code-review data row not found in output"
+        assert found_plan_review, "plan-review data row not found in output"
 
     def test_cross_project_aggregation(self, tmp_path, monkeypatch, capsys):
         """Default glob aggregates counts across multiple project directories."""
