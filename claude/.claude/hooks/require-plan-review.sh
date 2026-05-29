@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # PreToolUse hook: block Write/Edit when an uncommitted or modified plan file
 # exists in .claude/plans/ without a current plan-review marker for this session.
 #
@@ -28,16 +29,33 @@
 #   0      — allow (no opinion)
 #   0+JSON — deny (plan exists but no review marker for this session)
 
-. "$(dirname "$0")/_lib.sh"
+set -uo pipefail
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by plan-review gate: could not source _lib.sh."
+  exit 0
+fi
+
+_lib_parse_tool_input_or_deny "Blocked by plan-review gate: could not parse tool-input JSON."
 
 # Only gate Write, Edit, and MultiEdit tool calls.
 case "$TOOL_NAME" in
   Write|Edit|MultiEdit) ;;
   *) exit 0 ;;
 esac
+
+# Extract target path immediately after parsing — used both for the
+# repo-scope guard below and the deny gate.
+TARGET_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty')
 
 # Not in a git repo — can't check for plan files or key the marker.
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
@@ -94,7 +112,6 @@ fi
 # Scope the deny to writes inside this repo. Writes targeting user-home
 # directories (~/.claude/plans/), /tmp, or other repos are outside the gate's
 # intent — the gate guards this repo's code, not all files on disk.
-TARGET_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty')
 if [ -n "$TARGET_PATH" ]; then
   REAL_REPO=$(realpath -m "$REPO_ROOT")
   REAL_TARGET=$(realpath -m "$TARGET_PATH")
@@ -103,12 +120,10 @@ if [ -n "$TARGET_PATH" ]; then
   fi
 fi
 
-REASON="Write/Edit blocked by plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker was found for this session. Committed, unmodified plan files are treated as historical and do not arm the gate. Next step depends on whether a plan covers this change:
+emit_deny "Write/Edit blocked by plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker was found for this session. Committed, unmodified plan files are treated as historical and do not arm the gate. Next step depends on whether a plan covers this change:
 
   - If a plan covers this change → run /plan-review against it. The skill records the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry.
 
   - If no plan covers this change yet → run /plan-it first. It authors the plan and hands off to /plan-review at the end.
 
 The model judges which case applies from conversation context. Plans live wherever you put them — typically .claude/plans/, but also /tmp/<slug>.md, handoff docs, or external design doc URLs. The hook does not try to detect plan-change correlation."
-REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"

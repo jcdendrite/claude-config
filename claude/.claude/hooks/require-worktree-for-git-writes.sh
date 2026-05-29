@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: require git write operations to happen inside a linked worktree,
 # not the main working tree. Opt-in per-repo via a committed
 # .claude/worktree-required sentinel file at the repo root.
@@ -28,8 +29,9 @@ emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
@@ -37,13 +39,12 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
+_lib_parse_tool_input_or_deny "Blocked by worktree-enforcement hook: could not parse tool-input JSON. Refusing to evaluate git discipline under malformed input."
+
 # Defensive: prevent GIT_DIR / GIT_WORK_TREE env overrides from making the
 # main tree impersonate a linked worktree via rev-parse output.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
-INPUT=$(cat)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-JQ_EXIT=$?
 CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
@@ -115,13 +116,6 @@ git_C_note_if_present() {
     printf '%s' " If you used 'git -C <path>' expecting the -C path to be treated as the working tree: this hook reads cwd from Claude Code's session-persisted bash state (set by prior Bash calls), not from the -C path, because -C only retargets git's own working directory and doesn't change the session cwd. Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call."
   fi
 }
-
-# Fail-closed on malformed input: if jq couldn't parse the stdin JSON, we
-# can't tell what Claude is about to run, so deny rather than silently allow.
-if [ "$JQ_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by worktree-enforcement hook: could not parse tool-input JSON. Refusing to evaluate git discipline under malformed input."
-  exit 0
-fi
 
 # Fast-path: commands that don't mention `git` as a word are not our
 # concern. A plain `*git*` substring check false-positives on `.github`,

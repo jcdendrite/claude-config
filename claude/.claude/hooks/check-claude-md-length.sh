@@ -1,5 +1,5 @@
 #!/bin/bash
-set -uo pipefail
+# hook-class: gate
 # Gate: block git commit when a staged CLAUDE.md or AGENTS.md grows past its limit.
 #
 # Policy: deny when the staged file is over its limit AND longer than the
@@ -7,9 +7,10 @@ set -uo pipefail
 # file commit by commit without blocking the work, while still catching new
 # bloat.
 #
-# Fail posture: fail-open — tool absence (jq missing, not in a git repo) and
-# parse errors allow the commit through. This gate enforces a style rule, not
-# a security boundary.
+# Fail posture: fail-closed — parse errors deny the commit. This gate
+# enforces a style rule, not a security boundary, but consistent fail-closed
+# posture across all gate hooks prevents a whole class of silent-allow
+# regressions.
 #
 # Default limit is 200 lines, matching the Anthropic-documented threshold for
 # CLAUDE.md/AGENTS.md files (Claude Code — memory: "Longer files consume more
@@ -20,8 +21,28 @@ set -uo pipefail
 # The "if" field in settings.json is unreliable — the internal grep is the
 # actual gate. See require-code-review.sh for the same pattern and rationale.
 
-INPUT=$(cat)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
+set -uo pipefail
+
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by CLAUDE.md length gate: could not source _lib.sh."
+  exit 0
+fi
+
+_lib_parse_tool_input_or_deny "Blocked by CLAUDE.md length gate: could not parse tool-input JSON."
+
+# Only gate Bash tool calls.
+if [ "$TOOL_NAME" != "Bash" ]; then
+  exit 0
+fi
 
 # Only gate git commit commands.
 if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'; then
@@ -56,6 +77,5 @@ done < <(git diff --cached --name-only 2>/dev/null | grep -E '^(CLAUDE\.md|AGENT
 
 if [ "$FAIL" -eq 1 ]; then
   REASON=$(printf 'CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. Reduce to the limit or fewer lines before committing:\n%b' "$MESSAGES")
-  REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+  emit_deny "$REASON"
 fi

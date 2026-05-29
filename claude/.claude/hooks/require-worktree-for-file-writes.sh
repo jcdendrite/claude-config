@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# hook-class: gate
 # Gate: block Edit, Write, and MultiEdit to files in the main working tree of
 # a repo that has opted into worktree discipline (.claude/worktree-required
 # committed at the repo root). Companion to require-worktree-for-git-writes.sh,
@@ -28,24 +29,21 @@
 # env vars which git itself reads and which a committed config can pre-set.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
-INPUT=$(cat)
-
 emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
-# Fail-closed on malformed input: capture jq's exit code (not cat's) to detect
-# a broken jq binary or non-JSON harness output.
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
-JQ_EXIT=$?
-if [ "$JQ_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by worktree-enforcement hook (file-writes): could not parse tool-input JSON. Refusing to evaluate worktree discipline under malformed input."
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh."
   exit 0
 fi
+
+_lib_parse_tool_input_or_deny "Blocked by worktree-enforcement hook (file-writes): could not parse tool-input JSON. Refusing to evaluate worktree discipline under malformed input."
 
 FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 

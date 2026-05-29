@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: informational
 # SessionStart hook: bootstrap a session_id ↔ claude-PID mapping at session
 # start so downstream skills running as Bash tool calls can learn their
 # own session_id.

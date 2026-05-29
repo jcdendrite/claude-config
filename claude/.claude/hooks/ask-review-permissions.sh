@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: informational
 # Gate: ask before editing .claude/settings*.json.
 #
 # Why: settings.json edits that touch permissions.allow are security-sensitive

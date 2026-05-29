@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: informational
 # SessionStart bootstrap for the SKILL.md structural validator.
 #
 # Provisions a per-plugin Python venv with pyyaml at

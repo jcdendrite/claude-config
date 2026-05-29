@@ -83,6 +83,11 @@ check_private_projects_file() {
   fi
 }
 
+if ! command -v timeout >/dev/null 2>&1; then
+  printf '[install] warning: GNU coreutils `timeout` not in PATH; guard hooks will run jq without timeout protection.\n' >&2
+  printf '[install] hint: install via `brew install coreutils` (macOS) or `apt install coreutils` (debian). On macOS, coreutils installs `gtimeout` by default — either re-run with `--with-default-names` (older brew) or symlink `gtimeout` to `timeout` in PATH.\n' >&2
+fi
+
 check_private_projects_file
 
 if ! python3 -c "import ensurepip" >/dev/null 2>&1; then

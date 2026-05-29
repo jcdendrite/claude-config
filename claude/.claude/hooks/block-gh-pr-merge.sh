@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: block every shape of `gh pr merge` issued by the AI agent.
 # Enforces the repo-root CLAUDE.md rule "AI agents: don't merge your own PRs":
 # CI passing is necessary but not sufficient — the engineer merges directly.
@@ -26,29 +27,27 @@ set -uo pipefail
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
-JQ_EXIT=$?
-
 emit_deny() {
   local reason="$1"
   local reason_json
   reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$reason_json"
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
 }
 
-if [ "$JQ_EXIT" -ne 0 ]; then
-  emit_deny "Blocked: could not parse tool-input JSON for gh-pr-merge gate."
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by gh-pr-merge gate: could not source _lib.sh."
   exit 0
 fi
+
+_lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON for gh-pr-merge gate."
 
 # Defense-in-depth: only act on Bash calls (settings.json already matches Bash).
 if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command | if type == "string" then . else empty end' 2>/dev/null)
 [ -z "$COMMAND" ] && exit 0
 
 # Word-boundary match: (^|[[:space:]]) before `gh`; non-word char or EOL after `merge`.

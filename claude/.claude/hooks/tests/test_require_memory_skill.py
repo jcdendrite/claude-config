@@ -110,7 +110,8 @@ class TestRequireMemorySkill:
         assert run_hook(HOOK_PATH, payload) == "allow"
 
     def test_malformed_json_stdin(self, isolated_home):
-        """Malformed JSON stdin must not crash the hook and must exit 0."""
+        """Malformed JSON stdin must fail closed (deny), not silently allow."""
+        import json
         result = subprocess.run(
             [str(HOOK_PATH)],
             input="not-valid-json{{{",
@@ -118,7 +119,9 @@ class TestRequireMemorySkill:
             text=True,
         )
         assert result.returncode == 0
-        assert result.stdout.strip() == ""
+        assert result.stdout.strip(), "Hook must emit a deny message on malformed JSON, not silent exit"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     def test_deny_message_mentions_skill_name(self, isolated_home, memory_tree):
         """Deny reason must reference ai-instruction-and-memory-files."""

@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 set -uo pipefail
 # PreToolUse: during an active plan-review session, require that ROUTING.md
 # was Read (tracked by log-routing-read.sh) before any Agent spawn.
@@ -7,8 +8,22 @@ set -uo pipefail
 # This hook deliberately does NOT cover Bash matchers — sub-agent spawning is
 # via the dedicated Agent tool, not shell.
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
+}
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by routing-read gate: could not source _lib.sh."
+  exit 0
+fi
+
+_lib_parse_tool_input_or_deny "Blocked by routing-read gate: could not parse tool-input JSON."
+
 [ "$TOOL_NAME" = "Agent" ] || exit 0
 
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
@@ -24,6 +39,4 @@ if [ -f "$ROUTING_MARKER" ] && [ -n "$(find "$ROUTING_MARKER" -mmin -60 2>/dev/n
     exit 0
 fi
 
-REASON="Agent spawn blocked by plan-review routing gate: Read ~/.claude/skills/plan-review/ROUTING.md before spawning any specialist agent. All spawn criteria (always-spawn rules, item ownership, reconciliation logic) live exclusively in ROUTING.md."
-REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+emit_deny "Agent spawn blocked by plan-review routing gate: Read ~/.claude/skills/plan-review/ROUTING.md before spawning any specialist agent. All spawn criteria (always-spawn rules, item ownership, reconciliation logic) live exclusively in ROUTING.md."

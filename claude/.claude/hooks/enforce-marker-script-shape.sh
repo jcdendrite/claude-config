@@ -1,4 +1,5 @@
 #!/bin/bash
+# hook-class: gate
 # Gate: enforce strict invocation shape for ~/.claude/scripts/marker.sh.
 #
 # Fail posture: fail-closed — if jq cannot parse the input, deny.
@@ -17,15 +18,21 @@
 # those forms ungated.
 set -uo pipefail
 
-INPUT=$(cat)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-JQ_EXIT=$?
+emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | jq -Rs .)
+  local payload
+  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
+  printf '%s\n' "$payload"
+}
 
-if [ "$JQ_EXIT" -ne 0 ]; then
-  REASON_JSON='"Blocked: could not parse tool-input JSON."'
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  emit_deny "Blocked by marker-script-shape gate: could not source _lib.sh."
   exit 0
 fi
+
+_lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON."
 
 # Strip leading/trailing whitespace — computed before the activation guards so
 # both the fast-reject and anchored-path check share one computation.
@@ -43,9 +50,7 @@ printf '%s' "$COMMAND" | grep -qF 'marker.sh' || exit 0
 # anchored regex does not match them.
 if printf '%s' "$TRIMMED" | grep -qE '(^|/)\.\.(/|$)'; then
   TRUNCATED=$(printf '%s' "$TRIMMED" | cut -c1-80)
-  REASON="marker.sh invocation denied (path traversal '..' detected). Command (truncated): $TRUNCATED"
-  REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"
+  emit_deny "marker.sh invocation denied (path traversal '..' detected). Command (truncated): $TRUNCATED"
   exit 0
 fi
 
@@ -94,7 +99,7 @@ fi
 
 # Deny. Truncate to 80 chars to avoid echoing attacker-controlled bytes verbatim.
 TRUNCATED=$(printf '%s' "$TRIMMED" | cut -c1-80)
-REASON="marker.sh invocation denied. Command (truncated): $TRUNCATED
+emit_deny "marker.sh invocation denied. Command (truncated): $TRUNCATED
 
 Valid shapes:
   ~/.claude/scripts/marker.sh write code-review
@@ -114,5 +119,3 @@ Valid shapes:
 
 No chains (&&, ||, ;), redirects, or extra args. Env-var prefix, bash wrapper,
 and relative-path forms are not gated here — they are denied by permissions.allow."
-REASON_JSON=$(printf '%s' "$REASON" | jq -Rs .)
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$REASON_JSON"

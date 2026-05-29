@@ -156,10 +156,10 @@ class TestBlockGhPrMerge:
     # Allow — structural edge cases (null-safety of jq extraction)       #
     # ------------------------------------------------------------------ #
 
-    def test_empty_json_object_allowed(self):
-        # {} has no tool_name → TOOL_NAME is empty → != "Bash" → exit 0 (allow)
+    def test_empty_json_object_denied(self):
+        # {} has no tool_name → _lib_parse_tool_input_or_deny denies on empty TOOL_NAME
         payload = {}
-        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, payload) == "allow"
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, payload) == "deny"
 
     def test_bash_tool_missing_command_allowed(self):
         # tool_name is Bash but tool_input.command absent → COMMAND empty → exit 0 (allow)
