@@ -2,6 +2,18 @@
 
 Not loaded at skill runtime. Consult when editing the skill to verify a design decision still holds or to evaluate whether routing content should be inlined back into SKILL.md.
 
+## Tripwire → CLAUDE.md principle mapping
+
+The items below operationalize named principles from CLAUDE.md. This table
+lives here (edit-time reference) rather than in SKILL.md (runtime-loaded body)
+because it is design provenance for a skill editor, not an instruction that
+changes review behavior.
+
+| SKILL.md Step 4 tripwire | Canonical CLAUDE.md principle |
+|---|---|
+| Over-powered primitive | §Engineering Judgment — Default-suspect over-powered primitives |
+| Compounding layers | §Working Style — Compounding defensive layers are a wrong-foundation tell |
+
 ## Load-on-demand routing architecture
 
 **Why ROUTING.md exists:** The 200-line skill ceiling is a hard constraint enforced by `check-skill-length.sh`. The Reviewer roles table, Reconciliation logic, and Item ownership table together account for ~83 lines — extracting them to a load-on-demand file via a Read directive was the primary lever for getting SKILL.md under the ceiling without dropping behavioral content.

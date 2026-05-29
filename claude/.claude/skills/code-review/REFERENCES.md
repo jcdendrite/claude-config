@@ -4,6 +4,23 @@ Canonical sources that informed the rules in `SKILL.md`. Not loaded at
 runtime — read this when editing the skill to verify a rule still
 holds or to ground a new one.
 
+## Tripwire → CLAUDE.md principle mapping
+
+The items below operationalize named principles from CLAUDE.md. This table
+lives here (edit-time reference) rather than in SKILL.md (runtime-loaded body)
+because it is design provenance for a skill editor, not an instruction that
+changes review behavior.
+
+| SKILL.md item | Canonical CLAUDE.md principle |
+|---|---|
+| Step 1.5 — Out-of-scope file edits | §Working Style — Scope discipline Axis 1 (file-boundary rule) |
+| Step 1.5 — Preserved-record edits | §Working Style — Scope discipline Axis 3 (preserved-content exception) |
+| Item 9 — Repeated in-house logic | §Engineering Judgment — Single source of truth (DRY governs knowledge) |
+| Item 9a — Repeated domain discriminants | §Engineering Judgment — Ground every choice (discriminator literals where a canonical symbol exists) |
+| Item 9c — Ungrounded numeric literal | §Engineering Judgment — Ground every choice (numeric literals in network/timeout/retry contexts) |
+| Item 9d — Suppression without rationale | §Engineering Judgment — Ground every choice (inline lint/type-check suppressions) |
+| Item 9e — New dependency without provenance | §Engineering Judgment — Ground every choice (new third-party dependencies) |
+
 ## Finding disposition
 
 ### Default ADDRESS / opportunistic refactoring
