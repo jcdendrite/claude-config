@@ -77,15 +77,14 @@ When reviewing a PR that touches `.lovable/*.md` or `.lovable/skills/*.md`:
    this-app-specific → `project-knowledge.md`. Project knowledge wins
    on conflict.
 4. **Char budget** — Is the file approaching its char limit? (Check the table above.)
-5. **Sync status** — If `project-knowledge.md` or
-   `workspace-knowledge.md` changed, has the "Last synced" date been
-   bumped in the same PR? Does the PR description note that the human
-   needs to paste the merged content into the Lovable UI?
+5. **Sync status** — Does the PR description note that the human must
+   paste the merged content into the Lovable UI after merge? (Knowledge
+   files → Settings → Knowledge; skill bodies → Settings → Skills.) For
+   knowledge files, also verify the "Last synced" date is bumped in the
+   same PR.
 
 For `.lovable/skills/*.md` changes, also check:
 
 6. **Skill name** — Is the name 1–64 chars, lowercase letters / numbers /
    hyphens only, not starting or ending with a hyphen, with no consecutive
    hyphens?
-7. **Skills sync status** — Does the PR description note that the skill
-   body must be pasted into Lovable Settings → Skills to take effect?
