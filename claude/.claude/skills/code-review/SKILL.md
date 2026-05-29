@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Principal-engineer review before presenting code. TRIGGER when: code is about to be presented, or the user asks for a code review. DO NOT TRIGGER when: cosmetic-only changes (typo, formatting, CSS tweaks with no behavioral delta); only SKILL.md staged (use skill-review); only agent files staged (use agent-review); only plan files staged (use plan-review); only CLAUDE.md/AGENTS.md/auto-memory files staged (use ai-instruction-and-memory-files); fresh review-markers/ entry covers the diff."
+description: "Principal-engineer review before presenting code. TRIGGER when: code is about to be presented, or the user asks for a code review. DO NOT TRIGGER when: cosmetic-only changes (typo, formatting, CSS with no behavioral delta); only one specialized file type staged (SKILL.md→skill-review, agent→agent-review, plan→plan-review, CLAUDE.md/AGENTS.md/memory→ai-instruction-and-memory-files); fresh review-markers/ entry covers the diff."
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
