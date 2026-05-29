@@ -142,10 +142,9 @@ def _model_invokable_skills() -> list[str]:
     """Discover all skills whose descriptions auto-load into the model's context budget.
 
     A skill auto-loads when its frontmatter does NOT contain
-    disable-model-invocation: true AND it is not listed as name-only (or off /
-    user-invocable-only) in skillOverrides. These skills must carry TRIGGER
-    when: / DO NOT TRIGGER when: discipline so the harness fires them at the
-    right time.
+    disable-model-invocation: true AND it is not listed as name-only in
+    skillOverrides. These skills must carry TRIGGER when: / DO NOT TRIGGER
+    when: discipline so the harness fires them at the right time.
 
     name-only skills are excluded: their descriptions are not in the budget, so
     description-based auto-triggering is disabled and no TRIGGER blocks apply.
@@ -284,6 +283,15 @@ class TestNameOnlySkillContracts:
     """
 
     NAME_ONLY_SKILLS = _name_only_skills()
+
+    @pytest.mark.parametrize("skill_name", NAME_ONLY_SKILLS)
+    def test_name_only_skill_has_skill_file(self, skill_name):
+        """name-only skills listed in skillOverrides must have an existing SKILL.md."""
+        skill_path = _skill_file(skill_name)
+        assert skill_path.exists(), (
+            f"{skill_name} is listed as name-only in skillOverrides but has no "
+            f"SKILL.md at {skill_path}. Remove the skillOverrides entry or create the SKILL.md."
+        )
 
     @pytest.mark.parametrize("skill_name", NAME_ONLY_SKILLS)
     def test_name_only_skill_does_not_carry_disable_flag(self, skill_name):
