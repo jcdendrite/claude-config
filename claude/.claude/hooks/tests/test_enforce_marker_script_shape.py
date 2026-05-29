@@ -143,8 +143,8 @@ class TestEnforceMarkerScriptShape:
             "~/.claude/scripts/marker.sh write ready-for-review && ~/.claude/scripts/marker.sh deactivate ready-for-review",
             "~/.claude/scripts/marker.sh deactivate ready-for-review && ~/.claude/scripts/marker.sh write ready-for-review",
             (
-                "/home/jared/.claude/scripts/marker.sh write plan-review && "
-                "/home/jared/.claude/scripts/marker.sh deactivate plan-review"
+                "/home/testuser/.claude/scripts/marker.sh write plan-review && "
+                "/home/testuser/.claude/scripts/marker.sh deactivate plan-review"
             ),
             "~/.claude/scripts/marker.sh write ready-for-review   &&   ~/.claude/scripts/marker.sh deactivate ready-for-review",
             "~/.claude/scripts/marker.sh write plan-review && /home/jared/.claude/scripts/marker.sh deactivate plan-review",
