@@ -45,7 +45,7 @@ commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
 `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
 test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
-**Run the checks via `check-runner`, not inline Bash** — dispatch per `subagent-delegation/SKILL.md` § "Heavy command output → check-runner": enumerate the exact command strings identified above, pass `dispatch-id: <uuid>` and the worktree's absolute path, and read the returned spool rather than re-running.
+**Run the checks via `check-runner`, not inline Bash** — dispatch per `subagent-delegation/SKILL.md` § "Heavy command output → check-runner".
 
 **Scope exceptions — skip step 2 entirely:** skip when the diff
 contains no executable code — only markdown, plans, or non-executable
