@@ -44,6 +44,14 @@ If over-elaborated: stop. Surface the simpler implementation as the primary revi
 
 Question implementation choices, not feature scope. Feature scope is fixed by the ticket; implementation choice is reviewer-tunable.
 
+## Step 1.5 — Judgment-activation pass
+
+Evaluate the diff against CLAUDE.md §Engineering Judgment and §Working Style — being loaded is not the same as being applied. The tripwires below fire on **diff surface**, not on internal reasoning, so they catch judgment-class defects even when the author's reasoning reads as coherent:
+
+- **Unverified external-state claim** — the diff or its commit message asserts state the author cannot observe (which env vars or secrets exist, CI/config contents, whether a migration was already applied, git blame or authorship, that a referenced file exists on `main`) without tool output or an explicit "unverified" flag. Default to flag — the model cannot observe external state by reading source files.
+- **Out-of-scope file edits** — files changed that the stated task did not require, especially copy, comment, or cosmetic edits on unrelated files. Distinct from item 14 (don't *fix* unchanged code): this is having *edited* what was out of scope.
+- **Preserved-record edits** — edits to already-applied migrations, changelog or incident records, or anchor fixtures.
+
 ## Base checklist
 
 Evaluate the code against each item. Only flag items where there is a concrete issue — do not flag items just to show you checked them.
@@ -75,6 +83,12 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 9a. **Repeated domain discriminants without a shared type** — Is the same string literal representing a domain concept (tier, role, status, event type) used as a discriminator at 3 or more sites without a shared named type? Flag and suggest the language's idiomatic named-type construct (TypeScript string-literal union, Java/Kotlin/C# enum, Python `Literal[...]` or `Enum`, Rust enum, Go typed-string constant set) declared at the canonical module for that domain, with call sites replaced by the named type.
 
 9b. **Unnamed semantic bounds in slicing/truncation** — Does the code pass a bare numeric literal as a length, prefix, or offset bound when slicing, truncating, or windowing a string or collection in non-test code? If the number represents a semantic bound (prefix length for redaction, maximum field width, ID segment length), it should be a named constant expressing the intent, not a bare number. Suggest a named constant at the shared-utility level if the bound is used across files, or at the top of the file in the language's idiomatic constant declaration if local.
+
+9c. **Ungrounded numeric literal in network/timeout/retry context** — Does the diff introduce a bare numeric literal as a timeout, retry count, interval, or network parameter without a citation of the vendor or protocol documentation that specifies the value? Flag and require a primary-source citation or a named constant with a link in a comment.
+
+9d. **Lint or type-check suppression without rationale** — Does the diff add a suppression directive (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `# noqa`, `# type: ignore`, `//nolint`, `# pylint: disable`) without a one-line comment naming the alternative considered and why it does not apply? Flag — presence of a reason, not its quality, is the check.
+
+9e. **New third-party dependency without provenance research** — Does the diff add a new runtime or dev dependency (any package.json, requirements.txt, go.mod, Cargo.toml addition) without evidence of vulnerability-history and maintenance-health research? Flag and require the source-of-choice rationale to be named (in the PR description, a comment, or a commit message note).
 
 ### Clarity
 
@@ -304,6 +318,9 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **6–9. Hygiene** (dead exports, unnecessary wrappers, inline business logic, repeated in-house logic) | judgment (any reviewer) | — |
 | **9a. Repeated domain discriminants without a shared type** | judgment (any reviewer) | — |
 | **9b. Unnamed semantic bounds in slicing/truncation** | judgment (any reviewer) | — |
+| **9c. Ungrounded numeric literal in network/timeout/retry context** | `staff-backend-engineer` (timeout/retry in server paths), `staff-platform-engineer` (CI/infra timeouts) | — |
+| **9d. Lint or type-check suppression without rationale** | judgment (any reviewer) | — |
+| **9e. New third-party dependency without provenance research** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (build/CI deps), `staff-frontend-engineer` (frontend/client-side deps) |
 | **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
 | **12. Stripped WHY comments** | judgment (any reviewer) | — |
@@ -321,7 +338,7 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **28. Auth boundary coverage** | `staff-backend-engineer` | `ciso-reviewer` |
 | **29. Input validation at boundaries** | `staff-backend-engineer` | `ciso-reviewer` |
 | **30. Error response leakage** | `staff-backend-engineer` | `ciso-reviewer` |
-| **31. Dependency upgrades** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (CI / build deps) |
+| **31. Dependency upgrades** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (CI / build deps), `staff-frontend-engineer` (frontend/client-side deps) |
 | **32. Third-party API integration** | `staff-backend-engineer` | `ciso-reviewer` (credential scoping) |
 | **33. Sensitive data in logs** | `staff-backend-engineer` | `ciso-reviewer` |
 | **34. Performance-sensitive paths** | `staff-backend-engineer` (app-level query patterns) | `staff-data-engineer` (DDL / index / read-path) |

@@ -50,6 +50,7 @@ language and stack:
   runner config, sibling test files following a pattern). When no such
   convention exists, flag the coverage gap in **Still uncertain** rather than
   introduce test scaffolding the project does not have.
+- As you write, let CLAUDE.md §Engineering Judgment and §Working Style actively steer choices: understand the intent of existing code before changing it, ground every choice (timeouts, suppressions, discriminator literals, new dependencies), default-suspect over-powered primitives, and respect scope discipline (Axis 1–4) — surface them at each decision point, not only at self-review.
 
 This baseline is what you check while writing. It does not replace the
 self-review pass below.
@@ -77,7 +78,8 @@ more focused task than writing it — use that asymmetry deliberately.
 5. Scale the pass to the change. A one-line edit or a single config tweak needs
    the baseline only. A change that adds or alters logic in a domain gets that
    domain's reviewer read. When in doubt, read.
-6. Fix every issue you find, in your own diff, before you return.
+6. Re-read the diff once more specifically against CLAUDE.md §Engineering Judgment and §Working Style. Flag any unverified external-state claim, out-of-scope file edit, ungrounded timeout/literal, suppression without rationale, or new dependency without provenance research — the same set the code-review skill's Judgment-activation pass checks, applied here before handoff.
+7. Fix every issue you find, in your own diff, before you return.
 
 | Your diff touches | Reviewer file(s) to read |
 |---|---|
