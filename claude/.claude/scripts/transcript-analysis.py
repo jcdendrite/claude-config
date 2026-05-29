@@ -311,8 +311,19 @@ def _fmt_date(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%d")
 
 
-def iter_sessions(projects_dir: Path, projects_glob: str = "*") -> Iterator[tuple[Path, list[dict]]]:
-    """Yield (jsonl_path, records) for each transcript file matching the glob."""
+def iter_sessions(
+    projects_dir: Path,
+    projects_glob: str = "*",
+    include_subagents: bool = False,
+) -> Iterator[tuple[Path, list[dict]]]:
+    """Yield (jsonl_path, records) for each transcript file matching the glob.
+
+    When include_subagents=True, records from split subagent files under
+    <session_id>/subagents/*.jsonl are appended to the session's record list
+    before yielding. Those files carry isSidechain: true on assistant records
+    and represent subagent turns written to the SUBAGENT_SUBDIR layout by
+    Claude Code. Sessions with no subagents/ directory are yielded unchanged.
+    """
     for jsonl in sorted(projects_dir.glob(f"{projects_glob}/*.jsonl")):
         records: list[dict] = []
         try:
@@ -325,6 +336,22 @@ def iter_sessions(projects_dir: Path, projects_glob: str = "*") -> Iterator[tupl
                     records.append(rec)
         except OSError:
             continue
+
+        if include_subagents:
+            subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
+            if subagent_dir.is_dir():
+                for sub_jsonl in sorted(subagent_dir.glob("*.jsonl")):
+                    try:
+                        with open(sub_jsonl) as fh:
+                            for raw in fh:
+                                try:
+                                    rec = json.loads(raw)
+                                except json.JSONDecodeError:
+                                    continue
+                                records.append(rec)
+                    except OSError:
+                        continue
+
         if records:
             yield jsonl, records
 
@@ -547,6 +574,51 @@ def cmd_duration(args: argparse.Namespace) -> None:
         )
 
 
+def _count_subagent_spawns(records: list[dict]) -> int:
+    """Count main-thread subagent spawn tool_uses (Agent/Task) across all records.
+
+    Used corpus-wide (ignoring branch filter) as one side of the format-drift
+    cross-check: spawns > 0 with zero isSidechain turns read is the drift signature.
+    Note: isSidechain records (from subagent files) are excluded by design — nested
+    subagent spawns are not counted here.
+    """
+    count = 0
+    for rec in records:
+        if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+            continue
+        for block in ((rec.get("message") or {}).get("content") or []):
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("name") in _SPAWN_TOOL_NAMES
+            ):
+                count += 1
+    return count
+
+
+def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int) -> None:
+    """Emit a stderr warning when the drift signature is detected.
+
+    Drift signature: spawns recorded in the main thread but zero isSidechain
+    assistant turns read after include_subagents merge. Catches both failure
+    modes — the subagents/ path relocating (files never read → 0 turns) and a
+    field rename (files read but the filter matches 0).
+
+    This is the runtime half of the two-layer guard:
+      - Contract test (CI): pins what our code expects from fixtures.
+      - This canary (runtime): validates expectation against live on-disk data.
+    """
+    if total_spawns > 0 and total_sidechain_turns == 0:
+        print(
+            "WARNING: subagent spawns detected in main thread but zero isSidechain "
+            f"assistant turns were read from '{SUBAGENT_SUBDIR}/' subdirectories. "
+            "The Claude Code transcript format may have drifted — check that "
+            f"subagent files still live under <session>/{SUBAGENT_SUBDIR}/*.jsonl "
+            "and that records still carry 'isSidechain': true.",
+            file=sys.stderr,
+        )
+
+
 def cmd_subagents(args: argparse.Namespace) -> None:
     projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
@@ -554,17 +626,24 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     branch_data: dict[str, dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
     )
+    corpus_spawns = 0
+    corpus_sidechain_turns = 0
 
-    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob, include_subagents=True):
+        corpus_spawns += _count_subagent_spawns(records)
         for rec in records:
             if rec.get("type") != "assistant":
                 continue
+            if bool(rec.get("isSidechain")):
+                corpus_sidechain_turns += 1
             branch = rec.get("gitBranch") or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
             fam = _fam((rec.get("message") or {}).get("model", ""))
             thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
             branch_data[branch][thread][fam] += 1
+
+    _warn_if_subagent_format_drift(corpus_spawns, corpus_sidechain_turns)
 
     if not branch_data:
         print("No data found.")
@@ -587,6 +666,12 @@ def cmd_subagents(args: argparse.Namespace) -> None:
 
 
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
+
+# Subdirectory name where Claude Code writes split subagent transcripts.
+SUBAGENT_SUBDIR = "subagents"
+
+# Tool names that spawn a subagent in the main thread.
+_SPAWN_TOOL_NAMES = ("Agent", "Task")
 
 # Skills counted as review invocations in review-trace.
 REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
@@ -953,7 +1038,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                     continue
                 name = block.get("name")
                 inp = block.get("input") or {}
-                if name in ("Agent", "Task"):
+                if name in _SPAWN_TOOL_NAMES:
                     stype = inp.get("subagent_type") or "unknown"
                     session_data[branch]["spawns"][stype] += 1
                 elif name == "Skill":
@@ -1005,11 +1090,15 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
     data: dict[str, dict[str, int]] = defaultdict(
         lambda: {"leader_sessions": 0, "follower_main": 0, "follower_sidechain_only": 0}
     )
+    corpus_spawns = 0
+    corpus_sidechain_turns = 0
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob, include_subagents=True):
         # --exclude-projects: skip project dirs whose basename matches the glob
         if exclude_glob and fnmatch.fnmatchcase(jsonl.parent.name, exclude_glob):
             continue
+
+        corpus_spawns += _count_subagent_spawns(records)
 
         has_leader_hit = False
         leader_first_ts: float | None = None
@@ -1019,6 +1108,8 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
         for rec in records:
             if rec.get("type") != "assistant":
                 continue
+            if bool(rec.get("isSidechain")):
+                corpus_sidechain_turns += 1
             branch = rec.get("gitBranch") or ""
             if branch_filter and branch not in branch_filter:
                 continue
@@ -1054,6 +1145,8 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
         elif has_sidechain_follower:
             # sidechain-only: sidechain follower present AND no main-thread follower
             d["follower_sidechain_only"] += 1
+
+    _warn_if_subagent_format_drift(corpus_spawns, corpus_sidechain_turns)
 
     if not data:
         print("No data found.")
