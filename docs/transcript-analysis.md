@@ -218,6 +218,44 @@ bin          sessions   turns  skill-inv  skill/1k commits  w-skill  wo-skill  n
 
 ---
 
+## skill-invocation
+
+**Purpose.** Per-skill invocation-source tally across the full corpus, split into three buckets: `top-level` (description-triggered Skill tool_use on a main-thread turn with no parent skill active), `routed` (Skill tool_use fired while another skill's body was active — `attributionSkill` is non-empty), and `user-slash` (user record containing `<command-name>/skillname</command-name>`, the `/slash` invocation path). The classification summary at the bottom identifies routed-only candidates (name-only eligible) and slash-only candidates (disable-model-invocation eligible) for skill-description budget analysis.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`, all projects)
+
+**Sample output.**
+```
+SKILL INVOCATION SOURCES (full corpus)
+skill                                    top-level  routed  user-slash    total
+--------------------------------------------------------------------------------
+code-review                                    207       8           2      217
+plan-review                                     91       4           5      100
+subagent-delegation                             44       0           0       44
+skill-review                                     0      38           1       39
+ready-for-review                                 0       3          31       34
+
+ROUTED PAIRS (parent -> child : count)
+  code-review -> skill-review : 38
+
+CLASSIFICATION SUMMARY
+  Load-bearing (any top-level or slash invocations):
+    code-review (207 top, 2 slash)
+    plan-review (91 top, 5 slash)
+    subagent-delegation (44 top, 0 slash)
+    ready-for-review (0 top, 31 slash)
+    skill-review (0 top, 1 slash)
+  Routed-only candidates (zero top-level and zero slash — name-only eligible):
+    (none)
+  Slash-only candidates (zero top, zero routed — disable-model-invocation eligible):
+    (none)
+```
+
+**When to reach for it.** Audit which skills are reaching users via description-matching versus only via explicit `/slash` invocation or routing from a parent skill. The classification summary surfaces routed-only candidates (their description never independently fires — name-only conversion saves description-budget tokens) and slash-only candidates (only reach users via explicit command — disable-model-invocation conversion is safe).
+
+---
+
 ## review-trace
 
 **Purpose.** Emit an ordered event timeline per session — skill invocations, hook denials, and reviewer-agent spawns.
