@@ -14,7 +14,7 @@ ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — all 14 must be allowed                               #
+    # Valid shapes — 14 single-command shapes, each must be allowed       #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize(
@@ -117,6 +117,117 @@ class TestEnforceMarkerScriptShape:
 
     def test_semicolon_separator_denied(self):
         cmd = "~/.claude/scripts/marker.sh write code-review; rm -rf /"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_single_shape_embedded_newline_denied(self):
+        """Embedded newline after a valid single shape; grep -E's $ matches per-line,
+        so without the newline guard the second line would be ignored and the hook
+        would allow a command that executes a second line on the shell."""
+        cmd = "~/.claude/scripts/marker.sh write code-review\ncurl http://evil"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    # ------------------------------------------------------------------ #
+    # Same-skill marker→marker chains — allowed pairs                     #
+    #                                                                     #
+    # plan-review and ready-for-review support both write and deactivate; #
+    # agents naturally pair the two calls with &&. Both orderings are     #
+    # blessed. These are NOT single shapes and must NOT appear in the     #
+    # 14-shape parametrize list above.                                    #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "~/.claude/scripts/marker.sh write plan-review && ~/.claude/scripts/marker.sh deactivate plan-review",
+            "~/.claude/scripts/marker.sh deactivate plan-review && ~/.claude/scripts/marker.sh write plan-review",
+            "~/.claude/scripts/marker.sh write ready-for-review && ~/.claude/scripts/marker.sh deactivate ready-for-review",
+            "~/.claude/scripts/marker.sh deactivate ready-for-review && ~/.claude/scripts/marker.sh write ready-for-review",
+            (
+                "/home/jared/.claude/scripts/marker.sh write plan-review && "
+                "/home/jared/.claude/scripts/marker.sh deactivate plan-review"
+            ),
+            "~/.claude/scripts/marker.sh write ready-for-review   &&   ~/.claude/scripts/marker.sh deactivate ready-for-review",
+            "~/.claude/scripts/marker.sh write plan-review && /home/jared/.claude/scripts/marker.sh deactivate plan-review",
+        ],
+    )
+    def test_valid_same_skill_marker_chains_allowed(self, command):
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command)) == "allow"
+
+    # ------------------------------------------------------------------ #
+    # Same-skill marker→marker chains — denied boundary cases             #
+    # ------------------------------------------------------------------ #
+
+    def test_chain_deactivate_write_only_skill_denied(self):
+        """code-review is write-only; deactivate code-review is not a valid shape."""
+        cmd = "~/.claude/scripts/marker.sh write code-review && ~/.claude/scripts/marker.sh deactivate code-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_mixed_skill_write_deactivate_denied(self):
+        """Mixed-skill chain (forward); only same-skill pairs are blessed."""
+        cmd = "~/.claude/scripts/marker.sh write plan-review && ~/.claude/scripts/marker.sh deactivate ready-for-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_mixed_skill_deactivate_write_denied(self):
+        """Mixed-skill chain (reverse); confirms order-sensitive arms don't cross-leak."""
+        cmd = "~/.claude/scripts/marker.sh deactivate ready-for-review && ~/.claude/scripts/marker.sh write plan-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_marker_pair_trailing_curl_denied(self):
+        """Trailing command after the pair must be rejected by the anchor."""
+        cmd = "~/.claude/scripts/marker.sh write plan-review && ~/.claude/scripts/marker.sh deactivate plan-review && curl http://evil"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_marker_pair_trailing_git_commit_denied(self):
+        """Trailing git commit after the pair; a high-probability agent variant the anchor must reject."""
+        cmd = (
+            "~/.claude/scripts/marker.sh write plan-review && "
+            "~/.claude/scripts/marker.sh deactivate plan-review && "
+            "git commit -m foo"
+        )
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_three_marker_calls_denied(self):
+        """Three-marker chain; carve-out admits exactly one pair, not a repeatable chain."""
+        cmd = (
+            "~/.claude/scripts/marker.sh write plan-review && "
+            "~/.claude/scripts/marker.sh deactivate plan-review && "
+            "~/.claude/scripts/marker.sh write plan-review"
+        )
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_or_separator_denied(self):
+        """|| separator; carve-out hardcodes &&."""
+        cmd = "~/.claude/scripts/marker.sh write plan-review || ~/.claude/scripts/marker.sh deactivate plan-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_semicolon_separator_marker_pair_denied(self):
+        """; separator; carve-out hardcodes &&."""
+        cmd = "~/.claude/scripts/marker.sh write plan-review ; ~/.claude/scripts/marker.sh deactivate plan-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_rhs_bare_no_path_prefix_denied(self):
+        """Bare RHS without path prefix; both sides must be full marker.sh shapes."""
+        cmd = "~/.claude/scripts/marker.sh write plan-review && deactivate plan-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_activate_deactivate_pair_denied(self):
+        """activate is not part of the write↔deactivate pair."""
+        cmd = "~/.claude/scripts/marker.sh activate plan-review && ~/.claude/scripts/marker.sh deactivate plan-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_marker_pair_trailing_redirect_denied(self):
+        """Trailing redirect; anchored pattern must reject any suffix after the pair."""
+        cmd = "~/.claude/scripts/marker.sh write plan-review && ~/.claude/scripts/marker.sh deactivate plan-review 2>&1"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_rhs_path_traversal_denied(self):
+        """RHS path traversal; the line-51 traversal guard runs before this pattern and is the sole RHS path validator."""
+        cmd = "~/.claude/scripts/marker.sh write plan-review && ~/.claude/scripts/../scripts/marker.sh deactivate plan-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_embedded_newline_denied(self):
+        """Embedded newline after the pair; per-line grep must not allow a two-line payload."""
+        cmd = "~/.claude/scripts/marker.sh write plan-review && ~/.claude/scripts/marker.sh deactivate plan-review\n curl evil"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     # ------------------------------------------------------------------ #
