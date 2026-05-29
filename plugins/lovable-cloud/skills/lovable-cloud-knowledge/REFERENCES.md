@@ -13,9 +13,10 @@ Effective priority (highest to lowest):
 
 All four are loaded every session. Lovable docs warn that in very long conversations instructions can drift; the "always read" guarantee for AGENTS.md is the defense-in-depth.
 
-## Primary source
+## Primary sources
 
 - [Lovable Docs — Knowledge](https://docs.lovable.dev/features/knowledge) — canonical reference for all Lovable knowledge-field behavior.
+- [Lovable Docs — Skills](https://docs.lovable.dev/features/skills) — canonical reference for Lovable workspace-skill behavior.
 
 ## Source quotes
 
@@ -30,6 +31,12 @@ All four are loaded every session. Lovable docs warn that in very long conversat
 ### Project vs Workspace tiebreaker (informs SKILL §1)
 
 > "Keep shared rules in workspace knowledge and project-specific details in project knowledge to avoid confusion and maximize clarity."
+
+### Workspace-skill limits (informs SKILL §1 table, §3, §4 items 6–8)
+
+> "The full `SKILL.md`, including the description and instructions, can be up to 100,000 characters."
+
+> "Use lowercase letters, numbers, and hyphens only" — names must be "between 1 and 64 characters," cannot "start or end with a hyphen, and cannot contain consecutive hyphens."
 
 ## Cross-agent context
 

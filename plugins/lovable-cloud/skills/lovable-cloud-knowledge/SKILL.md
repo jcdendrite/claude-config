@@ -3,8 +3,8 @@ name: lovable-cloud-knowledge
 description: >
   Lovable's UI knowledge fields — `.lovable/*.md` repo-mirror workflow,
   Project/Workspace scope split, precedence, review criteria.
-  TRIGGER when: editing `.lovable/*.md`; drafting Project/Workspace Knowledge
-  changes; reviewing `.lovable/**` PRs.
+  TRIGGER when: editing `.lovable/*.md` or `.lovable/skills/*.md`; drafting
+  Project/Workspace Knowledge or workspace-skill changes; reviewing `.lovable/**` PRs.
   DO NOT TRIGGER when: not a Lovable project; editing CLAUDE.md or AGENTS.md;
   editing agent rules files; writing code.
 user-invocable: false
@@ -12,14 +12,14 @@ user-invocable: false
 
 # Lovable Knowledge — Workflow & Review
 
-## 1. Project Knowledge vs Workspace Knowledge
+## 1. Knowledge fields and Workspace Skills
 
-| | Workspace Knowledge | Project Knowledge |
-|---|---|---|
-| Scope | Cross-project (the Lovable workspace) | Single-project |
-| Use for | Coding style, naming, libraries/frameworks, architectural patterns, testing requirements, lint rules, brand/voice, **Lovable-platform behavior** | What the app does, user personas, schema/tables, architecture decisions, domain terminology, project-specific constraints, design specifics, security/compliance, links to important references |
-| Precedence | — | **Prioritized on conflict** |
-| Char limit | 10,000 | 10,000 |
+| | Workspace Knowledge | Project Knowledge | Workspace Skills |
+|---|---|---|---|
+| Scope | Cross-project (the Lovable workspace) | Single-project | Cross-project (the Lovable workspace) |
+| Use for | Coding style, naming, libraries/frameworks, architectural patterns, testing requirements, lint rules, brand/voice, **Lovable-platform behavior** | What the app does, user personas, schema/tables, architecture decisions, domain terminology, project-specific constraints, design specifics, security/compliance, links to important references | Reusable procedures Lovable runs on demand |
+| Precedence | — | **Prioritized on conflict** | — |
+| Char limit | 10,000 | 10,000 | **100,000** |
 
 When a rule could plausibly fit in either: ask whether it would apply to
 a *different* project in the same Lovable workspace. If yes →
@@ -59,14 +59,15 @@ When writing content for either field:
 - **Specificity.** Lovable follows literally and may over-apply vague
   guidance. "Be careful with auth" can become "add auth checks to public
   endpoints." Spell out the boundary cases.
-- **Context budget.** Both fields cap at 10,000 chars. Beyond that,
-  Lovable drops content. Even before the cap, length displaces active
-  task instructions — apply the same length and behavior-test discipline
-  as Claude Code skills (see `ai-instruction-and-memory-files` §3).
+- **Context budget.** Both knowledge fields cap at 10,000 chars. Beyond
+  that, Lovable drops content. Skill bodies (`.lovable/skills/*.md`) have
+  a separate 100,000-char limit. Even before either cap, length displaces
+  active task instructions — apply the same length and behavior-test
+  discipline as Claude Code skills (see `ai-instruction-and-memory-files` §3).
 
 ## 4. Review checklist for `.lovable/**` changes
 
-When reviewing a PR that touches `.lovable/*.md`:
+When reviewing a PR that touches `.lovable/*.md` or `.lovable/skills/*.md`:
 
 1. **Perspective** — Is the new content addressed to Lovable in second
    person?
@@ -75,8 +76,14 @@ When reviewing a PR that touches `.lovable/*.md`:
 3. **Scope** — Cross-project conventions → `workspace-knowledge.md`;
    this-app-specific → `project-knowledge.md`. Project knowledge wins
    on conflict.
-4. **Char budget** — Is the file approaching the 10,000-char limit?
-5. **Sync status** — If `project-knowledge.md` or
-   `workspace-knowledge.md` changed, has the "Last synced" date been
-   bumped in the same PR? Does the PR description note that the human
-   needs to paste the merged content into the Lovable UI?
+4. **Char budget** — Is the file approaching its char limit? (Check the table above.)
+5. **Sync status** — Has the "Last synced" date been bumped in the same
+   PR? Does the PR description note that the human must paste the merged
+   content into the Lovable UI after merge? (Knowledge files → Settings →
+   Knowledge; skill bodies → Settings → Skills.)
+
+For `.lovable/skills/*.md` changes, also check:
+
+6. **Skill name** — Is the name 1–64 chars, lowercase letters / numbers /
+   hyphens only, not starting or ending with a hyphen, with no consecutive
+   hyphens?
