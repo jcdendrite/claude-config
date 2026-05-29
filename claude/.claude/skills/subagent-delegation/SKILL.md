@@ -1,7 +1,7 @@
 ---
 name: subagent-delegation
 description: >
-  When to dispatch to a subagent vs inline. TRIGGER when: full
+  Dispatch to a subagent vs inline. TRIGGER when: full
   check suite or full-project verification; broad codebase search;
   first exploratory read (target unknown); 2nd/3rd Bash command
   toward same question; delegating implementation; reporting

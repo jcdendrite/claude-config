@@ -2,12 +2,10 @@
 name: plugin-semver
 description: >
   Semver and version-field discipline for Claude Code plugin changes.
-  TRIGGER when: modifying any file inside a plugin directory (a directory
-  whose tree contains .claude-plugin/plugin.json), or editing a
-  .claude-plugin/marketplace.json.
-  DO NOT TRIGGER when: editing skills or agents that are not part of any
-  plugin (no .claude-plugin/plugin.json in their tree) — e.g. user-scope
-  stowed skills.
+  TRIGGER when: modifying any file inside a plugin directory (tree contains
+  .claude-plugin/plugin.json), or editing a .claude-plugin/marketplace.json.
+  DO NOT TRIGGER when: editing skills/agents outside any plugin — e.g.
+  user-scope stowed skills.
 user-invocable: false
 ---
 
