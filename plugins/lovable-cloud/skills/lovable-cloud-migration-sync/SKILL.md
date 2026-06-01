@@ -12,6 +12,8 @@ disable-model-invocation: true
 
 > _This skill was extracted from a production Lovable Cloud project and genericized. The workflow shape (identify unsynced migrations → diff against originals → db reset → delete originals → open PR) is generic; file names like `migration-sync-pr.yml` and test commands like `npm run verify` are project-specific examples — adapt for your project._
 
+**This is the engineer-reviewed fallback flow** — its safety rests on a human reviewing the diff (steps 4–5) before deletion; contexts that delete without that review (e.g. non-engineer operators) need a dedicated, project-provided gated procedure that fails closed, not this one.
+
 Lovable Cloud's Supabase instance has two non-obvious behaviors:
 
 1. **It will not apply migration files it didn't create.** Migration files
