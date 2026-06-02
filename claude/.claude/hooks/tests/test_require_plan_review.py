@@ -209,6 +209,27 @@ class TestRequirePlanReview:
             == "deny"
         )
 
+    def test_agent_reviews_directory_itself_not_exempt(self, plan_review_repo, plan_review_home):
+        """A write to the agent-reviews/ directory itself (no filename) is NOT exempt.
+
+        The hook glob pattern is `agent-reviews/*` — a bare directory path with no
+        trailing filename component does not match. The write falls through to the
+        in-repo boundary check and is denied. This pins the exemption to file paths
+        *under* the directory, not the directory path itself, guarding against a
+        future glob-widening refactor that might accidentally widen the exemption.
+        """
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / "agent-reviews")),
+                    "session_id": "test-session-dir-itself-deny",
+                },
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
     def test_agent_reviews_path_edit_allows_without_marker(self, plan_review_repo, plan_review_home):
         """Edit tool writes to agent-reviews/ are also exempt, not just Write.
 
@@ -280,9 +301,14 @@ class TestRequirePlanReview:
         )
 
     def test_missing_file_path_denies(self, plan_review_repo, plan_review_home):
-        """Missing file_path in the hook payload cannot be resolved — fail-closed
-        and deny. Parallel to test_no_session_id_in_input_denies: security controls
-        must not silently allow on parse failure."""
+        """Missing file_path leaves TARGET_PATH empty, causing the scope-filter guard
+        (`if [ -n "$TARGET_PATH" ]`) to be false — the hook skips both the
+        agent-reviews/ exemption and the out-of-repo pass-through and falls through
+        to the default emit_deny. The scope filter only ever adds allows (narrows the
+        deny set), so skipping it when the path is unparseable can never wrongly
+        allow — an empty or missing path fails closed. Parallel to
+        test_no_session_id_in_input_denies: security controls must not silently allow
+        on parse failure."""
         payload = {"tool_name": "Write", "tool_input": {}, "session_id": "session-no-path"}
         assert (
             run_hook(REQUIRE_PLAN_REVIEW_HOOK, payload, cwd=plan_review_repo) == "deny"

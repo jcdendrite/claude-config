@@ -103,3 +103,92 @@ class TestReviewerAgentRoster:
             "Add each to REVIEWER_AGENTS (if it should carry the canary) or "
             "NON_REVIEWER_AGENTS (if not) in this test file."
         )
+
+
+class TestFileBasedOutputBlockConsistency:
+    """Enforce byte-equivalence of the ### File-based output block across all
+    reviewer agents.
+
+    The block is intentionally duplicated (load-bearing instructional prose that
+    must stand alone in each agent file — agent bodies are loaded verbatim with no
+    @path/import mechanism). This test closes the only real downside of duplication:
+    silent drift. Any divergence from the canonical form becomes a CI failure.
+    """
+
+    # Terminating sentinel: the block ends with this line. Using the terminator
+    # rather than EOF is critical — staff-backend-engineer places the block
+    # *before* a trailing ### Inline output section, so an EOF-bounded extraction
+    # would pull extra content in for that agent and produce a false diff.
+    _BLOCK_END_SENTINEL = (
+        "When `findings_path` is absent, ignore this section and use the "
+        "**Inline output** format."
+    )
+
+    @staticmethod
+    def _extract_file_based_output_block(path) -> str:
+        """Extract the ### File-based output block from an agent file.
+
+        Extracts from the '### File-based output' heading line (inclusive) through
+        the terminating sentinel line (inclusive). Returns the extracted text with
+        the agent's own name normalized to 'AGENT_NAME' so all 8 blocks can be
+        compared byte-for-byte.
+        """
+        content = path.read_text()
+        # Normalize the agent-specific H1 title line before extraction so that
+        # the one-line-per-agent difference does not cause a false inequality.
+        # The H1 is inside the block: "   - `# <agent-name>` (H1 title)"
+        agent_stem = path.stem  # e.g. "ciso-reviewer"
+        content = content.replace(f"# {agent_stem}", "# AGENT_NAME")
+
+        lines = content.splitlines(keepends=True)
+        in_block = False
+        block_lines = []
+        sentinel = TestFileBasedOutputBlockConsistency._BLOCK_END_SENTINEL
+
+        for line in lines:
+            if line.rstrip("\n") == "### File-based output":
+                in_block = True
+            if in_block:
+                block_lines.append(line)
+                if sentinel in line:
+                    break  # terminator included; stop here
+
+        assert block_lines, (
+            f"{path.name}: '### File-based output' block not found or terminator "
+            f"'{sentinel}' missing — extraction failed."
+        )
+        return "".join(block_lines)
+
+    def test_file_based_output_block_identical_across_reviewers(self):
+        """All reviewer agents must carry a byte-identical ### File-based output block.
+
+        The block text is identical across all 8 agents modulo the '# <agent-name>'
+        H1 line (which is normalized before comparison). Any divergence means one
+        agent has drifted from the shared protocol — the agent file must be updated
+        to match the canonical form.
+
+        The canonical reference is the first entry in REVIEWER_AGENTS (sorted order).
+        When the canonical block changes, all other agents must be updated in the
+        same commit.
+        """
+        blocks = {}
+        for name in REVIEWER_AGENTS:
+            path = AGENTS_DIR / name
+            blocks[name] = self._extract_file_based_output_block(path)
+
+        canonical_name = REVIEWER_AGENTS[0]
+        canonical_block = blocks[canonical_name]
+
+        mismatched = [
+            name
+            for name, block in blocks.items()
+            if name != canonical_name and block != canonical_block
+        ]
+        assert not mismatched, (
+            f"### File-based output block differs from canonical ({canonical_name}) "
+            f"in: {sorted(mismatched)}. "
+            "All reviewer agents must carry an identical block (modulo the H1 "
+            "agent-name line, which is normalized before comparison). Update the "
+            "diverging agent file(s) to match the canonical form, or update all "
+            "agents atomically if the protocol is changing."
+        )
