@@ -209,7 +209,7 @@ class TestRequirePlanReview:
             == "deny"
         )
 
-    def test_agent_reviews_directory_itself_not_exempt(self, plan_review_repo, plan_review_home):
+    def test_agent_reviews_directory_itself_not_exempt(self, plan_review_repo):
         """A write to the agent-reviews/ directory itself (no filename) is NOT exempt.
 
         The hook glob pattern is `agent-reviews/*` — a bare directory path with no

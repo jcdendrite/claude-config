@@ -83,6 +83,20 @@ class TestReviewerAgentRoster:
                 "All reviewer agents must contain this section for the file-based output canary."
             )
 
+    def test_reviewer_agents_list_is_sorted(self):
+        """REVIEWER_AGENTS must be sorted alphabetically.
+
+        TestFileBasedOutputBlockConsistency uses REVIEWER_AGENTS[0] as the canonical
+        reference for byte-equivalence comparison. If the list is unsorted, the
+        canonical anchor shifts silently when an entry is prepended, sending engineers
+        to update the wrong agent file on a drift failure.
+        """
+        assert sorted(REVIEWER_AGENTS) == REVIEWER_AGENTS, (
+            "REVIEWER_AGENTS is not sorted alphabetically. Keep it sorted so "
+            "REVIEWER_AGENTS[0] is a stable canonical anchor for "
+            "TestFileBasedOutputBlockConsistency."
+        )
+
     def test_no_uncategorized_agents(self):
         """Every agent file in agents/ must appear in REVIEWER_AGENTS or NON_REVIEWER_AGENTS.
 
@@ -138,6 +152,12 @@ class TestFileBasedOutputBlockConsistency:
         # the one-line-per-agent difference does not cause a false inequality.
         # The H1 is inside the block: "   - `# <agent-name>` (H1 title)"
         agent_stem = path.stem  # e.g. "ciso-reviewer"
+        # Assert the name appears before replacing — a no-op replace would
+        # silently skip normalization and produce a false diff at comparison.
+        assert f"# {agent_stem}" in content, (
+            f"{path.name}: '# {agent_stem}' not found in file — normalization "
+            "would be a no-op. The block structure may have changed."
+        )
         content = content.replace(f"# {agent_stem}", "# AGENT_NAME")
 
         lines = content.splitlines(keepends=True)
