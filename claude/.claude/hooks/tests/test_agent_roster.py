@@ -33,7 +33,7 @@ REVIEWER_AGENTS = [
 # test_no_uncategorized_agents test will fail until it is categorized.
 NON_REVIEWER_AGENTS = [
     "check-runner.md",  # executor-style; dispatches check suites, does not review
-    "code-writer.md",   # implementer; writes code, does not review
+    "code-writer.md",   # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
 ]
 
 

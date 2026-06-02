@@ -146,3 +146,5 @@ If not all three hold, point at the canonical source.
     Y requires citing the specific surviving line that carries the same instruction. "The meaning is the same" is not sufficient. Any N is a finding; restore the instruction.
 
     Compression that drops a forbidden-action callout ("do not X"), an imperative directive, an escape-hatch exception, or a verification command fails this audit even when the summary reads as equivalent.
+
+15. **Reviewer-agent output contract** (`staff-*` and `ciso-reviewer` only) — verify the agent carries `Write` in its frontmatter `tools` list, and has a `### File-based output` section in its `## Output format` body. Both are required for `findings_path` dispatch from the code-review dispatcher. An agent missing either falls back to full inline output and can trigger the heredoc-abort-on-large-findings failure the canary guards against.
