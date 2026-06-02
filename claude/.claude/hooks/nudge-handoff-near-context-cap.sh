@@ -29,16 +29,24 @@
 INPUT=$(cat 2>/dev/null)
 
 # Extract all four fields in a single jq pass to avoid four separate subshell spawns.
-# mapfile with newline-separated output handles empty fields and paths with spaces correctly.
-mapfile -t _FIELDS < <(
+# Sequential reads from the jq output: each field on its own line handles
+# empty values and paths with spaces correctly. Pre-initialize to "" so a
+# failed read (e.g. jq unavailable or INPUT invalid) leaves empty strings
+# rather than unbound variables. The || true preserves fail-open semantics.
+SESSION_ID=""
+AGENT_TYPE=""
+PERMISSION_MODE=""
+TRANSCRIPT_PATH=""
+{
+  IFS= read -r SESSION_ID
+  IFS= read -r AGENT_TYPE
+  IFS= read -r PERMISSION_MODE
+  IFS= read -r TRANSCRIPT_PATH
+} < <(
   printf '%s\n' "$INPUT" \
     | jq -r '(.session_id // ""),(.agent_type // ""),(.permission_mode // ""),(.transcript_path // "")' \
     2>/dev/null
 ) 2>/dev/null || true
-SESSION_ID="${_FIELDS[0]:-}"
-AGENT_TYPE="${_FIELDS[1]:-}"
-PERMISSION_MODE="${_FIELDS[2]:-}"
-TRANSCRIPT_PATH="${_FIELDS[3]:-}"
 [ -z "$SESSION_ID" ] && exit 0
 
 # Kill-switch: suppress nudge for automated pipelines or user opt-out.

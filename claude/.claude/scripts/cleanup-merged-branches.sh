@@ -194,13 +194,16 @@ fi
 
 CURRENT_HEAD=$(git rev-parse --abbrev-ref HEAD)
 
-mapfile -t ALL_BRANCHES < <(
+ALL_BRANCHES=()
+while IFS= read -r _branch_line; do
+  ALL_BRANCHES+=("$_branch_line")
+done < <(
   git for-each-ref --format='%(refname:short)' refs/heads
 )
 
 declare -a MERGED_BRANCHES=()
-declare -A MERGED_PR_INFO=()
-declare -A TIER=()
+declare -a MERGED_PR_INFO_VALUES=()
+declare -a TIER_VALUES=()
 declare -a SKIPPED_BRANCHES=()
 
 CANDIDATE_COUNT=0
@@ -246,16 +249,16 @@ else:
 
   if [ -n "$PR_NUMBER" ]; then
     MERGED_BRANCHES+=("$BRANCH")
-    MERGED_PR_INFO["$BRANCH"]="PR #${PR_NUMBER}, merged ${PR_MERGED_AT}"
-    TIER["$BRANCH"]="A"
+    MERGED_PR_INFO_VALUES+=("PR #${PR_NUMBER}, merged ${PR_MERGED_AT}")
+    TIER_VALUES+=("A")
     continue
   fi
 
   if git merge-base --is-ancestor "$BRANCH" \
        "refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null; then
     MERGED_BRANCHES+=("$BRANCH")
-    MERGED_PR_INFO["$BRANCH"]="reachable from origin/${DEFAULT_BRANCH}; no merged PR for this name"
-    TIER["$BRANCH"]="B"
+    MERGED_PR_INFO_VALUES+=("reachable from origin/${DEFAULT_BRANCH}; no merged PR for this name")
+    TIER_VALUES+=("B")
   fi
 done
 clear_progress
@@ -270,11 +273,11 @@ collect_process_cwds
 if [ "$DRY_RUN" -eq 1 ]; then
   declare -a _DRY_TIER_A=()
   declare -a _DRY_TIER_B=()
-  for BRANCH in "${MERGED_BRANCHES[@]}"; do
-    if [ "${TIER[$BRANCH]}" = "A" ]; then
-      _DRY_TIER_A+=("$BRANCH")
+  for _mb_i in "${!MERGED_BRANCHES[@]}"; do
+    if [ "${TIER_VALUES[$_mb_i]}" = "A" ]; then
+      _DRY_TIER_A+=("${MERGED_BRANCHES[$_mb_i]}")
     else
-      _DRY_TIER_B+=("$BRANCH")
+      _DRY_TIER_B+=("${MERGED_BRANCHES[$_mb_i]}")
     fi
   done
 
@@ -316,7 +319,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
         _tag=" [locked — will unlock and remove]"
       fi
     fi
-    echo "  ${_branch} (${MERGED_PR_INFO[$_branch]})${_tag}"
+    _branch_info=""
+    for _mb_i in "${!MERGED_BRANCHES[@]}"; do
+      if [ "${MERGED_BRANCHES[$_mb_i]}" = "$_branch" ]; then
+        _branch_info="${MERGED_PR_INFO_VALUES[$_mb_i]}"
+        break
+      fi
+    done
+    echo "  ${_branch} (${_branch_info})${_tag}"
   }
 
   if [ "${#_DRY_TIER_A[@]}" -gt 0 ]; then
@@ -360,10 +370,12 @@ fi
 declare -a TO_DELETE=()
 declare -a SKIPPED_NEEDS_PROMPT=()
 
-for BRANCH in "${MERGED_BRANCHES[@]}"; do
-  if [ "${TIER[$BRANCH]}" = "A" ]; then
+for _mb_i in "${!MERGED_BRANCHES[@]}"; do
+  BRANCH="${MERGED_BRANCHES[$_mb_i]}"
+  _branch_tier="${TIER_VALUES[$_mb_i]}"
+  if [ "$_branch_tier" = "A" ]; then
     TO_DELETE+=("$BRANCH")
-  elif [ "${TIER[$BRANCH]}" = "B" ]; then
+  elif [ "$_branch_tier" = "B" ]; then
     if [ "$ASSUME_YES" -eq 1 ]; then
       TO_DELETE+=("$BRANCH")
     elif [ -t 0 ]; then
@@ -398,7 +410,7 @@ fi
 
 declare -a SKIPPED_LIVE_LOCK=()
 declare -a SKIPPED_IN_USE=()
-declare -A SKIPPED_IN_USE_REASON=()
+declare -a SKIPPED_IN_USE_REASON_VALUES=()
 
 echo "Cleaned up:"
 
@@ -454,12 +466,12 @@ for BRANCH in "${TO_DELETE[@]}"; do
     if [ "$WORKTREE_IN_USE" -eq 0 ]; then
       echo "    worktree:       skipped (in use by a live process)"
       SKIPPED_IN_USE+=("$BRANCH")
-      SKIPPED_IN_USE_REASON["$BRANCH"]="worktree in use by a live process"
+      SKIPPED_IN_USE_REASON_VALUES+=("worktree in use by a live process")
       continue
     elif [ "$WORKTREE_IN_USE" -eq 2 ]; then
       echo "    worktree:       skipped (cannot verify it is idle)"
       SKIPPED_IN_USE+=("$BRANCH")
-      SKIPPED_IN_USE_REASON["$BRANCH"]="worktree idle state unverifiable"
+      SKIPPED_IN_USE_REASON_VALUES+=("worktree idle state unverifiable")
       continue
     fi
     if [ "$WORKTREE_LOCKED" -eq 1 ]; then
@@ -566,8 +578,8 @@ for BRANCH in "${SKIPPED_LIVE_LOCK[@]+"${SKIPPED_LIVE_LOCK[@]}"}"; do
   echo "Skipped (live agent lock): ${BRANCH}"
 done
 
-for BRANCH in "${SKIPPED_IN_USE[@]+"${SKIPPED_IN_USE[@]}"}"; do
-  echo "Skipped (${SKIPPED_IN_USE_REASON[$BRANCH]}): ${BRANCH}"
+for _su_i in "${!SKIPPED_IN_USE[@]}"; do
+  echo "Skipped (${SKIPPED_IN_USE_REASON_VALUES[$_su_i]}): ${SKIPPED_IN_USE[$_su_i]}"
 done
 
 if [ "${#SKIPPED_NEEDS_PROMPT[@]}" -gt 0 ]; then

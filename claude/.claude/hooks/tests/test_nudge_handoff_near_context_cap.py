@@ -301,3 +301,39 @@ class TestNudgeHandoffNearContextCap:
         assert result.stdout.strip() == ""
         # No log: below threshold produces no log line (skip line was removed; schema-drift not triggered).
         assert not _log_path(tmp_path).exists()
+
+    def test_empty_json_object_input_is_fail_open(self, tmp_path):
+        """Empty JSON object ({}) as INPUT: exit 0, no blocking stdout.
+
+        Verifies the four-read rewrite preserves fail-open semantics when
+        session_id is absent — the hook exits silently without emitting any
+        output that could block a user prompt.
+        """
+        result = subprocess.run(
+            [str(NUDGE_HOOK)],
+            input="{}",
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": str(tmp_path)},
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_malformed_input_is_fail_open(self, tmp_path):
+        """Non-JSON string as INPUT: exit 0, no blocking stdout.
+
+        Verifies the four-read rewrite preserves the || true fail-open guard
+        when jq cannot parse the input — the hook exits silently rather than
+        crashing or emitting output that could block a user prompt.
+        """
+        result = subprocess.run(
+            [str(NUDGE_HOOK)],
+            input="not json at all",
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": str(tmp_path)},
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""

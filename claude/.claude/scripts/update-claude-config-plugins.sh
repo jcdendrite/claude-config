@@ -97,8 +97,9 @@ if [ ! -f "$MARKETPLACE_MANIFEST" ]; then
   exit 1
 fi
 
-declare -A LATEST_VERSION=()
-declare -A PLUGIN_DESCRIPTION=()
+declare -a PLUGIN_NAMES=()
+declare -a PLUGIN_LATEST=()
+declare -a PLUGIN_DESC=()
 
 while read -r plugin_name plugin_source_rel; do
   [ -z "$plugin_name" ] && continue
@@ -118,8 +119,9 @@ print(desc)
   plugin_version=$(printf '%s' "$parsed" | sed -n '1p')
   plugin_desc=$(printf '%s' "$parsed" | sed -n '2p')
   if [ -n "$plugin_version" ]; then
-    LATEST_VERSION["$plugin_name"]="$plugin_version"
-    PLUGIN_DESCRIPTION["$plugin_name"]="$plugin_desc"
+    PLUGIN_NAMES+=("$plugin_name")
+    PLUGIN_LATEST+=("$plugin_version")
+    PLUGIN_DESC+=("$plugin_desc")
   fi
 done < <(python3 -c "
 import json, re, sys
@@ -134,7 +136,7 @@ for p in d.get('plugins', []):
         print(name, source)
 " "$MARKETPLACE_MANIFEST" 2>/dev/null || true)
 
-if [ "${#LATEST_VERSION[@]}" -eq 0 ]; then
+if [ "${#PLUGIN_NAMES[@]}" -eq 0 ]; then
   echo "No plugins found in the claude-config marketplace manifest." >&2
   exit 0
 fi
@@ -161,7 +163,13 @@ while IFS=$'\t' read -r entry_name installed_version entry_scope entry_project_p
     continue
   fi
 
-  latest_version="${LATEST_VERSION[$entry_name]:-}"
+  latest_version=""
+  for _pi in "${!PLUGIN_NAMES[@]}"; do
+    if [ "${PLUGIN_NAMES[$_pi]}" = "$entry_name" ]; then
+      latest_version="${PLUGIN_LATEST[$_pi]}"
+      break
+    fi
+  done
   if [ -z "$latest_version" ]; then
     continue
   fi
@@ -172,7 +180,12 @@ while IFS=$'\t' read -r entry_name installed_version entry_scope entry_project_p
 
   # Flag as outdated only when marketplace version sorts strictly higher.
   # A locally-ahead dev copy (installed > latest) is silently skipped.
-  lower=$(printf '%s\n%s' "$installed_version" "$latest_version" | sort -V | head -1)
+  lower=$(python3 -c "
+import sys
+a = tuple(int(x) for x in sys.argv[1].split('.') if x.isdigit())
+b = tuple(int(x) for x in sys.argv[2].split('.') if x.isdigit())
+print(sys.argv[1] if a <= b else sys.argv[2])
+" "$installed_version" "$latest_version")
   if [ "$lower" = "$installed_version" ]; then
     OUTDATED_NAMES+=("$entry_name")
     OUTDATED_INSTALLED_VERSIONS+=("$installed_version")
@@ -224,7 +237,13 @@ for i in "${!OUTDATED_NAMES[@]}"; do
   entry_project_path="${OUTDATED_PROJECT_PATHS[$i]}"
   installed_ver="${OUTDATED_INSTALLED_VERSIONS[$i]}"
   latest_ver="${OUTDATED_LATEST_VERSIONS[$i]}"
-  description="${PLUGIN_DESCRIPTION[$plugin_name]:-}"
+  description=""
+  for _pi in "${!PLUGIN_NAMES[@]}"; do
+    if [ "${PLUGIN_NAMES[$_pi]}" = "$plugin_name" ]; then
+      description="${PLUGIN_DESC[$_pi]}"
+      break
+    fi
+  done
 
   if [ "$entry_scope" = "project" ]; then
     echo "  ${plugin_name}  ${installed_ver} → ${latest_ver}  (scope: project, path: ${entry_project_path})"
