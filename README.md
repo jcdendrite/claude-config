@@ -188,7 +188,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 Three agent types ship in `claude/.claude/agents/`:
 
-**Reviewer subagents** — eight stack-agnostic personas spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with read-only tools (`Read`, `Grep`, `Glob`, `Bash`).
+**Reviewer subagents** — eight stack-agnostic personas spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with tools `Read`, `Grep`, `Glob`, `Bash`, `Write`; all write structured findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` when dispatched with `findings_path:` and return only a pointer line inline.
 
 - **`ciso-reviewer`** — threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth.
 - **`staff-backend-engineer`** — API contracts, error handling, idempotency, retry semantics, service boundaries; AND application data-store schema design (relational + NoSQL): partition keys, GSI/LSI, document shape, single-table vs multi-table, index coverage for app queries.
