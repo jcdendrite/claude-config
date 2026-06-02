@@ -117,6 +117,10 @@ and to the `code-review` skill's umbrella term — not a persona job title.
 Anthropic's subagent documentation treats the agent `name` as a pure
 identifier; behavior comes from the system prompt.
 
+## 12. Reviewer file-based output via `findings_path`
+
+All eight reviewer agents write structured Markdown findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` when the dispatch prompt includes `findings_path:`, and return only a pointer line inline (~650 B median vs ~4,500–7,800 B for full inline findings). The parent reads the file after the reviewer returns, starting with the `## Recommendations` section. Each reviewer carries the `Write` tool and a `### File-based output` section in its `## Output format`; the section activates only when `findings_path` is present, so reviewers dispatched without it continue to return findings inline. The `agent-reviews/` directory is gitignored and created on first write by the reviewer's `Write` call — no `mkdir` step is needed in the dispatcher. The plan-review gate (`require-plan-review.sh`) exempts writes to `<repo>/agent-reviews/*` with an exact prefix match, so reviewer writes are not blocked when a plan is in flight — without the exemption, a reviewer dispatched during code-review would fall back to full-inline output, defeating the context savings the mechanism exists to provide.
+
 ### Sources
 
 - Anthropic, *Create custom subagents* — https://code.claude.com/docs/en/sub-agents — first-party documentation.

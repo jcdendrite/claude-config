@@ -100,11 +100,14 @@ When your invocation prompt includes `findings_path: <path>`:
    Do not include any findings inline when `findings_path` is present — the
    parent reads them from the file. Including full findings inline when
    `findings_path` is present is a defect.
+   If the dispatch prompt poses specific questions, answer them inside the
+   findings file (e.g. under an `## Answers` heading) — not in the inline
+   return. The inline summary stays one sentence regardless of how many
+   questions the prompt asks.
    **If the Write call fails**, do not report success. Instead, state the failure
-   explicitly and fall back to the inline format below.
+   explicitly and fall back to the **Inline output** format.
 
-When `findings_path` is absent, ignore this section and use the inline
-format below.
+When `findings_path` is absent, ignore this section and use the **Inline output** format.
 
 ### Inline output
 

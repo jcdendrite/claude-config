@@ -150,6 +150,103 @@ class TestRequirePlanReview:
             == "allow"
         )
 
+    def test_agent_reviews_path_allows_without_marker(self, plan_review_repo, plan_review_home):
+        """Writes to agent-reviews/ are exempt from the plan-review gate.
+
+        Reviewer agents write findings to agent-reviews/ while a plan is in flight
+        (e.g. code-review runs after plan-it). Blocking them forces a full-inline
+        fallback that defeats the context-saving canary. The exemption is scoped to
+        an exact prefix match — only paths under <repo>/agent-reviews/ pass through.
+        """
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / "agent-reviews" / "staff-backend-engineer-123.md")),
+                    "session_id": "test-session-canary-exempt",
+                },
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_adjacent_path_not_exempt(self, plan_review_repo, plan_review_home):
+        """Paths adjacent to agent-reviews/ are NOT exempt — only exact prefix match.
+
+        The exemption comment states: "Exact prefix match only: foo-agent-reviews/
+        does not satisfy this." Verify that invariant holds — a sibling directory
+        whose name merely contains 'agent-reviews' still requires a plan-review marker.
+        """
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / "foo-agent-reviews" / "test.md")),
+                    "session_id": "test-session-adjacent-deny",
+                },
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_agent_reviews_nested_path_not_exempt(self, plan_review_repo, plan_review_home):
+        """A path with agent-reviews/ as a non-root-level component is NOT exempt.
+
+        The exemption pattern is `<repo>/agent-reviews/*` — only paths whose first
+        component after the repo root is literally `agent-reviews` match. A path like
+        `<repo>/src/agent-reviews/file.md` does not match, preventing a glob-widening
+        refactor from accidentally exempting arbitrary deep paths.
+        """
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / "src" / "agent-reviews" / "file.md")),
+                    "session_id": "test-session-nested-deny",
+                },
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_agent_reviews_path_edit_allows_without_marker(self, plan_review_repo, plan_review_home):
+        """Edit tool writes to agent-reviews/ are also exempt, not just Write.
+
+        The exemption fires before the Write/Edit/MultiEdit gate — it applies to all
+        three tool types equally. This test pins the exemption against a refactor that
+        moves the check inside the Write-only branch.
+        """
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **edit_input(str(plan_review_repo / "agent-reviews" / "staff-sdet-123.md")),
+                    "session_id": "test-session-canary-exempt-edit",
+                },
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_agent_reviews_path_multiedit_allows_without_marker(self, plan_review_repo, plan_review_home):
+        """MultiEdit tool writes to agent-reviews/ are also exempt, not just Write.
+
+        Mirrors test_agent_reviews_path_edit_allows_without_marker for the MultiEdit
+        tool variant, completing the three-way Write/Edit/MultiEdit coverage established
+        by the rest of this test suite.
+        """
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **multiedit_input(str(plan_review_repo / "agent-reviews" / "ciso-reviewer-456.md")),
+                    "session_id": "test-session-canary-exempt-multiedit",
+                },
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
     def test_outside_git_repo_allows(self, tmp_path):
         """Outside a git repo, the hook cannot key a marker — allow through."""
         non_repo = tmp_path / "not-a-repo"
