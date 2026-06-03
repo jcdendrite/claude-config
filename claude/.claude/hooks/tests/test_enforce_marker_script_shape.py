@@ -215,6 +215,11 @@ class TestEnforceMarkerScriptShape:
         cmd = "~/.claude/scripts/marker.sh activate plan-review && ~/.claude/scripts/marker.sh deactivate plan-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
+    def test_chain_activate_write_pair_denied(self):
+        """activate+write is not a blessed pair; only write↔deactivate is."""
+        cmd = "~/.claude/scripts/marker.sh activate plan-review && ~/.claude/scripts/marker.sh write plan-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
     def test_chain_marker_pair_trailing_redirect_denied(self):
         """Trailing redirect; anchored pattern must reject any suffix after the pair."""
         cmd = "~/.claude/scripts/marker.sh write plan-review && ~/.claude/scripts/marker.sh deactivate plan-review 2>&1"
@@ -428,6 +433,8 @@ class TestDevNullRedirectAllowed:
             # clear-stale — both forms
             "~/.claude/scripts/marker.sh clear-stale 2>/dev/null",
             "~/.claude/scripts/marker.sh clear-stale --dry-run 2>/dev/null",
+            # absolute-path form — confirms path parity under the 2>/dev/null arm
+            "/home/testuser/.claude/scripts/marker.sh write code-review 2>/dev/null",
             # chained-marker pairs — all four orderings (two skills × write-first/deactivate-first)
             (
                 "~/.claude/scripts/marker.sh write plan-review && "
