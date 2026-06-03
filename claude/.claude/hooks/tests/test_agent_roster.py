@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import re
 
+import pytest
+import yaml
 from helpers import CLAUDE_DIR
+from validate_skill_structure import parse_frontmatter
 
 AGENTS_DIR = CLAUDE_DIR / "agents"
 
@@ -35,6 +38,23 @@ NON_REVIEWER_AGENTS = [
     "check-runner.md",  # executor-style; dispatches check suites, does not review
     "code-writer.md",   # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
 ]
+
+# Maximum description length for agent frontmatter.
+# The full agent roster loads into every session's Agent-tool schema, so each
+# description is a per-session token cost. 1000 is a regression guard with
+# headroom above the current max (786 chars) — raise deliberately with rationale
+# if a longer description is genuinely needed.
+AGENT_DESCRIPTION_MAX_CHARS = 1000
+
+# Expected model pin per agent. Reviewers are enforced sonnet by CLAUDE.md;
+# non-reviewer model assignments are named here alongside their roster entry.
+# When adding a new agent, add it to REVIEWER_AGENTS or NON_REVIEWER_AGENTS
+# above AND add its expected model here — test_expected_model_map_is_complete
+# will fail until both are updated.
+NON_REVIEWER_MODELS = {
+    "check-runner.md": "haiku",  # narrow executor
+    "code-writer.md": "sonnet",  # implementer
+}
 
 
 class TestReviewerAgentRoster:
@@ -211,4 +231,102 @@ class TestFileBasedOutputBlockConsistency:
             "agent-name line, which is normalized before comparison). Update the "
             "diverging agent file(s) to match the canonical form, or update all "
             "agents atomically if the protocol is changing."
+        )
+
+
+class TestAgentFrontmatter:
+    """Validates YAML frontmatter structure and model-pin conventions for all agent files."""
+
+    # Evaluated at class-definition time (module import / collection phase) so
+    # pytest.mark.parametrize receives a stable list before collection. Tests
+    # that don't use parametrize re-glob at call time. A fixture that creates
+    # synthetic agent files would not appear here — acceptable because no
+    # fixture in this suite writes agent files.
+    _AGENT_FILES = sorted(AGENTS_DIR.glob("*.md"))
+
+    @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
+    def test_frontmatter_parses_strictly(self, agent_path):
+        """Each agent file must have frontmatter that parses as strict YAML.
+
+        The most common failure: an unquoted description containing ': ' (colon-space).
+        In a YAML plain scalar, ': ' is the mapping separator and causes a parse error
+        in strict parsers (GitHub renders, loaders with SafeLoader). Fix by replacing
+        the colon-space with ' — ' (em dash) or by double-quoting the whole value.
+        """
+        try:
+            parse_frontmatter(agent_path)
+        except yaml.YAMLError as exc:
+            pytest.fail(
+                f"{agent_path.name}: frontmatter is not strict YAML: {exc}. "
+                f"If the description contains ': ', replace it with ' — ' or double-quote the value."
+            )
+
+    @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
+    def test_required_fields_present(self, agent_path):
+        """Every agent file must declare name, description, model, and tools."""
+        fm = parse_frontmatter(agent_path)
+        for field in ("name", "description", "model"):
+            assert fm.get(field), (
+                f"{agent_path.name}: required frontmatter field '{field}' is missing or empty."
+            )
+        tools_val = fm.get("tools")
+        assert tools_val and isinstance(tools_val, str) and tools_val.strip(), (
+            f"{agent_path.name}: 'tools' field is missing or empty. "
+            f"Declare a comma-separated tools list."
+        )
+
+    @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
+    def test_description_length(self, agent_path):
+        """Description must not exceed AGENT_DESCRIPTION_MAX_CHARS characters."""
+        fm = parse_frontmatter(agent_path)
+        desc = fm.get("description") or ""
+        assert len(desc) <= AGENT_DESCRIPTION_MAX_CHARS, (
+            f"{agent_path.name}: description is {len(desc)} chars, "
+            f"exceeds cap of {AGENT_DESCRIPTION_MAX_CHARS}. "
+            f"Trim or raise the cap deliberately with a rationale comment."
+        )
+
+    @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
+    def test_model_pinned_to_expected_value(self, agent_path):
+        """Each agent must declare the exact model its role requires.
+
+        Reviewers (REVIEWER_AGENTS) → 'sonnet' per CLAUDE.md.
+        Non-reviewers → model declared in NON_REVIEWER_MODELS.
+        """
+        expected = {a: "sonnet" for a in REVIEWER_AGENTS} | NON_REVIEWER_MODELS
+        fm = parse_frontmatter(agent_path)
+        actual_model = fm.get("model")
+        expected_model = expected.get(agent_path.name)
+        assert actual_model == expected_model, (
+            f"{agent_path.name}: model is '{actual_model}', expected '{expected_model}'. "
+            f"Update the agent's frontmatter or, if the policy has changed, update "
+            f"REVIEWER_AGENTS / NON_REVIEWER_MODELS in this file."
+        )
+
+    def test_expected_model_map_is_complete(self):
+        """The expected-model map (REVIEWER_AGENTS + NON_REVIEWER_MODELS) must cover every agent file.
+
+        Adding an agent without updating both the roster list and NON_REVIEWER_MODELS
+        (or REVIEWER_AGENTS) will fail here. This mirrors test_no_uncategorized_agents.
+        """
+        all_agent_names = {p.name for p in AGENTS_DIR.glob("*.md")}
+        mapped_names = set(REVIEWER_AGENTS) | set(NON_REVIEWER_MODELS)
+        uncategorized = all_agent_names - mapped_names
+        assert not uncategorized, (
+            f"Agent files have no expected-model entry: {sorted(uncategorized)}. "
+            f"Add each to REVIEWER_AGENTS (sonnet reviewer) or NON_REVIEWER_MODELS "
+            f"(with its pinned model) in this test file."
+        )
+
+    def test_non_reviewer_roster_and_model_map_are_in_sync(self):
+        """NON_REVIEWER_MODELS and NON_REVIEWER_AGENTS must name the same set of agents.
+
+        Both lists serve as the reference for which agents are non-reviewers.
+        Drift between them causes test_model_pinned_to_expected_value to use a
+        stale model map while test_no_uncategorized_agents uses a stale roster —
+        the two lists diverging silently is the failure mode this test closes.
+        """
+        assert set(NON_REVIEWER_MODELS) == set(NON_REVIEWER_AGENTS), (
+            f"NON_REVIEWER_MODELS keys {sorted(NON_REVIEWER_MODELS)} differ from "
+            f"NON_REVIEWER_AGENTS {sorted(NON_REVIEWER_AGENTS)}. Keep them in sync."
         )
