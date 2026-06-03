@@ -24,7 +24,7 @@ Section 15.5.6 — 405 Method Not Allowed: "A server generating a 405 response M
 
 ---
 
-## Google Cloud API Improvement Proposal 193 — Errors
+## Google Cloud AIP-193 — Errors
 
 **URL:** https://google.aip.dev/193
 **Status:** VERIFIED
