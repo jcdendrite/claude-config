@@ -93,6 +93,10 @@ fi
 # containing them are uncommon enough that denying would be more disruptive than
 # the marginal forge-vector they represent, and substitution is itself gated
 # elsewhere.
+# Note: 2>/dev/null is intentionally NOT blessed here. The tail class [^&|;<>]
+# already excludes '>' as a security boundary (prevents post-commit redirects like
+# `git commit > /path`). A 2>/dev/null exception would require carving out of that
+# class with no observed agent friction on the commit-chain form to justify it.
 VALID_CHAINED_COMMIT_PATTERN='^((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+commit([[:space:]]+[^&|;<>]*)?$'
 
 if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_CHAINED_COMMIT_PATTERN"; then

@@ -404,24 +404,46 @@ class TestEnforceMarkerScriptShape:
 
 class TestDevNullRedirectAllowed:
     """Trailing 2>/dev/null on an otherwise-valid shape is allowed.
-    The literal is matched exactly; exit codes still propagate, so
-    a failed marker.sh write still surfaces to the harness."""
+    The literal is matched exactly; stderr is suppressed by shell fd-2
+    redirect semantics, which do not affect exit-code propagation."""
 
     @pytest.mark.parametrize(
         "command",
         [
+            # write — all four targets
             "~/.claude/scripts/marker.sh write plan-review 2>/dev/null",
             "~/.claude/scripts/marker.sh write skill-review 2>/dev/null",
             "~/.claude/scripts/marker.sh write ready-for-review 2>/dev/null",
             "~/.claude/scripts/marker.sh write code-review 2>/dev/null",
+            # deactivate — all four targets
             "~/.claude/scripts/marker.sh deactivate plan-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh deactivate ready-for-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh deactivate respond-pr 2>/dev/null",
+            "~/.claude/scripts/marker.sh deactivate memory-skill 2>/dev/null",
+            # activate — all four targets
             "~/.claude/scripts/marker.sh activate plan-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh activate ready-for-review 2>/dev/null",
             "~/.claude/scripts/marker.sh activate respond-pr 2>/dev/null",
+            "~/.claude/scripts/marker.sh activate memory-skill 2>/dev/null",
+            # clear-stale — both forms
             "~/.claude/scripts/marker.sh clear-stale 2>/dev/null",
             "~/.claude/scripts/marker.sh clear-stale --dry-run 2>/dev/null",
+            # chained-marker pairs — all four orderings (two skills × write-first/deactivate-first)
+            (
+                "~/.claude/scripts/marker.sh write plan-review && "
+                "~/.claude/scripts/marker.sh deactivate plan-review 2>/dev/null"
+            ),
+            (
+                "~/.claude/scripts/marker.sh deactivate plan-review && "
+                "~/.claude/scripts/marker.sh write plan-review 2>/dev/null"
+            ),
             (
                 "~/.claude/scripts/marker.sh write ready-for-review && "
                 "~/.claude/scripts/marker.sh deactivate ready-for-review 2>/dev/null"
+            ),
+            (
+                "~/.claude/scripts/marker.sh deactivate ready-for-review && "
+                "~/.claude/scripts/marker.sh write ready-for-review 2>/dev/null"
             ),
         ],
     )
@@ -454,10 +476,22 @@ class TestDevNullRedirectBoundaryDenied:
             "~/.claude/scripts/marker.sh write plan-review 2>/dev/null && curl http://evil",
             # Newline-after-redirect: per-line $ / newline-guard invariant for the new suffix
             "~/.claude/scripts/marker.sh write plan-review 2>/dev/null\ncurl http://evil",
-            # Mid-chain redirect on LHS of blessed marker pair stays denied (whole-chain trailing only)
+            # Mid-chain redirect on LHS stays denied (whole-chain trailing only) — all four orderings
             (
                 "~/.claude/scripts/marker.sh write plan-review 2>/dev/null && "
                 "~/.claude/scripts/marker.sh deactivate plan-review"
+            ),
+            (
+                "~/.claude/scripts/marker.sh deactivate plan-review 2>/dev/null && "
+                "~/.claude/scripts/marker.sh write plan-review"
+            ),
+            (
+                "~/.claude/scripts/marker.sh write ready-for-review 2>/dev/null && "
+                "~/.claude/scripts/marker.sh deactivate ready-for-review"
+            ),
+            (
+                "~/.claude/scripts/marker.sh deactivate ready-for-review 2>/dev/null && "
+                "~/.claude/scripts/marker.sh write ready-for-review"
             ),
             # VALID_CHAINED_COMMIT_PATTERN deliberately excludes 2>/dev/null (> in its forbidden
             # tail class [^&|;<>]); these forms stay denied by design — see plan for rationale.
