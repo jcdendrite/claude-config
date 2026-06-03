@@ -14,22 +14,23 @@ Full descriptions for skills, slash commands, and project-scoped plugins in this
 - **`/branch-creation`** — naming conventions (`<TICKET-ID>/<topic-slug>` for ticketed projects, `<topic-slug>` alone otherwise), anti-patterns to reject (tracker `<user>/` defaults), and branching from a fresh default-branch tip.
 - **`/git-feature-branch-sync`** — decision framework for keeping a feature branch current with the default branch: when to rebase-and-force-push vs merge-in, and how to force-push safely (`--force-with-lease` vs `--force-if-includes`).
 - **`/git-state-safety`** — safely inspecting other branches when the working tree is in a fragile state (mid-merge, mid-rebase, mid-cherry-pick), avoiding the silently-corrupted-index failure mode where a diagnostic `git checkout <ref> -- <path>` overwrites a partially-resolved merge, and recovering from bad merges that were already committed.
-- **`/test-conventions`**, **`/test-evaluation`** — test authoring and audit guidance.
+- **`/test-conventions`** — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
+- **`/test-evaluation`** — audit guidance for evaluating existing test suites.
 - **`/config-environments`** — designing configuration that differs across environments (dev, staging, production): env var naming, credential isolation, secrets provisioning, and the anti-patterns that reintroduce tight coupling.
-- **`/sql-query-conventions`** — read-path conventions for SQL and PostgREST/Supabase queries: pagination, limits, N+1 avoidance, batch-size ceilings, explicit column selection.
+- **`/sql-query-conventions`** — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
 - **`/ai-instruction-and-memory-files`** — how AI coding agents load instruction files (CLAUDE.md, AGENTS.md, Cursor rules, Lovable knowledge) and Claude Code auto-memory: precedence, duplication rules, length targets, import patterns.
 - **`/verify-primary-sources`** — when web research informs a code or design decision, read the primary documentation directly rather than trusting agent summaries or secondary sources.
 - **`/handoff`** — write a structured cross-session handoff file at `/tmp/<slug>-handoff.md` capturing goal, status, next step, modified files, active markers, open questions, and the resume incantation. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only` — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
 - **`/brief`** — write a cold-start task briefing at `/tmp/<slug>-task.md` for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, settled-scope ticket) — covers goal, scope, anchors, current state, decisions to make, steps to ship, out of scope. Distinct from `/handoff`, which captures mid-flight session state; `/brief` is for work the current session is *not* going to do. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/transcript-analysis`** — reference guidance for the `transcript-analysis.py` toolkit: which subcommand answers which analysis question, how to read `fail-seq` convergence-vs-thrashing output, and the measurement caveats. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
-- **`/error-handling`** — eight-principle error-handling standard: single code namespace, RFC 9457–derived envelope, developer-only message fields, and call-site anti-patterns. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`. Unlike the other four name-only skills (workflow utilities), this is a knowledge-domain skill kept name-only because the trigger surface (any try/catch or toast) is too broad to scope reliably — reached by name from the review skills and by `Read` from reviewer agents.
+- **`/error-handling`** — eight-principle error-handling standard: single code namespace, RFC 9457–derived envelope, developer-only message fields, and call-site anti-patterns. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`. Unlike the four workflow-utility name-only skills (brief, handoff, read-docx-comments, transcript-analysis), error-handling, test-conventions, and sql-query-conventions are knowledge-domain skills kept name-only because their trigger surfaces are too broad to scope reliably — reached by name from the review skills and by `Read` from reviewer agents.
 
 Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain co-located auxiliary files — see architecture notes below for the two distinct roles they play. Skills that primarily apply to this repo's own workflow (editing SKILL.md files, authoring hooks) live as project-scoped plugins instead — see [Project-scoped plugins](#project-scoped-plugins) below.
 
 ## Skills available by name (no description budget cost)
 
-Five repo skills use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older clients the override is silently ignored and these skills fall back to `on` (description loaded, weak auto-trigger since they carry no TRIGGER blocks).
+Seven repo skills use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older clients the override is silently ignored and these skills fall back to `on` (description loaded). The four workflow utilities carry no TRIGGER blocks so auto-trigger is not a concern; the three knowledge-domain skills carry TRIGGER blocks and may fire via description match on older clients.
 
 | Skill | Role |
 |---|---|
@@ -38,6 +39,8 @@ Five repo skills use `skillOverrides: name-only` — the model can invoke them w
 | `/read-docx-comments` | Extract comments from `.docx` files (Google Docs / Word feedback) |
 | `/transcript-analysis` | Reference guide for the `transcript-analysis.py` toolkit |
 | `/error-handling` | Canonical error-handling standard: code namespace, RFC 9457–derived envelope, developer-only message fields, call-site anti-patterns |
+| `/test-conventions` | Test authoring conventions: pyramid shape, fixture design, naming, regression-test intent; reached by name from code-review and by Read from reviewer agents |
+| `/sql-query-conventions` | Read-path SQL conventions: explicit limits, N+1 avoidance, explicit column selection; reached by name from code-review and by Read from reviewer agents |
 
 The `skillOverrides` setting controls skill visibility from settings rather than frontmatter. The four values (Claude Code v2.1.129+):
 
