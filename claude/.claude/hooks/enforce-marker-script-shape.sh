@@ -140,5 +140,5 @@ Valid shapes:
   ~/.claude/scripts/marker.sh clear-stale
   ~/.claude/scripts/marker.sh clear-stale --dry-run
 
-No chains (&&, ||, ;), redirects other than 2>/dev/null, or extra args. Env-var prefix, bash wrapper,
+No chains (&&, ||, ;), redirects, or extra args. Env-var prefix, bash wrapper,
 and relative-path forms are not gated here — they are denied by permissions.allow."
