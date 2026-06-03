@@ -241,7 +241,9 @@ class TestAgentFrontmatter:
     # pytest.mark.parametrize receives a stable list before collection. Tests
     # that don't use parametrize re-glob at call time. A fixture that creates
     # synthetic agent files would not appear here — acceptable because no
-    # fixture in this suite writes agent files.
+    # fixture in this suite writes .md files into AGENTS_DIR. (tmp_path fixtures
+    # must not write into AGENTS_DIR or the parametrize list will silently
+    # exclude the synthetic file.)
     _AGENT_FILES = sorted(AGENTS_DIR.glob("*.md"))
 
     @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
@@ -255,10 +257,11 @@ class TestAgentFrontmatter:
         """
         try:
             parse_frontmatter(agent_path)
-        except yaml.YAMLError as exc:
+        except (yaml.YAMLError, ValueError) as exc:
             pytest.fail(
-                f"{agent_path.name}: frontmatter is not strict YAML: {exc}. "
-                f"If the description contains ': ', replace it with ' — ' or double-quote the value."
+                f"{agent_path.name}: frontmatter failed to parse: {exc}. "
+                f"Common causes: missing closing '---' delimiter; "
+                f"or a description containing ': ' (replace with ' — ' or double-quote the value)."
             )
 
     @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
@@ -266,11 +269,23 @@ class TestAgentFrontmatter:
         """Every agent file must declare name, description, model, and tools."""
         fm = parse_frontmatter(agent_path)
         for field in ("name", "description", "model"):
-            assert fm.get(field), (
+            val = fm.get(field)
+            if val is not None and not isinstance(val, str):
+                pytest.fail(
+                    f"{agent_path.name}: '{field}' field is {type(val).__name__} "
+                    f"(got {val!r}), expected a string scalar."
+                )
+            assert val, (
                 f"{agent_path.name}: required frontmatter field '{field}' is missing or empty."
             )
         tools_val = fm.get("tools")
-        assert tools_val and isinstance(tools_val, str) and tools_val.strip(), (
+        if tools_val is not None and not isinstance(tools_val, str):
+            pytest.fail(
+                f"{agent_path.name}: 'tools' field is {type(tools_val).__name__} "
+                f"(got {tools_val!r}), expected a comma-separated string. "
+                f"Declare as a scalar: tools: Read, Grep, Write"
+            )
+        assert tools_val and tools_val.strip(), (
             f"{agent_path.name}: 'tools' field is missing or empty. "
             f"Declare a comma-separated tools list."
         )
