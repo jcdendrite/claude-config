@@ -7,8 +7,9 @@ description: >
   toward same question; delegating implementation; reporting
   check-runner test counts.
   DO NOT TRIGGER when: single targeted lookup; comprehension read
-  feeding your own writing/review/design; Edit/Write sequences;
-  output requiring line-by-line reasoning.
+  feeding your own writing/review/design; Edit/Write sequences where
+  scope or content is still forming; output requiring line-by-line
+  reasoning.
 ---
 
 # Subagent delegation
@@ -47,7 +48,10 @@ dispatch the question instead of continuing inline.
   dispatch it even if you only planned one command.
 - A comprehension read whose content feeds your own writing, review, or
   design.
-- `Edit`/`Write` sequences (judgment-dense, not scratch).
+- `Edit`/`Write` sequences where you are still deciding approach, scope,
+  or the substantive content — the judgment is the parent's and the edit
+  stays inline. See the **Read-then-edit: decision-made test** in the
+  `code-writer` section below for the narrow exception.
 - Output you must reason over line by line (a failure you are
   debugging, a diff you must design against).
 
@@ -175,6 +179,17 @@ not `general-purpose`. It carries `model: sonnet` and self-reviews its
 own diff against staff-engineer reviewer angles before returning,
 catching review-finding-class defects in its own context instead of as
 a parent round-trip.
+
+**Read-then-edit: decision-made test.** A read-then-edit sequence
+routes to `code-writer` only when both conditions hold: (1) the change
+is already decided before you read — you read only to *locate* a known
+target and apply a fixed change, not to determine scope or design a fix
+from what the file reveals; (2) reaching that target costs non-trivial
+context that will sit in the parent for the rest of the session. If you
+are still deciding *what* to change as you read — scope, approach, or
+the substantive content — the edit stays inline. Discovery reads
+(mapping an unfamiliar area before deciding) route to
+`Explore`/`general-purpose`, not `code-writer`.
 
 ### Everything else → `general-purpose`
 
