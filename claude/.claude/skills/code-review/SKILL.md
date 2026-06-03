@@ -152,7 +152,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 33. **Sensitive data in logs** — Does the change add or modify logging? Verify logs do not include tokens, credentials, PII, or full API responses from auth/OAuth endpoints. Extract only the fields needed for debugging.
 
-34. **Performance-sensitive code paths** — Does the change modify a hot path (queries in loops, N+1, cache read/write, large list ops)? Verify with representative data volumes, not just test fixtures.
+34. **Performance-sensitive code paths** — Does the change modify a hot path (queries in loops, N+1, cache read/write, large list ops)? Verify with representative data volumes, not just test fixtures. For read-path SELECT query conventions (explicit limits, N+1 from SELECT iteration, explicit column selection), invoke the `sql-query-conventions` skill.
 
 34a. **Untyped error raised where the file uses typed-error dispatch** — If the file defines or imports typed error variants and dispatches on them by type (catch-arm narrowing, `instanceof` / `isinstance` / `errors.As`, sum-type pattern match), any untyped/generic error raised for a parallel failure path will bypass the typed arm and fall to the generic handler. Flag any generic-error raise, throw, or error-return in the same file that shares the logical shape of an existing typed variant. The fix is a typed variant — not widening the dispatch.
 
@@ -225,7 +225,7 @@ The Change type column keys on what the change *does* for an operator or consume
 | Re-points a read to a different data source while both stay populated | `staff-data-engineer` + `staff-backend-engineer` + `ciso-reviewer` (when the read feeds an access-control decision) — verify every write path to the prior source also writes to the new one |
 | Changes API response shape | `staff-product-engineer` + `staff-backend-engineer` — verify all consumers handle new shape |
 | Adds/modifies security controls | `staff-sdet` + `ciso-reviewer` — verify test pyramid, coverage, and threat model |
-| Adds or modifies test code | `staff-sdet` — verify test-pyramid placement, behavioral-vs-structural fidelity, fixture realism, and mock design |
+| Adds or modifies test code | `staff-sdet` — verify test-pyramid placement, behavioral-vs-structural fidelity, fixture realism, and mock design; invoke `test-conventions` for the authoring standard |
 | Changes auth model (JWT, roles, permissions) | `ciso-reviewer` + `staff-backend-engineer` — trace all auth paths including token refresh, session expiry, and error fallbacks |
 | Modifies shared utilities (helpers, hooks, contexts) | `staff-backend-engineer` + `staff-frontend-engineer` — verify all call sites and check for behavioral assumptions |
 | Changes data model (columns, types, defaults, migrations) | Route by change type: new nullable column, index, or view → `staff-backend-engineer` only; new table → `staff-backend-engineer` + `staff-analytics-engineer`; rename, drop, type change, NOT NULL constraint added, partition key, or RLS policy → `staff-backend-engineer` + `staff-data-engineer` + `staff-analytics-engineer`. Add `staff-product-engineer` if user-visible. |

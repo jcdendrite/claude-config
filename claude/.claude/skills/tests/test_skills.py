@@ -304,6 +304,51 @@ class TestNameOnlySkillContracts:
         )
 
 
+class TestConventionSkillWiring:
+    """Assert that convention skills are explicitly wired into consumers.
+
+    test-conventions and sql-query-conventions rely on explicit Read/invoke
+    pointers rather than description-based auto-trigger (which never fires).
+    These tests prevent silent regression of the wiring.
+    """
+
+    AGENTS_DIR = Path(__file__).resolve().parent.parent.parent / "agents"
+    SKILLS_DIR_ROOT = Path(__file__).resolve().parent.parent.parent / "skills"
+
+    def _agent_body(self, name: str) -> str:
+        return (self.AGENTS_DIR / f"{name}.md").read_text()
+
+    def _skill_body(self, name: str) -> str:
+        return (self.SKILLS_DIR_ROOT / name / "SKILL.md").read_text()
+
+    def test_code_writer_references_test_conventions(self):
+        """code-writer must tell the writer to consult test-conventions for test code."""
+        assert "test-conventions/SKILL.md" in self._agent_body("code-writer")
+
+    def test_code_writer_references_sql_query_conventions(self):
+        """code-writer must tell the writer to consult sql-query-conventions for read-path SQL."""
+        assert "sql-query-conventions/SKILL.md" in self._agent_body("code-writer")
+
+    def test_staff_sdet_reads_test_conventions_body(self):
+        """staff-sdet must Read test-conventions/SKILL.md to ground its §N citations."""
+        body = self._agent_body("staff-sdet")
+        assert "test-conventions/SKILL.md" in body
+        assert "test-conventions §4" not in body  # §4 is Test isolation; §5 is naming/regression-test intent
+
+    def test_staff_backend_reads_sql_query_conventions_body(self):
+        """staff-backend-engineer must Read sql-query-conventions/SKILL.md."""
+        body = self._agent_body("staff-backend-engineer")
+        assert "sql-query-conventions/SKILL.md" in body
+
+    def test_code_review_invokes_test_conventions(self):
+        """code-review must have an actionable invoke pointer to test-conventions."""
+        assert "invoke `test-conventions`" in self._skill_body("code-review")
+
+    def test_code_review_invokes_sql_query_conventions(self):
+        """code-review must have an actionable invoke pointer to sql-query-conventions."""
+        assert "invoke the `sql-query-conventions`" in self._skill_body("code-review")
+
+
 class TestModelInvokableSkillTriggerContracts:
     """TRIGGER / DO NOT TRIGGER contract tests for all model-invokable skills.
 

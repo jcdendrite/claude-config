@@ -44,6 +44,8 @@
     "read-docx-comments": "name-only",
     "transcript-analysis": "name-only",
     "error-handling": "name-only",
+    "test-conventions": "name-only",
+    "sql-query-conventions": "name-only",
     "claude-api": "off",
     "fewer-permission-prompts": "off",
     "init": "off",

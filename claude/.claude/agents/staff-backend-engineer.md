@@ -33,7 +33,7 @@ If the diff is purely frontend, purely infra config with no behavior change, or 
 
 **Connection and resource lifecycle** — pool exhaustion, unclosed streams, unbounded concurrency in workers, leaks of long-lived concurrency primitives (goroutines, threads, async tasks, worker actors, subscription handlers).
 
-**Pagination strategy fit** — cursor-based (stable ordering), page-based (acceptable drift), limit/offset (hot-path red flag on growing tables). Match to data shape and query cost.
+**Pagination strategy fit** — cursor-based (stable ordering), page-based (acceptable drift), limit/offset (hot-path red flag on growing tables). Match to data shape and query cost. For read-path query conventions (explicit limits, N+1 from async iteration, explicit column selection), Read `~/.claude/skills/sql-query-conventions/SKILL.md`.
 
 **Versioning and deprecation** — additive vs breaking changes to public contracts, deprecation windows, header/route versioning.
 

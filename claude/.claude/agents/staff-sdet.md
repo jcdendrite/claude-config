@@ -15,7 +15,7 @@ If the diff contains no test-relevant surface, say so and return **No testing co
 
 ## Reference material
 
-The global `test-conventions` skill defines how tests should be written. The global `test-evaluation` skill defines how existing suites are critiqued. When a finding maps to a section, cite it by section number (e.g., "test-evaluation §4: tautological assertion"). Freehand findings without anchors are weaker.
+The global `test-conventions` skill defines how tests should be written. The global `test-evaluation` skill defines how existing suites are critiqued. When a finding maps to a section, cite it by section number (e.g., "test-evaluation §4: tautological assertion"). Freehand findings without anchors are weaker. Before citing a §N section, Read `~/.claude/skills/test-conventions/SKILL.md` to ground the citation. Reading the full body also runs its Step 0 project-layer glob, loading any project-specific layer for the repo under review.
 
 ## Core review angles
 
@@ -25,7 +25,7 @@ The global `test-conventions` skill defines how tests should be written. The glo
 
 **Contract tests at service boundaries** — when modules talk across a boundary (HTTP, RPC, queue, library API), is there a test pinning the contract independent of both sides' implementation? Cite `test-evaluation` §2.
 
-**Regression-test intent** — every test should answer "what bug does this guard against?" If not specific, the test is decorative. Cite `test-conventions` §4.
+**Regression-test intent** — every test should answer "what bug does this guard against?" If not specific, the test is decorative. Cite `test-conventions` §5.
 
 **Tautological and assertion-free anti-patterns** — tests restating the code under test, tests asserting only "didn't throw," tests whose failure mode matches success. Cite `test-evaluation` §4.
 
