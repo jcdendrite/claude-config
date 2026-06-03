@@ -78,16 +78,14 @@ Never override the response status so it diverges from what the code's registry 
 Codeless/unknown errors render the generic mapped message (`mapper(code ?? FALLBACK_CODE)`), never a hardcoded call-site literal. Resisting "preserve specificity" by hardcoding toast strings at the call site inverts the architecture: the mapper is the single UI surface for codes; the call site should not duplicate it.
 
 ```
-// Bad
-catch (err) {
-  showToast('Failed to save — please try again')
-}
+# Bad
+on error err:
+    show_toast("Failed to save — please try again")
 
-// Good
-catch (err) {
-  const { code } = await parseErrorEnvelope(err)
-  showToast(messageMapper(code ?? FALLBACK_CODE))
-}
+# Good
+on error err:
+    code = parse_error_envelope(err).code
+    show_toast(message_mapper(code or FALLBACK_CODE))
 ```
 
 ### B — Phantom codes (codes with no producer)
