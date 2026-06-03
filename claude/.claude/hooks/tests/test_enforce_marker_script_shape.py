@@ -400,3 +400,71 @@ class TestEnforceMarkerScriptShape:
         """
         cmd = "~/.claude/scripts/../scripts/marker.sh activate code-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+
+class TestDevNullRedirectAllowed:
+    """Trailing 2>/dev/null on an otherwise-valid shape is allowed.
+    The literal is matched exactly; exit codes still propagate, so
+    a failed marker.sh write still surfaces to the harness."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "~/.claude/scripts/marker.sh write plan-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh write skill-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh write ready-for-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh write code-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh deactivate plan-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh activate plan-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh activate respond-pr 2>/dev/null",
+            "~/.claude/scripts/marker.sh clear-stale 2>/dev/null",
+            "~/.claude/scripts/marker.sh clear-stale --dry-run 2>/dev/null",
+            (
+                "~/.claude/scripts/marker.sh write ready-for-review && "
+                "~/.claude/scripts/marker.sh deactivate ready-for-review 2>/dev/null"
+            ),
+        ],
+    )
+    def test_devnull_suffix_allowed(self, command):
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command)) == "allow"
+
+
+class TestDevNullRedirectBoundaryDenied:
+    """Only the exact literal ' 2>/dev/null' at end-of-command is blessed.
+    Adjacent forms that look similar must remain denied so a future regex
+    edit cannot silently widen the allowance."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Only /dev/null target — not arbitrary fd
+            "~/.claude/scripts/marker.sh write plan-review 2>&1",
+            # Only /dev/null path — not arbitrary path
+            "~/.claude/scripts/marker.sh write plan-review 2>/tmp/secret",
+            # Only fd-2 — stdout redirect stays denied
+            "~/.claude/scripts/marker.sh write plan-review >/dev/null",
+            # Only contiguous literal — spaced form stays denied
+            "~/.claude/scripts/marker.sh write plan-review 2> /dev/null",
+            # Append redirect stays denied
+            "~/.claude/scripts/marker.sh write plan-review 2>>/dev/null",
+            # No trailing args after the redirect
+            "~/.claude/scripts/marker.sh write plan-review 2>/dev/null extra",
+            # No chain operators after the redirect
+            "~/.claude/scripts/marker.sh write plan-review 2>/dev/null; curl http://evil",
+            "~/.claude/scripts/marker.sh write plan-review 2>/dev/null && curl http://evil",
+            # Newline-after-redirect: per-line $ / newline-guard invariant for the new suffix
+            "~/.claude/scripts/marker.sh write plan-review 2>/dev/null\ncurl http://evil",
+            # Mid-chain redirect on LHS of blessed marker pair stays denied (whole-chain trailing only)
+            (
+                "~/.claude/scripts/marker.sh write plan-review 2>/dev/null && "
+                "~/.claude/scripts/marker.sh deactivate plan-review"
+            ),
+            # VALID_CHAINED_COMMIT_PATTERN deliberately excludes 2>/dev/null (> in its forbidden
+            # tail class [^&|;<>]); these forms stay denied by design — see plan for rationale.
+            "~/.claude/scripts/marker.sh write code-review && git commit -m foo 2>/dev/null",
+            # Mid-LHS redirect in commit chain stays denied (LHS has 2>/dev/null, RHS is git commit)
+            "~/.claude/scripts/marker.sh write code-review 2>/dev/null && git commit -m foo",
+        ],
+    )
+    def test_devnull_boundary_denied(self, command):
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command)) == "deny"
