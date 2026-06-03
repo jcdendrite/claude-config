@@ -68,7 +68,7 @@ Schema is the query plan. Access patterns drive the design. `staff-data-engineer
 ## Shared ownership
 
 - **Input validation, error response leakage, sensitive data in logs** — co-owned with `ciso-reviewer`. You own callsite / shape; they own trust-boundary / sensitive-data framing.
-- **Error handling at the API/UX seam** — co-owned with `staff-frontend-engineer`. You own the error taxonomy and response shape; they own UI surfacing (toast mapping, retry affordance, error boundary placement).
+- **Error handling at the API/UX seam** — co-owned with `staff-frontend-engineer`. You own the error taxonomy and response shape; they own UI surfacing (toast mapping, retry affordance, error boundary placement). For the standard (code namespace, envelope shape, message discipline), Read `~/.claude/skills/error-handling/SKILL.md`.
 - **Observability COVERAGE** — `staff-platform-engineer` owns; you own the contract (fields, IDs, correlation).
 - **Retry / timeout at CALL SITE** — you own. `staff-platform-engineer` owns the PATTERN (budget, DLQ, circuit breaker).
 - **Migration safety** — three-way co-owned. You write the migration and own "is it correct"; `staff-data-engineer` owns pipeline / CDC / lineage impact and DDL execution shape; `staff-platform-engineer` owns deploy-window ordering and lock-budget.

@@ -62,7 +62,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 1. **API misuse** — Are libraries, frameworks, and language APIs used as designed? Flag any reliance on accidental or undocumented behavior (passing invalid arguments that happen to work, using internal methods, relying on side effects of unrelated calls).
 
-2. **Error handling changes** — Are there catch blocks, fallback defaults, or error handlers that hide failures the caller would want to know about? Empty catches, catch-and-return-null, and catch-and-log-only are all suspects. If this change modifies error/fallback behavior, trace the error paths — most production incidents come from changed catch blocks and silent fallbacks, not happy-path logic.
+2. **Error handling changes** — Are there catch blocks, fallback defaults, or error handlers that hide failures the caller would want to know about? Empty catches, catch-and-return-null, and catch-and-log-only are all suspects. If this change modifies error/fallback behavior, trace the error paths — most production incidents come from changed catch blocks and silent fallbacks, not happy-path logic. If the change touches error response shape, code namespace, or call-site mapping, invoke the `error-handling` skill for the standard.
 
 3. **Race conditions** — Is shared mutable state accessed concurrently without synchronization? Check module-level variables, singletons, caches, and lazy-init patterns.
 
@@ -144,7 +144,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 29. **Input validation at system boundaries** — Validate/sanitize user input before SQL, shell, file paths, or outbound API calls — framework parameterization counts, string concatenation does not.
 
-30. **Error response leakage** — Error responses must not expose internal details (stack traces, internal IDs, DB error text, file paths) — log server-side, return generic to the client.
+30. **Error response leakage** — Error responses must not expose internal details (stack traces, internal IDs, DB error text, file paths) — log server-side, return generic to the client. For the canonical error envelope shape and code-namespace rules, invoke the `error-handling` skill.
 
 31. **Dependency upgrades** — Does the change upgrade a runtime or build dependency? Read the changelog for breaking changes. Check for peer dependency conflicts and, for frontend deps, bundle size regression.
 
