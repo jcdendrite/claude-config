@@ -178,7 +178,7 @@ Apply when the plan touches edge functions, API routes, or server-side code.
 
 K1. **Contract compatibility** — Does the plan maintain backward compatibility during the transition? If not, is the breaking change coordinated with consumer updates?
 
-K2. **Error handling completeness** — Does the plan cover both success and error paths for new/changed endpoints?
+K2. **Error handling completeness** — Does the plan cover both success and error paths for new/changed endpoints? If the plan introduces or modifies an error response envelope, code namespace, or call-site mapping pattern, invoke the `error-handling` skill for the standard.
 
 ## Domain: Security
 

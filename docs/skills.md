@@ -23,12 +23,13 @@ Full descriptions for skills, slash commands, and project-scoped plugins in this
 - **`/brief`** — write a cold-start task briefing at `/tmp/<slug>-task.md` for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, settled-scope ticket) — covers goal, scope, anchors, current state, decisions to make, steps to ship, out of scope. Distinct from `/handoff`, which captures mid-flight session state; `/brief` is for work the current session is *not* going to do. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/transcript-analysis`** — reference guidance for the `transcript-analysis.py` toolkit: which subcommand answers which analysis question, how to read `fail-seq` convergence-vs-thrashing output, and the measurement caveats. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
+- **`/error-handling`** — eight-principle error-handling standard: single code namespace, RFC 9457–derived envelope, developer-only message fields, and call-site anti-patterns. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`. Unlike the other four name-only skills (workflow utilities), this is a knowledge-domain skill kept name-only because the trigger surface (any try/catch or toast) is too broad to scope reliably — reached by name from the review skills and by `Read` from reviewer agents.
 
 Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain co-located auxiliary files — see architecture notes below for the two distinct roles they play. Skills that primarily apply to this repo's own workflow (editing SKILL.md files, authoring hooks) live as project-scoped plugins instead — see [Project-scoped plugins](#project-scoped-plugins) below.
 
 ## Skills available by name (no description budget cost)
 
-Four repo skills use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older clients the override is silently ignored and these skills fall back to `on` (description loaded, weak auto-trigger since they carry no TRIGGER blocks).
+Five repo skills use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older clients the override is silently ignored and these skills fall back to `on` (description loaded, weak auto-trigger since they carry no TRIGGER blocks).
 
 | Skill | Role |
 |---|---|
@@ -36,6 +37,7 @@ Four repo skills use `skillOverrides: name-only` — the model can invoke them w
 | `/handoff` | Cross-session handoff file capturing mid-flight session state |
 | `/read-docx-comments` | Extract comments from `.docx` files (Google Docs / Word feedback) |
 | `/transcript-analysis` | Reference guide for the `transcript-analysis.py` toolkit |
+| `/error-handling` | Canonical error-handling standard: code namespace, RFC 9457–derived envelope, developer-only message fields, call-site anti-patterns |
 
 The `skillOverrides` setting controls skill visibility from settings rather than frontmatter. The four values (Claude Code v2.1.129+):
 

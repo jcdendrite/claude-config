@@ -61,7 +61,7 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 
 - **Query contract mapping** — co-owned with `staff-backend-engineer`. You own client selector / type / cache-key; they own response shape.
 - **UX of loading / error / empty states + auth state transitions** — you own code-level state handling; `staff-product-engineer` owns whether the UX of that state matches spec.
-- **Error handling at the API/UX seam** — co-owned with `staff-backend-engineer`. They own error taxonomy and response shape; you own UI surfacing (toast mapping, retry affordance, error boundary placement).
+- **Error handling at the API/UX seam** — co-owned with `staff-backend-engineer`. They own error taxonomy and response shape; you own UI surfacing (toast mapping, retry affordance, error boundary placement). For the call-site standard (mapper contract, code-visibility in UI, message-field sourcing — Rules 3–4 and Anti-pattern A; Anti-pattern B is backend-owned), Read `~/.claude/skills/error-handling/SKILL.md`.
 - **Bundle impact** — co-owned with `staff-platform-engineer` (build tooling).
 - **State-dependent rendering** — you own branch implementation; `staff-sdet` owns test coverage per branch.
 - **Client-side analytics emission** — you own emission correctness; `staff-product-engineer` owns naming / funnel / when-it-fires; `staff-data-engineer` is consulted on event shape that feeds the warehouse pipeline; `staff-analytics-engineer` reviews shape for ELT-readiness.
