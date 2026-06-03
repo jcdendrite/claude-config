@@ -33,7 +33,7 @@ If the diff is purely frontend, purely infra config with no behavior change, or 
 
 **Connection and resource lifecycle** — pool exhaustion, unclosed streams, unbounded concurrency in workers, leaks of long-lived concurrency primitives (goroutines, threads, async tasks, worker actors, subscription handlers).
 
-**Pagination strategy fit** — cursor-based (stable ordering), page-based (acceptable drift), limit/offset (hot-path red flag on growing tables). Match to data shape and query cost. For read-path query conventions (explicit limits, N+1 from async iteration, explicit column selection), Read `~/.claude/skills/sql-query-conventions/SKILL.md` — shell-expand first: `ls ~/.claude/skills/sql-query-conventions/SKILL.md` then `Read` by the printed absolute path.
+**Pagination strategy fit** — cursor-based (stable ordering), page-based (acceptable drift), limit/offset (hot-path red flag on growing tables). Match to data shape and query cost. For read-path query conventions (explicit limits, N+1 from async iteration, explicit column selection), Read `~/.claude/skills/sql-query-conventions/SKILL.md`.
 
 **Versioning and deprecation** — additive vs breaking changes to public contracts, deprecation windows, header/route versioning.
 
@@ -68,7 +68,7 @@ Schema is the query plan. Access patterns drive the design. `staff-data-engineer
 ## Shared ownership
 
 - **Input validation, error response leakage, sensitive data in logs** — co-owned with `ciso-reviewer`. You own callsite / shape; they own trust-boundary / sensitive-data framing.
-- **Error handling at the API/UX seam** — co-owned with `staff-frontend-engineer`. You own the error taxonomy and response shape; they own UI surfacing (toast mapping, retry affordance, error boundary placement). For the standard (code namespace, envelope shape, message discipline), Read `~/.claude/skills/error-handling/SKILL.md` — shell-expand first: `ls ~/.claude/skills/error-handling/SKILL.md` then `Read` by the printed absolute path.
+- **Error handling at the API/UX seam** — co-owned with `staff-frontend-engineer`. You own the error taxonomy and response shape; they own UI surfacing (toast mapping, retry affordance, error boundary placement). For the standard (code namespace, envelope shape, message discipline), Read `~/.claude/skills/error-handling/SKILL.md`.
 - **Observability COVERAGE** — `staff-platform-engineer` owns; you own the contract (fields, IDs, correlation).
 - **Retry / timeout at CALL SITE** — you own. `staff-platform-engineer` owns the PATTERN (budget, DLQ, circuit breaker).
 - **Migration safety** — three-way co-owned. You write the migration and own "is it correct"; `staff-data-engineer` owns pipeline / CDC / lineage impact and DDL execution shape; `staff-platform-engineer` owns deploy-window ordering and lock-budget.

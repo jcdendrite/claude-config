@@ -45,12 +45,12 @@ language and stack:
   loop body. Batch it or hoist it out of the loop.
 - Data crossing a trust boundary (request input, external response,
   caller-supplied identifier) is validated before use.
-- When the change includes a read-path SELECT query, a PostgREST `.from()/.select()` chain, or a list-returning ORM call, Read `sql-query-conventions` before writing — resolve via `ls ~/.claude/skills/sql-query-conventions/SKILL.md` then `Read` by the printed path. Do not apply this for write-path (INSERT/UPDATE/DELETE), DDL, test fixtures, or document/KV stores.
+- When the change includes a read-path SELECT query, a PostgREST `.from()/.select()` chain, or a list-returning ORM call, Read `~/.claude/skills/sql-query-conventions/SKILL.md` before writing. Do not apply this for write-path (INSERT/UPDATE/DELETE), DDL, test fixtures, or document/KV stores.
 - New behavior ships with a test that names the specific case it guards — but
   only when the codebase already shows a test convention (a tests directory, a
   runner config, sibling test files following a pattern). When no such
   convention exists, flag the coverage gap in **Still uncertain** rather than
-  introduce test scaffolding the project does not have. When test code IS being written and the codebase already shows a test convention, Read the full `test-conventions` body before writing — resolve via `ls ~/.claude/skills/test-conventions/SKILL.md` then `Read` by the printed path (as in the self-review pass below). Reading the full body runs its Step 0 project-layer glob, loading any `test-conventions-*` layer for the current repo.
+  introduce test scaffolding the project does not have. When test code IS being written and the codebase already shows a test convention, Read `~/.claude/skills/test-conventions/SKILL.md` before writing. Reading the full body runs its Step 0 project-layer glob, loading any `test-conventions-*` layer for the current repo.
 - As you write, let CLAUDE.md §Engineering Judgment and §Working Style actively steer choices: understand the intent of existing code before changing it, ground every choice (timeouts, suppressions, discriminator literals, new dependencies), default-suspect over-powered primitives, and respect scope discipline (Axis 1–4) — surface them at each decision point, not only at self-review.
 
 This baseline is what you check while writing. It does not replace the
@@ -66,10 +66,8 @@ more focused task than writing it — use that asymmetry deliberately.
    would flag.
 2. Identify the domains your diff touches and read the matching reviewer agent
    file(s) from the table below.
-3. Locate those files by absolute path — the `Read` tool does not expand `~`.
-   Pass the reviewer files the table named to `ls` (e.g.
-   `ls ~/.claude/agents/staff-backend-engineer.md`) in `Bash` so the shell
-   expands `~`, then `Read` each by the absolute path it prints.
+3. Read each reviewer file by its tilde path — e.g.
+   `~/.claude/agents/staff-backend-engineer.md`.
 4. **Mine each reviewer file for its review angles only** — the section
    enumerating what it looks for. Check your diff against each angle: where the
    reviewer says "flag X," your job was to not produce X — confirm you did not.
