@@ -4,8 +4,8 @@ description: >
   Lovable's UI knowledge fields and workspace skill files — `.lovable/*.md`
   repo-mirror workflow, `.agents/skills/` propagation model,
   Project/Workspace scope split, precedence, review criteria.
-  TRIGGER when: editing `.lovable/*.md` or `.agents/skills/*.md`; drafting
-  Project/Workspace Knowledge or workspace-skill changes; reviewing `.lovable/**` or `.agents/skills/**` PRs.
+  TRIGGER when: editing or reviewing PRs for `.lovable/*.md` or `.agents/skills/*.md`; drafting
+  Project/Workspace Knowledge or workspace-skill changes.
   DO NOT TRIGGER when: not a Lovable project; editing CLAUDE.md or AGENTS.md;
   editing agent rules files; writing code.
 user-invocable: false

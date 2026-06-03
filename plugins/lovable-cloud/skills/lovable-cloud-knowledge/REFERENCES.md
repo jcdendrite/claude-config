@@ -41,21 +41,3 @@ All four are loaded every session. Lovable docs warn that in very long conversat
 ## Cross-agent context
 
 - [agents.md standard](https://agents.md) — the cross-agent AGENTS.md spec referenced in the four-source priority list above. Lovable, Codex, Cursor, Aider, etc. all read AGENTS.md per this standard.
-
-## Skill file path and propagation — decision record
-
-**`.agents/skills/` is the canonical path for Lovable-created skill files.**
-This is based on observed behavior: Lovable auto-creates skill files at
-`.agents/skills/<name>.md` in the project repo. The Lovable Skills docs
-(docs.lovable.dev/features/skills) confirm an "Import from GitHub" pull-based
-path exists but do not pin a specific repo directory or auto-sync mechanism.
-
-`.lovable/skills/` is not a Lovable-defined standard — it is an arbitrary convention
-not derived from Lovable's own file-creation behavior. If you encounter `.lovable/skills/`
-references in any consuming project, treat them as incorrect; `.agents/skills/` is the
-correct path.
-
-**Propagation:** the GitHub-import path in the docs establishes that Lovable can
-read files from the repo. The "instruct Lovable to re-read" propagation pattern
-rests on in-product behavior (Lovable confirmed it can apply changes from repo
-files when asked). Re-verify if Lovable's behavior changes.
