@@ -166,6 +166,8 @@ For `CLAUDE.md`, `AGENTS.md`, and `~/.claude/projects/*/memory/` review, invoke 
 
 For hook reviews (`claude/.claude/hooks/*.sh`, hook entries in `settings.json`), invoke the `claude-hook-review` skill.
 
+When changed files are inside a plugin directory (identified by `.claude-plugin/plugin.json` present in the plugin's tree), or when `.claude-plugin/marketplace.json` is modified, invoke `plugin-semver` for version-bump discipline.
+
 ## Domain: Lovable config
 
 Apply when changed files match `.lovable/**`. Invoke the `lovable-cloud-knowledge` skill for the review checklist (perspective, specificity, scope split between project/workspace knowledge, char budget, sync status).
