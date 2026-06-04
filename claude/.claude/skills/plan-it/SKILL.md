@@ -40,7 +40,7 @@ List every underspecified decision (edge cases, error handling, scope boundaries
 
 ## Step 5 — Architecture design
 
-Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, and `verify-primary-sources` if their domains are implicated.
+Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, and `verify-sources` if their domains are implicated.
 
 **External-pattern grounding.** When the chosen approach invokes a pattern from external documentation (a library, framework, or vendor doc), quote the literal source lines that establish the pattern — not a paraphrase, not a summary, not the section heading. This extends Step 3's grep-the-population rule from in-codebase patterns to external sources. A capitalized pattern name ("the X pattern") lifted from prose without a verbatim source quote is a hazard: names crystallize an interpretation that may not match the source.
 
