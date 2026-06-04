@@ -2,7 +2,8 @@
 name: error-handling
 description: >
   Standard error-handling: single code namespace, RFC 9457–derived envelope,
-  developer-only message fields, and anti-patterns for call-site drift.
+  developer-only message fields, throw-vs-return propagation, centralized
+  capture boundary, serverless telemetry flush, and anti-patterns for call-site and capture drift.
 ---
 
 # Error Handling Standard
@@ -71,6 +72,22 @@ Decision test: would the client or support team act differently on this code tha
 
 Never override the response status so it diverges from what the code's registry entry maps to. If a path needs a new status, mint the code that owns that status (including any protocol-required headers, e.g. `Allow` for 405 per RFC 9110 §15.5.6).
 
+## Error propagation & capture (server-side)
+
+The eight rules above govern the response *envelope* — what crosses the wire to the consumer. These four govern the orthogonal axis: how an error travels from its origin to the response, and where it is reported to telemetry.
+
+### P1 — Throw the unexpected; return the expected
+Expected, recoverable conditions (invalid input, unauthorized, not found, conflict) are normal control flow — return the structured envelope. Genuinely unexpected failures (a query that should have succeeded, a broken dependency, an unreachable branch) are exceptions — throw them and let the boundary (P2) report and format. Reserve exceptions for the exceptional; do not use them for routine control flow, and do not swallow-and-return what the caller cannot act on.
+
+### P2 — Capture at one centralized boundary
+Telemetry capture (error tracker / APM) belongs in a single handler-boundary wrapper that every entry point routes through — not scattered across catch blocks, and not inside the response formatter (which stays pure: code → envelope). The boundary is where each error is triaged — an operational failure (a runtime problem in correct code, e.g. a dependency 500 or socket hang-up) versus a programmer error (a bug) — and where the capture-log-respond decision is made once.
+
+### P3 — Throw a typed error carrying the registry code + cause
+When you throw across a boundary, throw a typed error subclass carrying (a) the application error code from the single registry (Rule 1) so the boundary formats the correct envelope, and (b) the underlying cause so the original exception and its stack are preserved for capture. Do not discard the cause; do not stringify it into the user-facing message (Rule 4).
+
+### P4 — Flush telemetry before a serverless/edge runtime terminates
+In serverless and edge runtimes the execution environment is frozen or reclaimed once the response is returned, and telemetry events are sent asynchronously. The boundary must await the SDK's flush (vendor default ~2000 ms) before returning, or pending events are dropped. Background-task deferral APIs are for fire-and-forget work where delivery confirmation is not needed; error capture wants the flush completed before the response returns.
+
 ## Anti-patterns
 
 ### A — Hardcoded call-site copy
@@ -96,6 +113,18 @@ A code is a contract between a producer that emits it and a consumer that maps i
 
 Never override the HTTP status to diverge from what the code's registered status maps to (e.g., emitting a 400-class code but forcing the response to `405`). Mint the correct code that owns the intended status instead.
 
+### D — Capture inside the response formatter
+
+Couples telemetry to HTTP-body formatting; forces sync/async contortions, a status gate, and still misses any hand-rolled response that bypasses the formatter. Capture belongs at the boundary (P2).
+
+### E — Decide capture by inspecting the returned response status
+
+By the time a 5xx Response object exists, the original exception has been discarded — you capture a stack-less event. Throw (P1) so the boundary holds the real error.
+
+### F — Mask a captured failure as success via status override
+
+Forcing a registry-500 code to a 200 response to suppress a retry hides the failure from status-based observers. Mint the code that owns the intended status (cross-ref Rule 8 / Anti-pattern C).
+
 ## Review checklist
 
 1. **Single namespace** — Are infrastructure codes (DB SQLSTATE, vendor codes) logged only, never propagated as user-visible identifiers?
@@ -110,5 +139,12 @@ Never override the HTTP status to diverge from what the code's registered status
 10. **Anti-pattern B** — Are there codes in the registry that no server path ever emits?
 11. **Anti-pattern C** — Are there HTTP status overrides that diverge from the code's registered status?
 12. **Auth-conditional verbosity** — Does the error response vary in detail level based on caller authentication status? The same envelope shape and information content must be returned to all callers — richer detail belongs in server-side logs only, not in any authenticated response tier.
+13. **Throw vs. return** — Are unexpected failures thrown (not returned), and expected recoverable conditions returned as structured envelopes? (P1)
+14. **Capture boundary** — Is telemetry capture wired into a single handler-boundary wrapper rather than scattered across catch blocks or inside the response formatter? (P2)
+15. **Typed throw** — When throwing across a boundary, does the error carry (a) the application error code from the single registry and (b) the underlying cause? Is the cause preserved rather than stringified into the user-facing message? (P3)
+16. **Serverless flush** — In serverless/edge runtimes, does the boundary await the telemetry SDK's flush before returning? Are background-task deferral APIs reserved for fire-and-forget work rather than error capture? (P4)
+17. **Anti-pattern D** — Is telemetry capture co-located with or inside the response formatter? It must live at the handler boundary. (D)
+18. **Anti-pattern E** — Is there any code that decides whether to capture telemetry by inspecting the HTTP status of a returned Response object? That pattern discards the original exception; throw instead so the boundary holds the real error. (E)
+19. **Anti-pattern F** — Is any code forcing a registry-mapped-5xx error to a 200 response to suppress retries? Mint the code that owns the intended status. (Rule 8 / C / F)
 
 See `~/.claude/skills/error-handling/REFERENCES.md` for the research and primary-source citations behind these rules.
