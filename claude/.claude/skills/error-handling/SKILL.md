@@ -1,9 +1,13 @@
 ---
 name: error-handling
 description: >
-  Standard error-handling: single code namespace, RFC 9457–derived envelope,
-  developer-only message fields, throw-vs-return propagation, centralized
-  capture boundary, serverless telemetry flush, and anti-patterns for call-site and capture drift.
+  Error-handling: envelope, propagation, and capture rules for server-side APIs.
+  TRIGGER when: reviewing server-side catch blocks, response formatters, telemetry
+  capture, or serverless error boundaries; defining or auditing application error
+  codes or the code registry; reviewing API error response shapes.
+  DO NOT TRIGGER when: reviewing client-side error display only with no server
+  path in diff; reviewing test assertions on error shapes without touching
+  production code.
 ---
 
 # Error Handling Standard
