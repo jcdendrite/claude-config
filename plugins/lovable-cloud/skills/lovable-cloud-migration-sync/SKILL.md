@@ -147,9 +147,22 @@ Suite-level reruns route through the subagent.
 
 ### 6. Delete originals
 
+**Guard against deleting a Lovable emit instead of a human original.** You are
+deleting human-authored slug-named files, never the UUID-named files Lovable
+emitted. For each path you pass to `git rm`, extract that filename's segment
+between the first `_` and `.sql`; if it matches a UUID shape
+(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`), abort — the
+file is a Lovable UUID emit, not a human original. Delete the human-authored
+slug-named file instead, then wait for Lovable to re-emit.
+
 ```bash
 git rm supabase/migrations/ORIGINAL_1.sql supabase/migrations/ORIGINAL_2.sql ...
 ```
+
+**Do not manually restore a deleted emit.** Re-adding a deleted UUID file by
+hand races Lovable's own re-emit and lands two identical UUID files on `main`.
+If an emit was deleted in error, delete the human original instead and let
+Lovable re-emit on its own.
 
 ### 7. Commit and PR
 
