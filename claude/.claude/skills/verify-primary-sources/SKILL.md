@@ -57,6 +57,16 @@ When research will inform a code or design decision:
    source, the next user message will ask you to actually fetch it.
    Skip the round trip.
 
+**Triangulate durable decisions across multiple first-tier sources.**
+Depth on a single source (items 1–4) is not sufficient for a durable
+guideline or architectural standard (any decision committed to a plan,
+PR, or config change) — one authoritative source can
+still be incomplete or idiosyncratic. Cite two or more independent
+first-tier origins (vendor docs, specs, standards bodies), not one
+aggregator restating the others however well-staffed. Record a
+verbatim quote + URL per source so a reader can re-check what each
+claim is scoped to.
+
 If a primary source cannot be located, say so and present the
 secondary source as a secondary source. Flag the uncertainty rather
 than launder it into a confident claim.

@@ -46,6 +46,8 @@ Choose the approach. Always include brief rationale — what alternatives were w
 
 **Lighter-alternatives subsection.** If the chosen approach adopts a more powerful, invasive, or wider-scope mechanism than the task requires — a heavier abstraction, a more privileged execution context, a more complex coordination pattern, a more invasive integration — include a **Lighter alternatives considered** subsection in the plan. Enumerate at least two lighter primitives from the source documentation/system; for each, state in one sentence why it does not solve the problem. If you cannot find two lighter alternatives in the source, that itself is the signal that you have not read the source carefully enough — re-read with the specific question "what mechanisms exist that do NOT require this heavier choice?" before continuing.
 
+**Question the ticket's prescribed approach.** Acceptance criteria often prescribe *how* to implement, not only the outcome. Treat a prescribed approach as a hypothesis, not settled design: when planning it triggers the wrong-foundation tell — compounding patches accreting on one mechanism to force the prescribed approach to work — re-derive the correct design ignoring both the current code and the AC, then surface that re-scope to the user rather than planning around a wrong premise.
+
 Write the plan with these sections:
 
 1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
