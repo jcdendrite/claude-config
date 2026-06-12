@@ -1,0 +1,45 @@
+#!/bin/bash
+# Usage: new-migration <slug>
+# Example: new-migration "add co-parent index" → 20260612191215_add-co-parent-index.sql
+#
+# Emits a UTC-timestamped Supabase migration filename to stdout and writes
+# a one-shot authorization token. The PreToolUse validate-migration-filename hook
+# checks for this token before allowing a Write to supabase/migrations/*.sql.
+# PostToolUse consume-migration-token removes it after the Write succeeds.
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  printf 'Usage: new-migration <slug>\n' >&2
+  exit 1
+fi
+
+raw_slug="$1"
+
+# Sanitize: C locale for stable character class behavior, lowercase,
+# spaces to hyphens, strip non-[a-z0-9-], collapse consecutive hyphens,
+# strip leading/trailing hyphens.
+sanitized_slug=$(
+  LC_ALL=C printf '%s' "$raw_slug" \
+    | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+    | LC_ALL=C tr ' ' '-' \
+    | LC_ALL=C tr -cd 'a-z0-9-' \
+    | LC_ALL=C sed 's/--*/\-/g; s/^-//; s/-$//'
+)
+
+if [ -z "$sanitized_slug" ]; then
+  printf 'Error: slug "%s" sanitizes to empty — cannot emit a slugless migration filename.\n' "$raw_slug" >&2
+  exit 1
+fi
+
+utc_timestamp=$(date -u +%Y%m%d%H%M%S)
+output_filename="${utc_timestamp}_${sanitized_slug}.sql"
+
+# Source the single canonical token-dir definition.
+. "$(cd "$(dirname "$0")/.." && pwd)/lib/token-path.sh"
+
+mkdir -p "${MIGRATION_TOKEN_DIR}"
+# Touch is idempotent: if a same-second same-slug double-gen happens,
+# the token file already exists and this is a no-op.
+touch "${MIGRATION_TOKEN_DIR}/${output_filename}"
+
+printf '%s\n' "$output_filename"

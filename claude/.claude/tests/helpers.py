@@ -57,18 +57,54 @@ def extract_skill_command(skill_path: Path, fixture_id: str) -> str:
     return matches[0].group("body").strip()
 
 
-def run_hook(hook: Path, tool_input: dict, cwd: Path | None = None) -> str:
+def _build_subprocess_env(
+    home: Path | None,
+    extra_env: dict | None,
+) -> dict | None:
+    """Build a subprocess env with optional HOME override and extra variables.
+
+    Returns None when neither argument is provided, so subprocess.run inherits
+    the parent environment as-is — preserving PATH for hook tool lookups
+    (jq, grep, git, etc.).
+
+    Full parent env is intentionally inherited even when home or extra_env is
+    set, because hook scripts depend on PATH to locate tool binaries.
+    """
+    if home is None and extra_env is None:
+        return None
+    env = dict(os.environ)
+    if home is not None:
+        env["HOME"] = str(home)
+    if extra_env is not None:
+        env.update(extra_env)
+    return env
+
+
+def run_hook(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> str:
     """Invoke `hook` with `tool_input` as JSON stdin. Return the decision.
 
     Silent exit (exit 0, empty stdout) maps to "allow" to match the hook
     protocol, where absence of output means "no opinion".
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook writes into an isolated temp directory rather than real ~/.claude.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
     """
+    env = _build_subprocess_env(home, extra_env)
     result = subprocess.run(
         [str(hook)],
         input=json.dumps(tool_input),
         capture_output=True,
         text=True,
         cwd=cwd,
+        env=env,
         check=False,
     )
     if not result.stdout.strip():
@@ -77,22 +113,53 @@ def run_hook(hook: Path, tool_input: dict, cwd: Path | None = None) -> str:
     return payload["hookSpecificOutput"]["permissionDecision"]
 
 
-def run_hook_reason(hook: Path, tool_input: dict, cwd: Path | None = None) -> str | None:
+def run_hook_reason(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> str | None:
     """Like `run_hook` but returns the deny `permissionDecisionReason` string
     (or `None` if the hook allowed silently). Used by tests that need to
-    assert on the contents of the deny message, not just the decision."""
+    assert on the contents of the deny message, not just the decision.
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook writes into an isolated temp directory rather than real ~/.claude.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
+    env = _build_subprocess_env(home, extra_env)
     result = subprocess.run(
         [str(hook)],
         input=json.dumps(tool_input),
         capture_output=True,
         text=True,
         cwd=cwd,
+        env=env,
         check=False,
     )
     if not result.stdout.strip():
         return None
     payload = json.loads(result.stdout)
     return payload["hookSpecificOutput"].get("permissionDecisionReason")
+
+
+def posttooluse_input(file_path: str) -> dict:
+    """Build a PostToolUse Write event payload for consume-migration-token tests.
+
+    Covers the payload shape only — env setup is the caller's responsibility.
+    Tests routing through run_hook / run_hook_reason must also pass
+    extra_env={"CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}; without it the hook
+    exits 0 via fail-open before touching any token, making token-state
+    assertions vacuously true. The consume test suite uses its own _run_consume
+    runner to enforce this contract explicitly.
+    """
+    return {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": file_path, "content": "x"},
+    }
 
 
 def bash_input(
@@ -269,6 +336,6 @@ def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     subprocess.run(
         ["bash", "-c", command],
         cwd=cwd,
-        env={**os.environ, "HOME": str(isolated_home)},
+        env=_build_subprocess_env(isolated_home, None),
         check=True,
     )
