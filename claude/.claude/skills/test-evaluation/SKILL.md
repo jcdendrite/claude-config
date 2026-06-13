@@ -67,6 +67,7 @@ When a test is intermittently failing:
 | Tautological assertions | `assert("error" in body or "data" in body)` passes on any response | Assert specific values |
 | Duplicating production code in tests | Test passes with stale copy, drift | Import or call via integration |
 | Reading source files to test behavior | Tests source text, not runtime behavior | Call function, assert output |
+| Regex-parsing specific field values from runtime output in an assertion (log lines, JSON, XML) | Re-implements the production parser inside the test: passes when production parsing is broken, breaks on format changes. Exception: assertions checking only that the output *is* valid JSON or matches a line-format envelope (not specific field values within it) are format-contract tests and are not this anti-pattern | Parse with the library; assert on the resulting object; or call the production parse/validate function |
 | Unconditional global state deletion | Breaks subsequent tests that need the value | Save and restore in guaranteed cleanup |
 | In-test retry loops for flaky tests | Masks root cause, inflates suite duration | Root-cause and fix or quarantine |
 | Test interdependence | Test B depends on state from Test A; reorder breaks both | Each test sets up and tears down its own state |

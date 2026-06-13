@@ -186,8 +186,6 @@ If an assertion checks a value that was set up directly in the test double rathe
 **Good (tests real logic):** stub `getUser` to return `{name: "Alice", role: "admin"}`, then assert the formatted display string equals `"Alice (Admin)"`. This tests the formatting/transformation logic the code actually performs.
 
 ## 9. Common authoring mistakes
-
-Avoid these when writing new tests:
 | Mistake | Fix |
 |---|---|
 | Assertion-free tests (code runs but nothing is asserted) | Every test must assert on a specific expected outcome |
@@ -197,4 +195,5 @@ Avoid these when writing new tests:
 | Mocking third-party internals (library's private API) | Use the library's test utilities or mock at your own abstraction boundary |
 | Testing the test double (asserting stub's own return value) | Assert on values the code computed or transformed |
 | Source-scanning the file under test (reading it as a string and asserting substrings) instead of executing it | Reading source proves the literal text exists, not that it runs, is reachable, or behaves correctly; the assertion passes on dead code and fails on cosmetic renames. Use a behavioral test: execute the function/hook/component with mocked dependencies and assert observable behavior. Source-scans are a tripwire for *wiring presence only*, never a substitute for a behavioral assertion. |
+| Regex-parsing specific field values from runtime output (log lines, JSON, XML) in a test assertion instead of parsing with a library or calling the production parser | The regex re-implements logic the production code owns: the test passes when production parsing is broken and breaks on benign format changes. Parse with the same library the code uses and assert on the resulting object; or call the production parse/validate function and assert on its result. Exception: asserting only that the output *is* valid JSON or matches a line-format envelope (not specific field values within it) is a format-contract test and is not this anti-pattern. Distinct from source-scanning (asserting on source *text*) — see row above. |
 | Stub or vacuous assertion when blocked by credentials/env/external state | Mock or fake the credential boundary; don't commit a permanently-passing assertion. |
