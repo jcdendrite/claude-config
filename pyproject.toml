@@ -6,4 +6,4 @@ target-version = "py312"
 select = ["E", "F", "B", "I", "UP", "SIM"]
 
 [tool.pytest.ini_options]
-pythonpath = ["claude/.claude/tests", "evals", "plugins/skill-management/scripts"]
+pythonpath = ["claude/.claude/tests", "evals", "plugins/skill-management/scripts", "plugins/lovable-cloud/tests"]
