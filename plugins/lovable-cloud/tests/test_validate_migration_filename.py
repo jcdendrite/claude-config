@@ -66,48 +66,46 @@ class TestNoToken:
         assert decision == "deny"
 
 
-class TestUUIDExemption:
-    def test_uuid_named_migration_allows(self, tmp_path):
-        # Lovable-emitted files use lowercase UUID as the post-prefix segment.
+class TestUUIDNoExemption:
+    def test_uuid_named_migration_without_token_denies(self, tmp_path):
+        # UUID-named writes are not exempt from the token check; Lovable commits
+        # these directly (not via Claude's Write tool), so no token will exist.
+        # Regression guard: re-introduction of a shape-based bypass (UUID or any
+        # other filename shape) must break this test.
         uuid_basename = "20260612120000_fa10d453-8db5-429b-b9f6-30af3fc13e66.sql"
         decision = _hook_decision(
             write_input(f"supabase/migrations/{uuid_basename}"), tmp_path
         )
+        assert decision == "deny"
+
+    def test_token_keyed_allow_is_shape_agnostic(self, tmp_path):
+        # The gate is purely token-keyed; the filename segment after the timestamp
+        # prefix is irrelevant — a slug-named file with a token allows just as a
+        # UUID-named file would. Shape does not matter; only the token does.
+        slug_basename = "20260612120000_add-users.sql"
+        _place_token(tmp_path, slug_basename)
+        decision = _hook_decision(
+            write_input(f"supabase/migrations/{slug_basename}"), tmp_path
+        )
         assert decision == "allow"
 
-    def test_uppercase_uuid_denies(self, tmp_path):
-        # UUID regex is lowercase-only; uppercase is not a Lovable emit.
-        basename = "20260612120000_FA10D453-8DB5-429B-B9F6-30AF3FC13E66.sql"
-        decision = _hook_decision(
-            write_input(f"supabase/migrations/{basename}"), tmp_path
-        )
-        assert decision == "deny"
 
-    def test_uuid_with_extra_suffix_denies(self, tmp_path):
-        # A UUID-like segment with trailing content is not a clean UUID.
-        basename = "20260612120000_fa10d453-8db5-429b-b9f6-30af3fc13e66-extra.sql"
-        decision = _hook_decision(
-            write_input(f"supabase/migrations/{basename}"), tmp_path
+class TestTokenDirEmpty:
+    def test_empty_migration_token_dir_denies(self, tmp_path):
+        # When HOME is empty, token-path.sh produces an empty MIGRATION_TOKEN_DIR.
+        # The guard added after sourcing token-path.sh must fail closed (deny)
+        # rather than checking [ -f "/<basename>" ] against the root filesystem.
+        result = subprocess.run(
+            [str(VALIDATE_HOOK)],
+            input='{"tool_name":"Write","tool_input":{"file_path":"supabase/migrations/20260612120000_add-users.sql"}}',
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": "", "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
         )
-        assert decision == "deny"
-
-    def test_wrong_segment_length_uuid_denies(self, tmp_path):
-        # 11 hex chars in the last group instead of 12 — the anchored regex
-        # rejects it. This pins that grep -E is strict about segment length.
-        basename = "20260612120000_fa10d453-8db5-429b-b9f6-30af3fc13e6.sql"
-        decision = _hook_decision(
-            write_input(f"supabase/migrations/{basename}"), tmp_path
-        )
-        assert decision == "deny"
-
-    def test_mixed_case_uuid_denies(self, tmp_path):
-        # UUID regex is [0-9a-f] without -i; one uppercase char must deny.
-        # This pins that grep's -E flag is case-sensitive (no -i was added).
-        basename = "20260612120000_Fa10d453-8db5-429b-b9f6-30af3fc13e66.sql"
-        decision = _hook_decision(
-            write_input(f"supabase/migrations/{basename}"), tmp_path
-        )
-        assert decision == "deny"
+        assert result.returncode == 0, f"Hook must exit 0 even with empty HOME: {result.stderr}"
+        import json
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 class TestNonMigrationPaths:
