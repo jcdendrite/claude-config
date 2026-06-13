@@ -20,7 +20,7 @@ CONSUME_HOOK = PLUGIN_ROOT / "hooks" / "consume-migration-token.sh"
 GENERATOR = PLUGIN_ROOT / "scripts" / "new-migration"
 
 
-def _plugin_extra_env(home: Path) -> dict:
+def _plugin_extra_env() -> dict:
     return {"CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}
 
 
@@ -51,7 +51,7 @@ def test_one_shot_lifecycle(tmp_path):
         VALIDATE_HOOK,
         write_input(migration_path),
         home=tmp_path,
-        extra_env=_plugin_extra_env(tmp_path),
+        extra_env=_plugin_extra_env(),
     )
     assert decision == "allow", (
         "PreToolUse should allow a Write with a valid generator token"
@@ -79,7 +79,7 @@ def test_one_shot_lifecycle(tmp_path):
         VALIDATE_HOOK,
         write_input(migration_path),
         home=tmp_path,
-        extra_env=_plugin_extra_env(tmp_path),
+        extra_env=_plugin_extra_env(),
     )
     assert decision == "deny", (
         "PreToolUse should deny a second Write for the same filename after token consumed"

@@ -59,7 +59,7 @@ class TestTokenPresent:
 
 
 class TestNoToken:
-    def test_no_token_non_uuid_migration_denies(self, tmp_path):
+    def test_no_token_migration_denies(self, tmp_path):
         decision = _hook_decision(
             write_input("supabase/migrations/20260612120000_add-users.sql"), tmp_path
         )
