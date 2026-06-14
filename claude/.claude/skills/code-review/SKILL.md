@@ -90,6 +90,10 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 9e. **New third-party dependency without provenance research** — Does the diff add a new runtime or dev dependency (any package.json, requirements.txt, go.mod, Cargo.toml addition) without evidence of vulnerability-history and maintenance-health research? Flag and require the source-of-choice rationale to be named (in the PR description, a comment, or a commit message note).
 
+9f. **Brittle structural test assertion** — Does the diff add a test that asserts on specific field values in runtime/structured output (log lines, JSON, XML, generated config) by applying regex or string-matching to raw text rather than (a) parsing with a library and asserting on the resulting object, or (b) calling the production parse/validate function? The regex re-implements logic the code owns: the test passes when production parsing is broken and breaks on format changes. Does not apply when the assertion only checks the output's format envelope (e.g., that the output is valid JSON or matches a known line format) rather than asserting on specific field values — that is a legitimate format-contract test. See `test-conventions` §9.
+
+9g. **Source-scanning test assertion** — Does the diff add a test that reads a source, DDL, or generated file as a string and regex-matches or substring-matches against its literal text rather than executing the code and asserting on observable behavior? Reading source proves the literal text exists, not that it runs, is reachable, or behaves correctly; the assertion passes on dead code and fails on cosmetic renames. See `test-conventions` §9.
+
 ### Clarity
 
 10. **Undocumented limitations** — Does the code make assumptions or have known constraints invisible to future readers (only handling the first element, assuming single-tenant, ignoring edge cases by design)?
@@ -323,6 +327,8 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **9c. Ungrounded numeric literal in network/timeout/retry context** | `staff-backend-engineer` (timeout/retry in server paths), `staff-platform-engineer` (CI/infra timeouts) | — |
 | **9d. Lint or type-check suppression without rationale** | judgment (any reviewer) | — |
 | **9e. New third-party dependency without provenance research** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (build/CI deps), `staff-frontend-engineer` (frontend/client-side deps) |
+| **9f. Brittle structural test assertion** | `staff-sdet` | `staff-backend-engineer` (backend tests asserting on structured API response output) |
+| **9g. Source-scanning test assertion** | `staff-sdet` | — |
 | **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
 | **12. Stripped WHY comments** | judgment (any reviewer) | — |
