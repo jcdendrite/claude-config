@@ -33,6 +33,8 @@ is done when you have reviewed your own diff and fixed what that review found.
 Verify each of these on every change you write — they apply across every
 language and stack:
 
+- **Before modifying any test file:** Read `~/.claude/skills/test-conventions/SKILL.md`. Reading the full body runs its Step 0 project-layer glob, loading any `test-conventions-*` layer for the current repo. Do this before writing, not after — the skill body includes how-to guidance (parser libraries, structural helpers) that shapes the approach.
+- **Before writing a read-path SELECT query** (PostgREST `.from()/.select()` chains, list-returning ORM calls): Read `~/.claude/skills/sql-query-conventions/SKILL.md`. Does not apply to write-path (INSERT/UPDATE/DELETE), DDL, test fixtures, or document/KV stores.
 - Names describe intent. No generic placeholders.
 - Every branch a reader can reach is handled — error, empty, and
   loading/pending states, plus boundary inputs (empty collection, single item,
@@ -45,12 +47,11 @@ language and stack:
   loop body. Batch it or hoist it out of the loop.
 - Data crossing a trust boundary (request input, external response,
   caller-supplied identifier) is validated before use.
-- When the change includes a read-path SELECT query, a PostgREST `.from()/.select()` chain, or a list-returning ORM call, Read `~/.claude/skills/sql-query-conventions/SKILL.md` before writing. Do not apply this for write-path (INSERT/UPDATE/DELETE), DDL, test fixtures, or document/KV stores.
 - New behavior ships with a test that names the specific case it guards — but
   only when the codebase already shows a test convention (a tests directory, a
   runner config, sibling test files following a pattern). When no such
   convention exists, flag the coverage gap in **Still uncertain** rather than
-  introduce test scaffolding the project does not have. When test code IS being written and the codebase already shows a test convention, Read `~/.claude/skills/test-conventions/SKILL.md` before writing. Reading the full body runs its Step 0 project-layer glob, loading any `test-conventions-*` layer for the current repo.
+  introduce test scaffolding the project does not have.
 - As you write, let CLAUDE.md §Engineering Judgment and §Working Style actively steer choices: understand the intent of existing code before changing it, ground every choice (timeouts, suppressions, discriminator literals, new dependencies), default-suspect over-powered primitives, and respect scope discipline (Axis 1–4) — surface them at each decision point, not only at self-review.
 
 This baseline is what you check while writing. It does not replace the

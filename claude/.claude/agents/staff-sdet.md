@@ -29,6 +29,8 @@ The global `test-conventions` skill defines how tests should be written. The glo
 
 **Tautological and assertion-free anti-patterns** — tests restating the code under test, tests asserting only "didn't throw," tests whose failure mode matches success. Cite `test-evaluation` §4.
 
+**Brittle structural assertions** — does a new or modified test assert on specific field values in runtime/structured output (log lines, JSON, XML, generated config) by regex or string-matching against raw text instead of (a) parsing with a library and asserting on the resulting object, or (b) calling the production parse/validate function? Also check for source-scanning assertions — reading a source, DDL, or generated file as a string and substring/regex-matching its literal text — which proves the text exists, not that it runs, is reachable, or behaves correctly. Both patterns pass when production logic is broken and break on benign format changes. Cite `test-conventions` §9 and `code-review` items 9f–9g.
+
 **Concurrency and idempotency coverage** — for retryable or concurrent paths, is there a test that concurrent callers produce the correct outcome? Is idempotency actually verified?
 
 **Edge-case omissions** — empty list, single item, max-size input, unicode/non-ASCII, timezone boundaries, clock skew, concurrent callers, error-path returns, null/undefined input where the type says impossible.
