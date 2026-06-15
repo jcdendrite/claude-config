@@ -1,6 +1,6 @@
 # Estimating effort by review surface, not implementation time
 
-*Part of the [claude-config case studies](../case-studies.md). The empirical record behind [`design-decisions.md` §13](../design-decisions.md#13-effort-estimated-by-review-surface-not-implementation-time-2026-05-29).*
+*Part of the [claude-config case studies](../case-studies.md). The empirical record behind [`design-decisions.md` §14](../design-decisions.md#14-effort-estimated-by-review-surface-not-implementation-time-2026-05-29).*
 
 **The problem.** A recurring observation from engineers working alongside coding agents: the agent's effort estimates anchor on human coding speed. "This is a 30-minute change" — "a quick win" — "a small self-contained PR" framed as easy because it would take a human developer an afternoon. The frame is wrong. For an agent, implementation time is negligible — a 500-line refactor and a one-line fix both run in minutes. The cost that gates a change is not how long it takes to write; it's how long it takes to review, and how wide the testing surface is. Anchoring on implementation time miscalibrates triage, artificially weights small tasks toward "do it now," and treats low-implementation-cost changes as low-risk even when they touch widely-shared surfaces.
 
