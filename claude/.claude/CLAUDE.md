@@ -48,7 +48,6 @@
 ## Code Review
 
 - After writing or modifying code, run `/code-review` before presenting the code to the user. If the review finds issues, fix them first, then present the final version.
-- **Disposition calibrates on review surface, not coding time.** When deciding whether a reviewer-agent finding is fixed now or deferred — via `/code-review` or an ad-hoc reviewer spawn — calibrate on complexity, risk, and testing area, not on how little time the fix takes. A finding in code this change already touches and that tests already running already cover is fix-now, however small; defer only against the code-review skill's named Finding-disposition criteria.
 
 ## Plan Review
 

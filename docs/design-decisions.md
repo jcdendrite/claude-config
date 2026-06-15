@@ -169,10 +169,9 @@ Both skills are moved to `skillOverrides: name-only` following the `error-handli
 
 §14 established that effort anchors on review surface, not implementation time, and scoped the rule to plan effort sections. The same miscalibration surfaced at the code-review finding-disposition step: the orchestrator deferred reviewer findings cheap to ADDRESS — small, in already-touched code, covered by tests already running — on effort/size/non-blocking grounds. A transcript audit found the pushback recurring across 10+ sessions in two repos; in several the "pre-existing/independent" label was wrong because the PR's own change touched or activated the finding.
 
-The fix wires §14's principle into disposition: the code-review skill's Finding-disposition section now states disposition calibrates on complexity, risk, and testing area — not implementation effort — reinforces the opportunistic-refactoring license for tech debt in already-touched, already-tested code, hardens "Orthogonal scope" against the touch/activates-it mislabel, and adds "small/cosmetic/non-blocking/advisory" to the invalid-DEFER list. A one-line CLAUDE.md pointer carries the guard to ad-hoc reviewer dispositions outside `/code-review`. This adds the always-loaded pointer the effort-estimation case study deliberately declined — justified here because the disposition miscalibration recurs far more often (10+ flagged sessions vs the 6–8 conversational effort estimates that study measured) and ships as a merged-PR omission, not a stray sentence.
+The fix wires §14's principle into disposition: the code-review skill's Finding-disposition section now states disposition calibrates on complexity, risk, and testing area — not implementation effort — reinforces the opportunistic-refactoring license for tech debt in already-touched, already-tested code, hardens "Orthogonal scope" against the touch/activates-it mislabel, and adds "small/cosmetic/non-blocking/advisory" to the invalid-DEFER list.
 
 ### Sources
 
 - `claude/.claude/skills/code-review/SKILL.md` — Finding disposition (ADDRESS/DEFER) machinery
-- `claude/.claude/CLAUDE.md` §Code Review — the always-loaded pointer
 - §14 — the parent principle this extends
