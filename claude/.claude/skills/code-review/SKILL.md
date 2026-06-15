@@ -272,11 +272,13 @@ After Reconciliation, before producing the recommendation, walk every reviewer-s
 
 Default ADDRESS is grounded in opportunistic-refactoring discipline (Fowler, *Opportunistic Refactoring*): code already in the diff, especially when covered by tests already running in this PR's verification, is the cheapest place a finding will ever be fixed. DEFER is the exception.
 
+Calibrate disposition on complexity, risk, and testing area — never on implementation effort. For an agent, a one-line fix and a fifty-line fix in the same already-touched, already-tested code are equally cheap to make; "it's a small change, defer it" inverts the cost model — small *and* in-surface is the strongest ADDRESS signal, not a reason to push it to a follow-up. A tech-debt finding inside code this change already touches, covered by tests already running, is the textbook opportunistic-refactoring case (CLAUDE.md §Working Style Axis 2 — "opportunistic refactoring of code is encouraged"; Fowler) — ADDRESS it; that is the cheapest the fix will ever be.
+
 Format: inline `ADDRESS:` / `DEFER (<criterion>):` tags when there are ≤2 findings; a four-column table — Finding | Source | Disposition | Rationale — when there are 3+. The orchestrator's recommendation that follows can still propose grouping fixes into this PR vs follow-ups, but every finding has been seen, tagged, and either addressed or justified against the closed list.
 
 **DEFER criteria (closed list).** A finding may be tagged DEFER only when it matches one of:
 
-1. **Orthogonal scope** — addresses code or a concern truly unrelated to this change and not covered by tests already running in this PR's verification.
+1. **Orthogonal scope** — addresses code or a concern truly unrelated to this change and not covered by tests already running in this PR's verification. Not orthogonal if this change touches the code the finding lands in, or if this change is what activates the finding (a new caller reaching a latent bug, a migration that flips a table a bug reads) — those are ADDRESS: scope is set by the bug, not by where the symptom first surfaced.
 2. **Coordinated multi-PR effort, with design-tell test passed** — the fix requires changes across repos, services, or sequenced migrations that exceed this PR's coordination boundary. Before tagging DEFER here, run the design-tell test: if the coordination requirement signals the current PR's design is wrong-shape, re-run Step 1 instead of deferring. If it's pre-existing structural debt, DEFER is valid only when a ticket is filed for the remediation and the issue is surfaced to the human in the recommendation.
 3. **Gold-plating beyond declared user surface** — Step 1's implementation-fitness gate established the user surface and threat model; the finding adds a layer beyond it.
 4. **Contract pinned at another layer** — test coverage suggested for a contract already enforced by another layer's test or invariant.
@@ -288,6 +290,7 @@ Format: inline `ADDRESS:` / `DEFER (<criterion>):` tags when there are ≤2 find
 - **"No correctness impact"** — stale comments, misleading names, and outdated docs cost future readers (often future agent sessions priming on the comment to build context). Mechanical fixes are ADDRESS.
 - **"General skill guidance, not PR scope"** — narrowing the PR boundary to dismiss a finding is scope-shrinking, not disposition. If the guidance has a durable home (header comment, migration note, runbook line in the file), ADDRESS it there.
 - **"Pre-existing gap"** — pre-existing is a fact about the gap's age, not a disposition. A pre-existing gap that closes a correctness or security-invariant hole is ADDRESS; pre-existing alone is not a criterion.
+- **"Small" / "quick" / "cosmetic" / "non-blocking" / "advisory"** — implementation size and merge-blocking severity are not disposition axes. A reviewer's advisory or a one-line cosmetic fix in already-touched, already-tested code is ADDRESS; "it doesn't block merge" is a severity label, not a DEFER criterion.
 
 If you find yourself tagging 3+ findings DEFER in a single review, re-read the criteria — the default is ADDRESS, and a heavy DEFER list is usually a sign the criteria are being stretched.
 
