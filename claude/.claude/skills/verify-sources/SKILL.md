@@ -2,13 +2,12 @@
 name: verify-sources
 description: >
   Confirm claims at the primary source — fetch the official docs, spec, or
-  source directly instead of trusting agent summaries or secondary sources.
-  TRIGGER when: researching or doing web research on a library, API, framework,
-  or architecture/design decision; or acting on a documentation claim from a
-  subagent, blog post, or other secondary source. DO NOT TRIGGER when: you want
-  a full multi-source research report or synthesis (that is a research-harness
-  job, not source verification); quick syntax lookups; error decoding; or when
-  the cited URL is already the primary source.
+  source directly. TRIGGER when: researching a library, API, framework, or
+  architecture/design decision; or acting on a documentation claim from a
+  subagent, blog post, or other secondary source. DO NOT TRIGGER when: you
+  want a multi-source research synthesis (that is a research-harness job, not
+  source verification); quick syntax lookups; error decoding; or when the
+  cited URL is already the primary source.
 user-invocable: true
 ---
 
