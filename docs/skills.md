@@ -25,8 +25,6 @@ Full descriptions for skills, slash commands, and project-scoped plugins in this
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/transcript-analysis`** — reference guidance for the `transcript-analysis.py` toolkit: which subcommand answers which analysis question, how to read `fail-seq` convergence-vs-thrashing output, and the measurement caveats. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/error-handling`** — eight-principle error-handling standard: single code namespace, RFC 9457–derived envelope, developer-only message fields, and call-site anti-patterns. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
-- **`/agent-review`** — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
-- **`/skill-review`** — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
 
 Unlike the four workflow-utility name-only skills (brief, handoff, read-docx-comments, transcript-analysis), error-handling, test-conventions, and sql-query-conventions are knowledge-domain skills kept name-only because their trigger surfaces are too broad to scope reliably — reached by name from the review skills and by `Read` from reviewer agents. `agent-review` and `skill-review` form a third category: dispatcher-reached reviewer skills that carry TRIGGER blocks but are always reached by name from `/code-review` (SKILL.md:241) or the `require-skill-review` hook, never by description auto-trigger.
 
