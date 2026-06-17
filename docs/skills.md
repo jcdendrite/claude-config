@@ -56,9 +56,18 @@ The `skillOverrides` setting controls skill visibility from settings rather than
 
 Source: [Claude Code settings — skillOverrides](https://code.claude.com/docs/en/settings) · [Override skill visibility from settings](https://code.claude.com/docs/en/skills#override-skill-visibility-from-settings).
 
+Note: `skillOverrides` does not apply to plugin skills — plugin visibility is managed via the `/plugin` command and `enabledPlugins` in settings.json.
+
 ## Bundled skills disabled by default
 
-Claude Code ships a set of bundled skills alongside its custom-skill support. Twelve bundled skills are disabled in this repo's `settings.json` via `skillOverrides: "off"`. The reason in each case is either redundancy with a more capable repo-specific skill or low utility relative to the description-budget cost. All skill descriptions contribute to the `skillListingBudgetFraction` context allocation; `/doctor` reports a warning when the budget overflows and descriptions are dropped. The disabled skills freed budget for the always-relevant `user-invocable: false` skills that auto-trigger during the engineering workflow.
+Claude Code ships a set of bundled skills alongside its custom-skill support. Ten bundled skills are disabled in this repo's `settings.json` via `skillOverrides: "off"`, and two (`/loop`, `/simplify`) are set to `name-only` — invokable by name with no description-budget cost. The reason in each case is either redundancy with a more capable repo-specific skill or low utility relative to the description-budget cost. All skill descriptions contribute to the `skillListingBudgetFraction` context allocation; `/doctor` reports a warning when the budget overflows and descriptions are dropped. The disabled skills freed budget for the always-relevant `user-invocable: false` skills that auto-trigger during the engineering workflow.
+
+Two bundled skills are name-only instead of fully disabled — they are available via `/loop` and `/simplify` (or by name from conversation), with descriptions excluded from the listing budget.
+
+| Bundled skill | Why name-only (kept invokable) |
+|---|---|
+| `/loop` | Recurring-interval task automation. Occasionally useful on demand; not part of this repo's review-pipeline workflow, so the description stays out of budget. |
+| `/simplify` | Code simplification. Occasionally useful on demand; `/code-review` covers routine simplification via specialist routing, so the description stays out of budget. |
 
 | Bundled skill | Why disabled |
 |---|---|
@@ -66,12 +75,10 @@ Claude Code ships a set of bundled skills alongside its custom-skill support. Tw
 | `/fewer-permission-prompts` | One-time setup utility; rarely fires in established sessions. |
 | `/init` | One-time setup; CLAUDE.md is already established, and `/init` advice may conflict with repo conventions. |
 | `/keybindings-help` | One-time setup utility; rarely fires in established sessions. |
-| `/loop` | Recurring-interval task automation. Not part of this repo's skill-authoring / review-pipeline workflow. |
 | `/review` | "Review a PR" — superseded by `/code-review` (specialist reviewer routing) and `/ultrareview`. |
 | `/run` | Launches and drives "this project's app" — claude-config is dotfiles, no app to drive. Out of scope. |
 | `/schedule` | Cron-scheduled remote agents (routines). Not part of this repo's skill-authoring / review-pipeline workflow. |
 | `/security-review` | Superseded by `/code-review` specialist routing (ciso-reviewer agent fires automatically). |
-| `/simplify` | Overlaps with `/code-review`, which spins up domain specialists and produces a structured checklist. |
 | `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), `/skill-review` (skill bodies), and `/agent-review` (agent bodies); remaining env/model/theme edits are trivial direct file changes. |
 | `/verify` | Manual-verification skill that drives the app to confirm a change. Same scope mismatch as `/run` — claude-config skills and hooks are verified via `pytest claude/.claude/`. |
 

@@ -10,6 +10,8 @@ Skills in this repo fall into four invocation categories:
   name when referenced in conversation. No TRIGGER discipline required (no
   description to match on). Also slash-invocable by the user. Controlled via
   settings.json, not frontmatter — must NOT carry disable-model-invocation: true.
+  Two bundled Claude Code skills (loop, simplify) use this mode with no repo
+  SKILL.md — see BUILTIN_NAME_ONLY_SKILLS.
 - User-only commands (disable-model-invocation: true): description excluded from
   the listing budget; only the user can invoke via /skill-name. Must be
   registered in COMMAND_SKILLS.
@@ -215,6 +217,21 @@ COMMAND_SKILLS: list[str] = []
 # entries assert TRIGGER block content and must be removed for the exempted skill.
 _NAME_DISPATCHED_NO_TRIGGER: frozenset[str] = frozenset({"skill-review"})
 
+# Bundled Claude Code skills set to skillOverrides: name-only. These skills ship
+# in the Claude Code binary and have no repo SKILL.md by design. Exempted from the
+# three repo-SKILL.md-dependent contracts in TestNameOnlySkillContracts.
+# Note: the test cannot verify that a name here is a genuine bundled skill — a
+# typo'd bundled name in settings is silently ignored by Claude Code rather than
+# erroring; the set-equality test test_builtin_name_only_allowlist_matches_settings
+# below provides the drift guard.
+#
+# Invariant: built-ins never enter _model_invokable_skills() — that function only
+# iterates repo SKILLS_DIR and plugin directories, so loop/simplify (having no
+# SKILLS_DIR entry) are never passed to _skill_description() from that path.
+# budget_excluded membership for them is a no-op but harmless. This is what
+# prevents a FileNotFoundError cascade through the model-invokable test classes.
+BUILTIN_NAME_ONLY_SKILLS: set[str] = {"loop", "simplify"}
+
 
 class TestSpecialistSkillTriggerContracts:
     """TRIGGER / DO NOT TRIGGER contract tests for non-user-invocable skills.
@@ -308,20 +325,43 @@ class TestNameOnlySkillContracts:
     @pytest.mark.parametrize("skill_name", NAME_ONLY_SKILLS)
     def test_name_only_skill_has_skill_file(self, skill_name):
         """name-only skills listed in skillOverrides must have an existing SKILL.md."""
+        if skill_name in BUILTIN_NAME_ONLY_SKILLS:
+            pytest.skip(f"{skill_name!r} is a bundled Claude Code skill — no repo SKILL.md by design")
         skill_path = _skill_file(skill_name)
         assert skill_path.exists(), (
             f"{skill_name} is listed as name-only in skillOverrides but has no "
-            f"SKILL.md at {skill_path}. Remove the skillOverrides entry or create the SKILL.md."
+            f"SKILL.md at {skill_path}. Either: remove the skillOverrides entry, "
+            f"create the SKILL.md, or add to BUILTIN_NAME_ONLY_SKILLS if this is "
+            f"a bundled Claude Code skill with no repo SKILL.md."
         )
 
     @pytest.mark.parametrize("skill_name", NAME_ONLY_SKILLS)
     def test_name_only_skill_does_not_carry_disable_flag(self, skill_name):
         """name-only skills must not carry disable-model-invocation: true."""
+        if skill_name in BUILTIN_NAME_ONLY_SKILLS:
+            pytest.skip(f"{skill_name!r} is a bundled Claude Code skill — no frontmatter to check")
         desc = _skill_description(skill_name)
         assert "disable-model-invocation: true" not in desc, (
             f"{skill_name}/SKILL.md carries disable-model-invocation: true but is also "
             f"set to name-only in skillOverrides. Remove the frontmatter flag — "
             f"skillOverrides: name-only is the single source of truth for invocation control."
+        )
+
+
+    def test_builtin_name_only_allowlist_matches_settings(self):
+        """BUILTIN_NAME_ONLY_SKILLS must exactly match name-only settings entries that have no SKILL.md.
+
+        Fails if:
+        - A bundled skill is added to name-only in settings but omitted from BUILTIN_NAME_ONLY_SKILLS
+        - A BUILTIN_NAME_ONLY_SKILLS entry is no longer name-only in settings
+        - A BUILTIN_NAME_ONLY_SKILLS entry actually has a repo SKILL.md (repo skills use the
+          regular contract and do not belong in the allowlist)
+        """
+        computed = {n for n in _name_only_skills() if not _skill_file(n).exists()}
+        assert computed == BUILTIN_NAME_ONLY_SKILLS, (
+            f"BUILTIN_NAME_ONLY_SKILLS is out of sync with settings.json. "
+            f"In settings (no SKILL.md) but not in allowlist: {computed - BUILTIN_NAME_ONLY_SKILLS!r}. "
+            f"In allowlist but not in settings or has a SKILL.md now: {BUILTIN_NAME_ONLY_SKILLS - computed!r}."
         )
 
 
@@ -667,7 +707,7 @@ def test_skill_overrides_documented_in_docs_skills_md() -> None:
     """Every non-on skillOverride must have a table row in docs/skills.md.
 
     Covers both "off" entries (bundled skills disabled) and "name-only" entries
-    (repo skills available by name without description budget cost). Each must
+    (repo or bundled skills available by name without description budget cost). Each must
     appear as a | `/<name>` | table row so its rationale is visible to contributors.
     """
     repo_root = Path(__file__).resolve().parents[4]
