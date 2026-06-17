@@ -25,14 +25,16 @@ Full descriptions for skills, slash commands, and project-scoped plugins in this
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/transcript-analysis`** — reference guidance for the `transcript-analysis.py` toolkit: which subcommand answers which analysis question, how to read `fail-seq` convergence-vs-thrashing output, and the measurement caveats. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/error-handling`** — eight-principle error-handling standard: single code namespace, RFC 9457–derived envelope, developer-only message fields, and call-site anti-patterns. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
+- **`/agent-review`** — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
+- **`/skill-review`** — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
 
-Unlike the four workflow-utility name-only skills (brief, handoff, read-docx-comments, transcript-analysis), error-handling, test-conventions, and sql-query-conventions are knowledge-domain skills kept name-only because their trigger surfaces are too broad to scope reliably — reached by name from the review skills and by `Read` from reviewer agents.
+Unlike the four workflow-utility name-only skills (brief, handoff, read-docx-comments, transcript-analysis), error-handling, test-conventions, and sql-query-conventions are knowledge-domain skills kept name-only because their trigger surfaces are too broad to scope reliably — reached by name from the review skills and by `Read` from reviewer agents. `agent-review` and `skill-review` form a third category: dispatcher-reached reviewer skills that carry TRIGGER blocks but are always reached by name from `/code-review` (SKILL.md:241) or the `require-skill-review` hook, never by description auto-trigger.
 
 Each skill lives in `claude/.claude/skills/<skill-name>/SKILL.md`. A skill directory may also contain co-located auxiliary files — see architecture notes below for the two distinct roles they play. Skills that primarily apply to this repo's own workflow (editing SKILL.md files, authoring hooks) live as project-scoped plugins instead — see [Project-scoped plugins](#project-scoped-plugins) below.
 
 ## Skills available by name (no description budget cost)
 
-Seven repo skills use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older Claude Code versions (pre-v2.1.129) the override is silently ignored and these skills fall back to `on` (description loaded). The four workflow utilities carry no TRIGGER blocks so auto-trigger is not a concern; the three knowledge-domain skills carry TRIGGER blocks and may fire via description match on older versions.
+Nine skills in this repo use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older Claude Code versions (pre-v2.1.129) the override is silently ignored and these skills fall back to `on` (description loaded). The four workflow utilities carry no TRIGGER blocks so auto-trigger is not a concern; the three knowledge-domain skills and two dispatcher-reached reviewer skills carry TRIGGER blocks and may fire via description match on older versions.
 
 | Skill | Role |
 |---|---|
@@ -43,6 +45,8 @@ Seven repo skills use `skillOverrides: name-only` — the model can invoke them 
 | `/error-handling` | Canonical error-handling standard: code namespace, RFC 9457–derived envelope, developer-only message fields, call-site anti-patterns |
 | `/test-conventions` | Test authoring conventions: pyramid shape, fixture design, naming, regression-test intent; reached by name from code-review and by Read from reviewer agents |
 | `/sql-query-conventions` | Read-path SQL conventions: explicit limits, N+1 avoidance, explicit column selection; reached by name from code-review and by Read from reviewer agents |
+| `/agent-review` | Reviewer audit for agent files (frontmatter, triggers, voice, length); dispatched by `/code-review`, never description-auto-triggered |
+| `/skill-review` | Behavioral-equivalence audit for SKILL.md files (plugin: `skill-management`); dispatched by `/code-review` and enforced by `require-skill-review` hook, never description-auto-triggered |
 
 The `skillOverrides` setting controls skill visibility from settings rather than frontmatter. The four values (Claude Code v2.1.129+):
 
