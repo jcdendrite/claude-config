@@ -54,7 +54,15 @@ _PLUGINS_DIR = SKILLS_DIR.parent.parent.parent / "plugins"
 
 
 def _skill_file(skill_name: str) -> Path:
-    """Locate a SKILL.md by name — stowed skills first, then plugin skills."""
+    """Locate a SKILL.md by name or plugin-qualified name (plugin:skill).
+
+    A bare name searches stowed skills first, then plugin skill directories.
+    A qualified name (containing ':') resolves directly to the named plugin's
+    skills directory — the same form the harness uses in its skill listing.
+    """
+    if ":" in skill_name:
+        plugin_name, bare_name = skill_name.split(":", 1)
+        return _PLUGINS_DIR / plugin_name / "skills" / bare_name / "SKILL.md"
     candidate = SKILLS_DIR / skill_name / "SKILL.md"
     if candidate.exists():
         return candidate
@@ -171,8 +179,13 @@ def _model_invokable_skills() -> list[str]:
                     continue
                 if not (skill_dir / "SKILL.md").exists():
                     continue
-                if skill_dir.name in budget_excluded:
+                qualified_name = f"{plugin_dir.name}:{skill_dir.name}"
+                if skill_dir.name in budget_excluded or qualified_name in budget_excluded:
                     continue
+                # Description fetch uses the bare name — correct for single-plugin repos.
+                # If two plugins ever ship a skill with the same bare name, the first-alphabetically
+                # found plugin's frontmatter would be used. Revisit to pass qualified_name when
+                # a second same-named plugin skill is added.
                 frontmatter = _skill_description(skill_dir.name)
                 if (
                     frontmatter
@@ -301,6 +314,24 @@ class TestNameOnlySkillContracts:
             f"{skill_name}/SKILL.md carries disable-model-invocation: true but is also "
             f"set to name-only in skillOverrides. Remove the frontmatter flag — "
             f"skillOverrides: name-only is the single source of truth for invocation control."
+        )
+
+    @pytest.mark.parametrize("skill_name", NAME_ONLY_SKILLS)
+    def test_plugin_scoped_name_only_key_is_qualified(self, skill_name):
+        """Plugin skills listed in skillOverrides must use the plugin:skill qualified key.
+
+        A bare key for a plugin skill silently no-ops in the harness — the override
+        is never applied and the description stays in the listing budget. Only stowed
+        skills (under claude/.claude/skills/) may use bare keys.
+        """
+        if ":" in skill_name:
+            pytest.skip("already qualified — plugin:skill form is correct; covered by test_name_only_skill_has_skill_file")
+        stowed_path = SKILLS_DIR / skill_name / "SKILL.md"
+        assert stowed_path.exists(), (
+            f"{skill_name!r} is listed as name-only in skillOverrides with a bare key "
+            f"but has no stowed SKILL.md at {stowed_path}. Plugin skills require the "
+            f"qualified 'plugin:skill' key form or the override silently no-ops. "
+            f"Use 'plugin-name:{skill_name}' in skillOverrides."
         )
 
 
@@ -630,9 +661,10 @@ def test_skill_overrides_documented_in_docs_skills_md() -> None:
     for skill_name, state in settings.get("skillOverrides", {}).items():
         if state == "on":
             continue
-        marker = f"| `/{skill_name}` |"
+        slash_name = skill_name.split(":", 1)[-1]  # strips plugin prefix if present; no-op for bare names
+        marker = f"| `/{slash_name}` |"
         assert marker in docs_text, (
             f"skillOverrides has {skill_name!r} ({state!r}) but docs/skills.md has no "
-            f"`{marker}` row. Every non-on skillOverride entry needs a rationale row "
-            "in docs/skills.md."
+            f"`{marker}` row (slash name: /{slash_name}). Every non-on skillOverride entry needs "
+            "a rationale row in docs/skills.md."
         )
