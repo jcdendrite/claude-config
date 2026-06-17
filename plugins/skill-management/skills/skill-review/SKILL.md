@@ -1,13 +1,9 @@
 ---
 name: skill-review
 description: >
-  Audit of SKILL.md files: frontmatter, triggers, voice, length,
-  duplication.
-  TRIGGER when: authoring/reviewing a .claude/skills/**/SKILL.md
-  change, or auditing trigger accuracy across a skill set.
-  DO NOT TRIGGER when: editing CLAUDE.md/AGENTS.md (use
-  ai-instruction-and-memory-files), editing agent files (use
-  agent-review), or reviewing non-skill files.
+  Behavioral-equivalence audit of SKILL.md files (frontmatter, voice,
+  length, duplication). Dispatched by name from /code-review and the
+  require-skill-review hook — not auto-triggered by description.
 user-invocable: false
 ---
 

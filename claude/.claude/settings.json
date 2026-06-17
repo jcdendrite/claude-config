@@ -47,7 +47,6 @@
     "test-conventions": "name-only",
     "sql-query-conventions": "name-only",
     "agent-review": "name-only",
-    "skill-management:skill-review": "name-only",
     "claude-api": "off",
     "fewer-permission-prompts": "off",
     "init": "off",
