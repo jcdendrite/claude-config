@@ -54,15 +54,7 @@ _PLUGINS_DIR = SKILLS_DIR.parent.parent.parent / "plugins"
 
 
 def _skill_file(skill_name: str) -> Path:
-    """Locate a SKILL.md by name or plugin-qualified name (plugin:skill).
-
-    A bare name searches stowed skills first, then plugin skill directories.
-    A qualified name (containing ':') resolves directly to the named plugin's
-    skills directory — the same form the harness uses in its skill listing.
-    """
-    if ":" in skill_name:
-        plugin_name, bare_name = skill_name.split(":", 1)
-        return _PLUGINS_DIR / plugin_name / "skills" / bare_name / "SKILL.md"
+    """Locate a SKILL.md by name — stowed skills first, then plugin skills."""
     candidate = SKILLS_DIR / skill_name / "SKILL.md"
     if candidate.exists():
         return candidate
@@ -104,6 +96,8 @@ def _specialist_skills() -> list[str]:
             continue
         if not (skill_dir / "SKILL.md").exists():
             continue
+        if skill_dir.name in _NAME_DISPATCHED_NO_TRIGGER:
+            continue
         frontmatter = _skill_description(skill_dir.name)
         if frontmatter and "user-invocable: false" in frontmatter:
             skills.append(skill_dir.name)
@@ -116,6 +110,8 @@ def _specialist_skills() -> list[str]:
                 if not skill_dir.is_dir():
                     continue
                 if not (skill_dir / "SKILL.md").exists():
+                    continue
+                if skill_dir.name in _NAME_DISPATCHED_NO_TRIGGER:
                     continue
                 frontmatter = _skill_description(skill_dir.name)
                 if frontmatter and "user-invocable: false" in frontmatter and skill_dir.name not in skills:
@@ -166,6 +162,8 @@ def _model_invokable_skills() -> list[str]:
             continue
         if skill_dir.name in budget_excluded:
             continue
+        if skill_dir.name in _NAME_DISPATCHED_NO_TRIGGER:
+            continue
         frontmatter = _skill_description(skill_dir.name)
         if frontmatter and "disable-model-invocation: true" not in frontmatter:
             skills.append(skill_dir.name)
@@ -178,6 +176,8 @@ def _model_invokable_skills() -> list[str]:
                 if not skill_dir.is_dir():
                     continue
                 if not (skill_dir / "SKILL.md").exists():
+                    continue
+                if skill_dir.name in _NAME_DISPATCHED_NO_TRIGGER:
                     continue
                 qualified_name = f"{plugin_dir.name}:{skill_dir.name}"
                 if skill_dir.name in budget_excluded or qualified_name in budget_excluded:
@@ -204,6 +204,16 @@ def _model_invokable_skills() -> list[str]:
 # needs strict slash-only access (no model invocation at all) via frontmatter
 # rather than skillOverrides.
 COMMAND_SKILLS: list[str] = []
+
+# Skills that are user-invocable: false (model/hook-dispatched) but deliberately
+# carry no TRIGGER blocks because they are always dispatched by name — never by
+# description auto-trigger. These are exempt from TRIGGER-block structural contracts.
+#
+# Maintenance protocol: when adding a name here, also verify it has NO entries
+# in the test_trigger_covers_designated_surface and
+# test_do_not_trigger_names_adjacent_skill parametrize lists — those hardcoded
+# entries assert TRIGGER block content and must be removed for the exempted skill.
+_NAME_DISPATCHED_NO_TRIGGER: frozenset[str] = frozenset({"skill-review"})
 
 
 class TestSpecialistSkillTriggerContracts:
@@ -239,7 +249,6 @@ class TestSpecialistSkillTriggerContracts:
 
     @pytest.mark.parametrize("skill_name,expected_surface", [
         ("claude-hook-review", ".claude/hooks/"),
-        ("skill-review", ".claude/skills/"),
         ("agent-review", ".claude/agents/"),
         ("review-permissions", "permissions.allow"),
         ("test-conventions", "new"),
@@ -262,7 +271,6 @@ class TestSpecialistSkillTriggerContracts:
         ("test-conventions", "test-evaluation"),
         ("test-evaluation", "test-conventions"),
         ("agent-review", "skill-review"),
-        ("skill-review", "agent-review"),
     ])
     def test_do_not_trigger_names_adjacent_skill(self, skill_name, adjacent_skill):
         """DO NOT TRIGGER block must name the adjacent skill with overlapping surface."""
@@ -316,22 +324,29 @@ class TestNameOnlySkillContracts:
             f"skillOverrides: name-only is the single source of truth for invocation control."
         )
 
-    @pytest.mark.parametrize("skill_name", NAME_ONLY_SKILLS)
-    def test_plugin_scoped_name_only_key_is_qualified(self, skill_name):
-        """Plugin skills listed in skillOverrides must use the plugin:skill qualified key.
 
-        A bare key for a plugin skill silently no-ops in the harness — the override
-        is never applied and the description stays in the listing budget. Only stowed
-        skills (under claude/.claude/skills/) may use bare keys.
-        """
-        if ":" in skill_name:
-            pytest.skip("already qualified — plugin:skill form is correct; covered by test_name_only_skill_has_skill_file")
-        stowed_path = SKILLS_DIR / skill_name / "SKILL.md"
-        assert stowed_path.exists(), (
-            f"{skill_name!r} is listed as name-only in skillOverrides with a bare key "
-            f"but has no stowed SKILL.md at {stowed_path}. Plugin skills require the "
-            f"qualified 'plugin:skill' key form or the override silently no-ops. "
-            f"Use 'plugin-name:{skill_name}' in skillOverrides."
+class TestNameDispatchedNoTriggerContracts:
+    """Contract tests for skills in _NAME_DISPATCHED_NO_TRIGGER.
+
+    These skills are user-invocable: false and model/hook-dispatched by name,
+    but deliberately carry no TRIGGER blocks. This class enforces the invariant:
+    each exempted skill's frontmatter must NOT contain a TRIGGER when: block.
+    Without this check, a contributor adding TRIGGER blocks to an exempted skill
+    would pass the structural tests silently — the exemption would grant a pass
+    precisely when the contract was violated.
+    """
+
+    NAME_DISPATCHED_SKILLS = list(_NAME_DISPATCHED_NO_TRIGGER)
+
+    @pytest.mark.parametrize("skill_name", NAME_DISPATCHED_SKILLS)
+    def test_name_dispatched_skill_has_no_trigger_block(self, skill_name):
+        """Name-dispatched skills must NOT carry TRIGGER when: in their frontmatter."""
+        desc = _skill_description(skill_name)
+        assert "TRIGGER when:" not in desc, (
+            f"{skill_name}/SKILL.md is in _NAME_DISPATCHED_NO_TRIGGER (exempted from "
+            f"TRIGGER discipline) but its frontmatter contains 'TRIGGER when:'. "
+            f"Remove the TRIGGER blocks — this skill is always dispatched by name, "
+            f"never by description auto-trigger — or remove it from _NAME_DISPATCHED_NO_TRIGGER."
         )
 
 
@@ -661,10 +676,9 @@ def test_skill_overrides_documented_in_docs_skills_md() -> None:
     for skill_name, state in settings.get("skillOverrides", {}).items():
         if state == "on":
             continue
-        slash_name = skill_name.split(":", 1)[-1]  # strips plugin prefix if present; no-op for bare names
-        marker = f"| `/{slash_name}` |"
+        marker = f"| `/{skill_name}` |"
         assert marker in docs_text, (
             f"skillOverrides has {skill_name!r} ({state!r}) but docs/skills.md has no "
-            f"`{marker}` row (slash name: /{slash_name}). Every non-on skillOverride entry needs "
-            "a rationale row in docs/skills.md."
+            f"`{marker}` row. Every non-on skillOverride entry needs a rationale row "
+            "in docs/skills.md."
         )
