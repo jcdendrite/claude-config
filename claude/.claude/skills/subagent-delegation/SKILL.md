@@ -3,8 +3,8 @@ name: subagent-delegation
 description: >
   Dispatch to a subagent vs inline. TRIGGER when: full
   check suite or full-project verification; broad codebase search;
-  first exploratory read (target unknown); 2nd/3rd Bash command
-  toward same question; delegating implementation; reporting
+  first exploratory read; 2nd/3rd Bash toward same question; delegating
+  implementation; reporting
   check-runner test counts.
   DO NOT TRIGGER when: single targeted lookup; comprehension read
   feeding your own writing/review/design; Edit/Write sequences where
