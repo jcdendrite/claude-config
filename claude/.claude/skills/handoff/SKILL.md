@@ -25,6 +25,13 @@ One sentence: what was being attempted.
 
 ## §2 Status
 done / in-flight / blocked.
+**Handoff reason:** phase-complete | context-limit
+
+## §2.5 Incomplete prerequisites
+
+If this session executed one phase of a multi-phase plan, name the plan and the current phase. Enumerate prerequisite phases that were defined earlier and their completion status. If any are incomplete or unverified, list them here explicitly — do not omit them. If the handoff reason is context-limit, note what was mid-flight: tasks started but unfinished, open tool calls, pending verifications.
+
+If none: write "None."
 
 ## §3 Next concrete step (safe to execute autonomously)
 The exact command, file edit, or question to resume on. No vague "continue the work." Limit this section to reversible steps the resuming agent can execute without re-confirming with the engineer. Move irreversible or shared-state actions to §3.5.
@@ -78,3 +85,5 @@ Before writing the file, verify:
 - You are not claiming "done" for any step whose verification is still pending
 - §7 Resume command names the exact file you are about to write
 - Markers in §5 use the globs `~/.claude/*-markers/` and `~/.claude/.*-active.d/` — not a hardcoded subdir list
+- §2.5 is populated; if any prerequisite phases are incomplete or unverified, they are listed there, not silently omitted
+- If the handoff reason is context-limit, §2.5 names what was mid-flight at the time of the handoff
