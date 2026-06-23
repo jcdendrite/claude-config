@@ -28,6 +28,53 @@ def _write_subagent_jsonl(
     _write_jsonl(subdir / f"{agent_id}.jsonl", records)
 
 
+def _table_cols(out: str, *, header_contains: str, row_contains: str,
+                drop_leading_labels: int = 0,
+                max_labels: int | None = None,
+                row_startswith: bool = False) -> dict[str, str]:
+    """Map column-label -> cell value for the data row matching `row_contains`.
+
+    Anchors column positions to the header row (the line containing
+    `header_contains`) instead of hard-coding indices, so a column reorder in
+    the source output fails meaningfully rather than silently reading the wrong
+    column.
+
+    Precondition: every asserted column's header label AND cell value is a
+    single whitespace token (true for all leading label/count columns; trailing
+    free-text columns like "Top subagent types" are not assertable this way and
+    are not asserted by any test). `drop_leading_labels` lets a caller declare
+    that the row deliberately suppresses N leading left-aligned labels (the only
+    case: cmd_subagents continuation rows blank the Branch column,
+    transcript-analysis.py:688) — declared explicitly per call, never inferred.
+    `max_labels` limits labels to only the first N single-token columns, required
+    for tables whose header contains a trailing multi-word column name (e.g.,
+    cmd_subagent_mix's "Top subagent types") whose tokens would otherwise inflate
+    the label count beyond the data row's token count.
+    `row_startswith=True` matches only lines where `row_contains` appears at
+    column 0, filtering out indented summary/annotation lines that also contain
+    the same text (e.g., cmd_skill_invocation summary section).
+
+    Fails loudly (AssertionError) when exactly one header / data row isn't
+    found, or when token counts don't line up — a silent mismatch would
+    reintroduce the GH-363 bug class under a new cause.
+    """
+    lines = out.splitlines()
+    headers = [ln for ln in lines if header_contains in ln]
+    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
+    header = headers[0]
+    if row_startswith:
+        rows = [ln for ln in lines if ln.startswith(row_contains) and ln != header]
+    else:
+        rows = [ln for ln in lines if row_contains in ln and ln != header]
+    assert len(rows) == 1, f"row match not unique for {row_contains!r}: {len(rows)}"
+    labels = header.split()[drop_leading_labels:]
+    if max_labels is not None:
+        labels = labels[:max_labels]
+    values = rows[0].split()
+    assert len(values) >= len(labels), f"row has fewer cells than labels: {rows[0]!r}"
+    return dict(zip(labels, values, strict=False))
+
+
 def _asst(
     model: str,
     *,
@@ -79,6 +126,63 @@ def fake_projects(tmp_path, monkeypatch):
     proj.mkdir(parents=True)
     monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
     return proj
+
+
+# ---------------------------------------------------------------------------
+# _table_cols self-tests
+# ---------------------------------------------------------------------------
+
+
+class TestTableColsHelper:
+    """Unit tests for the _table_cols helper — verifies the safety properties
+    the refactor depends on."""
+
+    def test_basic_column_lookup(self):
+        out = "Branch Lead Main\nfeat   1    0  \n"
+        cols = _table_cols(out, header_contains="Lead", row_contains="feat")
+        assert cols["Lead"] == "1"
+        assert cols["Main"] == "0"
+
+    def test_drop_leading_labels(self):
+        out = "Branch Thread Opus Sonnet\nmain   main   1    2\n       sidechain 0  1\n"
+        # sidechain row has Branch suppressed — one fewer leading token
+        cols = _table_cols(out, header_contains="Thread", row_contains="sidechain",
+                           drop_leading_labels=1)
+        assert cols["Thread"] == "sidechain"
+        assert cols["Opus"] == "0"
+        assert cols["Sonnet"] == "1"
+
+    def test_row_not_unique_raises(self):
+        out = "Branch Lead\nfeat   1\nfeat   2\n"
+        with pytest.raises(AssertionError, match="not unique"):
+            _table_cols(out, header_contains="Lead", row_contains="feat")
+
+    def test_row_too_few_tokens_raises(self):
+        out = "Branch Lead Main\nfeat   1\n"
+        with pytest.raises(AssertionError, match="fewer cells"):
+            _table_cols(out, header_contains="Lead", row_contains="feat")
+
+    def test_max_labels_excludes_trailing_multiword_header(self):
+        # "Top subagent types" is 3 header tokens but 1 data token (—); max_labels=4
+        # limits to Branch/Sess/Spawns/CR so the assertion len(values)>=len(labels) passes.
+        out = "Branch Sess Spawns CR Top subagent types\nfeat   1    0      2 —\n"
+        cols = _table_cols(out, header_contains="Spawns", row_contains="feat", max_labels=4)
+        assert cols["Spawns"] == "0"
+        assert cols["CR"] == "2"
+
+    def test_row_startswith_excludes_indented_lines(self):
+        # "code-review" appears at column 0 in the data row and indented in the summary.
+        out = "skill  top-level user-slash\ncode-review  1  0\n  code-review (1 top)\n"
+        cols = _table_cols(out, header_contains="user-slash", row_contains="code-review",
+                           row_startswith=True)
+        assert cols["top-level"] == "1"
+        assert cols["user-slash"] == "0"
+
+    def test_header_not_unique_raises(self):
+        # Two lines both contain "Lead" → header ambiguity must raise, not silently pick one.
+        out = "Bin Lead Main\n2026-W20 1 0\nLead row duplicate 0 1\n"
+        with pytest.raises(AssertionError, match="not unique"):
+            _table_cols(out, header_contains="Lead", row_contains="2026-W20")
 
 
 # ---------------------------------------------------------------------------
@@ -389,12 +493,12 @@ class TestSubagentMix:
         args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
         _mod.cmd_subagent_mix(args)
         out = capsys.readouterr().out
-        # CR=2, PR=1, RR=1 — column order is Sess | Spawns | CR | PR | RR
-        lines = [ln for ln in out.splitlines() if ln.startswith("feat")]
-        assert len(lines) == 1
-        cols = lines[0].split()
-        # cols: ['feat', '1', '0', '2', '1', '1', ...]
-        assert cols[2:6] == ["0", "2", "1", "1"]
+        # CR=2, PR=1, RR=1; max_labels=6 excludes the trailing multi-word "Top subagent types" column
+        cols = _table_cols(out, header_contains="Spawns", row_contains="feat", max_labels=6)
+        assert cols["Spawns"] == "0"
+        assert cols["CR"] == "2"
+        assert cols["PR"] == "1"
+        assert cols["RR"] == "1"
 
     def test_legacy_task_tool_name_also_counted(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -489,14 +593,11 @@ class TestSkillPair:
         ])
         _mod.cmd_skill_pair(_skill_pair_args())
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
-        assert len(lines) == 1
-        cols = lines[0].split()
-        # cols: ['2026-W20', lead, main, side, pair%]
-        assert cols[1] == "1"   # Lead=1
-        assert cols[2] == "0"   # Main=0
-        assert cols[3] == "0"   # Side=0
-        assert "0.0%" in cols[4]
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert cols["Lead"] == "1"
+        assert cols["Main"] == "0"
+        assert cols["Side"] == "0"
+        assert "0.0%" in cols["Pair%"]
 
     def test_leader_plus_main_follower_counted(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -509,12 +610,10 @@ class TestSkillPair:
         ])
         _mod.cmd_skill_pair(_skill_pair_args())
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
-        assert len(lines) == 1
-        cols = lines[0].split()
-        assert cols[1] == "1"   # Lead=1
-        assert cols[2] == "1"   # Main=1
-        assert "100.0%" in cols[4]
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert cols["Lead"] == "1"
+        assert cols["Main"] == "1"
+        assert "100.0%" in cols["Pair%"]
 
     def test_leader_plus_sidechain_only_follower(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -527,12 +626,10 @@ class TestSkillPair:
         ])
         _mod.cmd_skill_pair(_skill_pair_args())
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
-        assert len(lines) == 1
-        cols = lines[0].split()
-        assert cols[1] == "1"   # Lead=1
-        assert cols[2] == "0"   # Main=0 (no main-thread follower)
-        assert cols[3] == "1"   # Side=1
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert cols["Lead"] == "1"
+        assert cols["Main"] == "0"  # no main-thread follower
+        assert cols["Side"] == "1"
 
     def test_both_main_and_sidechain_follower_counts_main_only(self, fake_projects, capsys):
         """Session with both main and sidechain follower hits counts in Main, NOT Side."""
@@ -549,11 +646,9 @@ class TestSkillPair:
         ])
         _mod.cmd_skill_pair(_skill_pair_args())
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
-        assert len(lines) == 1
-        cols = lines[0].split()
-        assert cols[2] == "1"   # Main=1
-        assert cols[3] == "0"   # Side=0 (sidechain-only requires no main hit)
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert cols["Main"] == "1"
+        assert cols["Side"] == "0"  # sidechain-only requires no main hit
 
     def test_multiple_leader_hits_count_as_one_session(self, fake_projects, capsys):
         """Three leader invocations in one session → Lead=1, not 3."""
@@ -566,9 +661,8 @@ class TestSkillPair:
         ])
         _mod.cmd_skill_pair(_skill_pair_args())
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
-        assert len(lines) == 1
-        assert lines[0].split()[1] == "1"   # Lead=1
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert cols["Lead"] == "1"
 
     def test_iso_week_boundary_sunday_vs_monday(self, fake_projects, capsys):
         """Leader on Sun 23:59:59 UTC → W20; leader on Mon 00:00:01 UTC → W21."""
@@ -609,10 +703,9 @@ class TestSkillPair:
         # Only match the first project dir
         _mod.cmd_skill_pair(_skill_pair_args(projects="-home-user-testrepo"))
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
-        assert len(lines) == 1
         # Only 1 leader session (the included project)
-        assert lines[0].split()[1] == "1"
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert cols["Lead"] == "1"
 
     def test_exclude_projects_glob_omits_matching_dir(self, fake_projects, capsys):
         """Project dirs matching --exclude-projects are skipped even when also matching --projects=*."""
@@ -640,10 +733,9 @@ class TestSkillPair:
         # fake_projects itself has no sessions for this test; use exclude on the eval dir
         _mod.cmd_skill_pair(_skill_pair_args(exclude_projects="-tmp-claude-eval-*"))
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
-        assert len(lines) == 1
         # Only 1 session from the normal project; eval sessions excluded
-        assert lines[0].split()[1] == "1"
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert cols["Lead"] == "1"
 
     def test_branches_filter_excludes_other_branch(self, fake_projects, capsys):
         """With --branches=branch-a, only sessions on branch-a contribute."""
@@ -662,11 +754,9 @@ class TestSkillPair:
         ])
         _mod.cmd_skill_pair(_skill_pair_args(branches="branch-a"))
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
-        assert len(lines) == 1
-        cols = lines[0].split()
-        assert cols[1] == "1"   # Lead=1 (branch-a only)
-        assert cols[2] == "1"   # Main=1 (follower on branch-a)
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert cols["Lead"] == "1"  # branch-a only
+        assert cols["Main"] == "1"  # follower on branch-a
 
 
 # ---------------------------------------------------------------------------
@@ -771,15 +861,11 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        # Default output: bin(0) sessions(1) turns(2) skill-inv(3) skill/1k(4) commits(5)
-        #                 w-skill(6) wo-skill(7) no-verify(8)
         # 1 session, 0 commits, 1 skill invocation; rate = 1000/1 = 1000.0
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[1] == "1"    # sessions
-        assert int(cols[5]) == 0  # commits
-        assert int(cols[3]) == 1  # skill-inv
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["sessions"] == "1"
+        assert int(cols["commits"]) == 0
+        assert int(cols["skill-inv"]) == 1
 
     def test_commit_after_skill_is_gated(self, fake_projects, capsys):
         """Skill invocation before commit in same session → commits-with-prior-skill = 1."""
@@ -792,15 +878,11 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        # Default: bin(0) sessions(1) turns(2) skill-inv(3) skill/1k(4) commits(5)
-        #          w-skill(6) wo-skill(7) no-verify(8)
-        assert cols[5] == "1"   # commits
-        assert cols[6] == "1"   # w-skill
-        assert cols[7] == "0"   # wo-skill
-        assert cols[8] == "0"   # no-verify
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["commits"] == "1"
+        assert cols["w-skill"] == "1"
+        assert cols["wo-skill"] == "0"
+        assert cols["no-verify"] == "0"
 
     def test_commit_before_skill_is_ungated(self, fake_projects, capsys):
         """Commit before any skill invocation → commits-without-prior-skill = 1."""
@@ -813,12 +895,10 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[5] == "1"   # commits
-        assert cols[6] == "0"   # w-skill
-        assert cols[7] == "1"   # wo-skill
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["commits"] == "1"
+        assert cols["w-skill"] == "0"
+        assert cols["wo-skill"] == "1"
 
     def test_two_commits_one_skill_between_consumes_only_first(self, fake_projects, capsys):
         """Skill between two commits: first commit is gated, second is not (skill consumed)."""
@@ -833,12 +913,10 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[5] == "2"   # commits
-        assert cols[6] == "1"   # w-skill (second commit, after skill)
-        assert cols[7] == "1"   # wo-skill (first commit, no prior skill)
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["commits"] == "2"
+        assert cols["w-skill"] == "1"  # second commit, after skill
+        assert cols["wo-skill"] == "1"  # first commit, no prior skill
 
     def test_no_verify_counted_in_commits_and_no_verify_but_not_gated(self, fake_projects, capsys):
         """git commit --no-verify after /code-review: counted in commits + no-verify, NOT in w-skill."""
@@ -851,13 +929,11 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[5] == "1"   # commits total
-        assert cols[6] == "0"   # w-skill (bypass is NOT credited as gated)
-        assert cols[7] == "1"   # wo-skill
-        assert cols[8] == "1"   # no-verify
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["commits"] == "1"
+        assert cols["w-skill"] == "0"  # bypass is NOT credited as gated
+        assert cols["wo-skill"] == "1"
+        assert cols["no-verify"] == "1"
 
     def test_amend_counted_as_commit(self, fake_projects, capsys):
         """git commit --amend is counted in the commits total."""
@@ -868,10 +944,8 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[5] == "1"   # commits
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["commits"] == "1"
 
     def test_git_commit_tree_not_counted(self, fake_projects, capsys):
         """git commit-tree must NOT match the commit regex (trailing word boundary)."""
@@ -882,10 +956,8 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[5] == "0"   # commits — commit-tree must not be counted
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["commits"] == "0"  # commit-tree must not be counted
 
     def test_sidechain_skill_not_counted(self, fake_projects, capsys):
         """A /code-review call inside a sidechain record must not credit the main thread."""
@@ -898,12 +970,10 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[3] == "0"   # skill-invocations: sidechain skill not counted
-        assert cols[6] == "0"   # w-skill: sidechain skill must not gate the commit
-        assert cols[7] == "1"   # wo-skill
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["skill-inv"] == "0"  # sidechain skill not counted
+        assert cols["w-skill"] == "0"    # sidechain skill must not gate the commit
+        assert cols["wo-skill"] == "1"
 
     def test_skill_name_exact_match_plugin_prefix_not_matched(self, fake_projects, capsys):
         """'skill-management:skill-review' does NOT match commit-gate skill-review (byte-equal)."""
@@ -916,11 +986,9 @@ class TestCommitGate:
         args = _gate_args("skill-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[3] == "0"   # skill-invocations: plugin-prefixed name must not match
-        assert cols[6] == "0"   # w-skill
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["skill-inv"] == "0"  # plugin-prefixed name must not match
+        assert cols["w-skill"] == "0"
 
     def test_same_record_skill_before_commit_is_gated(self, fake_projects, capsys):
         """Within one assistant record, Skill block at lower index than Bash → commit is gated."""
@@ -934,11 +1002,9 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[6] == "1"   # w-skill
-        assert cols[7] == "0"   # wo-skill
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["w-skill"] == "1"
+        assert cols["wo-skill"] == "0"
 
     def test_same_record_commit_before_skill_is_ungated(self, fake_projects, capsys):
         """Within one assistant record, Bash block at lower index than Skill → commit is ungated."""
@@ -952,11 +1018,9 @@ class TestCommitGate:
         args = _gate_args("code-review")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        cols = data_lines[0].split()
-        assert cols[6] == "0"   # w-skill
-        assert cols[7] == "1"   # wo-skill
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert cols["w-skill"] == "0"
+        assert cols["wo-skill"] == "1"
 
     def test_by_permission_mode_splits_auto_and_default(self, fake_projects, capsys):
         """Two sessions, one with permissionMode 'auto', one without → two rows per bin."""
@@ -974,9 +1038,10 @@ class TestCommitGate:
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
         data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        modes = [ln.split()[1] for ln in data_lines]
-        assert "auto" in modes
-        assert "default" in modes
+        # Verify both mode values appear; use column-value membership (not positional
+        # split-index) so a future column insertion doesn't silently read the wrong field.
+        assert any("auto" in ln.split() for ln in data_lines), "expected an 'auto' mode row"
+        assert any("default" in ln.split() for ln in data_lines), "expected a 'default' mode row"
 
     def test_by_permission_mode_sparse_picks_first_carrying_record(self, fake_projects, capsys):
         """permissionMode on a mid-session record (not the first) is still discovered."""
@@ -1044,9 +1109,8 @@ class TestCommitGate:
         args = _gate_args("code-review", projects="-home-user-testrepo")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        assert int(data_lines[0].split()[1]) == 1   # only 1 session
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert int(cols["sessions"]) == 1  # only 1 session
 
     def test_exclude_projects_omits_matching_dir(self, fake_projects, capsys):
         """--exclude-projects glob removes matching dirs even if --projects would include them."""
@@ -1061,9 +1125,8 @@ class TestCommitGate:
         args = _gate_args("code-review", exclude_projects="-tmp-claude-eval-*")
         _mod.cmd_commit_gate(args)
         out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        assert int(data_lines[0].split()[1]) == 1   # only the non-excluded session
+        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
+        assert int(cols["sessions"]) == 1  # only the non-excluded session
 
     def test_branches_filter_skips_sessions_with_no_matching_branch(self, fake_projects, capsys):
         """--branches filter: sessions whose main-thread records are all on other branches are skipped."""
@@ -1087,9 +1150,9 @@ class TestCommitGate:
         args2 = _gate_args("code-review", branches="feat-a")
         _mod.cmd_commit_gate(args2)
         out2 = capsys.readouterr().out
-        data_lines2 = [ln for ln in out2.splitlines() if "2026-W" in ln]
         # Still only 1 session (feat-b-only session excluded)
-        assert int(data_lines2[0].split()[1]) == 1
+        cols2 = _table_cols(out2, header_contains="sessions", row_contains="2026-W")
+        assert int(cols2["sessions"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1503,14 +1566,16 @@ def _audit_routing_args(
 
 def _extract_corpus_class_tokens(out: str, cls: str) -> int:
     """Parse output-token value for a class from the corpus aggregate section."""
+    # Locate the header to anchor the column index for "Output tokens".
+    # "Output" is the unique leading word of the "Output tokens" column.
+    header_line = next((ln for ln in out.splitlines() if "Class" in ln and "Output tokens" in ln), None)
+    out_idx = header_line.split().index("Output") if header_line else 1
     for line in out.splitlines():
         stripped = line.strip()
         if stripped.startswith(cls):
             parts = stripped.split()
-            # Format: "class-name  output_tokens  cache_read_tokens"
-            # Output tokens come after the class name (may have commas)
-            if len(parts) >= 2:
-                return int(parts[1].replace(",", ""))
+            if len(parts) > out_idx:
+                return int(parts[out_idx].replace(",", ""))
     return 0
 
 
@@ -1778,11 +1843,9 @@ class TestHandoffRatio:
         assert "Handoffs" in out
         assert "Compactions" in out
         # Totals row: 2 handoffs, 2 compactions, 50% ratio.
-        total_line = [ln for ln in out.splitlines() if ln.startswith("Total")]
-        assert total_line
-        parts = total_line[0].split()
-        assert int(parts[1]) == 2, f"Expected 2 handoffs in Total row, got: {total_line[0]!r}"
-        assert int(parts[2]) == 2, f"Expected 2 compactions in Total row, got: {total_line[0]!r}"
+        cols = _table_cols(out, header_contains="Handoffs", row_contains="Total")
+        assert int(cols["Handoffs"]) == 2, "Expected 2 handoffs in Total row"
+        assert int(cols["Compactions"]) == 2, "Expected 2 compactions in Total row"
         assert "50.0%" in out
 
     def test_handoff_ratio_empty_corpus_no_divide_by_zero(self, fake_projects, capsys):
@@ -1810,12 +1873,9 @@ class TestHandoffRatio:
         out = capsys.readouterr().out
         # Only the new session (handoff) should appear; old compaction excluded.
         assert "Handoffs" in out
-        total_line = [ln for ln in out.splitlines() if ln.startswith("Total")]
-        assert total_line
-        # Total row: "Total  <handoffs>  <compactions>  <ratio%>"
-        parts = total_line[0].split()
-        assert int(parts[1]) == 1, f"Expected 1 handoff in Total row, got: {total_line[0]!r}"
-        assert int(parts[2]) == 0, f"Expected 0 compactions in Total row, got: {total_line[0]!r}"
+        cols = _table_cols(out, header_contains="Handoffs", row_contains="Total")
+        assert int(cols["Handoffs"]) == 1, "Expected 1 handoff in Total row"
+        assert int(cols["Compactions"]) == 0, "Expected 0 compactions in Total row"
 
 
 # ---------------------------------------------------------------------------
@@ -1850,6 +1910,7 @@ def _audit_routing_shape_args(
 def _extract_shape_d1(out: str, bucket: str) -> tuple[int, int]:
     """Parse (turn_count, output_tokens) for a D1 bucket from audit-routing-shape output."""
     in_d1 = False
+    header_line: str | None = None
     for line in out.splitlines():
         stripped = line.strip()
         if "D1" in stripped and "Files Read" in stripped:
@@ -1857,16 +1918,24 @@ def _extract_shape_d1(out: str, bucket: str) -> tuple[int, int]:
             continue
         if in_d1 and stripped.startswith("###"):
             break
+        if in_d1 and "Bucket" in stripped and "Turns" in stripped:
+            header_line = stripped
+            continue
         if in_d1 and stripped.startswith(bucket):
             parts = stripped.split()
-            if len(parts) >= 3:
-                return int(parts[1].replace(",", "")), int(parts[2].replace(",", ""))
+            # Anchor Turns and Output tokens columns by the header row.
+            # "Output" is the unique leading word of the "Output tokens" column.
+            turns_idx = header_line.split().index("Turns") if header_line else 1
+            out_idx = header_line.split().index("Output") if header_line else turns_idx + 1
+            if len(parts) > out_idx:
+                return int(parts[turns_idx].replace(",", "")), int(parts[out_idx].replace(",", ""))
     return 0, 0
 
 
 def _extract_shape_d2(out: str, bucket: str) -> tuple[int, int]:
     """Parse (streak_count, output_tokens) for a D2 bucket from audit-routing-shape output."""
     in_d2 = False
+    header_line: str | None = None
     for line in out.splitlines():
         stripped = line.strip()
         if "D2" in stripped and "streak" in stripped.lower():
@@ -1874,16 +1943,24 @@ def _extract_shape_d2(out: str, bucket: str) -> tuple[int, int]:
             continue
         if in_d2 and stripped.startswith("###"):
             break
+        if in_d2 and "Bucket" in stripped and "Streaks" in stripped:
+            header_line = stripped
+            continue
         if in_d2 and stripped.startswith(bucket):
             parts = stripped.split()
-            if len(parts) >= 3:
-                return int(parts[1].replace(",", "")), int(parts[2].replace(",", ""))
+            # Anchor Streaks and Output tokens columns by the header row.
+            # "Output" is the unique leading word of the "Output tokens" column.
+            streaks_idx = header_line.split().index("Streaks") if header_line else 1
+            out_idx = header_line.split().index("Output") if header_line else streaks_idx + 1
+            if len(parts) > out_idx:
+                return int(parts[streaks_idx].replace(",", "")), int(parts[out_idx].replace(",", ""))
     return 0, 0
 
 
 def _extract_shape_d3(out: str, case: str) -> tuple[int, int]:
     """Parse (turn_count, output_tokens) for a D3 case from audit-routing-shape output."""
     in_d3 = False
+    header_line: str | None = None
     for line in out.splitlines():
         stripped = line.strip()
         if "D3" in stripped and "Read-then-edit" in stripped:
@@ -1893,16 +1970,24 @@ def _extract_shape_d3(out: str, case: str) -> tuple[int, int]:
             break
         if in_d3 and stripped.startswith("####"):
             break
+        if in_d3 and "Case" in stripped and "Turns" in stripped:
+            header_line = stripped
+            continue
         if in_d3 and stripped.startswith(case):
             parts = stripped.split()
-            if len(parts) >= 3:
-                return int(parts[1].replace(",", "")), int(parts[2].replace(",", ""))
+            # Anchor Turns and Output tokens columns by the header row.
+            # "Output" is the unique leading word of the "Output tokens" column.
+            turns_idx = header_line.split().index("Turns") if header_line else 1
+            out_idx = header_line.split().index("Output") if header_line else turns_idx + 1
+            if len(parts) > out_idx:
+                return int(parts[turns_idx].replace(",", "")), int(parts[out_idx].replace(",", ""))
     return 0, 0
 
 
 def _extract_shape_d3_xtab(out: str, case: str, bucket: str) -> tuple[int, int]:
     """Parse (turn_count, output_tokens) for a D3 × D1 cross-tab cell."""
     in_xtab = False
+    header_line: str | None = None
     for line in out.splitlines():
         stripped = line.strip()
         if "D3 × D1 cross-tab" in stripped or "D3 x D1 cross-tab" in stripped.lower():
@@ -1910,11 +1995,17 @@ def _extract_shape_d3_xtab(out: str, case: str, bucket: str) -> tuple[int, int]:
             continue
         if in_xtab and (stripped.startswith("###") or stripped.startswith("Dispatchable")):
             break
+        if in_xtab and "Case" in stripped and "Turns" in stripped:
+            header_line = stripped
+            continue
         if in_xtab and stripped.startswith(case) and bucket in stripped:
             parts = stripped.split()
-            # Format: case  bucket  turns  tokens
-            if len(parts) >= 4:
-                return int(parts[2].replace(",", "")), int(parts[3].replace(",", ""))
+            # "D1 bucket" is a 2-token header name but maps to 1 data token (e.g. "2-3").
+            # header.split().index("Turns") = 3, but the data-row Turns value is at position 2;
+            # subtract 1 to correct for the header's extra token from the multi-word column.
+            turns_idx = header_line.split().index("Turns") - 1 if header_line else 2
+            if len(parts) > turns_idx + 1:
+                return int(parts[turns_idx].replace(",", "")), int(parts[turns_idx + 1].replace(",", ""))
     return 0, 0
 
 
@@ -2852,11 +2943,8 @@ class TestCmdStruggle:
         # The output table should include "feat" with at least one struggle signal.
         assert "feat" in out, "branch not found in output"
         # Parse the data row for "feat": columns are Branch Opus Sonnet Haiku Other Unknown
-        data_lines = [ln for ln in out.splitlines() if ln.startswith("feat")]
-        assert len(data_lines) == 1, f"expected one data row for 'feat', got: {data_lines}"
-        cols = data_lines[0].split()
-        # cols[0]=branch, cols[1]=opus, cols[2]=sonnet, cols[3]=haiku, cols[4]=other, cols[5]=unknown
-        total_signals = sum(int(c) for c in cols[1:])
+        cols = _table_cols(out, header_contains="Opus", row_contains="feat")
+        total_signals = sum(int(cols[k]) for k in ["Opus", "Sonnet", "Haiku", "Other", "Unknown"])
         assert total_signals == 1, (
             f"expected exactly 1 struggle signal (from 'hallucinated', not from 'stale cache'); got cols={cols}"
         )
@@ -2932,17 +3020,11 @@ class TestSkillInvocation:
         _write_jsonl(fake_projects / "s1.jsonl", [asst_rec])
         out = self._run(capsys)
         assert "code-review" in out
-        # Top-level column should be ≥1; find the data row for code-review
-        for line in out.splitlines():
-            if line.startswith("code-review"):
-                parts = line.split()
-                # Format: skill top-level routed user-slash total
-                assert int(parts[1]) >= 1, f"expected top-level ≥1, got: {line!r}"
-                assert int(parts[2]) == 0, f"expected routed=0, got: {line!r}"
-                assert int(parts[3]) == 0, f"expected slash=0, got: {line!r}"
-                break
-        else:
-            pytest.fail("code-review data row not found in output")
+        # Top-level column should be ≥1
+        cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
+        assert int(cols["top-level"]) >= 1, f"expected top-level ≥1, got: {cols}"
+        assert int(cols["routed"]) == 0, f"expected routed=0, got: {cols}"
+        assert int(cols["user-slash"]) == 0, f"expected slash=0, got: {cols}"
 
     def test_routed_invocation_counted(self, fake_projects, capsys):
         """Assistant record with Skill tool_use AND attributionSkill → counted as routed."""
@@ -2965,14 +3047,9 @@ class TestSkillInvocation:
         asst_rec["attributionSkill"] = "plan-it"
         _write_jsonl(fake_projects / "s3.jsonl", [asst_rec])
         out = self._run(capsys)
-        for line in out.splitlines():
-            if line.startswith("plan-review"):
-                parts = line.split()
-                assert int(parts[1]) == 0, f"expected top-level=0, got: {line!r}"
-                assert int(parts[2]) >= 1, f"expected routed≥1, got: {line!r}"
-                break
-        else:
-            pytest.fail("plan-review data row not found in output")
+        cols = _table_cols(out, header_contains="user-slash", row_contains="plan-review", row_startswith=True)
+        assert int(cols["top-level"]) == 0, f"expected top-level=0, got: {cols}"
+        assert int(cols["routed"]) >= 1, f"expected routed≥1, got: {cols}"
 
     def test_slash_invocation_counted(self, fake_projects, capsys):
         """User record whose content contains <command-name>/plan-it</command-name> → user-slash count."""
@@ -2982,14 +3059,10 @@ class TestSkillInvocation:
         )
         _write_jsonl(fake_projects / "s4.jsonl", [user_rec])
         out = self._run(capsys)
-        # plan-it must appear in the table
+        # plan-it must appear in the table; slash column should be ≥1
         assert "plan-it" in out
-        # The slash column for plan-it should be ≥1
-        for line in out.splitlines():
-            if line.startswith("plan-it"):
-                parts = line.split()
-                assert int(parts[3]) >= 1, f"expected slash≥1, got: {line!r}"
-                break
+        cols = _table_cols(out, header_contains="user-slash", row_contains="plan-it", row_startswith=True)
+        assert int(cols["user-slash"]) >= 1, f"expected slash≥1, got: {cols}"
 
     def test_sidechain_excluded(self, fake_projects, capsys):
         """Sidechain assistant records are not counted in any bucket."""
@@ -3107,16 +3180,10 @@ class TestSkillInvocation:
         ])
         _write_jsonl(fake_projects / "s_multi_skill.jsonl", [rec])
         out = self._run(capsys)
-        found_code_review = found_plan_review = False
-        for line in out.splitlines():
-            if line.startswith("code-review"):
-                found_code_review = True
-                assert int(line.split()[1]) == 1, f"code-review top-level count should be 1: {line!r}"
-            if line.startswith("plan-review"):
-                found_plan_review = True
-                assert int(line.split()[1]) == 1, f"plan-review top-level count should be 1: {line!r}"
-        assert found_code_review, "code-review data row not found in output"
-        assert found_plan_review, "plan-review data row not found in output"
+        cr_cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
+        assert int(cr_cols["top-level"]) == 1, f"code-review top-level count should be 1: {cr_cols}"
+        pr_cols = _table_cols(out, header_contains="user-slash", row_contains="plan-review", row_startswith=True)
+        assert int(pr_cols["top-level"]) == 1, f"plan-review top-level count should be 1: {pr_cols}"
 
     def test_multiple_slash_tags_in_one_user_record(self, fake_projects, capsys):
         """Two <command-name> tags in a single user record → both skill names counted in slash column."""
@@ -3126,16 +3193,10 @@ class TestSkillInvocation:
         )
         _write_jsonl(fake_projects / "s_multi_slash.jsonl", [user_rec])
         out = self._run(capsys)
-        found_plan_it = found_code_review = False
-        for line in out.splitlines():
-            if line.startswith("plan-it"):
-                found_plan_it = True
-                assert int(line.split()[3]) >= 1, f"plan-it slash count should be ≥1: {line!r}"
-            if line.startswith("code-review"):
-                found_code_review = True
-                assert int(line.split()[3]) >= 1, f"code-review slash count should be ≥1: {line!r}"
-        assert found_plan_it, "plan-it data row not found in output"
-        assert found_code_review, "code-review data row not found in output"
+        pi_cols = _table_cols(out, header_contains="user-slash", row_contains="plan-it", row_startswith=True)
+        assert int(pi_cols["user-slash"]) >= 1, f"plan-it slash count should be ≥1: {pi_cols}"
+        cr_cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
+        assert int(cr_cols["user-slash"]) >= 1, f"code-review slash count should be ≥1: {cr_cols}"
 
     def test_slash_detection_with_list_form_user_content(self, fake_projects, capsys):
         """User record whose content is a list-of-blocks → slash command still detected via _content_text."""
@@ -3151,10 +3212,8 @@ class TestSkillInvocation:
         _write_jsonl(fake_projects / "s_list_content.jsonl", [user_rec])
         out = self._run(capsys)
         assert "plan-it" in out
-        for line in out.splitlines():
-            if line.startswith("plan-it"):
-                assert int(line.split()[3]) >= 1, f"plan-it slash count should be ≥1: {line!r}"
-                break
+        cols = _table_cols(out, header_contains="user-slash", row_contains="plan-it", row_startswith=True)
+        assert int(cols["user-slash"]) >= 1, f"plan-it slash count should be ≥1: {cols}"
 
     def test_mixed_top_and_routed_in_same_session(self, fake_projects, capsys):
         """A session with both top-level and routed calls for the same skill tallies both columns."""
@@ -3164,15 +3223,10 @@ class TestSkillInvocation:
         routed_rec["attributionSkill"] = "ready-for-review"
         _write_jsonl(fake_projects / "s10.jsonl", [top_rec, routed_rec])
         out = self._run(capsys)
-        for line in out.splitlines():
-            if line.startswith("code-review"):
-                parts = line.split()
-                assert int(parts[1]) == 1, f"expected top-level=1, got: {line!r}"
-                assert int(parts[2]) == 1, f"expected routed=1, got: {line!r}"
-                assert int(parts[4]) == 2, f"expected total=2, got: {line!r}"
-                break
-        else:
-            pytest.fail("code-review data row not found in output")
+        cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
+        assert int(cols["top-level"]) == 1, f"expected top-level=1, got: {cols}"
+        assert int(cols["routed"]) == 1, f"expected routed=1, got: {cols}"
+        assert int(cols["total"]) == 2, f"expected total=2, got: {cols}"
 
     def test_sidechain_user_records_excluded_from_slash(self, fake_projects, capsys):
         """User records with isSidechain=True are not scanned for slash invocations."""
@@ -3199,12 +3253,8 @@ class TestSkillInvocation:
         out = self._run(capsys)
         assert "code-review" in out, "main-thread slash should be counted"
         assert "plan-review" not in out, "sidechain slash should be excluded"
-        for line in out.splitlines():
-            if line.startswith("code-review"):
-                assert int(line.split()[3]) == 1, f"expected slash=1, got: {line!r}"
-                break
-        else:
-            pytest.fail("code-review data row not found in output")
+        cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
+        assert int(cols["user-slash"]) == 1, f"expected slash=1, got: {cols}"
 
     def test_multiple_skill_blocks_on_routed_record(self, fake_projects, capsys):
         """An attributed record with two Skill tool_use blocks counts both as routed, not top-level."""
@@ -3215,20 +3265,12 @@ class TestSkillInvocation:
         rec["attributionSkill"] = "ready-for-review"
         _write_jsonl(fake_projects / "s_multi_routed.jsonl", [rec])
         out = self._run(capsys)
-        found_code_review = found_plan_review = False
-        for line in out.splitlines():
-            if line.startswith("code-review"):
-                found_code_review = True
-                parts = line.split()
-                assert int(parts[1]) == 0, f"code-review top-level should be 0: {line!r}"
-                assert int(parts[2]) == 1, f"code-review routed should be 1: {line!r}"
-            if line.startswith("plan-review"):
-                found_plan_review = True
-                parts = line.split()
-                assert int(parts[1]) == 0, f"plan-review top-level should be 0: {line!r}"
-                assert int(parts[2]) == 1, f"plan-review routed should be 1: {line!r}"
-        assert found_code_review, "code-review data row not found in output"
-        assert found_plan_review, "plan-review data row not found in output"
+        cr_cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
+        assert int(cr_cols["top-level"]) == 0, f"code-review top-level should be 0: {cr_cols}"
+        assert int(cr_cols["routed"]) == 1, f"code-review routed should be 1: {cr_cols}"
+        pr_cols = _table_cols(out, header_contains="user-slash", row_contains="plan-review", row_startswith=True)
+        assert int(pr_cols["top-level"]) == 0, f"plan-review top-level should be 0: {pr_cols}"
+        assert int(pr_cols["routed"]) == 1, f"plan-review routed should be 1: {pr_cols}"
 
     def test_cross_project_aggregation(self, tmp_path, monkeypatch, capsys):
         """Default glob aggregates counts across multiple project directories."""
@@ -3245,12 +3287,8 @@ class TestSkillInvocation:
         args = argparse.Namespace(projects="*")
         _mod.cmd_skill_invocation(args)
         out = capsys.readouterr().out
-        for line in out.splitlines():
-            if line.startswith("code-review"):
-                assert int(line.split()[1]) == 2, f"expected 2 top-level from both projects: {line!r}"
-                break
-        else:
-            pytest.fail("code-review data row not found in output")
+        cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
+        assert int(cols["top-level"]) == 2, f"expected 2 top-level from both projects: {cols}"
 
 
 # ---------------------------------------------------------------------------
@@ -3366,19 +3404,18 @@ class TestSubagents:
         ])
         _mod.cmd_subagents(_subagents_args(branches="test-branch"))
         out = capsys.readouterr().out
-        main_lines = [ln for ln in out.splitlines() if "main" in ln]
-        sidechain_lines = [ln for ln in out.splitlines() if "sidechain" in ln]
-        assert main_lines, "expected a main row in output"
-        assert sidechain_lines, "expected a sidechain row in output"
+        assert any("main" in ln for ln in out.splitlines()), "expected a main row in output"
+        assert any("sidechain" in ln for ln in out.splitlines()), "expected a sidechain row in output"
         # Verify actual counts: 1 opus main turn, 1 sonnet sidechain turn.
-        # main row format: branch thread opus sonnet haiku other
-        main_cols = main_lines[0].split()
-        assert main_cols[2] == "1", "expected 1 opus main turn"
-        assert main_cols[3] == "0", "expected 0 sonnet main turns"
-        # sidechain row: branch label absent on second row → thread opus sonnet haiku other
-        sidechain_cols = sidechain_lines[0].split()
-        assert sidechain_cols[1] == "0", "expected 0 opus sidechain turns"
-        assert sidechain_cols[2] == "1", "expected 1 sonnet sidechain turn"
+        # main row: Branch label present → drop_leading_labels=0
+        main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert main_cols["Opus"] == "1", "expected 1 opus main turn"
+        assert main_cols["Sonnet"] == "0", "expected 0 sonnet main turns"
+        # sidechain row: Branch label absent on second row → drop_leading_labels=1
+        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain",
+                                     drop_leading_labels=1)
+        assert sidechain_cols["Opus"] == "0", "expected 0 opus sidechain turns"
+        assert sidechain_cols["Sonnet"] == "1", "expected 1 sonnet sidechain turn"
 
     def test_branch_filter_still_applies_to_output(self, fake_projects, capsys):
         """Branch filter limits the output rows even with split subagent files."""
@@ -3417,12 +3454,10 @@ class TestSkillPairSubagentFile:
         ])
         _mod.cmd_skill_pair(_skill_pair_args())
         out = capsys.readouterr().out
-        lines = [ln for ln in out.splitlines() if "2026-W20" in ln]
-        assert len(lines) == 1
-        cols = lines[0].split()
-        assert cols[1] == "1"   # Lead=1
-        assert cols[2] == "0"   # Main=0
-        assert cols[3] == "1"   # Side=1
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert cols["Lead"] == "1"
+        assert cols["Main"] == "0"
+        assert cols["Side"] == "1"
 
 
 # ---------------------------------------------------------------------------
