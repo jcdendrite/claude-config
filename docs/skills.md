@@ -128,13 +128,15 @@ Three skills that primarily apply to this repo's own workflow — editing `SKILL
 | `claude-hook-review@claude-config` | Review playbook for `.claude/hooks/*.sh` scripts and `settings.json` hook entries | Repos that author their own hook scripts |
 | `plugin-semver@claude-config` | Semver and version-field discipline for plugin manifests | Repos that author Claude Code plugins for a marketplace |
 
-All three plugins are enabled automatically in claude-config sessions via `enabledPlugins` in `.claude/settings.json`. For this to work, the claude-config marketplace must be registered on the machine:
+A fourth plugin, `lovable-cloud@claude-config`, also lives in `plugins/` but is not part of this repo's authoring workflow — it provides skills for downstream Lovable project repos rather than for contributors to claude-config itself.
+
+Each plugin is installed per-project via `claude plugin install`. For this to work, the claude-config marketplace must be registered on the machine:
 
 ```bash
 claude plugin marketplace add ~/MyCode/claude-config   # adjust to your actual checkout path
 ```
 
-Then Claude Code will resolve the plugins from the project settings. To install any plugin in a downstream project:
+Then Claude Code will resolve the plugins from the marketplace. To install any plugin in a downstream project:
 
 ```bash
 claude plugin install skill-management@claude-config --scope project
