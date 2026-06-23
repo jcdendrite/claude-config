@@ -190,8 +190,7 @@ _lib_chains_marker_write_before_commit() {
 }
 
 # Single source of truth for read-only git subcommands. Sourced by
-# require-worktree-for-git-writes.sh and check-runner-bash-guard.sh.
-# Edit this list; both consumers transitively pick up the change.
+# require-worktree-for-git-writes.sh.
 _LIB_READONLY_GIT_SUBCMDS=(
   blame
   branch           # "git branch" lists; creating/deleting takes flags

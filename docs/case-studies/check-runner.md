@@ -78,10 +78,26 @@ The Claude Code harness already truncates Bash tool output at 30 KB (30,720 byte
 
 What check-runner still does that the harness truncation does not: the harness preview is the *first* 2 KB of output — for a test run, the startup banner, not the failures, which land at the end — and learning pass/fail from it takes a follow-up `Read` or `grep` of the persisted file at the parent's model rate. check-runner returns a *curated* verdict — per-command pass/fail plus the failure *tail* — and handles the output on haiku. The decision: keep check-runner, justified as a signal-quality and verdict-ergonomics tool. Framing it as a token-cost optimization is not supported by the data.
 
+This verdict did not hold — see ## Retirement (2026-06-23) below.
+
 ## Sources
 
-- **`claude/.claude/agents/check-runner.md`** — the agent definition: `tools: Bash` only, `maxTurns: 20`, the checks-only charter, the cwd-anchoring rule, and the one-call-per-command spool protocol.
-- **`claude/.claude/hooks/check-runner-bash-guard.sh`** and **`_lib.sh`** (`_lib_readonly_git_subcmds`) — the git-write guard and its shared 32-entry read-only allowlist; wired via `settings.json` `PreToolUse(Bash)` with internal `agent_type: check-runner` discrimination (agent-frontmatter `hooks:` do not fire for Agent-spawned subagents; `settings.json` is the live path).
-- **`claude/.claude/CLAUDE.md`** "Heavy command output" — the dispatch contract: the parent must pass an absolute working directory and must not enumerate setup commands.
+- **`claude/.claude/agents/check-runner.md`** — the agent definition (now deleted): `tools: Bash` only, `maxTurns: 20`, the checks-only charter, the cwd-anchoring rule, and the one-call-per-command spool protocol.
+- **`claude/.claude/hooks/check-runner-bash-guard.sh`** and **`_lib.sh`** (`_lib_readonly_git_subcmds`) — the git-write guard and its shared 32-entry read-only allowlist (now deleted); was wired via `settings.json` `PreToolUse(Bash)` with internal `agent_type: check-runner` discrimination (agent-frontmatter `hooks:` do not fire for Agent-spawned subagents; `settings.json` was the live path).
+- **`claude/.claude/CLAUDE.md`** "Heavy command output" — the dispatch contract (now updated to inline-run guidance): the parent must pass an absolute working directory and must not enumerate setup commands.
 - Claude Code Bash-tool output truncation at 30 KB, with overflow persisted to a `tool-results/` file and a ~2 KB `<persisted-output>` preview returned in context — observed harness behavior, measured 2026-05-22; subject to change across Claude Code versions.
 - Transcript-corpus measurement — inline test-run output sizes, 30 KB-truncation incidence, and the absence of any large-result-to-compaction correlation; ad hoc scans of the local session JSONL logs, complementing `claude/.claude/scripts/transcript-analysis.py`.
+
+## Retirement (2026-06-23)
+
+A follow-on measurement (649 sessions, 2026-05-22 – 2026-06-23, via `transcript-analysis.py subagent-mix`) settled whether the verdict-ergonomics justification held empirically.
+
+**Inline runs never flood context.** 953 parent inline check runs in the corpus: median output 117 chars, p90 2 KB, p99 9 KB, max 24.5 KB — no run hit the 30 KB harness-truncation threshold, only 1.3% exceeded 8 KB. The context flood the design appeared to prevent was already prevented by the harness on every observed run.
+
+**Verdict ergonomics realized in ~67% of dispatches.** 784 total dispatches; 571 post-dispatch-id-contract (PR #351). Of those, 67% were clean (no follow-up), but 13% the parent re-ran the exact delegated command inline, 11% read the spool afterward, 22% re-ran some check inline, and 4% produced explicit distrust language. The dispatch-id contract showed no improvement (pre→post: clean 70%→67%, spool-read 8.5%→11%, distrust 2.8%→4%). The "clean" majority were green runs whose inline output is a ~117-char "passed" line the verdict does not undercut.
+
+**Misbehavior persisted post-hardening.** Anchored distrust samples from all six post-hardening months: "analyzed instead of running", "keeps returning confused output", "modified the migration file instead of just running checks", "didn't produce a new spool. Dispatching again". The model-agency failure class Incidents 1–6 targeted remained live.
+
+Decision: retire. The parent now runs checks inline via the parent Bash tool. The harness truncation handles the rare large suite; the failure tail is visible directly with no spool or follow-up read. The live agent, hook wiring (`check-runner-bash-guard.sh`), and dispatch-id contract are deleted. The `transcript-analysis.py` corpus tooling retains check-runner recognition for historical sessions.
+
+Resolves jcdendrite/claude-config#352.

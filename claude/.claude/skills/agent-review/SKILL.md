@@ -58,7 +58,7 @@ DO NOT TRIGGER when: <obvious misfire>; <adjacent agent or skill's surface>; <ou
 
 **DO NOT TRIGGER carries equal weight.** Over-broad triggers dispatch the agent into turns its system prompt can't help with; over-narrow leaves it dormant. Name the adjacent agents and skills whose surfaces overlap.
 
-**Executor-style carve-out.** Invocation-context agents whose description names a single dispatch shape — e.g., `check-runner` ("Use proactively for any suite-level run") — may use narrower trigger language than routed reviewers. Do not relax trigger discipline for routed reviewer agents (`staff-*`, `ciso-reviewer`); their dispatcher matches on description shape and they fire across many surfaces.
+**Executor-style carve-out.** Invocation-context agents whose description names a single dispatch shape — e.g., `code-writer` ("dispatch for delegated code changes") — may use narrower trigger language than routed reviewers. Do not relax trigger discipline for routed reviewer agents (`staff-*`, `ciso-reviewer`); their dispatcher matches on description shape and they fire across many surfaces.
 
 ## 3. Voice and structure
 
@@ -115,7 +115,7 @@ If not all three hold, point at the canonical source.
 
 2. **Description scope** — the description's TRIGGER list matches what the system prompt actually covers. An overpromising description dispatches the agent into work it can't do.
 
-3. **Trigger specificity** — TRIGGER conditions use file globs or action verbs, not vague context cues alone. **Executor-style exemption:** invocation-context agents (`check-runner`) may use narrower trigger language; do not relax for routed reviewer agents (`staff-*`, `ciso-reviewer`).
+3. **Trigger specificity** — TRIGGER conditions use file globs or action verbs, not vague context cues alone. **Executor-style exemption:** invocation-context agents (`code-writer`) may use narrower trigger language; do not relax for routed reviewer agents (`staff-*`, `ciso-reviewer`).
 
 4. **DO NOT TRIGGER coverage** — adjacent-agent and adjacent-skill surfaces are named explicitly; verify every domain-adjacent agent and skill appears.
 
@@ -123,7 +123,7 @@ If not all three hold, point at the canonical source.
 
 6. **`maxTurns` integer validation** — `maxTurns: 20`, not `maxTurns: "20"`. Strings are silently ignored; the cap will not apply.
 
-7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing". Reviewer, code-writing, and specialist agents pin `model: sonnet`; `check-runner` pins `model: haiku`; routinely-dispatched subagents do not pin `opus`.
+7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing". Reviewer, code-writing, and specialist agents pin `model: sonnet`; routinely-dispatched subagents do not pin `opus`.
 
 8. **Length** — under the 200-line target. Flag anything that drifts past 200 (and especially past 300) without a load-bearing reason.
 

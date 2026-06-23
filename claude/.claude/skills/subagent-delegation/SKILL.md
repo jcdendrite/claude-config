@@ -4,8 +4,7 @@ description: >
   Dispatch to a subagent vs inline. TRIGGER when: full
   check suite or full-project verification; broad codebase search;
   first exploratory read; 2nd/3rd Bash toward same question; delegating
-  implementation; reporting
-  check-runner test counts.
+  implementation.
   DO NOT TRIGGER when: single targeted lookup; comprehension read
   feeding your own writing/review/design; Edit/Write sequences where
   scope or content is still forming; output requiring line-by-line
@@ -62,87 +61,32 @@ adds no permission prompts and needs no `permissions.allow` entries.
 
 ## Step 2 — Pick the right subagent
 
-### Heavy command output → `check-runner`
+### Heavy command output — run inline
 
-Use the `Agent` tool with `subagent_type: check-runner` to run the
-checks (full test suites, lint, typecheck, build) — not `Bash` in the
-parent directly.
+Run check commands (test suites, lint, typecheck, build) directly via the
+parent's Bash tool. Do not delegate them to a subagent.
 
-- **Enumerate the exact command strings in the dispatch prompt** (e.g.
-  "Run these commands: `pytest claude/.claude/`, `ruff check
-  claude/.claude/`") — not "run the checks" or "run the suite".
-- **The dispatch prompt must include the absolute working directory**
-  (e.g. `Working directory: /absolute/path/to/worktree`). check-runner
-  has no guaranteed cwd; directory-sensitive commands run from the
-  wrong tree produce misleading failures.
-- **Do not enumerate setup or state-mutating commands** in the list —
-  db resets, migrations, container start/stop, seed scripts, package
-  installs — perform setup yourself before dispatching.
-- Commands scoped to a single test file or single test name during
-  interactive debugging can stay inline.
-- **Generate a dispatch-id per invocation and include it in the prompt**
-  as `dispatch-id: <uuid>` (one line, hex token from any UUID generator
-  — `uuidgen`, `python3 -c "import uuid; print(uuid.uuid4())"`, etc.).
-  The agent uses it as the spool filename prefix and echoes it back in
-  the verdict, so the parent can both verify the verdict's origin and
-  locate the spool unambiguously if needed.
+The Claude Code harness truncates Bash output at 30 KB — an inline heavy run
+costs the parent ~2 KB of context, not the full suite output. In practice,
+check suites almost never approach that limit, so the failure tail is visible
+directly in the parent's context with no follow-up read.
 
-The subagent writes full output to
-`${TMPDIR:-/tmp}/<dispatch-id>-<command-slug>-<epoch-ms>.txt` and returns
-a structured verdict plus the file paths; the parent reads the file for
-more detail rather than re-running.
+- **Enumerate check commands and run them one at a time** (e.g., `pytest
+  claude/.claude/`, then `ruff check claude/.claude/`) or as a single chained
+  command when they share a working directory.
+- **Set an explicit working directory** before running — always run from an
+  absolute path you've anchored with `cd` or `Bash(cd ... && ...)`.
+- **Setup and state-mutating commands run inline too** (db resets, migrations,
+  container start/stop, seed scripts, package installs). There is no charter
+  boundary that requires splitting setup from checks.
+- Commands scoped to a single test file or single test name during interactive
+  debugging also stay inline.
 
-**Reporting test counts.** check-runner's verdict carries no test
-counts and no per-sub-suite breakdown — on a passing run it surfaces
-nothing but exit codes. To tell the user how many tests passed, or a
-per-type breakdown, do not quote a number from the verdict or state one
-from memory — `grep` the spool file for the runner's own summary lines
-(e.g. `grep -E '(Test Files|Tests|passed|failed)' <spool>`) and quote
-those. A `grep` over the full spool recovers every sub-suite's verbatim
-totals in a few dozen lines — context-cheap, unlike reading the whole
-spool back.
-
-**Doubting the verdict.** If a check-runner return looks unusual —
-structure off, prose where a structured verdict was expected, or fix
-prescriptions the charter forbids — the recovery is to `cat` the spool,
-not re-run the command in the parent. The dispatch-id you emitted makes
-locating the spool deterministic: `ls "${TMPDIR:-/tmp}/<dispatch-id>"-*.txt`
-matches exactly the files this dispatch wrote — a UUID prefix is globally
-unique, so prior sessions' spools cannot share it. Verify the
-agent's verdict echoed back the same dispatch-id you sent — a mismatch
-(or absence) is the unambiguous signal that the verdict text is not from
-your dispatch. Re-running the command in the parent inhales the output
-back into context, defeating the dispatch; the verdict you doubted often
-turns out to be the agent having partially completed its job.
-
-**A lock your session holds never blocks a subagent you dispatch.** A
-subagent (Task/Agent tool) inherits the parent's `session_id`: to any
-hook or single-instance-resource guard keyed on session identity, a
-dispatched `check-runner` is the *same* session, not a competing one.
-Holding such a lock is therefore never a reason to run a check suite
-inline — dispatch `check-runner` as normal; its same-session calls
-clear the guard. Only a genuinely separate concurrent `claude` process
-counts as a different session. Do not pre-emptively skip the dispatch
-on a guess that the subagent will be blocked — if one ever genuinely
-is, it surfaces as the `HOOK_BLOCK` verdict handled just below.
-
-**BLOCKED check handling.** If the subagent reports a check was
-`BLOCKED`, do NOT fall back to running it directly in the parent — that
-defeats the dispatch (parent context inhales the output) and silently
-bypasses the gate that stopped it. Branch on the `block_type` the
-verdict carries:
-
-- `SETTINGS_DENIAL` — a missing or declined permission rule. Before
-  recommending an allow-rule, confirm an existing rule does not already
-  cover the command (don't propose a dead rule). Surface the exact rule
-  needed — exact-match, not a glob, e.g. `Bash(npm run verify)` — and
-  wait for the user to pre-approve it in the appropriate scope's
-  `permissions.allow` or run the command themselves.
-- `HOOK_BLOCK` — a PreToolUse hook blocked the call; this is not a
-  settings gap. Diagnose from the hook's verbatim stderr in the
-  verdict; do not add an allow-rule.
-- `UNKNOWN_BLOCK` — surface the verbatim message and ask the user; an
-  interactive-prompt decline can land here. Do not guess a remediation.
+If a suite's output exceeds 30 KB (rare — e.g., a very large vitest output),
+the harness persists the full output to a `tool-results/` file and returns a
+~2 KB preview (the *first* 2 KB, usually the startup banner). In that case,
+`grep` the persisted file for the runner's own summary lines to find pass/fail
+and counts — do not re-run the suite.
 
 ### Codebase discovery → `Explore` or `general-purpose`
 

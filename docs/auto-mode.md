@@ -142,7 +142,6 @@ follows:
 |---|---|---|
 | `Explore` | Haiku | Pinned by Claude Code; read-only search |
 | `staff-*`, `ciso-reviewer` | Sonnet | `model: sonnet` frontmatter in `~/.claude/agents/` |
-| `check-runner` | Haiku | `model: haiku` frontmatter |
 | `code-writer` | Sonnet | `model: sonnet` frontmatter |
 | `general-purpose` | **Opus (inherited)** | No model of its own — falls through to the parent |
 
@@ -157,10 +156,9 @@ unconditional: always dispatch `general-purpose` with an explicit `model`. See
 the Model Routing section of the global `CLAUDE.md`.
 
 Do **not** reach for `CLAUDE_CODE_SUBAGENT_MODEL` to solve this. It sits at
-resolution step 1 and overrides *every* subagent's model — including
-`check-runner`'s deliberate Haiku pin and the `staff-*` reviewers' Sonnet pin.
-The per-dispatch `model` parameter is the targeted instrument; the env var is a
-blunt global hammer.
+resolution step 1 and overrides *every* subagent's model — including the
+`staff-*` reviewers' Sonnet pin. The per-dispatch `model` parameter is the
+targeted instrument; the env var is a blunt global hammer.
 
 ## Inspection and tuning
 

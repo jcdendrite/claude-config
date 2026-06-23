@@ -186,7 +186,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 ### Agents
 
-Three agent types ship in `claude/.claude/agents/`:
+Two agent types ship in `claude/.claude/agents/`:
 
 **Reviewer subagents** — eight stack-agnostic personas spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with tools `Read`, `Grep`, `Glob`, `Bash`, `Write`; all write structured findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` when dispatched with `findings_path:` and return only a pointer line inline.
 
@@ -202,8 +202,6 @@ Three agent types ship in `claude/.claude/agents/`:
 Schema-change diffs nominally route three ways — `staff-backend-engineer` (designs), `staff-data-engineer` (operational / pipeline impact, DDL shape), `staff-analytics-engineer` (ELT-readiness). Trigger discipline in the skill bodies prevents three-persona fire on trivial additive changes. The decision criteria for adding, splitting, or excluding a persona — including why DBRE, data platform engineer, and data steward are deliberately not in the roster — are in [docs/design-decisions.md §3](docs/design-decisions.md#3-specialist-reviewer-roster-8-personas).
 
 For guidance on extending, splitting, or spawning personas, see [design-decisions.md §9](docs/design-decisions.md#9-reviewer-persona-roster-operations).
-
-**`check-runner`** — a non-reviewer Haiku agent that runs test suites and returns structured pass/fail verdicts. Dispatched by the parent via the `Agent` tool; see `claude/.claude/CLAUDE.md` "Heavy command output". Constrained to `tools: Bash` only and capped at `maxTurns: 20`; its checks-only charter and the reasoning behind every constraint are in `docs/design-decisions.md` §10.
 
 **`code-writer`** — a non-reviewer Sonnet agent that implements delegated code changes and self-reviews its own diff before returning, verifying it against the relevant `staff-*` reviewer angles so review-finding-class defects are caught in its own context rather than as a parent round-trip. Dispatched by the parent in place of `general-purpose` for code-writing; see `claude/.claude/CLAUDE.md` "Model Routing" and `docs/design-decisions.md` §11.
 

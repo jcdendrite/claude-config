@@ -4,6 +4,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ## [Unreleased]
 
+### Removed
+
+- **Retired `check-runner` agent.** Transcript-corpus measurement (649 sessions, 784 dispatches) showed neither the context-cost nor verdict-ergonomics justification holds. Parent runs checks inline. Removes the agent, `check-runner-bash-guard.sh` hook, and dispatch-id contract. See `docs/case-studies/check-runner.md#retirement`.
+
 ### Added
 
 - **`skill-management` self-provisions `pyyaml`** — plugin bumped to 2.1.0; a `SessionStart` hook installs `pyyaml` into a persistent venv at `${CLAUDE_PLUGIN_DATA}/venv` on first session and after manifest changes, and the commit-time hook prefers that venv's `python` (falling back to system `python3`). Consumers no longer need to run `python3 -m pip install pyyaml` after installing the plugin.
