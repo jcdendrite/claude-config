@@ -63,3 +63,5 @@ python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only
 # Review activity in a date window (e.g. before vs after a skill landed)
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --since 2026-01-01 --until 2026-03-31
 ```
+
+For narrative case studies and annotated timelines built on top of these metrics, use `transcript-narrative`.
