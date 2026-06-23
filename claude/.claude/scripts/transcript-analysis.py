@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """transcript-analysis.py — Claude Code transcript analysis toolkit.
-No writes; pr-link is the only subcommand that touches the network (via gh).
+pr-link is the only subcommand that touches the network (via gh).
+judgment-pair --out writes a file; all other subcommands are read-only.
 """
 
 import argparse
@@ -84,6 +85,33 @@ def _content_text(content) -> str:
     if isinstance(content, list):
         return " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
     return ""
+
+
+def _is_fresh_user_prompt(rec: dict) -> bool:
+    """Return True iff rec is a genuine new user message (not a tool result or injected record).
+
+    Filters out:
+    - Records that are not type=="user"
+    - Sidechain records (isSidechain=True)
+    - Meta-injected records (isMeta=True)
+    - Compaction summary records (isCompactSummary=True)
+    - Tool-result-bearing records (content is a list with any block whose type=="tool_result")
+    - Records with empty text content
+    """
+    if rec.get("type") != "user":
+        return False
+    if rec.get("isSidechain"):
+        return False
+    if rec.get("isMeta"):
+        return False
+    if rec.get("isCompactSummary"):
+        return False
+    content = (rec.get("message") or {}).get("content", "")
+    if isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+    ):
+        return False
+    return bool(_content_text(content).strip())
 
 
 def _pretty_tool_call(tool_call: dict) -> str:
@@ -912,6 +940,166 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 print(f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  id={uid}  msg={msg!r}")
             elif kind == "reviewer-spawn":
                 print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}")
+
+
+def cmd_judgment_pair(args: argparse.Namespace) -> None:
+    """Emit (review-skill output, user response) pairs from sessions containing review invocations.
+
+    For each matching Skill invocation in a session:
+    - REVIEW OUTPUT: the last main-thread assistant turn with non-empty text in the
+      window between the invocation and the next fresh user prompt (or next matching
+      invocation, whichever comes first).
+    - USER RESPONSE: the first fresh user prompt text after that window closes.
+
+    Uses _is_fresh_user_prompt() to skip tool-result turns, isMeta injections,
+    and isCompactSummary injections when locating the user response.
+    """
+    projects_glob = _projects_glob(args)
+    branch_filter = _branch_filter(args)
+
+    since_str: str | None = getattr(args, "since", None) or None
+    until_str: str | None = getattr(args, "until", None) or None
+    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
+    until_epoch: float | None = None
+    if until_str:
+        day_start = _parse_ts(f"{until_str}T00:00:00Z")
+        if day_start is not None:
+            until_epoch = day_start + 86400
+
+    skills_arg: str = getattr(args, "skills", None) or ",".join(REVIEW_SKILLS)
+    skill_set: set[str] = {s for s in skills_arg.split(",") if s}
+    truncate_chars: int = getattr(args, "truncate_chars", 1000) or 1000
+    out_path: str | None = getattr(args, "out", None) or None
+
+    output_blocks: list[str] = []
+
+    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+        # Determine session branch from first main-thread record with a gitBranch.
+        session_branch = ""
+        for rec in records:
+            if not bool(rec.get("isSidechain")):
+                b = rec.get("gitBranch") or ""
+                if b:
+                    session_branch = b
+                    break
+
+        if branch_filter and session_branch not in branch_filter:
+            continue
+
+        proj_label = _derive_proj_label(jsonl)
+        session_id_prefix = jsonl.stem[:8]
+
+        for rec_idx, rec in enumerate(records):
+            line_no = rec_idx + 1  # 1-based line number for output
+
+            # Detect matching skill invocation: main-thread assistant with Skill tool_use
+            # whose input.skill is in the target set.
+            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+                continue
+            content_blocks = (rec.get("message") or {}).get("content") or []
+            inv_skill: str | None = None
+            for block in content_blocks:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") != "Skill":
+                    continue
+                skill_name = (block.get("input") or {}).get("skill") or ""
+                if skill_name in skill_set:
+                    inv_skill = skill_name
+                    break
+            if inv_skill is None:
+                continue
+
+            inv_ts_str: str | None = rec.get("timestamp")
+            inv_ts_epoch: float | None = _parse_ts(inv_ts_str)
+
+            # Apply date filter to invocation timestamp.
+            if since_ts is not None or until_epoch is not None:
+                if inv_ts_epoch is None:
+                    continue
+                if since_ts is not None and inv_ts_epoch < since_ts:
+                    continue
+                if until_epoch is not None and inv_ts_epoch >= until_epoch:
+                    continue
+
+            # Scan forward to find window_end: the minimum of
+            #   (a) the index of the next fresh user prompt, and
+            #   (b) the index of the next matching skill invocation after this one.
+            # window_end is exclusive (records[rec_idx+1 : window_end]).
+            window_end = len(records)
+            found_boundary = False
+            for scan_idx in range(rec_idx + 1, len(records)):
+                scan_rec = records[scan_idx]
+                # Bound (a): next fresh user prompt closes the window.
+                if _is_fresh_user_prompt(scan_rec):
+                    window_end = scan_idx
+                    found_boundary = True
+                    break
+                # Bound (b): next matching skill invocation closes the window.
+                if scan_rec.get("type") == "assistant" and not bool(scan_rec.get("isSidechain")):
+                    scan_content = (scan_rec.get("message") or {}).get("content") or []
+                    for scan_block in scan_content:
+                        if not isinstance(scan_block, dict) or scan_block.get("type") != "tool_use":
+                            continue
+                        if scan_block.get("name") != "Skill":
+                            continue
+                        scan_skill = (scan_block.get("input") or {}).get("skill") or ""
+                        if scan_skill in skill_set:
+                            window_end = scan_idx
+                            found_boundary = True
+                            break
+                    if found_boundary:
+                        break
+
+            # REVIEW OUTPUT: last main-thread assistant turn with non-empty text in the window.
+            review_text = ""
+            for window_rec in records[rec_idx + 1 : window_end]:
+                if window_rec.get("type") != "assistant" or bool(window_rec.get("isSidechain")):
+                    continue
+                candidate_text = _content_text(
+                    (window_rec.get("message") or {}).get("content", "")
+                ).strip()
+                if candidate_text:
+                    review_text = candidate_text
+
+            # USER RESPONSE: the fresh user prompt at window_end (if it is one).
+            if window_end < len(records) and _is_fresh_user_prompt(records[window_end]):
+                user_response_text = _content_text(
+                    (records[window_end].get("message") or {}).get("content", "")
+                ).strip()
+            else:
+                user_response_text = "(no user response — end of session)"
+
+            # Format the output block.
+            date_label = _fmt_date(inv_ts_epoch) if inv_ts_epoch is not None else "?"
+            if review_text:
+                review_display = review_text[:truncate_chars] + "…" if len(review_text) > truncate_chars else review_text
+            else:
+                review_display = "(no review text found)"
+
+            block = (
+                f"### {proj_label} · {session_id_prefix} · {date_label}\n"
+                f"Skill: {inv_skill}  (line {line_no})\n"
+                f"\n"
+                f"--- REVIEW OUTPUT (truncated to {truncate_chars} chars) ---\n"
+                f"{review_display}\n"
+                f"\n"
+                f"--- USER RESPONSE ---\n"
+                f"{user_response_text}\n"
+                f"---"
+            )
+            output_blocks.append(block)
+
+    if not output_blocks:
+        print("No judgment pairs found.")
+        return
+
+    output_text = "\n\n".join(output_blocks)
+
+    if out_path:
+        Path(out_path).write_text(output_text + "\n")
+    else:
+        print(output_text)
 
 
 def cmd_skill_invocation(args: argparse.Namespace) -> None:
@@ -2377,6 +2565,38 @@ def main() -> None:
         help="Restrict skill-invocation matching to one skill name.",
     )
     p_review_trace.set_defaults(func=cmd_review_trace)
+
+    p_jp = sub.add_parser(
+        "judgment-pair",
+        help=(
+            "Extract (review-skill output, user response) pairs from sessions"
+            " where a review skill was invoked."
+        ),
+    )
+    p_jp.add_argument("--projects", default="*", metavar="GLOB")
+    p_jp.add_argument("--branches", metavar="B1,B2,...")
+    p_jp.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
+    p_jp.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
+    p_jp.add_argument(
+        "--skills",
+        metavar="SKILL1,SKILL2,...",
+        default=",".join(REVIEW_SKILLS),
+        help=f"Comma-separated skill names to match (default: {','.join(REVIEW_SKILLS)}).",
+    )
+    p_jp.add_argument(
+        "--truncate-chars",
+        type=int,
+        default=1000,
+        metavar="N",
+        help="Maximum characters for the review output block (default: 1000).",
+    )
+    p_jp.add_argument(
+        "--out",
+        metavar="PATH",
+        default=None,
+        help="Write output to this file instead of stdout.",
+    )
+    p_jp.set_defaults(func=cmd_judgment_pair)
 
     p_audit = sub.add_parser(
         "audit-routing",

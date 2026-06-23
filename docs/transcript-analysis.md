@@ -2,7 +2,7 @@
 
 `transcript-analysis.py` is an analysis toolkit for Claude Code transcripts at `~/.claude/projects/*/*.jsonl`. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
 
-All subcommands are local-only reads except `pr-link`, which calls `gh`. No subcommand writes to disk.
+All subcommands are local-only reads except `pr-link` (calls `gh`) and `judgment-pair --out` (writes to a specified file). No other subcommand writes to disk.
 
 For question-driven routing ("which subcommand answers X?"), use the `/transcript-analysis` skill. This page is the per-subcommand reference: flags, output shape, and when to reach for each one.
 
@@ -280,6 +280,39 @@ branch=my-feature  model=opus  skills=3  denials=1  reviewer-spawns=4
 ```
 
 **When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read.
+
+---
+
+## judgment-pair
+
+**Purpose.** Extract `(review-skill output, user response)` pairs from sessions where a review skill was invoked. For each matching skill invocation, locates the last main-thread assistant text turn before the next user prompt or next invocation (whichever comes first), then captures the first genuine user reply after that window. Tool-result turns, `isMeta` injections, and `isCompactSummary` records are automatically skipped when searching for the user response.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`, all projects)
+- `--branches B1,B2,...` — filter to specific branches
+- `--since DATE` — inclusive start date (`YYYY-MM-DD`)
+- `--until DATE` — inclusive end date (`YYYY-MM-DD`)
+- `--skills SKILL1,SKILL2,...` — comma-separated skill names to match (default: `code-review,plan-review,ready-for-review`)
+- `--truncate-chars N` — maximum characters for the review output block (default: 1000)
+- `--out PATH` — write output to this file instead of stdout
+
+**Sample output.**
+```
+### my-project · abc12345 · 2026-05-20
+Skill: code-review  (line 42)
+
+--- REVIEW OUTPUT (truncated to 1000 chars) ---
+The auth middleware bypasses rate limiting when the `X-Internal` header is
+present. Any caller who can set that header gains unrestricted access. The
+header check should be restricted to requests originating from the internal
+load balancer, validated by IP, not by header value alone.
+
+--- USER RESPONSE ---
+Good catch. I'll add IP-range validation before trusting that header.
+---
+```
+
+**When to reach for it.** Surface sessions where the human pushed back on, accepted, or acted on a review skill's output. Use as a dataset for evaluating review quality — look at what the user said immediately after the AI review to judge whether the finding was acted on, disputed, or ignored. Use `--out` to save output for offline analysis.
 
 ---
 
