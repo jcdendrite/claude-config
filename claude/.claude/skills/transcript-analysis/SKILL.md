@@ -16,6 +16,7 @@ The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly
 | How much work went through subagents vs the main thread? | `subagents --branches <branch>` |
 | Map branches to PRs; count per-author review comments | `pr-link --repo owner/repo --branches <branch>` |
 | Which sessions ran review skills, hit a hook denial, or spawned reviewer agents? | `review-trace` |
+| Where did a human push back on an AI review's output? | `judgment-pair` |
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | What fraction of Opus code-read turns are clearly dispatchable vs. read-then-edit loops? | `audit-routing-shape --since 35d` |
 | Pull a random sample of Opus code-read turns for delegation judgment curation | `audit-routing-samples --since 35d --sample 50 --seed 1` |
@@ -39,6 +40,7 @@ Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
 - `pr-link` requires `gh` and network access. All other subcommands are local-only and make no writes.
 - A model-vs-model comparison is only meaningful when there are multiple all-Opus and all-Sonnet execution branches. One or two branches per model is directional, not a controlled A/B.
 - `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis and `--deny-only` to isolate sessions that hit an enforcement hook.
+- `judgment-pair` captures what the human said immediately after a review output. Tool-result turns, `isMeta` injections, and `isCompactSummary` records between the review and the user reply are automatically skipped. Use `--out` to save output to a file for offline curation.
 - `audit-routing --redact` remaps project names to anonymized labels for public reporting — use this flag when posting output to GitHub issues.
 
 ## Example usage
