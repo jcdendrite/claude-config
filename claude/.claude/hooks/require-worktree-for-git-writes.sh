@@ -1,8 +1,10 @@
 #!/bin/bash
 # hook-class: gate
 # Gate: require git write operations to happen inside a linked worktree,
-# not the main working tree. Opt-in per-repo via a committed
-# .claude/worktree-required sentinel file at the repo root.
+# not the main working tree. Three activation markers:
+#   - <repo>/.claude/worktree-required  (committed repo sentinel — opt-out has no effect)
+#   - ~/.claude/worktree-required       (machine-level personal default)
+#   - <repo>/.claude/worktree-optout    (per-repo opt-out of machine default only)
 #
 # Motivation: concurrent Claude Code sessions on the same working tree can
 # race — e.g. one session's `git reset --hard` silently wipes another's
@@ -43,6 +45,7 @@ _lib_parse_tool_input_or_deny "Blocked by worktree-enforcement hook: could not p
 
 # Defensive: prevent GIT_DIR / GIT_WORK_TREE env overrides from making the
 # main tree impersonate a linked worktree via rev-parse output.
+# HOME is not unset: it comes from the OS user session (trusted), unlike git env vars.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
@@ -132,10 +135,8 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-# Per-repo opt-in: only enforce if the repo has committed the sentinel.
-if [ ! -f "$REPO_ROOT/.claude/worktree-required" ]; then
-  exit 0
-fi
+# Three-marker gate: repo sentinel, machine sentinel, per-repo opt-out.
+_lib_worktree_enforcement_active "$REPO_ROOT" || exit 0
 
 # A chained `cd ... && git ...` makes the effective cwd at the time git
 # runs unknowable from the tool-input JSON alone — the hook reads the
@@ -144,7 +145,7 @@ fi
 # decision is never based on stale state. The agent fix is to anchor cwd
 # with a standalone Bash call before the git op.
 if command_chains_cd_then_git "$COMMAND"; then
-  emit_deny "Blocked by worktree-enforcement hook: the command chains 'cd ... && git ...' and this hook cannot determine the effective cwd at the time git runs — it reads the session-persisted cwd (from prior Bash calls), not the cwd produced by the inline cd, because the hook fires before the subshell runs. This repo has opted into worktree discipline (.claude/worktree-required is committed). Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call."
+  emit_deny "Blocked by worktree-enforcement hook: the command chains 'cd ... && git ...' and this hook cannot determine the effective cwd at the time git runs — it reads the session-persisted cwd (from prior Bash calls), not the cwd produced by the inline cd, because the hook fires before the subshell runs. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call."
   exit 0
 fi
 
@@ -221,12 +222,12 @@ while IFS= read -r fragment; do
 
   subcmd=$(extract_git_subcmd "$fragment")
   if [ -z "$subcmd" ]; then
-    emit_deny "Blocked by worktree-enforcement hook: could not determine the git subcommand in '$fragment'. This repo has opted into worktree discipline (.claude/worktree-required is committed). Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree.$(cwd_anchor_note_if_chained "$COMMAND")$(git_C_note_if_present "$COMMAND")"
+    emit_deny "Blocked by worktree-enforcement hook: could not determine the git subcommand in '$fragment'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree.$(cwd_anchor_note_if_chained "$COMMAND")$(git_C_note_if_present "$COMMAND")"
     exit 0
   fi
 
   if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
-    emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this session is running in the main working tree of a repo that has opted into worktree discipline (.claude/worktree-required is committed). Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(cwd_anchor_note_if_chained "$COMMAND")$(git_C_note_if_present "$COMMAND")"
+    emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this session is running in the main working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(cwd_anchor_note_if_chained "$COMMAND")$(git_C_note_if_present "$COMMAND")"
     exit 0
   fi
 done <<< "$FRAGMENTS"

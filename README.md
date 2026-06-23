@@ -220,7 +220,7 @@ Configuration options spanning machine-local, project-local, and user-local sett
 
 ### Worktree enforcement
 
-`require-worktree-for-git-writes.sh` denies non-read-only git operations (`commit`, `push`, `rebase`, `reset`, `merge`, `checkout`, etc.) unless the session runs inside a linked git worktree. Read-only commands (`status`, `log`, `diff`, `fetch`, `show`, `blame`, etc.) are always allowed. The hook is opt-in per repo via a committed sentinel file.
+`require-worktree-for-git-writes.sh` denies non-read-only git operations (`commit`, `push`, `rebase`, `reset`, `merge`, `checkout`, etc.) unless the session runs inside a linked git worktree. Read-only commands (`status`, `log`, `diff`, `fetch`, `show`, `blame`, etc.) are always allowed. The hook is opt-in per repo (via a committed `.claude/worktree-required` sentinel) or per machine (via `~/.claude/worktree-required`).
 
 The race it prevents: concurrent Claude Code sessions sharing a working tree can step on each other — one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
 
@@ -261,6 +261,22 @@ The contributor `.venv` is gitignored and lives only in the main worktree root �
 Agents spawned with `isolation: worktree` create their own worktrees under `.claude/worktrees/` automatically — on a harness-generated branch name (`worktree-agent-<hash>`). That auto-naming is fine for ephemeral, non-PR work (parallel exploration, reviewer agents). For PR-bound work that needs a meaningful branch name, create the worktree yourself with `git worktree add .claude/worktrees/<slug> -b <slug>` first, then dispatch the agent into that path.
 
 To opt out, delete `.claude/worktree-required`.
+
+#### Activate for all your repos (machine-level)
+
+If you work across many repos and want enforcement everywhere without adding a marker to each:
+
+```bash
+touch ~/.claude/worktree-required
+```
+
+This activates enforcement for every git repo on your machine. Any repo that already has a committed `.claude/worktree-required` is unaffected (it was already enforcing). To exempt a specific repo from machine-level enforcement:
+
+```bash
+mkdir -p .claude && touch .claude/worktree-optout
+```
+
+The opt-out only modulates the machine-level default — it cannot exempt a repo whose committed `.claude/worktree-required` travels with the source.
 
 ### Private-project redaction
 

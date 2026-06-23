@@ -70,6 +70,36 @@ def non_opted_repo(tmp_path):
 
 
 @pytest.fixture
+def user_marker_home(isolated_home):
+    """Sandboxed $HOME with ~/.claude/worktree-required present.
+    Builds on isolated_home so $HOME is set to a temp dir; this fixture
+    adds the machine-level marker file. The assertion verifies the write
+    succeeded so a typo in the path cannot yield a silently-inert marker.
+    """
+    marker = isolated_home / ".claude" / "worktree-required"
+    marker.write_text("# machine-level sentinel\n")
+    assert marker.exists(), f"user_marker_home: marker not written at {marker}"
+    return isolated_home
+
+
+@pytest.fixture
+def repo_with_optout(tmp_path):
+    """Git repo with .claude/worktree-optout present (but no .claude/worktree-required).
+    Used to verify opt-out is an inert modulator, not a trigger."""
+    repo = tmp_path / "optout-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "worktree-optout").write_text("# opt-out\n")
+    return repo
+
+
+@pytest.fixture
 def opted_in_with_worktree(opted_in_repo, tmp_path):
     """Opted-in repo with a linked worktree at a path that does NOT contain
     '/worktrees/' — verifies the hook's worktree check reads git-dir rather

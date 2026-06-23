@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # hook-class: gate
 # Gate: block Edit, Write, and MultiEdit to files in the main working tree of
-# a repo that has opted into worktree discipline (.claude/worktree-required
-# committed at the repo root). Companion to require-worktree-for-git-writes.sh,
-# which blocks git write ops from the main tree.
+# a repo where worktree discipline is active. Three activation markers:
+#   - <repo>/.claude/worktree-required  (committed repo sentinel — opt-out has no effect)
+#   - ~/.claude/worktree-required       (machine-level personal default)
+#   - <repo>/.claude/worktree-optout    (per-repo opt-out of machine default only)
+# Companion to require-worktree-for-git-writes.sh, which blocks git write ops.
 #
 # Known exclusion: paths under $HOME/.claude/ are always exempt —
 # they are Claude Code harness/skill infrastructure, never project work.
@@ -91,8 +93,8 @@ done
 REPO_ROOT=$(git -C "$lookup_dir" rev-parse --show-toplevel 2>/dev/null)
 [ -z "$REPO_ROOT" ] && exit 0
 
-# Per-repo opt-in: only enforce if the sentinel is committed.
-[ ! -f "$REPO_ROOT/.claude/worktree-required" ] && exit 0
+# Three-marker gate: repo sentinel, machine sentinel, per-repo opt-out.
+_lib_worktree_enforcement_active "$REPO_ROOT" || exit 0
 
 # Detect main tree vs linked worktree using the same git-dir comparison as
 # require-worktree-for-git-writes.sh: in a linked worktree, --absolute-git-dir
@@ -101,7 +103,7 @@ GIT_DIR_ABS=$(git -C "$lookup_dir" rev-parse --absolute-git-dir 2>/dev/null)
 GIT_COMMON_DIR=$(git -C "$lookup_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 
 if [ -z "$GIT_DIR_ABS" ] || [ -z "$GIT_COMMON_DIR" ]; then
-  emit_deny "Blocked by worktree-enforcement hook (file-writes): could not determine git state for '$FILE_PATH'. This repo has opted into worktree discipline (.claude/worktree-required is committed). Run $TOOL_NAME from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, or spawn an agent with isolation: worktree."
+  emit_deny "Blocked by worktree-enforcement hook (file-writes): could not determine git state for '$FILE_PATH'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run $TOOL_NAME from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, or spawn an agent with isolation: worktree."
   exit 0
 fi
 
@@ -110,5 +112,5 @@ fi
 
 # In the main working tree: deny.
 REL_PATH="${FILE_PATH#"$REPO_ROOT"/}"
-emit_deny "Blocked by worktree-enforcement hook (file-writes): $TOOL_NAME targets '$FILE_PATH' which is in the main working tree of a repo that has opted into worktree discipline (.claude/worktree-required is committed). Write the file at its worktree path instead — e.g. .claude/worktrees/<branch>/$REL_PATH — or spawn an agent with isolation: worktree."
+emit_deny "Blocked by worktree-enforcement hook (file-writes): $TOOL_NAME targets '$FILE_PATH' which is in the main working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Write the file at its worktree path instead — e.g. .claude/worktrees/<branch>/$REL_PATH — or spawn an agent with isolation: worktree."
 exit 0

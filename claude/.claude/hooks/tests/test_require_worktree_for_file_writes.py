@@ -19,12 +19,12 @@ FILE_WRITES_HOOK = HOOKS_DIR / "require-worktree-for-file-writes.sh"
 
 
 class TestRequireWorktreeForFileWrites:
-    def test_no_sentinel_allows_edit(self, non_opted_repo):
+    def test_no_sentinel_allows_edit(self, non_opted_repo, isolated_home):
         """Repo without the sentinel: Edit passes through unconditionally."""
         path = str(non_opted_repo / "file.txt")
         assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
 
-    def test_no_sentinel_allows_write(self, non_opted_repo):
+    def test_no_sentinel_allows_write(self, non_opted_repo, isolated_home):
         """Repo without the sentinel: Write passes through unconditionally."""
         path = str(non_opted_repo / "new.txt")
         assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
@@ -44,25 +44,25 @@ class TestRequireWorktreeForFileWrites:
         path = str(opted_in_repo / "file.txt")
         assert run_hook(FILE_WRITES_HOOK, multiedit_input(path)) == "deny"
 
-    def test_opted_in_worktree_allows_edit(self, opted_in_with_worktree):
+    def test_opted_in_worktree_allows_edit(self, isolated_home, opted_in_with_worktree):
         """Edit targeting a file inside a linked worktree is allowed."""
         _, worktree = opted_in_with_worktree
         path = str(worktree / "file.txt")
         assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
 
-    def test_opted_in_worktree_allows_write(self, opted_in_with_worktree):
+    def test_opted_in_worktree_allows_write(self, isolated_home, opted_in_with_worktree):
         """Write targeting a new file inside a linked worktree is allowed."""
         _, worktree = opted_in_with_worktree
         path = str(worktree / "new.txt")
         assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
 
-    def test_opted_in_worktree_allows_multiedit(self, opted_in_with_worktree):
+    def test_opted_in_worktree_allows_multiedit(self, isolated_home, opted_in_with_worktree):
         """MultiEdit targeting a file inside a linked worktree is allowed."""
         _, worktree = opted_in_with_worktree
         path = str(worktree / "file.txt")
         assert run_hook(FILE_WRITES_HOOK, multiedit_input(path)) == "allow"
 
-    def test_non_git_path_allows_edit(self, tmp_path):
+    def test_non_git_path_allows_edit(self, tmp_path, isolated_home):
         """Edit to a path outside any git repo is allowed."""
         non_repo = tmp_path / "not-a-repo"
         non_repo.mkdir()
@@ -75,7 +75,7 @@ class TestRequireWorktreeForFileWrites:
         path = str(opted_in_repo / "subdir" / "deeply" / "new.txt")
         assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "deny"
 
-    def test_bash_tool_allowed(self, opted_in_repo):
+    def test_bash_tool_allowed(self, isolated_home, opted_in_repo):
         """Non-file-write tool (Bash) passes through: the hook is scoped to
         Edit/Write/MultiEdit only."""
         assert run_hook(FILE_WRITES_HOOK, bash_input("echo hi")) == "allow"
@@ -199,4 +199,47 @@ class TestRequireWorktreeForFileWritesHomeExemption:
         (opted_in_home / ".claude").symlink_to(dot_claude)
         # Write to ~/.claude/settings.json via the raw symlink path
         path = str(opted_in_home / ".claude" / "settings.json")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
+
+
+class TestMachineLevelMarker:
+    """Tests for the machine-level ~/.claude/worktree-required marker."""
+
+    def test_machine_marker_enforces_on_main_tree(self, non_opted_repo, user_marker_home):
+        """Machine marker active + main tree → deny."""
+        path = str(non_opted_repo / "file.txt")
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "deny"
+
+    def test_machine_marker_plus_optout_allows(self, repo_with_optout, user_marker_home):
+        """Machine marker active + repo opt-out → allow."""
+        path = str(repo_with_optout / "f.txt")
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
+
+    def test_repo_marker_plus_optout_still_enforces(self, opted_in_repo, user_marker_home):
+        """Committed repo marker + opt-out → still deny (opt-out can't defeat committed marker)."""
+        (opted_in_repo / ".claude" / "worktree-optout").write_text("# opt-out\n")
+        path = str(opted_in_repo / "f.txt")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "deny"
+
+    def test_neither_marker_allows(self, non_opted_repo, isolated_home):
+        """No markers at all → allow."""
+        path = str(non_opted_repo / "file.txt")
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
+
+    def test_optout_alone_is_inert(self, repo_with_optout, isolated_home):
+        """Opt-out present but no machine marker and no repo marker → allow."""
+        path = str(repo_with_optout / "f.txt")
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
+
+    def test_machine_marker_outside_git_repo_allows(self, tmp_path, user_marker_home):
+        """Machine marker active + path outside any git repo → allow."""
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        path = str(non_repo / "file.txt")
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
+
+    def test_machine_marker_home_path_still_exempt(self, non_opted_repo, user_marker_home):
+        """Machine marker active but write targets ~/.claude/foo → allow (HOME exemption holds)."""
+        # user_marker_home is the sandboxed HOME; write to something under it
+        path = str(user_marker_home / ".claude" / "some-file.txt")
         assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"

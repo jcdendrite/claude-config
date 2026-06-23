@@ -92,6 +92,8 @@ The hook is not the right default for every repo. From [`design-decisions.md` §
 
 So "is this over-engineered?" depends on which repo. For a single-developer personal script with no concurrent-session pattern, yes — the hook is friction without a matching risk. For a public repo with concurrent Claude sessions and a no-retract commit history, the hook is strictly necessary for cross-session races, and closes the residual within-session compliance gap that prose alone leaves open.
 
+See `docs/design-decisions.md` §7 for the subsequent addition of a machine-level sentinel for multi-repo workflows.
+
 ## When the CLAUDE.md prose-only approach is sufficient
 
 Honest scoping of the prose-only claim. The workflow it fits:
