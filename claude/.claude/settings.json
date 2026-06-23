@@ -135,11 +135,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/check-runner-bash-guard.sh",
-            "statusMessage": "Checking check-runner mutation guard..."
-          },
-          {
-            "type": "command",
             "command": "~/.claude/hooks/require-code-review.sh",
             "if": "Bash(git commit *)",
             "statusMessage": "Checking code review..."

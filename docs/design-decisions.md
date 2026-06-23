@@ -68,7 +68,7 @@ The right criterion for adding a persona is **distinct review heuristics an AI r
 
 **Why not a hook or `isolation: worktree`.** Agent-frontmatter `hooks:` do not fire for Agent-spawned subagents, and a `settings.json` hook fires for every session — including the parent that legitimately runs setup commands — so neither fences check-runner specifically. `isolation: worktree` would give a guaranteed cwd but verifies the wrong thing: an isolated agent runs in a bare checkout at a committed ref, without the parent's uncommitted changes or prepared environment, and a worktree boundary does not isolate a shared database. The charter-scoping rules above hold without either. `check-runner-bash-guard.sh` is kept as a reference implementation of the git-write guard for any future invocation path that does support agent-scoped hooks.
 
-**Justified on verdict quality, not context cost.** check-runner is not a context-cost optimization. The Claude Code harness already truncates Bash tool output at 30 KB, so an inline heavy run costs the parent ~2 KB of context, not the full suite output. What check-runner adds is a *curated* verdict — per-command pass/fail plus the failure tail, the part a truncation preview omits — produced on Haiku. It earns its place as a signal-quality and verdict-ergonomics tool.
+**Retired 2026-06-23.** Transcript-corpus measurement (649 sessions, 784 dispatches, 953 inline check runs) showed neither justification holds: no inline check run in a month exceeded the 30 KB harness truncation, and the verdict-ergonomics benefit was realized in only ~67% of dispatches — with the dispatch-id contract (PR #351) showing no improvement. The agent continued misbehaving post-hardening. The parent now runs checks inline. The empirical record and retirement rationale are in `docs/case-studies/check-runner.md`.
 
 ## 11. `code-writer` agent and in-agent self-review
 
@@ -112,8 +112,8 @@ there is no tool-call boundary for "the parent is about to write code"
 (`Edit` / `Write` fire identically for code, config, and docs), so unlike the
 review gates (§1) it stays advisory.
 
-The name `code-writer` is job-shaped — an action-noun parallel to `check-runner`
-and to the `code-review` skill's umbrella term — not a persona job title.
+The name `code-writer` is job-shaped — an action-noun (like `code-review`)
+describing the work the agent does — not a persona job title.
 Anthropic's subagent documentation treats the agent `name` as a pure
 identifier; behavior comes from the system prompt.
 

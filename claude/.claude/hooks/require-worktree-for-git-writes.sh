@@ -163,7 +163,7 @@ fi
 # From here on we are in the MAIN working tree of an opted-in repo.
 # Only read-only git subcommands are allowed; everything else is denied.
 
-# Pulled from _lib.sh — shared with check-runner-bash-guard.sh.
+# Pulled from _lib.sh.
 ALLOWED_SUBCMDS=($(_lib_readonly_git_subcmds))
 ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 

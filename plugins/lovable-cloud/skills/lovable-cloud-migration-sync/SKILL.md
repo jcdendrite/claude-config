@@ -94,13 +94,6 @@ with the user.
 
 ### 5. Verify locally before deleting
 
-**Run `supabase db reset` inline from the parent session — not the
-check-runner subagent.** The check-runner agent refuses state-mutating
-commands (`db reset`, `db push`, container start/stop, etc.) by
-charter, and a PreToolUse mutation-guard hook also denies them at the
-harness layer when the dispatcher is `check-runner`. Routing the reset
-through the subagent fails BLOCKED with no verify output.
-
 ```bash
 cd <absolute repo path> && supabase db reset
 ```
@@ -130,20 +123,14 @@ The "do not proceed on FAIL" rule applies to logic errors in the duplicate (wron
 predicates, missing DDL, weakened security checks), not to ordering artifacts that
 disappear once the original is deleted.
 
-Once the reset completes, dispatch your project's verify entry point
-(e.g. `npm run verify`, `pytest`, `make verify` — whatever its
-verification command is) via the `Agent` tool with
-`subagent_type: check-runner`. Enumerate the verify command exactly in
-the dispatch prompt and include the absolute working directory.
+Once the reset completes, run your project's verify entry point inline:
 
-The subagent writes the command's full output to
-`${TMPDIR:-/tmp}/<command-slug>-<epoch-ms>.txt` and returns: per-command
-name/exit code/pass-fail, smallest failing excerpt, overall PASS or FAIL, and
-the output file paths. If verify fails, Read the relevant output file rather
-than re-running the suite. Do not proceed to step 6 (delete originals) on FAIL.
+```bash
+cd <absolute repo path> && npm run verify   # or pytest / make verify / etc.
+```
 
-**Inline exception.** Single-test re-runs during debugging can stay inline.
-Suite-level reruns route through the subagent.
+If verify fails, diagnose from the output directly. Do not proceed to step 6
+(delete originals) on FAIL.
 
 ### 6. Delete originals
 

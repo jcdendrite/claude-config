@@ -135,7 +135,7 @@ GH-333/audit-routing-samples-subcommand           2      11   2   1   2  staff-s
 
 Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/ready-for-review` spawns.
 
-**When to reach for it.** Audit which reviewer agents fired on a branch, or compare how delegation patterns differ across branches.
+**When to reach for it.** Audit which reviewer agents fired on a branch, or compare how delegation patterns differ across branches. The tool recognizes `check-runner` in historical session data — the agent is retired (2026-06-23) but historical transcript entries remain valid corpus inputs.
 
 ---
 

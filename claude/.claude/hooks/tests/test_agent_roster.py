@@ -35,7 +35,6 @@ REVIEWER_AGENTS = [
 # When a new non-reviewer agent is added, add it here; the
 # test_no_uncategorized_agents test will fail until it is categorized.
 NON_REVIEWER_AGENTS = [
-    "check-runner.md",  # executor-style; dispatches check suites, does not review
     "code-writer.md",   # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
 ]
 
@@ -52,7 +51,6 @@ AGENT_DESCRIPTION_MAX_CHARS = 1000
 # above AND add its expected model here — test_expected_model_map_is_complete
 # will fail until both are updated.
 NON_REVIEWER_MODELS = {
-    "check-runner.md": "haiku",  # narrow executor
     "code-writer.md": "sonnet",  # implementer
 }
 
