@@ -43,6 +43,7 @@
     "handoff": "name-only",
     "read-docx-comments": "name-only",
     "transcript-analysis": "name-only",
+    "transcript-narrative": "name-only",
     "error-handling": "name-only",
     "test-conventions": "name-only",
     "sql-query-conventions": "name-only",
