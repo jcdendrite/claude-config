@@ -189,6 +189,35 @@ _lib_chains_marker_write_before_commit() {
     "(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|$)"
 }
 
+# _lib_worktree_enforcement_active REPO_ROOT
+# Returns 0 (true) when worktree discipline is active for the given repo root.
+# Three-marker logic:
+#   1. Committed repo sentinel (.claude/worktree-required at repo root): hard requirement,
+#      travels via git pull. Opt-out cannot defeat it.
+#   2. Machine sentinel (~/.claude/worktree-required): personal default-on for all repos
+#      on this machine. Defeated by the per-repo opt-out.
+#   3. Per-repo opt-out (.claude/worktree-optout at repo root): exempts this repo from
+#      the machine sentinel only — has no effect when the repo sentinel is present.
+# On filesystem error (EACCES, ESTALE, NFS timeout), [ -f ] returns false — the machine
+# sentinel silently deactivates for that invocation, the same outcome as an absent sentinel.
+# Empty REPO_ROOT returns 1 (no-enforce): the machine sentinel must never fire when
+# the session is outside a git repo.
+_lib_worktree_enforcement_active() {
+  local repo_root="$1"
+  [ -n "$repo_root" ] || return 1                                     # degenerate: no repo, never enforce
+  [ -f "$repo_root/.claude/worktree-required" ] && return 0           # committed requirement (opt-out has no effect)
+  # Machine default, minus per-repo opt-out.
+  # The [ -n "$home_norm" ] guard is load-bearing: an empty/unset $HOME would make
+  # the test below probe /.claude/worktree-required and a stray root file could
+  # force-enforce every repo. Mirrors require-worktree-for-file-writes.sh lines 73-74.
+  local home_norm="${HOME%/}"
+  [ -n "$home_norm" ] \
+    && [ -f "$home_norm/.claude/worktree-required" ] \
+    && [ ! -f "$repo_root/.claude/worktree-optout" ] \
+    && return 0
+  return 1
+}
+
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh.
 _LIB_READONLY_GIT_SUBCMDS=(

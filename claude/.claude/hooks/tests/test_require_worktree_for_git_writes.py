@@ -18,10 +18,10 @@ WORKTREE_HOOK = HOOKS_DIR / "require-worktree-for-git-writes.sh"
 
 
 class TestRequireWorktreeForGitWrites:
-    def test_no_sentinel_allows_commit(self, non_opted_repo):
+    def test_no_sentinel_allows_commit(self, non_opted_repo, isolated_home):
         assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=non_opted_repo) == "allow"
 
-    def test_no_sentinel_allows_push(self, non_opted_repo):
+    def test_no_sentinel_allows_push(self, non_opted_repo, isolated_home):
         assert run_hook(WORKTREE_HOOK, bash_input("git push origin main"), cwd=non_opted_repo) == "allow"
 
     def test_opted_in_main_tree_denies_commit(self, opted_in_repo):
@@ -53,7 +53,7 @@ class TestRequireWorktreeForGitWrites:
             "git blame file.txt",
         ],
     )
-    def test_opted_in_main_tree_allows_readonly(self, opted_in_repo, command):
+    def test_opted_in_main_tree_allows_readonly(self, isolated_home, opted_in_repo, command):
         assert run_hook(WORKTREE_HOOK, bash_input(command), cwd=opted_in_repo) == "allow"
 
     def test_opted_in_chained_write_denies(self, opted_in_repo):
@@ -68,7 +68,7 @@ class TestRequireWorktreeForGitWrites:
             == "deny"
         )
 
-    def test_opted_in_chained_readonly_allows(self, opted_in_repo):
+    def test_opted_in_chained_readonly_allows(self, isolated_home, opted_in_repo):
         assert (
             run_hook(
                 WORKTREE_HOOK,
@@ -78,18 +78,18 @@ class TestRequireWorktreeForGitWrites:
             == "allow"
         )
 
-    def test_opted_in_worktree_allows_commit(self, opted_in_with_worktree):
+    def test_opted_in_worktree_allows_commit(self, isolated_home, opted_in_with_worktree):
         _, worktree = opted_in_with_worktree
         assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=worktree) == "allow"
 
-    def test_opted_in_worktree_allows_push(self, opted_in_with_worktree):
+    def test_opted_in_worktree_allows_push(self, isolated_home, opted_in_with_worktree):
         _, worktree = opted_in_with_worktree
         assert run_hook(WORKTREE_HOOK, bash_input("git push origin feature"), cwd=worktree) == "allow"
 
-    def test_non_git_command_allowed(self, opted_in_repo):
+    def test_non_git_command_allowed(self, isolated_home, opted_in_repo):
         assert run_hook(WORKTREE_HOOK, bash_input("ls -la"), cwd=opted_in_repo) == "allow"
 
-    def test_outside_git_repo_allowed(self, tmp_path):
+    def test_outside_git_repo_allowed(self, tmp_path, isolated_home):
         """Not in a git repo — nothing to enforce."""
         non_repo = tmp_path / "not-a-repo"
         non_repo.mkdir()
@@ -106,7 +106,7 @@ class TestRequireWorktreeForGitWrites:
             == "deny"
         )
 
-    def test_git_no_pager_log_allowed(self, opted_in_repo):
+    def test_git_no_pager_log_allowed(self, isolated_home, opted_in_repo):
         """`git --no-pager log` parses as `log` — flag stripped."""
         assert (
             run_hook(
@@ -181,7 +181,7 @@ class TestRequireWorktreeForGitWrites:
             == "deny"
         )
 
-    def test_pipe_readonly_allowed(self, opted_in_repo):
+    def test_pipe_readonly_allowed(self, isolated_home, opted_in_repo):
         """Pipe-chained read-only commands pass; each fragment parsed separately."""
         assert (
             run_hook(
@@ -214,13 +214,13 @@ class TestRequireWorktreeForGitWrites:
             == "deny"
         )
 
-    def test_empty_command_allowed(self, opted_in_repo):
+    def test_empty_command_allowed(self, isolated_home, opted_in_repo):
         assert run_hook(WORKTREE_HOOK, bash_input(""), cwd=opted_in_repo) == "allow"
 
-    def test_whitespace_only_command_allowed(self, opted_in_repo):
+    def test_whitespace_only_command_allowed(self, isolated_home, opted_in_repo):
         assert run_hook(WORKTREE_HOOK, bash_input("   "), cwd=opted_in_repo) == "allow"
 
-    def test_git_dash_c_inline_config_allowed(self, opted_in_repo):
+    def test_git_dash_c_inline_config_allowed(self, isolated_home, opted_in_repo):
         """`git -c key=val log` — the -c inline config flag consumes the
         next word; subcommand `log` is on the allowlist."""
         assert (
@@ -232,7 +232,7 @@ class TestRequireWorktreeForGitWrites:
             == "allow"
         )
 
-    def test_git_dir_flag_allowed(self, opted_in_repo):
+    def test_git_dir_flag_allowed(self, isolated_home, opted_in_repo):
         """`git --git-dir /tmp/.git log` — --git-dir consumes next word."""
         assert (
             run_hook(
@@ -243,7 +243,7 @@ class TestRequireWorktreeForGitWrites:
             == "allow"
         )
 
-    def test_sentinel_as_directory_treated_as_unopted(self, tmp_path):
+    def test_sentinel_as_directory_treated_as_unopted(self, tmp_path, isolated_home):
         """`-f` is false for directories, so a directory at
         .claude/worktree-required leaves the repo effectively unopted."""
         repo = tmp_path / "weird"
@@ -321,14 +321,14 @@ class TestRequireWorktreeForGitWrites:
             "gitk-alnum-trailing",
         ],
     )
-    def test_git_substring_in_non_git_command_allowed(self, opted_in_repo, command):
+    def test_git_substring_in_non_git_command_allowed(self, isolated_home, opted_in_repo, command):
         """Commands that mention `git` only as a path/URL/prefix substring
         must not be treated as git invocations. `gitk` pins the regex's
         both-sides non-alnum requirement — a change that only kept the
         leading boundary would regress this case."""
         assert run_hook(WORKTREE_HOOK, bash_input(command), cwd=opted_in_repo) == "allow"
 
-    def test_chained_dotgithub_read_and_git_log_allowed(self, opted_in_repo):
+    def test_chained_dotgithub_read_and_git_log_allowed(self, isolated_home, opted_in_repo):
         """Read-only fragment touching `.github` followed by a read-only
         git command: both fragments must resolve correctly."""
         assert (
@@ -352,7 +352,7 @@ class TestRequireWorktreeForGitWrites:
             == "deny"
         )
 
-    def test_git_log_with_dotgithub_path_arg_allowed(self, opted_in_repo):
+    def test_git_log_with_dotgithub_path_arg_allowed(self, isolated_home, opted_in_repo):
         """Real read-only git command whose arguments reference a `.github`
         path must still parse as its subcommand — `git log -- .github/...`
         is `log`, not denied."""
@@ -445,7 +445,7 @@ class TestRequireWorktreeForGitWrites:
         assert reason is not None
         assert "-C path" in reason
 
-    def test_git_dash_C_readonly_no_C_note(self, opted_in_repo):
+    def test_git_dash_C_readonly_no_C_note(self, isolated_home, opted_in_repo):
         """`git -C /tmp log` is read-only → allowed; no deny reason."""
         assert (
             run_hook(
@@ -561,7 +561,7 @@ class TestRequireWorktreeForGitWrites:
             == "deny"
         )
 
-    def test_worktree_cwd_plain_git_still_allowed(self, opted_in_with_worktree):
+    def test_worktree_cwd_plain_git_still_allowed(self, isolated_home, opted_in_with_worktree):
         """No inline cd — hook reads the worktree-persisted cwd and allows."""
         _, worktree = opted_in_with_worktree
         assert (
@@ -573,7 +573,7 @@ class TestRequireWorktreeForGitWrites:
             == "allow"
         )
 
-    def test_worktree_cwd_chain_without_cd_still_allowed(self, opted_in_with_worktree):
+    def test_worktree_cwd_chain_without_cd_still_allowed(self, isolated_home, opted_in_with_worktree):
         """Non-cd chain from worktree — no inline cd, so hook reads persisted
         cwd (worktree) and allows."""
         _, worktree = opted_in_with_worktree
@@ -585,3 +585,34 @@ class TestRequireWorktreeForGitWrites:
             )
             == "allow"
         )
+
+
+class TestMachineLevelMarker:
+    """Tests for the machine-level ~/.claude/worktree-required marker."""
+
+    def test_machine_marker_enforces_on_main_tree(self, non_opted_repo, user_marker_home):
+        """Machine marker active + main tree → deny."""
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=non_opted_repo) == "deny"
+
+    def test_machine_marker_plus_optout_allows(self, repo_with_optout, user_marker_home):
+        """Machine marker active + repo opt-out → allow."""
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=repo_with_optout) == "allow"
+
+    def test_repo_marker_plus_optout_still_enforces(self, opted_in_repo, user_marker_home):
+        """Committed repo marker + opt-out → still deny (opt-out can't defeat committed marker)."""
+        (opted_in_repo / ".claude" / "worktree-optout").write_text("# opt-out\n")
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo) == "deny"
+
+    def test_neither_marker_allows(self, non_opted_repo, isolated_home):
+        """No markers at all → allow."""
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=non_opted_repo) == "allow"
+
+    def test_optout_alone_is_inert(self, repo_with_optout, isolated_home):
+        """Opt-out present but no machine marker and no repo marker → allow."""
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=repo_with_optout) == "allow"
+
+    def test_machine_marker_outside_git_repo_allows(self, tmp_path, user_marker_home):
+        """Machine marker active + command outside any git repo → allow."""
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=non_repo) == "allow"
