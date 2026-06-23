@@ -1924,8 +1924,9 @@ def _extract_shape_d1(out: str, bucket: str) -> tuple[int, int]:
         if in_d1 and stripped.startswith(bucket):
             parts = stripped.split()
             # Anchor Turns and Output tokens columns by the header row.
+            # "Output" is the unique leading word of the "Output tokens" column.
             turns_idx = header_line.split().index("Turns") if header_line else 1
-            out_idx = turns_idx + 1
+            out_idx = header_line.split().index("Output") if header_line else turns_idx + 1
             if len(parts) > out_idx:
                 return int(parts[turns_idx].replace(",", "")), int(parts[out_idx].replace(",", ""))
     return 0, 0
@@ -1975,9 +1976,11 @@ def _extract_shape_d3(out: str, case: str) -> tuple[int, int]:
         if in_d3 and stripped.startswith(case):
             parts = stripped.split()
             # Anchor Turns and Output tokens columns by the header row.
+            # "Output" is the unique leading word of the "Output tokens" column.
             turns_idx = header_line.split().index("Turns") if header_line else 1
-            if len(parts) > turns_idx + 1:
-                return int(parts[turns_idx].replace(",", "")), int(parts[turns_idx + 1].replace(",", ""))
+            out_idx = header_line.split().index("Output") if header_line else turns_idx + 1
+            if len(parts) > out_idx:
+                return int(parts[turns_idx].replace(",", "")), int(parts[out_idx].replace(",", ""))
     return 0, 0
 
 
