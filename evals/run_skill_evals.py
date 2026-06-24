@@ -588,25 +588,34 @@ def detect_dispatch_in_stream(proc: subprocess.Popen) -> bool:
     return False
 
 
+def _build_dispatch_command(query: str, handoff: str, model: str) -> list[str]:
+    """Build the claude -p command list for one behavioral-dispatch sample."""
+    return [
+        "claude", "-p", query,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--model", model,
+        "--append-system-prompt", handoff,
+    ]
+
+
 def run_dispatch_sample(args: tuple) -> tuple[str | None, list[str]]:
     """Run one claude -p sample for behavioral-dispatch. Called from worker processes.
 
     Returns (skill_name if the model dispatched a subagent else None, []) —
     the same (fired, also_fired) shape as run_single_sample so run_case()
     scores both methods identically.
+
+    args is a positional 5-tuple: (query, skill_name, dispatch_project, handoff, model).
+    Both this unpack and the construction in run_case() must be updated together.
     """
-    query, skill_name, dispatch_project, model = args
+    query, skill_name, dispatch_project, handoff, model = args
 
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
     proc = subprocess.Popen(
-        [
-            "claude", "-p", query,
-            "--output-format", "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-            "--model", model,
-        ],
+        _build_dispatch_command(query, handoff, model),
         cwd=str(dispatch_project),
         env=env,
         stdout=subprocess.PIPE,
@@ -614,6 +623,7 @@ def run_dispatch_sample(args: tuple) -> tuple[str | None, list[str]]:
     )
 
     dispatched = detect_dispatch_in_stream(proc)
+    proc.stdout.close()
     return (skill_name if dispatched else None, [])
 
 
@@ -640,7 +650,7 @@ def run_case(
         sample_arg: tuple = (query, skill_name, also_not, run_context["tmp_project"], model)
     elif method == BEHAVIORAL_DISPATCH_METHOD:
         sample_fn = run_dispatch_sample
-        sample_arg = (query, skill_name, run_context["dispatch_project"], model)
+        sample_arg = (query, skill_name, run_context["dispatch_project"], run_context["dispatch_handoff"], model)
     else:
         sample_fn = run_description_fidelity_sample
         sample_arg = (
@@ -816,7 +826,14 @@ def main() -> int:
 
         if behavioral_dispatch_files:
             dispatch_project = build_dispatch_project(SKILLS_DIR, PLUGINS_DIR)
-            dispatch_context = {"dispatch_project": dispatch_project}
+            dispatch_handoff_path = REPO_ROOT / "evals" / "fixtures" / "dispatch-session-handoff.md"
+            if not dispatch_handoff_path.exists():
+                sys.exit(f"Handoff fixture not found: {dispatch_handoff_path}")
+            dispatch_handoff = dispatch_handoff_path.read_text()
+            dispatch_context = {
+                "dispatch_project": dispatch_project,
+                "dispatch_handoff": dispatch_handoff,
+            }
             for case_file in behavioral_dispatch_files:
                 skill_results.append(
                     run_skill(

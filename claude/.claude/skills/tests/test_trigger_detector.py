@@ -1,7 +1,8 @@
 """Unit tests for the offline-testable parts of evals/run_skill_evals.py.
 
 Covers the runtime-mode stream-json trigger detector, the case-file `method`
-schema, and the description-fidelity classification parser / scorer. All
+schema, the description-fidelity classification parser / scorer, and the
+behavioral-dispatch command builder. All
 deterministic — no claude -p call, CI-safe. Runtime-mode detector tests feed
 committed synthetic stream-json fixtures from evals/fixtures/.
 
@@ -18,6 +19,7 @@ from pathlib import Path
 
 import pytest
 from run_skill_evals import (
+    _build_dispatch_command,
     detect_dispatch_in_lines,
     detect_trigger_in_lines,
     load_case_file,
@@ -344,3 +346,29 @@ class TestScoreClassification:
         fired, also = score_classification(None, "code-review", ["plan-review"])
         assert fired is None
         assert also == []
+
+
+class TestBuildDispatchCommand:
+    """Verify that _build_dispatch_command produces the correct subprocess argument list."""
+
+    def test_full_command_list(self) -> None:
+        cmd = _build_dispatch_command("my query", "handoff text", "claude-sonnet-4-6")
+        assert cmd == [
+            "claude", "-p", "my query",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model", "claude-sonnet-4-6",
+            "--append-system-prompt", "handoff text",
+        ]
+
+    def test_empty_handoff_passes_through(self) -> None:
+        # _build_dispatch_command has no validation; empty handoff is a caller concern.
+        # Fixture guard (test_handoff_fixture_exists_and_nonempty) catches this in CI.
+        cmd = _build_dispatch_command("q", "", "m")
+        assert cmd[cmd.index("--append-system-prompt") + 1] == ""
+
+    def test_handoff_fixture_exists_and_nonempty(self) -> None:
+        handoff_path = FIXTURES_DIR / "dispatch-session-handoff.md"
+        assert handoff_path.exists(), f"Handoff fixture not found at {handoff_path}"
+        assert handoff_path.read_text().strip(), "Handoff fixture is empty"

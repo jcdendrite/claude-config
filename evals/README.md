@@ -215,15 +215,30 @@ is no payload field to match. `also_not_triggered` is not used in this method.
 **`should_trigger: true`** means the scenario should cause the model to delegate.
 **`should_trigger: false`** means the scenario should be handled inline.
 
-**Cold-turn fidelity caveat.** A `claude -p` run is a single cold turn: the
-parent-context economy pressure that makes delegation rational ("context
-re-read every turn") is nearly absent. Consequence: INLINE cases pass cheaply
-and weakly (cold turns inline naturally regardless of skill quality); DELEGATE
-cases are the load-bearing signal. Choose DELEGATE scenarios broad enough that
-delegation is clearly correct even cold (multi-file sweeps, exploratory
-mapping). If DELEGATE cases fire < 50% at K=30, conclude "headless
-behavioral-dispatch is too cold to measure delegation here" and document it —
-do not record as a skill regression.
+**Instrument warming.** Each sample injects a mid-session handoff via
+`--append-system-prompt` that establishes the model as an orchestrator
+partway through a multi-step job: several turns done, partial results in
+hand, more steps queued, context budget growing. This restores the
+orchestrator stance that makes delegation rational — without a real prior
+session. The handoff sets *pressure and history* only; the per-case query
+drives the actual delegate-vs-inline decision.
+
+**Residual limitation.** `--append-system-prompt` *asserts* a large prior
+context; the real context window stays small. If the model's delegation
+decision is driven by physical token accounting rather than stance, warming
+via system prompt will not move it. If DELEGATE cases fire < 50% at K=30
+after warming, conclude "headless behavioral-dispatch is structurally too
+cold for this skill even warmed" and document it — do not record as a skill
+regression. The escalation path is `--resume <session-id>`: a real prior
+turn whose tool-call history physically fills the window, at the cost of
+2× invocations per sample and per-sample unique session IDs.
+
+**Case-authoring note.** Even with warming, INLINE cases are the easier arm
+(the model still naturally inlines short-context reasoning); DELEGATE cases
+are the load-bearing signal. Write DELEGATE scenarios broad enough that
+delegation is clearly warranted even when context pressure is asserted rather
+than physically present (multi-file sweeps, exploratory mapping,
+cross-module correlation tasks).
 
 The `method` schema, the classification-answer parser, and the stream-json
 detectors (both runtime and behavioral-dispatch) are unit-tested offline
