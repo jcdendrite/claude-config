@@ -43,11 +43,11 @@ This section is not a prose-vs-hook comparison — the gotcha below exists only 
 
 The hook reads cwd from the Bash tool's session-persisted state, not from an inline `cd` in the command being denied. This caught a recurring class of compliance attempts where the agent chained `cd /worktree && git ...` in a single Bash call, expecting the `cd` to land it in the worktree — but the hook fires before the subshell runs, so the persisted cwd is still the main tree.
 
-Two related changes refined the response. [PR #59](https://github.com/jcdendrite/claude-config/pull/59) added the `cwd_anchor_note_if_chained` helper (`require-worktree-for-git-writes.sh` lines 65–69) which suffixes the malformed-subcommand and non-allowlist-subcommand deny paths (lines 230 and 235) with a chained-`cd` self-correction note — the helper text (committed code):
+Two related changes refined the response. [PR #59](https://github.com/jcdendrite/claude-config/pull/59) added the `cwd_anchor_note_if_chained` helper in `require-worktree-for-git-writes.sh` which suffixes both deny paths with a chained-`cd` self-correction note — the helper text (committed code):
 
 > If you just chained 'cd /path/to/worktree && git ...' and expected the inline cd to land you in the worktree: this hook reads cwd from Claude Code's session-persisted bash state (set by prior Bash calls), not from your inline cd, because the hook fires before the subshell runs. Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call.
 
-[PR #131](https://github.com/jcdendrite/claude-config/pull/131) then added a chained-`cd` hard-deny gate (lines 146–155) that fires before the persisted-cwd check, so the deny path is never gated on stale state. The gate emits its own self-contained string at line 153 — a different string from the helper text above, and the one the Live demo below captures verbatim.
+[PR #131](https://github.com/jcdendrite/claude-config/pull/131) then added a `command_chains_cd_then_git` hard-deny gate that fires before the persisted-cwd check, so the deny path is never gated on stale state. The gate emits its own self-contained string — different from the helper text above, and the one the Live demo below captures verbatim.
 
 A parallel deny-message addendum exists for `git -C <path>`: `-C` retargets git's own working directory without changing the session cwd, so the hook still sees the main-tree cwd.
 
@@ -64,8 +64,10 @@ Blocked by worktree-enforcement hook: the command chains 'cd ... && git
 ...' and this hook cannot determine the effective cwd at the time git
 runs — it reads the session-persisted cwd (from prior Bash calls), not
 the cwd produced by the inline cd, because the hook fires before the
-subshell runs. This repo has opted into worktree discipline
-(.claude/worktree-required is committed). Anchor cwd by running 'cd
+subshell runs. This is a repo where worktree discipline is active
+(repo-level .claude/worktree-required committed, or your machine-level
+~/.claude/worktree-required). To exempt this repo from machine-level
+enforcement, add .claude/worktree-optout. Anchor cwd by running 'cd
 /path/to/worktree' as its own Bash call first, then retry the git op in
 a follow-up call.
 
@@ -74,7 +76,7 @@ a follow-up call.
 # as its own Bash call and then retry git log in a follow-up call.
 ```
 
-This is the deny string emitted by the chained-`cd` hard-deny gate (`require-worktree-for-git-writes.sh` lines 146–155) that the previous section cites; the 'Anchor cwd by running...' fix is baked into the gate's own `emit_deny` output, so the agent reads its correction inline with the denial — the self-correcting deny-message principle in action.
+This is the deny string emitted by the `command_chains_cd_then_git` hard-deny gate in `require-worktree-for-git-writes.sh` that the previous section cites; the 'Anchor cwd by running...' fix is baked into the gate's own `emit_deny` output, so the agent reads its correction inline with the denial — the self-correcting deny-message principle in action.
 
 ## The general philosophy
 
@@ -112,9 +114,9 @@ The hook scripts themselves and the README / `design-decisions.md` sections quot
 
 ## Sources
 
-- **`claude/.claude/hooks/require-worktree-for-git-writes.sh`** — header comment (lines 1–22), detection logic (lines 157–167), `cwd_anchor_note_if_chained` helper (lines 65–69), chained-`cd` hard-deny gate (lines 146–155), `git -C` self-correction addendum (lines 71–117).
-- **`claude/.claude/hooks/require-worktree-for-file-writes.sh`** — header comment (lines 1–5), detection logic (lines 57–69), deny-message text (lines 72–73).
-- **`README.md`** — "How enforcement complements instructions" (around line 47) and "Worktree enforcement" (around line 219).
+- **`claude/.claude/hooks/require-worktree-for-git-writes.sh`** — header comment (motivation paragraph), `--absolute-git-dir` vs `--git-common-dir` detection logic, `cwd_anchor_note_if_chained` helper, `command_chains_cd_then_git` hard-deny gate, `git_C_note_if_present` self-correction addendum.
+- **`claude/.claude/hooks/require-worktree-for-file-writes.sh`** — header comment, `--absolute-git-dir` vs `--git-common-dir` detection logic, `emit_deny` deny-message text ("Write the file at its worktree path instead").
+- **`README.md`** — "How enforcement complements instructions" and "Worktree enforcement" sections.
 - **`docs/design-decisions.md` §7** — "Worktree-required as a per-project sentinel."
 - **[PR #24](https://github.com/jcdendrite/claude-config/pull/24)** — original hook, motivation paragraph and "Design decisions" section. Claude-Code-generated body.
 - **[PR #30](https://github.com/jcdendrite/claude-config/pull/30)** — added the worktree-enforcement note to root CLAUDE.md so fresh sessions discover the constraint at load time rather than mid-task.
@@ -122,5 +124,5 @@ The hook scripts themselves and the README / `design-decisions.md` sections quot
 - **`claude/.claude/scripts/transcript-analysis.py`** — the `review-trace` subcommand, source of the 387-denial / 243-session measurement (via `review-trace --deny-only`; a point-in-time snapshot, per the companion case study's *How this was measured*).
 - **[PR #59](https://github.com/jcdendrite/claude-config/pull/59)** — added the `cwd_anchor_note_if_chained` helper that suffixes the malformed-subcommand and non-allowlist deny paths with a chained-`cd` self-correction note.
 - **[PR #114](https://github.com/jcdendrite/claude-config/pull/114)** — added `require-worktree-for-file-writes.sh`.
-- **[PR #131](https://github.com/jcdendrite/claude-config/pull/131)** — added the chained-`cd` hard-deny gate (lines 146–155) that fires before the persisted-cwd check.
+- **[PR #131](https://github.com/jcdendrite/claude-config/pull/131)** — added the `command_chains_cd_then_git` hard-deny gate that fires before the persisted-cwd check.
 - **[anthropics/claude-code#34327](https://github.com/anthropics/claude-code/issues/34327)** — external GitHub issue cited by PR #24 as documenting the cross-session race in the wild. Cited here as PR #24's reference; not independently summarized.
