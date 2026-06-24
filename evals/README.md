@@ -128,9 +128,9 @@ Schema:
 
 ## Measurement methods
 
-Each `trigger-cases.json` declares a `method`. `run_skill_evals.py` runs both
-in one invocation, routing per case file and labelling each skill's mode in the
-report:
+Each `trigger-cases.json` declares a `method`. `run_skill_evals.py` runs all
+three in one invocation, routing per case file and labelling each skill's mode
+in the report:
 
 - **`runtime`** — the harness spawns `claude -p` and watches for the skill's
   `Skill` tool call to fire. It measures real auto-dispatch in a live session.
@@ -138,13 +138,18 @@ report:
   classification prompt, which one skill a query should match given the full
   skill listing. It measures whether the skill's `description` discriminates
   the query, not runtime dispatch.
+- **`behavioral-dispatch`** — the harness spawns `claude -p` with a full task
+  scenario and watches for the `Task` tool call to fire. It measures whether
+  the model actually delegates to a subagent rather than handling the task
+  inline. Used for skills like `subagent-delegation` whose effect is the
+  parent's tool choice, not a `Skill` invocation.
 
 Headless `claude -p` does not reliably auto-trigger every skill — advisory
 skills the model is not pushed to invoke (and `user-invocable: false` skills)
 under-trigger regardless of description quality, so `runtime` measurement
 returns a false zero for them. Those skills use `description-fidelity` instead.
 
-The two methods measure genuinely different properties and are not
+The three methods measure genuinely different properties and are not
 interchangeable. `runtime` is strictly more faithful when available — it
 observes the real dispatch decision — so a skill that *can* trigger headlessly
 keeps `runtime` rather than being downgraded to classification.
@@ -189,10 +194,42 @@ This path is plain question-answering, not skill auto-dispatch, so it is
 unaffected by the headless auto-trigger limitation that makes `runtime`
 unreliable for advisory skills.
 
-The `method` schema, the classification-answer parser, and the runtime
-stream-json detector are unit-tested offline (synthetic inputs, no `claude -p`)
-in `claude/.claude/skills/tests/test_trigger_detector.py`; the runtime fixtures
-live in `evals/fixtures/`.
+### behavioral-dispatch
+
+The harness runs `claude -p <query> --output-format stream-json` against a
+throwaway project whose `.claude/skills/` is symlinked to the working-tree
+skills — so the `subagent-delegation` skill (or any other skill under test) is
+present and shaping the model — and whose working tree is seeded from
+`evals/fixtures/dispatch-project/`, a small multi-file Python project with a
+real import graph. The detector watches for:
+
+```
+content_block_start → content_block.type == "tool_use" AND name == "Task"
+```
+
+`Task` is the real dispatch-tool name (confirmed from the `system/init` event's
+`"tools"` list in committed fixtures — the "Agent" label is an
+interactive-display alias only). "Fired" means any `Task` call occurred; there
+is no payload field to match. `also_not_triggered` is not used in this method.
+
+**`should_trigger: true`** means the scenario should cause the model to delegate.
+**`should_trigger: false`** means the scenario should be handled inline.
+
+**Cold-turn fidelity caveat.** A `claude -p` run is a single cold turn: the
+parent-context economy pressure that makes delegation rational ("context
+re-read every turn") is nearly absent. Consequence: INLINE cases pass cheaply
+and weakly (cold turns inline naturally regardless of skill quality); DELEGATE
+cases are the load-bearing signal. Choose DELEGATE scenarios broad enough that
+delegation is clearly correct even cold (multi-file sweeps, exploratory
+mapping). If DELEGATE cases fire < 50% at K=30, conclude "headless
+behavioral-dispatch is too cold to measure delegation here" and document it —
+do not record as a skill regression.
+
+The `method` schema, the classification-answer parser, and the stream-json
+detectors (both runtime and behavioral-dispatch) are unit-tested offline
+(synthetic inputs, no `claude -p`) in
+`claude/.claude/skills/tests/test_trigger_detector.py`; the fixtures live in
+`evals/fixtures/`.
 
 ## Linting
 
