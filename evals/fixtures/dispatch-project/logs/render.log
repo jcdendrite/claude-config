@@ -1,0 +1,10 @@
+2026-06-01T10:00:01Z INFO  render_widget called widget_id=header context=None
+2026-06-01T10:00:01Z DEBUG WidgetRenderer.__init__ complete
+2026-06-01T10:00:02Z INFO  render_widget called widget_id=sidebar context={'user': 'anon'}
+2026-06-01T10:00:02Z ERROR render_widget failed widget_id=sidebar error=KeyError('user')
+2026-06-01T10:00:02Z INFO  retry widget_id=sidebar attempt=2
+2026-06-01T10:00:03Z INFO  render_widget called widget_id=sidebar context=None
+2026-06-01T10:00:03Z DEBUG widget rendered in 42ms
+2026-06-01T10:00:04Z INFO  render_widget called widget_id=footer context=None
+2026-06-01T10:00:04Z DEBUG widget rendered in 11ms
+AssertionError: expected widget_id='footer' to produce '<footer>' got '<widget id=footer>'

@@ -1,7 +1,7 @@
 """Skill eval harness for claude-config.
 
 Measures each skill's trigger-cases.json against its declared TRIGGER /
-DO NOT TRIGGER conditions, using one of two methods declared per case file:
+DO NOT TRIGGER conditions, using one of three methods declared per case file:
 
 - runtime: spawn `claude -p` and watch for the Skill tool to fire. Measures
   real auto-dispatch; faithful only when the skill triggers headlessly.
@@ -9,6 +9,10 @@ DO NOT TRIGGER conditions, using one of two methods declared per case file:
   which skill a query should match given the full skill listing. Measures
   whether the skill's description discriminates the query — not runtime
   dispatch. Used for advisory skills the runtime substrate cannot reach.
+- behavioral-dispatch: spawn `claude -p` and watch for the Task tool to fire.
+  Measures whether the model actually delegates to a subagent when given a full
+  task scenario. Used for skills like subagent-delegation whose effect is the
+  parent's tool choice, not a Skill invocation.
 
 LOCAL USE ONLY — never run in CI. Uses the session's Claude subscription
 auth (no ANTHROPIC_API_KEY required; no per-token charge on Max plan).
@@ -46,15 +50,23 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # Measurement method declared per case file. `runtime` spawns `claude -p` and
 # watches for the Skill tool to fire; `description-fidelity` asks `claude -p` to
-# classify which skill a query should match. See evals/README.md. A case file
-# must declare exactly one of these.
+# classify which skill a query should match; `behavioral-dispatch` spawns
+# `claude -p` and watches for the Task tool to fire. See evals/README.md. A
+# case file must declare exactly one of these.
 RUNTIME_METHOD = "runtime"
 DESCRIPTION_FIDELITY_METHOD = "description-fidelity"
-VALID_METHODS = frozenset((RUNTIME_METHOD, DESCRIPTION_FIDELITY_METHOD))
+BEHAVIORAL_DISPATCH_METHOD = "behavioral-dispatch"
+VALID_METHODS = frozenset((RUNTIME_METHOD, DESCRIPTION_FIDELITY_METHOD, BEHAVIORAL_DISPATCH_METHOD))
 
 # Skill-tool detection: Claude Code auto-triggers a skill by calling the Skill tool.
 # Read is NOT included — its input is a file path, not a skill name.
 TRIGGER_TOOL_NAMES = frozenset(("Skill",))
+
+# Dispatch-tool detection: current Claude Code (>=2.1.191) emits "Agent" for
+# subagent dispatch; earlier versions emitted "Task". Both are matched so the
+# harness stays correct across a version boundary. Confirmed by capturing a
+# live claude -p stream: the model calls Agent even when instructed to use Task.
+DISPATCH_TOOL_NAMES = frozenset(("Agent", "Task"))
 
 
 def find_skill_dir(skill_name: str) -> Path | None:
@@ -93,20 +105,18 @@ def load_case_file(path: Path) -> dict:
     return data
 
 
-def partition_case_files(case_files: list[Path]) -> tuple[list[Path], list[Path]]:
-    """Split case files by measurement method.
+def partition_case_files(case_files: list[Path]) -> dict[str, list[Path]]:
+    """Partition case files by measurement method.
 
-    Returns (runtime_files, description_fidelity_files). Raises via
-    load_case_file() on any file with a missing or invalid method.
+    Returns dict[method_str, list[Path]]. Raises via load_case_file() on any
+    file with a missing or invalid method. Forward-compatible: a new method
+    constant added to VALID_METHODS is automatically tracked here.
     """
-    runtime_files: list[Path] = []
-    description_fidelity_files: list[Path] = []
+    by_method: dict[str, list[Path]] = {m: [] for m in VALID_METHODS}
     for case_file in case_files:
-        if load_case_file(case_file)["method"] == RUNTIME_METHOD:
-            runtime_files.append(case_file)
-        else:
-            description_fidelity_files.append(case_file)
-    return runtime_files, description_fidelity_files
+        method = load_case_file(case_file)["method"]
+        by_method.setdefault(method, []).append(case_file)
+    return by_method
 
 
 def seed_temp_project_git(project_dir: Path) -> None:
@@ -243,6 +253,39 @@ def build_isolated_project() -> Path:
     dot_claude = tmp / ".claude"
     dot_claude.mkdir()
     (dot_claude / "settings.json").write_text(json.dumps({"hooks": {}}))
+    return tmp
+
+
+def build_dispatch_project(skills_dir: Path, plugins_dir: Path) -> Path:
+    """Create a throwaway project for behavioral-dispatch runs.
+
+    Like build_temp_project — real skills symlinked so the subagent-delegation
+    skill is present and shaping the model — but seeded with the dispatch
+    fixture project (evals/fixtures/dispatch-project/) instead of the
+    calculator project. The dispatch fixture has a real multi-file import graph
+    so "find every file that imports X" scenarios are genuine sweeps.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="claude-eval-bd-"))
+    dot_claude = tmp / ".claude"
+    dot_claude.mkdir()
+    (dot_claude / "skills").symlink_to(skills_dir)
+    if plugins_dir.exists():
+        plugin_skills = dot_claude / "plugin_skills"
+        plugin_skills.mkdir()
+        for plugin_dir in sorted(plugins_dir.iterdir()):
+            ps = plugin_dir / "skills"
+            if ps.is_dir():
+                (plugin_skills / plugin_dir.name).symlink_to(ps)
+    (dot_claude / "settings.json").write_text(json.dumps({"hooks": {}}))
+
+    dispatch_fixture = EVALS_DIR / "fixtures" / "dispatch-project"
+    shutil.copytree(dispatch_fixture, tmp, dirs_exist_ok=True)
+
+    git = ["git", "-c", "user.email=eval@example.com", "-c", "user.name=Eval Harness"]
+    subprocess.run([*git, "init", "-q"], cwd=tmp, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=tmp, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "initial"], cwd=tmp, check=True)
+
     return tmp
 
 
@@ -466,6 +509,125 @@ def run_single_sample(args: tuple) -> tuple[str | None, list[str]]:
     return detect_trigger_in_stream(proc, skill_name, also_not)
 
 
+# --- behavioral-dispatch measurement ------------------------------------------
+#
+# Watches the Agent and Task tools, not the Skill tool. Claude Code >=2.1.191
+# dispatches subagents via the Agent tool; earlier versions used Task. Both are
+# matched. "Fired" means any Agent or Task call occurred; there is no payload
+# field to match, and behavioral-dispatch uses no also_not.
+
+
+def detect_dispatch_in_lines(lines: Iterable[str | bytes]) -> bool:
+    """Parse stream-json lines and return True if any Agent or Task tool_use appeared.
+
+    Mirrors detect_trigger_in_lines but simpler: no also_not, no payload
+    parsing. Separated from the subprocess layer so the unit test can feed
+    fixture files without spawning a subprocess.
+    """
+    for raw_line in lines:
+        line = (
+            raw_line.strip().decode("utf-8", errors="replace")
+            if isinstance(raw_line, bytes)
+            else raw_line.strip()
+        )
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        evt = obj.get("event")
+        if not isinstance(evt, dict):
+            continue
+
+        if evt.get("type") != "content_block_start":
+            continue
+        block = evt.get("content_block", {})
+        if block.get("type") == "tool_use" and block.get("name") in DISPATCH_TOOL_NAMES:
+            return True
+
+    return False
+
+
+def detect_dispatch_in_stream(proc: subprocess.Popen) -> bool:
+    """Read stream-json from proc stdout; return True on first Agent or Task tool_use.
+
+    Early-terminates the subprocess on first dispatch tool call — no also_not to
+    wait for. Mirrors detect_trigger_in_stream.
+    """
+    buf = b""
+    deadline = time.monotonic() + SAMPLE_TIMEOUT_S
+
+    while True:
+        if time.monotonic() > deadline:
+            break
+        remaining = max(0.1, deadline - time.monotonic())
+        rlist, _, _ = select.select([proc.stdout], [], [], remaining)
+        if not rlist:
+            continue
+        chunk = proc.stdout.read(4096)
+        if not chunk:
+            break
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if detect_dispatch_in_lines([line]):
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+                return True
+
+    try:
+        proc.kill()
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+    return False
+
+
+def _build_dispatch_command(query: str, handoff: str, model: str) -> list[str]:
+    """Build the claude -p command list for one behavioral-dispatch sample."""
+    return [
+        "claude", "-p", query,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--model", model,
+        "--append-system-prompt", handoff,
+    ]
+
+
+def run_dispatch_sample(args: tuple) -> tuple[str | None, list[str]]:
+    """Run one claude -p sample for behavioral-dispatch. Called from worker processes.
+
+    Returns (skill_name if the model dispatched a subagent else None, []) —
+    the same (fired, also_fired) shape as run_single_sample so run_case()
+    scores both methods identically.
+
+    args is a positional 5-tuple: (query, skill_name, dispatch_project, handoff, model).
+    Both this unpack and the construction in run_case() must be updated together.
+    """
+    query, skill_name, dispatch_project, handoff, model = args
+
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+    proc = subprocess.Popen(
+        _build_dispatch_command(query, handoff, model),
+        cwd=str(dispatch_project),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+
+    dispatched = detect_dispatch_in_stream(proc)
+    proc.stdout.close()
+    return (skill_name if dispatched else None, [])
+
+
 def run_case(
     case: dict,
     skill_name: str,
@@ -487,6 +649,9 @@ def run_case(
     if method == RUNTIME_METHOD:
         sample_fn = run_single_sample
         sample_arg: tuple = (query, skill_name, also_not, run_context["tmp_project"], model)
+    elif method == BEHAVIORAL_DISPATCH_METHOD:
+        sample_fn = run_dispatch_sample
+        sample_arg = (query, skill_name, run_context["dispatch_project"], run_context["dispatch_handoff"], model)
     else:
         sample_fn = run_description_fidelity_sample
         sample_arg = (
@@ -623,15 +788,19 @@ def main() -> int:
             print("No trigger-cases.json files found. Run --skill <name> or author case files first.", file=sys.stderr)
             return 1
 
-    runtime_files, description_fidelity_files = partition_case_files(case_files)
+    files_by_method = partition_case_files(case_files)
+    runtime_files = files_by_method[RUNTIME_METHOD]
+    description_fidelity_files = files_by_method[DESCRIPTION_FIDELITY_METHOD]
+    behavioral_dispatch_files = files_by_method[BEHAVIORAL_DISPATCH_METHOD]
 
     tmp_project: Path | None = None
     isolated_project: Path | None = None
+    dispatch_project: Path | None = None
     try:
         skill_results = []
 
-        # runtime files first, then description-fidelity — each measured by its
-        # own substrate, both reported in one table with a `method` column.
+        # Each method runs against its own substrate; all three report in one
+        # table with a `method` column.
         if runtime_files:
             tmp_project = build_temp_project(SKILLS_DIR, PLUGINS_DIR)
             runtime_context = {"tmp_project": tmp_project}
@@ -656,6 +825,24 @@ def main() -> int:
                     )
                 )
 
+        if behavioral_dispatch_files:
+            dispatch_project = build_dispatch_project(SKILLS_DIR, PLUGINS_DIR)
+            dispatch_handoff_path = REPO_ROOT / "evals" / "fixtures" / "dispatch-session-handoff.md"
+            if not dispatch_handoff_path.exists():
+                sys.exit(f"Handoff fixture not found: {dispatch_handoff_path}")
+            dispatch_handoff = dispatch_handoff_path.read_text()
+            dispatch_context = {
+                "dispatch_project": dispatch_project,
+                "dispatch_handoff": dispatch_handoff,
+            }
+            for case_file in behavioral_dispatch_files:
+                skill_results.append(
+                    run_skill(
+                        case_file, dispatch_context,
+                        args.model, args.samples, args.workers, args.verbose,
+                    )
+                )
+
         print_report(skill_results, args.model, args.samples, args.verbose)
 
         if args.json_out:
@@ -675,6 +862,8 @@ def main() -> int:
             shutil.rmtree(tmp_project, ignore_errors=True)
         if isolated_project is not None:
             shutil.rmtree(isolated_project, ignore_errors=True)
+        if dispatch_project is not None:
+            shutil.rmtree(dispatch_project, ignore_errors=True)
 
 
 if __name__ == "__main__":

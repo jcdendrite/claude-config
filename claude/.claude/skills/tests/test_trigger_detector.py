@@ -1,7 +1,8 @@
 """Unit tests for the offline-testable parts of evals/run_skill_evals.py.
 
 Covers the runtime-mode stream-json trigger detector, the case-file `method`
-schema, and the description-fidelity classification parser / scorer. All
+schema, the description-fidelity classification parser / scorer, and the
+behavioral-dispatch command builder. All
 deterministic — no claude -p call, CI-safe. Runtime-mode detector tests feed
 committed synthetic stream-json fixtures from evals/fixtures/.
 
@@ -18,6 +19,8 @@ from pathlib import Path
 
 import pytest
 from run_skill_evals import (
+    _build_dispatch_command,
+    detect_dispatch_in_lines,
     detect_trigger_in_lines,
     load_case_file,
     parse_classification_answer,
@@ -136,7 +139,7 @@ class TestCaseFileMethod:
 
     def test_load_case_file_accepts_valid_methods(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
-            for method in ("runtime", "description-fidelity"):
+            for method in ("runtime", "description-fidelity", "behavioral-dispatch"):
                 path = self._write_case_file(
                     Path(tmp_str),
                     f"{method}.json",
@@ -145,7 +148,7 @@ class TestCaseFileMethod:
                 assert load_case_file(path)["method"] == method
 
     def test_partition_splits_by_method(self) -> None:
-        """partition_case_files separates runtime files from description-fidelity files."""
+        """partition_case_files groups files by method string into a dict."""
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             runtime = self._write_case_file(
@@ -156,9 +159,14 @@ class TestCaseFileMethod:
                 tmp, "descfid.json",
                 {"skill_name": "df", "method": "description-fidelity", "cases": []},
             )
-            runtime_files, description_fidelity_files = partition_case_files([runtime, descfid])
-            assert runtime_files == [runtime]
-            assert description_fidelity_files == [descfid]
+            dispatch = self._write_case_file(
+                tmp, "dispatch.json",
+                {"skill_name": "bd", "method": "behavioral-dispatch", "cases": []},
+            )
+            result = partition_case_files([runtime, descfid, dispatch])
+            assert result["runtime"] == [runtime]
+            assert result["description-fidelity"] == [descfid]
+            assert result["behavioral-dispatch"] == [dispatch]
 
 
 class TestParseSkillFrontmatter:
@@ -232,6 +240,136 @@ class TestParseClassificationAnswer:
         assert parse_classification_answer(answer, VALID_NAMES) == "code-review"
 
 
+@pytest.fixture
+def fixture_dir() -> Path:
+    return FIXTURES_DIR
+
+
+class TestDetectDispatch:
+    """Offline tests for the behavioral-dispatch dispatch-tool detector.
+
+    Claude Code >=2.1.191 emits "Agent" for subagent dispatch; earlier versions
+    emitted "Task". Both names are in DISPATCH_TOOL_NAMES; tests cover both.
+    """
+
+    def test_detects_dispatch_tool_from_fixture(self, fixture_dir: Path) -> None:
+        """Fixture with Agent tool_use call → detector returns True."""
+        lines = (fixture_dir / "dispatch-fired-explore.jsonl").read_text().splitlines()
+        assert detect_dispatch_in_lines(lines) is True
+
+    def test_no_dispatch_on_read_bash(self, fixture_dir: Path) -> None:
+        """Fixture with only Read and Bash calls → detector returns False."""
+        lines = (fixture_dir / "no-dispatch-inline.jsonl").read_text().splitlines()
+        assert detect_dispatch_in_lines(lines) is False
+
+    def test_empty_lines_returns_false(self) -> None:
+        assert detect_dispatch_in_lines([]) is False
+
+    def test_content_block_delta_does_not_fire(self) -> None:
+        """content_block_delta events must not be mistaken for a Task dispatch."""
+        # Guard that fires: evt.get("type") != "content_block_start" short-circuits
+        # before any content_block inspection — the embedded "Task" string in
+        # partial_json is irrelevant to the rejection.
+        delta_event = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"name": "Task"}'},
+            },
+        })
+        assert detect_dispatch_in_lines([delta_event]) is False
+
+    def test_agent_in_content_block_delta_does_not_fire(self) -> None:
+        """'Agent' embedded in a content_block_delta partial_json must not fire."""
+        delta_event = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"name": "Agent"}'},
+            },
+        })
+        assert detect_dispatch_in_lines([delta_event]) is False
+
+    def test_skill_tool_use_does_not_fire(self) -> None:
+        """A Skill tool_use must not register as a Task dispatch."""
+        lines = [
+            '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_X","name":"Skill","input":{}}}}'
+        ]
+        assert detect_dispatch_in_lines(lines) is False
+
+    def test_content_block_start_text_type_does_not_fire(self) -> None:
+        """content_block_start with content_block.type 'text' (not 'tool_use') must not fire.
+
+        Exercises the block.get("type") == "tool_use" guard specifically — distinct
+        from the event-type check that test_content_block_delta_does_not_fire covers.
+        """
+        event = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": "Task"},
+            },
+        })
+        assert detect_dispatch_in_lines([event]) is False
+
+    def test_non_json_line_before_task_does_not_prevent_detection(self) -> None:
+        """A malformed line mid-stream must not swallow a valid Task event that follows."""
+        task_line = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_X", "name": "Task", "input": {}},
+            },
+        })
+        assert detect_dispatch_in_lines(["not valid json", task_line]) is True
+
+    def test_non_json_line_before_agent_does_not_prevent_detection(self) -> None:
+        """A malformed line mid-stream must not swallow a valid Agent event that follows."""
+        agent_line = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_X", "name": "Agent", "input": {}},
+            },
+        })
+        assert detect_dispatch_in_lines(["not valid json", agent_line]) is True
+
+    def test_detects_agent_tool_use(self) -> None:
+        """Agent tool_use (Claude Code >=2.1.191 dispatch name) → detector returns True."""
+        agent_line = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_X", "name": "Agent", "input": {}},
+            },
+        })
+        assert detect_dispatch_in_lines([agent_line]) is True
+
+    def test_detects_task_tool_use(self) -> None:
+        """Task tool_use (backward-compat name for Claude Code <2.1.191) → detector returns True."""
+        task_line = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_X", "name": "Task", "input": {}},
+            },
+        })
+        assert detect_dispatch_in_lines([task_line]) is True
+
+    def test_bytes_input_detects_dispatch_tool(self, fixture_dir: Path) -> None:
+        """detect_dispatch_in_lines accepts bytes as emitted by detect_dispatch_in_stream."""
+        raw = (fixture_dir / "dispatch-fired-explore.jsonl").read_bytes()
+        lines = [line for line in raw.split(b"\n") if line.strip()]
+        assert detect_dispatch_in_lines(lines) is True
+
+
 class TestScoreClassification:
     """description-fidelity scoring maps a named skill to the (fired, also_fired) shape."""
 
@@ -260,3 +398,36 @@ class TestScoreClassification:
         fired, also = score_classification(None, "code-review", ["plan-review"])
         assert fired is None
         assert also == []
+
+
+class TestBuildDispatchCommand:
+    """Verify that _build_dispatch_command produces the correct subprocess argument list."""
+
+    def test_full_command_list(self) -> None:
+        cmd = _build_dispatch_command("my query", "handoff text", "claude-sonnet-4-6")
+        assert cmd == [
+            "claude", "-p", "my query",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model", "claude-sonnet-4-6",
+            "--append-system-prompt", "handoff text",
+        ]
+
+    def test_empty_handoff_passes_through(self) -> None:
+        # _build_dispatch_command has no validation; empty handoff is a caller concern.
+        # Fixture guard (test_handoff_fixture_exists_and_nonempty) catches this in CI.
+        cmd = _build_dispatch_command("q", "", "m")
+        assert cmd == [
+            "claude", "-p", "q",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model", "m",
+            "--append-system-prompt", "",
+        ]
+
+    def test_handoff_fixture_exists_and_nonempty(self) -> None:
+        handoff_path = FIXTURES_DIR / "dispatch-session-handoff.md"
+        assert handoff_path.exists(), f"Handoff fixture not found at {handoff_path}"
+        assert handoff_path.read_text().strip(), "Handoff fixture is empty"
