@@ -5,10 +5,10 @@ description: >
   check suite or full-project verification; broad codebase search;
   first exploratory read; 2nd/3rd Bash toward same question; delegating
   implementation.
-  DO NOT TRIGGER when: single targeted lookup; comprehension read
-  feeding your own writing/review/design; Edit/Write sequences where
-  scope or content is still forming; output requiring line-by-line
-  reasoning.
+  DO NOT TRIGGER when: single-artifact targeted lookup (one file or
+  value, not a multi-site sweep); comprehension read feeding your own
+  writing/review/design; Edit/Write sequences where scope or content
+  is still forming; output requiring line-by-line reasoning.
 ---
 
 # Subagent delegation
@@ -41,10 +41,14 @@ dispatch the question instead of continuing inline.
 
 **Stays inline — do not over-delegate:**
 
-- A lookup where you already know the target — one `grep` for a
-  specific known symbol, one `Read` of a specific known path. If you
-  do not yet know what you are looking for, that is exploratory —
-  dispatch it even if you only planned one command.
+- A lookup whose result is a single artifact the parent consumes
+  directly — one `Read` of a known path, or a `grep` that resolves to
+  one value or one yes/no answer (e.g. confirming a symbol is defined
+  in exactly one place). The test is the *result shape*, not whether
+  the target is known: a relay lookup that returns a set of sites —
+  all callers, all usages, every file matching a pattern — is
+  locate-and-report, so dispatch it even when the target is known. An
+  unknown target is exploratory — dispatch that too.
 - A comprehension read whose content feeds your own writing, review, or
   design.
 - `Edit`/`Write` sequences where you are still deciding approach, scope,
