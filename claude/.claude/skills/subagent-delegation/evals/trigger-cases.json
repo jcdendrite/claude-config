@@ -6,7 +6,7 @@
       "id": "locate-importers-sweep",
       "query": "Find every file in this project that imports from the components module and list what each one uses.",
       "should_trigger": true,
-      "note": "Broad locate sweep — real correction from session 84955fdf: 'don't grep. use an explore agent.' Unambiguous even cold: multi-file sweep, conclusion-only output needed."
+      "note": "Broad locate sweep — real correction from session 84955fdf: 'don't grep. use an explore agent.' Unambiguous even cold: multi-file sweep, conclusion-only output needed. Construct-validity caveat: the dispatch-project fixture was enlarged to 18+ importers and relay-lookup still fired 0-1/10 — bounded-retrieval framing keeps the model inline regardless of fixture scale. A 0/10 result on this case reflects framing bias, not a skill regression."
     },
     {
       "id": "explore-unfamiliar-area",
@@ -18,7 +18,7 @@
       "id": "relay-lookup",
       "query": "Show me the render_widget method and everywhere it's called.",
       "should_trigger": true,
-      "note": "Relay lookup: the parent needs the answer reported back, not the output reasoned over. Reframed from 'known-target = inline' after user pushback dc0dc508 — relay is locate-and-report, not comprehension."
+      "note": "Relay lookup: the parent needs the answer reported back, not the output reasoned over. Reframed from 'known-target = inline' after user pushback dc0dc508 — relay is locate-and-report, not comprehension. Construct-validity caveat: behavioral-dispatch cannot validate a skill-body fix (body is invisible to this eval — it only fires if the model self-triggers the Skill tool, which concrete task queries don't do). A 0/10 result reflects instrument blindness + bounded-retrieval framing bias, not a skill regression."
     },
     {
       "id": "reason-over-supplied-failure",
