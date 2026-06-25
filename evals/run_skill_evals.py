@@ -62,10 +62,11 @@ VALID_METHODS = frozenset((RUNTIME_METHOD, DESCRIPTION_FIDELITY_METHOD, BEHAVIOR
 # Read is NOT included — its input is a file path, not a skill name.
 TRIGGER_TOOL_NAMES = frozenset(("Skill",))
 
-# Dispatch-tool detection: all subagent dispatches go through the Task tool.
-# "Agent" is only an interactive-display alias; Task is the real tool name,
-# confirmed from the system/init event's tools list in committed fixtures.
-DISPATCH_TOOL_NAMES = frozenset(("Task",))
+# Dispatch-tool detection: current Claude Code (>=2.1.191) emits "Agent" for
+# subagent dispatch; earlier versions emitted "Task". Both are matched so the
+# harness stays correct across a version boundary. Confirmed by capturing a
+# live claude -p stream: the model calls Agent even when instructed to use Task.
+DISPATCH_TOOL_NAMES = frozenset(("Agent", "Task"))
 
 
 def find_skill_dir(skill_name: str) -> Path | None:
@@ -510,14 +511,14 @@ def run_single_sample(args: tuple) -> tuple[str | None, list[str]]:
 
 # --- behavioral-dispatch measurement ------------------------------------------
 #
-# Watches the Task tool, not the Skill tool. All subagent dispatches go through
-# Task (Explore, general-purpose, code-writer — confirmed from the system/init
-# tools list in committed fixtures). "Fired" means any Task call occurred;
-# there is no payload field to match, and behavioral-dispatch uses no also_not.
+# Watches the Agent and Task tools, not the Skill tool. Claude Code >=2.1.191
+# dispatches subagents via the Agent tool; earlier versions used Task. Both are
+# matched. "Fired" means any Agent or Task call occurred; there is no payload
+# field to match, and behavioral-dispatch uses no also_not.
 
 
 def detect_dispatch_in_lines(lines: Iterable[str | bytes]) -> bool:
-    """Parse stream-json lines and return True if any Task tool_use appeared.
+    """Parse stream-json lines and return True if any Agent or Task tool_use appeared.
 
     Mirrors detect_trigger_in_lines but simpler: no also_not, no payload
     parsing. Separated from the subprocess layer so the unit test can feed
@@ -550,10 +551,10 @@ def detect_dispatch_in_lines(lines: Iterable[str | bytes]) -> bool:
 
 
 def detect_dispatch_in_stream(proc: subprocess.Popen) -> bool:
-    """Read stream-json from proc stdout; return True on first Task tool_use.
+    """Read stream-json from proc stdout; return True on first Agent or Task tool_use.
 
-    Early-terminates the subprocess on first Task call — no also_not to wait
-    for. Mirrors detect_trigger_in_stream.
+    Early-terminates the subprocess on first dispatch tool call — no also_not to
+    wait for. Mirrors detect_trigger_in_stream.
     """
     buf = b""
     deadline = time.monotonic() + SAMPLE_TIMEOUT_S

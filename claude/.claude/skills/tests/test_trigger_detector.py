@@ -246,10 +246,14 @@ def fixture_dir() -> Path:
 
 
 class TestDetectDispatch:
-    """Offline tests for the behavioral-dispatch Task-tool detector."""
+    """Offline tests for the behavioral-dispatch dispatch-tool detector.
 
-    def test_detects_task_tool_use(self, fixture_dir: Path) -> None:
-        """Fixture with Task tool_use call → detector returns True."""
+    Claude Code >=2.1.191 emits "Agent" for subagent dispatch; earlier versions
+    emitted "Task". Both names are in DISPATCH_TOOL_NAMES; tests cover both.
+    """
+
+    def test_detects_dispatch_tool_from_fixture(self, fixture_dir: Path) -> None:
+        """Fixture with Agent tool_use call → detector returns True."""
         lines = (fixture_dir / "dispatch-fired-explore.jsonl").read_text().splitlines()
         assert detect_dispatch_in_lines(lines) is True
 
@@ -272,6 +276,18 @@ class TestDetectDispatch:
                 "type": "content_block_delta",
                 "index": 0,
                 "delta": {"type": "input_json_delta", "partial_json": '{"name": "Task"}'},
+            },
+        })
+        assert detect_dispatch_in_lines([delta_event]) is False
+
+    def test_agent_in_content_block_delta_does_not_fire(self) -> None:
+        """'Agent' embedded in a content_block_delta partial_json must not fire."""
+        delta_event = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"name": "Agent"}'},
             },
         })
         assert detect_dispatch_in_lines([delta_event]) is False
@@ -311,7 +327,43 @@ class TestDetectDispatch:
         })
         assert detect_dispatch_in_lines(["not valid json", task_line]) is True
 
-    def test_bytes_input_detects_task(self, fixture_dir: Path) -> None:
+    def test_non_json_line_before_agent_does_not_prevent_detection(self) -> None:
+        """A malformed line mid-stream must not swallow a valid Agent event that follows."""
+        agent_line = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_X", "name": "Agent", "input": {}},
+            },
+        })
+        assert detect_dispatch_in_lines(["not valid json", agent_line]) is True
+
+    def test_detects_agent_tool_use(self) -> None:
+        """Agent tool_use (Claude Code >=2.1.191 dispatch name) → detector returns True."""
+        agent_line = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_X", "name": "Agent", "input": {}},
+            },
+        })
+        assert detect_dispatch_in_lines([agent_line]) is True
+
+    def test_detects_task_tool_use(self) -> None:
+        """Task tool_use (backward-compat name for Claude Code <2.1.191) → detector returns True."""
+        task_line = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_X", "name": "Task", "input": {}},
+            },
+        })
+        assert detect_dispatch_in_lines([task_line]) is True
+
+    def test_bytes_input_detects_dispatch_tool(self, fixture_dir: Path) -> None:
         """detect_dispatch_in_lines accepts bytes as emitted by detect_dispatch_in_stream."""
         raw = (fixture_dir / "dispatch-fired-explore.jsonl").read_bytes()
         lines = [line for line in raw.split(b"\n") if line.strip()]
