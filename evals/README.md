@@ -204,13 +204,15 @@ present and shaping the model — and whose working tree is seeded from
 real import graph. The detector watches for:
 
 ```
-content_block_start → content_block.type == "tool_use" AND name == "Task"
+content_block_start → content_block.type == "tool_use" AND name IN ("Agent", "Task")
 ```
 
-`Task` is the real dispatch-tool name (confirmed from the `system/init` event's
-`"tools"` list in committed fixtures — the "Agent" label is an
-interactive-display alias only). "Fired" means any `Task` call occurred; there
-is no payload field to match. `also_not_triggered` is not used in this method.
+`Agent` is the dispatch-tool name on Claude Code >=2.1.191; earlier versions
+used `Task`. Both are matched so the harness stays correct across a version
+boundary — confirmed by capturing a live `claude -p` stream: the model emits
+`"Agent"` even when the `system/init` tools list still advertises `"Task"`.
+"Fired" means any `Agent` or `Task` call occurred; there is no payload field
+to match. `also_not_triggered` is not used in this method.
 
 **`should_trigger: true`** means the scenario should cause the model to delegate.
 **`should_trigger: false`** means the scenario should be handled inline.

@@ -418,7 +418,14 @@ class TestBuildDispatchCommand:
         # _build_dispatch_command has no validation; empty handoff is a caller concern.
         # Fixture guard (test_handoff_fixture_exists_and_nonempty) catches this in CI.
         cmd = _build_dispatch_command("q", "", "m")
-        assert cmd[cmd.index("--append-system-prompt") + 1] == ""
+        assert cmd == [
+            "claude", "-p", "q",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model", "m",
+            "--append-system-prompt", "",
+        ]
 
     def test_handoff_fixture_exists_and_nonempty(self) -> None:
         handoff_path = FIXTURES_DIR / "dispatch-session-handoff.md"
