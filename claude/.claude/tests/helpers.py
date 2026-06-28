@@ -190,6 +190,23 @@ def multiedit_input(file_path: str) -> dict:
     return {"tool_name": "MultiEdit", "tool_input": {"file_path": file_path, "edits": []}}
 
 
+def exitplanmode_input(plan_file_path: str = "/home/user/.claude/plans/test-plan.md") -> dict:
+    """Build an ExitPlanMode event payload matching the real harness shape.
+
+    The ExitPlanMode tool_input has `plan` and `planFilePath` fields — no
+    `file_path` field. The hook extracts `.tool_input.file_path // empty`,
+    which yields an empty string for this payload, so the path-scope filter
+    is skipped and the gate applies unconditionally.
+    """
+    return {
+        "tool_name": "ExitPlanMode",
+        "tool_input": {
+            "plan": "# Test plan\n\nTest plan content for spike/unit tests.",
+            "planFilePath": plan_file_path,
+        },
+    }
+
+
 def read_input(file_path: str, session_id: str | None = None) -> dict:
     payload: dict = {"tool_name": "Read", "tool_input": {"file_path": file_path}}
     if session_id is not None:
