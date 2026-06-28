@@ -197,6 +197,9 @@ def exitplanmode_input(plan_file_path: str = "/home/user/.claude/plans/test-plan
     `file_path` field. The hook extracts `.tool_input.file_path // empty`,
     which yields an empty string for this payload, so the path-scope filter
     is skipped and the gate applies unconditionally.
+
+    Field names (`plan`, `planFilePath` camelCase) verified empirically via
+    live plan-mode session observation (spike run, prior session).
     """
     return {
         "tool_name": "ExitPlanMode",
@@ -321,6 +324,15 @@ def plan_review_active_marker_path(home: Path, session_id: str) -> Path:
 
 
 def write_plan_review_active_marker(home: Path, session_id: str) -> Path:
+    """Create a plan-review active marker with empty content.
+
+    This produces a dead-PID marker intentionally for hooks that check marker
+    existence only (e.g., require-routing-read.sh, log-routing-read.sh).
+    require-plan-review.sh reads the file and validates the PID with kill -0,
+    so an empty-content marker is immediately evicted by that hook. For tests
+    that need a live-marker bypass in require-plan-review.sh, write the PID
+    directly: `(marker_dir / sid).write_text(str(os.getpid()))`.
+    """
     marker = plan_review_active_marker_path(home, session_id)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()

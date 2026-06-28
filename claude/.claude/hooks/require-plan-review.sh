@@ -77,8 +77,10 @@ fi
 
 NEEDS_REVIEW=0
 while IFS= read -r PLAN_FILE; do
-  if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$PLAN_FILE" >/dev/null 2>&1 \
-     && git -C "$REPO_ROOT" diff --quiet HEAD -- "$PLAN_FILE" 2>/dev/null; then
+  # 5s ceiling matches _lib_jq's established precedent; git ls-files/diff are
+  # fast on local disk but can stall indefinitely on NFS or a locked .git/index.
+  if timeout 5 git -C "$REPO_ROOT" ls-files --error-unmatch -- "$PLAN_FILE" >/dev/null 2>&1 \
+     && timeout 5 git -C "$REPO_ROOT" diff --quiet HEAD -- "$PLAN_FILE" 2>/dev/null; then
     continue
   fi
   NEEDS_REVIEW=1
@@ -119,6 +121,8 @@ fi
 # Scope the deny to writes inside this repo. Writes targeting user-home
 # directories (~/.claude/plans/), /tmp, or other repos are outside the gate's
 # intent — the gate guards this repo's code, not all files on disk.
+# ExitPlanMode carries no file_path, so TARGET_PATH is always empty for it;
+# this block is skipped and ExitPlanMode reaches emit_deny unconditionally.
 if [ -n "$TARGET_PATH" ]; then
   REAL_REPO=$(realpath -m "$REPO_ROOT")
   REAL_TARGET=$(realpath -m "$TARGET_PATH")

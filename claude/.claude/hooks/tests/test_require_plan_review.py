@@ -744,6 +744,15 @@ class TestRequirePlanReviewExitPlanMode:
         )
         assert result == "deny"
 
+    def test_no_session_id_exitplanmode_deny_reason(self, plan_review_repo, plan_review_home):
+        """No session_id deny reason uses ExitPlanMode-specific wording, not a generic message."""
+        reason = run_hook_reason(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            exitplanmode_input(),  # no session_id key
+            cwd=plan_review_repo,
+        )
+        assert reason is not None and "plan presentation" in reason.lower()
+
     def test_no_file_path_exitplanmode_denies_without_crash(self, plan_review_repo, plan_review_home):
         """ExitPlanMode has no file_path — must deny cleanly, no crash (set -u safe).
 
@@ -817,7 +826,7 @@ def test_settings_exitplanmode_matcher_exists_and_isolated():
         "ExitPlanMode should have exactly one matcher block in PreToolUse"
     )
     hook_commands = [h["command"] for h in exitplanmode_blocks[0].get("hooks", [])]
-    assert any("require-plan-review" in cmd for cmd in hook_commands), (
+    assert any(cmd.endswith("require-plan-review.sh") for cmd in hook_commands), (
         "ExitPlanMode block must include require-plan-review.sh"
     )
     assert not any("ask-review-permissions" in cmd for cmd in hook_commands), (
