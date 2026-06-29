@@ -8,7 +8,8 @@ description: >
   DO NOT TRIGGER when: single-artifact targeted lookup (one file or
   value, not a multi-site sweep); comprehension read feeding your own
   writing/review/design; Edit/Write sequences where scope or content
-  is still forming; output requiring line-by-line reasoning.
+  is still forming; the specific failure output or diff you reason over
+  line by line.
 ---
 
 # Subagent delegation
@@ -55,8 +56,7 @@ dispatch the question instead of continuing inline.
   or the substantive content — the judgment is the parent's and the edit
   stays inline. See the **Read-then-edit: decision-made test** in the
   `code-writer` section below for the narrow exception.
-- Output you must reason over line by line (a failure you are
-  debugging, a diff you must design against).
+- The failure output or diff you reason over line by line — the artifact itself, not the investigation that precedes it.
 
 **No permission cost.** A subagent runs under the parent's permission
 mode. Under auto mode, its read-only diagnostics are evaluated by the
@@ -86,11 +86,13 @@ directly in the parent's context with no follow-up read.
 - Commands scoped to a single test file or single test name during interactive
   debugging also stay inline.
 
-If a suite's output exceeds 30 KB (rare — e.g., a very large vitest output),
-the harness persists the full output to a `tool-results/` file and returns a
-~2 KB preview (the *first* 2 KB, usually the startup banner). In that case,
-`grep` the persisted file for the runner's own summary lines to find pass/fail
-and counts — do not re-run the suite.
+If any Bash output exceeds 30 KB (rare — e.g., a very large vitest output, a
+redirected diff, or a captured command log), the harness persists the full
+output to a `tool-results/` file and returns a ~2 KB preview (the *first* 2 KB,
+usually the startup banner). In that case, `grep` or `sed` the persisted file
+for the specific lines you need — do not re-run the command. On later turns, do
+not `Read` the whole persisted file: each full re-read re-bills the entire file
+size; extract only the slice you actually need.
 
 ### Codebase discovery → `Explore` or `general-purpose`
 
@@ -118,6 +120,25 @@ This does not apply to *comprehension* reads: when you need a file's
 content in your own reasoning — to write or modify it, review it, or
 design against it — read it directly. The split is locate-and-report
 (delegable) vs. read-and-reason (not).
+
+### Debug-investigation probe → `general-purpose` or `Explore`
+
+When root-causing a check or test failure requires a read-heavy probe —
+finding how existing tests handle a pattern, locating the relevant
+convention, mapping an analogous code shape — dispatch that probe as an
+objective to `general-purpose` (`model: sonnet`) or `Explore`:
+
+> "Diagnose why [test/check] fails; report root cause + minimal evidence
+> + proposed fix."
+
+The parent reasons over the returned diagnosis, designs the fix, and
+applies the edit and re-runs the check inline. The investigation read
+load stays in the subagent's context, not the parent's.
+
+See `root-cause-analysis` for the diagnosis discipline (establish the
+full symptom before forming a hypothesis). A write-capable debug-and-fix
+agent is the heavier primitive and re-introduces the model-agency failure
+class that retired `check-runner` — see `docs/case-studies/check-runner.md`.
 
 ### Implementation work → `code-writer`
 
