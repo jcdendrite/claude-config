@@ -115,7 +115,8 @@ Linear pipeline: plan-it → plan-review → code → code-review → commit →
 ```mermaid
 flowchart LR
     A[/plan-it/] --> B[/plan-review/]
-    B -->|"require-plan-review.sh\ngates Write/Edit while plan exists"| C([Write code])
+    B -->|"require-plan-review.sh\ngates ExitPlanMode + Write/Edit while plan exists"| EPM([ExitPlanMode / present to user])
+    EPM --> C([Write code])
     C --> D[/code-review/]
     D -->|"require-code-review.sh\ngates git commit"| E([git commit])
     E --> F[/ready-for-review/]
@@ -142,7 +143,7 @@ flowchart LR
 
 | Hook | Gates | Cleared by |
 |---|---|---|
-| `require-plan-review.sh` | `Write`/`Edit` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
+| `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
 | `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit (ships with `skill-management@claude-config` plugin) |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |

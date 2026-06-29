@@ -51,7 +51,7 @@
 
 ## Plan Review
 
-- After writing or modifying an implementation plan, run `/plan-review` before presenting the plan to the user. If the review finds issues, address them first, then present the final version.
+- After writing or modifying an implementation plan, run `/plan-review` before presenting the plan to the user — including when calling `ExitPlanMode` from the harness built-in plan workflow, not only via `/plan-it`. The `require-plan-review.sh` hook backs this mechanically: it denies `ExitPlanMode` while an un-reviewed plan file exists. If the review finds issues, address them first, then present the final version.
 
 ## Pre-Handoff Review
 

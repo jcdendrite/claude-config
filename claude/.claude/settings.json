@@ -251,6 +251,16 @@
         ]
       },
       {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-plan-review.sh",
+            "statusMessage": "Checking plan-review gate before plan presentation..."
+          }
+        ]
+      },
+      {
         "matcher": "Agent",
         "hooks": [
           {

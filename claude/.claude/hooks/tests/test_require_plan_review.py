@@ -1,15 +1,19 @@
 """Tests for require-plan-review.sh."""
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 
 import pytest
 from helpers import (
+    CLAUDE_DIR,
     HOOKS_DIR,
     SKILLS_DIR,
     bash_input,
     edit_input,
+    exitplanmode_input,
     extract_skill_command,
     multiedit_input,
     plan_review_marker_path,
@@ -662,4 +666,182 @@ class TestRequirePlanReview:
                 cwd=plan_review_repo,
             )
             == "allow"
+        )
+
+
+class TestRequirePlanReviewExitPlanMode:
+    """Gate behavior for the ExitPlanMode tool.
+
+    ExitPlanMode is the harness tool that presents the completed plan to the
+    user for approval. It must be gated by the same require-plan-review.sh
+    hook that gates Write/Edit, but with two important differences:
+      1. No file_path field — the path-scope filter is skipped (TARGET_PATH
+         empty → `if [ -n "$TARGET_PATH" ]` is false → falls through to deny).
+      2. Active-marker bypass does NOT apply — an active marker means
+         plan-review is in progress but not yet complete; ExitPlanMode must
+         remain blocked until review is finished and a completion marker exists.
+    """
+
+    def test_plan_exists_no_marker_denies_exitplanmode(self, plan_review_repo, plan_review_home):
+        """Gate arms: plan exists, no marker → ExitPlanMode denied."""
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(), "session_id": "test-session-epm"},
+            cwd=plan_review_repo,
+        )
+        assert result == "deny"
+
+    def test_plan_exists_no_marker_exitplanmode_deny_reason(self, plan_review_repo, plan_review_home):
+        """Deny reason contains /plan-review reference and ExitPlanMode-specific wording."""
+        reason = run_hook_reason(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(), "session_id": "test-session-epm-reason"},
+            cwd=plan_review_repo,
+        )
+        assert reason is not None
+        assert "/plan-review" in reason
+        assert "ExitPlanMode" in reason and "plan presentation" in reason.lower()
+
+    def test_completion_marker_allows_exitplanmode(self, plan_review_repo, plan_review_home):
+        """Completion marker present → ExitPlanMode allowed (happy path)."""
+        sid = "test-session-epm-allow"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(), "session_id": sid},
+            cwd=plan_review_repo,
+        )
+        assert result == "allow"
+
+    def test_no_plan_file_allows_exitplanmode(self, plan_review_repo, plan_review_home):
+        """No plan file in .claude/plans/ → ExitPlanMode allowed (gate inactive)."""
+        plans_dir = plan_review_repo / ".claude" / "plans"
+        shutil.rmtree(plans_dir, ignore_errors=True)
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(), "session_id": "test-session-epm-noplan"},
+            cwd=plan_review_repo,
+        )
+        assert result == "allow"
+
+    def test_committed_clean_plan_allows_exitplanmode(self, plan_review_repo, plan_review_home):
+        """Committed, unmodified plan → ExitPlanMode allowed (historical plan)."""
+        subprocess.run(["git", "add", ".claude/plans/impl-plan.md"], cwd=plan_review_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "plan"], cwd=plan_review_repo, check=True)
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(), "session_id": "test-session-epm-committed"},
+            cwd=plan_review_repo,
+        )
+        assert result == "allow"
+
+    def test_no_session_id_denies_exitplanmode(self, plan_review_repo, plan_review_home):
+        """No session_id → deny (fail-closed; can't key per-session marker)."""
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            exitplanmode_input(),  # no session_id key
+            cwd=plan_review_repo,
+        )
+        assert result == "deny"
+
+    def test_no_session_id_exitplanmode_deny_reason(self, plan_review_repo, plan_review_home):
+        """No session_id deny reason uses ExitPlanMode-specific wording, not a generic message."""
+        reason = run_hook_reason(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            exitplanmode_input(),  # no session_id key
+            cwd=plan_review_repo,
+        )
+        assert reason is not None and "plan presentation" in reason.lower()
+
+    def test_no_file_path_exitplanmode_denies_without_crash(self, plan_review_repo, plan_review_home):
+        """ExitPlanMode has no file_path — must deny cleanly, no crash (set -u safe).
+
+        TARGET_PATH resolves to empty string for ExitPlanMode payloads (no
+        .tool_input.file_path field). The `if [ -n "$TARGET_PATH" ]` guard
+        skips the scope filter, and the hook falls through to emit_deny.
+        This test confirms the hook does not crash under set -uo pipefail.
+        """
+        payload = exitplanmode_input()
+        # Confirm no file_path field — the helper must not include it.
+        assert "file_path" not in payload.get("tool_input", {})
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**payload, "session_id": "test-session-epm-nopath"},
+            cwd=plan_review_repo,
+        )
+        assert result == "deny"
+
+    def test_active_marker_does_not_bypass_exitplanmode(self, plan_review_repo, plan_review_home):
+        """Active marker (plan-review in progress) → ExitPlanMode still denied.
+
+        Contrasts with Write/Edit, which are allowed through during an active
+        review so the skill's own file writes don't self-deny. ExitPlanMode
+        is never called by the plan-review skill itself, so an active marker
+        indicates review is incomplete — ExitPlanMode must remain blocked.
+        """
+        sid = "test-session-epm-active"
+        active_dir = plan_review_home / ".claude" / ".plan-review-active.d"
+        active_dir.mkdir(parents=True, exist_ok=True)
+        (active_dir / sid).write_text(str(os.getpid()))  # live PID
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(), "session_id": sid},
+            cwd=plan_review_repo,
+        )
+        assert result == "deny"
+
+    def test_other_sessions_completion_marker_does_not_authorize_exitplanmode(
+        self, plan_review_repo, plan_review_home
+    ):
+        """Session A's completion marker does not release session B's ExitPlanMode gate.
+
+        The hook keys completion markers per-session ($REPO_HASH.$SESSION_ID).
+        A marker written by a different session must not authorize ExitPlanMode,
+        mirroring the cross-session isolation that exists for Write/Edit.
+        """
+        other_sid = "test-session-epm-other"
+        write_plan_review_marker(plan_review_home, plan_review_repo, other_sid)
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(), "session_id": "test-session-epm-current"},
+            cwd=plan_review_repo,
+        )
+        assert result == "deny"
+
+
+def test_settings_exitplanmode_matcher_exists_and_isolated():
+    """settings.json has ExitPlanMode in its own matcher block, not in Edit|Write|MultiEdit.
+
+    ExitPlanMode must be isolated from the Edit|Write|MultiEdit block because
+    that block also runs ask-review-permissions.sh and
+    require-worktree-for-file-writes.sh, which must not fire on ExitPlanMode.
+    """
+    settings_path = CLAUDE_DIR / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    pre_tool_use = settings.get("hooks", {}).get("PreToolUse", [])
+
+    # ExitPlanMode must have exactly one dedicated matcher block.
+    exitplanmode_blocks = [b for b in pre_tool_use if b.get("matcher") == "ExitPlanMode"]
+    assert len(exitplanmode_blocks) == 1, (
+        "ExitPlanMode should have exactly one matcher block in PreToolUse"
+    )
+    hook_commands = [h["command"] for h in exitplanmode_blocks[0].get("hooks", [])]
+    assert any(cmd.endswith("require-plan-review.sh") for cmd in hook_commands), (
+        "ExitPlanMode block must include require-plan-review.sh"
+    )
+    assert not any("ask-review-permissions" in cmd for cmd in hook_commands), (
+        "ExitPlanMode block must not include ask-review-permissions.sh"
+    )
+    assert not any("require-worktree" in cmd for cmd in hook_commands), (
+        "ExitPlanMode block must not include require-worktree-for-file-writes.sh"
+    )
+
+    # ExitPlanMode must NOT appear inside the Edit|Write|MultiEdit block.
+    write_edit_blocks = [
+        b for b in pre_tool_use
+        if "Write" in b.get("matcher", "") and "Edit" in b.get("matcher", "")
+    ]
+    for block in write_edit_blocks:
+        assert "ExitPlanMode" not in block.get("matcher", ""), (
+            "ExitPlanMode must not be bundled into the Edit|Write|MultiEdit matcher"
         )

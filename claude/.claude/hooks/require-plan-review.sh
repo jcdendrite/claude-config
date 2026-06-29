@@ -1,7 +1,8 @@
 #!/bin/bash
 # hook-class: gate
-# PreToolUse hook: block Write/Edit when an uncommitted or modified plan file
-# exists in .claude/plans/ without a current plan-review marker for this session.
+# PreToolUse hook: block Write/Edit/ExitPlanMode when an uncommitted or modified
+# plan file exists in .claude/plans/ without a current plan-review marker for
+# this session.
 #
 # Globally applied (no opt-in), consistent with require-code-review.sh,
 # require-ready-for-review.sh, and require-respond-pr.sh.
@@ -13,12 +14,14 @@
 # - Active marker (~/.claude/.plan-review-active.d/<session_id>):
 #   content = Claude session PID. Written by /plan-review at step 0;
 #   removed at the deactivation step. Bypasses the gate so the skill's own
-#   Write/Edit calls during review don't self-deny. The hook checks PID
+#   Write/Edit calls during review don't self-deny; ExitPlanMode is excluded
+#   from this bypass — an active marker means review is in progress, not
+#   complete, so plan presentation stays blocked. The hook checks PID
 #   liveness (kill -0) on each gate hit; dead PIDs are evicted automatically,
 #   which handles orphaned markers from sessions that errored before cleanup.
 # - Completion marker (~/.claude/plan-review-markers/<repo-hash>.<session_id>):
 #   written by /plan-review when the review is clean. Existence-checked;
-#   allows Write/Edit until the next session.
+#   allows Write/Edit/ExitPlanMode until the next session.
 # The markers are keyed per-session (not singletons) to prevent parallel
 # sessions from overwriting each other's markers.
 #
@@ -47,9 +50,9 @@ fi
 
 _lib_parse_tool_input_or_deny "Blocked by plan-review gate: could not parse tool-input JSON."
 
-# Only gate Write, Edit, and MultiEdit tool calls.
+# Gate Write, Edit, MultiEdit, and ExitPlanMode tool calls.
 case "$TOOL_NAME" in
-  Write|Edit|MultiEdit) ;;
+  Write|Edit|MultiEdit|ExitPlanMode) ;;
   *) exit 0 ;;
 esac
 
@@ -74,8 +77,10 @@ fi
 
 NEEDS_REVIEW=0
 while IFS= read -r PLAN_FILE; do
-  if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$PLAN_FILE" >/dev/null 2>&1 \
-     && git -C "$REPO_ROOT" diff --quiet HEAD -- "$PLAN_FILE" 2>/dev/null; then
+  # 5s ceiling matches _lib_jq's established precedent; git ls-files/diff are
+  # fast on local disk but can stall indefinitely on NFS or a locked .git/index.
+  if timeout 5 git -C "$REPO_ROOT" ls-files --error-unmatch -- "$PLAN_FILE" >/dev/null 2>&1 \
+     && timeout 5 git -C "$REPO_ROOT" diff --quiet HEAD -- "$PLAN_FILE" 2>/dev/null; then
     continue
   fi
   NEEDS_REVIEW=1
@@ -92,13 +97,17 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 # Without session_id, we cannot key a per-session marker — block.
 if [ -n "$SESSION_ID" ]; then
   # Active-marker bypass: the /plan-review skill is currently running.
-  ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
-  if [ -f "$ACTIVE_MARKER" ]; then
-    STORED_PID=$(cat "$ACTIVE_MARKER" 2>/dev/null | tr -d '[:space:]')
-    if [[ "$STORED_PID" =~ ^[0-9]+$ ]] && kill -0 "$STORED_PID" 2>/dev/null; then
-      exit 0
+  # Skip this bypass for ExitPlanMode — the active marker means plan-review
+  # is in progress (not yet complete), so ExitPlanMode must still be blocked.
+  if [ "$TOOL_NAME" != "ExitPlanMode" ]; then
+    ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+    if [ -f "$ACTIVE_MARKER" ]; then
+      STORED_PID=$(cat "$ACTIVE_MARKER" 2>/dev/null | tr -d '[:space:]')
+      if [[ "$STORED_PID" =~ ^[0-9]+$ ]] && kill -0 "$STORED_PID" 2>/dev/null; then
+        exit 0
+      fi
+      rm -f "$ACTIVE_MARKER" 2>/dev/null
     fi
-    rm -f "$ACTIVE_MARKER" 2>/dev/null
   fi
 
   # Completion-marker check.
@@ -112,6 +121,8 @@ fi
 # Scope the deny to writes inside this repo. Writes targeting user-home
 # directories (~/.claude/plans/), /tmp, or other repos are outside the gate's
 # intent — the gate guards this repo's code, not all files on disk.
+# ExitPlanMode carries no file_path, so TARGET_PATH is always empty for it;
+# this block is skipped and ExitPlanMode reaches emit_deny unconditionally.
 if [ -n "$TARGET_PATH" ]; then
   REAL_REPO=$(realpath -m "$REPO_ROOT")
   REAL_TARGET=$(realpath -m "$TARGET_PATH")
@@ -136,10 +147,18 @@ if [ -n "$TARGET_PATH" ]; then
   fi
 fi
 
-emit_deny "Write/Edit blocked by plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker was found for this session. Committed, unmodified plan files are treated as historical and do not arm the gate. Next step depends on whether a plan covers this change:
+if [ "$TOOL_NAME" = "ExitPlanMode" ]; then
+  emit_deny "Plan presentation blocked by the plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker was found for this session.
+
+  Run /plan-review against the plan file before calling ExitPlanMode. The skill records the review in ~/.claude/plan-review-markers/ and plan presentation will be allowed on retry.
+
+  If no plan covers this session yet → run /plan-it first. It authors the plan and hands off to /plan-review."
+else
+  emit_deny "Write/Edit blocked by plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker was found for this session. Committed, unmodified plan files are treated as historical and do not arm the gate. Next step depends on whether a plan covers this change:
 
   - If a plan covers this change → run /plan-review against it. The skill records the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry.
 
   - If no plan covers this change yet → run /plan-it first. It authors the plan and hands off to /plan-review at the end.
 
 The model judges which case applies from conversation context. Plans live wherever you put them — typically .claude/plans/, but also /tmp/<slug>.md, handoff docs, or external design doc URLs. The hook does not try to detect plan-change correlation."
+fi
