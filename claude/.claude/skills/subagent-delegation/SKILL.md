@@ -86,13 +86,14 @@ directly in the parent's context with no follow-up read.
 - Commands scoped to a single test file or single test name during interactive
   debugging also stay inline.
 
-If any Bash output exceeds 30 KB (rare — e.g., a very large vitest output, a
-redirected diff, or a captured command log), the harness persists the full
-output to a `tool-results/` file and returns a ~2 KB preview (the *first* 2 KB,
-usually the startup banner). In that case, `grep` or `sed` the persisted file
-for the specific lines you need — do not re-run the command. On later turns, do
-not `Read` the whole persisted file: each full re-read re-bills the entire file
-size; extract only the slice you actually need.
+The harness automatically truncates Bash output at 30 KB — you never need to
+predict output size before running. On the rare overflow (a very large vitest
+output, a verbose suite with extensive debug logging), the harness persists the
+full output to a `tool-results/` file and returns a ~2 KB preview (the *first*
+2 KB, usually the startup banner). For those overflows, `grep` or `sed` the
+persisted file for the specific lines you need — do not re-run the command. On
+later turns, do not `Read` the whole persisted file: each full re-read re-bills
+the entire file size; extract only the slice you actually need.
 
 ### Codebase discovery → `Explore` or `general-purpose`
 
@@ -126,7 +127,10 @@ design against it — read it directly. The split is locate-and-report
 When root-causing a check or test failure requires a read-heavy probe —
 finding how existing tests handle a pattern, locating the relevant
 convention, mapping an analogous code shape — dispatch that probe as an
-objective to `general-purpose` (`model: sonnet`) or `Explore`:
+objective to `Explore` or `general-purpose` (`model: sonnet`). Use the
+same split as Codebase discovery above: `Explore` for excerpt-level
+search (locate, grep, pattern-match); `general-purpose` when the probe
+must read whole files to understand structure or reproduce behavior.
 
 > "Diagnose why [test/check] fails; report root cause + minimal evidence
 > + proposed fix."
@@ -136,9 +140,7 @@ applies the edit and re-runs the check inline. The investigation read
 load stays in the subagent's context, not the parent's.
 
 See `root-cause-analysis` for the diagnosis discipline (establish the
-full symptom before forming a hypothesis). A write-capable debug-and-fix
-agent is the heavier primitive and re-introduces the model-agency failure
-class that retired `check-runner` — see `docs/case-studies/check-runner.md`.
+full symptom before forming a hypothesis).
 
 ### Implementation work → `code-writer`
 
