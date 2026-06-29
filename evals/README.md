@@ -40,6 +40,9 @@ python evals/run_skill_evals.py --skill code-review --model claude-opus-4-7
 # Verbose (prints each case as it completes):
 python evals/run_skill_evals.py --verbose
 
+# Warm behavioral-dispatch (physically primes context window via real Read calls):
+python evals/run_skill_evals.py --skill subagent-delegation --warm-dispatch --samples 30
+
 # Write machine-readable results:
 python evals/run_skill_evals.py --json /tmp/results.json
 ```
@@ -217,23 +220,43 @@ to match. `also_not_triggered` is not used in this method.
 **`should_trigger: true`** means the scenario should cause the model to delegate.
 **`should_trigger: false`** means the scenario should be handled inline.
 
-**Instrument warming.** Each sample injects a mid-session handoff via
-`--append-system-prompt` that establishes the model as an orchestrator
-partway through a multi-step job: several turns done, partial results in
-hand, more steps queued, context budget growing. This restores the
-orchestrator stance that makes delegation rational — without a real prior
-session. The handoff sets *pressure and history* only; the per-case query
-drives the actual delegate-vs-inline decision.
+**Instrument warming — cold path (default).** Each sample injects a mid-session
+handoff via `--append-system-prompt` that establishes the model as an orchestrator
+partway through a multi-step job: several turns done, partial results in hand, more
+steps queued, context budget growing. This restores the orchestrator stance that makes
+delegation rational — without a real prior session. The handoff sets *pressure and
+history* only; the per-case query drives the actual delegate-vs-inline decision.
 
-**Residual limitation.** `--append-system-prompt` *asserts* a large prior
-context; the real context window stays small. If the model's delegation
-decision is driven by physical token accounting rather than stance, warming
-via system prompt will not move it. If DELEGATE cases fire < 50% at K=30
-after warming, conclude "headless behavioral-dispatch is structurally too
-cold for this skill even warmed" and document it — do not record as a skill
-regression. The escalation path is `--resume <session-id>`: a real prior
-turn whose tool-call history physically fills the window, at the cost of
-2× invocations per sample and per-sample unique session IDs.
+**Instrument warming — warm path (`--warm-dispatch`).** Opt-in mode that physically
+fills the context window instead of asserting it. Mechanism:
+
+1. **Prime once** (shared across all cases and all K samples): run a single `claude -p`
+   with `--session-id <uuid>` against the dispatch project, using a prompt that
+   instructs the model to actually read `components.py`, `renderer.py`, `layout.py`,
+   and `logs/render.log` via the `Read` tool and log anomalies. Real tool-call history
+   lands in the session file.
+2. **Fork per sample**: each sample runs `claude -p <case-query> --resume <uuid>
+   --fork-session --output-format stream-json …`. `--fork-session` assigns each
+   parallel sample its own new session ID so K concurrent resumes never corrupt the
+   immutable primed base.
+
+Cost: **1 priming invocation + K × num_cases fork invocations** — cheaper than priming
+once per sample because priming is shared. The priming prompt **forbids delegation**
+(`Do NOT spawn any subagents`) — a priming turn that delegates fills a subagent's
+context, not the parent's, defeating the warm-up purpose.
+
+**Session cleanup.** Session files are stored externally at `~/.claude/projects/<hash>/`
+where `<hash>` is the dispatch project's absolute path with `/` replaced by `-`. The
+harness cleans this directory in its `finally` block for both warm and cold runs (cold
+runs also accumulate session files that `shutil.rmtree` on the tempdir does not reach).
+
+**Residual limitation.** `--append-system-prompt` (cold path) *asserts* a large prior
+context; the real context window stays small. If the model's delegation decision is
+driven by physical token accounting rather than stance, cold warming will not move it.
+Use `--warm-dispatch` to test with a physically-filled window. If DELEGATE cases still
+fire < 50% at K=30 even under `--warm-dispatch`, conclude "headless behavioral-dispatch
+is structurally too cold for this skill even warmed" and document it — do not record as
+a skill regression.
 
 **Case-authoring note.** Even with warming, INLINE cases are the easier arm
 (the model still naturally inlines short-context reasoning); DELEGATE cases
