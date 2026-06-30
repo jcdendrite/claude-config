@@ -6,19 +6,19 @@
       "id": "locate-importers-sweep",
       "query": "Find every file in this project that imports from the components module and list what each one uses.",
       "should_trigger": true,
-      "note": "Broad locate sweep — real correction from session 84955fdf: 'don't grep. use an explore agent.' Unambiguous even cold: multi-file sweep, conclusion-only output needed. Expected to fire ≥50% under --warm-dispatch. Under cold default (--append-system-prompt), bounded-retrieval framing suppresses dispatch — cold 0-1/10 is expected, not a regression. Construct-validity caveat: the dispatch-project fixture was enlarged to 18+ importers and the case still under-fired cold — fixture scale alone does not overcome framing bias."
+      "note": "Broad locate sweep — real correction from session 84955fdf: 'don't grep. use an explore agent.' Unambiguous even cold: multi-file sweep, conclusion-only output needed. Measured 0/10 warm (claude-sonnet-4-6): structurally too cold even warmed. The priming pass reads components.py, which may make the model treat the locate task as a quick grep rather than a delegation-worthy sweep — familiarity suppresses delegation. Under cold default (--append-system-prompt), bounded-retrieval framing suppresses dispatch — cold 0-1/10 is expected, not a regression. Construct-validity caveat: the dispatch-project fixture was enlarged to 18+ importers and the case still under-fired cold — fixture scale alone does not overcome framing bias."
     },
     {
       "id": "explore-unfamiliar-area",
       "query": "Explore how the rendering pipeline is wired — what calls render_widget, where WidgetRenderer is instantiated, and how the call chain flows.",
       "should_trigger": true,
-      "note": "Exploratory mapping of unfamiliar area. Real 'first explore the data' pattern. Expected to fire ≥50% under --warm-dispatch. Under cold default (--append-system-prompt), bounded-retrieval framing suppresses dispatch — cold 0-1/10 is expected, not a regression."
+      "note": "Exploratory mapping of unfamiliar area. Real 'first explore the data' pattern. Measured 10/10 warm (claude-sonnet-4-6): warm dispatch mechanism validated — forked session with real tool-call history reliably elicits delegation for explicit exploratory tasks. Under cold default (--append-system-prompt), bounded-retrieval framing suppresses dispatch — cold 0-1/10 is expected, not a regression."
     },
     {
       "id": "relay-lookup",
       "query": "Show me the render_widget method and everywhere it's called.",
       "should_trigger": true,
-      "note": "Relay lookup: the parent needs the answer reported back, not the output reasoned over. Reframed from 'known-target = inline' after user pushback dc0dc508 — relay is locate-and-report, not comprehension. Expected to fire ≥50% under --warm-dispatch. Under cold default (--append-system-prompt), bounded-retrieval framing suppresses dispatch — cold 0-1/10 is expected, not a regression. Construct-validity caveat: behavioral-dispatch cannot validate a skill-body fix (body is invisible to this eval — it only fires if the model self-triggers the Skill tool, which concrete task queries don't do)."
+      "note": "Relay lookup: the parent needs the answer reported back, not the output reasoned over. Reframed from 'known-target = inline' after user pushback dc0dc508 — relay is locate-and-report, not comprehension. Measured 0/10 warm (claude-sonnet-4-6): structurally too cold even warmed. 'Show me X' framing elicits direct retrieval regardless of context warmth — the model reads this as a targeted concrete lookup, not a delegation-worthy sweep. Under cold default (--append-system-prompt), bounded-retrieval framing suppresses dispatch — cold 0-1/10 is expected, not a regression. Construct-validity caveat: behavioral-dispatch cannot validate a skill-body fix (body is invisible to this eval — it only fires if the model self-triggers the Skill tool, which concrete task queries don't do)."
     },
     {
       "id": "reason-over-supplied-failure",
