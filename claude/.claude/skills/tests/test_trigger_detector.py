@@ -446,11 +446,12 @@ class TestBuildDispatchCommand:
         ]
 
     def test_warm_dispatch_none_session_falls_through_to_cold(self) -> None:
-        """warm=True with session_id=None silently falls back to cold path (--append-system-prompt).
+        """warm=True with session_id=None takes the cold path — API contract, not a production path.
 
-        This pins the deliberate fallback: a priming failure that returns None causes samples
-        to run cold rather than crashing. Callers must check that primed_session_id is not None
-        before warm runs are meaningful.
+        prime_dispatch_session always returns a UUID (str), even on TimeoutExpired — it never
+        returns None. This test pins the _build_dispatch_command API edge case: callers that
+        pass warm=True without a session_id (e.g. future callers, direct invocation) get cold
+        behavior rather than a crash or a malformed command.
         """
         cmd = _build_dispatch_command("q", "handoff", "model-x", warm=True, session_id=None)
         assert cmd == [
@@ -463,7 +464,7 @@ class TestBuildDispatchCommand:
         ]
 
     def test_cold_dispatch_command_shape_unchanged(self) -> None:
-        """Cold mode (warm=False) keeps the original --append-system-prompt shape."""
+        """Explicit warm=False produces cold shape — confirms no accidental warm flip by explicit callers."""
         cmd = _build_dispatch_command("q", "handoff", "model-x", warm=False)
         assert cmd == [
             "claude", "-p", "q",
@@ -482,7 +483,9 @@ class TestBuildDispatchCommand:
         assert content.strip(), "Priming prompt fixture is empty"
         # Delegation must be forbidden: the priming run must fill the parent's context,
         # not a subagent's. A delegating priming turn defeats the warming purpose.
-        assert "Do NOT spawn" in content or "do not spawn" in content.lower(), (
+        prohibition_keywords = ("do not spawn", "never spawn", "do not use the agent", "do not delegate")
+        assert any(kw in content.lower() for kw in prohibition_keywords), (
             "Priming prompt must forbid delegation (no Agent/Task); "
-            "a priming turn that delegates fills a subagent's context, not the parent's"
+            "a priming turn that delegates fills a subagent's context, not the parent's. "
+            f"Expected one of: {prohibition_keywords}"
         )
