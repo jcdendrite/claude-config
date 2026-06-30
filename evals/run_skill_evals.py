@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
@@ -42,6 +43,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EVALS_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = REPO_ROOT / "claude" / ".claude" / "skills"
 PLUGINS_DIR = REPO_ROOT / "plugins"
+
+# Priming prompt for warm dispatch mode. The file instructs the model to
+# actually read dispatch-project files via the Read tool, generating real
+# tool-call history that physically fills the session context window.
+DISPATCH_PRIMING_PROMPT_FILE = EVALS_DIR / "fixtures" / "dispatch-priming-prompt.md"
 
 SAMPLE_TIMEOUT_S = 90
 DEFAULT_SAMPLES = 10
@@ -589,8 +595,25 @@ def detect_dispatch_in_stream(proc: subprocess.Popen) -> bool:
     return False
 
 
-def _build_dispatch_command(query: str, handoff: str, model: str) -> list[str]:
-    """Build the claude -p command list for one behavioral-dispatch sample."""
+def _build_dispatch_command(
+    query: str, handoff: str, model: str, *, warm: bool = False, session_id: str | None = None
+) -> list[str]:
+    """Build the claude -p command list for one behavioral-dispatch sample.
+
+    When warm=True and session_id is provided, resumes the primed session via
+    --fork-session (each sample gets its own forked UUID; the primed base is
+    immutable). When warm=False (default), injects context via --append-system-prompt.
+    """
+    if warm and session_id is not None:
+        return [
+            "claude", "-p", query,
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model", model,
+            "--resume", session_id,
+            "--fork-session",
+        ]
     return [
         "claude", "-p", query,
         "--output-format", "stream-json",
@@ -601,6 +624,57 @@ def _build_dispatch_command(query: str, handoff: str, model: str) -> list[str]:
     ]
 
 
+def compute_session_store_dir(project_dir: Path) -> Path:
+    """Return the ~/.claude/projects/<path-hash> directory for a given project path.
+
+    Claude Code stores sessions at ~/.claude/projects/<hash>/ where <hash> is
+    the project's absolute path with every "/" replaced by "-". Sessions live
+    externally from the project directory; shutil.rmtree(project_dir) does not
+    clean them. Verified by inspecting ~/.claude/projects/ before and after a
+    dispatch run: tempdir-based dispatch projects accumulate session dirs at
+    this location that survive the project cleanup.
+    """
+    hashed_name = str(project_dir).replace("/", "-")
+    return Path.home() / ".claude" / "projects" / hashed_name
+
+
+def prime_dispatch_session(dispatch_project: Path, priming_prompt: str, model: str) -> str:
+    """Run a single priming invocation against dispatch_project and return its session ID.
+
+    Assigns a UUID via --session-id so the session can be resumed by all parallel
+    samples via --fork-session. The priming invocation does not use stream-json
+    output — its output is discarded; the side effect (a persisted session with
+    real Read-tool history) is all that matters.
+
+    Does NOT use --no-session-persistence: the session must be saved so samples
+    can --resume it. Spike 1 confirmed that --no-session-persistence prevents
+    resume with "No conversation found".
+
+    Timeout is 3× SAMPLE_TIMEOUT_S (270 s) because priming involves reading
+    multiple files and writing analysis — substantially more work than a single
+    sample turn.
+    """
+    session_id = str(uuid.uuid4())
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    try:
+        subprocess.run(
+            ["claude", "-p", priming_prompt, "--session-id", session_id, "--model", model],
+            cwd=str(dispatch_project),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=SAMPLE_TIMEOUT_S * 3,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            "Warning: priming invocation timed out; samples will attempt --resume anyway",
+            file=sys.stderr,
+        )
+    return session_id
+
+
 def run_dispatch_sample(args: tuple) -> tuple[str | None, list[str]]:
     """Run one claude -p sample for behavioral-dispatch. Called from worker processes.
 
@@ -608,15 +682,16 @@ def run_dispatch_sample(args: tuple) -> tuple[str | None, list[str]]:
     the same (fired, also_fired) shape as run_single_sample so run_case()
     scores both methods identically.
 
-    args is a positional 5-tuple: (query, skill_name, dispatch_project, handoff, model).
+    args is a positional 7-tuple:
+        (query, skill_name, dispatch_project, handoff, model, warm, primed_session_id).
     Both this unpack and the construction in run_case() must be updated together.
     """
-    query, skill_name, dispatch_project, handoff, model = args
+    query, skill_name, dispatch_project, handoff, model, warm, primed_session_id = args
 
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
     proc = subprocess.Popen(
-        _build_dispatch_command(query, handoff, model),
+        _build_dispatch_command(query, handoff, model, warm=warm, session_id=primed_session_id),
         cwd=str(dispatch_project),
         env=env,
         stdout=subprocess.PIPE,
@@ -651,7 +726,12 @@ def run_case(
         sample_arg: tuple = (query, skill_name, also_not, run_context["tmp_project"], model)
     elif method == BEHAVIORAL_DISPATCH_METHOD:
         sample_fn = run_dispatch_sample
-        sample_arg = (query, skill_name, run_context["dispatch_project"], run_context["dispatch_handoff"], model)
+        warm = run_context.get("warm", False)
+        primed_session_id = run_context.get("primed_session_id")
+        sample_arg = (
+            query, skill_name, run_context["dispatch_project"], run_context["dispatch_handoff"],
+            model, warm, primed_session_id,
+        )
     else:
         sample_fn = run_description_fidelity_sample
         sample_arg = (
@@ -708,8 +788,13 @@ def run_skill(
     method = data["method"]
     cases = data["cases"]
 
+    # Apply a (warm) label when behavioral-dispatch runs in warm mode so the
+    # report column never conflates the two sampling strategies.
+    warm = method == BEHAVIORAL_DISPATCH_METHOD and run_context.get("warm", False)
+    display_method = f"{method}(warm)" if warm else method
+
     if verbose:
-        print(f"\n{skill_name}  [{method}]", flush=True)
+        print(f"\n{skill_name}  [{display_method}]", flush=True)
 
     case_results = []
     for case in cases:
@@ -719,7 +804,7 @@ def run_skill(
     passed = sum(1 for r in case_results if r["passed"])
     return {
         "skill_name": skill_name,
-        "method": method,
+        "method": display_method,
         "cases": case_results,
         "passed": passed,
         "total": len(case_results),
@@ -768,6 +853,17 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help=f"Parallel workers (default: {DEFAULT_WORKERS})")
     parser.add_argument("--json", dest="json_out", metavar="PATH", help="Write full results JSON to PATH")
     parser.add_argument("--verbose", action="store_true", help="Print case results as they complete")
+    parser.add_argument(
+        "--warm-dispatch", action="store_true", default=False,
+        help=(
+            "Prime a real session before behavioral-dispatch samples. "
+            "Runs one priming invocation that physically fills the context window "
+            "via real Read tool calls, then forks that session for each sample via "
+            "--fork-session. More expensive than cold (1 prime + K×cases forks) but "
+            "accurately simulates a mid-session orchestrator context. "
+            "Default off — cold --append-system-prompt path is unchanged."
+        ),
+    )
     args = parser.parse_args()
 
     if args.skills:
@@ -831,9 +927,21 @@ def main() -> int:
             if not dispatch_handoff_path.exists():
                 sys.exit(f"Handoff fixture not found: {dispatch_handoff_path}")
             dispatch_handoff = dispatch_handoff_path.read_text()
+
+            primed_session_id: str | None = None
+            if args.warm_dispatch:
+                if not DISPATCH_PRIMING_PROMPT_FILE.exists():
+                    sys.exit(f"Priming prompt fixture not found: {DISPATCH_PRIMING_PROMPT_FILE}")
+                priming_prompt = DISPATCH_PRIMING_PROMPT_FILE.read_text()
+                if args.verbose:
+                    print("Priming dispatch session (reading project files)...", flush=True)
+                primed_session_id = prime_dispatch_session(dispatch_project, priming_prompt, args.model)
+
             dispatch_context = {
                 "dispatch_project": dispatch_project,
                 "dispatch_handoff": dispatch_handoff,
+                "warm": args.warm_dispatch,
+                "primed_session_id": primed_session_id,
             }
             for case_file in behavioral_dispatch_files:
                 skill_results.append(
@@ -864,6 +972,13 @@ def main() -> int:
             shutil.rmtree(isolated_project, ignore_errors=True)
         if dispatch_project is not None:
             shutil.rmtree(dispatch_project, ignore_errors=True)
+            # Session files are stored externally at ~/.claude/projects/<path-hash>/
+            # (path with "/" → "-"). shutil.rmtree above removes the project dir
+            # but not the session store. Clean it up to avoid accumulating stale
+            # session files across runs (both warm and cold dispatch runs leave them).
+            session_store = compute_session_store_dir(dispatch_project)
+            if session_store.exists():
+                shutil.rmtree(session_store, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -431,3 +431,61 @@ class TestBuildDispatchCommand:
         handoff_path = FIXTURES_DIR / "dispatch-session-handoff.md"
         assert handoff_path.exists(), f"Handoff fixture not found at {handoff_path}"
         assert handoff_path.read_text().strip(), "Handoff fixture is empty"
+
+    def test_warm_dispatch_command_shape(self) -> None:
+        """Warm mode uses --resume + --fork-session; exact list matches production path."""
+        cmd = _build_dispatch_command("q", "handoff", "model-x", warm=True, session_id="abc-123")
+        assert cmd == [
+            "claude", "-p", "q",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model", "model-x",
+            "--resume", "abc-123",
+            "--fork-session",
+        ]
+
+    def test_warm_dispatch_none_session_falls_through_to_cold(self) -> None:
+        """warm=True with session_id=None takes the cold path — API contract, not a production path.
+
+        prime_dispatch_session always returns a UUID (str), even on TimeoutExpired — it never
+        returns None. This test pins the _build_dispatch_command API edge case: callers that
+        pass warm=True without a session_id (e.g. future callers, direct invocation) get cold
+        behavior rather than a crash or a malformed command.
+        """
+        cmd = _build_dispatch_command("q", "handoff", "model-x", warm=True, session_id=None)
+        assert cmd == [
+            "claude", "-p", "q",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model", "model-x",
+            "--append-system-prompt", "handoff",
+        ]
+
+    def test_cold_dispatch_command_shape_unchanged(self) -> None:
+        """Explicit warm=False produces cold shape — confirms no accidental warm flip by explicit callers."""
+        cmd = _build_dispatch_command("q", "handoff", "model-x", warm=False)
+        assert cmd == [
+            "claude", "-p", "q",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model", "model-x",
+            "--append-system-prompt", "handoff",
+        ]
+
+    def test_priming_prompt_fixture_exists_and_nonempty(self) -> None:
+        """The warm-dispatch priming prompt fixture must exist and contain the forbid-delegation instruction."""
+        priming_path = FIXTURES_DIR / "dispatch-priming-prompt.md"
+        assert priming_path.exists(), f"Priming prompt fixture not found at {priming_path}"
+        content = priming_path.read_text()
+        assert content.strip(), "Priming prompt fixture is empty"
+        # Delegation must be forbidden: the priming run must fill the parent's context,
+        # not a subagent's. A delegating priming turn defeats the warming purpose.
+        prohibition_keywords = ("do not spawn", "never spawn", "do not use the agent", "do not delegate")
+        assert any(kw in content.lower() for kw in prohibition_keywords), (
+            "Priming prompt must forbid delegation (no Agent/Task); "
+            "a priming turn that delegates fills a subagent's context, not the parent's. "
+            f"Expected one of: {prohibition_keywords}"
+        )
