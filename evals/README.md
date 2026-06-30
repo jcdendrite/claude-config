@@ -250,6 +250,13 @@ where `<hash>` is the dispatch project's absolute path with `/` replaced by `-`.
 harness cleans this directory in its `finally` block for both warm and cold runs (cold
 runs also accumulate session files that `shutil.rmtree` on the tempdir does not reach).
 
+**What behavioral-dispatch actually measures.** Native delegation propensity under
+a physically-warmed context window — *not* skill-body efficacy. For a concrete task
+query the model never invokes the `subagent-delegation` Skill tool, so the skill body
+never loads and cannot shape the decision. A 10/10 DELEGATE rate validates the warm
+priming mechanism (the harness correctly fills the context and the model reads it as
+an orchestration context), not the skill rules.
+
 **Residual limitation.** `--append-system-prompt` (cold path) *asserts* a large prior
 context; the real context window stays small. If the model's delegation decision is
 driven by physical token accounting rather than stance, cold warming will not move it.
@@ -257,6 +264,12 @@ Use `--warm-dispatch` to test with a physically-filled window. If DELEGATE cases
 fire < 50% at K=30 even under `--warm-dispatch`, conclude "headless behavioral-dispatch
 is structurally too cold for this skill even warmed" and document it — do not record as
 a skill regression.
+
+**Queries behavioral-dispatch cannot measure.** Concrete known-target relay/lookup
+queries ("Show me X", "Find Y and list it") elicit direct retrieval regardless of
+context warmth — the model reads them as bounded concrete tasks, not delegation-worthy
+sweeps. Do not author DELEGATE cases of this shape expecting them to fire; they produce
+a permanent 0/10 that reads as a skill regression but reflects only the query framing.
 
 **Case-authoring note.** Even with warming, INLINE cases are the easier arm
 (the model still naturally inlines short-context reasoning); DELEGATE cases
