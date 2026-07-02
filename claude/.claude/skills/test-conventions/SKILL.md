@@ -27,7 +27,6 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 | **Smoke** (post-deploy health) | Seconds | Production/staging infra | Critical paths are up after deployment | 1-2 per service, run on deploy only |
 
 **Contract tests** verify that service-to-service API schemas stay compatible without requiring a running instance of the other service. Use them at any service boundary where teams deploy independently.
-**E2E tests** verify complete user journeys across the full stack. 
 **Smoke tests** are lightweight post-deploy checks that verify critical paths are functional — they answer "is it up?" not "does every flow work?"
 
 ## 2. Test-first invariant
@@ -58,7 +57,7 @@ In languages with explicit error types (Go, Rust, functional patterns), returnin
 Use the narrowest double that covers the test's intent. Prefer stubs for unit tests of pure logic; use mocks only when verifying interaction is the point of the test.
 
 ### Test double seams by dependency type
-- **Database calls:** Stub/fake the client object, or use transaction rollback isolation (see section 3)
+- **Database calls:** Stub/fake the client object, or use transaction rollback isolation (see §4)
 - **External HTTP APIs:** Intercept by URL pattern or use a fake HTTP server
 - **Env vars / config:** Set and restore in setup/teardown blocks
 - **Time:** Inject timestamps as parameters rather than relying on the system clock
@@ -69,15 +68,12 @@ Use the narrowest double that covers the test's intent. Prefer stubs for unit te
 Prefer designs that pass dependencies explicitly rather than relying on global state. When global state is unavoidable, follow the rules below.
 
 ### Global state must be saved and restored
-When tests modify global state (env vars, global functions, singletons), always save the original and restore in a guaranteed cleanup block (teardown, `finally`, `defer`, etc.). **Never** unconditionally delete or overwrite global state — a test that removes a value without saving it first will break every subsequent test that needs it.
+When tests modify global state (env vars, global functions, singletons, replaced doubles such as HTTP clients, fetch, or clocks), always save the original and restore in a guaranteed cleanup block (teardown, `finally`, `defer`, etc.) — even if the test fails or throws. **Never** unconditionally delete or overwrite global state — a test that removes a value without saving it first will break every subsequent test that needs it.
 
 ### Tests must be independent
 - Never rely on test execution order
 - Each test creates its own data and cleans up in teardown
 - Use unique identifiers (timestamps, counters) to prevent cross-test collision
-
-### Test double cleanup must be guaranteed
-When replacing globals (HTTP client, fetch function, clock), always restore the original in a guaranteed cleanup block, even if the test fails or throws.
 
 ### Database test isolation
 - **Transaction rollback pattern:** Wrap each test in a transaction and roll back at the end. Standard in Django, Rails, Spring, and most ORMs — more efficient than truncation.
@@ -185,6 +181,9 @@ If an assertion checks a value that was set up directly in the test double rathe
 
 **Good (tests real logic):** stub `getUser` to return `{name: "Alice", role: "admin"}`, then assert the formatted display string equals `"Alice (Admin)"`. This tests the formatting/transformation logic the code actually performs.
 
+### Framework mock accessors
+- Prefer the test framework's typed mock accessor/wrapper over manual casts when accessing mock state — the typed helper tracks the framework's current idiom and removes hand-written cast expressions that hide type drift.
+
 ## 9. Common authoring mistakes
 | Mistake | Fix |
 |---|---|
@@ -197,3 +196,4 @@ If an assertion checks a value that was set up directly in the test double rathe
 | Source-scanning the file under test (reading it as a string and asserting substrings) instead of executing it | Reading source proves the literal text exists, not that it runs, is reachable, or behaves correctly; the assertion passes on dead code and fails on cosmetic renames. Use a behavioral test: execute the function/hook/component with mocked dependencies and assert observable behavior. Source-scans are a tripwire for *wiring presence only*, never a substitute for a behavioral assertion. |
 | Regex-parsing specific field values from runtime output (log lines, JSON, XML) in a test assertion instead of parsing with a library or calling the production parser | The regex re-implements logic the production code owns: the test passes when production parsing is broken and breaks on benign format changes. Parse with the same library the code uses and assert on the resulting object; or call the production parse/validate function and assert on its result. Exception: asserting only that the output *is* valid JSON or matches a line-format envelope (not specific field values within it) is a format-contract test and is not this anti-pattern. Distinct from source-scanning (asserting on source *text*) — see row above. |
 | Stub or vacuous assertion when blocked by credentials/env/external state | Mock or fake the credential boundary; don't commit a permanently-passing assertion. |
+| Unexplained import-form deviation in a test (e.g. a namespace import added for spy installation) | When the framework's spy/mock mechanism requires an import form that deviates from the module's existing import idiom (a mutable binding the spy can replace), keep it and add an inline comment naming the constraint so reviewers read it as required technique, not sloppiness |

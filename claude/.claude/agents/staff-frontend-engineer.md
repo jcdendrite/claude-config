@@ -23,6 +23,8 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 
 **Async cancellation and effect lifecycle** — effect-cleanup hooks (React `useEffect` cleanup, Vue `onUnmounted` / `watchEffect` cleanup, Svelte `onDestroy`, Solid `onCleanup`, Angular `ngOnDestroy`) must abort or no-op pending work to avoid stale-closure writes / state-writes-after-unmount; user-initiated requests need an `AbortController` so a faster keystroke doesn't lose to a slower stale response (request race); long-running effects need a cancellation token that the cleanup actually triggers.
 
+**Async contract at component boundaries** — when a component exposes or consumes an async interface (promise-returning prop, event handler, hook/composable, callback), trace whether sibling or parent callers depend on a specific resolution shape, timing, or error path — and whether the implementation honors that contract. A handler that swallows rejection, resolves early, or returns void where a caller awaits a value breaks callers outside the diff — search for consumers of the exposed interface, including files the diff does not touch. If the same defect also violates the Optimistic mutation lifecycle angle, report it under that angle only.
+
 **Query contract mapping** — when backend response shape changes, do client selectors, types, AND cache keys all match? Co-owned with backend.
 
 **Auth state transitions** — logged-in ↔ logged-out, token refresh, session expiry — handle the transition explicitly or risk a stale-user-data render before the redirect.
