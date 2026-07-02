@@ -53,3 +53,15 @@ no expansion, no escape processing — so `\`` survives into the body and
 breaks GitHub markdown code-span rendering. Backslash-escape backticks
 only inside double-quoted strings or unquoted (`<<EOF`) heredocs where
 they would otherwise trigger command substitution.
+
+**Record completion.** After the body is applied (or confirmed already
+in sync), write the completion marker so the two-tier push gate accepts
+iteration pushes to this branch's **draft** PR without demanding the
+full `/ready-for-review` gate. (Pushes to a ready, non-draft PR — and
+`gh pr ready` itself — still require the full gate regardless of this
+marker.)
+
+<!-- HOOK_TEST_FIXTURE: record-completion — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/sync-pr-description/SKILL.md) to verify it matches require-ready-for-review.sh's sync-pr-description completion-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```
+~/.claude/scripts/marker.sh write sync-pr-description
+```

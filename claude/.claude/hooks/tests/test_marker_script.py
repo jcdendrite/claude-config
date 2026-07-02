@@ -36,6 +36,7 @@ class TestMarkerScriptSessionMissing:
             ["write", "skill-review"],
             ["write", "plan-review"],
             ["write", "ready-for-review"],
+            ["write", "sync-pr-description"],
             ["activate", "plan-review"],
             ["activate", "ready-for-review"],
             ["activate", "respond-pr"],
@@ -81,6 +82,27 @@ class TestMarkerScriptHappyPath:
         files = list(marker_dir.iterdir())
         assert len(files) == 1
         assert files[0].name.endswith(f".{sid}")
+
+    def test_write_sync_pr_description_creates_marker_with_head_sha(
+        self, isolated_home, git_repo
+    ):
+        """write sync-pr-description mirrors ready-for-review's completion
+        marker mechanics: content = current HEAD SHA."""
+        sid = self._seed_session(isolated_home)
+        result = _run(["write", "sync-pr-description"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "sync-pr-description-markers"
+        files = list(marker_dir.iterdir())
+        assert len(files) == 1
+        assert files[0].name.endswith(f".{sid}")
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert files[0].read_text().strip() == head
 
     def test_activate_creates_active_marker_with_pid(self, isolated_home, git_repo):
         """activate must write the Claude session PID to the active.d file body

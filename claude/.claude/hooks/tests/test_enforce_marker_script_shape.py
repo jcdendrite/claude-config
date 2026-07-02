@@ -24,6 +24,7 @@ class TestEnforceMarkerScriptShape:
             "~/.claude/scripts/marker.sh write skill-review",
             "~/.claude/scripts/marker.sh write plan-review",
             "~/.claude/scripts/marker.sh write ready-for-review",
+            "~/.claude/scripts/marker.sh write sync-pr-description",
             "~/.claude/scripts/marker.sh activate plan-review",
             "~/.claude/scripts/marker.sh activate ready-for-review",
             "~/.claude/scripts/marker.sh activate respond-pr",
@@ -268,6 +269,16 @@ class TestEnforceMarkerScriptShape:
         cmd = "~/.claude/scripts/marker.sh activate code-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
+    def test_sync_pr_description_activate_denied(self):
+        """sync-pr-description is write-only — no self-deny problem to solve
+        with an active-bypass marker, so activate/deactivate stay denied."""
+        cmd = "~/.claude/scripts/marker.sh activate sync-pr-description"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_sync_pr_description_deactivate_denied(self):
+        cmd = "~/.claude/scripts/marker.sh deactivate sync-pr-description"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
     def test_memory_skill_extra_arg_denied(self):
         """activate memory-skill with a trailing arg must be denied."""
         cmd = "~/.claude/scripts/marker.sh activate memory-skill extra"
@@ -420,6 +431,7 @@ class TestDevNullRedirectAllowed:
             "~/.claude/scripts/marker.sh write skill-review 2>/dev/null",
             "~/.claude/scripts/marker.sh write ready-for-review 2>/dev/null",
             "~/.claude/scripts/marker.sh write code-review 2>/dev/null",
+            "~/.claude/scripts/marker.sh write sync-pr-description 2>/dev/null",
             # deactivate — all four targets
             "~/.claude/scripts/marker.sh deactivate plan-review 2>/dev/null",
             "~/.claude/scripts/marker.sh deactivate ready-for-review 2>/dev/null",
