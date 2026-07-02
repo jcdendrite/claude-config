@@ -137,7 +137,7 @@ flowchart LR
 - **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. Hook-enforced (`require-skill-review.sh` blocks `git commit` until the marker is written). Provided by the `skill-management@claude-config` plugin — see [Project-scoped plugins](docs/skills.md#project-scoped-plugins).
 - **`/agent-review`** — frontmatter contract, trigger design, voice, and behavioral-equivalence audit when an agent file (`claude/.claude/agents/*.md` or `plugins/*/agents/*.md`) changes. Dispatcher-invoked by `/code-review`; **not** hook-enforced — agent bodies are lazy-loaded and lower-blast-radius than skill descriptions.
 - **`/ready-for-review`** — final tests + cumulative-diff review before push.
-- **`/sync-pr-description`** — lightweight PR-description accuracy sync; dispatched by `/ready-for-review` step 4 and the `/handoff` pre-write checklist, or run standalone.
+- **`/sync-pr-description`** — verify and sync the PR description against branch state.
 - **`/respond-pr`** — fetch and reply to all PR comments with `[Claude Code]` attribution.
 
 **Hook transitions:**
@@ -150,7 +150,7 @@ flowchart LR
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |
 | `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in) | Remove the flagged content, or `exclude:` a synthetic-fixture path |
 | `deny-data-file-reads.sh` | `Read` of a data-shaped file (opt-in) | No clear — inspect data files outside Claude |
-| `require-ready-for-review.sh` | `git push`, `gh pr ready` | `/ready-for-review` run since last commit; iteration pushes to a **draft** PR alternatively clear with a HEAD-fresh `/sync-pr-description` marker |
+| `require-ready-for-review.sh` | `git push`, `gh pr ready` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
 | `cleanup-session-id.sh` | — (SessionEnd, no gate) | Removes the session-id lookup file its paired SessionStart hook wrote |

@@ -18,10 +18,10 @@ database migration, release creation, external communications (Slack, email, Git
 comments), bulk deletes, or any other action that mutates shared state irreversibly —
 state that cannot be put back by running a different command, or that has
 externally-observable side effects outside this repo.
-Contents below are the prior session agent's assertions unless marked
-engineer-confirmed. Treat unverified claims as hypotheses — verify against
-source (code, tests, command output) before relying on one for further work;
-do not re-verify items marked engineer-confirmed or facts you can act on reversibly.
+Load-bearing claims below carry a confidence tag: [engineer-confirmed],
+[verified: <evidence>], or [assumed]. Verify [assumed] and untagged
+load-bearing claims against source before building on them; tagged claims
+need no re-verification.
 ```
 
 ## §1 Goal
@@ -92,4 +92,4 @@ Before writing the file, verify:
 - §2.5 is populated; if any prerequisite phases are incomplete or unverified, they are listed there, not silently omitted
 - If the handoff reason is context-limit, §2.5 names what was mid-flight at the time of the handoff
 - If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `sync-pr-description` skill before writing this file
-- Load-bearing claims in §2/§3/§6 distinguish engineer-confirmed facts from agent findings, and each agent finding names its evidence (command run, file read, test output)
+- Load-bearing claims in §2/§3/§6 carry a confidence tag — `[engineer-confirmed]`, `[verified: <evidence>]` (the command run, file read, or test output that established it), or `[assumed]` — so the resuming session re-verifies only what was never verified

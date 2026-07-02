@@ -21,7 +21,7 @@ Subcommands:
              longer alive. --dry-run reports without removing.
 
 Valid (subcommand, skill) combinations:
-  write       code-review | skill-review | plan-review | ready-for-review | sync-pr-description
+  write       code-review | skill-review | plan-review | ready-for-review
   activate    plan-review | ready-for-review | respond-pr | memory-skill
   deactivate  plan-review | ready-for-review | respond-pr | memory-skill
 EOF
@@ -153,14 +153,8 @@ case "$SUBCOMMAND" in
         mkdir -p "$HOME/.claude/ready-for-review-markers"
         git rev-parse HEAD > "$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
-      sync-pr-description)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        REPO_HASH=$(_resolve_repo_hash) || exit 2
-        mkdir -p "$HOME/.claude/sync-pr-description-markers"
-        git rev-parse HEAD > "$HOME/.claude/sync-pr-description-markers/$REPO_HASH.$SESSION_ID"
-        ;;
       *)
-        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, sync-pr-description\n" "$SKILL" >&2
+        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review\n" "$SKILL" >&2
         exit 2
         ;;
     esac

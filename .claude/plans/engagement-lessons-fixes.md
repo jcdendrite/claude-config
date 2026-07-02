@@ -150,3 +150,7 @@ All work in a linked worktree (`git worktree add .claude/worktrees/<slug> -b <sl
 - Automating the analysis methodology (that's the filed GitHub issue's follow-up work).
 - Pre-existing guard gap noticed during review: `guard-settings-session-keys.sh` doesn't cover the `skipWorkflowUsageWarning` key — raise as a follow-up note, don't bundle (Axis 4).
 - Automated behavioral testing of the extracted skill's PR-sync logic — the repo's documented no-`claude -p`-harness decision applies; coverage is the wiring tests plus the step-5 live smoke run, disclosed as a known limitation.
+
+## Revision — 2026-07-02
+
+PR #413 review reverted the **two-tier push gate** (the "Cadence closure" design above): the lighter draft-PR tier moved the full-gate checkpoint from the push — an agent-controlled, hook-observable event — to the draft→ready transition, which fires no hook when done in the GitHub web UI, so a PR could reach merge without the full gate ever covering its final HEAD. The `sync-pr-description` skill itself survives (dispatched from `/ready-for-review` step 4 and the `/handoff` pre-write checklist, or standalone); its completion-marker plumbing, the hook's draft tier, and the related CLAUDE.md/README text were reverted to the single-tier gate. The cadence question ("cheap pre-push description check during iteration") moved to a follow-up design issue — see the PR #413 conversation for the invariant analysis.

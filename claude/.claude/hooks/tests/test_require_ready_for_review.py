@@ -16,59 +16,22 @@ from helpers import (
     git_toplevel,
     head_sha,
     run_hook,
-    run_hook_reason,
     run_skill_command,
 )
 
 READY_FOR_REVIEW_HOOK = HOOKS_DIR / "require-ready-for-review.sh"
 READY_FOR_REVIEW_SKILL = SKILLS_DIR / "ready-for-review" / "SKILL.md"
-SYNC_PR_DESCRIPTION_SKILL = SKILLS_DIR / "sync-pr-description" / "SKILL.md"
 
 
 @pytest.fixture
 def fake_gh_pr_exists(tmp_path, monkeypatch):
-    """Inject a fake gh that reports an open, non-draft PR (`pr view ...`
-    returns number 42, isDraft false) via the hook's unit-separator
-    two-field --jq format."""
+    """Inject a fake gh that reports an open PR (`pr view ...` returns 42)."""
     bin_dir = tmp_path / "fake-bin-pr"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
     gh.write_text(
         '#!/bin/bash\n'
-        'case "$*" in *"pr view"*) printf "42\\x1ffalse" ;; *) exit 1 ;; esac\n'
-    )
-    gh.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-    return gh
-
-
-@pytest.fixture
-def fake_gh_pr_draft(tmp_path, monkeypatch):
-    """Inject a fake gh that reports an open DRAFT PR (`pr view ...` returns
-    number 42, isDraft true)."""
-    bin_dir = tmp_path / "fake-bin-pr-draft"
-    bin_dir.mkdir()
-    gh = bin_dir / "gh"
-    gh.write_text(
-        '#!/bin/bash\n'
-        'case "$*" in *"pr view"*) printf "42\\x1ftrue" ;; *) exit 1 ;; esac\n'
-    )
-    gh.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-    return gh
-
-
-@pytest.fixture
-def fake_gh_pr_malformed(tmp_path, monkeypatch):
-    """Inject a fake gh that reports a PR but WITHOUT the unit-separator
-    delimiter between number and isDraft (garbled --jq output) — guards the
-    fail-closed contract of the hook's field-splitting logic."""
-    bin_dir = tmp_path / "fake-bin-pr-malformed"
-    bin_dir.mkdir()
-    gh = bin_dir / "gh"
-    gh.write_text(
-        '#!/bin/bash\n'
-        'case "$*" in *"pr view"*) printf "42true" ;; *) exit 1 ;; esac\n'
+        'case "$*" in *"pr view"*) echo 42 ;; *) exit 1 ;; esac\n'
     )
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
@@ -117,13 +80,6 @@ def rfr_completion_marker(home: Path, repo: Path, session_id: str) -> Path:
     repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
     return (
         home / ".claude" / "ready-for-review-markers" / f"{repo_hash}.{session_id}"
-    )
-
-
-def sync_pr_description_completion_marker(home: Path, repo: Path, session_id: str) -> Path:
-    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
-    return (
-        home / ".claude" / "sync-pr-description-markers" / f"{repo_hash}.{session_id}"
     )
 
 
@@ -475,11 +431,7 @@ class TestRequireReadyForReview:
     ):
         """If gh pr view errors (network glitch, gh not configured), the gate
         does not fire — keeps the user unblocked. The skill's prose triggers
-        still cover this case. This also covers the two-tier gate's
-        `--json number,isDraft` call specifically: a gh client too old to
-        recognize the `isDraft` field, or any other reason the whole --json
-        call errors, empties PR_INFO the same way a plain gh failure does —
-        an intentional, reviewed fail-open, not an oversight."""
+        still cover this case."""
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -487,177 +439,6 @@ class TestRequireReadyForReview:
                 cwd=repo_on_feature_branch,
             )
             == "allow"
-        )
-
-    # -- Two-tier draft gate (git push only) ------------------------------
-    # Push to an open DRAFT PR is satisfied by EITHER the full
-    # ready-for-review marker (already covered above) OR a lighter
-    # sync-pr-description completion marker whose recorded SHA matches
-    # current HEAD. Scoped to the git-push path — gh pr ready and pushes to
-    # a ready (non-draft) PR keep demanding the full marker.
-
-    def test_malformed_gh_output_denies_full_gate_not_draft_tier(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_malformed
-    ):
-        """If gh's --jq output is garbled — missing the 0x1f separator
-        between number and isDraft — IS_DRAFT ends up holding the whole
-        undivided string ("42true"), which never equals the literal "true".
-        The draft-tier bypass must NOT fire even with a fresh
-        sync-pr-description marker present: the hook falls through to the
-        ordinary full-gate deny message, not the draft-tier one. Pins the
-        fail-closed contract so a future refactor of the field-splitting
-        logic can't silently widen the bypass on malformed gh output."""
-        sid = "s"
-        marker = sync_pr_description_completion_marker(
-            isolated_home, repo_on_feature_branch, sid
-        )
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
-        reason = run_hook_reason(
-            READY_FOR_REVIEW_HOOK,
-            bash_input("git push origin feature", session_id=sid),
-            cwd=repo_on_feature_branch,
-        )
-        assert reason is not None, "malformed gh output must still deny"
-        assert "/sync-pr-description" not in reason, (
-            "malformed gh output must not be treated as a draft PR — the "
-            "draft-tier deny message (which names /sync-pr-description as "
-            "a clearing path) must not fire"
-        )
-        assert (
-            "Push to a branch with an open PR blocked by ready-for-review gate"
-            in reason
-        ), "must fall through to the ordinary full-gate deny message"
-
-    def test_draft_pr_push_fresh_sync_marker_allows(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_draft
-    ):
-        sid = "s"
-        marker = sync_pr_description_completion_marker(
-            isolated_home, repo_on_feature_branch, sid
-        )
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
-        assert (
-            run_hook(
-                READY_FOR_REVIEW_HOOK,
-                bash_input("git push origin feature", session_id=sid),
-                cwd=repo_on_feature_branch,
-            )
-            == "allow"
-        )
-
-    def test_draft_pr_push_no_session_id_denies(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_draft
-    ):
-        """Without session_id in the hook payload, no per-session sync marker
-        can be keyed — deny when a draft PR exists, same as the full-marker
-        no-session-id case."""
-        assert (
-            run_hook(
-                READY_FOR_REVIEW_HOOK,
-                bash_input("git push origin feature"),
-                cwd=repo_on_feature_branch,
-            )
-            == "deny"
-        )
-
-    def test_draft_pr_push_stale_sync_marker_denies(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_draft
-    ):
-        """New commit after the sync marker was written → HEAD moves →
-        marker stale → deny."""
-        sid = "s"
-        marker = sync_pr_description_completion_marker(
-            isolated_home, repo_on_feature_branch, sid
-        )
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
-        (repo_on_feature_branch / "f").write_text("b\n")
-        subprocess.run(["git", "add", "f"], cwd=repo_on_feature_branch, check=True)
-        subprocess.run(
-            ["git", "commit", "-qm", "more"], cwd=repo_on_feature_branch, check=True
-        )
-        assert (
-            run_hook(
-                READY_FOR_REVIEW_HOOK,
-                bash_input("git push origin feature", session_id=sid),
-                cwd=repo_on_feature_branch,
-            )
-            == "deny"
-        )
-
-    def test_draft_pr_push_no_marker_denies_naming_both_paths(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_draft
-    ):
-        """No sync marker and no ready-for-review marker → deny, and the
-        deny reason must name both satisfying paths."""
-        reason = run_hook_reason(
-            READY_FOR_REVIEW_HOOK,
-            bash_input("git push origin feature", session_id="s"),
-            cwd=repo_on_feature_branch,
-        )
-        assert reason is not None
-        assert "/sync-pr-description" in reason
-        assert "/ready-for-review" in reason
-
-    def test_draft_pr_push_full_ready_for_review_marker_still_allows(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_draft
-    ):
-        """The full ready-for-review marker remains a satisfying path on a
-        draft PR too — the draft tier only adds a second, lighter option."""
-        sid = "s"
-        marker = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
-        assert (
-            run_hook(
-                READY_FOR_REVIEW_HOOK,
-                bash_input("git push origin feature", session_id=sid),
-                cwd=repo_on_feature_branch,
-            )
-            == "allow"
-        )
-
-    def test_ready_pr_push_with_only_sync_marker_denies(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
-    ):
-        """Push to a READY (non-draft) PR still demands the full
-        ready-for-review marker — a sync-pr-description marker alone is not
-        enough once the PR is out of draft."""
-        sid = "s"
-        marker = sync_pr_description_completion_marker(
-            isolated_home, repo_on_feature_branch, sid
-        )
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
-        assert (
-            run_hook(
-                READY_FOR_REVIEW_HOOK,
-                bash_input("git push origin feature", session_id=sid),
-                cwd=repo_on_feature_branch,
-            )
-            == "deny"
-        )
-
-    def test_gh_pr_ready_with_only_sync_marker_denies(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_draft
-    ):
-        """`gh pr ready` keeps demanding the full gate regardless of draft
-        status — the draft tier is scoped to the git-push path only."""
-        sid = "s"
-        marker = sync_pr_description_completion_marker(
-            isolated_home, repo_on_feature_branch, sid
-        )
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
-        assert (
-            run_hook(
-                READY_FOR_REVIEW_HOOK,
-                bash_input("gh pr ready", session_id=sid),
-                cwd=repo_on_feature_branch,
-            )
-            == "deny"
         )
 
     # -- Skill ↔ hook alignment ------------------------------------------
@@ -720,41 +501,6 @@ class TestRequireReadyForReview:
         assert marker.exists(), (
             "SKILL.md record-completion recipe ran but no marker landed at "
             "the path the hook checks — skill and hook disagree on layout."
-        )
-        assert marker.read_text().strip() == head_sha(repo_on_feature_branch), (
-            "completion marker must hold the local HEAD SHA"
-        )
-        assert (
-            run_hook(
-                READY_FOR_REVIEW_HOOK,
-                bash_input("git push origin feature", session_id=sid),
-                cwd=repo_on_feature_branch,
-            )
-            == "allow"
-        )
-
-    def test_skill_sync_pr_description_record_completion_creates_marker(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_draft
-    ):
-        """sync-pr-description/SKILL.md's record-completion fixture must
-        produce a marker keyed by repo-hash + session-id with HEAD SHA as
-        content, recognized by the hook's draft-tier bypass for HEAD-matching
-        pushes to a draft PR."""
-        sid = "test-session-sync-complete"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
-
-        cmd = extract_skill_command(SYNC_PR_DESCRIPTION_SKILL, "record-completion")
-        run_skill_command(cmd, cwd=repo_on_feature_branch, isolated_home=isolated_home)
-
-        marker = sync_pr_description_completion_marker(
-            isolated_home, repo_on_feature_branch, sid
-        )
-        assert marker.exists(), (
-            "sync-pr-description/SKILL.md record-completion recipe ran but "
-            "no marker landed at the path the hook checks — skill and hook "
-            "disagree on layout."
         )
         assert marker.read_text().strip() == head_sha(repo_on_feature_branch), (
             "completion marker must hold the local HEAD SHA"

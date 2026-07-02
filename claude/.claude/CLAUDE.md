@@ -55,8 +55,7 @@
 
 ## Pre-Handoff Review
 
-- Before handing off to a human reviewer — pushing to a ready (non-draft) PR, or marking a PR ready — run `/ready-for-review`. If the review finds issues, fix them first, then push or hand off.
-- Iteration pushes to a branch with an open **draft** PR need only `/sync-pr-description` (the lightweight PR-body accuracy check); the push gate accepts its HEAD-fresh marker. The full gate still applies at the draft→ready transition. If a PR is readied via the GitHub web UI instead of `gh pr ready`, no hook fires — run `/ready-for-review` before flipping it.
+- Before pushing a branch with an open PR or handing off to a human reviewer, run `/ready-for-review`. If the review finds issues, fix them first, then push or hand off.
 
 ## Agent Briefing
 

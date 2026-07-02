@@ -10,7 +10,7 @@
 # gate. The "if" field is a hint only.
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
-# match one of the 15 single-command shapes, the marker.sh write chain to git
+# match one of the 14 single-command shapes, the marker.sh write chain to git
 # commit, or the same-skill write↔deactivate chain (plan-review and
 # ready-for-review only). No redirects (except trailing `2>/dev/null`), no extra args. Wrapped forms (env-var
 # prefix, bash wrapper, relative path, subshell) are not gated here — they
@@ -72,7 +72,7 @@ fi
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
 # No bash wrapper, no env-var prefix, no chain operator, no redirect (except
 # trailing `2>/dev/null`), no extra args after the skill name.
-VALID_PATTERN='^(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|sync-pr-description)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?)([[:space:]]+2>/dev/null)?[[:space:]]*$'
+VALID_PATTERN='^(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?)([[:space:]]+2>/dev/null)?[[:space:]]*$'
 
 if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_PATTERN"; then
   exit 0
@@ -97,7 +97,7 @@ fi
 # already excludes '>' as a security boundary (prevents post-commit redirects like
 # `git commit > /path`). A 2>/dev/null exception would require carving out of that
 # class with no observed agent friction on the commit-chain form to justify it.
-VALID_CHAINED_COMMIT_PATTERN='^((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|sync-pr-description)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+commit([[:space:]]+[^&|;<>]*)?$'
+VALID_CHAINED_COMMIT_PATTERN='^((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+commit([[:space:]]+[^&|;<>]*)?$'
 
 if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_CHAINED_COMMIT_PATTERN"; then
   exit 0
@@ -129,7 +129,6 @@ Valid shapes:
   ~/.claude/scripts/marker.sh write skill-review
   ~/.claude/scripts/marker.sh write plan-review
   ~/.claude/scripts/marker.sh write ready-for-review
-  ~/.claude/scripts/marker.sh write sync-pr-description
   ~/.claude/scripts/marker.sh activate plan-review
   ~/.claude/scripts/marker.sh activate ready-for-review
   ~/.claude/scripts/marker.sh activate respond-pr
