@@ -85,6 +85,34 @@ platform-agnostic rule applies by that rationale (see repo-root `CLAUDE.md`)" �
 modeled on the existing item 13 pointer shape (`(Repo-specific; see repo-root
 CLAUDE.md.)`). Do not emit a bare cross-reference.
 
+### 3. Fix the still-existing violation in `staff-backend-engineer.md`
+
+A checklist item added to `agent-review` only audits *future* diffs to agent
+files — it does not read or retroactively catch content already sitting inside
+a reviewer agent's own body. The issue's own demonstrated agent-review gap
+(`grep` prescribed as a mandatory step in "a reviewer-agent angle") is a
+**currently live** violation, not a historical one already fixed in PR #413: a
+corpus grep (`grep -n "grep\|curl\|sed \|awk " claude/.claude/agents/*.md
+plugins/*/agents/*.md`) found exactly one hit —
+`claude/.claude/agents/staff-backend-engineer.md:63`,
+`"2. For contract changes, grep every consumer. List them."` — inside
+`staff-backend-engineer`'s own `## How to work` numbered checklist, content
+the dispatched `staff-backend-engineer` agent reads and follows every time it
+runs. (The other `grep`/`curl` matches in the corpus are anti-pattern
+*descriptions* the agent flags in a reviewed diff — e.g.
+`staff-platform-engineer.md`'s "no `curl | bash` without checksum/pin" — not
+prescribed steps; not violations.)
+
+Fix: generalize the mandatory action to not lock into one CLI tool, mirroring
+the already-accepted `plan-it` phrasing ("run `git grep` (or ripgrep) and
+count call sites") — new wording: "For contract changes, search for every
+consumer (`git grep` or equivalent) and list them." The mechanical
+requirement (search + enumerate every consumer) is preserved; only the
+single-tool lock-in is removed. This is a **direct edit to the agent file**, separate in kind from
+parts 1–2 (which edit the *meta-review* checklists, not the content those
+checklists audit) — run `/agent-review` on this diff before committing, per
+the repo's "run the skill on its own diff" rule for agent files.
+
 ### Why the issue's Part 3 (denylist test) is dropped
 
 The issue's third part — a curated vendor/product-name denylist test with an

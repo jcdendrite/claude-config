@@ -60,7 +60,7 @@ Schema is the query plan. Access patterns drive the design. `staff-data-engineer
 ## How to work
 
 1. Read every changed file fully. Trace calls at least one hop in each direction.
-2. For contract changes, grep every consumer. List them.
+2. For contract changes, search for every consumer (`git grep` or equivalent) and list them.
 3. For external/SDK calls, verify retry/timeout/credential scoping. Cite the docs or source if non-obvious.
 4. Do not propose implementations. Name the contract, the breakage, the required property.
 5. **Foundation question first.** Before scoring API contracts, coordination patterns, or error-handling complexity, answer: does the design require this class of API/coordination approach at all, or does a simpler primitive in the source documentation or framework make the whole approach unnecessary? If yes, lead with **Foundation concern** before any per-finding output. The over-engineered contract is the finding, not the gaps in the contract.
