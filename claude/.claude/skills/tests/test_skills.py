@@ -443,6 +443,28 @@ class TestConventionSkillWiring:
         assert "run the `sync-pr-description`" in self._skill_body("handoff")
 
 
+class TestContinuityFileBucketCrosscheck:
+    """Pin the autonomous-vs-authorization bucket cross-check in continuity skills.
+
+    handoff (§3/§3.5) and brief (§6/§6.5) both split next steps into an
+    autonomously-safe section and a pending-engineer-authorization section,
+    each with a categorization rule. The rule only helps if the writer
+    re-scans the safe section against it before writing the file; these
+    pre-write checklist bullets are that trigger. Without them an
+    irreversible step (a bulk delete, an external communication) can ship
+    labeled autonomously-safe and be executed unprompted by a resuming
+    session.
+    """
+
+    def test_handoff_prewrite_checklist_crosschecks_section3(self):
+        """handoff's pre-write checklist must re-scan §3 against the §3.5 rule."""
+        assert "re-checked against the §3.5 categorization rule" in _skill_file("handoff").read_text()
+
+    def test_brief_prewrite_checklist_crosschecks_section6(self):
+        """brief's pre-write checklist must re-scan §6 against the §6.5 rule."""
+        assert "re-checked against the §6.5 categorization rule" in _skill_file("brief").read_text()
+
+
 class TestModelInvokableSkillTriggerContracts:
     """TRIGGER / DO NOT TRIGGER contract tests for all model-invokable skills.
 
