@@ -174,7 +174,7 @@ For `CLAUDE.md`, `AGENTS.md`, and `~/.claude/projects/*/memory/` review, invoke 
 
 For hook reviews (`claude/.claude/hooks/*.sh`, hook entries in `settings.json`), invoke the `claude-hook-review` skill.
 
-When changed files are inside a plugin directory (identified by `.claude-plugin/plugin.json` present in the plugin's tree), or when `.claude-plugin/marketplace.json` is modified, invoke `plugin-semver` for version-bump discipline.
+When changed files are inside a plugin directory (identified by `.claude-plugin/plugin.json` present in the plugin's tree), or when `.claude-plugin/marketplace.json` is modified, invoke `plugin-semver` for version-bump discipline (hook-enforced at commit time by `require-plugin-version-bump.sh`, which ships with the `plugin-semver` plugin).
 
 ## Domain: Lovable config
 
