@@ -113,6 +113,37 @@ parts 1–2 (which edit the *meta-review* checklists, not the content those
 checklists audit) — run `/agent-review` on this diff before committing, per
 the repo's "run the skill on its own diff" rule for agent files.
 
+### 4. Rewrite item 16's voice to match items 1–15
+
+Part 2's item 16 (as first written) opened with "before declaring the review
+complete, extract every diff hit in two classes; do not rely on noticing
+during read-through" — the same shape as `code-review` item 9d (a methodology
+for scanning a *code* diff) and `staff-backend-engineer.md`'s own "## How to
+work" checklist (content a dispatched reviewer agent reads and follows).
+Items 1–15 are all declarative property-checks against the reviewed
+agent-definition file's *structure* (e.g. item 5: "any `disallowedTools`
+entry is a recognized field name…"). Item 16's procedural framing pattern-
+matched against the code-review-methodology templates instead, reading as
+guidance embedded for a `staff-*` agent to follow when reviewing code —
+distinct from, and easy to confuse with, agent-review's own job of auditing
+the definition file's structure. Separately, "before declaring the review
+complete" has no referent: `agent-review` has no completion-marker mechanic
+(no "Record review completion" step), unlike `skill-review` and `code-review`,
+both of which terminate in a `marker.sh write` step — the phrase was copied
+from those templates without checking it fit `agent-review`'s own structure.
+
+Fix: rewrite item 16 as a declarative property statement matching items
+1–15's voice, anchoring every generic noun ("a review/checklist instruction",
+"a rule") explicitly to "the reviewed agent's own body" so it cannot be
+misread as content belonging inside a `staff-*.md` file. The mechanical-
+enumeration instruction ("extract every hit… do not rely on noticing during
+read-through") is preserved as a supporting clause, not cut — it addresses a
+real, separately-diagnosed failure mode (the *original* skill-review item 12
+failed partly because it relied on read-through noticing), so dropping it
+entirely to fully match items 1–15's shape would trade one defect for
+another. Final wording: see `claude/.claude/skills/agent-review/SKILL.md`
+item 16.
+
 ### Why the issue's Part 3 (denylist test) is dropped
 
 The issue's third part — a curated vendor/product-name denylist test with an
