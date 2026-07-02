@@ -177,9 +177,8 @@ If not all three hold, point at the canonical source.
     verification command fails this audit even when the summary reads
     as equivalent.
 
-12. **Platform-genericness** — skills under `claude/.claude/skills/` keep
-    engine/platform tokens (`pg_cron`, `net.http_post`) out; stack-specific
-    content goes in a `<skill>-<project>` layer. (Repo-specific; see CLAUDE.md.)
+12. **Platform-genericness (enumerate-then-justify)** — before declaring the review complete, extract every diff hit in three classes; do not rely on noticing during read-through: (a) a tool-invocation verb prescribed as a mandatory review-instruction step; (b) a vendor/product name anchoring a rule's category rather than illustrating the generic capability alongside it; (c) a source-material bias anchor — a named team's or org's practice cited as the reason a rule holds, not the rule's own rationale.
+    Justify each hit inline as deliberate/illustrative, or move it to a `<skill>-<project>` layer; extraction is mandatory, the verdict per hit stays judgment. (Repo-specific; see CLAUDE.md "Global skill bodies stay platform-agnostic" and "abstract first.")
 
 ## Step — Record review completion
 
