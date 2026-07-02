@@ -116,6 +116,26 @@ def _count_skill_overrides_off() -> int:
     )
 
 
+# Builtin Claude Code skills carried in skillOverrides: name-only despite having
+# no repo SKILL.md. Mirrors BUILTIN_NAME_ONLY_SKILLS in
+# claude/.claude/skills/tests/test_skills.py — duplicated locally rather than
+# imported across test directories, since pytest only adds a collected file's
+# own directory to sys.path.
+_BUILTIN_NAME_ONLY_SKILLS = {"loop", "simplify"}
+
+
+def _count_name_only_skills() -> int:
+    """Return the count of skillOverrides entries set to "name-only" in
+    settings.json, excluding builtin skills with no repo SKILL.md."""
+    settings_path = CLAUDE_DIR / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    return sum(
+        1
+        for name, value in settings.get("skillOverrides", {}).items()
+        if value == "name-only" and name not in _BUILTIN_NAME_ONLY_SKILLS
+    )
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -155,6 +175,17 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 rel_path="docs/skills.md",
                 pattern=r"(\w+) bundled skills are disabled in this repo",
                 description="docs/skills.md: N bundled skills disabled",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_name_only_skills,
+        label='count of skillOverrides == "name-only" in settings.json (excluding builtin loop/simplify)',
+        occurrences=[
+            Occurrence(
+                rel_path="docs/skills.md",
+                pattern=r"(\w+) skills in this repo use `skillOverrides: name-only`",
+                description="docs/skills.md: N skills use skillOverrides: name-only",
             ),
         ],
     ),

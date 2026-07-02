@@ -391,11 +391,11 @@ class TestNameDispatchedNoTriggerContracts:
 
 
 class TestConventionSkillWiring:
-    """Assert that convention skills are explicitly wired into consumers.
+    """Assert that name-dispatched skills are explicitly wired into consumers.
 
-    test-conventions and sql-query-conventions rely on explicit Read/invoke
-    pointers rather than description-based auto-trigger (which never fires).
-    These tests prevent silent regression of the wiring.
+    test-conventions, sql-query-conventions, and sync-pr-description rely on
+    explicit Read/invoke pointers rather than description-based auto-trigger
+    (which never fires). These tests prevent silent regression of the wiring.
     """
 
     AGENTS_DIR = Path(__file__).resolve().parent.parent.parent / "agents"
@@ -433,6 +433,14 @@ class TestConventionSkillWiring:
     def test_code_review_invokes_sql_query_conventions(self):
         """code-review must have an actionable invoke pointer to sql-query-conventions."""
         assert "invoke the `sql-query-conventions`" in self._skill_body("code-review")
+
+    def test_ready_for_review_invokes_sync_pr_description(self):
+        """ready-for-review step 4 must have an actionable invoke pointer to sync-pr-description."""
+        assert "Invoke the `sync-pr-description`" in self._skill_body("ready-for-review")
+
+    def test_handoff_runs_sync_pr_description(self):
+        """handoff's pre-write checklist must have an actionable run pointer to sync-pr-description."""
+        assert "run the `sync-pr-description`" in self._skill_body("handoff")
 
 
 class TestModelInvokableSkillTriggerContracts:
