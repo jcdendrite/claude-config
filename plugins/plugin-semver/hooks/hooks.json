@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/require-plugin-version-bump.sh",
+            "if": "Bash(git commit *)",
+            "statusMessage": "Checking plugin-version-bump gate..."
+          }
+        ]
+      }
+    ]
+  }
+}

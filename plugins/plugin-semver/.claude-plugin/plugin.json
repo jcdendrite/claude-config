@@ -1,7 +1,7 @@
 {
   "name": "plugin-semver",
   "description": "Semver and version-field discipline for Claude Code plugin changes. Install at project scope in any repo that authors plugins for a Claude Code marketplace.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "author": {
     "name": "Cordova Strategy"
   },

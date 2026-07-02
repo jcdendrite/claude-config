@@ -87,6 +87,14 @@ when staged changes include skill or agent files:
   `/agent-review` is invoked by the dispatcher but **not hook-enforced**. Agent
   bodies are lazy-loaded and lower-blast-radius than skill descriptions, so
   dispatcher-level invocation suffices and no pre-commit gate is added.
+- **any file under a plugin directory** (a tree containing
+  `.claude-plugin/plugin.json`) → `plugin-semver` is also required and
+  **hook-enforced** (`require-plugin-version-bump.sh` blocks `git commit`
+  unless the plugin's `version` was strictly raised since the branch's
+  merge-base with the default branch). This hook ships inside the
+  `plugin-semver` plugin itself, so it only takes effect once that plugin is
+  installed/updated to a version that carries it — a `git pull` alone does
+  not activate it, unlike stowed `claude/.claude/**` hooks.
 
 `/code-review` invokes whichever applies automatically.
 

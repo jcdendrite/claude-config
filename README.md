@@ -147,6 +147,7 @@ flowchart LR
 | `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
 | `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit (ships with `skill-management@claude-config` plugin) |
+| `require-plugin-version-bump.sh` | `git commit` when staged changes fall under any plugin's `.claude-plugin/plugin.json` tree, without a strict version increase since the branch's merge-base with the default branch | bump the plugin's `version` field (ships with `plugin-semver@claude-config` plugin) |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |
 | `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in) | Remove the flagged content, or `exclude:` a synthetic-fixture path |
 | `deny-data-file-reads.sh` | `Read` of a data-shaped file (opt-in) | No clear — inspect data files outside Claude |
@@ -184,7 +185,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
   **Plugin dependency:** the structural validator imports `pyyaml`. On first session in a consumer repo, the plugin's `SessionStart` hook provisions a persistent venv at `${CLAUDE_PLUGIN_DATA}/venv` and installs `pyyaml` into it; the commit-time hook prefers that venv's `python` and falls back to system `python3`. `./install.sh` does not install anything into the host Python — contributors who run the test suite set up a repo-local `.venv` per [Tests](#tests).
 
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
-- **`plugin-semver`** — Semver and version-field discipline for Claude Code plugin changes: when to bump major/minor/patch, which fields must be kept in sync, and how to catch version drift before pushing. `claude plugin install plugin-semver@claude-config --scope project`
+- **`plugin-semver`** — Semver and version-field discipline for Claude Code plugin changes: when to bump major/minor/patch, which fields must be kept in sync, and a commit-time hook (`require-plugin-version-bump.sh`) that blocks a plugin-directory change unless the plugin's version was raised on the branch. `claude plugin install plugin-semver@claude-config --scope project`
 
 ### Agents
 
