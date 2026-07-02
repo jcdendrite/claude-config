@@ -96,6 +96,7 @@ Before writing the file, verify:
 - §4 Current state is objective — facts a fresh session could verify, not editorial
 - §5 Decisions to make lists open questions, not foregone conclusions framed as questions
 - §6 Steps to ship name concrete commands or file edits, not vague verbs
+- Every §6 step has been re-checked against the §6.5 categorization rule: a step matching any §6.5 anchor shape is mis-bucketed — move it to §6.5 (bulk deletes include removing many branches or worktrees in one command). A cited justification ("per repo convention", "per memory") does not downgrade a step's irreversibility; a step claiming a convention names the file that states it
 - §7 Out of scope names at least one specific temptation to leave alone
 - File contains no references to the originating conversation, prior sessions, or unstated context
 

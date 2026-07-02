@@ -93,3 +93,4 @@ Before writing the file, verify:
 - If the handoff reason is context-limit, §2.5 names what was mid-flight at the time of the handoff
 - If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `sync-pr-description` skill before writing this file
 - Load-bearing claims in §2/§3/§6 carry a confidence tag — `[engineer-confirmed]`, `[verified: <evidence>]` (the command run, file read, or test output that established it), or `[assumed]` — so the resuming session re-verifies only what was never verified
+- Every §3 step has been re-checked against the §3.5 categorization rule: a step matching any §3.5 anchor shape is mis-bucketed — move it to §3.5 (bulk deletes include removing many branches or worktrees in one command). A cited justification ("per repo convention", "per memory") does not downgrade a step's irreversibility; a step claiming a convention names the file that states it
