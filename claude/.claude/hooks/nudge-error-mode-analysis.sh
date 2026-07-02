@@ -31,8 +31,9 @@
 # only inflate the composite toward the nudge threshold, never corrupt
 # state).
 #
-# Kill-switch: touching ~/.claude/.error-mode-nudge-disabled suppresses all
-# nudges globally.
+# Opt-in: dormant by default. Touching ~/.claude/.error-mode-nudge-enabled
+# arms the hook; without that file, every invocation exits 0 before reading
+# the transcript. See CONTRIBUTING.md for how to enable it.
 #
 # Fail-open everywhere: any unexpected error (missing python3, python3 older
 # than 3.11, non-integer friction-count output, a friction-count timeout)
@@ -68,8 +69,10 @@ TRANSCRIPT_PATH=""
     2>/dev/null
 ) 2>/dev/null || true
 
-# 1. Kill-switch: suppress nudge for automated pipelines or user opt-out.
-if [ -f "$HOME/.claude/.error-mode-nudge-disabled" ]; then
+# 1. Opt-in gate: dormant unless the contributor has explicitly armed the
+# hook. Absent this file, every invocation exits here before doing any
+# transcript work.
+if [ ! -f "$HOME/.claude/.error-mode-nudge-enabled" ]; then
   exit 0
 fi
 

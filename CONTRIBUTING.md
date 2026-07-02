@@ -18,6 +18,16 @@ cd .claude/worktrees/my-feature
 
 See [Worktree enforcement in the README](./README.md#worktree-enforcement) for the reasoning.
 
+## Optional nudges
+
+A few advisory hooks are opt-in and dormant until a contributor explicitly arms them. `nudge-error-mode-analysis.sh` watches for accumulated in-session friction (hook denials, failed test runs, corrections) and suggests running `/error-mode-analysis` once a backtested threshold is crossed:
+
+```bash
+touch ~/.claude/.error-mode-nudge-enabled
+```
+
+See [`docs/error-mode-nudge.md`](./docs/error-mode-nudge.md) for what it does, how to disable it again, and known limitations.
+
 ## AI agents don't merge their own PRs
 
 If an AI agent opens a PR, it does not also merge it. CI passing is necessary but not sufficient — wait for the maintainer's explicit "merge it." Open-ended instructions like "handle" or "do the swap" cover writing the change and opening the PR, not landing it.

@@ -9,6 +9,11 @@ distribution). The nudge fires once per session — a marker file gates
 subsequent turns, and that marker check runs *before* python3 is ever
 spawned.
 
+The hook is opt-in: dormant unless ~/.claude/.error-mode-nudge-enabled
+exists. `_run_hook`'s `enabled=True` default arms that marker for every
+test that exercises gates past the opt-in check; only the test verifying
+the dormant-by-default behavior itself passes `enabled=False`.
+
 All tests sandbox $HOME via monkeypatch so markers and logs land in tmp_path
 rather than the real $HOME. The real transcript-analysis.py script is
 symlinked into the sandboxed $HOME/.claude/scripts/ so the hook's own
@@ -71,8 +76,15 @@ def _prepare_home(home: Path) -> None:
         link.symlink_to(SCRIPTS_DIR / "transcript-analysis.py")
 
 
-def _run_hook(payload: dict, tmp_path: Path, *, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+def _run_hook(
+    payload: dict, tmp_path: Path, *, extra_env: dict | None = None, enabled: bool = True
+) -> subprocess.CompletedProcess:
+    """Run the hook against a sandboxed $HOME. `enabled=True` (the default) arms
+    the opt-in marker first, since most tests exercise gates *past* the opt-in
+    check; pass `enabled=False` to test the dormant-by-default behavior itself."""
     _prepare_home(tmp_path)
+    if enabled:
+        _enable_nudge(tmp_path)
     env = {**os.environ, "HOME": str(tmp_path)}
     if extra_env:
         env.update(extra_env)
@@ -99,6 +111,13 @@ def _log_path(tmp_path: Path) -> Path:
 
 def _marker_path(tmp_path: Path, session_id: str = SESSION_ID) -> Path:
     return tmp_path / ".claude" / ".error-mode-nudge-fired.d" / session_id
+
+
+def _enable_nudge(tmp_path: Path) -> None:
+    """Arm the opt-in nudge hook: touch ~/.claude/.error-mode-nudge-enabled."""
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    (claude_dir / ".error-mode-nudge-enabled").touch()
 
 
 def _fake_bin_dir(tmp_path: Path, name: str) -> Path:
@@ -196,18 +215,31 @@ class TestNudgeErrorModeAnalysis:
         assert result.stdout.strip() == ""
         assert not spawn_counter.exists(), "python3 shim was invoked despite an existing fired-marker"
 
-    def test_killswitch_suppresses(self, tmp_path):
-        """Presence of ~/.claude/.error-mode-nudge-disabled suppresses the nudge
-        and produces no log line."""
+    def test_disabled_by_default_without_opt_in_marker(self, tmp_path):
+        """Absence of ~/.claude/.error-mode-nudge-enabled suppresses the nudge —
+        opt-in, not opt-out — even when the composite is at threshold, and
+        produces no log line. Also asserts python3 is never spawned: the gate
+        must short-circuit *before* any transcript work, the same invariant
+        `test_already_fired_is_silent_and_python3_not_spawned` pins for the
+        fired-marker gate, and this is gate #1 — the cheapest one to prove."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True)
-        (claude_dir / ".error-mode-nudge-disabled").touch()
-        result = _run_hook(_base_payload(transcript), tmp_path)
+
+        fake_bin = _fake_bin_dir(tmp_path, "opt-in-spawn-check")
+        spawn_counter = tmp_path / "python3-spawn-count"
+        shim_path = _fake_python3(
+            fake_bin,
+            f"#!/bin/bash\necho invoked >> {spawn_counter}\nexit 0\n",
+        )
+
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, enabled=False, extra_env={"PATH": shim_path}
+        )
         assert result.returncode == 0
         assert result.stdout.strip() == ""
         assert not _log_path(tmp_path).exists()
+        assert not _marker_path(tmp_path).exists()
+        assert not spawn_counter.exists(), "python3 shim was invoked despite the opt-in marker being absent"
 
     def test_subagent_gate(self, tmp_path):
         """Payload with agent_type field is silently ignored — nudge is
@@ -418,6 +450,7 @@ class TestNudgeErrorModeAnalysis:
     def test_empty_json_object_input_is_fail_open(self, tmp_path):
         """Empty JSON object ({}) as INPUT: exit 0, no blocking stdout."""
         _prepare_home(tmp_path)
+        _enable_nudge(tmp_path)
         result = subprocess.run(
             [str(NUDGE_HOOK)],
             input="{}",
@@ -432,6 +465,7 @@ class TestNudgeErrorModeAnalysis:
     def test_malformed_input_is_fail_open(self, tmp_path):
         """Non-JSON string as INPUT: exit 0, no blocking stdout."""
         _prepare_home(tmp_path)
+        _enable_nudge(tmp_path)
         result = subprocess.run(
             [str(NUDGE_HOOK)],
             input="not json at all",

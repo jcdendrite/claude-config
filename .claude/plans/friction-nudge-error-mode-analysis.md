@@ -127,7 +127,7 @@ Read `session_id`, `agent_type`, `permission_mode`, `transcript_path` from the
 `UserPromptSubmit` payload in one `jq` pass (as the handoff nudge does). **Gate order
 — cheapest first, so the interpreter is never spawned unnecessarily:**
 
-1. kill-switch file present → exit 0
+1. opt-in marker file absent → exit 0
 2. `agent_type` non-empty (inside a subagent) → exit 0
 3. `permission_mode == plan` → exit 0
 4. no `session_id` / no transcript file → exit 0
@@ -180,16 +180,19 @@ non-zero exit / non-integer stdout all as no-nudge. Fail-open everywhere; no `se
 measure `friction-count`'s wall time against the largest realistic transcript in
 `~/.claude/projects` (not guessed), and record that measurement in the PR description.
 
-### Global, with a kill-switch (like handoff), not opt-in
+### Opt-in via a per-machine marker, not global-with-kill-switch
 
-Mirrors the accepted handoff-nudge posture. The switch away from opt-in is
-*correctly forced*: with no committed marker there is no opt-in surface, and the
-committed-marker fingerprint risk from earlier designs disappears. **Residual noise
-class (stated honestly):** a high-friction *throwaway / spike* session (in any repo,
-incl. claude-config) can fire a nudge with no useful retrospective target. This is
-*bounded by the kill-switch and the once-per-session marker*, not *eliminated* — there
-is no repo-type gate. If throwaway-repo noise proves common in practice, per-session +
-kill-switch is the only mitigation without reintroducing a committed opt-in marker.
+Dormant by default: the hook exits before doing any transcript work unless
+`~/.claude/.error-mode-nudge-enabled` exists. A contributor arms it once per machine;
+CONTRIBUTING.md documents the marker. This replaces an earlier "global, with a
+kill-switch (like handoff)" design that was rejected during PR #432 review — reviewer
+feedback was that a stow-shipped nudge firing by default for every contributor is a
+bigger default-behavior change than a global reminder hook (handoff) warrants, and
+that new advisory hooks in this repo should ask before they speak. The residual noise
+class from a high-friction throwaway/spike session firing with no useful retrospective
+target still applies, but is now bounded by opt-in itself — a contributor who never
+touches the marker never sees it, rather than relying on the once-per-session marker
+and a kill-switch to bound noise for a hook that is on by default.
 
 ### Exact paths (mirror the handoff nudge's naming)
 
@@ -197,7 +200,7 @@ kill-switch is the only mitigation without reintroducing a committed opt-in mark
   (evicted `find … -mtime +30 -delete`, as the handoff nudge does).
 - checkpoint dir: `$HOME/.claude/.error-mode-nudge-checkpoint.d/<session_id>`
   (same eviction; persists whether or not the nudge ever fires).
-- kill-switch: `$HOME/.claude/.error-mode-nudge-disabled`.
+- opt-in marker: `$HOME/.claude/.error-mode-nudge-enabled` (dormant unless present).
 - log: `$HOME/.claude/.error-mode-nudge.log` (append-only; growth is slow — one line
   per *fired* session — so unbounded-append is acceptable, matching
   `.handoff-nudge.log`; noted, not rotated).
@@ -218,7 +221,7 @@ kill-switch is the only mitigation without reintroducing a committed opt-in mark
 **Create — `claude/.claude/hooks/nudge-error-mode-analysis.sh`**: the UserPromptSubmit
 hook. Reuse the structure of `claude/.claude/hooks/nudge-handoff-near-context-cap.sh`
 (payload jq-parse, marker dedup dir + 30-day eviction, subagent/plan-mode skips,
-kill-switch, log, fail-open, additionalContext emission), adding the bash-side
+opt-in gate, log, fail-open, additionalContext emission), adding the bash-side
 `python3` preflight + `timeout` + integer-validation + `--checkpoint` pass-through
 described above.
 
@@ -261,7 +264,7 @@ JSONL):
   mirror `test_nudge_handoff_near_context_cap.py`): fires above threshold; quiet below;
   quiet when fired-marker present **and asserts `python3` was not spawned** (PATH-shim
   recording invocation, as the handoff test shims); skip in subagent; skip in plan
-  mode; kill-switch honored; `python3` missing → quiet + exit 0; `python3` < 3.11 →
+  mode; opt-in gate honored (dormant without the marker, armed with it); `python3` missing → quiet + exit 0; `python3` < 3.11 →
   quiet; non-integer stdout → quiet; timeout → quiet; always `exit 0`; the
   `--checkpoint` flag is passed with the session-scoped checkpoint path on every
   invocation.
@@ -283,8 +286,10 @@ external to the skill, so no skill edit and no `/skill-review`.
 - **Composite of all three signals** (vs. a narrower subset) — covers "errors" and
   "user corrections." The refactor cost is now minimal (only `cmd_review_trace`
   touched) because the other two reuse existing constants.
-- **Global + kill-switch** (vs. opt-in) — mirrors the handoff nudge; residual
-  non-engagement-repo noise class noted above.
+- **Opt-in via a per-machine marker** (vs. global + kill-switch, mirroring the
+  handoff nudge) — reversed during PR #432 review; see "Opt-in via a per-machine
+  marker, not global-with-kill-switch" above. Residual non-engagement-repo noise
+  class noted there.
 
 ## Verification
 
