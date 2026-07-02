@@ -86,13 +86,15 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 9c. **Ungrounded numeric literal in network/timeout/retry context** — Does the diff introduce a bare numeric literal as a timeout, retry count, interval, or network parameter without a citation of the vendor or protocol documentation that specifies the value? Flag and require a primary-source citation or a named constant with a link in a comment.
 
-9d. **Lint or type-check suppression without rationale** — Does the diff add a suppression directive (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `# noqa`, `# type: ignore`, `//nolint`, `# pylint: disable`) without a one-line comment naming the alternative considered and why it does not apply? Flag — presence of a reason, not its quality, is the check.
+9d. **Lint or type-check suppression without rationale** — Grep the diff text for suppression tokens (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `# noqa`, `# type: ignore`, `//nolint`, `# pylint: disable`, `istanbul ignore`) — run the grep explicitly; do not rely on noticing directives during read-through. For each hit the diff adds: is there a one-line comment naming the alternative considered and why it does not apply? Flag — presence of a reason, not its quality, is the check.
 
 9e. **New third-party dependency without provenance research** — Does the diff add a new runtime or dev dependency (any package.json, requirements.txt, go.mod, Cargo.toml addition) without evidence of vulnerability-history and maintenance-health research? Flag and require the source-of-choice rationale to be named (in the PR description, a comment, or a commit message note).
 
 9f. **Brittle structural test assertion** — Does the diff add a test that asserts on specific field values in runtime/structured output (log lines, JSON, XML, generated config) by applying regex or string-matching to raw text rather than (a) parsing with a library and asserting on the resulting object, or (b) calling the production parse/validate function? The regex re-implements logic the code owns: the test passes when production parsing is broken and breaks on format changes. Does not apply when the assertion only checks the output's format envelope (e.g., that the output is valid JSON or matches a known line format) rather than asserting on specific field values — that is a legitimate format-contract test. See `test-conventions` §9.
 
 9g. **Source-scanning test assertion** — Does the diff add a test that reads a source, DDL, or generated file as a string and regex-matches or substring-matches against its literal text rather than executing the code and asserting on observable behavior? Reading source proves the literal text exists, not that it runs, is reachable, or behaves correctly; the assertion passes on dead code and fails on cosmetic renames. See `test-conventions` §9.
+
+9h. **Construct-substitution suppression** — Does the diff silence a warning via a language construct rather than a directive — `void` applied to a promise in an async/dispatch context, an empty catch, a broad type assertion, an unused-variable rename that hides a real value? Check whether the silencing construct introduces its own defect class or is itself flagged by stricter analyzers (SonarQube-class reliability rules). Prefer explicit handling: an explicit catch, or an intentional, named fire-and-forget wrapper. For casts reaching mock state in test files, `test-conventions` §8 names the prescriptive fix (the framework's typed mock accessor) — prefer that over a rationale-commented cast.
 
 ### Clarity
 
@@ -109,6 +111,8 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 ### Scope discipline
 
 14. **Pre-existing issues in unchanged code** — If you notice issues in code NOT written or modified in this change, flag them in a separate "Pre-existing issues" section. Do NOT fix them — informational only, out of scope.
+
+14a. **Config-file change without stated intent** — Does the diff change a project config file (build config, tooling config, dependency manifest, lockfiles — `package-lock.json` and equivalents, compiler/analyzer options, infrastructure-as-code such as Terraform or Kubernetes manifests) without its intent being evident — an inline comment where the format allows comments, or an explicit mention in the PR description or commit message? A config diff reads as structural; a reviewer cannot distinguish intentional cleanup from accidental deletion without stated rationale. Flag when neither exists. When the changed file also matches an Infrastructure-domain item (15–19) and the finding content overlaps (the same permission/trigger/idempotency delta), report once under the more specific item and note the missing rationale there — reserve 14a for config changes no domain item absorbs.
 
 ## Domain: Infrastructure
 
@@ -332,11 +336,13 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **9e. New third-party dependency without provenance research** | `staff-backend-engineer` (runtime deps) | `staff-platform-engineer` (build/CI deps), `staff-frontend-engineer` (frontend/client-side deps) |
 | **9f. Brittle structural test assertion** | `staff-sdet` | `staff-backend-engineer` (backend tests asserting on structured API response output) |
 | **9g. Source-scanning test assertion** | `staff-sdet` | — |
+| **9h. Construct-substitution suppression** | judgment (any reviewer) | `staff-sdet` (suppression constructs inside test files or test-double setup; see `test-conventions` §8) |
 | **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
 | **12. Stripped WHY comments** | judgment (any reviewer) | — |
 | **13. Test adequacy for security controls** | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
 | **14. Pre-existing issues in unchanged code** | judgment (any reviewer) | — |
+| **14a. Config-file change without stated intent** | judgment (any reviewer) | `staff-platform-engineer` (build/CI/IaC configs) |
 | **15–19. Infrastructure** (concurrency scoping, secret exposure, least-privilege, idempotency, trigger alignment) | `staff-platform-engineer` | `ciso-reviewer` (16 secret exposure, 17 least-privilege) |
 | **20. Migration reversibility** | `staff-data-engineer` (rollback safety, pipeline impact) | `staff-backend-engineer` |
 | **21. Index coverage** | `staff-backend-engineer` (app-query coverage) | `staff-data-engineer` (DDL risk and bloat) |
