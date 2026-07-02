@@ -46,10 +46,26 @@ during read-through… For each hit… Flag"). The new item:
 ### 2. Add the mirrored item to agent-review (`claude/.claude/skills/agent-review/SKILL.md`)
 
 agent-review's checklist (currently 15 items) gains a new item 16 mirroring the
-sharpened skill-review item 12, adapted for agent bodies: agent bodies are
-stowed to every user with the same rationale as skill bodies, so the same three
-failure classes and the same enumerate-then-justify procedure apply. This is a
-**genuine gap, not duplication-for-safety** — the repo's "No shared partials
+sharpened skill-review item 12, adapted for agent bodies, with **one class
+dropped**: agent bodies are stowed to every user with the same rationale as
+skill bodies, so the tool-verb-prescription class (a) and the source-material
+bias-anchor class (from skill-review's (c)) transfer and apply — the issue's
+own demonstrated agent-review gap (`grep` prescribed as a mandatory step in a
+reviewer-agent angle) is a class-(a) violation. The vendor/product
+category-anchor class (skill-review's (b)) does **not** transfer: `staff-*`
+reviewer personas (`staff-platform-engineer`, `staff-data-engineer`,
+`staff-analytics-engineer`, `staff-frontend-engineer`) are domain-expert
+bodies whose job is enumerating the vendor landscape they must recognize
+(Terraform, Snowflake, Fivetran, Sentry, and similar) — that enumeration is
+load-bearing domain knowledge, not platform lock-in to generalize away.
+Porting skill-review's full three-class item onto agent-review without this
+carve-out was a category error caught in review: skill bodies are generic
+meta-process instructions where vendor names are lock-in to avoid; `staff-*`
+bodies are domain-expert review personas where vendor names are the
+domain knowledge itself. Item 16's text states the exclusion and its
+rationale explicitly, rather than relying on a reviewer to infer it.
+
+This is a **genuine gap, not duplication-for-safety** — the repo's "No shared partials
 across skills — duplicate intentionally" rule sanctions the near-duplicate text
 so each file stands alone.
 

@@ -149,10 +149,11 @@ If not all three hold, point at the canonical source.
 
 15. **Reviewer-agent output contract** (`staff-*` and `ciso-reviewer` only) — verify the agent carries `Write` in its frontmatter `tools` list, and has a `### File-based output` section in its `## Output format` body. Both are required for `findings_path` dispatch from the code-review dispatcher. An agent missing either falls back to full inline output and can trigger the heredoc-abort-on-large-findings failure the canary guards against.
 
-16. **Platform-genericness (enumerate-then-justify)** — before declaring the review complete, extract every diff hit in three classes; do not rely on noticing during read-through:
+16. **Platform-genericness (enumerate-then-justify; tool-verb and bias-anchor only)** — before declaring the review complete, extract every diff hit in two classes; do not rely on noticing during read-through:
 
     (a) a tool-invocation verb prescribed as a mandatory step inside a review/checklist instruction;
-    (b) a vendor or product name used as a rule's category anchor rather than an illustrative example paired with the generic capability it demonstrates;
-    (c) a source-material bias anchor — a named team's or org's practice cited as the reason a rule holds, instead of the rule's own rationale.
+    (b) a source-material bias anchor — a named team's or org's practice cited as the reason a rule holds, instead of the rule's own rationale.
 
-    For each hit, justify inline as a deliberate mechanical procedure or an illustrative pairing. Agent bodies are stowed to every user for the same reason skill bodies are, but have no `<skill>-<project>` layer to defer to — an unjustified hit is generalized or removed rather than relocated. Extraction is mandatory; the verdict on each hit stays judgment. (Repo-specific; the platform-agnostic rationale applies to agent bodies for the same reason it applies to skill bodies — see repo-root `CLAUDE.md` "Global skill bodies stay platform-agnostic.")
+    For each hit, justify inline as a deliberate mechanical procedure or an illustrative pairing. Agent bodies are stowed to every user for the same reason skill bodies are, but have no `<skill>-<project>` layer to defer to — an unjustified hit is generalized or removed rather than relocated. Extraction is mandatory; the verdict on each hit stays judgment.
+
+    Excludes `skill-review` item 12's class (b) — vendor/product name as category anchor — by design: `staff-*` reviewer personas are domain-expert bodies whose job is enumerating the vendor landscape they must recognize (Terraform, Snowflake, Fivetran, Sentry, and similar are load-bearing domain knowledge in `staff-platform-engineer`, `staff-data-engineer`, `staff-analytics-engineer`, and `staff-frontend-engineer`), not platform lock-in to generalize away. (Repo-specific; the tool-verb and bias-anchor rationale applies to agent bodies for the same reason it applies to skill bodies — see repo-root `CLAUDE.md` "Global skill bodies stay platform-agnostic.")
