@@ -87,12 +87,39 @@ the count and have subcommands call it" would force behavior drift. Instead:
 
 ### `friction-count` subcommand
 
-`friction-count --transcript <path>` reads **one** JSONL file (no `iter_sessions`, no
-`gh`), prints the composite integer to stdout, and supports `--json` for the
-per-signal breakdown. **Pinned semantics** (so the threshold test is deterministic):
-each signal counts *distinct events*; `composite = denials + failed_test_runs +
-struggle_turns` with **all-1 weights** (stated, not implied); the `--json` breakdown
-is the tested contract and `composite == sum(signals)` is an asserted invariant.
+`friction-count --transcript <path> [--checkpoint <path>]` reads a JSONL file (no
+`iter_sessions`, no `gh`), prints the composite integer to stdout, and supports
+`--json` for the per-signal breakdown. **Pinned semantics** (so the threshold test is
+deterministic): each signal counts *distinct events*; `composite = denials +
+failed_test_runs + struggle_turns` with **all-1 weights** (stated, not implied); the
+`--json` breakdown is the tested contract and `composite == sum(signals)` is an
+asserted invariant.
+
+**Incremental checkpoint (added after `claude-hook-review` flagged the naive
+full-reparse-every-prompt cost — see "Why incremental" below).** When `--checkpoint
+<path>` is given, `friction-count` seeks to the byte offset stored in the checkpoint
+(absent/malformed checkpoint → offset 0, i.e. full scan), parses only complete JSONL
+lines appended since that offset, adds the per-signal deltas to the checkpoint's
+persisted running totals, writes the new offset + running totals back to the
+checkpoint, and prints the **cumulative** composite (not just the delta). No
+cross-call dedup state is needed beyond the offset: a given transcript line is a
+self-contained JSONL record, is read at most once across the lifetime of a checkpoint
+(each call starts exactly where the previous one stopped), and is therefore counted
+exactly once by construction — the same guarantee the current single-file whole-scan
+path already relies on within one call. Checkpoint file is a small JSON blob (offset +
+three integers); corrupt/unreadable checkpoint fails open to a full rescan from
+offset 0, never to an error.
+
+**Known limitation (documented, not fixed):** if a single hook-denial event is
+represented by both the legacy `attachment` shape and the current `is_error`
+`tool_result` shape for the same `tool_use_id` (as `cmd_review_trace`'s
+`seen_denial_ids` dedup already anticipates), and those two records are somehow split
+across two different checkpoint calls, the denial could be double-counted. In
+practice both records are emitted within the same assistant turn, before the next
+user prompt (and therefore the next hook fire) is even possible, so this is a
+theoretical edge case, not an observed one — noted rather than engineered around, to
+avoid re-adding the cross-call dedup-set complexity the checkpoint design exists to
+avoid.
 
 ### Hook shape (mirror the handoff nudge)
 
@@ -107,13 +134,38 @@ Read `session_id`, `agent_type`, `permission_mode`, `transcript_path` from the
 5. **per-session fired-marker present → exit 0** (one-shot suppresses the *spawn*, not
    just the output — this is the whole-session hot-path fix)
 6. **`python3` preflight** (bash-side fail-open — see below); on any failure → exit 0
-7. `timeout <N> python3 <script> friction-count --transcript "$TRANSCRIPT_PATH"`;
-   validate stdout is an integer (`2>/dev/null` guard on the arithmetic compare, as
-   the handoff nudge guards its compare); non-integer / non-zero exit / timeout →
-   exit 0
+7. `timeout <N> python3 <script> friction-count --transcript "$TRANSCRIPT_PATH"
+   --checkpoint "$CHECKPOINT_FILE"`; validate stdout is an integer (`2>/dev/null` guard
+   on the arithmetic compare, as the handoff nudge guards its compare); non-integer /
+   non-zero exit / timeout → exit 0
 8. if integer ≥ `FRICTION_THRESHOLD`: emit
    `jq -n '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:…}}'`,
    `touch` the fired-marker, append one line to the log. Always `exit 0`.
+
+`CHECKPOINT_FILE` is `$HOME/.claude/.error-mode-nudge-checkpoint.d/<session_id>` —
+sibling to the fired-marker dir, same 30-day eviction. It persists for the session's
+lifetime regardless of whether the nudge ever fires (unlike the fired-marker, which is
+written only on fire); this is what turns per-fire cost from
+O(current transcript size) into O(lines appended since the last prompt).
+
+**Why incremental.** `claude-hook-review`'s operational-footprint escalation
+(mandatory Section 10 spawn to `staff-platform-engineer`) measured the naive
+full-reparse design at ~180ms on the largest real transcript found in testing, and
+found the cost is paid on **every prompt for the session's entire remaining
+lifetime** in any session that never crosses `FRICTION_THRESHOLD` — the backtest
+found that's the majority case (47.4% of the 654 sampled sessions never fired).
+Because the fired-marker only engages after threshold is crossed, and transcript size
+grows every turn, cumulative added latency across a long non-firing session is
+roughly quadratic in turn count, not a fixed tax — a confirmed violation of this
+project's own hook-review performance budget (<100ms/fire, no unbounded file I/O).
+The incremental checkpoint is the platform reviewer's top-ranked fix: it preserves the
+"session-intrinsic, no external lookups" design intent exactly (still purely local,
+still no new dependency) while turning the per-fire cost into O(new lines only).
+Rejected alternative: a time/size throttle (skip re-computation unless N seconds
+elapsed) — cheaper to build but only reduces *fire frequency*, not per-fire
+complexity, so it masks the cost rather than removing it; not worth the added state
+for a problem the checkpoint design solves directly at comparable implementation
+cost.
 
 **Bash-side Python guard (not script-side).** `transcript-analysis.py` does
 `from datetime import UTC` at module top, so on `python3 < 3.11` it raises
@@ -143,6 +195,8 @@ kill-switch is the only mitigation without reintroducing a committed opt-in mark
 
 - fired-marker dir: `$HOME/.claude/.error-mode-nudge-fired.d/<session_id>`
   (evicted `find … -mtime +30 -delete`, as the handoff nudge does).
+- checkpoint dir: `$HOME/.claude/.error-mode-nudge-checkpoint.d/<session_id>`
+  (same eviction; persists whether or not the nudge ever fires).
 - kill-switch: `$HOME/.claude/.error-mode-nudge-disabled`.
 - log: `$HOME/.claude/.error-mode-nudge.log` (append-only; growth is slow — one line
   per *fired* session — so unbounded-append is acceptable, matching
@@ -156,15 +210,17 @@ kill-switch is the only mitigation without reintroducing a committed opt-in mark
 `/code-review`):
 - Extract `hook_denial_key(record) -> str | None`; refactor `cmd_review_trace`'s
   denial detection to call it (its rendered output must stay byte-identical).
-- Add `friction-count --transcript <path>` (+ `--json`) per the pinned semantics
-  above. Do **not** modify `cmd_fail_seq` / `cmd_struggle`; `friction-count` reuses
-  their module-level constants directly.
+- Add `friction-count --transcript <path> [--checkpoint <path>]` (+ `--json`) per the
+  pinned semantics above, including the incremental-checkpoint behavior. Do **not**
+  modify `cmd_fail_seq` / `cmd_struggle`; `friction-count` reuses their module-level
+  constants directly.
 
 **Create — `claude/.claude/hooks/nudge-error-mode-analysis.sh`**: the UserPromptSubmit
 hook. Reuse the structure of `claude/.claude/hooks/nudge-handoff-near-context-cap.sh`
 (payload jq-parse, marker dedup dir + 30-day eviction, subagent/plan-mode skips,
 kill-switch, log, fail-open, additionalContext emission), adding the bash-side
-`python3` preflight + `timeout` + integer-validation described above.
+`python3` preflight + `timeout` + integer-validation + `--checkpoint` pass-through
+described above.
 
 **Modify — `claude/.claude/settings.json`**: add `nudge-error-mode-analysis.sh` to the
 existing `UserPromptSubmit` array (currently just the handoff nudge).
@@ -193,12 +249,22 @@ JSONL):
     truth" holds only for denials and struggle (a trivial phrase-in-text check, low
     drift risk), not for the failed-test signal, which carries the most duplicated
     logic of the three.
+- **`--checkpoint` incremental unit tests:** first call with no checkpoint file scans
+  from offset 0 and creates one; a second call after appending new lines to the
+  transcript re-scans only the appended bytes and returns the *cumulative* composite
+  (assert this against a full-rescan baseline over the same final file, to catch
+  incremental/full-scan drift); a corrupt/malformed checkpoint file falls back to a
+  full rescan rather than erroring; checkpoint offset advances monotonically and never
+  re-reads already-consumed bytes (assert via a fixture where re-reading would double
+  a signal if the offset weren't respected).
 - **Hook subprocess tests** (`claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py`,
   mirror `test_nudge_handoff_near_context_cap.py`): fires above threshold; quiet below;
   quiet when fired-marker present **and asserts `python3` was not spawned** (PATH-shim
   recording invocation, as the handoff test shims); skip in subagent; skip in plan
   mode; kill-switch honored; `python3` missing → quiet + exit 0; `python3` < 3.11 →
-  quiet; non-integer stdout → quiet; timeout → quiet; always `exit 0`.
+  quiet; non-integer stdout → quiet; timeout → quiet; always `exit 0`; the
+  `--checkpoint` flag is passed with the session-scoped checkpoint path on every
+  invocation.
 
 **Not modified:** `claude/.claude/skills/error-mode-analysis/SKILL.md` — the nudge is
 external to the skill, so no skill edit and no `/skill-review`.
