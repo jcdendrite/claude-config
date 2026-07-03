@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -412,88 +413,10 @@ class TestRequireWorktreeForGitWrites:
             == "allow"
         )
 
-    # The cwd-anchor note is appended to the deny reason ONLY when the
-    # command shows a `cd ... && git ...` (or `;` / `||`) pattern. This
-    # is the precise failure mode where the agent expected its inline cd
-    # to put it in a worktree, but the hook reads cwd from the JSON
-    # tool_input — Claude Code's persisted bash cwd from prior calls,
-    # not the cwd the inline cd would produce after this hook returns.
-    # Tests cover three positive cases (each chain operator) and a
-    # negative case (no chained cd → no note appended).
-
-    def test_chained_cd_amp_git_appends_anchor_note(self, opted_in_repo):
-        reason = run_hook_reason(
-            WORKTREE_HOOK,
-            bash_input("cd /tmp && git commit -m foo"),
-            cwd=opted_in_repo,
-        )
-        assert reason is not None
-        assert "session-persisted" in reason
-        assert "Anchor cwd" in reason
-
-    def test_chained_cd_semicolon_git_appends_anchor_note(self, opted_in_repo):
-        reason = run_hook_reason(
-            WORKTREE_HOOK,
-            bash_input("cd /tmp; git commit -m foo"),
-            cwd=opted_in_repo,
-        )
-        assert reason is not None
-        assert "session-persisted" in reason
-
-    def test_chained_cd_or_git_appends_anchor_note(self, opted_in_repo):
-        """`||` chain (run-if-fail) is unusual but parses the same way —
-        cwd note still appended so the agent gets the hint."""
-        reason = run_hook_reason(
-            WORKTREE_HOOK,
-            bash_input("cd /tmp || git commit -m foo"),
-            cwd=opted_in_repo,
-        )
-        assert reason is not None
-        assert "session-persisted" in reason
-
-    def test_plain_git_no_anchor_note(self, opted_in_repo):
-        """No chained cd → cwd note not appended; deny message stays
-        short for the common case."""
-        reason = run_hook_reason(
-            WORKTREE_HOOK,
-            bash_input("git commit -m foo"),
-            cwd=opted_in_repo,
-        )
-        assert reason is not None
-        assert "session-persisted" not in reason
-        assert "Anchor cwd" not in reason
-
-    def test_cd_after_git_no_anchor_note(self, opted_in_repo):
-        """`git ... && cd ...` is the reverse of the trigger pattern —
-        the cd is AFTER the git, not before. The note targets the
-        chained-cd-before-git mistake, so this case must NOT match."""
-        reason = run_hook_reason(
-            WORKTREE_HOOK,
-            bash_input("git commit -m foo && cd /tmp"),
-            cwd=opted_in_repo,
-        )
-        assert reason is not None
-        assert "session-persisted" not in reason
-
-    # Tests for git_C_note_if_present: the corrective note appended when
-    # the agent used `git -C <path> <write-op>` from the main tree and
-    # expected the -C path to be treated as the working directory.
-    # Assertion phrases:
-    #   chained-cd note (existing) → unique substring: "chained 'cd"
-    #   -C note (new)              → unique substring: "-C path"
-
-    def test_git_dash_C_write_appends_C_note(self, opted_in_repo):
-        """`git -C /tmp commit` → denied; -C note appended."""
-        reason = run_hook_reason(
-            WORKTREE_HOOK,
-            bash_input("git -C /tmp commit -m foo"),
-            cwd=opted_in_repo,
-        )
-        assert reason is not None
-        assert "-C path" in reason
-
-    def test_git_dash_C_readonly_no_C_note(self, isolated_home, opted_in_repo):
-        """`git -C /tmp log` is read-only → allowed; no deny reason."""
+    def test_git_dash_C_readonly_ignores_cwd(self, isolated_home, opted_in_repo):
+        """`git -C /tmp log` is a read — the allowlist governs regardless of
+        cwd, so an out-of-repo -C target on a read is still allowed. Pins
+        that reads never enter cwd/-C resolution at all."""
         assert (
             run_hook(
                 WORKTREE_HOOK,
@@ -503,47 +426,279 @@ class TestRequireWorktreeForGitWrites:
             == "allow"
         )
 
-    def test_plain_git_no_C_note(self, opted_in_repo):
-        """Plain `git commit` without -C → denied; -C note NOT appended."""
+    def test_readonly_with_unresolved_dash_C_still_allows(self, isolated_home, opted_in_repo):
+        """`git -C "$VAR" log` — the allowlist check must run BEFORE any
+        c_status check, so an UNRESOLVED -C on a read still allows. Pins
+        the branch order: a future refactor that checks c_status first
+        would start denying legitimate reads like this one, and only this
+        test (not the sibling literal-`-C` test above) would catch it."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input('git -C "$VAR" log'),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_subcommand_dash_C_is_not_global_flag(self, opted_in_repo):
+        """`git commit -C HEAD` uses -C as commit's reuse-message flag, not
+        the global working-dir flag — the parser must not treat it as a
+        cwd-relocating -C, so this denies as a plain main-tree write."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git commit -C HEAD"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_cd_worktree_amp_git_commit_allowed_from_main_tree(self, isolated_home, opted_in_repo, tmp_path):
+        """`cd <worktree> && git commit` from a MAIN-tree session — the
+        literal cd resolves cleanly to a linked worktree, so the write is
+        allowed. This is the headline flip: the old hook blanket-denied
+        every `cd ... && git ...` chain regardless of where it led."""
+        worktree = tmp_path / "feature-tree"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree), "-b", "feature-flip"],
+            cwd=opted_in_repo,
+            check=True,
+            capture_output=True,
+        )
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"cd {worktree} && git commit -m foo"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_cd_expansion_target_denies_write(self, opted_in_repo):
+        """`cd "$REPO" && git commit` — shlex never expands $VAR, so the cd
+        target is literal text, not a real path. The write must deny
+        rather than silently keep judging at the stale session cwd."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input('cd "$REPO" && git commit -m foo'),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_cd_tilde_target_denies_write(self, opted_in_repo):
+        """`cd ~/repo && git commit` — tilde is never expanded by the
+        parser either; same unresolved-target deny as $VAR."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("cd ~/repo && git commit"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_dash_C_var_target_denies_write(self, opted_in_repo):
+        """`git -C "$VAR" reset` — an unresolved global -C value must deny
+        the write outright, not fall back to the session cwd (falling back
+        would silently ignore a flag that genuinely retargets git)."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input('git -C "$VAR" reset --hard'),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_multiple_dash_C_flags_deny_write(self, opted_in_repo):
+        """`git -C /a -C /b commit` — more than one global -C is ambiguous
+        about which path git actually resolves against; deny rather than
+        pick one."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git -C /a -C /b commit"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_subshell_cd_does_not_relocate_write(self, opted_in_repo, tmp_path):
+        """`(cd <worktree>) && git commit` from a main-tree session — the
+        cd is scoped to the subshell and never affects the parent shell's
+        cwd, so the write still runs (and is judged) at the main tree."""
+        worktree = tmp_path / "feature-tree"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree), "-b", "feature-subshell"],
+            cwd=opted_in_repo,
+            check=True,
+            capture_output=True,
+        )
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"(cd {worktree}) && git commit -m foo"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_command_substitution_write_denied_on_main_tree(self, opted_in_repo):
+        """`$(git reset --hard)` on the main tree — a write reached only
+        through command substitution is denied outright, regardless of
+        session cwd, since nothing inside the group can be trusted to have
+        relocated it."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("$(git reset --hard)"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_or_chain_write_denied(self, opted_in_repo):
+        """`cd /bad || git commit` — a write reached via `||` is denied
+        regardless of whether the preceding cd would have succeeded or
+        failed in a real shell; the parser cannot evaluate that condition,
+        so it refuses to guess rather than allow."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("cd /bad || git commit -m foo"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_backgrounded_cd_write_denied(self, opted_in_repo, tmp_path):
+        """`cd <worktree> & git push` — the cd is backgrounded (forks a
+        subshell that never changes the parent shell's cwd), so the write
+        actually runs at the real, unrelocated shell cwd. Verified bypass:
+        `bash -c 'cd /tmp & pwd; wait'` prints the original directory, not
+        the cd target. Denied regardless of the (wrongly-threaded) cwd."""
+        worktree = tmp_path / "feature-tree"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree), "-b", "feature-bg"],
+            cwd=opted_in_repo,
+            check=True,
+            capture_output=True,
+        )
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"cd {worktree} & git push"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_delimiter_injection_in_subcommand_denied(self, opted_in_repo):
+        """A quoted git subcommand token containing an embedded tab/newline
+        that spells out a fake CD record (`CD\\t<real-worktree>\\t;\\t0`)
+        must not spoof `running_cwd` for a later real write in the same
+        command — a confirmed live bypass before the parser guarded the
+        subcommand field the same way it already guarded cd-target/-C."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input('git "status\nCD\t/some/real/worktree\t;\t0"\n; git reset --hard'),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_time_wrapper_write_still_caught(self, opted_in_repo):
+        """`time git commit` — no wrapper allowlist is needed: the parser
+        finds `git` as a token wherever it appears in the segment, so a
+        wrapper command in front of it doesn't hide the write."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("time git commit -m foo"),
+                cwd=opted_in_repo,
+            )
+            == "deny"
+        )
+
+    def test_heredoc_prose_mentioning_git_allowed(self, isolated_home, opted_in_repo):
+        """A heredoc body that merely mentions `git commit` in prose is not
+        a real invocation — the heredoc-aware parser strips the body
+        before tokenizing, so this allows instead of denying on a phantom
+        match."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("cat <<EOF\nthis mentions git commit but is prose\nEOF"),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_quoted_prose_mentioning_git_allowed(self, isolated_home, opted_in_repo):
+        """`echo "git subcommands are neat"` — the quoted argument
+        tokenizes as one word, which can never equal the bare token `git`,
+        so this is not treated as a git invocation."""
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input('echo "git subcommands are neat"'),
+                cwd=opted_in_repo,
+            )
+            == "allow"
+        )
+
+    def test_readonly_allowlist_additions_allowed(self, isolated_home, opted_in_repo):
+        """The allowlist completion (merge-base, symbolic-ref, diff-tree,
+        grep, ...) added to close the 157-FP read-only bucket."""
+        for command in (
+            "git merge-base HEAD origin/main",
+            "git symbolic-ref HEAD",
+            "git diff-tree HEAD~1 HEAD",
+            "git grep foo",
+        ):
+            assert run_hook(WORKTREE_HOOK, bash_input(command), cwd=opted_in_repo) == "allow", command
+
+    def test_python3_absent_denies(self, opted_in_repo, tmp_path):
+        """Toolchain failure (python3 missing from PATH) must fail closed —
+        this is a gate, not an advisory nudge, unlike nudge-error-mode-
+        analysis.sh's fail-open python3 handling. PATH is replaced entirely
+        with a stub directory containing only symlinks to the other tools
+        this hook's code path actually invokes before ever reaching the
+        python3 check (`cat` via _lib_parse_tool_input_or_deny, `dirname`
+        to locate _lib.sh/the parser, `git`, `jq`, `timeout`) — not
+        sha256sum/awk, which only _marker_lib_repo_hash uses and this hook
+        never calls — so python3 is genuinely absent regardless of where
+        the real binary lives on this machine. Mirrors test_lib.py's
+        pytest.skip precedent: skip (don't silently under-symlink) when a
+        required tool isn't found on the test machine."""
+        stub_bin = tmp_path / "_stub_bin"
+        stub_bin.mkdir()
+        for tool in ("cat", "dirname", "git", "jq", "timeout"):
+            real_path = shutil.which(tool)
+            if not real_path:
+                pytest.skip(f"{tool} not found in PATH")
+            (stub_bin / tool).symlink_to(real_path)
         reason = run_hook_reason(
             WORKTREE_HOOK,
             bash_input("git commit -m foo"),
             cwd=opted_in_repo,
+            extra_env={"PATH": str(stub_bin)},
         )
         assert reason is not None
-        assert "-C path" not in reason
-
-    def test_subcommand_dash_C_no_C_note(self, opted_in_repo):
-        """`git commit -C HEAD` uses -C as commit's reuse-message flag,
-        not as the global working-dir flag. The note must NOT fire —
-        the hint about working directories doesn't apply here."""
-        reason = run_hook_reason(
-            WORKTREE_HOOK,
-            bash_input("git commit -C HEAD"),
-            cwd=opted_in_repo,
-        )
-        assert reason is not None
-        assert "-C path" not in reason
-
-    def test_chained_cd_and_git_C_only_cd_chain_deny(self, opted_in_repo):
-        """Command with both cd chain and -C: the cd-chain deny fires before
-        the fragment loop, so the -C note is never appended."""
-        reason = run_hook_reason(
-            WORKTREE_HOOK,
-            bash_input("cd /tmp && git -C /tmp commit -m foo"),
-            cwd=opted_in_repo,
-        )
-        assert reason is not None
-        assert "chains 'cd" in reason    # cd-chain deny fires first
-        assert "-C path" not in reason   # -C note never reached
+        assert "python3" in reason
 
     # -- Worktree-cwd bypass: chained cd to main tree from worktree session --
     # Regression: a session whose persisted cwd is a linked worktree could run
     # `cd /main-repo && git merge ...` and bypass the hook — the hook read the
     # persisted cwd (worktree shape → exit 0) before ever inspecting the
-    # fragments. The fix denies all chained `cd ... && git ...` commands
-    # regardless of the persisted cwd, since the effective cwd at the time
-    # git runs cannot be determined from the tool-input JSON alone.
+    # command. The relocation-aware fast path only skips the parser when the
+    # command has no cd/-C/group token at all, so any `cd`-containing command
+    # still gets threaded — the write here resolves to the main tree and is
+    # denied there, not via a blanket deny of every chained cd.
 
     def test_worktree_cwd_chained_cd_to_main_merge_denied(self, opted_in_with_worktree):
         """Bug regression: persisted cwd = worktree, `cd /main && git merge`
@@ -594,10 +749,12 @@ class TestRequireWorktreeForGitWrites:
             == "deny"
         )
 
-    def test_worktree_cwd_chained_cd_readonly_also_denied(self, opted_in_with_worktree):
-        """Chained cd+git is denied regardless of subcommand — the hook
-        cannot determine which cwd the git op runs against, so it refuses
-        to evaluate rather than guess."""
+    def test_worktree_cwd_chained_cd_readonly_allowed(self, isolated_home, opted_in_with_worktree):
+        """Intentional flip from the old blanket cd-chain deny: a READ is
+        cwd-independent regardless of where the cd resolves, so
+        `cd <main> && git status` from a worktree session now allows. Only
+        writes need the effective-cwd resolution that denies the sibling
+        `git merge`/`git push` tests above."""
         opted_in_repo, worktree = opted_in_with_worktree
         assert (
             run_hook(
@@ -605,7 +762,7 @@ class TestRequireWorktreeForGitWrites:
                 bash_input(f"cd {str(opted_in_repo)} && git status"),
                 cwd=worktree,
             )
-            == "deny"
+            == "allow"
         )
 
     def test_worktree_cwd_plain_git_still_allowed(self, isolated_home, opted_in_with_worktree):

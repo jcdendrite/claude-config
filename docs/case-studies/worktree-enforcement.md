@@ -53,6 +53,8 @@ A parallel deny-message addendum exists for `git -C <path>`: `-C` retargets git'
 
 Generalizing the principle (PR #59's design note rephrased for the wider point): the agent reads a deny reason as part of the failure, so the lesson lands exactly when it's needed and costs nothing while it isn't. This pattern is specific to designs that are denying anyway — it's a refinement on the hook, not an argument for the hook over prose.
 
+> **Superseded (GH-421).** The `cwd_anchor_note_if_chained`, `command_chains_cd_then_git`, and `git_C_note_if_present` mechanisms described above were replaced by a command-tokenizing parser (`parse-git-command.py`) that resolves `cd`/`-C` targets directly — a literal `cd <worktree> && git ...` or `git -C <worktree> ...` is now allowed outright rather than denied-with-a-workaround-note. The blanket `command_chains_cd_then_git` deny is gone; effective cwd is threaded through the command and judged per write. The Live demo below reflects the hook's behavior as of PR #131 and is no longer reproducible verbatim.
+
 ## Live demo
 
 To make the previous section concrete, the agent running this work deliberately invoked the chained pattern from inside the worktree — the same shape a less careful agent would naturally produce — so the hook's runtime output could be captured rather than paraphrased.
@@ -125,4 +127,5 @@ The hook scripts themselves and the README / `design-decisions.md` sections quot
 - **[PR #59](https://github.com/jcdendrite/claude-config/pull/59)** — added the `cwd_anchor_note_if_chained` helper that suffixes the malformed-subcommand and non-allowlist deny paths with a chained-`cd` self-correction note.
 - **[PR #114](https://github.com/jcdendrite/claude-config/pull/114)** — added `require-worktree-for-file-writes.sh`.
 - **[PR #131](https://github.com/jcdendrite/claude-config/pull/131)** — added the `command_chains_cd_then_git` hard-deny gate that fires before the persisted-cwd check.
+- **[GH-421](https://github.com/jcdendrite/claude-config/issues/421)** — replaced `cwd_anchor_note_if_chained`, `command_chains_cd_then_git`, and `git_C_note_if_present` with the command-tokenizing parser described in the superseded note above.
 - **[anthropics/claude-code#34327](https://github.com/anthropics/claude-code/issues/34327)** — external GitHub issue cited by PR #24 as documenting the cross-session race in the wild. Cited here as PR #24's reference; not independently summarized.
