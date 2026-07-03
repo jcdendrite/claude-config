@@ -31,3 +31,10 @@ claude/.claude/private-projects.md
 # stowed tree from being committed. See docs/security-hardening.md.
 claude/.claude/pii-patterns.md
 claude/.claude/data-file-read-guard.md
+
+# Machine-level opt-in markers belong at ~/.claude/ directly, created by hand
+# (touch), never via the stow package. These entries stop an accidental in-tree
+# copy from being committed and shipped to every stow user. See
+# claude/.claude/hooks/_lib.sh (worktree) and docs/error-mode-nudge.md (nudge).
+claude/.claude/worktree-required
+claude/.claude/.error-mode-nudge-enabled
