@@ -726,6 +726,18 @@ def run_dispatch_sample(args: tuple) -> tuple[str | None, list[str]]:
 # evals/README.md's disposition-fidelity section for the full design rationale
 # (neutral-frame isolation, the routine gate, the drift alarm).
 
+# Gate thresholds for score_disposition_results(). Heuristic acceptance
+# thresholds for a local-only dev tool (not a production SLA or vendor-
+# specified value — CLAUDE.md's numeric-literal citation requirement is
+# scoped to network/timeout/retry contexts, which these aren't).
+DISPOSITION_MIN_EFFECTIVE_SAMPLES = 6  # below this, exclusions hollow the denominator too far to trust the rate
+# 0.8 (not 0.5): a correct rule blocks near-always, so this catches a
+# ~0.95 -> ~0.55 efficacy regression that a lower bar would let pass forever.
+DISPOSITION_PASS_THRESHOLD = 0.8
+# Non-gating: baseline creeping to this rate means the no-guidance control is
+# starting to block on its own — re-author the fixture.
+DISPOSITION_DRIFT_ALARM_THRESHOLD = 0.3
+
 # Neutral per-skill task frame. Deliberately says nothing about the disposition
 # rule under test — it is the no-guidance control half of the baseline/
 # treatment pair. Keyed by skill_name because plan-review and code-review
@@ -756,13 +768,23 @@ def extract_governing_rule(skill_md_path: Path, anchor_name: str) -> str:
     `HOOK_TEST_FIXTURE` comments already present in these same SKILL.md files.
 
     Raises ValueError — never returns an empty string or silently no-ops — when
-    the anchor is missing, misspelled, or only one of start/end is present. A
-    silent no-op here would make treatment == baseline and destroy the eval's
-    signal without any indication why.
+    the anchor is missing, misspelled, duplicated, or only one of start/end is
+    present. A silent no-op here would make treatment == baseline and destroy
+    the eval's signal without any indication why; a silently-picked duplicate
+    would extract text from the wrong start/end pair without any indication
+    the SKILL.md contains two blocks under the same name.
     """
     text = skill_md_path.read_text()
     start_marker = f"<!-- DISPOSITION_RULE:{anchor_name} start -->"
     end_marker = f"<!-- DISPOSITION_RULE:{anchor_name} end -->"
+    start_count = text.count(start_marker)
+    end_count = text.count(end_marker)
+    if start_count > 1 or end_count > 1:
+        raise ValueError(
+            f"DISPOSITION_RULE anchor {anchor_name!r} in {skill_md_path}: "
+            f"appears more than once (start x{start_count}, end x{end_count}) — "
+            "duplicate anchor names are not supported, rename one of them"
+        )
     start_idx = text.find(start_marker)
     end_idx = text.find(end_marker)
     if start_idx == -1 or end_idx == -1:
@@ -798,11 +820,21 @@ def parse_disposition_answer(raw_output: str) -> str | None:
     punctuation/quotes stripped, case-insensitive match. The strip set is
     wider than parse_classification_answer's — it also covers `!`, `,`, and
     markdown emphasis (`**BLOCKING**`), since a judge asked for a bare verdict
-    word plausibly still wraps it in sentence or markdown punctuation. Returns
-    None for neither label — the sample is excluded from the denominator, not
-    folded into either arm (see run_disposition_sample()) — so an
-    under-stripped parser would silently manifest as extra exclusions rather
-    than a visible parse failure.
+    word plausibly still wraps it in sentence or markdown punctuation. Falls
+    back to a whole-text `\bBLOCKING\b` / `\bPERMISSIVE\b` search when the
+    last line keeps the label but embeds it in a short sentence (e.g.
+    "Verdict: BLOCKING") rather than being the bare word — a realistic
+    non-compliance mode for a judge asked for a one-word reply. Unlike
+    parse_classification_answer's fallback (which only risks masking a
+    shorter name inside a longer one, resolved by longest-name-first), a
+    disposition reply can contain BOTH labels via ordinary negation prose
+    ("not blocking, it's clearly permissive") — picking one by any fixed
+    priority would silently invert the judge's actual verdict. So the
+    fallback requires *exactly one* label present; both-or-neither returns
+    None. Returns None for neither/both label — the sample is excluded from
+    the denominator, not folded into either arm (see run_disposition_sample())
+    — so an under-stripped parser would silently manifest as extra exclusions
+    rather than a visible parse failure or a mislabeled sample.
     """
     text = raw_output.strip()
     if not text:
@@ -815,7 +847,14 @@ def parse_disposition_answer(raw_output: str) -> str | None:
             break
     if last_line in ("BLOCKING", "PERMISSIVE"):
         return last_line
-    return None
+
+    # Best-effort fallback for a prose-wrapped answer, searching the whole
+    # text rather than last-line-only since the label can land anywhere in a
+    # judge reply that ignored the one-word-only instruction. Requires
+    # exactly one label present — see the both-labels note above.
+    text_upper = text.upper()
+    found_labels = [label for label in ("BLOCKING", "PERMISSIVE") if re.search(rf"\b{label}\b", text_upper)]
+    return found_labels[0] if len(found_labels) == 1 else None
 
 
 def judge_disposition(review_output: str, rubric: str, judge_model: str, cwd: Path) -> str | None:
@@ -927,6 +966,36 @@ def run_disposition_sample(args: tuple) -> tuple[bool | None, bool | None]:
     return label_to_blocked.get(treatment_answer), label_to_blocked.get(baseline_answer)
 
 
+def score_disposition_results(treatment_results: list[bool], baseline_results: list[bool]) -> dict:
+    """Aggregate one case's non-excluded sample labels into rates and a verdict.
+
+    Pure function — shared by run_disposition_case() and its unit tests, the
+    same extraction pattern score_classification() uses for run_case(). Both
+    input lists have already had excluded (None) samples dropped by the
+    caller; this function only does the rate math, the
+    DISPOSITION_MIN_EFFECTIVE_SAMPLES inconclusive floor, the
+    DISPOSITION_PASS_THRESHOLD gate, and the DISPOSITION_DRIFT_ALARM_THRESHOLD
+    diagnostic — none of which needs a ProcessPoolExecutor or a live claude -p
+    call to test.
+    """
+    treatment_n = len(treatment_results)
+    baseline_n = len(baseline_results)
+    treatment_block_rate = (sum(treatment_results) / treatment_n) if treatment_n else 0.0
+    baseline_block_rate = (sum(baseline_results) / baseline_n) if baseline_n else 0.0
+
+    inconclusive = treatment_n < DISPOSITION_MIN_EFFECTIVE_SAMPLES
+    passed = (not inconclusive) and treatment_block_rate >= DISPOSITION_PASS_THRESHOLD
+    drift_alarm = baseline_block_rate >= DISPOSITION_DRIFT_ALARM_THRESHOLD
+
+    return {
+        "treatment_block_rate": treatment_block_rate,
+        "baseline_block_rate": baseline_block_rate,
+        "inconclusive": inconclusive,
+        "passed": passed,
+        "drift_alarm": drift_alarm,
+    }
+
+
 def run_disposition_case(
     case: dict,
     skill_name: str,
@@ -943,14 +1012,24 @@ def run_disposition_case(
     doesn't fit a baseline/treatment pair, so this owns its own scoring, gate,
     and verbose print (run_case()'s verbose print does not apply here).
 
-    Gate: passed = treatment_block_rate >= 0.8 over non-excluded treatment
-    samples. If the post-exclusion treatment sample count falls under
-    MIN_EFFECTIVE_SAMPLES, the case is marked inconclusive rather than
-    pass/fail. baseline_block_rate is diagnostic, not gating: a non-gating
-    drift alarm prints when it is >= 0.3 ("control now blocks on its own"),
-    catching silent fixture rot a static authoring `note` cannot.
+    Gate: passed = treatment_block_rate >= DISPOSITION_PASS_THRESHOLD over
+    non-excluded treatment samples. If the post-exclusion treatment sample
+    count falls under DISPOSITION_MIN_EFFECTIVE_SAMPLES, the case is marked
+    inconclusive rather than pass/fail. baseline_block_rate is diagnostic,
+    not gating: a non-gating drift alarm prints when it crosses
+    DISPOSITION_DRIFT_ALARM_THRESHOLD ("control now blocks on its own"),
+    catching silent fixture rot a static authoring `note` cannot. The rate
+    math and gate itself live in score_disposition_results() — this function
+    owns only sample orchestration and the print/return formatting.
     """
-    MIN_EFFECTIVE_SAMPLES = 6  # below this, exclusions have hollowed out the denominator too far to trust the rate
+    missing_fields = [f for f in ("scenario_file", "rule_anchor", "judge_rubric") if not case.get(f)]
+    if missing_fields:
+        raise ValueError(
+            f"disposition-fidelity case {case.get('id', '<no id>')!r} for skill {skill_name!r} "
+            f"is missing required field(s): {missing_fields} — matches the loud-failure discipline "
+            "extract_governing_rule() documents for itself; test_trigger_cases_files_well_formed "
+            "should have caught this in the normal pytest suite before it reached a live run"
+        )
 
     case_id = case.get("id", case["scenario_file"])
     scenario = (REPO_ROOT / case["scenario_file"]).read_text()
@@ -987,37 +1066,33 @@ def run_disposition_case(
             else:
                 baseline_results.append(baseline_blocked)
 
-    treatment_n = len(treatment_results)
-    baseline_n = len(baseline_results)
-    treatment_block_rate = (sum(treatment_results) / treatment_n) if treatment_n else 0.0
-    baseline_block_rate = (sum(baseline_results) / baseline_n) if baseline_n else 0.0
+    score = score_disposition_results(treatment_results, baseline_results)
 
-    inconclusive = treatment_n < MIN_EFFECTIVE_SAMPLES
-    passed = (not inconclusive) and treatment_block_rate >= 0.8
-
-    if baseline_block_rate >= 0.3:
+    if score["drift_alarm"]:
         print(
-            f"  DRIFT ALARM ({case_id}): baseline_block_rate={baseline_block_rate:.2f} >= 0.3 — "
-            "re-author fixture — control now blocks on its own",
+            f"  DRIFT ALARM ({case_id}): baseline_block_rate={score['baseline_block_rate']:.2f} "
+            f">= {DISPOSITION_DRIFT_ALARM_THRESHOLD} — re-author fixture — control now blocks on its own",
             flush=True,
         )
 
     if verbose:
-        status = "INCONCLUSIVE" if inconclusive else ("PASS" if passed else "FAIL")
+        status = "INCONCLUSIVE" if score["inconclusive"] else ("PASS" if score["passed"] else "FAIL")
         print(
-            f"  {case_id:<40} treatment={treatment_block_rate:.2f} baseline={baseline_block_rate:.2f}   {status}",
+            f"  {case_id:<40} treatment={score['treatment_block_rate']:.2f} "
+            f"baseline={score['baseline_block_rate']:.2f}   {status}"
+            f"   excluded={excluded_treatment}t/{excluded_baseline}b",
             flush=True,
         )
 
     return {
         "id": case_id,
-        "passed": passed,
+        "passed": score["passed"],
         "total": samples,
-        "treatment_block_rate": treatment_block_rate,
-        "baseline_block_rate": baseline_block_rate,
+        "treatment_block_rate": score["treatment_block_rate"],
+        "baseline_block_rate": score["baseline_block_rate"],
         "excluded_treatment": excluded_treatment,
         "excluded_baseline": excluded_baseline,
-        "inconclusive": inconclusive,
+        "inconclusive": score["inconclusive"],
     }
 
 
@@ -1148,6 +1223,7 @@ def print_report(skill_results: list[dict], model: str, samples: int, verbose: b
                     print(
                         f"  {cr['id']:<40} treatment={cr['treatment_block_rate']:.2f} "
                         f"baseline={cr['baseline_block_rate']:.2f}   {status}"
+                        f"   excluded={cr['excluded_treatment']}t/{cr['excluded_baseline']}b"
                     )
                     continue
                 triggered_label = "triggers" if cr["should_trigger"] else "does-not-trig"

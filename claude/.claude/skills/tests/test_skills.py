@@ -49,7 +49,8 @@ from helpers import SCRIPTS_DIR, extract_skill_command, run_skill_command
 
 # Single source of truth for SKILL.md structural rules — the commit-gate hook
 # shells out to the same module. pyproject.toml's [tool.pytest.ini_options]
-# pythonpath puts plugins/skill-management/scripts on the import path.
+# pythonpath puts plugins/skill-management/scripts and evals/ on the import path.
+from run_skill_evals import extract_governing_rule
 from validate_skill_structure import (
     SKILL_LISTING_BUDGET_CHARS,
     corpus_budget_violations,
@@ -970,29 +971,25 @@ def test_disposition_rule_anchors_present() -> None:
     length, not exact text — a legitimate reword must not false-fail this
     test. Catching a reword-into-weakness is Layer 2's (the live
     disposition-fidelity method's) job, not this test's.
+
+    Delegates the actual extraction and validation (missing/misordered/
+    duplicated anchors) to extract_governing_rule() — the same parser
+    evals/run_skill_evals.py uses at eval time — rather than re-deriving
+    anchor positions with a second, independent regex. Two parsers over the
+    same anchor syntax could silently diverge (this test passing on a
+    SKILL.md the live eval harness would then reject with a ValueError, or
+    vice versa); calling the production parser here closes that gap. The
+    regex below is retained only to discover which anchor *names* exist in
+    each file — extract_governing_rule() needs a name to look up.
     """
     MIN_RULE_TEXT_CHARS = 20  # a single stripped char would pass a bare "non-empty" check
 
     for skill_md_path in _all_skill_md_paths():
         text = skill_md_path.read_text()
-        matches = list(_DISPOSITION_RULE_ANCHOR_RE.finditer(text))
-        if not matches:
-            continue
+        anchor_names = {m.group(1) for m in _DISPOSITION_RULE_ANCHOR_RE.finditer(text)}
 
-        anchors: dict[str, dict[str, int]] = {}
-        for m in matches:
-            name, kind = m.group(1), m.group(2)
-            anchors.setdefault(name, {})[kind] = m.start()
-
-        for name, positions in anchors.items():
-            assert "start" in positions and "end" in positions, (
-                f"{skill_md_path}: DISPOSITION_RULE:{name} has only one of start/end"
-            )
-            assert positions["start"] < positions["end"], (
-                f"{skill_md_path}: DISPOSITION_RULE:{name} end marker appears before start marker"
-            )
-            start_marker = f"<!-- DISPOSITION_RULE:{name} start -->"
-            enclosed = text[positions["start"] + len(start_marker):positions["end"]].strip()
+        for name in anchor_names:
+            enclosed = extract_governing_rule(skill_md_path, name)
             assert len(enclosed) >= MIN_RULE_TEXT_CHARS, (
                 f"{skill_md_path}: DISPOSITION_RULE:{name} encloses only {len(enclosed)} "
                 f"non-whitespace chars after stripping — looks deleted or gutted"
