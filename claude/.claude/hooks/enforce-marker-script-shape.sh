@@ -11,10 +11,12 @@
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
 # match one of the 14 single-command shapes, the marker.sh write chain to git
-# commit, or the same-skill write↔deactivate chain (plan-review and
-# ready-for-review only). No redirects (except trailing `2>/dev/null`), no extra args. Wrapped forms (env-var
-# prefix, bash wrapper, relative path, subshell) are not gated here — they
-# fast-exit at Stage 2 and are denied by
+# commit, or a chain of two-or-more valid marker.sh shapes joined by `&&`
+# (any op/target combination) — equivalent to running each op separately,
+# since every marker operation is independently allowlisted or harmless. No
+# redirects (except trailing `2>/dev/null`), no extra args. Wrapped forms
+# (env-var prefix, bash wrapper, relative path, subshell) are not gated here —
+# they fast-exit at Stage 2 and are denied by
 # the permissions.allow layer, which does not list their wrapper executables.
 # Removing the permissions.allow gate without updating this hook would leave
 # those forms ungated.
@@ -68,11 +70,16 @@ if [[ ! "$TRIMMED" =~ ^(\~|\$HOME|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh
   exit 0
 fi
 
+# Path prefix + one valid (op, target) shape — no anchors, no trailing
+# suffix. Shared building block for VALID_PATTERN and the marker-chain
+# pattern below, so the path-prefix regex fragment has one authoritative copy.
+MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?)'
+
 # Strict allowlist. Tilde form (~/.claude/scripts/marker.sh) and absolute
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
 # No bash wrapper, no env-var prefix, no chain operator, no redirect (except
 # trailing `2>/dev/null`), no extra args after the skill name.
-VALID_PATTERN='^(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?)([[:space:]]+2>/dev/null)?[[:space:]]*$'
+VALID_PATTERN="^${MARKER_SHAPE}([[:space:]]+2>/dev/null)?[[:space:]]*\$"
 
 if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_PATTERN"; then
   exit 0
@@ -103,20 +110,21 @@ if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_CHAI
   exit 0
 fi
 
-# Same-skill marker→marker chain allowance. plan-review and ready-for-review
-# each end by pairing a completion `write` with an active-marker `deactivate`;
-# agents naturally join the two adjacent calls with &&. The chain's end state
-# is identical to two separate (already-allowlisted) calls — no new capability.
-# Both sides must be exact path-prefixed marker.sh shapes; the chain is anchored
-# so nothing else can ride along. Only plan-review and ready-for-review are
-# valid for both write and deactivate; both orderings are blessed.
+# Marker-chain allowance. A chain of two-or-more valid marker.sh shapes
+# joined by `&&`, any op/target combination, is permitted — the chain's end
+# state is identical to running each op separately, and every op is already
+# individually allowlisted (the 12 shapes in permissions.allow) or harmless
+# (clear-stale only evicts dead-PID bypass markers). No new capability is
+# reachable through the chain that isn't already reachable by running the
+# calls one at a time.
 #
-# NOTE: This pattern depends on the line-51 traversal guard running first — that
-# check is the sole validator of the RHS path (Stage 2's anchor at line 65 only
-# checks position 0 = the LHS). Do not move this block above line 51.
-VALID_CHAINED_MARKER_PATTERN='^((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+plan-review[[:space:]]*&&[[:space:]]*(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+deactivate[[:space:]]+plan-review|(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+deactivate[[:space:]]+plan-review[[:space:]]*&&[[:space:]]*(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+plan-review|(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+ready-for-review[[:space:]]*&&[[:space:]]*(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+deactivate[[:space:]]+ready-for-review|(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+deactivate[[:space:]]+ready-for-review[[:space:]]*&&[[:space:]]*(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+ready-for-review)([[:space:]]+2>/dev/null)?[[:space:]]*$'
+# NOTE: This pattern depends on the traversal guard above running first —
+# that check is the sole validator of non-first segments' paths (Stage 2's
+# anchor above only checks position 0 = the first segment). Do not move
+# this block above the traversal guard.
+VALID_MARKER_CHAIN_PATTERN="^${MARKER_SHAPE}([[:space:]]*&&[[:space:]]*${MARKER_SHAPE})+([[:space:]]+2>/dev/null)?[[:space:]]*\$"
 
-if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_CHAINED_MARKER_PATTERN"; then
+if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_MARKER_CHAIN_PATTERN"; then
   exit 0
 fi
 
@@ -140,5 +148,7 @@ Valid shapes:
   ~/.claude/scripts/marker.sh clear-stale
   ~/.claude/scripts/marker.sh clear-stale --dry-run
 
-No chains (&&, ||, ;), redirects, or extra args. Env-var prefix, bash wrapper,
-and relative-path forms are not gated here — they are denied by permissions.allow."
+Chains of valid marker.sh operations joined by && are permitted. Chaining to
+any other command (except the blessed 'git commit' tail), or using ||/;,
+redirects, or extra args, is denied. Env-var prefix, bash wrapper, and
+relative-path forms are not gated here — they are denied by permissions.allow."
