@@ -950,12 +950,69 @@ class TestCorpusBudgetFunction:
         assert violations[0].count("chars") >= 5  # each offender line ends "N chars"
 
 
+_DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|end) -->")
+
+
+def _all_skill_md_paths() -> list[Path]:
+    """Every SKILL.md under the stowed skills dir and plugin skill dirs."""
+    paths = sorted(SKILLS_DIR.glob("*/SKILL.md"))
+    if _PLUGINS_DIR.exists():
+        paths += sorted(_PLUGINS_DIR.glob("*/skills/*/SKILL.md"))
+    return paths
+
+
+def test_disposition_rule_anchors_present() -> None:
+    """Every DISPOSITION_RULE:<name> anchor pair exists, is ordered, and is non-trivial.
+
+    Layer 1 of the disposition-fidelity eval (see evals/README.md): a
+    deterministic, zero-flake guard against a governing rule being deleted
+    outright. Deliberately asserts presence and a minimal non-whitespace
+    length, not exact text — a legitimate reword must not false-fail this
+    test. Catching a reword-into-weakness is Layer 2's (the live
+    disposition-fidelity method's) job, not this test's.
+    """
+    MIN_RULE_TEXT_CHARS = 20  # a single stripped char would pass a bare "non-empty" check
+
+    for skill_md_path in _all_skill_md_paths():
+        text = skill_md_path.read_text()
+        matches = list(_DISPOSITION_RULE_ANCHOR_RE.finditer(text))
+        if not matches:
+            continue
+
+        anchors: dict[str, dict[str, int]] = {}
+        for m in matches:
+            name, kind = m.group(1), m.group(2)
+            anchors.setdefault(name, {})[kind] = m.start()
+
+        for name, positions in anchors.items():
+            assert "start" in positions and "end" in positions, (
+                f"{skill_md_path}: DISPOSITION_RULE:{name} has only one of start/end"
+            )
+            assert positions["start"] < positions["end"], (
+                f"{skill_md_path}: DISPOSITION_RULE:{name} end marker appears before start marker"
+            )
+            start_marker = f"<!-- DISPOSITION_RULE:{name} start -->"
+            enclosed = text[positions["start"] + len(start_marker):positions["end"]].strip()
+            assert len(enclosed) >= MIN_RULE_TEXT_CHARS, (
+                f"{skill_md_path}: DISPOSITION_RULE:{name} encloses only {len(enclosed)} "
+                f"non-whitespace chars after stripping — looks deleted or gutted"
+            )
+
+
+_LEGACY_TRIGGER_METHODS = {"runtime", "description-fidelity", "behavioral-dispatch"}
+
+
 def test_trigger_cases_files_well_formed() -> None:
-    """Every trigger-cases.json file found under skills/ or plugins/ must be valid.
+    """Every *-cases.json file found under skills/ or plugins/ must be valid.
 
     Discovery-based: no hardcoded skill list. Validates shape only — never
-    invokes a model. Auto-extends as trigger-cases.json files are added in
-    follow-up PRs. CI-safe (pure static check).
+    invokes a model. Auto-extends as case files are added in follow-up PRs.
+    CI-safe (pure static check). Field validation branches on `method`: the
+    three legacy trigger/no-trigger methods validate query/should_trigger
+    fields; disposition-fidelity validates its own
+    scenario_file/rule_anchor/judge_rubric fields. Every method in
+    run_skill_evals.VALID_METHODS must be handled explicitly here — an
+    unrecognized method fails loudly rather than silently skipping validation.
     """
     repo_root = Path(__file__).resolve().parents[4]
     found_files: list[Path] = []
@@ -963,12 +1020,12 @@ def test_trigger_cases_files_well_formed() -> None:
         repo_root / "claude" / ".claude" / "skills",
         repo_root / "plugins",
     ]:
-        for p in base.glob("*/evals/trigger-cases.json"):
+        for p in base.glob("*/evals/*-cases.json"):
             found_files.append(p)
-        for p in base.glob("*/skills/*/evals/trigger-cases.json"):
+        for p in base.glob("*/skills/*/evals/*-cases.json"):
             found_files.append(p)
 
-    assert found_files, "No trigger-cases.json files found — run the pilot skills setup first"
+    assert found_files, "No *-cases.json files found — run the pilot skills setup first"
 
     for path in found_files:
         try:
@@ -980,8 +1037,10 @@ def test_trigger_cases_files_well_formed() -> None:
         assert "cases" in data, f"{path}: missing 'cases'"
         assert isinstance(data["cases"], list) and data["cases"], f"{path}: 'cases' must be a non-empty list"
 
+        method = data.get("method")
+
         # skill_name must match the parent skill directory name
-        skill_dir_name = path.parts[-3]  # …/skills/<name>/evals/trigger-cases.json
+        skill_dir_name = path.parts[-3]  # …/skills/<name>/evals/<name>-cases.json
         assert data["skill_name"] == skill_dir_name, (
             f"{path}: skill_name={data['skill_name']!r} does not match parent dir {skill_dir_name!r}"
         )
@@ -989,20 +1048,40 @@ def test_trigger_cases_files_well_formed() -> None:
         ids_seen: set[str] = set()
         for i, case in enumerate(data["cases"]):
             prefix = f"{path} case[{i}]"
-            assert isinstance(case.get("query"), str) and case["query"], f"{prefix}: 'query' must be a non-empty string"
-            assert isinstance(case.get("should_trigger"), bool), f"{prefix}: 'should_trigger' must be a boolean"
             assert isinstance(case.get("id"), str) and case["id"], f"{prefix}: 'id' must be a non-empty string"
             assert case["id"] not in ids_seen, f"{prefix}: duplicate id {case['id']!r}"
             ids_seen.add(case["id"])
-            if "also_not_triggered" in case:
-                ant = case["also_not_triggered"]
-                assert isinstance(ant, list) and all(isinstance(s, str) for s in ant), (
-                    f"{prefix}: 'also_not_triggered' must be a list of strings"
+
+            if method in _LEGACY_TRIGGER_METHODS:
+                assert isinstance(case.get("query"), str) and case["query"], (
+                    f"{prefix}: 'query' must be a non-empty string"
                 )
-                assert data["skill_name"] not in ant, (
-                    f"{prefix}: 'also_not_triggered' must not contain the skill's own name "
-                    f"({data['skill_name']!r}) — a skill cannot be a misfire of itself"
+                assert isinstance(case.get("should_trigger"), bool), f"{prefix}: 'should_trigger' must be a boolean"
+                if "also_not_triggered" in case:
+                    ant = case["also_not_triggered"]
+                    assert isinstance(ant, list) and all(isinstance(s, str) for s in ant), (
+                        f"{prefix}: 'also_not_triggered' must be a list of strings"
+                    )
+                    assert data["skill_name"] not in ant, (
+                        f"{prefix}: 'also_not_triggered' must not contain the skill's own name "
+                        f"({data['skill_name']!r}) — a skill cannot be a misfire of itself"
+                    )
+            elif method == "disposition-fidelity":
+                scenario_file = case.get("scenario_file")
+                assert isinstance(scenario_file, str) and scenario_file, (
+                    f"{prefix}: 'scenario_file' must be a non-empty string"
                 )
+                assert (repo_root / scenario_file).exists(), (
+                    f"{prefix}: scenario_file {scenario_file!r} does not exist at {repo_root / scenario_file}"
+                )
+                assert isinstance(case.get("rule_anchor"), str) and case["rule_anchor"], (
+                    f"{prefix}: 'rule_anchor' must be a non-empty string"
+                )
+                assert isinstance(case.get("judge_rubric"), str) and case["judge_rubric"], (
+                    f"{prefix}: 'judge_rubric' must be a non-empty string"
+                )
+            else:
+                raise AssertionError(f"{path}: unrecognized method {method!r} — add a validation branch here")
 
 
 def test_skill_overrides_documented_in_docs_skills_md() -> None:

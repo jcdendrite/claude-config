@@ -45,8 +45,10 @@ See [Tests](./README.md#tests) for the contributor `.venv` setup, the pinned `py
 ## Skill evals
 
 `evals/run_skill_evals.py` measures each skill's `trigger-cases.json` against
-its declared TRIGGER / DO NOT TRIGGER conditions, via one of three per-skill
-methods (`runtime`, `description-fidelity`, or `behavioral-dispatch`). It runs
+its declared TRIGGER / DO NOT TRIGGER conditions, via one of four per-skill
+methods (`runtime`, `description-fidelity`, `behavioral-dispatch`, or
+`disposition-fidelity` — the last measures whether a skill's governing rule
+text drives the correct review disposition, not whether it triggers). It runs
 `claude -p` locally using your Claude subscription auth — no API key, no CI
 wiring, no per-token charge on Max plan.
 

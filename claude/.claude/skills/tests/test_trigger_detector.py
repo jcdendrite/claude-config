@@ -20,10 +20,13 @@ from pathlib import Path
 import pytest
 from run_skill_evals import (
     _build_dispatch_command,
+    build_disposition_prompt,
     detect_dispatch_in_lines,
     detect_trigger_in_lines,
+    extract_governing_rule,
     load_case_file,
     parse_classification_answer,
+    parse_disposition_answer,
     parse_skill_frontmatter,
     partition_case_files,
     score_classification,
@@ -139,7 +142,7 @@ class TestCaseFileMethod:
 
     def test_load_case_file_accepts_valid_methods(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
-            for method in ("runtime", "description-fidelity", "behavioral-dispatch"):
+            for method in ("runtime", "description-fidelity", "behavioral-dispatch", "disposition-fidelity"):
                 path = self._write_case_file(
                     Path(tmp_str),
                     f"{method}.json",
@@ -163,10 +166,15 @@ class TestCaseFileMethod:
                 tmp, "dispatch.json",
                 {"skill_name": "bd", "method": "behavioral-dispatch", "cases": []},
             )
-            result = partition_case_files([runtime, descfid, dispatch])
+            disposition = self._write_case_file(
+                tmp, "disposition.json",
+                {"skill_name": "dp", "method": "disposition-fidelity", "cases": []},
+            )
+            result = partition_case_files([runtime, descfid, dispatch, disposition])
             assert result["runtime"] == [runtime]
             assert result["description-fidelity"] == [descfid]
             assert result["behavioral-dispatch"] == [dispatch]
+            assert result["disposition-fidelity"] == [disposition]
 
 
 class TestParseSkillFrontmatter:
@@ -210,6 +218,95 @@ class TestParseSkillFrontmatter:
             assert desc == ""
 
 
+class TestExtractGoverningRule:
+    """Offline tests for the disposition-fidelity anchor extractor.
+
+    No claude -p call — extract_governing_rule() is a pure text operation over
+    a SKILL.md's DISPOSITION_RULE anchor comments.
+    """
+
+    @staticmethod
+    def _write_skill_md(tmp_path: Path, body: str) -> Path:
+        path = tmp_path / "SKILL.md"
+        path.write_text(body)
+        return path
+
+    def test_anchor_present_returns_exact_enclosed_text(self, tmp_path: Path) -> None:
+        path = self._write_skill_md(
+            tmp_path,
+            "intro text\n"
+            "<!-- DISPOSITION_RULE:my-rule start -->\n"
+            "The governing rule text.\n"
+            "<!-- DISPOSITION_RULE:my-rule end -->\n"
+            "trailing text\n",
+        )
+        assert extract_governing_rule(path, "my-rule") == "The governing rule text."
+
+    def test_missing_anchor_raises(self, tmp_path: Path) -> None:
+        path = self._write_skill_md(tmp_path, "no anchors here at all\n")
+        with pytest.raises(ValueError, match="my-rule"):
+            extract_governing_rule(path, "my-rule")
+
+    def test_misspelled_anchor_name_raises(self, tmp_path: Path) -> None:
+        path = self._write_skill_md(
+            tmp_path,
+            "<!-- DISPOSITION_RULE:my-rule start -->\ntext\n<!-- DISPOSITION_RULE:my-rule end -->\n",
+        )
+        with pytest.raises(ValueError, match="my-rule-typo"):
+            extract_governing_rule(path, "my-rule-typo")
+
+    def test_only_start_present_raises(self, tmp_path: Path) -> None:
+        path = self._write_skill_md(tmp_path, "<!-- DISPOSITION_RULE:my-rule start -->\ntext with no end\n")
+        with pytest.raises(ValueError, match="my-rule"):
+            extract_governing_rule(path, "my-rule")
+
+    def test_only_end_present_raises(self, tmp_path: Path) -> None:
+        path = self._write_skill_md(tmp_path, "text with no start\n<!-- DISPOSITION_RULE:my-rule end -->\n")
+        with pytest.raises(ValueError, match="my-rule"):
+            extract_governing_rule(path, "my-rule")
+
+    def test_multiple_anchors_picks_by_name(self, tmp_path: Path) -> None:
+        path = self._write_skill_md(
+            tmp_path,
+            "<!-- DISPOSITION_RULE:rule-one start -->\nFirst rule.\n<!-- DISPOSITION_RULE:rule-one end -->\n"
+            "some text between anchors\n"
+            "<!-- DISPOSITION_RULE:rule-two start -->\nSecond rule.\n<!-- DISPOSITION_RULE:rule-two end -->\n",
+        )
+        assert extract_governing_rule(path, "rule-one") == "First rule."
+        assert extract_governing_rule(path, "rule-two") == "Second rule."
+
+    def test_anchor_at_start_of_file(self, tmp_path: Path) -> None:
+        path = self._write_skill_md(
+            tmp_path,
+            "<!-- DISPOSITION_RULE:my-rule start -->\nRule at the very top.\n<!-- DISPOSITION_RULE:my-rule end -->\ntrailer\n",
+        )
+        assert extract_governing_rule(path, "my-rule") == "Rule at the very top."
+
+    def test_anchor_at_end_of_file(self, tmp_path: Path) -> None:
+        path = self._write_skill_md(
+            tmp_path,
+            "header\n<!-- DISPOSITION_RULE:my-rule start -->\nRule at the very bottom.\n"
+            "<!-- DISPOSITION_RULE:my-rule end -->",
+        )
+        assert extract_governing_rule(path, "my-rule") == "Rule at the very bottom."
+
+    def test_crlf_line_endings(self, tmp_path: Path) -> None:
+        path = tmp_path / "SKILL.md"
+        path.write_bytes(
+            b"intro\r\n<!-- DISPOSITION_RULE:my-rule start -->\r\nCRLF rule text.\r\n"
+            b"<!-- DISPOSITION_RULE:my-rule end -->\r\ntrailer\r\n"
+        )
+        assert extract_governing_rule(path, "my-rule") == "CRLF rule text."
+
+    def test_trailing_whitespace_inside_block_is_stripped(self, tmp_path: Path) -> None:
+        path = self._write_skill_md(
+            tmp_path,
+            "<!-- DISPOSITION_RULE:my-rule start -->\n\n  Rule text with padding.  \n\n"
+            "<!-- DISPOSITION_RULE:my-rule end -->\n",
+        )
+        assert extract_governing_rule(path, "my-rule") == "Rule text with padding."
+
+
 VALID_NAMES = frozenset({"code-review", "test-conventions", "test-evaluation", "plan-it"})
 
 
@@ -238,6 +335,67 @@ class TestParseClassificationAnswer:
         """Best-effort fallback when the model ignores the one-line constraint."""
         answer = "I would use the code-review skill for this request."
         assert parse_classification_answer(answer, VALID_NAMES) == "code-review"
+
+
+class TestBuildDispositionPrompt:
+    """Offline tests for the baseline/treatment prompt assembler."""
+
+    def test_baseline_omits_rule_block(self) -> None:
+        """rule_text=None (baseline arm) must not emit a <governing_rule> block at all."""
+        prompt = build_disposition_prompt("frame text", "scenario text", None)
+        assert "frame text" in prompt
+        assert "<scenario>\nscenario text\n</scenario>" in prompt
+        assert "governing_rule" not in prompt
+
+    def test_treatment_includes_rule_block(self) -> None:
+        """rule_text set (treatment arm) must emit the rule inside <governing_rule>."""
+        prompt = build_disposition_prompt("frame text", "scenario text", "the rule text")
+        assert "frame text" in prompt
+        assert "<governing_rule>\nthe rule text\n</governing_rule>" in prompt
+
+    def test_baseline_and_treatment_share_frame_and_scenario(self) -> None:
+        """The only difference between the two arms is the presence of the rule block."""
+        baseline = build_disposition_prompt("frame", "scenario", None)
+        treatment = build_disposition_prompt("frame", "scenario", "rule")
+        assert treatment.startswith(baseline)
+
+
+class TestParseDispositionAnswer:
+    """Offline tests for the disposition-fidelity judge-answer parser."""
+
+    def test_bare_blocking(self) -> None:
+        assert parse_disposition_answer("BLOCKING") == "BLOCKING"
+
+    def test_bare_permissive(self) -> None:
+        assert parse_disposition_answer("PERMISSIVE") == "PERMISSIVE"
+
+    def test_lowercase_blocking(self) -> None:
+        assert parse_disposition_answer("blocking\n") == "BLOCKING"
+
+    def test_mixed_case_permissive(self) -> None:
+        assert parse_disposition_answer("Permissive") == "PERMISSIVE"
+
+    def test_trailing_punctuation_and_quotes(self) -> None:
+        assert parse_disposition_answer('"BLOCKING."') == "BLOCKING"
+
+    def test_trailing_exclamation_point(self) -> None:
+        assert parse_disposition_answer("BLOCKING!") == "BLOCKING"
+
+    def test_trailing_comma(self) -> None:
+        assert parse_disposition_answer("BLOCKING,") == "BLOCKING"
+
+    def test_markdown_emphasis_wrapped(self) -> None:
+        assert parse_disposition_answer("**BLOCKING**") == "BLOCKING"
+
+    def test_last_non_empty_line_wins(self) -> None:
+        answer = "Some reasoning about the review.\n\nPERMISSIVE"
+        assert parse_disposition_answer(answer) == "PERMISSIVE"
+
+    def test_empty_output_returns_none(self) -> None:
+        assert parse_disposition_answer("") is None
+
+    def test_garbage_input_returns_none(self) -> None:
+        assert parse_disposition_answer("I'm not sure how to classify this.") is None
 
 
 @pytest.fixture

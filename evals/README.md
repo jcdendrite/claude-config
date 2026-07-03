@@ -1,10 +1,11 @@
 # Skill Evals
 
-A local harness that measures each skill's `trigger-cases.json` against its
-declared TRIGGER / DO NOT TRIGGER conditions. It runs one of two measurement
-methods per skill — `runtime` or `description-fidelity` — and reports a
-per-case pass rate. See [Measurement methods](#measurement-methods) for which
-method fits which skill.
+A local harness that measures each skill's case file (`trigger-cases.json` or
+`disposition-cases.json`) against its declared behavior. It runs one of four
+measurement methods per skill — `runtime`, `description-fidelity`,
+`behavioral-dispatch`, or `disposition-fidelity` — and reports a per-case pass
+rate. See [Measurement methods](#measurement-methods) for which method fits
+which skill.
 
 ## Why local only — never CI
 
@@ -131,9 +132,9 @@ Schema:
 
 ## Measurement methods
 
-Each `trigger-cases.json` declares a `method`. `run_skill_evals.py` runs all
-three in one invocation, routing per case file and labelling each skill's mode
-in the report:
+Each case file (`trigger-cases.json` or `disposition-cases.json`) declares a
+`method`. `run_skill_evals.py` runs all four in one invocation, routing per
+case file and labelling each skill's mode in the report:
 
 - **`runtime`** — the harness spawns `claude -p` and watches for the skill's
   `Skill` tool call to fire. It measures real auto-dispatch in a live session.
@@ -146,16 +147,23 @@ in the report:
   the model actually delegates to a subagent rather than handling the task
   inline. Used for skills like `subagent-delegation` whose effect is the
   parent's tool choice, not a `Skill` invocation.
+- **`disposition-fidelity`** — the harness asks `claude -p` to review a fixed
+  scenario twice (with and without the skill's governing rule text) and judges
+  each review's disposition. It measures whether a rule actually drives the
+  correct disposition, not whether the skill triggers at all. See
+  [disposition-fidelity](#disposition-fidelity) below.
 
 Headless `claude -p` does not reliably auto-trigger every skill — advisory
 skills the model is not pushed to invoke (and `user-invocable: false` skills)
 under-trigger regardless of description quality, so `runtime` measurement
 returns a false zero for them. Those skills use `description-fidelity` instead.
 
-The three methods measure genuinely different properties and are not
+The first three methods measure genuinely different properties and are not
 interchangeable. `runtime` is strictly more faithful when available — it
 observes the real dispatch decision — so a skill that *can* trigger headlessly
 keeps `runtime` rather than being downgraded to classification.
+`disposition-fidelity` is a different axis entirely — trigger/no-trigger vs.
+disposition correctness — and is not a substitute for any of the other three.
 
 **Write realistic queries.** On-the-nose queries (keyword-bait like "trigger
 code-review now") pass trivially. The `also_not_triggered` confusion cases carry
@@ -278,10 +286,109 @@ delegation is clearly warranted even when context pressure is asserted rather
 than physically present (multi-file sweeps, exploratory mapping,
 cross-module correlation tasks).
 
-The `method` schema, the classification-answer parser, and the stream-json
-detectors (both runtime and behavioral-dispatch) are unit-tested offline
-(synthetic inputs, no `claude -p`) in
-`claude/.claude/skills/tests/test_trigger_detector.py`; the fixtures live in
+### disposition-fidelity
+
+**Two-layer model.** A skill's governing rule can fail in two different ways:
+it can be deleted outright, or it can be reworded until it no longer drives
+the correct disposition. These need different guards:
+
+- **Layer 1 — deterministic anchor-presence test** (in the normal pytest
+  suite, `claude/.claude/skills/tests/test_skills.py::test_disposition_rule_anchors_present`).
+  Zero-flake, zero-cost, runs in CI. Asserts each rule's
+  `<!-- DISPOSITION_RULE:<name> start/end -->` anchor block exists and encloses
+  non-trivial text — catches deletion, not rewording.
+- **Layer 2 — this method.** Manual-cadence, not continuous (see the runtime
+  cost note below). Catches the subtler regression Layer 1 can't: the rule is
+  present but no longer efficacious.
+
+**Mechanism.** Per case, per sample:
+
+1. **Baseline (no-guidance control)** — a neutral, skill-specific task frame
+   (says nothing about the rule under test) plus the case's scenario. `claude -p`
+   reviews it and states a disposition.
+2. **Treatment** — the same neutral frame and scenario, plus the rule's text
+   extracted *live* from the current SKILL.md via its `DISPOSITION_RULE` anchor.
+3. **Judge** — a second `claude -p` call classifies each review's disposition
+   as `BLOCKING` or `PERMISSIVE` against the case's `judge_rubric`.
+
+Isolating the rule against a neutral frame (rather than the whole skill
+section) removes the surrounding pro-strictness skill text that would
+otherwise make the baseline block regardless, keeping baseline a genuine
+no-guidance control.
+
+**Gate.** Routine `PASS` is `treatment_block_rate >= 0.8` over non-excluded
+treatment samples — a correct rule drives blocking near-always, so 0.8 (not
+0.5) catches a regression from ~0.95 down to ~0.55 that a lower bar would let
+pass forever. `baseline_block_rate` is diagnostic, not gating: it prints a
+non-gating drift alarm at `>= 0.3` ("re-author fixture — control now blocks on
+its own"), catching silent fixture rot a static `note` can't. A judge call that
+times out, errors, or returns neither label excludes that sample from its
+arm's denominator rather than folding it into a label.
+
+**Fixture discrimination is validated once, at authoring time, not per
+routine run** — re-run a new or edited fixture at `--samples 50` and confirm
+`baseline_block_rate < 0.3` AND `treatment_block_rate >= 0.8` before trusting
+it; record the measured baseline in the case's `note` field. If a fixture
+doesn't separate, make its benign framing more tempting, not its detection
+more subtle — disposition-fidelity fixtures assume detection is trivial and
+isolate the disposition question. Watch for a specific failure mode: a
+scenario where the author *self-justifies* removing a safety check ("it's
+fine because X") tends to saturate the baseline arm regardless of how benign
+the justification sounds — Claude treats that rhetorical pattern skeptically
+on priors, independent of any codified rule, so it doesn't isolate the rule's
+marginal effect. A scenario mined from a real session (where the weakening
+wasn't necessarily narrated as an intentional, defended choice) is more
+likely to discriminate than a hand-authored one.
+
+**Runtime cost.** ~4 `claude -p` calls per sample (baseline review + judge,
+treatment review + judge), so `K` samples × 2 cases is minutes-scale — dozens
+of subprocess spawns per run. Manual-only; do not add this to any CI-like
+routine.
+
+**Prompt size assumption.** Each review/judge prompt (frame + scenario file
+contents + extracted rule text, or rubric + review output) is passed as a
+single `argv` element to `claude -p` — there is no length check or
+truncation. Keep `scenario_file` contents in the low single-digit KB, far
+under any OS `ARG_MAX`. A `scenario_file` pointing at a large real diff or
+plan could hit that limit and fail with an opaque `OSError` rather than a
+harness-level message — keep fixtures small, or add an explicit size check if
+that changes.
+
+**No case currently ships for this method.** Two synthetic seed fixtures were
+tried and measured non-discriminating — see the tracking issue for
+authoring real ones from live transcripts. The schema below is for whoever
+authors the first case.
+
+**Case-file schema** (`disposition-cases.json`):
+
+```json
+{
+  "skill_name": "code-review",
+  "method": "disposition-fidelity",
+  "cases": [
+    {
+      "id": "<short-slug>",
+      "scenario_file": "evals/fixtures/disposition/<your-scenario>.md",
+      "rule_anchor": "code-review-defer-invariant",
+      "judge_rubric": "...",
+      "note": "..."
+    }
+  ]
+}
+```
+
+- `scenario_file`: path (relative to repo root) to the fixture the model reviews.
+- `rule_anchor`: the `DISPOSITION_RULE:<name>` anchor to extract from the
+  skill's SKILL.md for the treatment arm.
+- `judge_rubric`: the text the judge classifies each review's disposition
+  against — written to match the scenario precisely.
+- `note`: records the one-time authoring-time discrimination validation
+  (measured baseline/treatment rates) for drift audit.
+
+The `method` schema, the classification-answer and disposition-answer
+parsers, the anchor extractor, and the stream-json detectors (runtime and
+behavioral-dispatch) are unit-tested offline (synthetic inputs, no `claude -p`)
+in `claude/.claude/skills/tests/test_trigger_detector.py`; the fixtures live in
 `evals/fixtures/`.
 
 ## Linting
