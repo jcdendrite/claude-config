@@ -1,9 +1,9 @@
 ---
 name: error-mode-analysis
-description: Produce a signal-bucketed error-mode report from a delivered body of multi-session AI-assisted work — bucket every failure by which pipeline layer caught it, correlate transcript signals with PR review comments, and split output into a private, project-identifying report and a de-identified public lessons doc. Builds on transcript-narrative and transcript-analysis.
+description: Produce a signal-bucketed error-mode report from a delivered body of multi-session AI-assisted work — bucket every failure by which pipeline layer caught it, correlate transcript signals with PR review comments, and split output into a private, project-identifying report and a de-identified public lessons doc. Builds on transcript-narrative and transcript-analysis. Supports a multi-window trend pass to distinguish recurring patterns from one-off noise.
 ---
 
-Analyzes a *delivered body of work* (many sessions and PRs), not a single transcript. The organizing question is: where is the review pipeline self-correcting, and where is it blind? Answering that requires two data sources (transcript signals AND PR review comments — they are not the same signal) and a bucketing scheme that groups by detection layer rather than by investigative phase.
+Analyzes a *delivered body of work* (many sessions and PRs, potentially spanning multiple projects and calendar time), not a single transcript. The organizing question is: where is the review pipeline self-correcting, and where is it blind? Answering that requires two data sources (transcript signals AND PR review comments — they are not the same signal) and a bucketing scheme that groups by detection layer rather than by investigative phase.
 
 ## Step 1 — Scope the delivery
 
@@ -12,6 +12,10 @@ Identify the branches, PRs, sessions, and date range under analysis. Use `transc
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py buckets
 ```
+
+`buckets`, `review-trace`, and `fail-seq` all accept `--projects GLOB` (cross-repo), `--branches B1,B2,...` (multiple branches/PRs at once), and (on `review-trace`) `--since`/`--until DATE` — the tooling already spans repos and calendar time; scope is a choice, not a limitation.
+
+**Default to breadth, not the narrowest concrete option.** A single PR or session is the highest-noise, lowest-confidence sample available — one human comment or one bad turn looks identical to a systemic gap when it's the only data point. Absent an explicit request to narrow (the user names one PR/branch), default the scope to: the current project, all branches, last 6 weeks. If a scoping question to the user goes unanswered, widen the default rather than narrowing it — the cost of over-scoping is a longer report; the cost of under-scoping is a false pattern promoted to a fix.
 
 ## Step 2 — Collect transcript signals
 
@@ -96,4 +100,22 @@ Title: …
 Body: …
 ```
 
-For raw quantitative metrics without this bucketing, use `transcript-analysis`; for a narrative case study without the detection-layer lens, use `transcript-narrative`. This skill composes both and adds the PR-comment source, the bucket taxonomy, and the two-artifact boundary.
+## Step 7 — Multi-window trend pass
+
+A single run buckets one flat window. That's enough to tell you a failure mode exists; it isn't enough to tell you whether it's recurring, growing, or a one-off — and that distinction changes the priority column in Step 4 (a human-unique finding seen once across six weeks is a different fix priority than the same finding recurring every PR).
+
+Split the Step 1 date range into successive sub-windows (weekly, or biweekly for a longer range) and re-run Steps 2–4 per sub-window using `--since`/`--until` on `review-trace` (and `--branches`/`--projects` held constant across sub-windows so the only thing varying is time):
+
+```bash
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --projects '<glob>' --since <window-start> --until <window-end>
+```
+
+For each distinct error mode identified in Step 4, classify it against the sub-window sequence:
+
+- **Recurring** — present in two or more non-adjacent sub-windows. Treat as a systemic gap, not an incident; the priority in Step 4's table is a floor, not a ceiling — recurrence across windows is grounds to raise it.
+- **Growing** — present in an increasing share of sessions across successive sub-windows. Flag regardless of current bucket/priority; a growing trend outranks a static one at the same nominal priority.
+- **One-off** — present in exactly one sub-window. Report it (per Step 6's "do not silently drop a finding" rule) but do not let it drive a checklist or process change on its own — that's exactly the overfit-to-one-session failure this step exists to prevent. Note it as a candidate to watch, not a confirmed pattern.
+
+Add a "Trend" column to the bucket table (Step 4) and a one-line trend caveat to any candidate fix in Artifact B that was promoted primarily on the strength of one sub-window.
+
+For raw quantitative metrics without this bucketing, use `transcript-analysis`; for a narrative case study without the detection-layer lens, use `transcript-narrative`. This skill composes both and adds the PR-comment source, the bucket taxonomy, the two-artifact boundary, and the multi-window trend pass.
