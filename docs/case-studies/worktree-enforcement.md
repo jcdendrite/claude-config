@@ -127,5 +127,5 @@ The hook scripts themselves and the README / `design-decisions.md` sections quot
 - **[PR #59](https://github.com/jcdendrite/claude-config/pull/59)** — added the `cwd_anchor_note_if_chained` helper that suffixes the malformed-subcommand and non-allowlist deny paths with a chained-`cd` self-correction note.
 - **[PR #114](https://github.com/jcdendrite/claude-config/pull/114)** — added `require-worktree-for-file-writes.sh`.
 - **[PR #131](https://github.com/jcdendrite/claude-config/pull/131)** — added the `command_chains_cd_then_git` hard-deny gate that fires before the persisted-cwd check.
-- **[GH-421](https://github.com/jcdendrite/claude-config/issues/421)** — replaced `cwd_anchor_note_if_chained`, `command_chains_cd_then_git`, and `git_C_note_if_present` with the command-tokenizing parser described in the superseded note above.
+- **[PR #439](https://github.com/jcdendrite/claude-config/pull/439)** — replaced `cwd_anchor_note_if_chained`, `command_chains_cd_then_git`, and `git_C_note_if_present` with the command-tokenizing parser described in the superseded note above.
 - **[anthropics/claude-code#34327](https://github.com/anthropics/claude-code/issues/34327)** — external GitHub issue cited by PR #24 as documenting the cross-session race in the wild. Cited here as PR #24's reference; not independently summarized.
