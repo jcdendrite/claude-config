@@ -245,7 +245,9 @@ _lib_stray_marker_hint() {
 }
 
 # Single source of truth for read-only git subcommands. Sourced by
-# require-worktree-for-git-writes.sh.
+# require-worktree-for-git-writes.sh. Closed enumeration — this is a
+# security surface, so new entries are added deliberately (a subcommand
+# proven read-only against git's own docs), not accreted via "etc./like".
 _LIB_READONLY_GIT_SUBCMDS=(
   blame
   branch           # "git branch" lists; creating/deleting takes flags
@@ -254,30 +256,43 @@ _LIB_READONLY_GIT_SUBCMDS=(
   check-ignore     # read-only gitignore query
   check-mailmap    # read-only mailmap lookup
   check-ref-format # read-only ref name validation
+  cherry           # comparison of commits; distinct from the still-denied cherry-pick
   count-objects
   describe
   diff
+  diff-files       # read-only plumbing diff
+  diff-index       # read-only plumbing diff
+  diff-tree        # read-only plumbing diff
   fetch            # updates remote-tracking refs only, not working tree
   for-each-ref
   fsck
+  grep             # read-only content search
   help
   log
   ls-files
   ls-remote
   ls-tree
+  merge-base
   name-rev
+  range-diff
   reflog
   remote
   rev-list
   rev-parse
   shortlog
   show
+  show-branch
+  show-ref
   status
+  symbolic-ref     # "symbolic-ref HEAD <ref>" repoints HEAD but touches neither the
+                   # working tree nor the index — acceptable risk under this hook's
+                   # working-tree-race threat model, same tier as branch/tag below
   tag              # "git tag" lists; creating takes flags — acceptable risk
   var              # read-only git variable lookup
   verify-commit
   verify-tag
   version
+  whatchanged
   worktree         # bootstrap for the whole mechanism — don't block it
 )
 _lib_readonly_git_subcmds() {

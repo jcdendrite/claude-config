@@ -46,31 +46,13 @@ _GIT_WRITES = "claude/.claude/hooks/require-worktree-for-git-writes.sh"
 _FILE_WRITES = "claude/.claude/hooks/require-worktree-for-file-writes.sh"
 
 _REGISTERED_ANCHORS: list[CaseStudyAnchor] = [
-    # --- git-writes hook: symbol anchors ---
-    # Function names legitimately recur (definition + call sites), so
-    # we assert presence ≥ 1 on the script side, not exactly-one.
-    CaseStudyAnchor(
-        label="git-writes:symbol:cwd_anchor_note_if_chained",
-        doc_rel_path=_DOC,
-        script_rel_path=_GIT_WRITES,
-        anchor_text="cwd_anchor_note_if_chained",
-        kind="symbol",
-    ),
-    CaseStudyAnchor(
-        label="git-writes:symbol:command_chains_cd_then_git",
-        doc_rel_path=_DOC,
-        script_rel_path=_GIT_WRITES,
-        anchor_text="command_chains_cd_then_git",
-        kind="symbol",
-    ),
-    CaseStudyAnchor(
-        label="git-writes:symbol:git_C_note_if_present",
-        doc_rel_path=_DOC,
-        script_rel_path=_GIT_WRITES,
-        anchor_text="git_C_note_if_present",
-        kind="symbol",
-    ),
     # --- git-writes hook: detection pair (each is distinctive in context) ---
+    # The cwd_anchor_note_if_chained, command_chains_cd_then_git, and
+    # git_C_note_if_present symbol anchors (and their two associated quote
+    # anchors below) were removed here when GH-421 deleted those mechanisms
+    # from require-worktree-for-git-writes.sh — see the "Superseded (GH-421)"
+    # callout in the case study doc, which is the doc-side counterpart of
+    # this registry change.
     CaseStudyAnchor(
         label="git-writes:symbol:absolute-git-dir",
         doc_rel_path=_DOC,
@@ -92,20 +74,6 @@ _REGISTERED_ANCHORS: list[CaseStudyAnchor] = [
         doc_rel_path=_DOC,
         script_rel_path=_GIT_WRITES,
         anchor_text="isolates each session's state",
-        kind="quote",
-    ),
-    CaseStudyAnchor(
-        label="git-writes:quote:helper-inline-cd",
-        doc_rel_path=_DOC,
-        script_rel_path=_GIT_WRITES,
-        anchor_text="expected the inline cd to land you in the worktree",
-        kind="quote",
-    ),
-    CaseStudyAnchor(
-        label="git-writes:quote:gate-deny-effective-cwd",
-        doc_rel_path=_DOC,
-        script_rel_path=_GIT_WRITES,
-        anchor_text="cannot determine the effective cwd at the time git runs",
         kind="quote",
     ),
     # --- file-writes hook: detection pair ---

@@ -11,18 +11,66 @@
 # uncommitted edits. Working in linked worktrees (`git worktree add`)
 # isolates each session's state.
 #
-# Allow list: ~26 known read-only git subcommands, plus `worktree` (so the
-# bootstrap `git worktree add` isn't denied on the main tree). Anything
-# else is denied when run from the main working tree of an opted-in repo.
-# Allowed unconditionally inside a linked worktree.
+# Threat model: this is a developer-machine guardrail against *accidental*
+# main-tree writes, not an adversarial boundary — the agent is cooperative,
+# not attacking the gate. When a command's effective working directory for a
+# git write is genuinely ambiguous, this hook denies rather than guesses;
+# the fallback (anchor cwd with a separate `cd` call, or work in a worktree)
+# is cheap for a cooperative agent.
 #
-# Known limitation: parses the Bash command as a string, splitting on
-# shell operators only. Heredoc bodies, single-quoted, and double-quoted
-# regions are not distinguished from live command text — a Bash command
-# whose prose contains the literal `git <word>` (e.g. inside a `<<EOF`
-# heredoc writing a file) can be denied as if it invoked `git <word>`.
-# Workaround: write prose-containing files via the Write/Edit tool, not
-# Bash heredocs.
+# Mechanism: `parse-git-command.py` (co-located) tokenizes the raw command
+# with the stdlib shlex module — quote- and heredoc-aware, unlike a
+# regex/sed split on the raw string — into an ordered stream of CD and GIT
+# records plus any literal global `-C`. This hook threads cwd across the CD
+# records and judges each GIT record:
+#   - a read-only subcommand (allowlist) is always allowed — cwd is
+#     irrelevant, since a read cannot clobber the working tree or index.
+#   - a write subcommand is allowed only when its effective cwd resolves,
+#     through a plain literal `cd`/`-C` chain, to a linked worktree of this
+#     repo. Anything that keeps that resolution from being clean — a cd/-C
+#     target needing shell expansion (~, $VAR, $(...), glob), a write inside
+#     a subshell/command-substitution/backtick group, a write reached via
+#     `||`, or more than one global `-C` — denies the write outright rather
+#     than guessing which cwd it would actually run in.
+# See parse-git-command.py's module docstring for the exact record grammar.
+#
+# python3 is a hard precondition for this hook (present or absent is
+# checked explicitly below); any parser invocation failure (missing
+# binary, missing script, non-zero exit, timeout) denies — a gate must
+# fail closed on its own tooling. A command that mentions "git" only
+# inside a heredoc body, a quoted string, or backticked/substituted text
+# with no real invocation produces empty parser output, which is a
+# legitimate, safe "nothing to judge" result and is allowed.
+#
+# Rollback: a bad parser could deny every main-tree git write, including
+# `git pull` (not on the read-only allowlist) — the fix-forward path is
+# itself gated. Escape hatch: write `.claude/worktree-optout` (a file
+# write, not a git op) or remove the machine-level sentinel, then pull.
+#
+# Known gaps (what this model does NOT close):
+#   - A `git` reached only through an alias, a wrapper script, or another
+#     level of indirection this parser cannot see is undecidable — a
+#     command containing no literal `git`/`*/git` token produces no GIT
+#     record and is allowed, same as any non-git command.
+#   - The `cd`/`git rev-parse` resolution calls below have no timeout of
+#     their own (unlike the `python3` parser spawn) — a path backed by a
+#     stalled network filesystem could hang the call. Accepted for a
+#     developer-machine guardrail; not guarded against network-mount
+#     hangs the way the parser spawn is guarded against a runaway parse.
+#   - No cap on the size of the command string handed to the parser —
+#     bounded in practice by the 5s parser timeout, not by an explicit
+#     size check.
+#
+# Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
+# `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
+# deny-private-project-refs.sh, require-ready-for-review.sh) are NOT reused
+# here. Those hooks judge commit-message/PR-readiness content, where the
+# heredoc/quote misparse class this rewrite fixes rarely bites; their
+# boolean-fragment-test shape also doesn't fit the cwd-threading records
+# this hook needs. Two parsers coexist deliberately — a named exception to
+# single-source-of-truth, not an oversight.
+
+set -uo pipefail
 
 # emit_deny is defined before sourcing _lib.sh so it is available even if
 # _lib.sh is absent (e.g. mid-stow). The guarded source below ensures a
@@ -51,86 +99,17 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
-# Returns success when the command chains `cd ... <op> ... git ...`. The
-# hook reads cwd from Claude Code's session-persisted bash state (set by
-# prior Bash calls), not from the inline cd in the current command, because
-# the hook fires before the subshell runs. When this shape is detected the
-# effective cwd at the time git runs cannot be determined from the tool-input
-# JSON alone. Pattern requires `cd` as a word, then a chain operator, then
-# `git` somewhere later — avoids false positives on paths containing `cd`.
-command_chains_cd_then_git() {
-  printf '%s' "$1" | grep -qE '(^|[[:space:]])cd[[:space:]].*(&&|\|\||;).*git'
-}
-
-# When the command chains `cd ... <op> ... git ...`, the agent likely
-# expected the inline `cd` to land inside a worktree. Returns a
-# self-correction note for the agent when this pattern is detected;
-# empty otherwise.
-cwd_anchor_note_if_chained() {
-  if command_chains_cd_then_git "$1"; then
-    printf '%s' " If you just chained 'cd /path/to/worktree && git ...' and expected the inline cd to land you in the worktree: this hook reads cwd from Claude Code's session-persisted bash state (set by prior Bash calls), not from your inline cd, because the hook fires before the subshell runs. Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call."
-  fi
-}
-
-# When the command uses `git -C <path> <write-op>` from the main tree,
-# the agent likely expected the -C path to be treated as the working
-# tree. The hook checks the session-persisted CWD (from the tool input
-# JSON) — not the -C path — so the op is blocked even when -C points at
-# a linked worktree. Returns a self-correction note for the agent when
-# this pattern is detected; empty otherwise.
-#
-# Detection is scoped to `-C` in the GLOBAL flag position only —
-# subcommand-level uses (`git commit -C HEAD`, `git diff -C`, etc.)
-# do not trigger the note, since the hint would not apply there.
-# Mirrors the flag-skip table in extract_git_subcmd so both parsers
-# stay consistent. Globbing is disabled around the loop so that an
-# input like "git * -C foo" can't glob against cwd contents.
-git_C_note_if_present() {
-  local command="$1"
-  fragment_invokes_git "$command" || return
-  local after_git="${command#*git}"
-  local saved_opts=$-
-  set -f
-  local skip_next=false found=false
-  for word in $after_git; do
-    if $skip_next; then
-      skip_next=false
-      continue
-    fi
-    case "$word" in
-      -C)
-        found=true
-        break ;;
-      -c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
-        skip_next=true ;;
-      -*)
-        ;;
-      *)
-        break ;;  # subcommand reached; any -C past here is subcommand-scoped
-    esac
-  done
-  # Note: detects -C in the first git invocation only. A command like
-  # `git status && git -C ...` won't trigger — the loop stops at the
-  # first git's subcommand and never reaches the second git's flags.
-  if [[ "$saved_opts" != *f* ]]; then
-    set +f
-  fi
-  if $found; then
-    printf '%s' " If you used 'git -C <path>' expecting the -C path to be treated as the working tree: this hook reads cwd from Claude Code's session-persisted bash state (set by prior Bash calls), not from the -C path, because -C only retargets git's own working directory and doesn't change the session cwd. Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call."
-  fi
-}
-
 # Fast-path: commands that don't mention `git` as a word are not our
 # concern. A plain `*git*` substring check false-positives on `.github`,
-# `.gitignore`, `github.com`, `longitude`, and similar, blocking harmless
-# reads like `ls .github/workflows/`. Require a non-alnum boundary (or
-# string edge) on both sides so `git` fires only as a command word.
+# `.gitignore`, `github.com`, and similar, blocking harmless reads like
+# `ls .github/workflows/`. Require a non-alnum boundary (or string edge) on
+# both sides so `git` fires only as a command word.
 if ! [[ "$COMMAND" =~ (^|[^[:alnum:]])git([^[:alnum:]]|$) ]]; then
   exit 0
 fi
 
 # Find the repo. Outside a git repo, nothing to enforce.
-REPO_ROOT=$(cd "$CWD" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
+REPO_ROOT=$(cd "$CWD" 2>/dev/null && timeout 5 git rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
@@ -138,98 +117,185 @@ fi
 # Three-marker gate: repo sentinel, machine sentinel, per-repo opt-out.
 _lib_worktree_enforcement_active "$REPO_ROOT" || exit 0
 
-# A chained `cd ... && git ...` makes the effective cwd at the time git
-# runs unknowable from the tool-input JSON alone — the hook reads the
-# session-persisted cwd from prior Bash calls, not the cwd the inline cd
-# would produce. Deny regardless of the persisted cwd so that the hook's
-# decision is never based on stale state. The agent fix is to anchor cwd
-# with a standalone Bash call before the git op.
-if command_chains_cd_then_git "$COMMAND"; then
-  emit_deny "Blocked by worktree-enforcement hook: the command chains 'cd ... && git ...' and this hook cannot determine the effective cwd at the time git runs — it reads the session-persisted cwd (from prior Bash calls), not the cwd produced by the inline cd, because the hook fires before the subshell runs. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Anchor cwd by running 'cd /path/to/worktree' as its own Bash call first, then retry the git op in a follow-up call."
-  exit 0
-fi
-
-# "Am I in a linked worktree?" check. For the main working tree,
+# "Am I in a linked worktree?" check, and the enforced repo's identity
+# anchor for later effective-cwd comparisons. For the main working tree,
 # --git-dir and --git-common-dir return the same absolute path. For a
 # linked worktree, --git-dir points at <common>/worktrees/<name> while
-# --git-common-dir still points at <common>. Comparing the two is robust
-# against path-substring false positives (e.g. a repo literally at
-# ~/code/worktrees/myrepo) and env-var spoofing.
-GIT_DIR_ABS=$(cd "$CWD" 2>/dev/null && git rev-parse --absolute-git-dir 2>/dev/null)
-GIT_COMMON_DIR=$(cd "$CWD" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-if [ -n "$GIT_DIR_ABS" ] && [ -n "$GIT_COMMON_DIR" ] && [ "$GIT_DIR_ABS" != "$GIT_COMMON_DIR" ]; then
+# --git-common-dir still points at <common> — the same value regardless of
+# which worktree of the repo you query it from, which is what makes it a
+# reliable identity anchor for "does this other cwd belong to this repo?"
+# Both paths come from one rev-parse call (git prints one line per query
+# flag, in the order given) rather than two separate subprocess spawns.
+{
+  read -r SESSION_GIT_DIR_ABS
+  read -r REPO_GIT_COMMON_DIR
+} < <(cd "$CWD" 2>/dev/null && timeout 5 git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
+if [ -z "${SESSION_GIT_DIR_ABS:-}" ] || [ -z "${REPO_GIT_COMMON_DIR:-}" ]; then
+  emit_deny "Blocked by worktree-enforcement hook: could not determine git state for the session working directory. Refusing to evaluate git discipline under unresolvable git state."
+  exit 0
+fi
+SESSION_IS_WORKTREE=false
+if [ "$SESSION_GIT_DIR_ABS" != "$REPO_GIT_COMMON_DIR" ]; then
+  SESSION_IS_WORKTREE=true
+fi
+
+# Relocation-aware fast path: already in a linked worktree, and nothing in
+# the command could move a write elsewhere, so it is safe without the
+# parser. This guard is load-bearing — a worktree session running
+# `cd <main-repo> && git reset --hard` must still be caught, so any hint of
+# relocation (a `cd` word, a `-C` flag, or a subshell/substitution/backtick
+# group) falls through to full parsing regardless of session cwd. The
+# check is a deliberately conservative over-approximation — it may route a
+# command with no real relocation risk (e.g. `-C` mentioned only in a
+# comment string) to the parser too, which just costs a python3 spawn, not
+# a false allow.
+if $SESSION_IS_WORKTREE; then
+  if ! [[ "$COMMAND" =~ (^|[^[:alnum:]_])cd([^[:alnum:]_]|$) ]] \
+     && [[ "$COMMAND" != *'-C'* ]] \
+     && [[ "$COMMAND" != *'('* ]] \
+     && [[ "$COMMAND" != *'`'* ]]; then
+    exit 0
+  fi
+fi
+
+# From here on: either the session is in the main tree, or the command
+# could plausibly relocate a write. Parse it properly.
+PARSER="$(dirname "$0")/parse-git-command.py"
+if ! command -v python3 >/dev/null 2>&1; then
+  emit_deny "Blocked by worktree-enforcement hook: python3 is required to parse this command safely and was not found on PATH. Install python3 (see claude-config README) or run this git operation from inside a linked worktree, where the fast path above does not require python3."
   exit 0
 fi
 
-# From here on we are in the MAIN working tree of an opted-in repo.
-# Only read-only git subcommands are allowed; everything else is denied.
+# 5s ceiling matches _lib_jq's and require-plan-review.sh's established
+# precedent for local, non-network subprocess calls. Parsing a Bash
+# command string is a pure in-memory operation with no I/O, so this leaves
+# ample headroom; a timeout here (exit 124) is treated as a parser failure
+# and denies, same as any other non-zero exit.
+RECORDS=$(printf '%s' "$COMMAND" | timeout 5 python3 "$PARSER" 2>/dev/null)
+PARSER_EXIT=$?
+if [ "$PARSER_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by worktree-enforcement hook: the command parser exited abnormally (exit $PARSER_EXIT) or timed out. Refusing to evaluate git discipline under an unparseable command. If this persists, check that claude/.claude/hooks/parse-git-command.py is present and executable with python3."
+  exit 0
+fi
 
 # Pulled from _lib.sh.
 ALLOWED_SUBCMDS=($(_lib_readonly_git_subcmds))
 ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
-fragment_invokes_git() { _lib_fragment_invokes_git "$@"; }
+# Threaded across CD records in order. `resolvable` becomes permanently
+# false for the rest of this command once any cd cannot be trusted (an
+# in-group cd, or a target needing shell expansion) — a write judged after
+# that point is denied regardless of any later cd, since the parser cannot
+# tell which cwd it would really run in.
+running_cwd="$CWD"
+resolvable=true
 
-# Extract the git subcommand from a fragment like "git -C path commit -m foo".
-# Strips global flags that consume the next word, skips other flags, returns
-# the first bare word — the subcommand. Empty output means we couldn't find
-# one, which is a parse failure and triggers fail-closed deny.
-#
-# Globbing is explicitly disabled for the loop so that an input like
-# "git * log" can't glob against cwd contents to hide the real subcommand.
-#
-# Intentionally NOT delegating to _lib_extract_git_subcmd: this hook is
-# fail-closed — an unrecognized or malformed subcommand is denied.
-# _lib_extract_git_subcmd strips trailing non-alnum chars (e.g. `push)` →
-# `push`) for the ready-for-review hook's "is this a push?" detection;
-# stripping here would silently allow `log)` after paren-group splitting
-# when `log` happens to be allowlisted.
-extract_git_subcmd() {
-  local fragment="$1"
-  local after_git="${fragment#*git}"
-  local saved_opts=$-
-  set -f
-  local skip_next=false subcmd=""
-  for word in $after_git; do
-    if $skip_next; then
-      skip_next=false
-      continue
-    fi
-    case "$word" in
-      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
-        skip_next=true ;;
-      -*)
-        ;;
-      *)
-        subcmd="$word"
-        break ;;
-    esac
-  done
-  # Restore the globbing state of our caller.
-  if [[ "$saved_opts" != *f* ]]; then
-    set +f
-  fi
-  printf '%s' "$subcmd"
-}
+while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
+  [ -z "$rec_type" ] && continue
+  case "$rec_type" in
+    SENTINEL)
+      emit_deny "Blocked by worktree-enforcement hook: $field1. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree."
+      exit 0
+      ;;
+    CD)
+      target="$field1"
+      in_group="$field3"
+      if [ "$in_group" = "1" ] || [ -z "$target" ]; then
+        resolvable=false
+        continue
+      fi
+      if $resolvable; then
+        # No timeout wrapper here (see header "Known gaps") — cd is a shell
+        # builtin, so guarding it would require an extra bash -c layer for a
+        # hang scenario (a network-mounted worktree path) this repo's other
+        # hooks don't guard against either.
+        new_cwd=$(cd "$running_cwd" 2>/dev/null && cd "$target" 2>/dev/null && pwd -P 2>/dev/null)
+        if [ -n "$new_cwd" ]; then
+          running_cwd="$new_cwd"
+        else
+          resolvable=false
+        fi
+      fi
+      ;;
+    GIT)
+      subcmd="$field1"
+      c_path="$field2"
+      c_status="$field3"
+      op="$field4"
+      in_group="$field5"
 
-FRAGMENTS=$(_lib_split_fragments "$COMMAND")
+      # Reads are always allowed: they cannot clobber the working tree or
+      # index, so cwd, -C, group nesting, and the preceding operator are
+      # all irrelevant to the invariant this hook protects.
+      if [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
+        continue
+      fi
 
-while IFS= read -r fragment; do
-  [ -z "$fragment" ] && continue
-  if ! fragment_invokes_git "$fragment"; then
-    continue
-  fi
+      # Write, and its effective cwd cannot be trusted: a group-scoped
+      # write (subshell cd does not affect the parent shell), a write
+      # reached only if a preceding command failed (`||`) or backgrounded
+      # (`&` — a backgrounded `cd` forks a subshell and never changes the
+      # parent shell's cwd either, so a write after `&` cannot trust
+      # whatever `running_cwd` currently holds), an unresolved cd earlier
+      # in this command, or an unresolved/ambiguous `-C`.
+      if [ "$in_group" = "1" ] || [ "$op" = "||" ] || [ "$op" = "&" ] || [ "$c_status" = "UNRESOLVED" ] || ! $resolvable; then
+        emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' is a write whose effective working directory cannot be safely determined (a cd/-C target needing shell expansion, a write inside a subshell/command-substitution/backtick group, a write reached via '||' or backgrounded with '&', or more than one global -C flag), and this session is running in a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run this as a literal 'cd <worktree-path> && git ...' or 'git -C <worktree-path> ...' with a plain path — not a variable, glob, subshell, or backgrounded cd — or spawn an agent with isolation: worktree."
+        exit 0
+      fi
 
-  subcmd=$(extract_git_subcmd "$fragment")
-  if [ -z "$subcmd" ]; then
-    emit_deny "Blocked by worktree-enforcement hook: could not determine the git subcommand in '$fragment'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree.$(cwd_anchor_note_if_chained "$COMMAND")$(git_C_note_if_present "$COMMAND")"
-    exit 0
-  fi
+      effective_cwd="$running_cwd"
+      case "$c_status" in
+        NONE)
+          ;;
+        LITERAL)
+          resolved_c=$(cd "$running_cwd" 2>/dev/null && cd "$c_path" 2>/dev/null && pwd -P 2>/dev/null)
+          if [ -z "$resolved_c" ]; then
+            emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd -C $c_path' targets a working directory that does not exist or is unreachable from '$running_cwd'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
+            exit 0
+          fi
+          effective_cwd="$resolved_c"
+          ;;
+        *)
+          # UNRESOLVED is already denied above; anything else is a
+          # parser/shell contract mismatch this hook has never seen —
+          # deny rather than silently treat it as NONE (which would
+          # discard a real -C target and judge the write against the
+          # wrong cwd).
+          emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' carries an unrecognized -C status ('$c_status') that this hook does not know how to judge safely. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
+          exit 0
+          ;;
+      esac
 
-  if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
-    emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this session is running in the main working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(cwd_anchor_note_if_chained "$COMMAND")$(git_C_note_if_present "$COMMAND")$(_lib_stray_marker_hint "$REPO_ROOT")"
-    exit 0
-  fi
-done <<< "$FRAGMENTS"
+      # Both queries in one rev-parse call (git prints one line per query
+      # flag, in the order given) rather than two separate subprocess spawns.
+      eff_git_dir=""
+      eff_common_dir=""
+      {
+        read -r eff_git_dir
+        read -r eff_common_dir
+      } < <(cd "$effective_cwd" 2>/dev/null && timeout 5 git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
+      if [ -z "$eff_git_dir" ] || [ -z "$eff_common_dir" ] || [ "$eff_common_dir" != "$REPO_GIT_COMMON_DIR" ]; then
+        emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' targets a working directory outside this repository (or its git state could not be determined), so it cannot be confirmed safe. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
+        exit 0
+      fi
+
+      if [ "$eff_git_dir" != "$eff_common_dir" ]; then
+        # Linked worktree of this repo — allow.
+        continue
+      fi
+
+      emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
+      exit 0
+      ;;
+    *)
+      # Unrecognized record type — a future parser change added a record
+      # kind this hook doesn't know how to judge, or the wire format got
+      # corrupted in transit. Deny rather than silently skip the record:
+      # an unjudged record could represent a real git write.
+      emit_deny "Blocked by worktree-enforcement hook: received an unrecognized record type ('$rec_type') from the command parser. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
+      exit 0
+      ;;
+  esac
+done <<< "$RECORDS"
 
 exit 0
