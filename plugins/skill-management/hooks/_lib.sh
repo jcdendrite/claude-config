@@ -218,6 +218,32 @@ _lib_worktree_enforcement_active() {
   return 1
 }
 
+# _lib_stray_marker_hint REPO_ROOT
+# Returns a hint string when the repo-root sentinel exists in the working
+# tree but is not tracked in the git index — a stray copy still enforces
+# per _lib_worktree_enforcement_active's `[ -f ]` check, and this surfaces
+# why: the deny messages that consume this hint already state the
+# tracked/committed case, so an untracked marker producing the same deny
+# reads as unexplained. Returns empty when the marker is absent, or present
+# and tracked (the normal opted-in case) — no noise on the common path.
+# Deny-path only: callers interpolate this into an already-decided deny
+# message, so the `git ls-files` call here never runs on the allow path.
+# 5s timeout backstop mirrors _lib_jq (line 14): a stalled `git ls-files`
+# (e.g. NFS-mounted repo root) would otherwise hold the deny message open
+# indefinitely. Falls back to bare git when timeout(1) is absent (BSD/macOS).
+_lib_stray_marker_hint() {
+  local repo_root="$1"
+  [ -f "$repo_root/.claude/worktree-required" ] || return 0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5 git -C "$repo_root" ls-files --error-unmatch .claude/worktree-required \
+      >/dev/null 2>&1 && return 0
+  else
+    git -C "$repo_root" ls-files --error-unmatch .claude/worktree-required \
+      >/dev/null 2>&1 && return 0
+  fi
+  printf '%s' " Note: .claude/worktree-required is present but untracked — an accidental stray copy activates enforcement exactly like a committed one. Commit it if intentional, or remove it if it was created by accident."
+}
+
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh.
 _LIB_READONLY_GIT_SUBCMDS=(

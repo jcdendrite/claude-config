@@ -44,6 +44,49 @@ class TestRequireWorktreeForFileWrites:
         path = str(opted_in_repo / "file.txt")
         assert run_hook(FILE_WRITES_HOOK, multiedit_input(path)) == "deny"
 
+    def test_stray_untracked_marker_still_denies(self, stray_marker_repo):
+        """GH-427: an untracked .claude/worktree-required still activates
+        enforcement — this test locks that existence-based behavior in place;
+        the fix for GH-427 is a deny-message hint, not a logic change."""
+        path = str(stray_marker_repo / "f.txt")
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "deny"
+
+    def test_stray_untracked_marker_deny_includes_hint(self, stray_marker_repo):
+        path = str(stray_marker_repo / "f.txt")
+        reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
+        assert reason is not None
+        assert "untracked" in reason
+        # The unique hint phrase, not a bare path substring — the boilerplate
+        # deny text already mentions .claude/worktree-required twice regardless
+        # of whether the hint fired, so that alone wouldn't prove the hint ran.
+        assert "present but untracked" in reason
+
+    def test_committed_marker_deny_omits_stray_hint(self, opted_in_repo):
+        """The hint is GH-427-specific noise for the normal opted-in case —
+        a committed marker must not trigger it."""
+        path = str(opted_in_repo / "file.txt")
+        reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
+        assert reason is not None
+        assert "untracked" not in reason
+
+    def test_staged_not_committed_marker_deny_omits_stray_hint(self, staged_marker_repo):
+        """The hint's actual gate is index-tracked (git ls-files --error-unmatch),
+        not HEAD-committed — a staged-but-uncommitted marker already satisfies it."""
+        path = str(staged_marker_repo / "f.txt")
+        reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
+        assert reason is not None
+        assert "untracked" not in reason
+
+    def test_machine_marker_only_deny_omits_stray_hint(self, non_opted_repo, user_marker_home):
+        """Enforcement active via the machine-level marker alone (no repo-root
+        .claude/worktree-required at all) must not surface the untracked-repo-
+        sentinel hint — the hint's first check ([ -f repo-root marker ]) should
+        short-circuit before ever reaching the git ls-files branch."""
+        path = str(non_opted_repo / "file.txt")
+        reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
+        assert reason is not None
+        assert "untracked" not in reason
+
     def test_opted_in_worktree_allows_edit(self, isolated_home, opted_in_with_worktree):
         """Edit targeting a file inside a linked worktree is allowed."""
         _, worktree = opted_in_with_worktree

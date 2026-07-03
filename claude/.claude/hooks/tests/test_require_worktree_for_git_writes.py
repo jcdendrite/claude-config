@@ -39,6 +39,53 @@ class TestRequireWorktreeForGitWrites:
     def test_opted_in_main_tree_denies_checkout(self, opted_in_repo):
         assert run_hook(WORKTREE_HOOK, bash_input("git checkout main"), cwd=opted_in_repo) == "deny"
 
+    def test_stray_untracked_marker_still_denies(self, stray_marker_repo):
+        """GH-427: an untracked .claude/worktree-required still activates
+        enforcement — this test locks that existence-based behavior in place;
+        the fix for GH-427 is a deny-message hint, not a logic change."""
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=stray_marker_repo) == "deny"
+
+    def test_stray_untracked_marker_deny_includes_hint(self, stray_marker_repo):
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=stray_marker_repo)
+        assert reason is not None
+        assert "untracked" in reason
+        # The unique hint phrase, not a bare path substring — the boilerplate
+        # deny text already mentions .claude/worktree-required twice regardless
+        # of whether the hint fired, so that alone wouldn't prove the hint ran.
+        assert "present but untracked" in reason
+
+    def test_committed_marker_deny_omits_stray_hint(self, opted_in_repo):
+        """The hint is GH-427-specific noise for the normal opted-in case —
+        a committed marker must not trigger it."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
+        assert reason is not None
+        assert "untracked" not in reason
+
+    def test_staged_not_committed_marker_deny_omits_stray_hint(self, staged_marker_repo):
+        """The hint's actual gate is index-tracked (git ls-files --error-unmatch),
+        not HEAD-committed — a staged-but-uncommitted marker already satisfies it."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=staged_marker_repo)
+        assert reason is not None
+        assert "untracked" not in reason
+
+    def test_machine_marker_only_deny_omits_stray_hint(self, non_opted_repo, user_marker_home):
+        """Enforcement active via the machine-level marker alone (no repo-root
+        .claude/worktree-required at all) must not surface the untracked-repo-
+        sentinel hint — the hint's first check ([ -f repo-root marker ]) should
+        short-circuit before ever reaching the git ls-files branch."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=non_opted_repo)
+        assert reason is not None
+        assert "untracked" not in reason
+
+    def test_stray_marker_omitted_from_unrelated_deny_path(self, stray_marker_repo):
+        """The hint is scoped to the 'not on read-only allowlist' deny site only
+        — a stray marker present alongside an unrelated deny (unparseable git
+        subcommand) must not pull the hint into that message too."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git -C /tmp"), cwd=stray_marker_repo)
+        assert reason is not None
+        assert "could not determine the git subcommand" in reason
+        assert "untracked" not in reason
+
     @pytest.mark.parametrize(
         "command",
         [
