@@ -84,6 +84,8 @@ own output (loop risk).
 
 Unskippable — markdown, skill, and config diffs benefit from the same pass.
 
+**Enforcement-invariant findings are fix-or-ask.** `/code-review`'s own Invalid DEFER rationales list excludes findings that weaken an enforcement invariant (a gate, hook, permission check, required-approval, or marker guarantee) from DEFER — such a finding must not reach the `DEFERRED_FINDINGS` block step 5 splices into the PR body. If `/code-review` returns one, fix it in this step's commit or stop and ask the user before continuing; do not let it pass through to PR creation as a disclosed tradeoff.
+
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
 Check that skills this branch invoked were executed, not silently abbreviated —

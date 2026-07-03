@@ -86,3 +86,14 @@ Two hooks mechanically enforce ROUTING.md consultation during plan-review:
 - **`require-routing-read.sh`** (PreToolUse on Agent): denies sub-agent spawning if no fresh (<60 min) routing-read marker exists for the session. Only fires when `~/.claude/.plan-review-active.d/$SESSION_ID` is present.
 
 The output format also requires listing spawned agents with their checklist item IDs (from ROUTING.md's Item ownership table). Item-to-agent mappings only exist in ROUTING.md, so correct attribution requires consulting the table — making the rationale a de-facto smoke test on every plan-review run.
+
+## Enforcement-invariant fix-or-ask rule — surfacing incident (GH-428)
+
+Added after a 2026-07-02 review-pipeline assessment (corpus: 264 engineer-authored inline review comments since 2026-03-31, plus a 36-plan sweep) found a 2-for-2 pattern: when a plan-time review detected a weakening of an enforcement invariant and disposed of it as a "disclosed tradeoff," the engineer rejected or reverted it on contact with the implementation.
+
+1. PR #413's approved plan contained a web-UI draft→ready push-gate bypass, labeled "Known hole," disposed as disclose-in-PR-body. Shipped; rejected at human review; reverted same day; GH-415 then re-derived the identical invariant analysis from scratch.
+2. A plan that removed a check-runner read guard disclosed the resulting drift risk and deferred it to a "separate foundational plan" that was never filed; the misbehavior persisted until the subsystem was retired wholesale (#401 / GH-352).
+
+Mechanism: author-as-judge. The session that designed the mechanism grades its own found invariant-break as an acceptable tradeoff, and plan approval does not function as informed consent — in the #413 case the hole sat at ~line 113 of a 152-line plan; the engineer's genuine reaction surfaced only on reading the implemented hook.
+
+Falsifiable: the rule earns its keep if plan-time-detected invariant holes stop appearing in post-merge reverts. See GH-428.
