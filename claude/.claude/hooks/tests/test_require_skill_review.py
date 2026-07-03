@@ -610,16 +610,136 @@ class TestRequireSkillReview:
             == "deny"
         )
 
-    def test_plugin_lib_sh_matches_stowed_lib_sh(self):
-        """_lib.sh in the plugin hooks dir must be byte-identical to the stowed copy.
+    def test_plugin_lib_sh_repo_hash_matches_stowed_lib_sh(self):
+        """_marker_lib_repo_hash must produce identical output from the plugin's
+        trimmed _lib.sh and the stowed copy for the same input.
 
-        Both the plugin hook (require-skill-review.sh) and marker.sh source different
-        copies of _lib.sh. If they diverge, _marker_lib_repo_hash may produce different
-        hashes on the read side vs the write side, permanently breaking the gate.
+        marker.sh (the write side) always sources the stowed
+        $HOME/.claude/hooks/_lib.sh directly — never a plugin-bundled copy — so
+        this hook (the read side) computing a different hash for the same
+        repo-toplevel path would permanently break the gate: markers written
+        by one side would never be found by the other.
+
+        A behavioral check on this one function — not a whole-file byte
+        comparison — is the right invariant: the plugin's _lib.sh is a trimmed
+        copy (see its header) containing only what require-skill-review.sh
+        actually sources; whole-file identity would force this plugin to
+        carry, and re-sync on every change to, worktree/git-enforcement code
+        it never calls.
         """
-        assert _PLUGIN_LIB.read_bytes() == _STOWED_LIB.read_bytes(), (
-            "plugins/skill-management/hooks/_lib.sh has drifted from claude/.claude/hooks/_lib.sh. "
-            "These files must stay byte-identical — update the plugin copy when the stowed copy changes."
+        harness = '. "{lib}"; _marker_lib_repo_hash "/some/repo/toplevel"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout, "expected a non-empty hash"
+        assert plugin_result.stdout == stowed_result.stdout, (
+            "plugins/skill-management/hooks/_lib.sh's _marker_lib_repo_hash "
+            "produces a different hash than the stowed claude/.claude/hooks/_lib.sh "
+            f"copy — plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
+        )
+
+    def test_plugin_lib_sh_parses_tool_input_same_as_stowed_lib_sh(self):
+        """_lib_parse_tool_input_or_deny (and the _lib_jq it calls) must behave
+        identically between the plugin's trimmed copy and the stowed copy."""
+        harness = (
+            'emit_deny() {{ printf "DENY:%s\\n" "$1"; exit 0; }}; '
+            '. "{lib}"; '
+            '_lib_parse_tool_input_or_deny "test-msg"; '
+            'printf "OK:%s:%s\\n" "$TOOL_NAME" "$COMMAND"'
+        )
+        payload = '{"tool_name":"Bash","tool_input":{"command":"git commit -m foo"}}'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            input=payload, capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            input=payload, capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout == stowed_result.stdout, (
+            "plugins/skill-management/hooks/_lib.sh's _lib_parse_tool_input_or_deny "
+            "behaves differently than the stowed claude/.claude/hooks/_lib.sh copy — "
+            f"plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
+        )
+
+    def test_plugin_lib_sh_jq_fallback_matches_stowed_lib_sh(self, tmp_path):
+        """Without timeout(1) in PATH, _lib_jq's bare-jq fallback branch must
+        behave identically between the plugin's copy and the stowed copy.
+
+        The default-PATH parity test above never exercises this branch — jq
+        and bash's own timeout(1) is present on the test runner's PATH, so
+        _lib_jq's `if command -v timeout` always takes the wrapped branch.
+        Mirrors test_lib.py::test_timeout_absent_fallback_valid_payload_returns_ok's
+        technique: build a PATH with jq/bash/coreutils symlinked in but
+        timeout deliberately omitted.
+        """
+        import shutil
+
+        jq_path = shutil.which("jq")
+        bash_path = shutil.which("bash")
+        if not jq_path or not bash_path:
+            pytest.skip("jq or bash not found in PATH")
+        (tmp_path / "jq").symlink_to(jq_path)
+        (tmp_path / "bash").symlink_to(bash_path)
+        for cmd in ["head", "tail", "cat", "cut", "printf"]:
+            cmd_path = shutil.which(cmd)
+            if cmd_path:
+                (tmp_path / cmd).symlink_to(cmd_path)
+        env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+
+        harness = (
+            'emit_deny() {{ printf "DENY:%s\\n" "$1"; exit 0; }}; '
+            '. "{lib}"; '
+            '_lib_parse_tool_input_or_deny "test-msg"; '
+            'printf "OK:%s:%s\\n" "$TOOL_NAME" "$COMMAND"'
+        )
+        payload = '{"tool_name":"Bash","tool_input":{"command":"git commit -m foo"}}'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            input=payload, capture_output=True, text=True, check=False, env=env,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            input=payload, capture_output=True, text=True, check=False, env=env,
+        )
+        assert plugin_result.stdout == stowed_result.stdout, (
+            "plugins/skill-management/hooks/_lib.sh's _lib_jq timeout-absent fallback "
+            "behaves differently than the stowed claude/.claude/hooks/_lib.sh copy — "
+            f"plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "~/.claude/scripts/marker.sh write skill-review && git commit -m foo",
+            # Also exercises the Step-2 skill-mismatch exclusion: this chain's
+            # skill is plan-review, but the call below targets skill-review,
+            # so Step 1 (shape) passes while Step 2 (skill match) must fail.
+            "~/.claude/scripts/marker.sh write plan-review && git commit -m foo",
+            "git commit -m foo",
+        ],
+    )
+    def test_plugin_lib_sh_chains_marker_write_same_as_stowed_lib_sh(self, command):
+        """_lib_chains_marker_write_before_commit must return the same verdict
+        from the plugin's trimmed copy and the stowed copy for the same input."""
+        harness = '. "{lib}"; _lib_chains_marker_write_before_commit "$1" skill-review; printf "RC:%s\\n" "$?"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", command],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", command],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout == stowed_result.stdout, (
+            "plugins/skill-management/hooks/_lib.sh's _lib_chains_marker_write_before_commit "
+            "behaves differently than the stowed claude/.claude/hooks/_lib.sh copy for "
+            f"{command!r} — plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )
 
 

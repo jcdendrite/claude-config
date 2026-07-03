@@ -356,15 +356,83 @@ class TestRequirePluginVersionBump:
 
     # ---------------- Drift guard -------------------------------------------
 
-    def test_plugin_lib_sh_matches_stowed_lib_sh(self):
-        """_lib.sh in the plugin hooks dir must be byte-identical to the stowed copy.
+    def test_plugin_lib_sh_parses_tool_input_same_as_stowed_lib_sh(self):
+        """The plugin's trimmed _lib.sh must behave identically to the stowed
+        copy for the one function this hook actually sources:
+        _lib_parse_tool_input_or_deny (which itself calls _lib_jq).
 
         A project-scope install of plugin-semver has no stowed
-        ~/.claude/hooks/_lib.sh available, so the plugin ships its own copy.
-        If the two drift, behavior sourced by this hook (and any future
-        plugin-semver hook) diverges from the canonical helper library.
+        ~/.claude/hooks/_lib.sh available, so the plugin ships its own trimmed
+        copy (require-plugin-version-bump.sh needs only these two helpers —
+        no git helpers, no marker helpers, no worktree-enforcement helpers;
+        see plugins/plugin-semver/hooks/_lib.sh's header). A behavioral check
+        here — not a whole-file byte comparison — is the right invariant:
+        whole-file identity would force this plugin to carry, and re-sync on
+        every change to, worktree/git-enforcement code it never calls.
         """
-        assert _PLUGIN_LIB.read_bytes() == _STOWED_LIB.read_bytes(), (
-            "plugins/plugin-semver/hooks/_lib.sh has drifted from claude/.claude/hooks/_lib.sh. "
-            "These files must stay byte-identical — update the plugin copy when the stowed copy changes."
+        harness = (
+            'emit_deny() {{ printf "DENY:%s\\n" "$1"; exit 0; }}; '
+            '. "{lib}"; '
+            '_lib_parse_tool_input_or_deny "test-msg"; '
+            'printf "OK:%s:%s\\n" "$TOOL_NAME" "$COMMAND"'
+        )
+        payload = '{"tool_name":"Bash","tool_input":{"command":"git commit -m foo"}}'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            input=payload, capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            input=payload, capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout == stowed_result.stdout, (
+            "plugins/plugin-semver/hooks/_lib.sh's _lib_parse_tool_input_or_deny "
+            "behaves differently than the stowed claude/.claude/hooks/_lib.sh copy — "
+            f"plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
+        )
+
+    def test_plugin_lib_sh_jq_fallback_matches_stowed_lib_sh(self, tmp_path):
+        """Without timeout(1) in PATH, _lib_jq's bare-jq fallback branch must
+        behave identically between the plugin's copy and the stowed copy.
+
+        The default-PATH parity test above never exercises this branch — jq
+        and bash's own timeout(1) is present on the test runner's PATH, so
+        _lib_jq's `if command -v timeout` always takes the wrapped branch.
+        Mirrors test_lib.py::test_timeout_absent_fallback_valid_payload_returns_ok's
+        technique: build a PATH with jq/bash/coreutils symlinked in but
+        timeout deliberately omitted.
+        """
+        import shutil
+
+        jq_path = shutil.which("jq")
+        bash_path = shutil.which("bash")
+        if not jq_path or not bash_path:
+            pytest.skip("jq or bash not found in PATH")
+        (tmp_path / "jq").symlink_to(jq_path)
+        (tmp_path / "bash").symlink_to(bash_path)
+        for cmd in ["head", "tail", "cat", "cut", "printf"]:
+            cmd_path = shutil.which(cmd)
+            if cmd_path:
+                (tmp_path / cmd).symlink_to(cmd_path)
+        env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+
+        harness = (
+            'emit_deny() {{ printf "DENY:%s\\n" "$1"; exit 0; }}; '
+            '. "{lib}"; '
+            '_lib_parse_tool_input_or_deny "test-msg"; '
+            'printf "OK:%s:%s\\n" "$TOOL_NAME" "$COMMAND"'
+        )
+        payload = '{"tool_name":"Bash","tool_input":{"command":"git commit -m foo"}}'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            input=payload, capture_output=True, text=True, check=False, env=env,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            input=payload, capture_output=True, text=True, check=False, env=env,
+        )
+        assert plugin_result.stdout == stowed_result.stdout, (
+            "plugins/plugin-semver/hooks/_lib.sh's _lib_jq timeout-absent fallback "
+            "behaves differently than the stowed claude/.claude/hooks/_lib.sh copy — "
+            f"plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )

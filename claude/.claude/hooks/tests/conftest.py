@@ -56,6 +56,46 @@ def opted_in_repo(tmp_path):
 
 
 @pytest.fixture
+def stray_marker_repo(tmp_path):
+    """Git repo with .claude/worktree-required present but NOT committed or
+    staged — the GH-427 scenario. Enforcement still activates (existence-based
+    check, unchanged), but the deny message should carry the stray-marker
+    hint since a tracked-marker repo would not."""
+    repo = tmp_path / "stray-marker"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "worktree-required").write_text("# stray, untracked\n")
+    return repo
+
+
+@pytest.fixture
+def staged_marker_repo(tmp_path):
+    """Git repo with .claude/worktree-required staged (git add) but not yet
+    committed. _lib_stray_marker_hint uses `git ls-files --error-unmatch`,
+    which succeeds for staged-not-committed files, not just committed ones —
+    this fixture exercises that middle state so the hint's actual gate
+    (index-tracked, not HEAD-committed) is what tests pin down."""
+    repo = tmp_path / "staged-marker"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "worktree-required").write_text("# staged, not committed\n")
+    subprocess.run(["git", "add", ".claude/worktree-required"], cwd=repo, check=True)
+    return repo
+
+
+@pytest.fixture
 def non_opted_repo(tmp_path):
     """Git repo without the sentinel — enforcement should be a no-op."""
     repo = tmp_path / "non-opted"

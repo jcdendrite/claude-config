@@ -102,6 +102,11 @@ _lib_worktree_enforcement_active "$REPO_ROOT" || exit 0
 GIT_DIR_ABS=$(git -C "$lookup_dir" rev-parse --absolute-git-dir 2>/dev/null)
 GIT_COMMON_DIR=$(git -C "$lookup_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 
+# Deliberately no _lib_stray_marker_hint here: this is a git-state parse
+# failure (rev-parse produced no output after REPO_ROOT already resolved),
+# not the "enforcement active, blocking on main tree" case the hint targets.
+# Untestable deterministically without simulating a race between the two
+# rev-parse calls above, so no regression test pins this boundary.
 if [ -z "$GIT_DIR_ABS" ] || [ -z "$GIT_COMMON_DIR" ]; then
   emit_deny "Blocked by worktree-enforcement hook (file-writes): could not determine git state for '$FILE_PATH'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run $TOOL_NAME from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, or spawn an agent with isolation: worktree."
   exit 0
@@ -112,5 +117,5 @@ fi
 
 # In the main working tree: deny.
 REL_PATH="${FILE_PATH#"$REPO_ROOT"/}"
-emit_deny "Blocked by worktree-enforcement hook (file-writes): $TOOL_NAME targets '$FILE_PATH' which is in the main working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Write the file at its worktree path instead — e.g. .claude/worktrees/<branch>/$REL_PATH — or spawn an agent with isolation: worktree."
+emit_deny "Blocked by worktree-enforcement hook (file-writes): $TOOL_NAME targets '$FILE_PATH' which is in the main working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Write the file at its worktree path instead — e.g. .claude/worktrees/<branch>/$REL_PATH — or spawn an agent with isolation: worktree.$(_lib_stray_marker_hint "$REPO_ROOT")"
 exit 0
