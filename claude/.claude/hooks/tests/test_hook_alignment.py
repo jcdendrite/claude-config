@@ -1,4 +1,7 @@
-"""Two-layer hook alignment test suite.
+"""Three-layer hook alignment test suite.
+
+Layer 0 — Docs coverage: every .sh hook in claude/.claude/hooks/ (excluding
+_lib.sh) must have its own list-item entry in docs/hooks.md.
 
 Layer 1 — Static checks: every .sh hook in claude/.claude/hooks/ and
 plugins/*/hooks/ (excluding _lib.sh siblings) must declare a
@@ -80,12 +83,55 @@ _EXPLICIT_GATES: frozenset[str] = frozenset(
 ALL_HOOKS = _all_hook_files()
 GATE_HOOKS = [h for h in ALL_HOOKS if _hook_class(h) == "gate"]
 
+# Hooks documented in docs/hooks.md only for the main hooks dir — that doc's
+# stated scope excludes plugins/*/hooks/ (plugin hooks are documented in
+# their own plugin's docs instead).
+_MAIN_HOOKS = [h for h in ALL_HOOKS if h.parent == _MAIN_HOOKS_DIR]
+_HOOKS_DOC = _REPO_ROOT / "docs" / "hooks.md"
+
 
 def _is_gate_by_naming(hook: Path) -> bool:
     name = hook.name
     if name in _EXPLICIT_GATES:
         return True
     return any(p.match(name) for p in _GATE_PREFIX_PATTERNS)
+
+
+# ------------------------------------------------------------------ #
+# Layer 0 — Docs coverage                                            #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.parametrize("hook", _MAIN_HOOKS, ids=[h.name for h in _MAIN_HOOKS])
+def test_hook_documented_in_hooks_md(hook: Path) -> None:
+    """Every hook in claude/.claude/hooks/ must have its own entry in
+    docs/hooks.md.
+
+    docs/hooks.md opens with "Full descriptions for every hook in
+    claude/.claude/hooks/" — this test keeps that claim true. Plugin hooks
+    (plugins/*/hooks/) are out of scope; docs/hooks.md documents the main
+    hooks dir only.
+
+    Requires a line-start `- **`{name}`**` bullet (docs/hooks.md's
+    established entry convention) rather than a bare substring match: a
+    bare match would false-pass a hook whose own bullet was deleted but
+    whose name survives as a cross-reference elsewhere in the file (e.g.
+    `require-memory-skill.sh` and `require-code-review.sh` are both named
+    again, outside their own bullets, in the "Gate deadlock recovery"
+    section below). The bullet-anchored regex assumes hooks are referenced
+    by bare filename (docs/hooks.md's convention today, with no path
+    prefix); a future path-qualified reference wouldn't match this
+    pattern, but that only produces a loud false-negative failure, not a
+    silent false-pass.
+    """
+    doc_text = _HOOKS_DOC.read_text()
+    bullet_pattern = re.compile(
+        rf"^- \*\*`{re.escape(hook.name)}`\*\*", re.MULTILINE
+    )
+    assert bullet_pattern.search(doc_text), (
+        f"{hook.name}: not documented in docs/hooks.md — add an entry "
+        f"under Gate hooks or Utility hooks"
+    )
 
 
 # ------------------------------------------------------------------ #

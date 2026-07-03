@@ -134,8 +134,8 @@ flowchart LR
 - **`/plan-it`** — produce the implementation plan.
 - **`/plan-review`** — review the plan against domain checklists.
 - **`/code-review`** — principal-engineer review with ripple-effect triage.
-- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. Hook-enforced (`require-skill-review.sh` blocks `git commit` until the marker is written). Provided by the `skill-management@claude-config` plugin — see [Project-scoped plugins](docs/skills.md#project-scoped-plugins).
-- **`/agent-review`** — frontmatter contract, trigger design, voice, and behavioral-equivalence audit when an agent file (`claude/.claude/agents/*.md` or `plugins/*/agents/*.md`) changes. Dispatcher-invoked by `/code-review`; **not** hook-enforced — agent bodies are lazy-loaded and lower-blast-radius than skill descriptions.
+- **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. **Hook-enforced.** See [docs/skills.md](docs/skills.md#project-scoped-plugins).
+- **`/agent-review`** — same audit for agent files (`claude/.claude/agents/*.md` or `plugins/*/agents/*.md`). Dispatcher-invoked by `/code-review`; **not** hook-enforced. See [docs/skills.md — Skill architecture notes](docs/skills.md#skill-architecture-notes).
 - **`/ready-for-review`** — final tests + cumulative-diff review before push.
 - **`/sync-pr-description`** — verify and sync the PR description against branch state.
 - **`/respond-pr`** — fetch and reply to all PR comments with `[Claude Code]` attribution.
@@ -146,19 +146,19 @@ flowchart LR
 |---|---|---|
 | `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` per-session marker |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
-| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit (ships with `skill-management@claude-config` plugin) |
-| `require-plugin-version-bump.sh` | `git commit` when staged changes fall under any plugin's `.claude-plugin/plugin.json` tree, without a strict version increase since the branch's merge-base with the default branch | bump the plugin's `version` field (ships with `plugin-semver@claude-config` plugin) |
+| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit |
+| `require-plugin-version-bump.sh` | `git commit` under a plugin dir without a version bump on the branch (see [Plugins](#plugins-marketplace)) | bump the plugin's `version` field |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |
-| `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in) | Remove the flagged content, or `exclude:` a synthetic-fixture path |
+| `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in) | Remove the flagged content; see [`docs/hooks.md`](docs/hooks.md) |
 | `deny-data-file-reads.sh` | `Read` of a data-shaped file (opt-in) | No clear — inspect data files outside Claude |
 | `require-ready-for-review.sh` | `git push`, `gh pr ready` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
 | `cleanup-session-id.sh` | — (SessionEnd, no gate) | Removes the session-id lookup file its paired SessionStart hook wrote |
-| `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit, advisory) | Injects a one-shot context reminder when estimated carried tokens exceed 120k; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
+| `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
 | `cleanup-handoff-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session handoff-nudge marker files written by its paired UserPromptSubmit hook |
-| `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis` when in-session friction signals (hook denials, failed test runs, user corrections) cross a backtested threshold; dormant until `~/.claude/.error-mode-nudge-enabled` is created — see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
-| `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>` so the agent can offer to invoke `/git-feature-branch-sync` |
+| `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
+| `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
 
 See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all hooks, skills, scripts, and project-scoped plugins, see [`docs/hooks.md`](docs/hooks.md), [`docs/skills.md`](docs/skills.md), and [`docs/scripts.md`](docs/scripts.md).
 
