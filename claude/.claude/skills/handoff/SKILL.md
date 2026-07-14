@@ -1,9 +1,28 @@
 ---
 name: handoff
-description: Write a cross-session handoff file at /tmp/<descriptive-slug>-handoff.md capturing goal, status, next step, files modified, active markers, open questions, and resume command.
+description: Write a cross-session handoff file at ~/.claude/handoffs/<descriptive-slug>-handoff.md capturing goal, status, next step, files modified, active markers, open questions, and resume command.
 ---
 
-Write a cross-session handoff file at `/tmp/<descriptive-slug>-handoff.md` using the structure below.
+Write a cross-session handoff file at `~/.claude/handoffs/<descriptive-slug>-handoff.md`
+using the structure below. Run the commands below before writing, substituting
+your actual slug for `<descriptive-slug>` — the directory is not guaranteed to
+exist yet, and `chmod 700` keeps it owner-only for the file's entire durable
+"until resumed" lifetime (not just the moment `resume-context` consumes it).
+The `touch` + `chmod 600` on the file itself is an independent layer: the
+directory mode blocks another local account from resolving the path at all,
+but the file's own mode is never otherwise narrowed, and the `Write` tool's
+default creation mode does not restrict it on its own. A durable handoff can
+sit unresumed for days, and a `644`/`664` file under a group- or
+world-traversable `~/.claude` would otherwise be readable by any other local
+account for that whole window.
+
+<!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory AND the file are created owner-only, not just that the prose says so. Below, descriptive-slug (written without angle brackets, which the shell would otherwise parse as redirection) is the same placeholder used bracketed above — substitute your actual slug for it here exactly as you would above. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```bash
+mkdir -p ~/.claude/handoffs
+chmod 700 ~/.claude/handoffs
+touch ~/.claude/handoffs/descriptive-slug-handoff.md
+chmod 600 ~/.claude/handoffs/descriptive-slug-handoff.md
+```
 
 ## Artifact preamble (required — open this file with this block verbatim)
 
@@ -65,7 +84,10 @@ List active markers under `~/.claude/*-markers/` and `~/.claude/.*-active.d/` �
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.
 
 ## §7 Resume command
-`Read /tmp/<slug>-handoff.md and continue.`
+`resume-context ~/.claude/handoffs/<slug>-handoff.md` — moves the file to a
+fresh temp path and launches a new session with it loaded, so nothing
+depends on the resuming session remembering to read or delete the file.
+Can be aliased for convenience.
 
 ## You may drop
 

@@ -1,9 +1,29 @@
 ---
 name: brief
-description: Produce a cold-start task briefing at /tmp/<slug>-task.md for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, ticket whose scope is settled). Distinct from /handoff, which captures mid-flight session state.
+description: Produce a cold-start task briefing at ~/.claude/briefs/<slug>-task.md for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, ticket whose scope is settled). Distinct from /handoff, which captures mid-flight session state.
 ---
 
-Write a cold-start task briefing at `/tmp/<descriptive-slug>-task.md` using the structure below. A fresh session — with no memory of the originating conversation — must be able to read the file and execute the work.
+Write a cold-start task briefing at `~/.claude/briefs/<descriptive-slug>-task.md`
+using the structure below. Run the commands below before writing, substituting
+your actual slug for `<descriptive-slug>` — the directory is not guaranteed to
+exist yet, and `chmod 700` keeps it owner-only for the file's entire durable
+"until resumed" lifetime (not just the moment `resume-context` consumes it).
+The `touch` + `chmod 600` on the file itself is an independent layer: the
+directory mode blocks another local account from resolving the path at all,
+but the file's own mode is never otherwise narrowed, and the `Write` tool's
+default creation mode does not restrict it on its own. A durable brief can sit
+unresumed for days, and a `644`/`664` file under a group- or world-traversable
+`~/.claude` would otherwise be readable by any other local account for that
+whole window. A fresh session — with no memory of the originating
+conversation — must be able to read the file and execute the work.
+
+<!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory AND the file are created owner-only, not just that the prose says so. Below, descriptive-slug (written without angle brackets, which the shell would otherwise parse as redirection) is the same placeholder used bracketed above — substitute your actual slug for it here exactly as you would above. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```bash
+mkdir -p ~/.claude/briefs
+chmod 700 ~/.claude/briefs
+touch ~/.claude/briefs/descriptive-slug-task.md
+chmod 600 ~/.claude/briefs/descriptive-slug-task.md
+```
 
 ## When to use this vs `/handoff`
 
@@ -15,7 +35,7 @@ If you are still mid-task and running low on context, use `/handoff`. If the wor
 ## When to use this vs `/plan-it`
 
 - **`/plan-it`** is for the design phase: approach is unsettled, exploration and clarifying questions are needed, and the output (`.claude/plans/<slug>.md`) is reviewed by `/plan-review` before implementation. Committed to the repo.
-- **`/brief`** is for the operational handoff: scope is settled (or the work is mechanical), no design step remains, and the output (`/tmp/<slug>-task.md`) tells a fresh session where the work stands so they can pick up execution. Ephemeral.
+- **`/brief`** is for the operational handoff: scope is settled (or the work is mechanical), no design step remains, and the output (`~/.claude/briefs/<slug>-task.md`) tells a fresh session where the work stands so they can pick up execution. Durable until resumed — see "Resume command" below.
 
 If `§5 Decisions to make` is filling with open design questions rather than specific items awaiting an answer, write a plan instead.
 
@@ -70,6 +90,12 @@ Steps from §6 that require explicit in-session confirmation from the engineer b
 ## §7 Out of scope
 Adjacent work that must NOT be bundled into this change. Name the temptation explicitly — refactors in the same area, parallel cleanups, "while we're here" additions — so the reader knows what to leave alone.
 
+## §7.5 Resume command
+`resume-context ~/.claude/briefs/<slug>-task.md` — moves the file to a fresh
+temp path and launches a new session with it loaded, so picking up the brief
+doesn't depend on the fresh session remembering to read or delete the file.
+Can be aliased for convenience.
+
 ## Cold-start readability rules
 
 The briefing is read by a session with zero context from the originating conversation. To survive that:
@@ -96,8 +122,9 @@ count; completeness of state beats brevity here.
 
 Before writing the file, verify:
 - Preamble block is present and verbatim at the top of the file
-- Every section §1–§7 above is populated
+- Every section §1–§7.5 above is populated
 - No placeholder text ("TBD", "TODO", "fill in later") in any section
+- §7.5 Resume command names the exact file you are about to write
 - §4 Current state is objective — facts a fresh session could verify, not editorial
 - §5 Decisions to make lists open questions, not foregone conclusions framed as questions
 - §6 Steps to ship name concrete commands or file edits, not vague verbs
