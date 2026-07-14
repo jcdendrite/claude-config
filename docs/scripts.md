@@ -51,3 +51,10 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   update-claude-config-plugins --yes       # update all outdated plugins without prompting
   update-claude-config-plugins --dry-run   # preview outdated plugins without updating
   ```
+
+- **`resume-context.sh`** — resumes a `/handoff` or `/brief` continuity file: moves it from `~/.claude/handoffs/` or `~/.claude/briefs/` to a fresh `mktemp`-created path under `${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}` (permissions re-asserted to `600` via an explicit `chmod` after the move — a same-filesystem `mv` inherits the source file's permissions via `rename(2)`, not `mktemp`'s own mode, so the `chmod` is what actually enforces owner-only), then launches a new interactive `claude` session with the moved file loaded via `--append-system-prompt-file`. Refuses to move a symlink source: `mv` preserves a symlink's identity on a same-filesystem rename, and `chmod` dereferences symlinks by default, so chmodding a moved symlink would silently narrow permissions on whatever arbitrary file it points to. `--consume-only` performs the move only, without launching anything — used by `consume-durable-continuity-file-on-read.sh` (see [`docs/hooks.md`](hooks.md)) to consume a continuity file read directly in the same session (e.g. after `/clear`), without going through this script's launch path. Two env-var seams exist purely for tests, never touching the real `claude` binary or the real shared `/tmp`: `RESUME_CONTEXT_LAUNCHER` (command to exec instead of `claude`) and `RESUME_CONTEXT_TMPDIR` (temp-dir root override). No kill-switch of its own — the kill-switch lives in the consuming hook, since this script only ever runs when explicitly invoked.
+
+  ```bash
+  resume-context ~/.claude/handoffs/<slug>-handoff.md   # move + launch
+  resume-context --consume-only <path>                  # move only, no launch
+  ```

@@ -350,18 +350,31 @@ def write_plan_review_routing_read_marker(home: Path, session_id: str) -> Path:
     return marker
 
 
+def _symlink_if_absent(link: Path, target: Path) -> Path:
+    """Create link -> target if link doesn't already exist. Idempotent."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if not link.exists():
+        link.symlink_to(target)
+    return link
+
+
+def install_resume_context_script(isolated_home: Path) -> Path:
+    """Symlink the real resume-context.sh into an isolated $HOME/.claude/scripts/.
+
+    So hook/script tests that shell out to resume-context.sh (directly, or via
+    consume-durable-continuity-file-on-read.sh) exercise the real script
+    rather than a copy that can drift from it.
+    """
+    return _symlink_if_absent(
+        isolated_home / ".claude" / "scripts" / "resume-context.sh",
+        SCRIPTS_DIR / "resume-context.sh",
+    )
+
+
 def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     """Run a SKILL.md-extracted bash command in a sandboxed $HOME."""
-    scripts_dir = isolated_home / ".claude" / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    marker_link = scripts_dir / "marker.sh"
-    if not marker_link.exists():
-        marker_link.symlink_to(SCRIPTS_DIR / "marker.sh")
-    hooks_dir = isolated_home / ".claude" / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-    lib_link = hooks_dir / "_lib.sh"
-    if not lib_link.exists():
-        lib_link.symlink_to(HOOKS_DIR / "_lib.sh")
+    _symlink_if_absent(isolated_home / ".claude" / "scripts" / "marker.sh", SCRIPTS_DIR / "marker.sh")
+    _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_lib.sh", HOOKS_DIR / "_lib.sh")
     subprocess.run(
         ["bash", "-c", command],
         cwd=cwd,

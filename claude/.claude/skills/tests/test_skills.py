@@ -37,9 +37,15 @@ Run with: pytest claude/.claude/
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
+
+# pyproject.toml's pythonpath also puts claude/.claude/tests on the import
+# path, where these shared test helpers live.
+from helpers import SCRIPTS_DIR, extract_skill_command, run_skill_command
 
 # Single source of truth for SKILL.md structural rules — the commit-gate hook
 # shells out to the same module. pyproject.toml's [tool.pytest.ini_options]
@@ -47,6 +53,7 @@ import pytest
 from validate_skill_structure import (
     SKILL_LISTING_BUDGET_CHARS,
     corpus_budget_violations,
+    parse_frontmatter,
     validate,
 )
 
@@ -752,3 +759,104 @@ def test_skill_overrides_documented_in_docs_skills_md() -> None:
             f"`{marker}` row. Every non-on skillOverride entry needs a rationale row "
             "in docs/skills.md."
         )
+
+
+# Durable-handoff-location: /handoff and /brief write to a durable
+# ~/.claude/ directory, not /tmp (lost on reboot). Both skills legitimately
+# mention /tmp elsewhere for the consumed-tier destination (the temp path
+# resume-context.sh moves the file to), so these tests anchor to the
+# write-target construct — frontmatter description + the body "Write ... at"
+# line — rather than a blanket "/tmp" presence/absence scan, which would
+# false-positive on that correct content.
+_DURABLE_WRITE_TARGETS = {
+    "handoff": ("~/.claude/handoffs/", "-handoff.md"),
+    "brief": ("~/.claude/briefs/", "-task.md"),
+}
+
+
+@pytest.mark.parametrize("skill_name", sorted(_DURABLE_WRITE_TARGETS))
+def test_handoff_and_brief_write_target_matches_durable_path(skill_name: str) -> None:
+    """Anchored to the frontmatter description only — the one place this
+    path is documented but never executed (the skill picker never runs the
+    write recipe). The execution test below covers the literal recipe
+    behavior; a text-match against the body's opening paragraph would be
+    redundant with it and brittle to copy-only rewording (an SDET review
+    round flagged this)."""
+    skill_path = _skill_file(skill_name)
+    directory, suffix = _DURABLE_WRITE_TARGETS[skill_name]
+    frontmatter = parse_frontmatter(skill_path)
+    description = frontmatter.get("description", "") or ""
+    assert directory in description and suffix in description, (
+        f"{skill_name}/SKILL.md frontmatter description does not name the durable "
+        f"write target {directory}<slug>{suffix}"
+    )
+
+
+@pytest.mark.parametrize("skill_name", sorted(_DURABLE_WRITE_TARGETS))
+def test_handoff_and_brief_write_recipe_executes_to_durable_path(
+    skill_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Execution test, not just a text-match: runs the skill's own
+    HOOK_TEST_FIXTURE recipe (mkdir -p + chmod 700 + touch + chmod 600) in an
+    isolated $HOME and asserts the directory AND the file actually land at
+    the literal expected path with owner-only permissions — this is the
+    real, literal instruction the skill always issues (not synthetic
+    placeholder scaffolding), so executing it proves the path and proves the
+    permission-hardening control two CISO review rounds required (a durable
+    handoff/brief must not sit at rest with default umask-derived
+    permissions for its full "until resumed" lifetime, and the file's own
+    mode must not depend solely on the containing directory's).
+    """
+    isolated_home = tmp_path / "home"
+    isolated_home.mkdir()
+    monkeypatch.setenv("HOME", str(isolated_home))
+
+    skill_path = _skill_file(skill_name)
+    command = extract_skill_command(skill_path, "write-target")
+    run_skill_command(command, cwd=tmp_path, isolated_home=isolated_home)
+
+    directory, suffix = _DURABLE_WRITE_TARGETS[skill_name]
+    expected_dir = isolated_home / directory.replace("~/", "")
+    assert expected_dir.is_dir(), (
+        f"{skill_name}/SKILL.md's write-target fixture did not create {expected_dir}"
+    )
+    dir_mode = stat.S_IMODE(expected_dir.stat().st_mode)
+    assert dir_mode == 0o700, (
+        f"{skill_name}/SKILL.md's write-target fixture must leave {expected_dir} "
+        f"owner-only (0700), got {oct(dir_mode)}"
+    )
+
+    expected_file = expected_dir / f"descriptive-slug{suffix}"
+    assert expected_file.is_file(), (
+        f"{skill_name}/SKILL.md's write-target fixture did not create {expected_file}"
+    )
+    file_mode = stat.S_IMODE(expected_file.stat().st_mode)
+    assert file_mode == 0o600, (
+        f"{skill_name}/SKILL.md's write-target fixture must leave {expected_file} "
+        f"owner-only (0600), got {oct(file_mode)}"
+    )
+
+
+def test_resume_context_script_exists_and_executable() -> None:
+    script = SCRIPTS_DIR / "resume-context.sh"
+    assert script.exists(), "claude/.claude/scripts/resume-context.sh must exist"
+    assert os.access(script, os.X_OK), (
+        "resume-context.sh must be committed with the executable bit set "
+        "(git add --chmod=+x) so the stow symlink is runnable"
+    )
+
+
+@pytest.mark.parametrize("skill_name", sorted(_DURABLE_WRITE_TARGETS))
+def test_handoff_and_brief_reference_resume_context_literally(skill_name: str) -> None:
+    """Doc-consistency check only, explicitly scoped as such (parallel to
+    test_handoff_and_brief_write_target_matches_durable_path above) — proves
+    the skill body names a literal resume-context invocation, not that the
+    invocation actually works end-to-end (test_resume_context.py and the
+    hook tests cover that). Kept separate from the executable-bit check
+    above so a benign copy-edit to this prose can't fail that invariant, and
+    vice versa (an SDET review round flagged the two being combined)."""
+    body = _skill_file(skill_name).read_text()
+    assert "resume-context ~/.claude/" in body, (
+        f"{skill_name}/SKILL.md must give a literal resume-context invocation, "
+        "not just mention the name in passing"
+    )

@@ -299,6 +299,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/log-routing-read.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/consume-durable-continuity-file-on-read.sh"
           }
         ]
       }
