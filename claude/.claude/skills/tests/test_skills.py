@@ -471,6 +471,41 @@ class TestContinuityFileBucketCrosscheck:
         """brief's pre-write checklist must re-scan §6 against the §6.5 rule."""
         assert "re-checked against the §6.5 categorization rule" in _skill_file("brief").read_text()
 
+    def test_handoff_prewrite_checklist_crosschecks_section2_6(self):
+        """handoff's pre-write checklist must verify §2.6 was populated before writing."""
+        assert (
+            "§2.6 is populated — a faithful task-list serialization with per-item status, "
+            'or "None." — and carries the resume directive'
+            in _skill_file("handoff").read_text()
+        )
+
+
+class TestHandoffTaskListPersistence:
+    """Pin the §2.6 task-list serialization and resume directive in handoff.
+
+    Without a faithful task-list serialization and an explicit resume
+    directive, a session resumed from a handoff file starts with an empty
+    task list and re-derives remaining work from prose instead of
+    recreating it from the live state the prior session captured.
+    """
+
+    def test_handoff_task_list_reads_live_state_not_memory(self):
+        """§2.6 must instruct reading the live task list, not reconstructing from memory."""
+        assert (
+            "Read the live task list via the task tool (not from memory) and list each item "
+            "with its status — `completed` / `in_progress` / `pending` — preserving order."
+            in _skill_file("handoff").read_text()
+        )
+
+    def test_handoff_task_list_has_resume_directive(self):
+        """§2.6's resume directive must cover ordering (before §3), recreation, and the no-re-add-completed dedup rule."""
+        assert (
+            "before executing §3, recreate the `pending` and `in_progress` items below as tasks "
+            "via the task tool, preserving order; completed items are listed for context only "
+            "— do not re-add them."
+            in _skill_file("handoff").read_text()
+        )
+
 
 class TestModelInvokableSkillTriggerContracts:
     """TRIGGER / DO NOT TRIGGER contract tests for all model-invokable skills.
