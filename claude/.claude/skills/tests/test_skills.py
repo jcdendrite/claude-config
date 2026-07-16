@@ -474,8 +474,8 @@ class TestContinuityFileBucketCrosscheck:
     def test_handoff_prewrite_checklist_crosschecks_section2_6(self):
         """handoff's pre-write checklist must verify §2.6 was populated before writing."""
         assert (
-            "§2.6 is populated — a faithful task-list serialization with per-item status, "
-            'or "None." — and carries the resume directive'
+            "§2.6 is populated — a faithful task-list serialization with per-item ordinal, "
+            'status, and blocking edges, or "None." — and carries the resume directive'
             in _skill_file("handoff").read_text()
         )
 
@@ -493,16 +493,24 @@ class TestHandoffTaskListPersistence:
         """§2.6 must instruct reading the live task list, not reconstructing from memory."""
         assert (
             "Read the live task list via the task tool (not from memory) and list each item "
-            "with its status — `completed` / `in_progress` / `pending` — preserving order."
+            "with a stable ordinal, its status — `completed` / `in_progress` / `pending` — "
+            "and, for pending/in_progress items, which ordinals block it and (for the "
+            "in_progress item) its `activeForm`. Preserve order. Example: "
+            "`3. [pending] Phase B: … (blocked by 2)`."
             in _skill_file("handoff").read_text()
         )
 
     def test_handoff_task_list_has_resume_directive(self):
-        """§2.6's resume directive must cover ordering (before §3), recreation, and the no-re-add-completed dedup rule."""
+        """§2.6's resume directive must cover authoritativeness (no plan-file/memory
+        fallback), ordering (before §3), recreation, dependency-edge remap, and the
+        no-re-add-completed dedup rule."""
         assert (
-            "before executing §3, recreate the `pending` and `in_progress` items below as tasks "
-            "via the task tool, preserving order; completed items are listed for context only "
-            "— do not re-add them."
+            "§2.6 is the authoritative source of remaining task state on resume — do not "
+            "reconstruct the task list from the plan file or from memory. Before executing "
+            "§3, recreate the `pending` and `in_progress` items below as tasks via the task "
+            "tool, preserving order, then wire each item's `blockedBy`/`blocks` by mapping "
+            "the serialized ordinals to the tasks just created in that position; completed "
+            "items are listed for context only — do not re-add them."
             in _skill_file("handoff").read_text()
         )
 
