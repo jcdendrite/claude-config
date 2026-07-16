@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Write a cross-session handoff file at ~/.claude/handoffs/<descriptive-slug>-handoff.md capturing goal, status, next step, files modified, active markers, open questions, and resume command.
+description: Write a cross-session handoff file at ~/.claude/handoffs/<descriptive-slug>-handoff.md capturing goal, status, task list, next step, files modified, active markers, open questions, and resume command.
 ---
 
 Write a cross-session handoff file at `~/.claude/handoffs/<descriptive-slug>-handoff.md`
@@ -52,7 +52,15 @@ done / in-flight / blocked.
 
 ## §2.5 Incomplete prerequisites
 
-If this session executed one phase of a multi-phase plan, name the plan and the current phase. Enumerate prerequisite phases that were defined earlier and their completion status. If any are incomplete or unverified, list them here explicitly — do not omit them. If the handoff reason is context-limit, note what was mid-flight: tasks started but unfinished, open tool calls, pending verifications.
+If this session executed one phase of a multi-phase plan, name the plan and the current phase. Enumerate prerequisite phases that were defined earlier and their completion status. If any are incomplete or unverified, list them here explicitly — do not omit them. If the handoff reason is context-limit, note what was mid-flight: open tool calls, pending verifications (see §2.6 for task-list state).
+
+If none: write "None."
+
+## §2.6 Task list
+
+Read the live task list via the task tool (not from memory) and list each item with its status — `completed` / `in_progress` / `pending` — preserving order.
+
+**Resume directive:** before executing §3, recreate the `pending` and `in_progress` items below as tasks via the task tool, preserving order; completed items are listed for context only — do not re-add them. Recreating an `in_progress` item may take two calls (create, then update status) if creation can't set that status directly. This directive is a reversible, auto-executable action — a peer to §3's safe steps, not gated by the artifact preamble's re-confirm-before-executing rule (which is scoped to irreversible/shared-state actions; task creation is neither).
 
 If none: write "None."
 
@@ -118,6 +126,7 @@ Before writing the file, verify:
 - Markers in §5 use the globs `~/.claude/*-markers/` and `~/.claude/.*-active.d/` — not a hardcoded subdir list
 - §2.5 is populated; if any prerequisite phases are incomplete or unverified, they are listed there, not silently omitted
 - If the handoff reason is context-limit, §2.5 names what was mid-flight at the time of the handoff
+- §2.6 is populated — a faithful task-list serialization with per-item status, or "None." — and carries the resume directive
 - If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `sync-pr-description` skill before writing this file
 - Load-bearing claims in §2/§3/§6 carry a confidence tag — `[engineer-confirmed]`, `[verified: <evidence>]` (the command run, file read, or test output that established it), or `[assumed]` — so the resuming session re-verifies only what was never verified
 - Every §3 step has been re-checked against the §3.5 categorization rule: a step matching any §3.5 anchor shape is mis-bucketed — move it to §3.5 (bulk deletes include removing many branches or worktrees in one command). A cited justification ("per repo convention", "per memory") does not downgrade a step's irreversibility; a step claiming a convention names the file that states it
