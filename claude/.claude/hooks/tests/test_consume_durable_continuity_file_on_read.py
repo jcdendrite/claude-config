@@ -1,8 +1,11 @@
 """Tests for consume-durable-continuity-file-on-read.sh."""
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import stat
+import subprocess
 import time
 from pathlib import Path
 
@@ -13,6 +16,7 @@ from helpers import (
     install_resume_context_script,
     read_input,
     run_hook,
+    run_hook_advisory,
 )
 
 CONSUME_HOOK = HOOKS_DIR / "consume-durable-continuity-file-on-read.sh"
@@ -25,17 +29,89 @@ def _write_fixture(isolated_home: Path, rel_path: str) -> Path:
     return path
 
 
+def _run_hook_raw(
+    hook: Path, tool_input: dict, home: Path, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Like helpers.run_hook, but returns the raw CompletedProcess instead of
+    the decoded permissionDecision — needed for tests asserting on the
+    `systemMessage` JSON this hook now emits on a successful consume, which
+    run_hook's decision-decoding doesn't expose."""
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
 class TestConsumeDurableContinuityFileOnRead:
     def test_read_handoff_file_consumes_it(self, isolated_home):
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        run_hook(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert not fixture.exists()
+
+    def test_successful_consume_emits_system_message_naming_destination(self, isolated_home, tmp_path):
+        """A successful consume is no longer silent: stdout must be valid
+        JSON carrying a systemMessage that names the moved-to destination,
+        so a same-session resume shows where the file went."""
+        install_resume_context_script(isolated_home)
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        tmpdir_root = tmp_path / "resume-tmpdir"
+        tmpdir_root.mkdir()
+        result = _run_hook_raw(
+            CONSUME_HOOK,
+            read_input(str(fixture)),
+            home=isolated_home,
+            extra_env={"RESUME_CONTEXT_TMPDIR": str(tmpdir_root)},
+        )
+        assert result.returncode == 0
+        assert not fixture.exists()
+        moved = [p for p in tmpdir_root.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        payload = json.loads(result.stdout)
+        assert str(moved[0]) in payload["systemMessage"]
+
+    def test_jq_absent_fails_open_no_system_message(self, isolated_home, tmp_path):
+        """jq is required upstream of the new systemMessage guard — the hook's
+        own TOOL_NAME/FILE_PATH extraction (pre-existing code) already needs
+        jq to reach any of this hook's logic. So a jq-less PATH must fail open
+        *before* ever consuming the file: the fixture stays untouched (not
+        silently moved with a swallowed systemMessage), and stdout is empty.
+        This is a distinct fail-open branch from the `command -v jq` guard
+        around the new systemMessage emission — it's exercised here as an
+        upstream precondition, since a PATH excluding jq can never reach that
+        guard at all."""
+        install_resume_context_script(isolated_home)
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+
+        shadow_bin = tmp_path / "shadow-bin"
+        shadow_bin.mkdir()
+        for cmd in ["timeout", "bash", "cat", "mktemp", "mv", "chmod"]:
+            cmd_path = shutil.which(cmd)
+            if cmd_path:
+                (shadow_bin / cmd).symlink_to(cmd_path)
+
+        result = _run_hook_raw(
+            CONSUME_HOOK,
+            read_input(str(fixture)),
+            home=isolated_home,
+            extra_env={"PATH": str(shadow_bin)},
+        )
+        assert result.returncode == 0
+        assert fixture.exists(), "jq unavailable — hook can't even parse tool_name, must not consume"
+        assert result.stdout == "", "jq unavailable — must emit no systemMessage"
 
     def test_read_brief_file_consumes_it(self, isolated_home):
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/briefs/example-task.md")
-        run_hook(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert not fixture.exists()
 
     def test_read_unrelated_directory_is_noop(self, isolated_home):
@@ -63,25 +139,30 @@ class TestConsumeDurableContinuityFileOnRead:
         # No install_resume_context_script call — script absent, hook must
         # fail open rather than error.
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        run_hook(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        result = _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert fixture.exists()
+        assert result.stdout == "", "no destination to report — must emit no systemMessage"
 
     def test_kill_switch_disables_consumption(self, isolated_home):
         install_resume_context_script(isolated_home)
         (isolated_home / ".claude" / ".consume-durable-continuity-disabled").touch()
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        run_hook(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        result = _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert fixture.exists()
+        assert result.stdout == "", "kill-switch must suppress the systemMessage too"
 
     def test_double_read_of_already_consumed_file_is_noop(self, isolated_home):
         """Second firing on a path the first firing already moved away —
         distinct failure mode from 'script binary entirely missing'."""
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        run_hook(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert not fixture.exists()
-        # Second firing on the same (now-gone) path must not error out.
-        assert run_hook(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home) == "allow"
+        # Second firing on the same (now-gone) path must not error out, and
+        # must not report a destination that doesn't exist.
+        second = _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        assert second.returncode == 0
+        assert second.stdout == "", "already-gone source — must emit no systemMessage"
 
     def test_read_of_path_traversing_a_symlink_is_noop(self, isolated_home):
         """Documents the literal-path-only scope as an intentional, tested
@@ -132,7 +213,7 @@ class TestConsumeDurableContinuityFileOnRead:
     def test_hook_always_exits_allow(self, isolated_home):
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        assert run_hook(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home) == "allow"
+        assert run_hook_advisory(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home) == "allow"
 
     def test_timeout_bounds_a_hung_resume_context(self, isolated_home):
         """The one property the timeout wrapper exists to guarantee — an SDET
@@ -172,6 +253,9 @@ class TestConsumeDurableContinuityFileOnRead:
         still performs the real consume — an SDET review round found this
         branch (documented as the BSD/macOS path) is otherwise never
         exercised, since `timeout` is present on essentially every CI runner.
+        Also asserts the systemMessage emission itself (not just consumption),
+        since a copy-paste divergence between the `if`/`else` branches could
+        break DEST-capture only in this arm.
         """
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
@@ -183,10 +267,17 @@ class TestConsumeDurableContinuityFileOnRead:
             if cmd_path:
                 (shadow_bin / cmd).symlink_to(cmd_path)
 
-        run_hook(
+        tmpdir_root = tmp_path / "resume-tmpdir"
+        tmpdir_root.mkdir()
+        result = _run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
             home=isolated_home,
-            extra_env={"PATH": str(shadow_bin)},
+            extra_env={"PATH": str(shadow_bin), "RESUME_CONTEXT_TMPDIR": str(tmpdir_root)},
         )
+        assert result.returncode == 0
         assert not fixture.exists()
+        moved = [p for p in tmpdir_root.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        payload = json.loads(result.stdout)
+        assert str(moved[0]) in payload["systemMessage"]

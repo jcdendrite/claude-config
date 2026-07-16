@@ -15,6 +15,14 @@
 # blocked consume must never break the Read call it followed. Any failure
 # (missing script, already-consumed source, timeout) is swallowed.
 #
+# No longer fully silent on success: once resume-context.sh --consume-only
+# reports where it moved the file, this hook surfaces that destination to
+# the user via a `systemMessage` (see the emission below) so a same-session
+# resume shows where the file went instead of silently vanishing. Still
+# fail-open throughout — a missing destination, missing jq, or any failure
+# building the message emits nothing and falls through to `exit 0` exactly
+# as before.
+#
 # Kill-switch: touching ~/.claude/.consume-durable-continuity-disabled
 # suppresses this hook entirely, mirroring
 # nudge-handoff-near-context-cap.sh's ~/.claude/.handoff-nudge-disabled
@@ -94,9 +102,15 @@ RESUME_SCRIPT="$HOME/.claude/scripts/resume-context.sh"
 TIMEOUT_SECONDS="${RESUME_CONTEXT_HOOK_TIMEOUT_SECONDS:-5}"
 
 if command -v timeout >/dev/null 2>&1; then
-  timeout "$TIMEOUT_SECONDS" "$RESUME_SCRIPT" --consume-only "$FILE_PATH" >/dev/null 2>&1 || true
+  DEST=$(timeout "$TIMEOUT_SECONDS" "$RESUME_SCRIPT" --consume-only "$FILE_PATH" 2>/dev/null) || DEST=""
 else
-  "$RESUME_SCRIPT" --consume-only "$FILE_PATH" >/dev/null 2>&1 || true
+  DEST=$("$RESUME_SCRIPT" --consume-only "$FILE_PATH" 2>/dev/null) || DEST=""
+fi
+
+if [ -n "$DEST" ] && command -v jq >/dev/null 2>&1; then
+  jq -n --arg dest "$DEST" \
+    '{systemMessage: ("Continuity file moved to " + $dest + " to keep ~/.claude/handoffs tidy. Reload with: claude --append-system-prompt-file " + $dest)}' \
+    2>/dev/null || true
 fi
 
 exit 0
