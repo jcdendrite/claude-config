@@ -33,6 +33,13 @@ minutes. Strategic conclusions that go wrong waste a migration plan,
 a PR, a review cycle — and the user has to push back two or three
 times before the primary source is actually fetched.
 
+There is a second shape. An agent reaches a *real* source — a
+widely-starred community GitHub repo, a popular blog post — and cites it as
+"canonical" because it ranks high or is "most-cited." Reaching a source is
+not the same as reaching an authority. Popularity is not provenance: an
+unaffiliated aggregation is a lead to the originator or the first-party
+spec, never the citation itself.
+
 ## The rule
 
 When research will inform a code or design decision:
@@ -42,13 +49,20 @@ When research will inform a code or design decision:
    yourself. A blog post's summary of a deprecation is a pointer to
    the deprecation announcement.
 2. **Fetch the primary source and read the surrounding context.**
-   Primary, in rough order: the vendor's official docs / reference,
-   the project CHANGELOG / release notes / migration guide, the RFC
+   Rank candidate sources by *provenance*, not popularity: the
+   concept's originator on their own domain, the official
+   first-party vendor / standards-body docs or reference, the
+   project CHANGELOG / release notes / migration guide, the RFC
    or spec, the source code itself when behavior is in dispute, or
    an official maintainer announcement. Read enough of the
    surrounding section to know what the claim is *scoped to* —
    which version, which configuration, which API surface, which
-   migration path.
+   migration path. **Star count and citation count are not
+   provenance.** A community aggregation repo, an individual-engineer
+   blog, an SEO/content-farm page, or an LLM-generated summary is
+   disqualified as an *authority* however popular — treat it as a
+   lead to a qualified source, and do not shape a search toward
+   finding such a repo.
 3. **Distinguish "docs say X" from "docs say X in the context of
    Y."** If the docs scope the claim — to a specific version, config
    mode, or migration path — your conclusion has to carry the scope
