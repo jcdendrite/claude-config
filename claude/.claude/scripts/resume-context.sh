@@ -20,6 +20,25 @@
 #   RESUME_CONTEXT_LAUNCHER  command to exec instead of `claude`
 #   RESUME_CONTEXT_TMPDIR    temp-dir root instead of ${TMPDIR:-/tmp}
 #
+# Destination visibility:
+# - Launch mode prints the move and a reload hint to stderr before exec'ing
+#   the launcher. This is best-effort UX, not the recovery guarantee: it may
+#   not survive `exec` into an alt-screen TUI, and is lost entirely under a
+#   piped or `-p` invocation. It's fine either way — a successful exec means
+#   you're already resuming, and the not-found branch below is the
+#   dependable recovery path if you need to look back later. This line
+#   includes the original source path (which can embed the continuity
+#   file's slug), so it assumes the invoking terminal/session isn't itself
+#   being captured to a shared or lower-trust log (script(1), tmux/terminal
+#   logging, CI log capture on a shared runner).
+# - Consume-only mode's stdout contract is exactly the destination path and
+#   nothing else (a single line, no trailing content) — a downstream
+#   PostToolUse hook parses this via command substitution.
+# - The not-found branch's hint is a static message pointing at the temp-dir
+#   root; it performs no directory listing or file-existence check of its
+#   own, so it stays truthful post-reboot (an empty glob then correctly
+#   reads as "nothing recoverable").
+#
 # Known limitations:
 # - Shell *aliases* for `claude` are not visible here (aliases aren't
 #   inherited by non-interactive scripts) — command -v resolves `claude` on
@@ -58,6 +77,17 @@ Usage: resume-context.sh [--consume-only] <continuity-file-path>
 EOF
 }
 
+# Prints the reload command a human would run to load a moved continuity
+# file back into a session's system prompt. Kept in one place (rather than
+# inlined at each call site) so the reload string can't drift between the
+# launch-mode announcement and any future caller. Uses the literal `claude`,
+# not $LAUNCHER: this is a hint for a human to run manually, potentially in a
+# later shell/session where $RESUME_CONTEXT_LAUNCHER won't be set.
+print_recovery_hint() {
+  local dest="$1"
+  printf 'resume-context.sh: reload with: claude --append-system-prompt-file %s\n' "$dest" >&2
+}
+
 CONSUME_ONLY=0
 if [ "${1:-}" = "--consume-only" ]; then
   CONSUME_ONLY=1
@@ -71,8 +101,17 @@ fi
 
 SRC=$1
 
+# mktemp's bare positional TEMPLATE form (no -p/--tmpdir flag) is the base
+# invocation documented by both GNU coreutils and BSD/macOS mktemp(1) — no
+# GNU-only extension relied on here. Hoisted above the not-found check so
+# both the not-found hint and the move below share one definition.
+TMPDIR_ROOT="${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}"
+
 if [ ! -f "$SRC" ]; then
   printf 'resume-context.sh: source file not found: %s\n' "$SRC" >&2
+  printf 'resume-context.sh: it may already have been consumed — moved copies are at\n' >&2
+  printf 'resume-context.sh:   %s/resume-context.* (newest first: ls -t)\n' "$TMPDIR_ROOT" >&2
+  printf 'resume-context.sh: those are cleared on reboot; if none remain, it is unrecoverable.\n' >&2
   exit 1
 fi
 
@@ -96,10 +135,6 @@ if [ "$CONSUME_ONLY" -eq 0 ]; then
   fi
 fi
 
-# mktemp's bare positional TEMPLATE form (no -p/--tmpdir flag) is the base
-# invocation documented by both GNU coreutils and BSD/macOS mktemp(1) — no
-# GNU-only extension relied on here.
-TMPDIR_ROOT="${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}"
 DEST=$(mktemp "$TMPDIR_ROOT/resume-context.XXXXXX")
 
 if ! mv -- "$SRC" "$DEST"; then
@@ -118,7 +153,11 @@ if ! chmod 600 "$DEST"; then
 fi
 
 if [ "$CONSUME_ONLY" -eq 1 ]; then
+  printf '%s\n' "$DEST"
   exit 0
 fi
+
+printf 'resume-context.sh: moved %s -> %s\n' "$SRC" "$DEST" >&2
+print_recovery_hint "$DEST"
 
 exec "$LAUNCHER" --append-system-prompt-file "$DEST" "Continue from the handoff/brief file loaded into your system prompt."

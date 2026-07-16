@@ -90,7 +90,14 @@ def run_hook(
     """Invoke `hook` with `tool_input` as JSON stdin. Return the decision.
 
     Silent exit (exit 0, empty stdout) maps to "allow" to match the hook
-    protocol, where absence of output means "no opinion".
+    protocol, where absence of output means "no opinion". A non-empty stdout
+    payload is expected to carry `hookSpecificOutput.permissionDecision` —
+    missing it raises `KeyError`, since for every hook that always emits
+    `hookSpecificOutput` that shape break is itself a regression worth a hard
+    test failure. Hooks that legitimately emit a decision-less advisory
+    payload (e.g. a PostToolUse `systemMessage`) should use
+    `run_hook_advisory` instead, which treats that absence as "no opinion"
+    rather than a broken payload.
 
     home: when set, overrides $HOME in the subprocess environment so the
     hook writes into an isolated temp directory rather than real ~/.claude.
@@ -111,6 +118,42 @@ def run_hook(
         return "allow"
     payload = json.loads(result.stdout)
     return payload["hookSpecificOutput"]["permissionDecision"]
+
+
+def run_hook_advisory(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> str:
+    """Like `run_hook`, but for hooks documented as PostToolUse/informational,
+    where a non-empty stdout payload may carry only an advisory field (e.g.
+    `systemMessage`) with no `hookSpecificOutput.permissionDecision` at all —
+    that absence means "no opinion" per the hook protocol, not a broken
+    payload shape. Use `run_hook` instead for hooks that always emit
+    `hookSpecificOutput`, so a shape regression there still surfaces as a
+    hard failure rather than silently defaulting to "allow".
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook writes into an isolated temp directory rather than real ~/.claude.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
+    env = _build_subprocess_env(home, extra_env)
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
+    if not result.stdout.strip():
+        return "allow"
+    payload = json.loads(result.stdout)
+    return payload.get("hookSpecificOutput", {}).get("permissionDecision", "allow")
 
 
 def run_hook_reason(

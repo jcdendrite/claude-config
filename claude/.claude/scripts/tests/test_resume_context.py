@@ -60,6 +60,22 @@ class TestLaunchMode:
         assert result.stderr.strip()
         assert not recorder.exists()
 
+    def test_missing_source_hint_points_at_overridden_tmpdir(self, tmp_path: Path) -> None:
+        """The not-found branch must name the actual RESUME_CONTEXT_TMPDIR in
+        use (not a hardcoded /tmp), and include the reboot caveat, so a human
+        who re-runs resume-context on an already-consumed path is pointed at
+        where the moved copy lives."""
+        stub, _ = _install_recorder(tmp_path)
+        missing = tmp_path / "does-not-exist-handoff.md"
+        result = _run(
+            [str(missing)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert f"{tmp_path}/resume-context.*" in result.stderr
+        assert "cleared on reboot" in result.stderr
+        assert "unrecoverable" in result.stderr
+
     def test_happy_path_moves_and_launches(self, tmp_path: Path) -> None:
         stub, recorder = _install_recorder(tmp_path)
         src = tmp_path / "foo-handoff.md"
@@ -76,6 +92,9 @@ class TestLaunchMode:
         recorded_args = recorder.read_text().splitlines()
         assert recorded_args[0] == "--append-system-prompt-file"
         assert recorded_args[1] == str(moved[0])
+        assert f"moved {src} -> {moved[0]}" in result.stderr
+        assert f"reload with: claude --append-system-prompt-file {moved[0]}" in result.stderr
+        assert result.stdout == "", "launch mode must not write the destination announcement to stdout"
 
     def test_moved_file_is_owner_only_regardless_of_source_permissions(self, tmp_path: Path) -> None:
         """mv's same-filesystem rename(2) inherits the source's permissions, not
@@ -135,6 +154,8 @@ class TestConsumeOnlyMode:
         moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
         assert len(moved) == 1
         assert not recorder.exists(), "launcher must never be invoked in --consume-only mode"
+        assert result.stdout.strip() == str(moved[0])
+        assert result.stdout == str(moved[0]) + "\n", "stdout must be exactly the dest path, nothing else"
 
     def test_moved_filename_does_not_leak_source_slug(self, tmp_path: Path) -> None:
         """A CISO round found the temp destination previously embedded the
