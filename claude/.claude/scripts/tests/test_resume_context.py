@@ -96,6 +96,27 @@ class TestLaunchMode:
         assert f"reload with: claude --append-system-prompt-file {moved[0]}" in result.stderr
         assert result.stdout == "", "launch mode must not write the destination announcement to stdout"
 
+    def test_launch_prompt_instructs_task_list_restoration(self, tmp_path: Path) -> None:
+        """The launched first-turn prompt must point the resuming session at the
+        handoff's §2.6 resume directive before it takes any other action — without
+        this, a resumed session finds an empty live task list and reconstructs
+        work from the plan file instead of the prior session's captured state."""
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            [str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        recorded_args = recorder.read_text().splitlines()
+        prompt = recorded_args[2]
+        assert (
+            "If it contains a task-list resume directive, follow that directive to "
+            "recreate the task list via the task tool before taking any other action."
+            in prompt
+        )
+
     def test_moved_file_is_owner_only_regardless_of_source_permissions(self, tmp_path: Path) -> None:
         """mv's same-filesystem rename(2) inherits the source's permissions, not
         mktemp's 0600 placeholder — the script must re-assert 0600 explicitly."""
