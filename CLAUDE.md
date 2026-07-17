@@ -19,6 +19,12 @@ govern any contribution (human or agent).
 
 **Two CLAUDE.md files:** This file (repo root) governs contributor workflow. `claude/.claude/CLAUDE.md` contains the global engineering instructions (judgment heuristics, working style, safety rules) — it is stowed to `~/.claude/CLAUDE.md` and applies to all Claude Code sessions on this machine.
 
+**Path-scoped rules:** `.claude/rules/` holds contributor-workflow instructions
+that only need to load when a specific file type is open, instead of every
+session — skill/agent self-review discipline and per-file-type review-pipeline
+dispatch. They load automatically via `paths` frontmatter matching; see the
+file names for what each one covers.
+
 Worktree enforcement is active. `.claude/worktree-required` is committed, so
 non-read-only git operations must run inside a linked worktree
 (`git worktree add .claude/worktrees/<branch> -b <branch>`) or an agent with
@@ -77,26 +83,10 @@ not want to extend. Mirror existing entries when in doubt.
 `/plan-it` is the prescribed entry for plan creation. `/plan-review` and
 `/code-review` are mandatory pipeline steps before PR handoff — both are
 hook-enforced (see README "Workflow" for the full skill invocation order and
-which hook gates each transition). `/code-review` dispatches per file type
-when staged changes include skill or agent files:
-
-- **SKILL.md** → `/skill-review` is also required and **hook-enforced**
-  (`require-skill-review.sh` blocks `git commit` until the behavioral-equivalence
-  marker is written).
-- **agent file** (`claude/.claude/agents/*.md` or `plugins/*/agents/*.md`) →
-  `/agent-review` is invoked by the dispatcher but **not hook-enforced**. Agent
-  bodies are lazy-loaded and lower-blast-radius than skill descriptions, so
-  dispatcher-level invocation suffices and no pre-commit gate is added.
-- **any file under a plugin directory** (a tree containing
-  `.claude-plugin/plugin.json`) → `plugin-semver` is also required and
-  **hook-enforced** (`require-plugin-version-bump.sh` blocks `git commit`
-  unless the plugin's `version` was strictly raised since the branch's
-  merge-base with the default branch). This hook ships inside the
-  `plugin-semver` plugin itself, so it only takes effect once that plugin is
-  installed/updated to a version that carries it — a `git pull` alone does
-  not activate it, unlike stowed `claude/.claude/**` hooks.
-
-`/code-review` invokes whichever applies automatically.
+which hook gates each transition). Per-file-type dispatch details (what
+`/code-review` additionally requires for SKILL.md, agent, and plugin-directory
+files) live in `.claude/rules/review-pipeline-dispatch.md`, loaded
+automatically whenever one of those files is opened.
 
 ## Plans in this repo affect all stow users
 
@@ -109,18 +99,6 @@ CI passing is necessary but not sufficient — wait for the user's
 explicit "merge it" before running `gh pr merge`. Open-ended verbs
 like "handle" or "do the swap" cover writing the change and opening
 the PR, not landing it.
-
-## When editing a skill or agent, run the skill on its own diff
-
-A skill's body states the rules it enforces; an edit can violate
-those rules unless you re-read the body with the diff in mind. Before
-committing a skill change, invoke `/skill-review` via the `Skill`
-tool and check the diff against its output — e.g. an edit adding
-prose to a skill that argues for brevity is the kind of thing the
-skill would flag against itself. The same rule applies to agent
-files (`claude/.claude/agents/*.md`, `plugins/*/agents/*.md`):
-invoke `/agent-review` and check the diff against its output before
-staging.
 
 ## Redact private-project-identifying content
 
