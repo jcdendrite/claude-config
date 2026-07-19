@@ -165,6 +165,8 @@ The repair is explicit pointer wiring: every consumer that should consult the sk
 - **`staff-backend-engineer`** (reviewer): reads `sql-query-conventions` when evaluating pagination and read-path query design.
 - **`code-review`** (dispatcher): inline pointer to invoke `test-conventions` on test-code changes and `sql-query-conventions` on performance-sensitive paths.
 
+Because these consumers `Read` the skill body rather than invoking it through the `Skill` tool, none of that consumption registers as a skill invocation — a usage audit (e.g. `/doctor`) can report `sql-query-conventions` and `error-handling` as zero-invocation even though they are actively consulted on every read-path write and review pass. That is the expected telemetry consequence of this wiring choice, not a sign the skill is unused.
+
 Both skills are moved to `skillOverrides: name-only` following the `error-handling` precedent (§11). The TRIGGER blocks and `user-invocable: false` frontmatter are kept: the test suite's `_specialist_skills()` discovery relies on `user-invocable: false` to determine which skills require TRIGGER discipline, and graceful degradation on older clients (pre-v2.1.129) means the description-based path is still available as a fallback.
 
 The same principle was extended to `agent-review` — a dispatcher-reached reviewer skill that carries TRIGGER blocks but is always invoked by name from `/code-review` (SKILL.md:241), never by description auto-trigger. Moving it to `skillOverrides: name-only` freed its description from the always-loaded listing budget. The TRIGGER blocks are kept for graceful degradation on pre-v2.1.129 clients.
