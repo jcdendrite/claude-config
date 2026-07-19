@@ -88,10 +88,6 @@ which hook gates each transition). Per-file-type dispatch details (what
 files) live in `.claude/rules/review-pipeline-dispatch.md`, loaded
 automatically whenever one of those files is opened.
 
-## Plans in this repo affect all stow users
-
-`claude/` is stowed into `$HOME` — changes ship to every user who clones and stows this repo, not only to the session owner. When reviewing a plan for `claude-config`, evaluate with that audience in mind. Files under `claude/` are not personal config; they are distributed to all stow users on `git pull`. Surface this when declaring the user surface in Step 2 of plan-review, and weight finding severity accordingly.
-
 ## AI agents: don't merge your own PRs
 
 In this repo, an AI agent that opens a PR does not also merge it.
