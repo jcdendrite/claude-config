@@ -55,7 +55,7 @@ A CLAUDE.md instruction says "you should run code-review before committing." A P
 - [`docs/design-decisions.md`](docs/design-decisions.md) — the non-obvious choices in this repo (hook-enforced gates, per-session sha256 marker keying, no shared skill partials, project-layer composition via prose-pointer + glob, reviewer persona roster operations, etc.) and the reasoning behind each.
 - [`docs/case-studies.md`](docs/case-studies.md) — index of longer-form case studies: individual design decisions examined in depth with primary-source citations.
 - [`docs/walkthrough.md`](docs/walkthrough.md) — one full contribution cycle: plan → plan-review → code → code-review → commit → ready-for-review → push → respond-pr, showing each hook firing in sequence.
-- **Two `CLAUDE.md` files, plus path-scoped rules.** The repo-root [`CLAUDE.md`](CLAUDE.md) is contributor workflow for this repo (what GitHub renders by default). The stowed [`claude/.claude/CLAUDE.md`](claude/.claude/CLAUDE.md) is the global engineering instructions applied to every Claude Code session on the machine after `./install.sh`. Contributor-workflow instructions that only apply to specific file types live in [`.claude/rules/`](.claude/rules/) instead, Claude Code's native path-scoped rules directory — loaded automatically only when a matching file is opened, rather than every session.
+- **Two `CLAUDE.md` files, plus path-scoped rules.** The repo-root [`CLAUDE.md`](CLAUDE.md) is contributor workflow for this repo (what GitHub renders by default). The stowed [`claude/.claude/CLAUDE.md`](claude/.claude/CLAUDE.md) is the global engineering instructions applied to every Claude Code session on the machine after `./install.sh`. Contributor-workflow instructions that only apply to specific file types live in [`.claude/rules/`](.claude/rules/) instead, Claude Code's native path-scoped rules directory — loaded automatically only when a matching file is opened, rather than every session. The stowed [`claude/.claude/rules/`](claude/.claude/rules/) is the same mechanism applied to the global surface — it installs to `~/.claude/rules/` and applies in every repo the user opens, not just this one.
 
 ### Notable patterns
 
@@ -214,6 +214,7 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
 - **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline and per-file-type review-pipeline dispatch.
+- **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra and SQL/DDL conventions that apply across every repo the user opens, not just this one.
 - **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo` and secret-file reads (see [Auto mode](#auto-mode)). Configured with **opusplan** as the default model (cost-effective and [recommended by Anthropic](https://support.claude.com/en/articles/14552983-models-usage-and-limits-in-claude-code)). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 
 ### Scripts

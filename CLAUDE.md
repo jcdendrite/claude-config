@@ -23,7 +23,10 @@ govern any contribution (human or agent).
 that only need to load when a specific file type is open, instead of every
 session — skill/agent self-review discipline and per-file-type review-pipeline
 dispatch. They load automatically via `paths` frontmatter matching; see the
-file names for what each one covers.
+file names for what each one covers. `claude/.claude/rules/` is the stowed
+sibling (installs to `~/.claude/rules/`) — since it applies in every repo a
+stow user opens, not just this one, its `paths` globs must stay generic
+(`**/*.sql`, not a claude-config-specific path) rather than repo-relative.
 
 Worktree enforcement is active. `.claude/worktree-required` is committed, so
 non-read-only git operations must run inside a linked worktree
