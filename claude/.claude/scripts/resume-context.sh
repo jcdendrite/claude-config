@@ -15,10 +15,14 @@
 # move logic is never duplicated between the explicit-resume path and the
 # same-session (`/clear` + manual Read) resume path.
 #
-# Env overrides (tests only — never touch the real claude binary or the
-# real shared /tmp otherwise):
-#   RESUME_CONTEXT_LAUNCHER  command to exec instead of `claude`
-#   RESUME_CONTEXT_TMPDIR    temp-dir root instead of ${TMPDIR:-/tmp}
+# Env overrides:
+#   RESUME_CONTEXT_LAUNCHER  command to exec instead of `claude`. Used by tests
+#                            to avoid the real claude binary; also usable in a
+#                            real shell to front `claude` with a wrapper, e.g.
+#                            RESUME_CONTEXT_LAUNCHER=claude-auto resumes in
+#                            auto mode.
+#   RESUME_CONTEXT_TMPDIR    temp-dir root instead of ${TMPDIR:-/tmp}. Tests
+#                            only — never touch the real shared /tmp otherwise.
 #
 # Destination visibility:
 # - Launch mode prints the move and a reload hint to stderr before exec'ing
