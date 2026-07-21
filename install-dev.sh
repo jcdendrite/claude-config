@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-dev.sh — contributor dev-environment setup (not for end users)
-# Creates .venv and installs requirements-dev.txt (pytest, ruff, pyyaml).
+# Creates .venv and installs requirements-dev.txt (pytest, ruff, pyyaml, shellcheck-py).
 # Run from the main worktree root; the .venv lives there only.
 set -euo pipefail
 
@@ -54,7 +54,8 @@ fi
 check_venv_healthy() {
   [ -x .venv/bin/python ] \
     && .venv/bin/python -c "import yaml, pytest" 2>/dev/null \
-    && .venv/bin/ruff --version >/dev/null 2>&1
+    && .venv/bin/ruff --version >/dev/null 2>&1 \
+    && .venv/bin/shellcheck --version >/dev/null 2>&1
 }
 
 # Step 4 — Heal or create venv. If .venv exists but the health probe fails
@@ -82,9 +83,11 @@ if check_venv_healthy; then
   pytest_ver="$(.venv/bin/python -c "import pytest; print(pytest.__version__)")"
   ruff_ver="$(.venv/bin/ruff --version | awk '{print $2}')"
   yaml_ver="$(.venv/bin/python -c "import yaml; print(yaml.__version__)")"
-  echo "Done. .venv is ready (pytest=${pytest_ver}, ruff=${ruff_ver}, pyyaml=${yaml_ver})"
+  shellcheck_ver="$(.venv/bin/shellcheck --version | awk '/^version:/ {print $2}')"
+  echo "Done. .venv is ready (pytest=${pytest_ver}, ruff=${ruff_ver}, pyyaml=${yaml_ver}, shellcheck=${shellcheck_ver})"
   echo "  Run tests:  .venv/bin/pytest claude/.claude/"
   echo "  Run lint:   .venv/bin/ruff check claude/.claude/"
+  echo "  Lint shell: scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck"
 else
   echo "ERROR: .venv verification failed after install. Check output above." >&2
   exit 1

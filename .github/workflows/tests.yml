@@ -23,7 +23,9 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    # pytest alone consumes 72-92s of this budget; the shellcheck step adds
+    # ~10s. Two minutes left no headroom for a new step.
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -42,11 +44,16 @@ jobs:
           fi
 
           # Fail open: if BASE is the zero SHA (first push, some force-push
-          # scenarios) or unresolvable locally, run the test suite.
+          # scenarios) or unresolvable locally, run both the test suite and
+          # shellcheck. shell_changed must be set here too — it is otherwise
+          # only computed further down, so this early exit would leave it
+          # absent (not false), and an absent output never equals 'true',
+          # silently skipping the shellcheck step while CI reports green.
           ZERO_SHA="0000000000000000000000000000000000000000"
           if [ "$BASE" = "$ZERO_SHA" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
-            echo "BASE unresolvable ($BASE); running tests."
+            echo "BASE unresolvable ($BASE); running tests and shellcheck."
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "shell_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -80,17 +87,37 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+          # Independent gate for the shellcheck step. Kept separate from REGEX
+          # above, which means "directories containing test files or read by
+          # tests" — a shell edit under plugins/ needs linting but not the full
+          # pytest suite. Must cover every path shape that
+          # scripts/list-shell-files.sh can return, plus .shellcheckrc (editing
+          # it changes findings without touching any .sh file) and the
+          # discovery script itself.
+          SHELL_REGEX='(\.sh$|^claude/\.local/bin/|^plugins/lovable-cloud/scripts/|^\.shellcheckrc$|^scripts/list-shell-files\.sh$)'
+
+          SHELL_MATCHED=$(echo "$CHANGED" | grep -E "$SHELL_REGEX" || true)
+          if [ -n "$SHELL_MATCHED" ]; then
+            echo "Matched (will run shellcheck):"; echo "$SHELL_MATCHED" | sed 's/^/  /'
+            echo "shell_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Matched (will run shellcheck): (none)"
+            echo "shell_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Skip — no hook-relevant changes
         if: steps.detect.outputs.changed != 'true'
         run: echo "No hook-relevant files changed; skipping pytest."
 
+      # Gated on either output: shellcheck ships as a pip wheel, so a PR that
+      # only touches shell files outside REGEX still needs the toolchain.
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        if: steps.detect.outputs.changed == 'true'
+        if: steps.detect.outputs.changed == 'true' || steps.detect.outputs.shell_changed == 'true'
         with:
           python-version: '3.12'
 
       - name: Install dependencies
-        if: steps.detect.outputs.changed == 'true'
+        if: steps.detect.outputs.changed == 'true' || steps.detect.outputs.shell_changed == 'true'
         run: pip install -r requirements-dev.txt
 
       - name: Run tests
@@ -100,3 +127,17 @@ jobs:
       - name: Lint
         if: steps.detect.outputs.changed == 'true'
         run: ruff check claude/.claude/
+
+      - name: Shellcheck
+        if: steps.detect.outputs.shell_changed == 'true'
+        run: |
+          set -euo pipefail
+          # The runner image may carry its own shellcheck; confirm the pinned
+          # wheel wins PATH resolution rather than silently linting with a
+          # different version.
+          which shellcheck
+          shellcheck --version
+          # No flags: .shellcheckrc supplies them. Exit 3 on an empty file
+          # list is a feature — a broken discovery regex fails loudly instead
+          # of passing vacuously, so this is deliberately not `|| true`.
+          ./scripts/list-shell-files.sh | xargs -0 shellcheck

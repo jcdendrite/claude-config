@@ -82,7 +82,10 @@ def repo_root_stub(tmp_path: Path) -> Path:
 
 def _make_healthy_venv_stub(repo_root_stub: Path) -> None:
     """Create a minimal stub .venv whose health probe passes: python exits 0
-    for any -c argument, pip exits 0, ruff prints a version line."""
+    for any -c argument, pip exits 0, ruff and shellcheck print version lines.
+
+    Every binary check_venv_healthy probes must be stubbed here — the probe
+    calls .venv/bin/<tool> directly, so a PATH stub cannot satisfy it."""
     venv_bin = repo_root_stub / ".venv" / "bin"
     venv_bin.mkdir(parents=True)
     (venv_bin / "python").write_text("#!/bin/bash\nexit 0\n")
@@ -91,6 +94,11 @@ def _make_healthy_venv_stub(repo_root_stub: Path) -> None:
     (venv_bin / "pip").chmod(0o755)
     (venv_bin / "ruff").write_text('#!/bin/bash\necho "ruff 0.6.0"\nexit 0\n')
     (venv_bin / "ruff").chmod(0o755)
+    (venv_bin / "shellcheck").write_text(
+        '#!/bin/bash\nprintf "ShellCheck - shell script analysis tool\\n"\n'
+        'printf "version: 0.11.0\\n"\nexit 0\n'
+    )
+    (venv_bin / "shellcheck").chmod(0o755)
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +281,8 @@ class TestUnhealthyVenvIsRecreated:
               chmod +x "$venv_dir/bin/pip"
               printf '%s\\n' '#!/bin/bash' 'echo "ruff 0.6.0"' 'exit 0' > "$venv_dir/bin/ruff"
               chmod +x "$venv_dir/bin/ruff"
+              printf '%s\\n' '#!/bin/bash' 'echo "version: 0.11.0"' 'exit 0' > "$venv_dir/bin/shellcheck"
+              chmod +x "$venv_dir/bin/shellcheck"
               exit 0
             fi
             exit 0
@@ -334,6 +344,58 @@ class TestIdempotency:
         assert not sentinel.exists(), (
             "python3 -m venv must not be called when .venv is already healthy"
         )
+        assert "shellcheck=0.11.0" in result.stdout, (
+            "Expected the printed version summary to contain shellcheck=0.11.0, "
+            "parsed from `shellcheck --version`'s `version:` line via "
+            f"install-dev.sh's `awk '/^version:/ {{print $2}}'`; got stdout: "
+            f"{result.stdout!r}"
+        )
+
+    def test_venv_missing_shellcheck_is_recreated(self, repo_root_stub: Path):
+        """A .venv predating the shellcheck pin must be treated as unhealthy.
+
+        Contributors who ran install-dev.sh before shellcheck-py was added have
+        a .venv that is complete by every other measure. Without shellcheck in
+        the health probe the script would exit 0 and leave them unable to run
+        the shell lint, so the probe must fail and trigger heal-and-recreate.
+        """
+        _make_healthy_venv_stub(repo_root_stub)
+        # Remove only shellcheck — everything else still passes the probe.
+        (repo_root_stub / ".venv" / "bin" / "shellcheck").unlink()
+
+        sentinel = repo_root_stub / "venv_created.flag"
+        bin_dir = repo_root_stub / "bin"
+        _write_stub(bin_dir, "python3", textwrap.dedent(f"""\
+            if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
+              exit 0
+            fi
+            if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+              touch '{sentinel}'
+              venv_dir="$3"
+              mkdir -p "$venv_dir/bin"
+              printf '%s\\n' '#!/bin/bash' 'exit 0' > "$venv_dir/bin/python"
+              chmod +x "$venv_dir/bin/python"
+              printf '%s\\n' '#!/bin/bash' 'exit 0' > "$venv_dir/bin/pip"
+              chmod +x "$venv_dir/bin/pip"
+              printf '%s\\n' '#!/bin/bash' 'echo "ruff 0.6.0"' 'exit 0' > "$venv_dir/bin/ruff"
+              chmod +x "$venv_dir/bin/ruff"
+              printf '%s\\n' '#!/bin/bash' 'echo "version: 0.11.0"' 'exit 0' > "$venv_dir/bin/shellcheck"
+              chmod +x "$venv_dir/bin/shellcheck"
+              exit 0
+            fi
+            exit 0
+        """))
+
+        result = _run_script(repo_root_stub, stub_bin=bin_dir)
+
+        assert sentinel.exists(), (
+            "A .venv without shellcheck must be recreated — check_venv_healthy "
+            "is what makes the new pin reach existing contributors"
+        )
+        assert result.returncode == 0, (
+            f"Expected exit 0 after recreation; got {result.returncode}\n"
+            f"stderr: {result.stderr}\nstdout: {result.stdout}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +422,8 @@ class TestPipInstallFailure:
               chmod +x "$venv_dir/bin/pip"
               printf '%s\\n' '#!/bin/bash' 'echo "ruff 0.6.0"' 'exit 0' > "$venv_dir/bin/ruff"
               chmod +x "$venv_dir/bin/ruff"
+              printf '%s\\n' '#!/bin/bash' 'echo "version: 0.11.0"' 'exit 0' > "$venv_dir/bin/shellcheck"
+              chmod +x "$venv_dir/bin/shellcheck"
               exit 0
             fi
             exit 0
