@@ -244,11 +244,17 @@ find_package_root() {
     dir=$(dirname -- "$dir")
   done
 
+  # Guard before iterating: on bash <4.4 (including stock macOS bash 3.2),
+  # `for x in "${arr[@]}"` on an EMPTY array triggers "unbound variable"
+  # under `set -u` — this hits on the common case of a cache hit at the
+  # walk's very first iteration, where visited_dirs is still empty.
   local visited
-  for visited in "${visited_dirs[@]}"; do
-    CACHED_DIRS+=("$visited")
-    CACHED_ROOTS+=("$result")
-  done
+  if [ "${#visited_dirs[@]}" -gt 0 ]; then
+    for visited in "${visited_dirs[@]}"; do
+      CACHED_DIRS+=("$visited")
+      CACHED_ROOTS+=("$result")
+    done
+  fi
 
   [ "$result" = "__NONE__" ] && return 1
   printf '%s\n' "$result"
@@ -262,12 +268,16 @@ while IFS= read -r CHANGED_FILE; do
   ROOT=$(find_package_root "$CHANGED_FILE") || continue
   [ -z "$ROOT" ] && continue
   ALREADY_SEEN=0
-  for EXISTING_ROOT in "${PACKAGE_ROOTS[@]}"; do
-    if [ "$EXISTING_ROOT" = "$ROOT" ]; then
-      ALREADY_SEEN=1
-      break
-    fi
-  done
+  # Same bash <4.4 empty-array guard as above — PACKAGE_ROOTS is empty for
+  # the first gated changed file of nearly every invocation.
+  if [ "${#PACKAGE_ROOTS[@]}" -gt 0 ]; then
+    for EXISTING_ROOT in "${PACKAGE_ROOTS[@]}"; do
+      if [ "$EXISTING_ROOT" = "$ROOT" ]; then
+        ALREADY_SEEN=1
+        break
+      fi
+    done
+  fi
   [ "$ALREADY_SEEN" -eq 0 ] && PACKAGE_ROOTS+=("$ROOT")
 done <<< "$CHANGED_FILES"
 
