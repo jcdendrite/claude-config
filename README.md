@@ -188,6 +188,7 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 - **`claude-hook-review`** — Review playbook for `.claude/hooks/*.sh` and `settings.json` hook entries: event/matcher selection, path resolution, script skeleton, fail-open/fail-closed posture, dispatch drift, and the review checklist. `claude plugin install claude-hook-review@claude-config --scope project`
 - **`plugin-semver`** — Semver and version-field discipline for Claude Code plugin changes: when to bump major/minor/patch, which fields must be kept in sync, and a commit-time hook (`require-plugin-version-bump.sh`) that blocks a plugin-directory change unless the plugin's version was raised on the branch. `claude plugin install plugin-semver@claude-config --scope project`
+- **`npm-semver`** — Semver and version-field discipline for published npm packages: when to bump major/minor/patch against the package's declared public API, a reminder to propagate a bump to consuming repos, and a commit-time hook (`require-npm-version-bump.sh`) that blocks a non-private package's source change unless `package.json`'s version was raised on the branch. `claude plugin install npm-semver@claude-config --scope project`
 
 ### Agents
 

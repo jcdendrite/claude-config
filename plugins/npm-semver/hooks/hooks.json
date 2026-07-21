@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/require-npm-version-bump.sh",
+            "if": "Bash(git commit *)",
+            "statusMessage": "Checking npm-version-bump gate..."
+          }
+        ]
+      }
+    ]
+  }
+}
