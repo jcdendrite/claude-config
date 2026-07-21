@@ -41,6 +41,15 @@
       },
       "source": "./plugins/plugin-semver",
       "category": "productivity"
+    },
+    {
+      "name": "npm-semver",
+      "description": "Semver and version-field discipline for published npm packages. Install at project scope in any repo that publishes an npm package.",
+      "author": {
+        "name": "Cordova Strategy"
+      },
+      "source": "./plugins/npm-semver",
+      "category": "productivity"
     }
   ]
 }
