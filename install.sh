@@ -75,7 +75,7 @@ check_private_projects_file() {
     echo "TIP: Create ~/.claude/private-projects.md and add \"@private-projects.md\""
     echo "     to ~/.claude/CLAUDE.md to enable redaction of project names you don't"
     echo "     want leaking in commits/PRs. See README section 'Private-project redaction'."
-  elif [ -z "$(grep -Ev '^[[:space:]]*(#|$)' "$file" 2>/dev/null)" ]; then
+  elif ! grep -Evq '^[[:space:]]*(#|$)' "$file" 2>/dev/null; then
     echo ""
     echo "WARNING: ~/.claude/private-projects.md exists but contains no usable entries"
     echo "         (only comments or blank lines). Either populate it or delete it —"
@@ -84,7 +84,13 @@ check_private_projects_file() {
 }
 
 if ! command -v timeout >/dev/null 2>&1; then
+  # shellcheck disable=SC2016 # single-quoted for literal display text — the
+  # backtick-quoted tokens are markdown-style formatting, not command
+  # substitution; there is no shell expansion intended in either message.
   printf '[install] warning: GNU coreutils `timeout` not in PATH; guard hooks will run jq without timeout protection.\n' >&2
+  # shellcheck disable=SC2016 # single-quoted for literal display text — the
+  # backtick-quoted tokens are markdown-style formatting, not command
+  # substitution; there is no shell expansion intended in this message.
   printf '[install] hint: install via `brew install coreutils` (macOS) or `apt install coreutils` (debian). On macOS, coreutils installs `gtimeout` by default — either re-run with `--with-default-names` (older brew) or symlink `gtimeout` to `timeout` in PATH.\n' >&2
 fi
 

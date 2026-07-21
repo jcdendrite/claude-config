@@ -178,8 +178,12 @@ if [ "$PARSER_EXIT" -ne 0 ]; then
   exit 0
 fi
 
-# Pulled from _lib.sh.
-ALLOWED_SUBCMDS=($(_lib_readonly_git_subcmds))
+# Pulled from _lib.sh. Built via a read loop, not `mapfile` (bash-4+, breaks
+# macOS's shipped bash 3.2.57 — see test_no_bash4_constructs.py).
+ALLOWED_SUBCMDS=()
+while IFS= read -r subcmd; do
+  ALLOWED_SUBCMDS+=("$subcmd")
+done < <(_lib_readonly_git_subcmds)
 ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
 # Threaded across CD records in order. `resolvable` becomes permanently

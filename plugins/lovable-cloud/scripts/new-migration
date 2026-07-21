@@ -35,6 +35,7 @@ utc_timestamp=$(date -u +%Y%m%d%H%M%S)
 output_filename="${utc_timestamp}_${sanitized_slug}.sql"
 
 # Source the single canonical token-dir definition.
+# shellcheck source=../lib/token-path.sh
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/token-path.sh"
 
 mkdir -p "${MIGRATION_TOKEN_DIR}"

@@ -12,7 +12,6 @@ rate_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty
 
 # ANSI color codes (dim-friendly)
 RESET='\033[0m'
-BOLD='\033[1m'
 DIM='\033[2m'
 CYAN='\033[36m'
 GREEN='\033[32m'
@@ -28,8 +27,8 @@ build_bar() {
     local filled=$(( pct * width / 100 ))
     local empty=$(( width - filled ))
     local bar=""
-    for i in $(seq 1 $filled); do bar="${bar}#"; done
-    for i in $(seq 1 $empty); do bar="${bar}-"; done
+    for _ in $(seq 1 $filled); do bar="${bar}#"; done
+    for _ in $(seq 1 $empty); do bar="${bar}-"; done
     echo "$bar"
 }
 
@@ -65,7 +64,7 @@ if [ -n "$rate_5h" ] || [ -n "$rate_7d" ]; then
     d_color=$(rate_color "$d_pct")
     rate_display=$(printf "${h_color}5h:${h_pct}%%${RESET} ${d_color}7d:${d_pct}%%${RESET}")
 else
-    rate_display=$(printf "${DIM}5h:--  7d:--${RESET}")
+    rate_display=$(printf '%b5h:--  7d:--%b' "$DIM" "$RESET")
 fi
 
 # --- Session cost ---

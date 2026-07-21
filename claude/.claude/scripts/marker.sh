@@ -4,6 +4,7 @@
 # Usage: marker.sh <write|activate|deactivate|clear-stale> [<skill>|--dry-run]
 # _marker_lib_repo_hash is defined in the sourced library so the hash recipe
 # stays in sync with the read side (require-*.sh hooks) automatically.
+# shellcheck source=../hooks/_lib.sh
 . "$HOME/.claude/hooks/_lib.sh"
 
 set -u
@@ -80,6 +81,9 @@ _resolve_repo_hash() {
 _guard_staged_vs_unstaged() {
   local skill="$1"; shift
   if git diff --cached --quiet -- "$@" && ! git diff --quiet -- "$@"; then
+    # shellcheck disable=SC2016 # single-quoted for literal display text (the
+    # backtick-quoted `git add` is markdown-style formatting, not command
+    # substitution); %s below is the only intended expansion.
     printf 'marker.sh: staged diff is empty but unstaged tracked changes exist — run `git add` before /%s.\n' "$skill" >&2
     exit 2
   fi

@@ -190,6 +190,8 @@ if printf '%s' "$SCAN_TARGET" | grep -qiE '(install\.sh|stow)'; then
 fi
 
 # Format the entry list compactly for the deny message.
+# shellcheck disable=SC2016 # the `$` in the sed script is a sed end-of-line
+# anchor (s/$/.../), not a shell variable — nothing here needs shell expansion.
 ENTRIES_HUMAN=$(printf '%s' "$NEW_TOPLEVEL_ENTRIES" | tr ' ' '\n' | sed 's/^/`claude\/.claude\//; s/$/`/' | tr '\n' ' ' | sed 's/ $//')
 
 emit_deny "Blocked by stow-reminder gate: this PR adds new top-level entries under claude/.claude/ ($ENTRIES_HUMAN). Stow links each top-level child individually, and a brand-new child only appears in ~/.claude/ after re-running install.sh — git pull alone does not create the symlink. Without a reminder in the PR body, whoever merges won't know to re-stow, and the new content will silently fail to load. Add a line to the PR body (or a commit message if using --fill) mentioning install.sh or stow — for example: 'Post-merge: run \`./install.sh\` to link the new top-level entry.' The gate is satisfied by a case-insensitive substring match for 'install.sh' or 'stow' in the PR body, any --body-file/--template file, or commit messages reachable from --fill."

@@ -327,8 +327,7 @@ for ROOT in "${PACKAGE_ROOTS[@]}"; do
 
   # Branch on `git show`'s own exit code, not a pipe's — piping into jq
   # would mask a missing-blob failure behind jq's exit status.
-  IDX_CONTENT=$(git show ":$PACKAGE_JSON_REL" 2>/dev/null)
-  if [ $? -ne 0 ]; then
+  if ! IDX_CONTENT=$(git show ":$PACKAGE_JSON_REL" 2>/dev/null); then
     # package.json unreadable or removed on this branch — nothing to bump.
     continue
   fi
@@ -340,8 +339,7 @@ for ROOT in "${PACKAGE_ROOTS[@]}"; do
     continue
   fi
 
-  BASE_CONTENT=$(git show "$BASE:$PACKAGE_JSON_REL" 2>/dev/null)
-  if [ $? -ne 0 ]; then
+  if ! BASE_CONTENT=$(git show "$BASE:$PACKAGE_JSON_REL" 2>/dev/null); then
     # New package on this branch — no baseline to compare against.
     continue
   fi

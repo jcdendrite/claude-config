@@ -131,6 +131,10 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
   # Each line is a path glob. `case` glob matching treats `*` as matching
   # any character including `/`, so `**` collapses to `*` and a glob like
   # `**/patient-exports/**` matches at any depth.
+  # shellcheck disable=SC2254 # $line is an intentional user-authored glob, per
+  # the comment directly above. Quoting it forces literal matching and would
+  # silently break every wildcard rule in every user's guard file — a false
+  # negative on this deny gate. Do not apply ShellCheck's quoting suggestion.
   case "$FILE_PATH" in
     $line)
       emit_deny "Read of '${FILE_PATH}' denied by the data-file read gate: the path matches the glob '${line}' in ~/.claude/data-file-read-guard.md, a directory or file shape you flagged as holding PII/PHI. (See docs/security-hardening.md.)"

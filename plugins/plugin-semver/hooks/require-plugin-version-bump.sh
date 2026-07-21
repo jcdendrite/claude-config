@@ -209,14 +209,12 @@ for ROOT in "${PLUGIN_ROOTS[@]}"; do
 
   # Branch on `git show`'s own exit code, not a pipe's — piping into jq
   # would mask a missing-blob failure behind jq's exit status.
-  BASE_CONTENT=$(git show "$BASE:$PLUGIN_JSON_REL" 2>/dev/null)
-  if [ $? -ne 0 ]; then
+  if ! BASE_CONTENT=$(git show "$BASE:$PLUGIN_JSON_REL" 2>/dev/null); then
     # New plugin on this branch — no baseline to compare against.
     continue
   fi
 
-  IDX_CONTENT=$(git show ":$PLUGIN_JSON_REL" 2>/dev/null)
-  if [ $? -ne 0 ]; then
+  if ! IDX_CONTENT=$(git show ":$PLUGIN_JSON_REL" 2>/dev/null); then
     # Plugin removed on this branch — nothing to bump.
     continue
   fi
