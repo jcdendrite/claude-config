@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # cleanup-merged-branches.sh — discover and clean up merged branches.
 #
-# Uses two signals to detect merged branches:
+# A branch is deleted once either signal confirms it is merged:
 #   Tier A — gh pr list confirms a merged PR for this branch name, and the
 #             branch's current tip matches that merged PR's headRefOid.
 #   Tier B — the branch tip is reachable from origin/<default> but no
 #             merged PR was found for this name (branch renamed before
-#             merge, worktree-prefixed name, etc.).
+#             merge, worktree-prefixed name, direct merge with no PR,
+#             etc.).
 #   Tier C — not reachable, no merged PR; never touched.
 #
 # Before either tier is considered, classify_branch() checks for an open PR
@@ -18,9 +19,15 @@
 # part of that merge, is skipped rather than deleted; a `gh` lookup failure
 # also skips (fails closed) rather than treating an error as "no PR found".
 #
-# Tier A branches are deleted without prompting. Tier B branches prompt
-# interactively; --yes auto-confirms them. When stdin is not a TTY and
-# --yes is not set, Tier B branches are skipped with a warning.
+# Both Tier A and Tier B are then deleted without further prompting. Reach-
+# ability alone would be an incomplete safety argument — a branch can be
+# trivially reachable (freshly branched, not yet diverged) while still
+# having an open PR with live review activity — so unconditional deletion
+# is safe only because Guard 1 above has already ruled out an open PR by
+# the time either tier verdict is returned. Per-branch messaging still shows
+# which signal confirmed each branch (MERGED_PR_INFO_VALUES), so the "Cleaned
+# up" / "Would clean up" listings distinguish a confirmed PR from a reachable
+# no-PR match.
 #
 # No user-controlled branch-name argument means no argument-injection
 # attack surface against the destructive git ops. The exact-string
@@ -44,8 +51,6 @@
 # Usage:
 #   cleanup-merged-branches.sh
 #   cleanup-merged-branches.sh --dry-run
-#   cleanup-merged-branches.sh --yes
-#   cleanup-merged-branches.sh --dry-run --yes
 #
 # Exit codes:
 #   0  success (including no-op)
@@ -148,15 +153,13 @@ worktree_in_use() {
 # ---------------------------------------------------------------------------
 
 usage() {
-  echo "Usage: $(basename "$0") [--dry-run] [--yes]" >&2
+  echo "Usage: $(basename "$0") [--dry-run]" >&2
 }
 
 DRY_RUN=0
-ASSUME_YES=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
-    --yes)     ASSUME_YES=1 ;;
     *)         usage; exit 2 ;;
   esac
   shift
@@ -379,7 +382,6 @@ done < <(
 
 declare -a MERGED_BRANCHES=()
 declare -a MERGED_PR_INFO_VALUES=()
-declare -a TIER_VALUES=()
 declare -a SKIPPED_BRANCHES=()
 declare -a SKIP_REASON_BRANCHES=()
 declare -a SKIP_REASON_MESSAGES=()
@@ -413,7 +415,6 @@ for BRANCH in "${ALL_BRANCHES[@]}"; do
       _merged_date="${_rest#*:}"
       MERGED_BRANCHES+=("$BRANCH")
       MERGED_PR_INFO_VALUES+=("PR #${_pr_number}, merged ${_merged_date}")
-      TIER_VALUES+=("A")
       ;;
     tier-b:*)
       _stale_pr="${VERDICT#tier-b:}"
@@ -423,7 +424,6 @@ for BRANCH in "${ALL_BRANCHES[@]}"; do
       else
         MERGED_PR_INFO_VALUES+=("reachable from origin/${DEFAULT_BRANCH}; no merged PR for this name")
       fi
-      TIER_VALUES+=("B")
       ;;
     skip-open-pr:*)
       SKIP_REASON_BRANCHES+=("$BRANCH")
@@ -451,18 +451,8 @@ collect_process_cwds
 # ---------------------------------------------------------------------------
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  declare -a _DRY_TIER_A=()
-  declare -a _DRY_TIER_B=()
-  for _mb_i in "${!MERGED_BRANCHES[@]}"; do
-    if [ "${TIER_VALUES[$_mb_i]}" = "A" ]; then
-      _DRY_TIER_A+=("${MERGED_BRANCHES[$_mb_i]}")
-    else
-      _DRY_TIER_B+=("${MERGED_BRANCHES[$_mb_i]}")
-    fi
-  done
-
-  if [ "${#_DRY_TIER_A[@]}" -eq 0 ] && [ "${#_DRY_TIER_B[@]}" -eq 0 ] \
-     && [ "${#SKIPPED_BRANCHES[@]}" -eq 0 ] && [ "${#SKIP_REASON_BRANCHES[@]}" -eq 0 ]; then
+  if [ "${#MERGED_BRANCHES[@]}" -eq 0 ] && [ "${#SKIPPED_BRANCHES[@]}" -eq 0 ] \
+     && [ "${#SKIP_REASON_BRANCHES[@]}" -eq 0 ]; then
     if [ -t 1 ]; then
       echo "nothing to clean"
     fi
@@ -510,16 +500,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "  ${_branch} (${_branch_info})${_tag}"
   }
 
-  if [ "${#_DRY_TIER_A[@]}" -gt 0 ]; then
-    echo "Would clean up (confirmed merged):"
-    for BRANCH in "${_DRY_TIER_A[@]}"; do
-      _dry_print_branch_with_lock "$BRANCH"
-    done
-  fi
-
-  if [ "${#_DRY_TIER_B[@]}" -gt 0 ]; then
-    echo "Probable merges (would prompt; --yes to auto-confirm):"
-    for BRANCH in "${_DRY_TIER_B[@]}"; do
+  if [ "${#MERGED_BRANCHES[@]}" -gt 0 ]; then
+    echo "Would clean up:"
+    for BRANCH in "${MERGED_BRANCHES[@]}"; do
       _dry_print_branch_with_lock "$BRANCH"
     done
   fi
@@ -530,34 +513,17 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Pre-cleanup confirmation pass
+# Build deletion list — every scanned branch is already confirmed merged
+# (Tier A or Tier B), so no further confirmation step is needed here.
 # ---------------------------------------------------------------------------
 
 declare -a TO_DELETE=()
-declare -a SKIPPED_NEEDS_PROMPT=()
 
 for _mb_i in "${!MERGED_BRANCHES[@]}"; do
-  BRANCH="${MERGED_BRANCHES[$_mb_i]}"
-  _branch_tier="${TIER_VALUES[$_mb_i]}"
-  if [ "$_branch_tier" = "A" ]; then
-    TO_DELETE+=("$BRANCH")
-  elif [ "$_branch_tier" = "B" ]; then
-    if [ "$ASSUME_YES" -eq 1 ]; then
-      TO_DELETE+=("$BRANCH")
-    elif [ -t 0 ]; then
-      printf "delete '%s' (%s)? [y/N]: " \
-        "$BRANCH" "${MERGED_PR_INFO_VALUES[$_mb_i]}"
-      read -r _REPLY
-      if [[ "$_REPLY" == "y" || "$_REPLY" == "Y" ]]; then
-        TO_DELETE+=("$BRANCH")
-      fi
-    else
-      SKIPPED_NEEDS_PROMPT+=("$BRANCH")
-    fi
-  fi
+  TO_DELETE+=("${MERGED_BRANCHES[$_mb_i]}")
 done
 
-if [ "${#TO_DELETE[@]}" -eq 0 ] && [ "${#SKIPPED_NEEDS_PROMPT[@]}" -eq 0 ]; then
+if [ "${#TO_DELETE[@]}" -eq 0 ]; then
   if [ "${#SKIP_REASON_BRANCHES[@]}" -eq 0 ]; then
     if [ -t 1 ]; then
       echo "nothing to clean"
@@ -565,13 +531,6 @@ if [ "${#TO_DELETE[@]}" -eq 0 ] && [ "${#SKIPPED_NEEDS_PROMPT[@]}" -eq 0 ]; then
   else
     print_skip_reason_lines
   fi
-  exit 0
-fi
-
-if [ "${#TO_DELETE[@]}" -eq 0 ] && [ "${#SKIPPED_NEEDS_PROMPT[@]}" -gt 0 ]; then
-  printf 'Skipped %d probable-merge branch(es) (no TTY for prompt; rerun with --yes or from a terminal): %s\n' \
-    "${#SKIPPED_NEEDS_PROMPT[@]}" "${SKIPPED_NEEDS_PROMPT[*]}"
-  print_skip_reason_lines
   exit 0
 fi
 
@@ -752,11 +711,6 @@ done
 for _su_i in "${!SKIPPED_IN_USE[@]}"; do
   echo "Skipped (${SKIPPED_IN_USE_REASON_VALUES[$_su_i]}): ${SKIPPED_IN_USE[$_su_i]}"
 done
-
-if [ "${#SKIPPED_NEEDS_PROMPT[@]}" -gt 0 ]; then
-  printf 'Skipped %d probable-merge branch(es) (no TTY for prompt; rerun with --yes or from a terminal): %s\n' \
-    "${#SKIPPED_NEEDS_PROMPT[@]}" "${SKIPPED_NEEDS_PROMPT[*]}"
-fi
 
 print_skip_reason_lines
 
