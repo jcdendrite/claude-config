@@ -604,8 +604,12 @@ class TestInvalidArgs:
         ["foo"],
         ["--bar"],
         ["--dry-run", "x"],
+        ["--yes"],
     ])
     def test_invalid_args_exit_2(self, tmp_path, fake_gh, bad_args):
+        """--yes is asserted here as a regression guard: it is a removed flag,
+        not merely an unused one — this fails if it is ever reintroduced
+        without an accompanying test update."""
         local, _ = _make_repo_with_remote(tmp_path)
         env = fake_gh({})
         result = _run_script(local, env, args=bad_args)
@@ -614,8 +618,6 @@ class TestInvalidArgs:
 
     @pytest.mark.parametrize("valid_dup_args", [
         ["--dry-run", "--dry-run"],
-        ["--yes", "--yes"],
-        ["--dry-run", "--yes", "--dry-run"],
     ])
     def test_duplicate_flags_are_idempotent(self, tmp_path, fake_gh, valid_dup_args):
         local, _ = _make_repo_with_remote(tmp_path)
@@ -826,8 +828,8 @@ def _make_tier_b_branch(repo: Path, remote: Path, branch_name: str) -> None:
 class TestTierBReachableNoMergedPR:
     """Branches reachable from origin/main but with no merged PR for this name."""
 
-    def test_reachable_but_no_merged_pr_prompts(self, fake_gh, tmp_path):
-        """Tier B branch: interactive y via pty stdin → deleted."""
+    def test_reachable_no_pr_deletes_with_tty_stdin(self, fake_gh, tmp_path):
+        """Tier B branch: plain invocation with a TTY stdin auto-deletes, no prompt."""
         local, remote = _make_repo_with_remote(tmp_path)
         _make_tier_b_branch(local, remote, "tier-b-branch")
         env = fake_gh({})
@@ -840,7 +842,6 @@ class TestTierBReachableNoMergedPR:
                 stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             os.close(slave_fd)
-            os.write(master_fd, b"y\n")
             proc.wait(timeout=30)
             os.close(master_fd)
         except Exception:
@@ -851,45 +852,85 @@ class TestTierBReachableNoMergedPR:
             raise
 
         assert proc.returncode == 0
+        stdout = proc.stdout.read().decode()
+        assert "[y/N]" not in stdout
+        assert "prompt" not in stdout.lower()
         branches = subprocess.run(
             ["git", "branch"], cwd=local, capture_output=True, text=True
         ).stdout
         assert "tier-b-branch" not in branches
 
-    def test_reachable_but_no_merged_pr_skipped_on_n(self, fake_gh, tmp_path):
-        """Tier B branch: interactive n via pty stdin → branch survives."""
+    def test_reachable_no_pr_deletes_with_non_tty_stdin(self, fake_gh, tmp_path):
+        """Tier B branch: plain invocation with non-TTY stdin auto-deletes, no prompt."""
         local, remote = _make_repo_with_remote(tmp_path)
         _make_tier_b_branch(local, remote, "tier-b-branch")
         env = fake_gh({})
-
-        master_fd, slave_fd = pty.openpty()
-        try:
-            proc = subprocess.Popen(
-                [str(_SCRIPT)], cwd=local,
-                env=env,
-                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            os.close(slave_fd)
-            os.write(master_fd, b"n\n")
-            proc.wait(timeout=30)
-            os.close(master_fd)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.close(master_fd)
-            with contextlib.suppress(OSError):
-                os.close(slave_fd)
-            raise
-
-        assert proc.returncode == 0
+        result = subprocess.run(
+            [str(_SCRIPT)], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert result.returncode == 0
+        stdout = result.stdout.decode()
+        assert "[y/N]" not in stdout
+        assert "prompt" not in stdout.lower()
         branches = subprocess.run(
             ["git", "branch"], cwd=local, capture_output=True, text=True
         ).stdout
-        assert "tier-b-branch" in branches
+        assert "tier-b-branch" not in branches
 
-    def test_reachable_no_pr_non_tty_no_yes_skips(self, fake_gh, tmp_path):
-        """Tier B branch, non-TTY stdin, no --yes: branch skipped with warning."""
+    def test_tier_a_and_tier_b_both_deleted_together(self, fake_gh, tmp_path):
+        """A Tier A (gh-confirmed) and a Tier B (reachable, no PR) branch in the same
+        plain, non-dry-run run are both deleted, with no cross-contamination between
+        the parallel MERGED_BRANCHES/MERGED_PR_INFO_VALUES arrays."""
         local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "tier-a-branch")
         _make_tier_b_branch(local, remote, "tier-b-branch")
+        env = fake_gh({"tier-a-branch": {"number": 42, "mergedAt": "2026-01-01"}})
+        result = subprocess.run(
+            [str(_SCRIPT)], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert result.returncode == 0
+        stdout = result.stdout.decode()
+        assert "tier-a-branch" in stdout
+        assert "tier-b-branch" in stdout
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-a-branch" not in branches
+        assert "tier-b-branch" not in branches
+
+    def test_open_pr_survives_alongside_tier_b_auto_delete_same_run(self, fake_gh, tmp_path):
+        """The reachability-path analogue of the 2026-07-19 incident: an
+        open-PR branch and a separate Tier-B-shaped (reachable, no PR)
+        branch in the same run. The open-PR branch must survive and the
+        Tier-B branch must still be deleted — proving the open-PR guard
+        wins per-branch rather than being short-circuited by Tier B's
+        now-unconditional auto-delete for any other candidate in the sweep."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/in-review")
+        _make_tier_b_branch(local, remote, "tier-b-branch")
+        env = fake_gh({"feat/in-review": [{"number": 21, "state": "OPEN"}]})
+        result = subprocess.run(
+            [str(_SCRIPT)], cwd=local,
+            env=env,
+            stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        assert result.returncode == 0
+        stdout = result.stdout.decode()
+        assert "open PR #21" in stdout
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "feat/in-review" in branches, "branch with an open PR must survive"
+        assert "tier-b-branch" not in branches
+
+    def test_unmerged_branch_not_touched(self, fake_gh, tmp_path):
+        """Tier C branch (not reachable from origin/main, no merged PR) is never deleted."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "unmerged-branch")
         env = fake_gh({})
         result = subprocess.run(
             [str(_SCRIPT)], cwd=local,
@@ -900,43 +941,10 @@ class TestTierBReachableNoMergedPR:
         branches = subprocess.run(
             ["git", "branch"], cwd=local, capture_output=True, text=True
         ).stdout
-        assert "tier-b-branch" in branches
-        assert b"tier-b-branch" in result.stdout
-
-    def test_reachable_no_pr_with_yes_flag_deletes(self, fake_gh, tmp_path):
-        """Tier B branch + --yes: deleted without prompt."""
-        local, remote = _make_repo_with_remote(tmp_path)
-        _make_tier_b_branch(local, remote, "tier-b-branch")
-        env = fake_gh({})
-        result = subprocess.run(
-            [str(_SCRIPT), "--yes"], cwd=local,
-            env=env,
-            stdin=subprocess.DEVNULL, capture_output=True,
-        )
-        assert result.returncode == 0
-        branches = subprocess.run(
-            ["git", "branch"], cwd=local, capture_output=True, text=True
-        ).stdout
-        assert "tier-b-branch" not in branches
-
-    def test_unmerged_branch_not_touched(self, fake_gh, tmp_path):
-        """Tier C branch (not reachable from origin/main, no merged PR) is never deleted."""
-        local, remote = _make_repo_with_remote(tmp_path)
-        _make_feature_branch(local, "unmerged-branch")
-        env = fake_gh({})
-        result = subprocess.run(
-            [str(_SCRIPT), "--yes"], cwd=local,
-            env=env,
-            stdin=subprocess.DEVNULL, capture_output=True,
-        )
-        assert result.returncode == 0
-        branches = subprocess.run(
-            ["git", "branch"], cwd=local, capture_output=True, text=True
-        ).stdout
         assert "unmerged-branch" in branches
 
-    def test_dry_run_separates_confirmed_and_probable(self, tmp_path):
-        """Dry-run shows Tier A under 'confirmed merged' and Tier B under 'probable merges'."""
+    def test_dry_run_lists_confirmed_and_reachable_together(self, tmp_path):
+        """Dry-run lists Tier A and Tier B branches under one 'Would clean up' heading."""
         local, remote = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "tier-a-branch")
         _make_tier_b_branch(local, remote, "tier-b-branch")
@@ -955,10 +963,12 @@ class TestTierBReachableNoMergedPR:
         )
         assert result.returncode == 0
         output = result.stdout.decode()
-        assert "confirmed merged" in output
+        assert "Would clean up:" in output
+        assert "prompt" not in output.lower()
+        assert "probable" not in output.lower()
         assert "tier-a-branch" in output
-        assert "probable" in output.lower() or "would prompt" in output.lower()
         assert "tier-b-branch" in output
+        assert "reachable from origin/main; no merged PR for this name" in output
         assert "tier-c-branch" not in output
 
     def test_existing_tier_a_silent_clean_preserved(self, tmp_path):
@@ -985,24 +995,6 @@ class TestTierBReachableNoMergedPR:
         assert "tier-a-branch" not in branches
         assert b"prompt" not in result.stdout.lower()
 
-    def test_dry_run_with_yes_flag_no_prompt(self, fake_gh, tmp_path):
-        """--dry-run --yes: tier B listed but nothing deleted, no prompt."""
-        local, remote = _make_repo_with_remote(tmp_path)
-        _make_tier_b_branch(local, remote, "tier-b-branch")
-        env = fake_gh({})
-        result = subprocess.run(
-            [str(_SCRIPT), "--dry-run", "--yes"], cwd=local,
-            env=env,
-            stdin=subprocess.DEVNULL, capture_output=True,
-        )
-        assert result.returncode == 0
-        branches = subprocess.run(
-            ["git", "branch"], cwd=local, capture_output=True, text=True
-        ).stdout
-        assert "tier-b-branch" in branches
-        output = result.stdout.decode()
-        assert "tier-b-branch" in output
-
 
 class TestLockedWorktreeLiveness:
     """Live vs dead pid liveness check for locked worktrees."""
@@ -1026,7 +1018,7 @@ class TestLockedWorktreeLiveness:
         env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
 
         result = subprocess.run(
-            [str(_SCRIPT), "--yes"], cwd=local,
+            [str(_SCRIPT)], cwd=local,
             env=env,
             stdin=subprocess.DEVNULL, capture_output=True,
         )
@@ -1054,7 +1046,7 @@ class TestLockedWorktreeLiveness:
         env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
 
         result = subprocess.run(
-            [str(_SCRIPT), "--yes"], cwd=local,
+            [str(_SCRIPT)], cwd=local,
             env=env,
             stdin=subprocess.DEVNULL, capture_output=True,
         )
@@ -1184,7 +1176,7 @@ class TestOpenPRGuardWinsOverStaleMergedMatch:
                 {"number": 7, "state": "MERGED", "mergedAt": "2026-06-16", "headRefOid": "a" * 40},
             ],
         })
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         ref_check = subprocess.run(
@@ -1238,7 +1230,7 @@ class TestOpenPROnlyNoSameNamedMergedPR:
         env = fake_gh({
             "feat/in-review": [{"number": 21, "state": "OPEN"}],
         })
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         ref_check = subprocess.run(
@@ -1264,7 +1256,7 @@ class TestFailClosedOnGhError:
         _make_tier_b_branch(local, remote, "reachable-but-erroring")
 
         env = fake_gh({"reachable-but-erroring": "error"})
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         ref_check = subprocess.run(
@@ -1286,7 +1278,7 @@ class TestFailClosedOnGhError:
             "reachable-but-erroring": "error",
             "feat/healthy-merged": {"number": 42, "mergedAt": "2026-05-01"},
         })
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         erroring_ref = subprocess.run(
@@ -1310,7 +1302,7 @@ class TestFailClosedOnGhError:
         _make_tier_b_branch(local, remote, "reachable-but-malformed")
 
         env = fake_gh({"reachable-but-malformed": "malformed"})
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         ref_check = subprocess.run(
@@ -1335,7 +1327,7 @@ class TestStaleNameNoOpenPR:
                 {"number": 7, "state": "MERGED", "mergedAt": "2026-06-16", "headRefOid": "a" * 40},
             ],
         })
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         ref_check = subprocess.run(
@@ -1362,7 +1354,7 @@ class TestMultipleMergedRowsScanFullHistory:
                 {"number": 9, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": tip},
             ],
         })
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         ref_check = subprocess.run(
@@ -1381,7 +1373,7 @@ class TestMultipleMergedRowsScanFullHistory:
                 {"number": 9, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": "b" * 40},
             ],
         })
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         ref_check = subprocess.run(
@@ -1432,7 +1424,7 @@ class TestClosedUnmergedOnlyLeftUntouched:
                 {"number": 9, "state": "CLOSED", "mergedAt": None},
             ],
         })
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         ref_check = subprocess.run(
@@ -1561,7 +1553,7 @@ class TestTierBWithStaleMergedRowReportsBothSignals:
         _make_tier_b_branch(local, remote, "tier-b-with-stale-name")
 
         env = fake_gh(self._STALE_MERGED_ROW)
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         ref_check = subprocess.run(
@@ -1571,9 +1563,8 @@ class TestTierBWithStaleMergedRowReportsBothSignals:
         assert ref_check.returncode != 0, "reachability still qualifies the branch for Tier B cleanup"
 
     def test_tier_b_reason_names_the_same_named_merged_pr(self, tmp_path, fake_gh):
-        """The reason string is rendered on the paths that show one — the
-        dry-run preview and the interactive prompt — not under --yes, which
-        deletes without prompting."""
+        """The reason string only appears in the dry-run preview; a plain
+        run's "Cleaned up:" per-branch block never prints it."""
         local, remote = _make_repo_with_remote(tmp_path)
         _make_tier_b_branch(local, remote, "tier-b-with-stale-name")
 
@@ -1598,7 +1589,7 @@ class TestClassifierEmitsNoShellDiagnostics:
         subprocess.run(["git", "branch", "-D", "feat/ordinary-merged"], cwd=bare, check=True)
 
         env = fake_gh({"feat/ordinary-merged": {"number": 88, "mergedAt": "2026-05-02"}})
-        result = _run_script(local, env, args=["--yes"])
+        result = _run_script(local, env)
 
         assert result.returncode == 0
         assert result.stderr == "", (
