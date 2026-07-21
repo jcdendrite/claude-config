@@ -2,11 +2,21 @@
 # cleanup-merged-branches.sh — discover and clean up merged branches.
 #
 # Uses two signals to detect merged branches:
-#   Tier A — gh pr list confirms a merged PR for this branch name.
+#   Tier A — gh pr list confirms a merged PR for this branch name, and the
+#             branch's current tip matches that merged PR's headRefOid.
 #   Tier B — the branch tip is reachable from origin/<default> but no
 #             merged PR was found for this name (branch renamed before
 #             merge, worktree-prefixed name, etc.).
 #   Tier C — not reachable, no merged PR; never touched.
+#
+# Before either tier is considered, classify_branch() checks for an open PR
+# on the branch name and, for a same-named merged PR, that the branch's
+# current tip actually belongs to that merge — a name can be reused (old PR
+# merged, new PR opened on the same head branch), and neither reachability
+# nor a same-named merged PR by itself proves the current tip was part of
+# it. A branch with an open PR, or a merged-by-name match whose tip isn't
+# part of that merge, is skipped rather than deleted; a `gh` lookup failure
+# also skips (fails closed) rather than treating an error as "no PR found".
 #
 # Tier A branches are deleted without prompting. Tier B branches prompt
 # interactively; --yes auto-confirms them. When stdin is not a TTY and
@@ -194,6 +204,172 @@ fi
 
 CURRENT_HEAD=$(git rev-parse --abbrev-ref HEAD)
 
+# ---------------------------------------------------------------------------
+# Branch classification
+#
+# Single source of truth for whether a branch is eligible for cleanup, used
+# by the detection loop, the dry-run preview, and the checked-out-branch
+# message so all three agree and none re-issues its own `gh` call.
+# ---------------------------------------------------------------------------
+
+# classify_branch <branch>
+#
+# Prints a verdict to stdout and always returns 0 — a return-nonzero here
+# would abort the whole sweep under `set -e`, which is why every lookup
+# below is captured rather than allowed to propagate. Pure: makes exactly
+# one `gh pr list` call and one read-only git reachability check, with no
+# destructive side effects, so it is safe to call from message-only sites.
+#
+# Verdicts:
+#   tier-a:<pr>:<merged-date>  confirmed merged; branch tip matches the
+#                              merged PR's headRefOid
+#   tier-b:[<stale-pr>]       reachable from origin/<default>; no PR
+#                              matched this name — <stale-pr> is set when a
+#                              same-named merged PR exists but this tip isn't
+#                              part of that merge, empty otherwise
+#   skip-open-pr:<pr>         an open PR exists for this head branch name —
+#                              never delete
+#   skip-stale-name:<pr>      a merged PR shares this name, but the current
+#                              tip is not part of that merge (reused name)
+#   skip-error                the `gh` lookup failed; fail closed
+#   none                      no signal either way (Tier C — untouched)
+#
+# Guard 1 (open-PR check) and Guard 2 (Tier-A tip verification) both live
+# here: an open PR always wins over a same-named merged PR, and a
+# merged-by-name match only qualifies for Tier A if the current tip is
+# part of that merge — otherwise it is a reused branch name.
+classify_branch() {
+  local branch="$1" pr_json tip classification stale_pr rest pr_number merged_date
+
+  # Fail closed on a `gh` error: capture output before parsing (rather than
+  # piping straight into python3, which would lose gh's exit code) so a
+  # transient rate-limit or auth failure never reads as "no PR found".
+  # --limit 100: a generous cap — a single branch name being reused across
+  # more than a handful of historical PRs is not a realistic case.
+  if ! pr_json=$(gh pr list \
+        --head "$branch" \
+        --state all \
+        --limit 100 \
+        --json number,state,mergedAt,headRefOid \
+        2>/dev/null); then
+    printf 'skip-error\n'
+    return 0
+  fi
+
+  # An empty tip (branch deleted by a concurrent run between enumeration
+  # and this lookup) is safe rather than fail-closed: it can never equal a
+  # headRefOid, which is always a 40-char SHA, so it cannot manufacture a
+  # Tier-A match. The branch falls through to the reachability check and,
+  # at worst, draws a Tier-B prompt for a ref that is already gone.
+  tip=$(git rev-parse "$branch" 2>/dev/null || true)
+
+  # Fail closed here too: gh's --json contract guarantees an array of
+  # objects, but an unexpected shape must skip this branch, not abort the
+  # whole sweep (set -e + pipefail would otherwise kill every remaining
+  # branch on one bad record).
+  #
+  # The python source below is a double-quoted shell string, so the shell
+  # expands it before python ever sees it: no backticks, no dollar signs,
+  # and no unescaped double quotes may appear in it, comments included.
+  # The shell would substitute them away — silently, in the case of a
+  # comment — and could execute whatever they expanded to.
+  if ! classification=$(printf '%s' "$pr_json" | python3 -c "
+import json, sys
+
+tip = sys.argv[1]
+try:
+    rows = json.load(sys.stdin)
+except json.JSONDecodeError:
+    # Malformed JSON on a 0 exit (truncated output, a stray banner mixed
+    # into stdout) must fail closed, not read as \"no PR found\" — an
+    # empty-list substitution here would bypass the open-PR guard exactly
+    # like the original incident. This nonzero exit propagates out through
+    # the pipeline to the caller, which turns it into a skip-error verdict.
+    sys.exit(1)
+
+open_pr = next((r for r in rows if r.get('state', '').upper() == 'OPEN'), None)
+if open_pr is not None:
+    print(f\"open:{open_pr['number']}\")
+    sys.exit(0)
+
+merged_rows = [r for r in rows if r.get('state', '').upper() == 'MERGED' and r.get('mergedAt')]
+matched = next((r for r in merged_rows if r.get('headRefOid') == tip), None)
+if matched is not None:
+    print(f\"matched:{matched['number']}:{(matched.get('mergedAt') or '')[:10]}\")
+elif merged_rows:
+    print(f\"stale:{merged_rows[0]['number']}\")
+else:
+    print('none')
+" "$tip"); then
+    printf 'skip-error\n'
+    return 0
+  fi
+
+  case "$classification" in
+    open:*)
+      printf 'skip-open-pr:%s\n' "${classification#open:}"
+      return 0
+      ;;
+    matched:*)
+      rest="${classification#matched:}"
+      pr_number="${rest%%:*}"
+      merged_date="${rest#*:}"
+      printf 'tier-a:%s:%s\n' "$pr_number" "$merged_date"
+      return 0
+      ;;
+    stale:*)
+      stale_pr="${classification#stale:}"
+      ;;
+  esac
+
+  if git merge-base --is-ancestor "$branch" \
+       "refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null; then
+    # Reachability wins over a same-named-but-different-tip merged PR: carry
+    # stale_pr (if set) so callers can report that a merged PR by this name
+    # exists, just not the one that produced this tip.
+    printf 'tier-b:%s\n' "${stale_pr:-}"
+    return 0
+  fi
+
+  if [ -n "${stale_pr:-}" ]; then
+    printf 'skip-stale-name:%s\n' "$stale_pr"
+    return 0
+  fi
+
+  printf 'none\n'
+  return 0
+}
+
+# print_skip_reason_lines — report every branch classify_branch skipped
+# (open PR / stale name / gh error), and why, so a skip is never silent.
+print_skip_reason_lines() {
+  local _i
+  for _i in "${!SKIP_REASON_BRANCHES[@]}"; do
+    echo "Skipped: ${SKIP_REASON_BRANCHES[$_i]} (${SKIP_REASON_MESSAGES[$_i]})"
+  done
+}
+
+# checked_out_skip_line — report the currently checked-out branch if it
+# would otherwise be a cleanup candidate. The detection loop below never
+# classifies CURRENT_HEAD (it can't be deleted while checked out), so this
+# is CURRENT_HEAD's only classify_branch call, used purely to gate this
+# message — never to delete.
+checked_out_skip_line() {
+  [ "$CURRENT_HEAD" = "$DEFAULT_BRANCH" ] && return 0
+  local verdict
+  verdict=$(classify_branch "$CURRENT_HEAD")
+  case "$verdict" in
+    tier-a:*|tier-b:*)
+      echo "Skipped: ${CURRENT_HEAD} (currently checked out)"
+      ;;
+    skip-open-pr:*)
+      echo "Skipped: ${CURRENT_HEAD} (currently checked out; open PR #${verdict#skip-open-pr:})"
+      ;;
+    skip-stale-name:*|skip-error|none)
+      ;;
+  esac
+}
+
 ALL_BRANCHES=()
 while IFS= read -r _branch_line; do
   ALL_BRANCHES+=("$_branch_line")
@@ -205,6 +381,8 @@ declare -a MERGED_BRANCHES=()
 declare -a MERGED_PR_INFO_VALUES=()
 declare -a TIER_VALUES=()
 declare -a SKIPPED_BRANCHES=()
+declare -a SKIP_REASON_BRANCHES=()
+declare -a SKIP_REASON_MESSAGES=()
 
 CANDIDATE_COUNT=0
 for _B in "${ALL_BRANCHES[@]}"; do
@@ -226,40 +404,42 @@ for BRANCH in "${ALL_BRANCHES[@]}"; do
   _PROGRESS_I=$(( _PROGRESS_I + 1 ))
   progress "$_PROGRESS_I" "$CANDIDATE_COUNT" "$BRANCH"
 
-  PR_JSON=$(gh pr list \
-    --head "$BRANCH" \
-    --state merged \
-    --limit 1 \
-    --json number,mergedAt \
-    2>/dev/null || true)
+  VERDICT=$(classify_branch "$BRANCH")
 
-  PR_PARSED=$(echo "$PR_JSON" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-if data:
-    r = data[0]
-    print(r['number'])
-    print((r.get('mergedAt') or '')[:10])
-else:
-    print()
-    print()
-" 2>/dev/null || printf '\n\n')
-  PR_NUMBER=$(echo "$PR_PARSED" | sed -n '1p')
-  PR_MERGED_AT=$(echo "$PR_PARSED" | sed -n '2p')
-
-  if [ -n "$PR_NUMBER" ]; then
-    MERGED_BRANCHES+=("$BRANCH")
-    MERGED_PR_INFO_VALUES+=("PR #${PR_NUMBER}, merged ${PR_MERGED_AT}")
-    TIER_VALUES+=("A")
-    continue
-  fi
-
-  if git merge-base --is-ancestor "$BRANCH" \
-       "refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null; then
-    MERGED_BRANCHES+=("$BRANCH")
-    MERGED_PR_INFO_VALUES+=("reachable from origin/${DEFAULT_BRANCH}; no merged PR for this name")
-    TIER_VALUES+=("B")
-  fi
+  case "$VERDICT" in
+    tier-a:*)
+      _rest="${VERDICT#tier-a:}"
+      _pr_number="${_rest%%:*}"
+      _merged_date="${_rest#*:}"
+      MERGED_BRANCHES+=("$BRANCH")
+      MERGED_PR_INFO_VALUES+=("PR #${_pr_number}, merged ${_merged_date}")
+      TIER_VALUES+=("A")
+      ;;
+    tier-b:*)
+      _stale_pr="${VERDICT#tier-b:}"
+      MERGED_BRANCHES+=("$BRANCH")
+      if [ -n "$_stale_pr" ]; then
+        MERGED_PR_INFO_VALUES+=("reachable from origin/${DEFAULT_BRANCH}; a merged PR #${_stale_pr} shares this name but this tip isn't part of that merge")
+      else
+        MERGED_PR_INFO_VALUES+=("reachable from origin/${DEFAULT_BRANCH}; no merged PR for this name")
+      fi
+      TIER_VALUES+=("B")
+      ;;
+    skip-open-pr:*)
+      SKIP_REASON_BRANCHES+=("$BRANCH")
+      SKIP_REASON_MESSAGES+=("open PR #${VERDICT#skip-open-pr:}")
+      ;;
+    skip-stale-name:*)
+      SKIP_REASON_BRANCHES+=("$BRANCH")
+      SKIP_REASON_MESSAGES+=("merged PR #${VERDICT#skip-stale-name:} by name only; current tip not part of that merge — likely a reused branch name")
+      ;;
+    skip-error)
+      SKIP_REASON_BRANCHES+=("$BRANCH")
+      SKIP_REASON_MESSAGES+=("gh lookup failed; skipping to fail closed")
+      ;;
+    none)
+      ;;
+  esac
 done
 clear_progress
 
@@ -281,7 +461,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
     fi
   done
 
-  if [ "${#_DRY_TIER_A[@]}" -eq 0 ] && [ "${#_DRY_TIER_B[@]}" -eq 0 ] && [ "${#SKIPPED_BRANCHES[@]}" -eq 0 ]; then
+  if [ "${#_DRY_TIER_A[@]}" -eq 0 ] && [ "${#_DRY_TIER_B[@]}" -eq 0 ] \
+     && [ "${#SKIPPED_BRANCHES[@]}" -eq 0 ] && [ "${#SKIP_REASON_BRANCHES[@]}" -eq 0 ]; then
     if [ -t 1 ]; then
       echo "nothing to clean"
     fi
@@ -343,23 +524,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
     done
   fi
 
-  for BRANCH in "${ALL_BRANCHES[@]}"; do
-    [ "$BRANCH" = "$DEFAULT_BRANCH" ] && continue
-    [ "$BRANCH" = "$CURRENT_HEAD" ] || continue
-    PR_JSON=$(gh pr list \
-      --head "$BRANCH" \
-      --state merged \
-      --limit 1 \
-      --json number,mergedAt \
-      2>/dev/null || true)
-    PR_COUNT=$(echo "$PR_JSON" | python3 -c "import json,sys; data=json.load(sys.stdin); print(len(data))" 2>/dev/null || echo 0)
-    REACHABLE=0
-    git merge-base --is-ancestor "$BRANCH" \
-      "refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null && REACHABLE=1 || true
-    if [ "$PR_COUNT" -gt 0 ] || [ "$REACHABLE" -eq 1 ]; then
-      echo "Skipped: ${BRANCH} (currently checked out)"
-    fi
-  done
+  print_skip_reason_lines
+  checked_out_skip_line
   exit 0
 fi
 
@@ -379,8 +545,8 @@ for _mb_i in "${!MERGED_BRANCHES[@]}"; do
     if [ "$ASSUME_YES" -eq 1 ]; then
       TO_DELETE+=("$BRANCH")
     elif [ -t 0 ]; then
-      printf "delete '%s' (reachable from origin/%s; no merged PR for this name)? [y/N]: " \
-        "$BRANCH" "$DEFAULT_BRANCH"
+      printf "delete '%s' (%s)? [y/N]: " \
+        "$BRANCH" "${MERGED_PR_INFO_VALUES[$_mb_i]}"
       read -r _REPLY
       if [[ "$_REPLY" == "y" || "$_REPLY" == "Y" ]]; then
         TO_DELETE+=("$BRANCH")
@@ -392,8 +558,12 @@ for _mb_i in "${!MERGED_BRANCHES[@]}"; do
 done
 
 if [ "${#TO_DELETE[@]}" -eq 0 ] && [ "${#SKIPPED_NEEDS_PROMPT[@]}" -eq 0 ]; then
-  if [ -t 1 ]; then
-    echo "nothing to clean"
+  if [ "${#SKIP_REASON_BRANCHES[@]}" -eq 0 ]; then
+    if [ -t 1 ]; then
+      echo "nothing to clean"
+    fi
+  else
+    print_skip_reason_lines
   fi
   exit 0
 fi
@@ -401,6 +571,7 @@ fi
 if [ "${#TO_DELETE[@]}" -eq 0 ] && [ "${#SKIPPED_NEEDS_PROMPT[@]}" -gt 0 ]; then
   printf 'Skipped %d probable-merge branch(es) (no TTY for prompt; rerun with --yes or from a terminal): %s\n' \
     "${#SKIPPED_NEEDS_PROMPT[@]}" "${SKIPPED_NEEDS_PROMPT[*]}"
+  print_skip_reason_lines
   exit 0
 fi
 
@@ -587,6 +758,8 @@ if [ "${#SKIPPED_NEEDS_PROMPT[@]}" -gt 0 ]; then
     "${#SKIPPED_NEEDS_PROMPT[@]}" "${SKIPPED_NEEDS_PROMPT[*]}"
 fi
 
+print_skip_reason_lines
+
 # ---------------------------------------------------------------------------
 # Skipped branches
 # ---------------------------------------------------------------------------
@@ -595,20 +768,4 @@ for BRANCH in "${SKIPPED_BRANCHES[@]}"; do
   echo "Skipped: ${BRANCH} (currently checked out)"
 done
 
-for BRANCH in "${ALL_BRANCHES[@]}"; do
-  [ "$BRANCH" = "$DEFAULT_BRANCH" ] && continue
-  [ "$BRANCH" = "$CURRENT_HEAD" ] || continue
-  PR_JSON=$(gh pr list \
-    --head "$BRANCH" \
-    --state merged \
-    --limit 1 \
-    --json number,mergedAt \
-    2>/dev/null || true)
-  PR_COUNT=$(echo "$PR_JSON" | python3 -c "import json,sys; data=json.load(sys.stdin); print(len(data))" 2>/dev/null || echo 0)
-  REACHABLE=0
-  git merge-base --is-ancestor "$BRANCH" \
-    "refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null && REACHABLE=1 || true
-  if [ "$PR_COUNT" -gt 0 ] || [ "$REACHABLE" -eq 1 ]; then
-    echo "Skipped: ${BRANCH} (currently checked out)"
-  fi
-done
+checked_out_skip_line
