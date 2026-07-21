@@ -840,15 +840,14 @@ def test_handoff_and_brief_write_recipe_executes_to_durable_path(
     skill_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Execution test, not just a text-match: runs the skill's own
-    HOOK_TEST_FIXTURE recipe (mkdir -p + chmod 700 + touch + chmod 600) in an
-    isolated $HOME and asserts the directory AND the file actually land at
-    the literal expected path with owner-only permissions — this is the
-    real, literal instruction the skill always issues (not synthetic
-    placeholder scaffolding), so executing it proves the path and proves the
-    permission-hardening control two CISO review rounds required (a durable
-    handoff/brief must not sit at rest with default umask-derived
-    permissions for its full "until resumed" lifetime, and the file's own
-    mode must not depend solely on the containing directory's).
+    HOOK_TEST_FIXTURE recipe (mkdir -p + chmod 700) in an isolated $HOME and
+    asserts the directory actually lands at the literal expected path,
+    owner-only — this is the real, literal instruction the skill always
+    issues (not synthetic placeholder scaffolding), so executing it proves
+    the directory-mode control that blocks another local account from
+    resolving the path at all. The recipe no longer creates a file (file-mode
+    hardening moved to harden-durable-continuity-file-mode.sh, covered by its
+    own hook test suite), so this test does not assert anything about a file.
     """
     isolated_home = tmp_path / "home"
     isolated_home.mkdir()
@@ -858,7 +857,7 @@ def test_handoff_and_brief_write_recipe_executes_to_durable_path(
     command = extract_skill_command(skill_path, "write-target")
     run_skill_command(command, cwd=tmp_path, isolated_home=isolated_home)
 
-    directory, suffix = _DURABLE_WRITE_TARGETS[skill_name]
+    directory, _suffix = _DURABLE_WRITE_TARGETS[skill_name]
     expected_dir = isolated_home / directory.replace("~/", "")
     assert expected_dir.is_dir(), (
         f"{skill_name}/SKILL.md's write-target fixture did not create {expected_dir}"
@@ -867,16 +866,6 @@ def test_handoff_and_brief_write_recipe_executes_to_durable_path(
     assert dir_mode == 0o700, (
         f"{skill_name}/SKILL.md's write-target fixture must leave {expected_dir} "
         f"owner-only (0700), got {oct(dir_mode)}"
-    )
-
-    expected_file = expected_dir / f"descriptive-slug{suffix}"
-    assert expected_file.is_file(), (
-        f"{skill_name}/SKILL.md's write-target fixture did not create {expected_file}"
-    )
-    file_mode = stat.S_IMODE(expected_file.stat().st_mode)
-    assert file_mode == 0o600, (
-        f"{skill_name}/SKILL.md's write-target fixture must leave {expected_file} "
-        f"owner-only (0600), got {oct(file_mode)}"
     )
 
 

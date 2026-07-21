@@ -4,24 +4,17 @@ description: Write a cross-session handoff file at ~/.claude/handoffs/<descripti
 ---
 
 Write a cross-session handoff file at `~/.claude/handoffs/<descriptive-slug>-handoff.md`
-using the structure below. Run the commands below before writing, substituting
-your actual slug for `<descriptive-slug>` — the directory is not guaranteed to
-exist yet, and `chmod 700` keeps it owner-only for the file's entire durable
-"until resumed" lifetime (not just the moment `resume-context` consumes it).
-The `touch` + `chmod 600` on the file itself is an independent layer: the
-directory mode blocks another local account from resolving the path at all,
-but the file's own mode is never otherwise narrowed, and the `Write` tool's
-default creation mode does not restrict it on its own. A durable handoff can
-sit unresumed for days, and a `644`/`664` file under a group- or
-world-traversable `~/.claude` would otherwise be readable by any other local
-account for that whole window.
+using the structure below. Run the command below before writing — the
+directory is not guaranteed to exist yet, and `chmod 700` keeps it owner-only
+for the file's entire durable "until resumed" lifetime (not just the moment
+`resume-context` consumes it). The file's own mode is hardened to `0600` by a
+`PostToolUse` hook (`harden-durable-continuity-file-mode.sh`) after the
+`Write` call, so it does not depend on this recipe.
 
-<!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory AND the file are created owner-only, not just that the prose says so. Below, descriptive-slug (written without angle brackets, which the shell would otherwise parse as redirection) is the same placeholder used bracketed above — substitute your actual slug for it here exactly as you would above. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created owner-only, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
 mkdir -p ~/.claude/handoffs
 chmod 700 ~/.claude/handoffs
-touch ~/.claude/handoffs/descriptive-slug-handoff.md
-chmod 600 ~/.claude/handoffs/descriptive-slug-handoff.md
 ```
 
 ## Artifact preamble (required — open this file with this block verbatim)

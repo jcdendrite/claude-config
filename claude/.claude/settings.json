@@ -305,6 +305,15 @@
             "command": "~/.claude/hooks/consume-durable-continuity-file-on-read.sh"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/harden-durable-continuity-file-mode.sh"
+          }
+        ]
       }
     ]
   },
