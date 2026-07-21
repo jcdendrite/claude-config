@@ -80,33 +80,76 @@ def _dead_pid() -> int:
     return proc.pid
 
 
+def _rev_parse(repo: Path, ref: str) -> str:
+    """Return the full 40-char SHA for ref in repo."""
+    result = subprocess.run(
+        ["git", "rev-parse", ref], cwd=repo, capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
+
+
 # ---------------------------------------------------------------------------
 # fake_gh fixture
 # ---------------------------------------------------------------------------
 
-def _gh_shim_source(merged_branches: dict[str, dict]) -> str:
+def _gh_shim_source(pr_data: dict[str, object]) -> str:
     """Return source for a gh shim script.
 
-    merged_branches maps branch_name -> {"number": N, "mergedAt": "YYYY-MM-DD"}
-    for branches that should appear merged. Branches absent from the dict
-    appear as open (empty array) or unauthenticated based on the dict value.
+    pr_data maps branch_name -> PR record(s) for that head branch name.
+    A value may be:
+      None                     → no PR for this name (empty array; open/not found)
+      "error"                  → the `gh` call itself fails (non-zero exit),
+                                  for exercising the fail-closed path
+      "malformed"              → the `gh` call exits zero but writes
+                                  non-JSON to stdout, for exercising the
+                                  second, independent fail-closed path
+                                  (the parser's JSONDecodeError branch
+                                  rather than the exit-code branch).
+                                  Models real `gh` mixing a banner or a
+                                  truncated body into stdout on a 0 exit.
+      {"number": N, "mergedAt": "YYYY-MM-DD", ["headRefOid": SHA]}
+                                → sugar for a single MERGED row. When
+                                  headRefOid is omitted it defaults to the
+                                  branch's actual current tip (`git
+                                  rev-parse <branch>`, run with the shim's
+                                  cwd — the repo under test) — the common
+                                  case of a legitimate merge whose branch
+                                  was never rewritten afterward.
+      [{"number": N, "state": "OPEN"|"MERGED"|"CLOSED",
+        ["mergedAt": "YYYY-MM-DD"], ["headRefOid": SHA]}, ...]
+                                → multiple PR rows under one head name, for
+                                  modeling a reused branch name (e.g. an
+                                  open PR alongside an older merged PR).
 
-    Special sentinel values:
-      None         → empty array (branch open/not found)
-      "unauth"     → auth status non-zero (used only for 'auth status' sub-command)
+    Every response includes headRefOid regardless of --state, since the
+    script now always queries `--state all` and classifies every row
+    itself; the shim does not filter on the requested --state.
+
+    Divergence from real `gh`: the auto-fill above only fires for
+    state == "MERGED" — an OPEN or CLOSED row without an explicit
+    headRefOid serializes as headRefOid: null. Real `gh pr list` always
+    returns the actual head commit SHA regardless of state. Harmless
+    today since classify_branch never reads headRefOid off a non-MERGED
+    row, but a future guard that inspects an open PR's headRefOid would
+    be silently validated against a synthetic null here rather than a
+    real SHA — pass headRefOid explicitly on OPEN/CLOSED rows if a test
+    ever needs one.
+
+    One further sentinel is keyed on "__auth__" rather than a branch name:
+      "unauth"     → `gh auth status` exits non-zero
     """
-    merged_json = json.dumps(merged_branches)
+    payload = json.dumps(pr_data)
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
-        import json, sys
+        import json, subprocess, sys
 
-        MERGED = json.loads({merged_json!r})
+        PR_DATA = json.loads({payload!r})
 
         args = sys.argv[1:]
 
         # gh auth status
         if args and args[0] == "auth" and len(args) > 1 and args[1] == "status":
-            if MERGED.get("__auth__") == "unauth":
+            if PR_DATA.get("__auth__") == "unauth":
                 sys.exit(1)
             sys.exit(0)
 
@@ -114,16 +157,40 @@ def _gh_shim_source(merged_branches: dict[str, dict]) -> str:
         if args and args[0] == "pr" and "--head" in args:
             head_idx = args.index("--head")
             branch = args[head_idx + 1]
-            info = MERGED.get(branch)
+            info = PR_DATA.get(branch)
+
+            if info == "error":
+                sys.exit(1)
+
+            if info == "malformed":
+                # Exit 0 with an unparseable body, as real gh can when a
+                # banner or a truncated response lands on stdout.
+                print('[{{"number":')
+                sys.exit(0)
+
             if info is None:
                 print("[]")
-            else:
-                print(json.dumps([{{
-                    "number": info["number"],
+                sys.exit(0)
+
+            rows_in = info if isinstance(info, list) else [info]
+            rows_out = []
+            for row in rows_in:
+                state = row.get("state", "MERGED")
+                merged_at = row.get("mergedAt")
+                head_ref_oid = row.get("headRefOid")
+                if state == "MERGED" and head_ref_oid is None:
+                    head_ref_oid = subprocess.run(
+                        ["git", "rev-parse", branch],
+                        capture_output=True, text=True, check=True,
+                    ).stdout.strip()
+                rows_out.append({{
+                    "number": row["number"],
                     "headRefName": branch,
-                    "state": "MERGED",
-                    "mergedAt": info["mergedAt"] + "T00:00:00Z",
-                }}]))
+                    "state": state,
+                    "mergedAt": (merged_at + "T00:00:00Z") if merged_at else None,
+                    "headRefOid": head_ref_oid,
+                }})
+            print(json.dumps(rows_out))
             sys.exit(0)
 
         # Fallthrough: unknown subcommand
@@ -142,9 +209,9 @@ def fake_gh(tmp_path, monkeypatch):
     shim_dir = tmp_path / "gh_shim"
     shim_dir.mkdir()
 
-    def _make_env(merged_branches: dict) -> dict:
+    def _make_env(pr_data: dict) -> dict:
         shim_py = shim_dir / "gh"
-        shim_py.write_text(_gh_shim_source(merged_branches))
+        shim_py.write_text(_gh_shim_source(pr_data))
         shim_py.chmod(0o755)
         new_path = str(shim_dir) + ":" + os.environ.get("PATH", "")
         env = {**os.environ, "PATH": new_path}
@@ -1090,3 +1157,450 @@ class TestWorktreeInUseGuard:
             cwd=local, capture_output=True,
         )
         assert ref_check.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Open-PR guard and Tier-A tip verification (classify_branch)
+#
+# Regression coverage for the 2026-07-19 incident: Tier A matched a merged
+# PR by branch *name* only, with no check that the current tip belonged to
+# that merge. A branch name reused across PRs (old PR merged, new PR opened
+# on the same head name) was deleted, which GitHub recorded as closing the
+# new, still-open PR. See ~/.claude/plans/cleanup-branches-open-pr-guard.md.
+# ---------------------------------------------------------------------------
+
+class TestOpenPRGuardWinsOverStaleMergedMatch:
+    """An open PR on this head branch name must survive even when an older
+    PR merged under the same name — the exact incident shape (open PR #14
+    alongside merged PR #7, same head branch)."""
+
+    def test_open_pr_survives_despite_same_named_merged_pr(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "reused-name-with-open-pr")
+
+        env = fake_gh({
+            "reused-name-with-open-pr": [
+                {"number": 14, "state": "OPEN"},
+                {"number": 7, "state": "MERGED", "mergedAt": "2026-06-16", "headRefOid": "a" * 40},
+            ],
+        })
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/reused-name-with-open-pr"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "branch with an open PR must survive"
+        remote_refs = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "reused-name-with-open-pr"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert "reused-name-with-open-pr" in remote_refs, "remote branch of an open PR must survive"
+        assert "open PR #14" in result.stdout
+
+    def test_open_pr_guard_skip_reason_rendered_in_dry_run(self, tmp_path, fake_gh):
+        """The skip-reason line renders on the dry-run code path too:
+        print_skip_reason_lines runs from a separate branch in the script
+        (the dry-run preview) from the real-run summary path, and dry-run
+        must never delete regardless."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "reused-name-with-open-pr")
+
+        env = fake_gh({
+            "reused-name-with-open-pr": [
+                {"number": 14, "state": "OPEN"},
+                {"number": 7, "state": "MERGED", "mergedAt": "2026-06-16", "headRefOid": "a" * 40},
+            ],
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "open PR #14" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/reused-name-with-open-pr"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "dry-run must never delete"
+
+
+class TestOpenPROnlyNoSameNamedMergedPR:
+    """The common, non-incident shape: a branch with only an open PR and no
+    same-named merged PR at all must survive. Behaviorally covered by the
+    classifier returning the open verdict before merged rows are even
+    considered — locked here by an assertion so a future reordering of
+    that check can't silently break the common case."""
+
+    def test_open_pr_only_no_merged_row_survives(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/in-review")
+
+        env = fake_gh({
+            "feat/in-review": [{"number": 21, "state": "OPEN"}],
+        })
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/in-review"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "branch with an open PR must survive"
+        assert "open PR #21" in result.stdout
+
+
+class TestFailClosedOnGhError:
+    """A `gh` failure must never be read as "no PR found" — the branch is
+    skipped even when it would otherwise qualify via Tier B reachability,
+    proving fail-closed overrides Tier B rather than falling through to it.
+
+    Two independent failure paths reach the same verdict: a non-zero exit
+    from `gh` itself, and a zero exit whose body will not parse. Both are
+    covered here, because reading either as "no PR found" is the mistake
+    that lets a branch with an open PR be deleted."""
+
+    def test_gh_error_skips_even_reachable_branch(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "reachable-but-erroring")
+
+        env = fake_gh({"reachable-but-erroring": "error"})
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/reachable-but-erroring"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "gh failure must fail closed, not fall through to Tier B"
+        assert "gh lookup failed" in result.stdout
+
+    def test_gh_error_on_one_branch_does_not_block_sibling_cleanup(self, tmp_path, fake_gh):
+        """A `gh` failure on one branch must not poison or abort the sweep:
+        a sibling branch in the same run that is normally Tier-A-mergeable
+        is still cleaned."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "reachable-but-erroring")
+        _make_feature_branch(local, "feat/healthy-merged")
+
+        env = fake_gh({
+            "reachable-but-erroring": "error",
+            "feat/healthy-merged": {"number": 42, "mergedAt": "2026-05-01"},
+        })
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        erroring_ref = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/reachable-but-erroring"],
+            cwd=local, capture_output=True,
+        )
+        assert erroring_ref.returncode == 0, "erroring branch must survive"
+        healthy_ref = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/healthy-merged"],
+            cwd=local, capture_output=True,
+        )
+        assert healthy_ref.returncode != 0, "healthy sibling branch must still be cleaned"
+
+    def test_malformed_json_on_zero_exit_skips_even_reachable_branch(self, tmp_path, fake_gh):
+        """`gh` exits 0 but its body will not parse: the branch is skipped,
+        not treated as "no PR found". Substituting an empty PR list here
+        would bypass the open-PR guard for any branch whose response is
+        truncated or polluted, which is the shape of the original
+        incident."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "reachable-but-malformed")
+
+        env = fake_gh({"reachable-but-malformed": "malformed"})
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/reachable-but-malformed"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "unparseable gh output must fail closed, not fall through to Tier B"
+        assert "gh lookup failed" in result.stdout
+
+
+class TestStaleNameNoOpenPR:
+    """A merged PR sharing this branch name, but whose headRefOid does not
+    match the current tip, is not a Tier-A match — the name was reused
+    after that PR merged."""
+
+    def test_stale_name_match_not_cleaned(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "reused-branch-name")
+
+        env = fake_gh({
+            "reused-branch-name": [
+                {"number": 7, "state": "MERGED", "mergedAt": "2026-06-16", "headRefOid": "a" * 40},
+            ],
+        })
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/reused-branch-name"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "stale name-only match must not be deleted"
+        assert "likely a reused branch name" in result.stdout
+
+
+class TestMultipleMergedRowsScanFullHistory:
+    """Guard 2's tip-vs-headRefOid match scans every MERGED row for a head
+    branch name, not just the first — a name can accumulate more than one
+    merged PR over its history, and the matching row is not always first."""
+
+    def test_tip_matches_second_of_two_merged_rows_cleans_branch(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/reused-name-twice")
+        tip = _rev_parse(local, "feat/reused-name-twice")
+
+        env = fake_gh({
+            "feat/reused-name-twice": [
+                {"number": 5, "state": "MERGED", "mergedAt": "2026-04-01", "headRefOid": "a" * 40},
+                {"number": 9, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": tip},
+            ],
+        })
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/reused-name-twice"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode != 0, "a tip match on the second MERGED row must still be Tier A"
+
+    def test_tip_matches_neither_of_two_merged_rows_skipped_stale(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/reused-name-neither-matches")
+
+        env = fake_gh({
+            "feat/reused-name-neither-matches": [
+                {"number": 5, "state": "MERGED", "mergedAt": "2026-04-01", "headRefOid": "a" * 40},
+                {"number": 9, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": "b" * 40},
+            ],
+        })
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/reused-name-neither-matches"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "no matching MERGED row among several must not be Tier A"
+        assert "likely a reused branch name" in result.stdout
+
+
+class TestSquashMergeStillCleanedAfterTipGuard:
+    """Regression: a legitimately squash/rebase-merged branch (tip not
+    reachable from origin/<default>, but tip == the merged PR's
+    headRefOid) is still cleaned once the tip-verification guard is in
+    place — the guard must not reject the common case it was added
+    alongside."""
+
+    def test_squash_merged_branch_with_matching_tip_is_cleaned(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/squash-merged")
+        tip = _rev_parse(local, "feat/squash-merged")
+        subprocess.run(["git", "branch", "-D", "feat/squash-merged"], cwd=bare, check=True)
+
+        env = fake_gh({
+            "feat/squash-merged": {"number": 500, "mergedAt": "2026-05-01", "headRefOid": tip},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/squash-merged"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode != 0, "matching-tip merged PR must still be cleaned"
+
+
+class TestClosedUnmergedOnlyLeftUntouched:
+    """A branch whose sole PR record is closed without merging (mergedAt is
+    null) is Tier C — left untouched, and not misreported as a stale-name
+    skip (there is no merged PR to have reused the name from)."""
+
+    def test_closed_unmerged_pr_not_cleaned_and_not_reported_stale(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/closed-unmerged")
+
+        env = fake_gh({
+            "feat/closed-unmerged": [
+                {"number": 9, "state": "CLOSED", "mergedAt": None},
+            ],
+        })
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/closed-unmerged"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "closed-unmerged-only branch is Tier C, never touched"
+        assert "stale" not in result.stdout.lower()
+
+
+class TestCheckedOutIncidentBranchReportsOpenPRSkip:
+    """The checked-out-branch message site must honor the open-PR guard
+    too: an incident-shaped branch that happens to be checked out is
+    reported via its open-PR reason, never deleted."""
+
+    def test_checked_out_open_pr_branch_reports_reason_and_survives(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "reused-name-with-open-pr")
+        _make_feature_branch(local, "feat/other-merged")
+        subprocess.run(["git", "branch", "-D", "feat/other-merged"], cwd=bare, check=True)
+
+        subprocess.run(["git", "checkout", "-q", "reused-name-with-open-pr"], cwd=local, check=True)
+
+        env = fake_gh({
+            "reused-name-with-open-pr": [
+                {"number": 14, "state": "OPEN"},
+                {"number": 7, "state": "MERGED", "mergedAt": "2026-06-16", "headRefOid": "a" * 40},
+            ],
+            "feat/other-merged": {"number": 71, "mergedAt": "2026-05-02"},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "open PR #14" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/reused-name-with-open-pr"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "checked-out branch must never be deleted regardless of verdict"
+        other_remaining = subprocess.run(
+            ["git", "branch", "--list", "feat/other-merged"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert other_remaining.strip() == "", "the unrelated tier-a branch should still be cleaned"
+
+
+class TestCheckedOutTierBBranchReportsSkip:
+    """The checked-out-branch message site must also honor a Tier-B
+    verdict: a branch reachable from origin/<default> with no PR match at
+    all that happens to be checked out is reported as skipped, never
+    deleted. TestCurrentlyOnCandidateBranch already covers the Tier-A
+    verdict at this same call site; this fills the Tier-B gap."""
+
+    def test_checked_out_tier_b_branch_reports_reason_and_survives(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "tier-b-checked-out")
+        # A second, ordinary Tier-A candidate keeps the run past the
+        # early "nothing to clean" exit so checked_out_skip_line() at the
+        # end of the real-run path actually runs.
+        _make_feature_branch(local, "feat/other-merged")
+        subprocess.run(["git", "branch", "-D", "feat/other-merged"], cwd=remote, check=True)
+        subprocess.run(["git", "checkout", "-q", "tier-b-checked-out"], cwd=local, check=True)
+
+        env = fake_gh({
+            "feat/other-merged": {"number": 71, "mergedAt": "2026-05-02"},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "Skipped: tier-b-checked-out (currently checked out)" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/tier-b-checked-out"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "checked-out branch must never be deleted regardless of verdict"
+
+
+class TestCheckedOutNonCandidateStaysSilent:
+    """The checked-out-branch message is a cleanup-candidate notice, not a
+    running commentary: a checked-out branch that is not a candidate at all
+    (a stale name-only match) produces no line. Locks the silent arm so a
+    future edit does not start reporting every checked-out branch."""
+
+    def test_checked_out_stale_name_branch_reports_nothing(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "checked-out-stale-name")
+        # A second, ordinary Tier-A candidate keeps the run past the early
+        # "nothing to clean" exit so the checked-out message site runs at all.
+        _make_feature_branch(local, "feat/other-merged")
+        subprocess.run(["git", "branch", "-D", "feat/other-merged"], cwd=bare, check=True)
+        subprocess.run(["git", "checkout", "-q", "checked-out-stale-name"], cwd=local, check=True)
+
+        env = fake_gh({
+            "checked-out-stale-name": [
+                {"number": 7, "state": "MERGED", "mergedAt": "2026-06-16", "headRefOid": "a" * 40},
+            ],
+            "feat/other-merged": {"number": 71, "mergedAt": "2026-05-02"},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "checked-out-stale-name" not in result.stdout, (
+            "a checked-out branch that is not a cleanup candidate must not be reported"
+        )
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/checked-out-stale-name"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "checked-out branch must never be deleted regardless of verdict"
+
+
+class TestTierBWithStaleMergedRowReportsBothSignals:
+    """A branch can be both reachable from origin/<default> and carry a
+    same-named merged PR whose tip does not match — Tier B by reachability,
+    stale by name. It is still cleaned, but the reason line names the
+    same-named PR rather than claiming no merged PR exists for the name."""
+
+    _STALE_MERGED_ROW = {
+        "tier-b-with-stale-name": [
+            {"number": 33, "state": "MERGED", "mergedAt": "2026-04-01", "headRefOid": "a" * 40},
+        ],
+    }
+
+    def test_tier_b_reachable_with_stale_merged_row_still_cleaned(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "tier-b-with-stale-name")
+
+        env = fake_gh(self._STALE_MERGED_ROW)
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/tier-b-with-stale-name"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode != 0, "reachability still qualifies the branch for Tier B cleanup"
+
+    def test_tier_b_reason_names_the_same_named_merged_pr(self, tmp_path, fake_gh):
+        """The reason string is rendered on the paths that show one — the
+        dry-run preview and the interactive prompt — not under --yes, which
+        deletes without prompting."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "tier-b-with-stale-name")
+
+        env = fake_gh(self._STALE_MERGED_ROW)
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "a merged PR #33 shares this name" in result.stdout
+        assert "no merged PR for this name" not in result.stdout
+
+
+class TestClassifierEmitsNoShellDiagnostics:
+    """classify_branch builds its parser source as a double-quoted shell
+    string, so anything shell-active in that source is expanded before
+    python sees it. A stray backtick or dollar sign there is silently eaten
+    (and could be executed), announcing itself only as shell noise on
+    stderr — which nothing else in this suite would notice."""
+
+    def test_normal_run_writes_nothing_to_stderr(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/ordinary-merged")
+        subprocess.run(["git", "branch", "-D", "feat/ordinary-merged"], cwd=bare, check=True)
+
+        env = fake_gh({"feat/ordinary-merged": {"number": 88, "mergedAt": "2026-05-02"}})
+        result = _run_script(local, env, args=["--yes"])
+
+        assert result.returncode == 0
+        assert result.stderr == "", (
+            f"classification must not emit shell diagnostics; got: {result.stderr!r}"
+        )
