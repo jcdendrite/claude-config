@@ -72,6 +72,7 @@ _lib_parse_tool_input_or_deny() {
     exit 0
   fi
   TOOL_NAME="${jq_out%%$'\x1f'*}"
+  # shellcheck disable=SC2034 # set for hook scripts that source this file and reference $COMMAND
   COMMAND="${jq_out#*$'\x1f'}"
   # Embedded newline in TOOL_NAME means the payload violated the PreToolUse
   # contract; deny rather than allow with a corrupted TOOL_NAME value.

@@ -10,8 +10,12 @@ govern any contribution (human or agent).
 ./install.sh                                                 # first-time setup (stow + plugin registration)
 ./install-dev.sh                                             # contributor venv setup from requirements-dev.txt (one-time, run from repo root)
 .venv/bin/pytest claude/.claude/                             # test suite (hooks + skills)
-.venv/bin/ruff check claude/.claude/                         # lint
+.venv/bin/ruff check claude/.claude/                         # lint (Python)
+scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # lint (shell, all tracked scripts)
 ```
+
+ShellCheck flags live in the repo-root `.shellcheckrc`, not on the command
+line — CI, this command, and any editor integration all read them from there.
 
 ## Working in this repo
 

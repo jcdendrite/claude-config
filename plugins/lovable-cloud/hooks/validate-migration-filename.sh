@@ -13,11 +13,13 @@ emit_deny() {
   printf '%s\n' "$payload"
 }
 
+# shellcheck source=./_lib.sh
 if ! . "${CLAUDE_PLUGIN_ROOT}/hooks/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by validate-migration-filename: could not source _lib.sh."
   exit 0
 fi
 
+# shellcheck source=../lib/token-path.sh
 if ! . "${CLAUDE_PLUGIN_ROOT}/lib/token-path.sh" 2>/dev/null; then
   emit_deny "Blocked by validate-migration-filename: could not source token-path.sh."
   exit 0

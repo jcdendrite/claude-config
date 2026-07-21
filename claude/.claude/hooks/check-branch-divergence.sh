@@ -78,7 +78,7 @@ fi
 
 FETCH_OK=0
 if [ -n "$TIMEOUT_CMD" ]; then
-  if GIT_TERMINAL_PROMPT=0 SSH_ASKPASS= GIT_ASKPASS= \
+  if GIT_TERMINAL_PROMPT=0 SSH_ASKPASS='' GIT_ASKPASS='' \
       "$TIMEOUT_CMD" 2 git fetch --no-tags --quiet origin "$DEFAULT_BRANCH" \
       >/dev/null 2>&1; then
     FETCH_OK=1

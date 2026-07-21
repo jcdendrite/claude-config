@@ -1,0 +1,20 @@
+# ShellCheck configuration for this repo.
+#
+# These directives are the single source of truth for how shellcheck runs
+# here: CI, the contributor venv, and any editor integration all pick them
+# up automatically, so no flags are repeated in .github/workflows/tests.yml
+# or in CLAUDE.md's command block.
+#
+# Resolution is relative to the file being checked, not the caller's working
+# directory, so `shellcheck path/to/one.sh` behaves identically from anywhere.
+#
+# No `severity=` line: the default floor is `style`, and the quoting defect
+# that motivated adopting shellcheck here reports as SC2006, a style-level
+# finding. Raising the floor would silence it.
+
+# Follow `source`d files even when they are not named on the command line.
+external-sources=true
+
+# Resolve `source` targets relative to the sourcing script's own directory,
+# which is how the hooks locate their _lib.sh sibling.
+source-path=SCRIPTDIR

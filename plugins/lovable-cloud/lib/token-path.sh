@@ -6,4 +6,7 @@
 # must be byte-identical between the generator (Bash tool call) and the hooks
 # (harness-spawned subprocesses) to prevent a false-deny outage where a token
 # is written to a path the hook cannot read.
+# shellcheck disable=SC2034 # set for the generator (new-migration) and the
+# hooks (validate-migration-filename.sh, consume-migration-token.sh) that
+# source this file and reference $MIGRATION_TOKEN_DIR
 MIGRATION_TOKEN_DIR="${HOME}/.claude/lovable-cloud/migration-tokens"

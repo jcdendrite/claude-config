@@ -368,8 +368,12 @@ Pytest suite covering hooks (allow, deny, and ask paths) and skill description c
 ```bash
 ./install-dev.sh   # creates .venv and installs requirements-dev.txt (contributor only)
 .venv/bin/pytest claude/.claude/
-.venv/bin/ruff check claude/.claude/
+.venv/bin/ruff check claude/.claude/                         # Python
+scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # shell
 ```
+
+ShellCheck takes no flags on the command line — they live in the repo-root
+`.shellcheckrc`, so CI, the command above, and any editor integration agree.
 
 The `.venv` lives only in the main worktree root. Linked worktrees live at `.claude/worktrees/<branch>/` — exactly three levels deep — so from inside a worktree invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
 
