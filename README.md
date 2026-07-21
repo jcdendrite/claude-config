@@ -285,6 +285,16 @@ mkdir -p .claude && touch .claude/worktree-optout
 
 The opt-out only modulates the machine-level default — it cannot exempt a repo whose committed `.claude/worktree-required` travels with the source.
 
+Machine-level enforcement produces an untracked `.claude/worktrees/` directory in *every* repo you open, not just ones you've configured — so pair it with a global git-excludes entry rather than relying on each repo's own (possibly absent) `.gitignore`. This is a permanent, machine-wide change (it applies to every repo you ever open, not just this one); to reverse it later, remove the appended line from the same file:
+
+```bash
+f=$(git config --path --get core.excludesFile || echo "${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore")
+mkdir -p "$(dirname "$f")"
+grep -qxF '**/.claude/worktrees/' "$f" 2>/dev/null || echo '**/.claude/worktrees/' >> "$f"
+```
+
+Without this, a `git add -A` in a repo that never got the per-repo `.gitignore` line (see above) can sweep live worktrees into a commit.
+
 ### Private-project redaction
 
 This repo is public — any project codename, organization name, or tracker-ID that lands in a commit or PR description ships to the world. `claude-config` defends against that in three tiers:
