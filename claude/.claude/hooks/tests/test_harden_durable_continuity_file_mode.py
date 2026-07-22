@@ -75,6 +75,12 @@ def _run_hook_raw_stdin(
 class TestHardenDurableContinuityFileMode:
     def test_write_into_handoffs_lands_600(self, isolated_home):
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        # Pin the hard-link guard's threshold by name: a single-link file is
+        # the legitimate case and must still be chmodded. Without this
+        # precondition a reversed comparison in the guard (>0 rather than
+        # >1) would silently skip every real continuity file and no test
+        # would say why.
+        assert fixture.stat().st_nlink == 1
         result = _run_hook_raw(HARDEN_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         assert _mode(fixture) == 0o600
@@ -213,6 +219,54 @@ class TestHardenDurableContinuityFileMode:
         assert result.returncode == 0
         assert link_path.is_symlink()
         assert _mode(real_file) == 0o644
+
+    def test_hard_link_at_matching_path_is_not_chmodded_and_target_untouched(
+        self, isolated_home
+    ):
+        """A hard link is not a symlink, so [ ! -L ] passes it, and realpath
+        reports it unchanged because the link itself IS a canonical path —
+        neither guard above excludes it. chmod acts on the shared inode, so
+        without the link-count guard this would narrow the mode of a file
+        outside both directories. Deterministic, not a race."""
+        victim = isolated_home / "unrelated-target.txt"
+        victim.write_text("sensitive content\n")
+        victim.chmod(0o644)
+        planted = isolated_home / ".claude" / "handoffs" / "planted-handoff.md"
+        planted.parent.mkdir(parents=True)
+        os.link(victim, planted)
+        # Fixture sanity: prove the two paths really share one inode rather
+        # than the link having silently degraded to a copy.
+        assert planted.stat().st_nlink == 2
+
+        result = _run_hook_raw(HARDEN_HOOK, write_input(str(planted)), home=isolated_home)
+
+        assert result.returncode == 0
+        assert result.stdout == ""
+        # One inode, so either path's mode answers for both.
+        assert _mode(victim) == 0o644, "hard-linked file must not be chmodded through"
+
+    def test_stat_absent_fails_open_no_chmod(self, isolated_home, tmp_path):
+        """The hard-link guard's own dependency: with no stat on PATH the
+        link count is unknown, and the hook must skip the chmod rather than
+        proceed or crash under `set -uo pipefail`."""
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+
+        shadow_bin = tmp_path / "shadow-bin"
+        shadow_bin.mkdir()
+        for cmd in ["bash", "cat", "chmod", "realpath", "jq"]:
+            cmd_path = shutil.which(cmd)
+            if cmd_path:
+                (shadow_bin / cmd).symlink_to(cmd_path)
+
+        result = _run_hook_raw(
+            HARDEN_HOOK,
+            write_input(str(fixture)),
+            home=isolated_home,
+            extra_env={"PATH": str(shadow_bin)},
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert _mode(fixture) == 0o664, "stat unavailable — link count unknown, must not chmod"
 
     def test_missing_file_does_not_crash(self, isolated_home):
         """tool_input names a path the hook never finds on disk (e.g. it was

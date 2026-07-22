@@ -53,10 +53,22 @@
 # - Sub-second post-write window: the file exists at the umask default
 #   between the tool's write and this hook's chmod call. Irrelevant while
 #   the containing directory is 0700, but real and worth naming.
+# - The hard-link guard below needs a working GNU or BSD stat. On a system
+#   with neither, the link count is unknown and every file is skipped, so
+#   the hook silently becomes a no-op instead of risking a chmod against a
+#   shared inode. Files then stay at the umask default, which the 0700
+#   directory still covers.
 #
 # Defense-in-depth: filters tool_name and file_path itself; does not rely
 # solely on the settings.json matcher condition.
 set -uo pipefail
+
+# $HOME is the root of both protected path prefixes, so guard it before any
+# expansion below. Under `set -u` an unset $HOME aborts the script non-zero
+# at its first use — breaking the never-break-the-tool-call contract above —
+# and an empty $HOME would collapse both prefixes to an absolute
+# "/.claude/handoffs"/"/.claude/briefs" unrelated to the user's home.
+[ -n "${HOME:-}" ] || exit 0
 
 # Read stdin directly. PostToolUse does not need a deny response.
 # Fail-open on malformed input: a file left at the umask default is
@@ -98,6 +110,35 @@ esac
 # symlink) — this is the only point at which the check can be meaningful.
 [ -f "$FILE_PATH" ] || exit 0
 [ ! -L "$FILE_PATH" ] || exit 0
+
+# Skip hard-linked files. chmod acts on the inode, not the directory entry,
+# so narrowing a file with more than one link narrows every other name
+# pointing at that same inode — including names outside these two
+# directories. The symlink guard above does not cover this: a hard link is
+# not a symlink, and realpath reports it unchanged because the link *is* a
+# canonical path. A continuity file freshly written by Write/Edit/MultiEdit
+# always has exactly one link, so this costs the hook nothing on its real
+# use case.
+#
+# Portable link count: GNU stat (-c%h) first, then BSD/macOS stat (-f%l).
+# The order matters — GNU stat's own -f flag means "filesystem status", a
+# different and incompatible mode, so -c must be tried first. Mirrors the
+# GNU/BSD stat fallback in deny-data-file-reads.sh's file_size().
+link_count() {
+  local target="$1" count
+  count=$(stat -c%h -- "$target" 2>/dev/null) \
+    || count=$(stat -f%l -- "$target" 2>/dev/null) \
+    || count=""
+  printf '%s' "$count"
+}
+
+# An unreadable, absent, or non-numeric count skips the chmod rather than
+# proceeding, matching every other undetermined-state branch in this hook:
+# declining to narrow a mode is inert, whereas narrowing the wrong inode
+# mutates a file outside this hook's declared scope.
+LINK_COUNT=$(link_count "$RESOLVED")
+[ -n "$LINK_COUNT" ] || exit 0
+[ "$LINK_COUNT" -eq 1 ] 2>/dev/null || exit 0
 
 chmod 600 "$RESOLVED" 2>/dev/null || true
 
