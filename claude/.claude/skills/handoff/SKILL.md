@@ -5,11 +5,7 @@ description: Write a cross-session handoff file at ~/.claude/handoffs/<descripti
 
 Write a cross-session handoff file at `~/.claude/handoffs/<descriptive-slug>-handoff.md`
 using the structure below. Run the command below before writing — the
-directory is not guaranteed to exist yet. Owner-only protection for the
-file's entire durable "until resumed" lifetime comes from `~/.claude` itself
-being `700` (set once by this repo's ./install.sh, not by this skill) — a durable
-handoff sitting under a traversable `~/.claude` would otherwise be readable
-by any other local account for as long as it sits unresumed.
+directory is not guaranteed to exist yet.
 
 <!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash

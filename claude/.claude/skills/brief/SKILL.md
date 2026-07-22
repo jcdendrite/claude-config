@@ -5,13 +5,9 @@ description: Produce a cold-start task briefing at ~/.claude/briefs/<slug>-task.
 
 Write a cold-start task briefing at `~/.claude/briefs/<descriptive-slug>-task.md`
 using the structure below. Run the command below before writing — the
-directory is not guaranteed to exist yet. Owner-only protection for the
-file's entire durable "until resumed" lifetime comes from `~/.claude` itself
-being `700` (set once by this repo's ./install.sh, not by this skill) — a durable brief
-sitting under a traversable `~/.claude` would otherwise be readable by any
-other local account for as long as it sits unresumed. A fresh session — with
-no memory of the originating conversation — must be able to read the file
-and execute the work.
+directory is not guaranteed to exist yet. A fresh session — with no memory of
+the originating conversation — must be able to read the file and execute the
+work.
 
 <!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
