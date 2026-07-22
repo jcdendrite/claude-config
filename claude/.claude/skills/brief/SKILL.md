@@ -4,25 +4,18 @@ description: Produce a cold-start task briefing at ~/.claude/briefs/<slug>-task.
 ---
 
 Write a cold-start task briefing at `~/.claude/briefs/<descriptive-slug>-task.md`
-using the structure below. Run the commands below before writing, substituting
-your actual slug for `<descriptive-slug>` — the directory is not guaranteed to
-exist yet, and `chmod 700` keeps it owner-only for the file's entire durable
-"until resumed" lifetime (not just the moment `resume-context` consumes it).
-The `touch` + `chmod 600` on the file itself is an independent layer: the
-directory mode blocks another local account from resolving the path at all,
-but the file's own mode is never otherwise narrowed, and the `Write` tool's
-default creation mode does not restrict it on its own. A durable brief can sit
-unresumed for days, and a `644`/`664` file under a group- or world-traversable
-`~/.claude` would otherwise be readable by any other local account for that
-whole window. A fresh session — with no memory of the originating
-conversation — must be able to read the file and execute the work.
+using the structure below. Run the command below before writing — the
+directory is not guaranteed to exist yet. Owner-only protection for the
+file's entire durable "until resumed" lifetime comes from `~/.claude` itself
+being `700` (set once by this repo's ./install.sh, not by this skill) — a durable brief
+sitting under a traversable `~/.claude` would otherwise be readable by any
+other local account for as long as it sits unresumed. A fresh session — with
+no memory of the originating conversation — must be able to read the file
+and execute the work.
 
-<!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory AND the file are created owner-only, not just that the prose says so. Below, descriptive-slug (written without angle brackets, which the shell would otherwise parse as redirection) is the same placeholder used bracketed above — substitute your actual slug for it here exactly as you would above. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
 mkdir -p ~/.claude/briefs
-chmod 700 ~/.claude/briefs
-touch ~/.claude/briefs/descriptive-slug-task.md
-chmod 600 ~/.claude/briefs/descriptive-slug-task.md
 ```
 
 ## When to use this vs `/handoff`
