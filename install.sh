@@ -16,7 +16,47 @@ fi
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO_DIR"
 mkdir -p "$HOME/.local/bin"
+# Both target directories are created before stow runs so stow links their
+# contents entry by entry. Without this, stow tree-folds a target that does
+# not yet exist into a single symlink pointing back into this checkout — which
+# would put every file Claude Code writes at runtime inside the git clone.
+mkdir -p "$HOME/.claude"
 stow -v --adopt -t "$HOME" claude
+
+# Harden ~/.claude and ~/.claude.json against other local accounts. $HOME is
+# commonly 755 (set once at account creation, not by umask), and under the
+# widespread umask 0002 anything created beneath it lands group-writable —
+# ~/.claude at 775. Claude Code narrows only a few paths of its own
+# (.credentials.json, projects/, sessions/, ide/, daemon/), leaving
+# file-history/, plans/, shell-snapshots/ and the rest at that default.
+# chmod 700 on ~/.claude is a single choke point: clearing the search bit
+# blocks path resolution into every subdirectory at once, so no per-directory
+# recipe is needed and directories added by future releases are covered too.
+#
+# ~/.claude.json needs its own chmod because it sits at $HOME level, outside
+# ~/.claude/ — it indexes every project directory ever opened. Current Claude
+# Code releases create it 0600 and preserve its mode across their
+# temp-file-plus-rename rewrites, so this is a one-time repair of files left
+# at 664 by older releases, and the repair holds.
+#
+# chmod is skipped when ~/.claude is a symlink: chmod dereferences, so a
+# tree-folded ~/.claude left by an earlier install would narrow this
+# checkout's own directory rather than a private one. Failures only warn, so
+# hardening never blocks the plugin registration below.
+#
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: continuity-hardening — start
+if [ -L "$HOME/.claude" ]; then
+  echo "[install] warning: ~/.claude is a symlink to $(readlink "$HOME/.claude") — skipping chmod 700 so the link target is not narrowed. Claude Code is storing its state inside that path; replace the symlink with a real directory to get owner-only permissions." >&2
+elif [ -d "$HOME/.claude" ]; then
+  chmod 700 "$HOME/.claude" || echo "[install] warning: could not chmod 700 ~/.claude" >&2
+fi
+if [ -f "$HOME/.claude.json" ]; then
+  chmod 600 "$HOME/.claude.json" || echo "[install] warning: could not chmod 600 ~/.claude.json" >&2
+fi
+# INSTALL_TEST_FIXTURE: continuity-hardening — end
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
 if [ -f "$SETTINGS_FILE" ]; then
