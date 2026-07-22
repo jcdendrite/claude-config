@@ -158,7 +158,11 @@ class TestInstallShContinuityHardening:
         test_home = tmp_path / "home"
         test_home.mkdir(parents=True)
         link_target = tmp_path / "checkout" / "claude" / ".claude"
-        link_target.mkdir(parents=True, mode=0o775)
+        link_target.mkdir(parents=True)
+        # chmod rather than mkdir(mode=...): the mkdir mode argument is masked
+        # by the caller's umask, so the starting mode would vary by environment
+        # and this assertion would encode the umask rather than the behavior.
+        link_target.chmod(0o775)
         (test_home / ".claude").symlink_to(link_target)
 
         result = _run_hardening_block(test_home)
@@ -168,7 +172,7 @@ class TestInstallShContinuityHardening:
         )
         target_mode = stat.S_IMODE(link_target.stat().st_mode)
         assert target_mode == 0o775, (
-            f"symlink target must not be chmodded, got {oct(target_mode)}"
+            f"symlink target must be left at its original mode, got {oct(target_mode)}"
         )
         assert "symlink" in result.stderr, (
             f"a skipped chmod must warn the user; stderr={result.stderr!r}"
