@@ -402,10 +402,21 @@ recompute in Python from a real `git diff`, which is the opposite technique.
 ## Out of scope / incidental
 
 - **`plan-review/REFERENCES.md` tripwire-count drift** (surfaced during
-  exploration): the "surfacing incident" section documents 4 tripwires; SKILL.md
-  now has 5 ("Overcorrection that negates a named allowance"). This is a
-  dated *incident record* (preserved-content, Axis 3) — **raise to reviewer**,
-  do not fold into this PR's edits.
+  exploration; initially deferred as a dated *incident record* under
+  preserved-content Axis 3, then **brought into scope at the engineer's
+  explicit request** — which is the authorization Axis 3 requires). Review
+  found the drift was wider than first reported: the tripwire→principle
+  *table* carried 2 of 5 rows, and the surfacing-incident section 4 of 5.
+  Both now carry one entry per tripwire. Two entries deliberately record an
+  *absence* rather than inventing content — misordered observe-then-mutate
+  maps to no CLAUDE.md principle, and overcorrection has no surfacing
+  incident (it came from a judgment-activation pass) — because a fabricated
+  provenance in a record is worse than the drift it papers over.
+- **`plan-review` over-powered-primitive threshold** (same request): the
+  tripwire required naming "the lighter primitive," singular, while `plan-it`
+  Step 5 requires the author to enumerate at least two, so a one-alternative
+  plan passed review while violating the authoring rule. Both sides now state
+  the same threshold and the reviewer cites `plan-it` as its source.
 - **Structural-completeness hook** and **Stop-hook + cross-check subagent** —
   deferred pending live validation, per the scope decision. Track as a #466
   follow-up.
