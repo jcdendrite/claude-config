@@ -10,6 +10,7 @@ import pytest
 from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
+    SCRIPTS_DIR,
     SKILLS_DIR,
     bash_input,
     edit_input,
@@ -75,24 +76,28 @@ class TestRequirePlanReview:
         )
 
     def test_plan_exists_with_marker_allows_write(self, plan_review_repo, plan_review_home):
+        """Target must be in-repo: an out-of-repo path like /tmp/foo.py would
+        also allow via the scope filter's out-of-repo exemption regardless of
+        whether the marker's hash matched, masking the marker check."""
         sid = "test-session-prt-allowed"
         write_plan_review_marker(plan_review_home, plan_review_repo, sid)
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input("/tmp/foo.py"), "session_id": sid},
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
                 cwd=plan_review_repo,
             )
             == "allow"
         )
 
     def test_plan_exists_with_marker_allows_edit(self, plan_review_repo, plan_review_home):
+        """In-repo target for the same reason as the Write case above."""
         sid = "test-session-prt-allowed-edit"
         write_plan_review_marker(plan_review_home, plan_review_repo, sid)
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**edit_input("/tmp/foo.py"), "session_id": sid},
+                {**edit_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
                 cwd=plan_review_repo,
             )
             == "allow"
@@ -666,6 +671,263 @@ class TestRequirePlanReview:
                 cwd=plan_review_repo,
             )
             == "allow"
+        )
+
+
+class TestMarkerWriteReadAgreement:
+    """The write side (marker.sh) and the read side (require-plan-review.sh)
+    must agree byte-for-byte on the active-plan hash. Every other test seeds
+    the marker through a Python helper, so each side is only ever checked
+    against a stand-in for the other -- a divergence in how marker.sh
+    resolves the repo root or writes the value would be invisible."""
+
+    def _seed_session(self, home, sid):
+        sessions_dir = home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / str(os.getpid())).write_text(sid)
+
+    def _write_marker_via_script(self, repo, home):
+        return subprocess.run(
+            ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "plan-review"],
+            cwd=repo,
+            env={**os.environ, "HOME": str(home)},
+            capture_output=True,
+            text=True,
+        )
+
+    def test_real_marker_write_allows_then_denies_after_plan_edit(
+        self, plan_review_repo, plan_review_home
+    ):
+        sid = "session-e2e-write-read"
+        self._seed_session(plan_review_home, sid)
+
+        result = self._write_marker_via_script(plan_review_repo, plan_review_home)
+        assert result.returncode == 0, result.stderr
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        ), "a marker written by the real marker.sh must satisfy the real hook"
+
+        (plan_review_repo / ".claude" / "plans" / "impl-plan.md").write_text(
+            "# Implementation plan\n\nStep 1...\n\nRevised after review.\n"
+        )
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        ), "editing the plan after a real marker write must re-arm the gate"
+
+
+class TestUnhashablePlanFailsClosed:
+    """An active plan that cannot be hashed is an UNKNOWN review state, not
+    an absent one. _lib_active_plan_hash returns empty for "no plan active"
+    and exits non-zero for "plan active but unhashable"; collapsing those
+    two onto the same empty-string signal made a transient unreadable plan
+    file silently disarm the gate (fail-open)."""
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_plan_denies_write(self, plan_review_repo, plan_review_home):
+        sid = "session-unhashable-write"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        plan = plan_review_repo / ".claude" / "plans" / "impl-plan.md"
+        plan.chmod(0o000)
+        try:
+            decision = run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+        finally:
+            plan.chmod(0o644)
+        assert decision == "deny"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_plan_denies_exitplanmode(self, plan_review_repo, plan_review_home):
+        """ExitPlanMode carries no file_path, so it skips the repo-scope
+        filter -- the hash path is the only thing deciding allow/deny."""
+        sid = "session-unhashable-epm"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        plan = plan_review_repo / ".claude" / "plans" / "impl-plan.md"
+        plan.chmod(0o000)
+        try:
+            decision = run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+        finally:
+            plan.chmod(0o644)
+        assert decision == "deny"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_plan_deny_names_file_and_repair_route(
+        self, plan_review_repo, plan_review_home
+    ):
+        """The remedy must be actionable. Telling the user to run
+        /plan-review here would be circular -- marker.sh hits the identical
+        condition and aborts -- so the message names the offending file and
+        points at Bash, which this hook does not gate."""
+        sid = "session-unhashable-reason"
+        plan = plan_review_repo / ".claude" / "plans" / "impl-plan.md"
+        plan.chmod(0o000)
+        try:
+            reason = run_hook_reason(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+        finally:
+            plan.chmod(0o644)
+        assert reason is not None, "an unhashable active plan must deny, not allow"
+        assert "impl-plan.md" in reason, (
+            f"deny reason must name the unreadable plan file, got {reason!r}"
+        )
+        assert "chmod" in reason, (
+            f"deny reason must name a concrete repair command, got {reason!r}"
+        )
+
+
+class TestContentAddressedPlanReviewMarker:
+    """The completion marker stores a content hash of the active plan file
+    set (GH #466), not an existence-only sentinel -- editing a reviewed plan
+    must re-arm the gate on the next Write/Edit/ExitPlanMode."""
+
+    def test_stale_hash_denies_write_after_plan_edit(self, plan_review_repo, plan_review_home):
+        """Editing the plan after a clean review changes the active-plan
+        hash, so the stored marker no longer matches -- the gate re-arms."""
+        sid = "session-hash-stale-write"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        (plan_review_repo / ".claude" / "plans" / "impl-plan.md").write_text(
+            "# Implementation plan\n\nStep 1...\n\nRevised.\n"
+        )
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_stale_hash_denies_exitplanmode_after_plan_edit(self, plan_review_repo, plan_review_home):
+        """Same as the Write case, but for ExitPlanMode -- the tool that has
+        no file_path and so skips the scope filter entirely, making the
+        marker hash comparison the only thing standing between allow/deny."""
+        sid = "session-hash-stale-epm"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        (plan_review_repo / ".claude" / "plans" / "impl-plan.md").write_text(
+            "# Implementation plan\n\nStep 1...\n\nRevised for ExitPlanMode.\n"
+        )
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_committed_clean_plan_does_not_contribute_to_hash(self, plan_review_repo, plan_review_home):
+        """One committed-clean plan + one active plan: the gate is armed;
+        committing the previously-active plan (so both are now historical)
+        disarms it entirely -- proving the committed-clean file contributes
+        nothing to the hash. A break-on-first-find-result bug that hashed
+        every enumerated file regardless of active/historical status would
+        leave the gate armed forever here."""
+        subprocess.run(["git", "add", ".claude/plans/impl-plan.md"], cwd=plan_review_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "plan"], cwd=plan_review_repo, check=True)
+        active_plan = plan_review_repo / ".claude" / "plans" / "new-plan.md"
+        active_plan.write_text("# New plan\n")
+
+        sid = "session-armset-agreement"
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        ), "precondition: the untracked active plan must arm the gate"
+
+        subprocess.run(["git", "add", ".claude/plans/new-plan.md"], cwd=plan_review_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "new plan"], cwd=plan_review_repo, check=True)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        ), "committing the previously-active plan should disarm the gate entirely"
+
+    def test_multiplan_active_set_rearms_on_either_edit(self, plan_review_repo, plan_review_home):
+        """Two active (untracked) plans: a marker written over both allows;
+        editing EITHER one afterward denies -- guards against a ported
+        break-on-first-plan bug that only hashed the first enumerated file."""
+        second_plan = plan_review_repo / ".claude" / "plans" / "second-plan.md"
+        second_plan.write_text("# Second plan\n")
+        first_plan = plan_review_repo / ".claude" / "plans" / "impl-plan.md"
+
+        sid = "session-multiplan"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        ), "precondition: marker over the two-plan active set must allow"
+
+        # Editing the SECOND enumerated plan (alphabetically after the first)
+        # is exactly what a break-on-first-find-result bug would miss.
+        second_plan.write_text("# Second plan (edited)\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        ), "editing the second active plan must re-arm the gate"
+
+        # Reset with a fresh review, then edit the FIRST plan instead.
+        second_plan.write_text("# Second plan\n")
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        first_plan.write_text("# Implementation plan\n\nStep 1 (edited)...\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        ), "editing the first active plan must also re-arm the gate"
+
+    def test_legacy_literal_marker_denies_cleanly(self, plan_review_repo, plan_review_home):
+        """A pre-migration marker containing the literal 'reviewed' sentinel
+        (written by the old existence-only code) must deny cleanly against an
+        active plan under the new hash-compare logic -- fail-closed, not an
+        error under pipefail."""
+        sid = "session-legacy-marker"
+        marker = plan_review_marker_path(plan_review_home, plan_review_repo, sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("reviewed\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
         )
 
 

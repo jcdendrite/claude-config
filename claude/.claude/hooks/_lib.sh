@@ -19,6 +19,21 @@ _lib_jq() {
   fi
 }
 
+# Same 5s backstop and same BSD/macOS fallback as _lib_jq, for any other
+# command that reads the filesystem and can stall on it (git against a
+# locked .git/index, sha256sum against a dead NFS mount). Callers MUST check
+# the exit status: a bare `timeout 5 git ...` is not just uncapped when
+# timeout(1) is missing, it is "command not found" (127), which silently
+# yields empty output on stock macOS.
+# Usage: out=$(_lib_capped git -C "$root" ls-files ...) || <fail closed>
+_lib_capped() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5 "$@"
+  else
+    "$@"
+  fi
+}
+
 # Reads stdin into INPUT (global), extracts TOOL_NAME and COMMAND (globals)
 # via a single _lib_jq call using ASCII Unit Separator (0x1f) as delimiter.
 # The single call surfaces a structural-type error when .tool_input is non-object
@@ -84,6 +99,133 @@ _lib_parse_tool_input_or_deny() {
 # Usage: hash=$(_marker_lib_repo_hash "$REPO_ROOT")
 _marker_lib_repo_hash() {
   printf '%s' "$1" | sha256sum | awk '{print $1}'
+}
+
+# Compute a content-addressed hash of the "active" plan file set in a
+# repo's .claude/plans/ directory, for the plan-review completion marker.
+# "Active" means untracked, or tracked-and-modified-vs-HEAD; a plan that is
+# tracked and byte-identical to HEAD is historical (its PR shipped) and is
+# excluded. Hashes repo-relative paths AND contents, so editing an active
+# plan (including a ledger row) changes the hash and re-arms the gate.
+# Paths are hashed repo-relative rather than absolute because the write side
+# and read side resolve the repo root independently; an absolute path would
+# fold any difference between those two resolutions into the digest.
+#
+# Three-outcome contract -- exit status disambiguates stdout, because
+# "nothing to gate" and "could not compute" must never collapse onto the
+# same caller-visible signal:
+#   - exit 0, non-empty stdout: that hash is the active plan set.
+#   - exit 0, empty stdout:     no plan is active; the gate is disarmed.
+#   - exit 1, stdout = the path of the plan file that could not be hashed
+#     (unreadable, vanished mid-enumeration, sha256sum failed). Callers
+#     MUST fail closed. Treating this as the disarmed case is fail-*open*:
+#     it lets an unreviewed plan edit through on a transient disk or
+#     permission blip, silently and with nothing logged. Reusing stdout for
+#     the offending path keeps this to one call site with no subshell
+#     visibility problem -- the exit status already says which meaning
+#     applies.
+#
+# Determinism contract (write side [marker.sh] and read side
+# [require-plan-review.sh] must agree byte-for-byte, or the gate wedges):
+#   - `LC_ALL=C sort` on the file list -- a bare `sort` honors
+#     $LC_COLLATE, and the write-side (Bash-tool locale) and read-side
+#     (harness hook environment) callers can differ, flipping order on
+#     >=2 active plans and producing a false-deny. `-u` also collapses the
+#     overlap between the two git queries, which are unioned, not disjoint.
+#   - Path and per-file content-hash are newline-delimited per entry. With
+#     today's fixed-width 64-hex digests the concatenation would already be
+#     unambiguous without them, so this is defensive rather than
+#     load-bearing: it keeps the serialization injective if the digest ever
+#     becomes variable-width, and keeps the hashed input readable when
+#     debugging a mismatch. Do not cite it as a live collision defense.
+#   - Every digest is captured into a variable and tested for emptiness,
+#     rather than being returned as a pipeline's exit status. This is what
+#     makes the contract independent of the caller's shell options, and it
+#     is load-bearing: marker.sh sources this file under `set -u` with no
+#     `pipefail`, where a pipeline reports only its LAST command's status
+#     -- a missing or failed `sha256sum` still leaves `awk` exiting 0
+#     having printed nothing, which would silently misclassify a hash
+#     failure as "no active plan". The emptiness check, not `pipefail`, is
+#     the guard.
+# Usage: hash=$(_lib_active_plan_hash "$REPO_ROOT")
+_lib_active_plan_hash() {
+  local repo_root="$1"
+  local plans_dir="$repo_root/.claude/plans"
+  [ -d "$plans_dir" ] || return 0
+
+  # "Active" is exactly `untracked` UNION `tracked and modified vs HEAD`, so
+  # ask git for those two sets directly rather than listing the directory and
+  # probing each file's status. Enumerate-then-probe costs two git spawns per
+  # plan file (~1.2s on a 61-plan directory) and this runs on every
+  # Write/Edit/MultiEdit/ExitPlanMode.
+  #
+  # Every git call is capped AND status-checked. An unchecked call is the
+  # dangerous shape here: a failed or timed-out enumeration yields fewer
+  # files, and fewer files still hashes cleanly -- so both sides would agree
+  # on a hash computed over an active plan that neither of them saw, and the
+  # gate would open with nothing logged. A partial enumeration is therefore
+  # treated exactly like an unhashable file: fail closed.
+  # :(glob) confines the `*` to one path segment, preserving the maxdepth-1
+  # scope; --others without --exclude-standard keeps gitignored plans in the
+  # set, since an ignored plan is still an unreviewed plan.
+  # --diff-filter=d drops deletions: a tracked plan deleted from the worktree
+  # is reported as modified but has no bytes left to hash, and treating it as
+  # active would fail the hash and deny forever instead of disarming.
+  # core.quotePath=false keeps non-ASCII filenames raw rather than C-escaped.
+  # Newline-delimited (not -z): a plan filename containing a newline is
+  # already unsupported, and -z would force the output through a command
+  # substitution, which strips NUL bytes.
+  local -a plan_pathspecs=(":(glob).claude/plans/*.md" ":(glob).claude/plans/*.txt")
+  local untracked_plans modified_plans
+  untracked_plans=$(_lib_capped git -C "$repo_root" -c core.quotePath=false \
+    ls-files --others -- "${plan_pathspecs[@]}" 2>/dev/null) || {
+    printf '%s' "$plans_dir"
+    return 1
+  }
+  if _lib_capped git -C "$repo_root" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    modified_plans=$(_lib_capped git -C "$repo_root" -c core.quotePath=false \
+      diff --name-only --diff-filter=d HEAD -- "${plan_pathspecs[@]}" 2>/dev/null) || {
+      printf '%s' "$plans_dir"
+      return 1
+    }
+  else
+    # No HEAD to diff against means nothing has shipped yet, so every
+    # tracked plan still counts as active.
+    modified_plans=$(_lib_capped git -C "$repo_root" -c core.quotePath=false \
+      ls-files -- "${plan_pathspecs[@]}" 2>/dev/null) || {
+      printf '%s' "$plans_dir"
+      return 1
+    }
+  fi
+
+  local plan_file
+  local -a active_files=()
+  while IFS= read -r plan_file; do
+    [ -n "$plan_file" ] || continue
+    active_files+=("$plan_file")
+  done < <(printf '%s\n%s\n' "$untracked_plans" "$modified_plans" | LC_ALL=C sort -u)
+
+  [ "${#active_files[@]}" -gt 0 ] || return 0
+
+  local file file_hash combined=""
+  for file in "${active_files[@]}"; do
+    file_hash=$(_lib_capped sha256sum -- "$repo_root/$file" 2>/dev/null | awk '{print $1}')
+    if [ -z "$file_hash" ]; then
+      # Unreadable or vanished mid-enumeration. Name the offending file on
+      # stdout so the caller's deny message can point the user at it.
+      printf '%s' "$repo_root/$file"
+      return 1
+    fi
+    combined+="$file"$'\n'"$file_hash"$'\n'
+  done
+
+  local digest
+  digest=$(printf '%s' "$combined" | sha256sum | awk '{print $1}')
+  if [ -z "$digest" ]; then
+    printf '%s' "$plans_dir"
+    return 1
+  fi
+  printf '%s' "$digest"
 }
 
 # Decide whether a shell fragment actually invokes `git`, not just mentions it

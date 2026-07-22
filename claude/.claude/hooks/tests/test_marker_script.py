@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 import pytest
@@ -81,6 +82,59 @@ class TestMarkerScriptHappyPath:
         files = list(marker_dir.iterdir())
         assert len(files) == 1
         assert files[0].name.endswith(f".{sid}")
+
+    def test_write_plan_review_stores_hash_not_literal(self, isolated_home, git_repo):
+        """write plan-review must store _lib_active_plan_hash's output (a
+        sha256 hex digest of the active plan set), not the legacy literal
+        'reviewed' existence-only sentinel."""
+        self._seed_session(isolated_home)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        files = list(marker_dir.iterdir())
+        assert len(files) == 1
+        content = files[0].read_text().strip()
+        assert content != "reviewed"
+        assert re.fullmatch(r"[0-9a-f]{64}", content), (
+            f"expected a sha256 hex digest, got {content!r}"
+        )
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_write_plan_review_aborts_without_clobbering_marker(self, isolated_home, git_repo):
+        """An unhashable active plan must abort the write with a non-zero
+        status naming the file -- and must leave any pre-existing marker
+        byte-identical. Redirecting the helper's output straight into the
+        marker path would truncate it before the failure surfaced, so a
+        failed attempt would destroy a good marker as a side effect."""
+        sid = self._seed_session(isolated_home)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        plan = plans_dir / "p.md"
+        plan.write_text("# plan\n")
+
+        assert _run(["write", "plan-review"], cwd=git_repo, home=isolated_home).returncode == 0
+        marker = isolated_home / ".claude" / "plan-review-markers" / next(
+            f.name for f in (isolated_home / ".claude" / "plan-review-markers").iterdir()
+        )
+        good_content = marker.read_text()
+        assert marker.name.endswith(f".{sid}")
+
+        plan.chmod(0o000)
+        try:
+            result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        finally:
+            plan.chmod(0o644)
+
+        assert result.returncode == 2, result.stderr
+        assert "p.md" in result.stderr, (
+            f"stderr must name the offending plan file, got {result.stderr!r}"
+        )
+        assert marker.read_text() == good_content, (
+            "a failed write must not truncate or alter the existing marker"
+        )
 
     def test_activate_creates_active_marker_with_pid(self, isolated_home, git_repo):
         """activate must write the Claude session PID to the active.d file body

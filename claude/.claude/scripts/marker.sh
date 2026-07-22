@@ -67,15 +67,23 @@ _resolve_claude_pid() {
   printf '%s' "${out##* }"
 }
 
-_resolve_repo_hash() {
-  if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
-    printf 'marker.sh: not inside a git repository\n' >&2
-    exit 2
-  fi
+_resolve_repo_root() {
   # tr -d '\n' is load-bearing: git rev-parse appends a trailing newline.
   # require-* hooks compute the hash via printf '%s' "$REPO_ROOT" (no newline),
   # so both sides must strip it to produce the same sha256 and matching paths.
-  _marker_lib_repo_hash "$(git rev-parse --show-toplevel | tr -d '\n')"
+  local root
+  root=$(git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
+  if [ -z "$root" ]; then
+    printf 'marker.sh: not inside a git repository\n' >&2
+    return 2
+  fi
+  printf '%s' "$root"
+}
+
+_resolve_repo_hash() {
+  local root
+  root=$(_resolve_repo_root) || return 2
+  _marker_lib_repo_hash "$root"
 }
 
 _guard_staged_vs_unstaged() {
@@ -131,31 +139,56 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_HASH=$(_resolve_repo_hash) || exit 2
         _guard_staged_vs_unstaged code-review
+        # Compute before redirecting: `>` truncates the marker before the
+        # pipeline runs, so a failed hash would destroy a valid marker and
+        # silently force a re-review. Same shape in every arm below.
+        MARKER_VALUE=$(git diff --cached | sha256sum | awk '{print $1}')
+        [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$HOME/.claude/review-markers"
-        git diff --cached | sha256sum | awk '{print $1}' \
+        printf '%s\n' "$MARKER_VALUE" \
           > "$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       skill-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_HASH=$(_resolve_repo_hash) || exit 2
         _guard_staged_vs_unstaged skill-review 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'
-        mkdir -p "$HOME/.claude/skill-review-markers"
         # The pathspecs are load-bearing: scope the hash to SKILL.md diffs only (both stowed
         # and plugin locations), matching what require-skill-review.sh checks at commit time.
-        git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}' \
+        MARKER_VALUE=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
+        [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
+        mkdir -p "$HOME/.claude/skill-review-markers"
+        printf '%s\n' "$MARKER_VALUE" \
           > "$HOME/.claude/skill-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       plan-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_HASH=$(_resolve_repo_hash) || exit 2
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        # Content-addressed: the marker holds a hash of the active plan file
+        # set (paths + contents), so editing a reviewed plan re-arms
+        # require-plan-review.sh on the next gate hit. _lib_active_plan_hash
+        # is the single source of truth shared with the read side.
+        #
+        # Capture into a variable before redirecting. Writing the function's
+        # output straight into the marker path would let `>` truncate an
+        # existing valid marker before the function even runs, so a failed
+        # attempt would destroy a good marker as a side effect.
+        if ! PLAN_HASH=$(_lib_active_plan_hash "$REPO_ROOT"); then
+          printf 'marker.sh: cannot read active plan file %s — cannot compute the plan-review hash. Abort without writing a marker.\n' "$PLAN_HASH" >&2
+          exit 2
+        fi
         mkdir -p "$HOME/.claude/plan-review-markers"
-        printf 'reviewed\n' > "$HOME/.claude/plan-review-markers/$REPO_HASH.$SESSION_ID"
+        printf '%s\n' "$PLAN_HASH" \
+          > "$HOME/.claude/plan-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_HASH=$(_resolve_repo_hash) || exit 2
+        MARKER_VALUE=$(git rev-parse HEAD)
+        [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not resolve HEAD. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$HOME/.claude/ready-for-review-markers"
-        git rev-parse HEAD > "$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
+        printf '%s\n' "$MARKER_VALUE" \
+          > "$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       *)
         printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review\n" "$SKILL" >&2

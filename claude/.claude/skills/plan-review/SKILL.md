@@ -81,9 +81,11 @@ If over-elaborated or any foundation tripwire fires: stop. Surface the simpler d
 
 Question implementation choices, not feature scope — the ticket itself isn't reviewed here, that goes back to the author.
 
+If the plan carries an assumption ledger and this is a re-review round, note it here — the cross-check itself runs in each spawned reviewer's fresh context at Step 5 (see `ROUTING.md`'s Ledger cross-check).
+
 ## Step 5 — Evaluate
 
-Evaluate the plan against the **Base checklist** first, then each detected **Domain checklist**. For multi-phase plans, evaluate each phase against the relevant checklists. Reference the specific phase/section when reporting findings.
+Evaluate the plan against the **Base checklist** first, then each detected **Domain checklist**. For multi-phase plans, evaluate each phase against the relevant checklists. Reference the specific phase/section when reporting findings. When the plan carries an assumption ledger, every spawned reviewer also gets the ledger cross-check instruction from `ROUTING.md` — diffing the revision against every `[verified]`/`[engineer-verified]` row for continued consistency.
 
 ## Base checklist
 
@@ -231,6 +233,8 @@ For each finding, state:
 5. **Suggested resolution** (concrete, not "consider improving")
 
 If any items were flagged by B7 (scope creep), include an **Out of Scope** section listing them. The reviewer can decide whether to bring them into scope or create follow-up tickets.
+
+If any spawned reviewer's ledger cross-check finds the revision touching a row already confirmed in a prior round, include a **Previously-settled, now reopened** section naming the row and what changed — this surfaces the human's own version of the failure (re-litigating something already decided), not just the agent's.
 
 End with a verdict: **Approve**, **Approve with changes** (list what), or **Request changes** (list blockers).
 
