@@ -98,9 +98,11 @@ class TestLaunchMode:
 
     def test_launch_prompt_instructs_task_list_restoration(self, tmp_path: Path) -> None:
         """The launched first-turn prompt must point the resuming session at the
-        handoff's §2.6 resume directive before it takes any other action — without
-        this, a resumed session finds an empty live task list and reconstructs
-        work from the plan file instead of the prior session's captured state."""
+        handoff's §2.6 resume directive — without this, a resumed session finds
+        no live task-list state and reconstructs work from the plan file instead
+        of the prior session's captured state. Resumed sessions are typically
+        non-TTY and expose no task-list tool (gated on an interactive TTY
+        upstream), so the prompt must not hard-require the tool."""
         stub, recorder = _install_recorder(tmp_path)
         src = tmp_path / "foo-handoff.md"
         src.write_text("hello handoff\n")
@@ -112,8 +114,10 @@ class TestLaunchMode:
         recorded_args = recorder.read_text().splitlines()
         prompt = recorded_args[2]
         assert (
-            "If it contains a task-list resume directive, follow that directive to "
-            "recreate the task list via the task tool before taking any other action."
+            "If it contains a task-list resume directive, track its pending and "
+            "in-progress items from the file (not from memory) as you resume — "
+            "using your session's task-list tool if one is available, otherwise "
+            "inline. A missing task-list tool is not a blocker."
             in prompt
         )
 

@@ -164,4 +164,4 @@ fi
 printf 'resume-context.sh: moved %s -> %s\n' "$SRC" "$DEST" >&2
 print_recovery_hint "$DEST"
 
-exec "$LAUNCHER" --append-system-prompt-file "$DEST" "Continue from the handoff/brief file loaded into your system prompt. If it contains a task-list resume directive, follow that directive to recreate the task list via the task tool before taking any other action."
+exec "$LAUNCHER" --append-system-prompt-file "$DEST" "Continue from the handoff/brief file loaded into your system prompt. If it contains a task-list resume directive, track its pending and in-progress items from the file (not from memory) as you resume — using your session's task-list tool if one is available, otherwise inline. A missing task-list tool is not a blocker."

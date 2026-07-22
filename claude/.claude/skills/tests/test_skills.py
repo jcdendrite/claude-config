@@ -484,32 +484,45 @@ class TestHandoffTaskListPersistence:
 
     Without a faithful task-list serialization and an explicit resume
     directive, a session resumed from a handoff file starts with an empty
-    task list and re-derives remaining work from prose instead of
-    recreating it from the live state the prior session captured.
+    task list and re-derives remaining work from prose instead of tracking
+    it from the live state the prior session captured. Resumed sessions are
+    typically non-TTY and expose no task-list tool (Task tools are gated on
+    an interactive TTY upstream), so tracking must fall back to inline
+    conversation state rather than hard-depending on the tool.
     """
 
     def test_handoff_task_list_reads_live_state_not_memory(self):
-        """§2.6 must instruct reading the live task list, not reconstructing from memory."""
+        """§2.6 must instruct reading the current task list from the tool if present,
+        else from inline-tracked items — never reconstructed from memory."""
         assert (
-            "Read the live task list via the task tool (not from memory) and list each item "
-            "with a stable ordinal, its status — `completed` / `in_progress` / `pending` — "
-            "and, for pending/in_progress items, which ordinals block it and (for the "
-            "in_progress item) its `activeForm`. Preserve order. Example: "
-            "`3. [pending] Phase B: … (blocked by 2)`."
+            "Read the current task list — from your session's task-list tool if it "
+            "exposes one, otherwise from the inline items you have been tracking (not "
+            "reconstructed from memory) — and list each item with a stable ordinal, its "
+            "status — `completed` / `in_progress` / `pending` — and, for pending/in_progress "
+            "items, which ordinals block it and (for the in_progress item) its "
+            "`activeForm`. Preserve order. Example: `3. [pending] Phase B: … (blocked by 2)`."
             in _skill_file("handoff").read_text()
         )
 
     def test_handoff_task_list_has_resume_directive(self):
         """§2.6's resume directive must cover authoritativeness (no plan-file/memory
-        fallback), ordering (before §3), recreation, dependency-edge remap, and the
-        no-re-add-completed dedup rule."""
+        fallback), tracking order and dependency edges, the no-re-add-completed dedup
+        rule, opportunistic (not required) tool use, and the inline fallback."""
         assert (
             "§2.6 is the authoritative source of remaining task state on resume — do not "
-            "reconstruct the task list from the plan file or from memory. Before executing "
-            "§3, recreate the `pending` and `in_progress` items below as tasks via the task "
-            "tool, preserving order, then wire each item's `blockedBy`/`blocks` by mapping "
-            "the serialized ordinals to the tasks just created in that position; completed "
-            "items are listed for context only — do not re-add them."
+            "reconstruct the task list from the plan file or from memory. As you resume, "
+            "track the `pending` and `in_progress` items below, preserving order and their "
+            "`blockedBy`/`blocks` relationships (map the serialized ordinals to the items "
+            "in that position); completed items are listed for context only — do not "
+            "re-add them. If your session exposes a task-list tool (e.g. "
+            "`TaskCreate`/`TaskUpdate`), mirror the items into it"
+            in _skill_file("handoff").read_text()
+        )
+        assert (
+            "If it does not — common for resumed sessions — track them inline. Tracking "
+            "these items is a safe, reversible action, not gated by the artifact preamble's "
+            "re-confirm-before-executing rule (which is scoped to irreversible/shared-state "
+            "actions); a missing task-list tool is not a blocker."
             in _skill_file("handoff").read_text()
         )
 
