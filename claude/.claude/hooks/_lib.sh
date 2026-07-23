@@ -441,3 +441,41 @@ _LIB_READONLY_GIT_SUBCMDS=(
 _lib_readonly_git_subcmds() {
   printf '%s\n' "${_LIB_READONLY_GIT_SUBCMDS[@]}"
 }
+
+# Single source of truth for review-only agent identities: the eight
+# staff-*/ciso-reviewer personas dispatched by /plan-review and /code-review,
+# the skill-fidelity-reviewer dispatched by /ready-for-review, plus the harness
+# built-ins Explore and Plan. Sourced by deny-reviewer-tree-mutation.sh. Closed
+# enumeration, same discipline as _LIB_READONLY_GIT_SUBCMDS above — new entries
+# are added deliberately (a persona proven review-only, never dispatched to
+# write project files), not accreted via "etc./like".
+_LIB_REVIEW_ONLY_AGENTS=(
+  ciso-reviewer
+  skill-fidelity-reviewer
+  staff-analytics-engineer
+  staff-backend-engineer
+  staff-data-engineer
+  staff-frontend-engineer
+  staff-platform-engineer
+  staff-product-engineer
+  staff-sdet
+  Explore
+  Plan
+)
+_lib_review_only_agents() {
+  printf '%s\n' "${_LIB_REVIEW_ONLY_AGENTS[@]}"
+}
+
+# _lib_is_review_only_agent AGENT_TYPE
+# Returns 0 (true) iff AGENT_TYPE exactly matches an entry in
+# _LIB_REVIEW_ONLY_AGENTS. Empty input (agent_type absent from the
+# PreToolUse payload, e.g. the main session) never matches.
+_lib_is_review_only_agent() {
+  local agent_type="$1"
+  [ -n "$agent_type" ] || return 1
+  local candidate
+  for candidate in "${_LIB_REVIEW_ONLY_AGENTS[@]}"; do
+    [ "$agent_type" = "$candidate" ] && return 0
+  done
+  return 1
+}

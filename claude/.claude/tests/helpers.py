@@ -218,19 +218,28 @@ def bash_input(
     return payload
 
 
-def edit_input(file_path: str) -> dict:
-    return {
+def edit_input(file_path: str, agent_type: str | None = None) -> dict:
+    payload: dict = {
         "tool_name": "Edit",
         "tool_input": {"file_path": file_path, "old_string": "a", "new_string": "b"},
     }
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    return payload
 
 
-def write_input(file_path: str) -> dict:
-    return {"tool_name": "Write", "tool_input": {"file_path": file_path, "content": "x"}}
+def write_input(file_path: str, agent_type: str | None = None) -> dict:
+    payload: dict = {"tool_name": "Write", "tool_input": {"file_path": file_path, "content": "x"}}
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    return payload
 
 
-def multiedit_input(file_path: str) -> dict:
-    return {"tool_name": "MultiEdit", "tool_input": {"file_path": file_path, "edits": []}}
+def multiedit_input(file_path: str, agent_type: str | None = None) -> dict:
+    payload: dict = {"tool_name": "MultiEdit", "tool_input": {"file_path": file_path, "edits": []}}
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    return payload
 
 
 def exitplanmode_input(plan_file_path: str = "/home/user/.claude/plans/test-plan.md") -> dict:

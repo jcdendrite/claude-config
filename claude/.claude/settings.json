@@ -228,6 +228,11 @@
             "type": "command",
             "command": "~/.claude/hooks/require-worktree-for-git-writes.sh",
             "statusMessage": "Checking worktree enforcement..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-reviewer-tree-mutation.sh",
+            "statusMessage": "Checking reviewer read-only gate..."
           }
         ]
       },
@@ -253,6 +258,11 @@
             "type": "command",
             "command": "~/.claude/hooks/require-memory-skill.sh",
             "statusMessage": "Checking memory-skill gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-reviewer-tree-mutation.sh",
+            "statusMessage": "Checking reviewer read-only gate..."
           }
         ]
       },
