@@ -16,9 +16,13 @@ from validate_skill_structure import parse_frontmatter
 
 AGENTS_DIR = CLAUDE_DIR / "agents"
 
-# The set of reviewer agent files that must carry the file-based output canary.
-# This list is the authoritative roster. When a new reviewer is added, add it
-# here — the test will then enforce the structural requirements automatically.
+# The stack-specialist reviewer roster — the personas dispatched by /plan-review
+# and /code-review off their Item-ownership tables. This list is ALSO the ground
+# truth test_doc_counts.py locks the "N specialist personas" doc claims to, so it
+# must stay equal to the count those docs assert. When a new *stack specialist* is
+# added, add it here. A reviewer that carries the canary but is not a counted
+# stack specialist (e.g. a branch-gate reviewer spawned by /ready-for-review) goes
+# in CANARY_AGENTS below instead, so the doc counts do not drift.
 REVIEWER_AGENTS = [
     "ciso-reviewer.md",
     "staff-analytics-engineer.md",
@@ -29,6 +33,16 @@ REVIEWER_AGENTS = [
     "staff-product-engineer.md",
     "staff-sdet.md",
 ]
+
+# Every agent that must carry the file-based output canary (Write tool +
+# "### File-based output" section + the byte-identical block). Superset of
+# REVIEWER_AGENTS: the stack specialists PLUS other reviewers that write
+# findings_path output but are not part of the counted stack-specialist roster.
+# skill-fidelity-reviewer is spawned by /ready-for-review (not the two
+# dispatchers) and is not a domain specialist, so it enforces the canary here
+# without inflating the specialist-roster doc counts. Kept sorted so
+# CANARY_AGENTS[0] is a stable canonical anchor for the byte-equivalence test.
+CANARY_AGENTS = sorted(REVIEWER_AGENTS + ["skill-fidelity-reviewer.md"])
 
 # Agents that exist in the directory but are not code-review dispatched
 # reviewers — they do not receive findings_path and do not need the canary.
@@ -57,12 +71,13 @@ NON_REVIEWER_MODELS = {
 
 class TestReviewerAgentRoster:
     def test_all_reviewer_agents_exist(self):
-        """Every agent named in the roster list must have a corresponding file."""
-        for name in REVIEWER_AGENTS:
+        """Every agent named in the canary roster must have a corresponding file."""
+        for name in CANARY_AGENTS:
             path = AGENTS_DIR / name
             assert path.exists(), (
                 f"Reviewer agent file missing: {path}. "
-                "If the file was renamed or removed, update REVIEWER_AGENTS in this test."
+                "If the file was renamed or removed, update REVIEWER_AGENTS / "
+                "CANARY_AGENTS in this test."
             )
 
     def test_all_reviewer_agents_have_write_tool(self):
@@ -74,7 +89,7 @@ class TestReviewerAgentRoster:
         ordering rule stated in code-review/SKILL.md: add Write to the agent BEFORE
         updating the dispatcher to pass findings_path.
         """
-        for name in REVIEWER_AGENTS:
+        for name in CANARY_AGENTS:
             path = AGENTS_DIR / name
             content = path.read_text()
             tools_match = re.search(r"^tools:\s*(.+)$", content, re.MULTILINE)
@@ -93,7 +108,7 @@ class TestReviewerAgentRoster:
         output. This is the prose half of the ordering rule: add the section BEFORE
         updating the dispatcher.
         """
-        for name in REVIEWER_AGENTS:
+        for name in CANARY_AGENTS:
             path = AGENTS_DIR / name
             content = path.read_text()
             assert "### File-based output" in content, (
@@ -104,15 +119,15 @@ class TestReviewerAgentRoster:
     def test_reviewer_agents_list_is_sorted(self):
         """REVIEWER_AGENTS must be sorted alphabetically.
 
-        TestFileBasedOutputBlockConsistency uses REVIEWER_AGENTS[0] as the canonical
-        reference for byte-equivalence comparison. If the list is unsorted, the
-        canonical anchor shifts silently when an entry is prepended, sending engineers
-        to update the wrong agent file on a drift failure.
+        CANARY_AGENTS is sorted by construction (built via sorted()), so
+        CANARY_AGENTS[0] is a stable canonical anchor for
+        TestFileBasedOutputBlockConsistency regardless of REVIEWER_AGENTS order.
+        Keeping REVIEWER_AGENTS itself sorted preserves readable, stable diffs and
+        matches the sorted membership CANARY_AGENTS derives from.
         """
         assert sorted(REVIEWER_AGENTS) == REVIEWER_AGENTS, (
-            "REVIEWER_AGENTS is not sorted alphabetically. Keep it sorted so "
-            "REVIEWER_AGENTS[0] is a stable canonical anchor for "
-            "TestFileBasedOutputBlockConsistency."
+            "REVIEWER_AGENTS is not sorted alphabetically. Keep it sorted for "
+            "stable diffs and to match the sorted CANARY_AGENTS membership."
         )
 
     def test_no_uncategorized_agents(self):
@@ -127,7 +142,7 @@ class TestReviewerAgentRoster:
         - If it is a code-review dispatched reviewer → add to REVIEWER_AGENTS
         - If it is not a reviewer → add to NON_REVIEWER_AGENTS with a comment
         """
-        known = set(REVIEWER_AGENTS) | set(NON_REVIEWER_AGENTS)
+        known = set(CANARY_AGENTS) | set(NON_REVIEWER_AGENTS)
         actual = {path.name for path in AGENTS_DIR.glob("*.md")}
         uncategorized = actual - known
         assert not uncategorized, (
@@ -200,21 +215,21 @@ class TestFileBasedOutputBlockConsistency:
     def test_file_based_output_block_identical_across_reviewers(self):
         """All reviewer agents must carry a byte-identical ### File-based output block.
 
-        The block text is identical across all 8 agents modulo the '# <agent-name>'
-        H1 line (which is normalized before comparison). Any divergence means one
-        agent has drifted from the shared protocol — the agent file must be updated
-        to match the canonical form.
+        The block text is identical across all canary agents modulo the
+        '# <agent-name>' H1 line (which is normalized before comparison). Any
+        divergence means one agent has drifted from the shared protocol — the agent
+        file must be updated to match the canonical form.
 
-        The canonical reference is the first entry in REVIEWER_AGENTS (sorted order).
+        The canonical reference is the first entry in CANARY_AGENTS (sorted order).
         When the canonical block changes, all other agents must be updated in the
         same commit.
         """
         blocks = {}
-        for name in REVIEWER_AGENTS:
+        for name in CANARY_AGENTS:
             path = AGENTS_DIR / name
             blocks[name] = self._extract_file_based_output_block(path)
 
-        canonical_name = REVIEWER_AGENTS[0]
+        canonical_name = CANARY_AGENTS[0]
         canonical_block = blocks[canonical_name]
 
         mismatched = [
@@ -303,10 +318,10 @@ class TestAgentFrontmatter:
     def test_model_pinned_to_expected_value(self, agent_path):
         """Each agent must declare the exact model its role requires.
 
-        Reviewers (REVIEWER_AGENTS) → 'sonnet' per CLAUDE.md.
+        Reviewers (CANARY_AGENTS) → 'sonnet' per CLAUDE.md.
         Non-reviewers → model declared in NON_REVIEWER_MODELS.
         """
-        expected = {a: "sonnet" for a in REVIEWER_AGENTS} | NON_REVIEWER_MODELS
+        expected = {a: "sonnet" for a in CANARY_AGENTS} | NON_REVIEWER_MODELS
         fm = parse_frontmatter(agent_path)
         actual_model = fm.get("model")
         expected_model = expected.get(agent_path.name)
@@ -323,7 +338,7 @@ class TestAgentFrontmatter:
         (or REVIEWER_AGENTS) will fail here. This mirrors test_no_uncategorized_agents.
         """
         all_agent_names = {p.name for p in AGENTS_DIR.glob("*.md")}
-        mapped_names = set(REVIEWER_AGENTS) | set(NON_REVIEWER_MODELS)
+        mapped_names = set(CANARY_AGENTS) | set(NON_REVIEWER_MODELS)
         uncategorized = all_agent_names - mapped_names
         assert not uncategorized, (
             f"Agent files have no expected-model entry: {sorted(uncategorized)}. "

@@ -209,6 +209,8 @@ Schema-change diffs nominally route three ways — `staff-backend-engineer` (des
 
 For guidance on extending, splitting, or spawning personas, see [design-decisions.md §9](docs/design-decisions.md#9-reviewer-persona-roster-operations).
 
+**`skill-fidelity-reviewer`** — a reviewer spawned by `/ready-for-review` (not by the two dispatchers, so it is outside the specialist-roster count above). It checks whether the skills a branch's work invoked were actually executed or silently abbreviated: it reads each invoked skill's body fresh and compares it to the delivered diff, so the observer never shares the deviating session's reasoning. Tools `Read`, `Grep`, `Glob`, `Write` — no `Bash`, because its task is closed-form (it is handed the skill-invocation list, not raw transcripts). Like the specialist reviewers, it writes findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` under `findings_path:` and returns only a pointer line.
+
 **`code-writer`** — a non-reviewer Sonnet agent that implements delegated code changes and self-reviews its own diff before returning, verifying it against the relevant `staff-*` reviewer angles so review-finding-class defects are caught in its own context rather than as a parent round-trip. Dispatched by the parent in place of `general-purpose` for code-writing; see `claude/.claude/CLAUDE.md` "Model Routing" and `docs/design-decisions.md` §11.
 
 ### Configuration files

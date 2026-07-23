@@ -13,8 +13,8 @@ argument-hint: "[optional PR context]"
 # Ready-for-review gate
 
 Run steps in order. Halt on failures unless the step is marked **warn
-only**. After fixes produced by step 3, re-run step 2 — do not re-run
-step 3 on its own output.
+only**. After fixes produced by step 3 or step 4, re-run
+step 2 — do not re-run either on its own output.
 
 ## 0. Activate gate session
 
@@ -35,8 +35,8 @@ If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStar
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base:
   `gh pr view --json number,baseRefName`
-- If no PR exists, step 5 will open one after verification and review.
-- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 8's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
+- If no PR exists, step 6 will open one after verification and review.
+- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 9's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
 ## 2. Verification (halt on fail)
 
@@ -81,7 +81,41 @@ own output (loop risk).
 
 Unskippable — markdown, skill, and config diffs benefit from the same pass.
 
-## 4. Sync PR description (warn + fix; skip if no PR)
+## 4. Skill-procedural-fidelity review (halt on findings)
+
+Check that skills this branch invoked were executed, not silently abbreviated —
+run by an independent observer so a rationalization in the working session can't
+wave the deviation through. List what the branch invoked:
+
+```bash
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+python3 ~/.claude/scripts/transcript-analysis.py skill-invocation \
+  --branches "$BRANCH" --include-subagents
+```
+
+Omit `--projects` — its repo-scoped default is the minimization control keeping
+other projects' skill names out of the output; passing one here is a bug.
+
+- Empty list → state no skills were invoked on this branch and continue (an
+  affirmative no-op, not a silent skip).
+- Otherwise spawn `skill-fidelity-reviewer` **synchronously** with: the list; the
+  **text** of step 3's cumulative diff (`git diff $(git merge-base
+  origin/$BASE_REF HEAD)...HEAD` — text, not the range, since the agent has no
+  `Bash`); the plan path if one exists; and `findings_path:
+  agent-reviews/skill-fidelity-reviewer-<epoch>-<slug>.md` (same convention as
+  `/code-review`). `Read` the findings file after it returns.
+
+Name the pipeline's own skills **out of scope** in the prompt (the agent body
+also excludes them) — `code-review`, `plan-review`, `ready-for-review`,
+`skill-review`, `agent-review`, plus this run's still-executing invocations —
+else the reviewer audits the gate running it.
+
+**Halt on a silent-abbreviation finding.** The escape hatch is stating the
+deviation with a rationale — a low bar. Fix findings in a new commit (normal
+staged-diff `/code-review` + marker gate), then return to step 2; don't re-run
+this step on its own output.
+
+## 5. Sync PR description (warn + fix; skip if no PR)
 
 Invoke the `sync-pr-description` skill via the Skill tool against this
 branch's PR. It compares the body against branch state, verifies content
@@ -89,10 +123,10 @@ claims, preserves coordination steps, and applies the fix with
 `gh pr edit`. Warn + fix; skip only if no PR exists. Unskippable when a
 PR exists — markdown, skill, and config diffs benefit from the same pass.
 
-## 5. Create PR if missing (skip if PR already exists)
+## 6. Create PR if missing (skip if PR already exists)
 
 Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
-Body (omit `$ARGUMENTS` if empty; use single-quoted `<<'EOF'` heredoc; capture PR number for step 6). If `/code-review` returned a `## Deferred review findings` block at review time (≥1 DEFER, no open PR), assign it to `DEFERRED_FINDINGS` and it will be spliced in above; otherwise set `DEFERRED_FINDINGS` to empty string:
+Body (omit `$ARGUMENTS` if empty; use single-quoted `<<'EOF'` heredoc; capture PR number for step 7). If `/code-review` returned a `## Deferred review findings` block at review time (≥1 DEFER, no open PR), assign it to `DEFERRED_FINDINGS` and it will be spliced in above; otherwise set `DEFERRED_FINDINGS` to empty string:
 ```
 ## Summary
 $(git log $(git merge-base origin/$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main) HEAD)..HEAD --format="- %s")
@@ -102,20 +136,20 @@ $ARGUMENTS
 $DEFERRED_FINDINGS
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
-## 6. Final hygiene recheck (halt on fail)
+## 7. Final hygiene recheck (halt on fail)
 
-Steps 3 and 4 may have produced new commits or body edits. Reconfirm:
+Steps 3, 4, and 5 may have produced new commits or body edits. Reconfirm:
 
 - Working tree is clean.
 - All commits are pushed. If `git status` shows the branch ahead of
-  `origin/<branch>` because steps 2/3 produced fix commits, push them
+  `origin/<branch>` because steps 2/3/4 produced fix commits, push them
   now — those commits are inside the approved scope of this gate and
   the user does not need to re-authorize the push. After pushing,
   re-verify the branch is no longer ahead.
 - PR body edit (if any) landed — re-fetch with `gh pr view` and confirm.
-- Branch is not behind the base branch — if steps 3–5 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
+- Branch is not behind the base branch — if steps 3–6 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
 
-## 7. CI status (warn only)
+## 8. CI status (warn only)
 
 Run `gh pr checks <n>`:
 - All green → continue.
@@ -125,7 +159,7 @@ Run `gh pr checks <n>`:
   Do not auto-halt — sometimes the human reviewer wants to see the
   failure themselves — but make the failure explicit before handoff.
 
-## 8. Record gate completion + deactivate session
+## 9. Record gate completion + deactivate session
 
 If every halt-on-fail step above passed, record the completed gate
 and remove the active-session marker:
@@ -146,7 +180,7 @@ Removes only this session's file. If the skill errors before reaching this step,
 
 **Do NOT write the completion marker if:**
 
-- Any halt-on-fail step (1, 2, 3, 6) produced findings that weren't
+- Any halt-on-fail step (1, 2, 3, 4, 7) produced findings that weren't
   fixed in this session.
 - The user asked you to present findings without finishing the gate.
 - You are not in a git repository.
