@@ -160,10 +160,18 @@ class TestBashGitModeDependentWrites:
         assert run_hook(HOOK, bash_input("git symbolic-ref HEAD refs/heads/x", agent_type="staff-sdet")) == "deny"
 
     def test_reviewer_git_fsck_lost_found_denied(self):
-        """`git fsck --lost-found` writes recovered dangling objects into
-        .git/lost-found/ — read-only bare form, write-capable with a flag, same
-        shape as branch/tag/reflog."""
+        """`git fsck` is excluded from the reviewer's read-only subcommands at
+        the subcommand level (it can write recovered objects into
+        .git/lost-found/ with --lost-found), so EVERY `git fsck` denies
+        regardless of flags — the same subcommand-level over-deny as `git
+        branch`, not a --lost-found-specific flag gate."""
         assert run_hook(HOOK, bash_input("git fsck --lost-found", agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_git_fsck_bare_over_denied(self):
+        """Accepted false-positive: bare `git fsck` (read-only) also denies,
+        because the exclusion is subcommand-level — pins that the over-deny is
+        the whole subcommand, not just its --lost-found write flag."""
+        assert run_hook(HOOK, bash_input("git fsck", agent_type="staff-sdet")) == "deny"
 
     def test_reviewer_git_branch_bare_list_over_denied(self):
         """Accepted false-positive: bare `git branch` (list) is read-only but
@@ -224,8 +232,24 @@ class TestBashInPlaceEditFamily:
 
     def test_reviewer_ruff_check_without_fix_allowed(self):
         # ruff check is read-only linting — stays allowed; only ruff format
-        # and ruff check --fix deny.
+        # and any --fix* form deny.
         assert run_hook(HOOK, bash_input("ruff check src/x.py", agent_type="staff-backend-engineer")) == "allow"
+
+    def test_reviewer_ruff_check_fix_only_denied(self):
+        # --fix-only writes to disk exactly like --fix; the --fix token-prefix
+        # match catches it (it did not under the old literal --fix check).
+        assert run_hook(HOOK, bash_input("ruff check --fix-only src/x.py", agent_type="staff-backend-engineer")) == "deny"
+
+    def test_reviewer_ruff_bare_fix_denied(self):
+        # Bare `ruff --fix` (no explicit check subcommand) writes; gating on
+        # the --fix flag rather than a literal `check` token catches it.
+        assert run_hook(HOOK, bash_input("ruff --fix src/x.py", agent_type="staff-backend-engineer")) == "deny"
+
+    def test_reviewer_ruff_fixable_without_fix_allowed(self):
+        # `--fixable` filters which rules are fixable but writes nothing on its
+        # own; exact --fix / --fix-only token matching (not a --fix* prefix)
+        # keeps this read-only linter invocation allowed.
+        assert run_hook(HOOK, bash_input("ruff check --fixable I001 src/x.py", agent_type="staff-backend-engineer")) == "allow"
 
     def test_reviewer_black_denied(self):
         assert run_hook(HOOK, bash_input("black src/x.py", agent_type="staff-backend-engineer")) == "deny"
@@ -340,8 +364,14 @@ class TestCommandWordResolution:
     def test_reviewer_path_form_runner_wrapping_formatter_denied(self):
         # A path-form runner (/usr/bin/python) wrapping a formatter resolves
         # past the runner to the formatter, same as the bare-name form —
-        # locks the path-form runner alternation against silent removal.
+        # locks the basename runner match against silent removal.
         assert run_hook(HOOK, bash_input("/usr/bin/python -m black src/x.py", agent_type="staff-backend-engineer")) == "deny"
+
+    def test_reviewer_path_form_non_subset_runner_denied(self):
+        # pnpm is a runner covered only by basename (it had no path-qualified
+        # alternation under the prior design) — exercises that ALL runners,
+        # not a subset, resolve through their absolute path.
+        assert run_hook(HOOK, bash_input("/usr/local/bin/pnpm exec prettier --write x.ts", agent_type="staff-sdet")) == "deny"
 
     # Runner + connector sub-token (run/exec): the connector must be skipped so
     # the command word resolves past it — the most complex branch in
@@ -407,6 +437,17 @@ class TestKnownGapBypass:
         # `bash -c "sed -i ..."`: the scan sees the glued token `"sed`, not
         # `sed`. Documented as an accepted gap under the cooperative model.
         assert run_hook(HOOK, bash_input('bash -c "sed -i s/a/b/ x"', agent_type="staff-sdet")) == "allow"
+
+    def test_reviewer_sed_combined_short_option_cluster_allowed(self):
+        # Documented "Known gaps" miss: the -i-prefix check only matches a
+        # token starting `-i`, so a combined cluster (`-ni`) is not caught.
+        # Pin the accepted allow so a future change to the matcher is visible.
+        assert run_hook(HOOK, bash_input("sed -ni s/a/b/p x.txt", agent_type="staff-sdet")) == "allow"
+
+    def test_reviewer_sed_long_in_place_flag_allowed(self):
+        # Same documented gap: GNU sed's `--in-place` long form starts `--i`,
+        # not `-i`, so it is not caught. Pin the accepted allow.
+        assert run_hook(HOOK, bash_input("sed --in-place s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
 
 
 class TestChainOperators:

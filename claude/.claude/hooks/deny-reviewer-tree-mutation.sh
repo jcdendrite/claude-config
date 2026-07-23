@@ -48,9 +48,11 @@
 #   - eslint: writes only with `--fix`; without it, only reports — a reviewer
 #     legitimately lints, so only `--fix` denies.
 #   - ruff: `ruff format` denies unconditionally (any invocation, like the
-#     pure-formatter tier above — there is no --check exemption); only
-#     `ruff check` is flag-gated, denying on `--fix` and otherwise staying
-#     allowed as read-only linting.
+#     pure-formatter tier above). Otherwise ruff denies whenever a --fix /
+#     --fix-only token is present (both write to disk), independent of a
+#     literal `check` subcommand token — so `ruff check --fix`, `ruff check
+#     --fix-only`, and bare `ruff --fix` are all caught; `ruff check` alone
+#     stays allowed as read-only linting.
 #
 # Known gaps (what this model does NOT close):
 #   - Arbitrary Bash write-target resolution (`cp scratch src/x`,
@@ -60,7 +62,17 @@
 #     in-place-edit family below cover every mutation vector seen in the
 #     transcript scan. The residual raw-Bash copy/redirect path is covered
 #     by the reviewer-agent prose clause and the fail-closed principle that
-#     reviewers work in /tmp.
+#     reviewers work in /tmp. A related but distinct vector: a Bash-created
+#     symlink that launders the /tmp exemption (`ln -s src/x /tmp/link`, then a
+#     Write to `/tmp/link`) — the file-write arm matches the literal `/tmp/*`
+#     path and does not resolve symlinks, so the OS write lands on the tracked
+#     file. Unlike the unbounded copy/redirect gap this one is bounded and
+#     could in principle be closed by resolving the path (realpath) before the
+#     match — but that closure would itself resolve `/tmp` to `/private/tmp` on
+#     macOS and false-deny every legitimate reviewer /tmp write (see the macOS
+#     `/tmp` note below), so it is deliberately left conceded; the vector also
+#     requires a deliberate two-step setup no cooperative reviewer performs by
+#     accident.
 #   - Combined short-option clusters (`sed -ni`, `perl -pi`) and GNU sed's
 #     `--in-place` long form are not matched by the `-i`-prefix check below
 #     — only literal `-i`/`-i<suffix>` tokens are, a missed mutation for the
@@ -167,9 +179,13 @@ _fragment_command_word() {
       esac
       expect_after_runner=false
     fi
-    case "$word" in
-      sudo|doas|env|command|time|nice|xargs|npx|pnpm|yarn|bunx|bun|pipx|uvx|uv|poetry|pipenv|rye|hatch|pdm|python|python2|python3|node|deno \
-      |*/sudo|*/env|*/xargs|*/python|*/python2|*/python3|*/node|*/deno|*/uv|*/npx)
+    # Match the runner set against the command's basename, so an absolute or
+    # relative path form (/usr/local/bin/pnpm, ~/.nvm/.../bin/node) resolves
+    # the same as the bare name — every runner is covered by path, with no
+    # separate path-qualified alternation that could cover only a subset or
+    # drift from the bare list.
+    case "${word##*/}" in
+      sudo|doas|env|command|time|nice|xargs|npx|pnpm|yarn|bunx|bun|pipx|uvx|uv|poetry|pipenv|rye|hatch|pdm|python|python2|python3|node|deno)
         expect_after_runner=true
         continue ;;
     esac
@@ -308,12 +324,18 @@ case "$TOOL_NAME" in
       # without --fix, `sed`/`perl` without -i) are ordinary review actions a
       # reviewer legitimately runs, so only the mutating flag/subcommand denies.
       if _fragment_invokes_tool "$fragment" ruff; then
-        if _fragment_has_token "$fragment" format; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: 'ruff format' rewrites files in place. $SANCTIONED_ALTERNATIVE"
-          exit 0
-        fi
-        if _fragment_has_token "$fragment" check && _fragment_has_token "$fragment" --fix; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: 'ruff check --fix' rewrites files in place. $SANCTIONED_ALTERNATIVE"
+        # Deny `ruff format` (any invocation) and any ruff invocation carrying
+        # a --fix or --fix-only token (both write to disk). Matched as exact
+        # tokens, NOT a --fix* prefix, so the read-only `--fixable` selector
+        # (`ruff check --fixable RULE`, which filters fixable rules without
+        # writing) is not false-denied — that would contradict keeping linter
+        # reads available. Gated on the flag, NOT on a literal `check` token,
+        # so `ruff check --fix-only` and bare `ruff --fix` (implicit-check
+        # form) are both caught; `ruff check` alone stays allowed.
+        if _fragment_has_token "$fragment" format \
+          || _fragment_has_token "$fragment" --fix \
+          || _fragment_has_token "$fragment" --fix-only; then
+          emit_deny "Blocked by reviewer-tree-mutation hook: 'ruff format' / 'ruff --fix' rewrites files in place. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
       fi
