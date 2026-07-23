@@ -15,6 +15,7 @@ from helpers import (
     run_hook_reason,
     write_input,
 )
+from test_agent_roster import CANARY_AGENTS
 
 HOOK = HOOKS_DIR / "deny-reviewer-tree-mutation.sh"
 
@@ -187,17 +188,22 @@ class TestBashInPlaceEditFamily:
     def test_reviewer_terraform_fmt_denied(self):
         assert run_hook(HOOK, bash_input("terraform fmt x.tf", agent_type="staff-platform-engineer")) == "deny"
 
-    def test_reviewer_terraform_fmt_check_allowed(self):
-        assert run_hook(HOOK, bash_input("terraform fmt -check x.tf", agent_type="staff-platform-engineer")) == "allow"
+    def test_reviewer_tofu_fmt_denied(self):
+        # tofu shares the terraform code path via the `||` alternation; lock
+        # it so a refactor collapsing or typoing that branch fails a test.
+        assert run_hook(HOOK, bash_input("tofu fmt x.tf", agent_type="staff-platform-engineer")) == "deny"
 
-    def test_reviewer_terraform_fmt_write_false_allowed(self):
-        assert run_hook(HOOK, bash_input("terraform fmt -write=false x.tf", agent_type="staff-platform-engineer")) == "allow"
+    def test_reviewer_terraform_validate_allowed(self):
+        # terraform/tofu gate on the fmt subcommand, so read-only subcommands
+        # (validate, plan) stay available to a reviewer.
+        assert run_hook(HOOK, bash_input("terraform validate", agent_type="staff-platform-engineer")) == "allow"
+
+    def test_reviewer_gofmt_denied(self):
+        # Pure formatter: denies unconditionally, no -w gating.
+        assert run_hook(HOOK, bash_input("gofmt main.go", agent_type="staff-backend-engineer")) == "deny"
 
     def test_reviewer_gofmt_dash_w_denied(self):
         assert run_hook(HOOK, bash_input("gofmt -w main.go", agent_type="staff-backend-engineer")) == "deny"
-
-    def test_reviewer_gofmt_without_write_flag_allowed(self):
-        assert run_hook(HOOK, bash_input("gofmt main.go", agent_type="staff-backend-engineer")) == "allow"
 
     def test_reviewer_prettier_write_denied(self):
         assert run_hook(HOOK, bash_input("npx prettier --write src/x.ts", agent_type="staff-frontend-engineer")) == "deny"
@@ -206,6 +212,8 @@ class TestBashInPlaceEditFamily:
         assert run_hook(HOOK, bash_input("npx eslint --fix src/x.ts", agent_type="staff-frontend-engineer")) == "deny"
 
     def test_reviewer_eslint_without_fix_allowed(self):
+        # eslint is a linter, not a pure formatter — its read-only report form
+        # stays allowed; only --fix denies.
         assert run_hook(HOOK, bash_input("npx eslint src/x.ts", agent_type="staff-frontend-engineer")) == "allow"
 
     def test_reviewer_ruff_format_denied(self):
@@ -215,6 +223,8 @@ class TestBashInPlaceEditFamily:
         assert run_hook(HOOK, bash_input("ruff check --fix src/x.py", agent_type="staff-backend-engineer")) == "deny"
 
     def test_reviewer_ruff_check_without_fix_allowed(self):
+        # ruff check is read-only linting — stays allowed; only ruff format
+        # and ruff check --fix deny.
         assert run_hook(HOOK, bash_input("ruff check src/x.py", agent_type="staff-backend-engineer")) == "allow"
 
     def test_reviewer_black_denied(self):
@@ -225,9 +235,6 @@ class TestBashInPlaceEditFamily:
 
     def test_reviewer_rustfmt_denied(self):
         assert run_hook(HOOK, bash_input("rustfmt src/x.rs", agent_type="staff-backend-engineer")) == "deny"
-
-    def test_reviewer_rustfmt_check_allowed(self):
-        assert run_hook(HOOK, bash_input("rustfmt --check src/x.rs", agent_type="staff-backend-engineer")) == "allow"
 
 
 class TestBuiltinAgents:
@@ -330,6 +337,12 @@ class TestCommandWordResolution:
     def test_reviewer_absolute_path_black_denied(self):
         assert run_hook(HOOK, bash_input("/usr/bin/black src/x.py", agent_type="staff-backend-engineer")) == "deny"
 
+    def test_reviewer_path_form_runner_wrapping_formatter_denied(self):
+        # A path-form runner (/usr/bin/python) wrapping a formatter resolves
+        # past the runner to the formatter, same as the bare-name form —
+        # locks the path-form runner alternation against silent removal.
+        assert run_hook(HOOK, bash_input("/usr/bin/python -m black src/x.py", agent_type="staff-backend-engineer")) == "deny"
+
     # Runner + connector sub-token (run/exec): the connector must be skipped so
     # the command word resolves past it — the most complex branch in
     # _fragment_command_word, and the only one otherwise untested.
@@ -340,33 +353,50 @@ class TestCommandWordResolution:
         assert run_hook(HOOK, bash_input("pnpm exec eslint --fix src/x.ts", agent_type="staff-frontend-engineer")) == "deny"
 
 
-class TestDocumentedOverDenies:
-    """black/isort/ruff format are denied even with --check/--diff, unlike
-    terraform/rustfmt (Known gaps). Pin the deliberate deviation so a future
-    'fix' that adds a --check exemption is a visible, tested behavior change."""
+class TestPureFormatterCheckModesDenied:
+    """Pure formatters (black, isort, gofmt, prettier, rustfmt, terraform/tofu
+    fmt) deny on ANY invocation, including their read-only check/diff modes: a
+    reviewer reads the diff, it does not run the formatter even to verify (see
+    hook Grounding). Pins the deliberate over-deny so a future change re-adding
+    a check-mode exemption is a visible, tested behavior change."""
 
-    def test_reviewer_black_check_still_denied(self):
+    def test_reviewer_black_check_denied(self):
         assert run_hook(HOOK, bash_input("black --check src/x.py", agent_type="staff-backend-engineer")) == "deny"
 
-    def test_reviewer_isort_diff_still_denied(self):
+    def test_reviewer_isort_diff_denied(self):
         assert run_hook(HOOK, bash_input("isort --diff src/x.py", agent_type="staff-backend-engineer")) == "deny"
 
-    def test_reviewer_ruff_format_check_still_denied(self):
+    def test_reviewer_ruff_format_check_denied(self):
         assert run_hook(HOOK, bash_input("ruff format --check src/x.py", agent_type="staff-backend-engineer")) == "deny"
 
+    def test_reviewer_gofmt_diff_denied(self):
+        assert run_hook(HOOK, bash_input("gofmt -d main.go", agent_type="staff-backend-engineer")) == "deny"
 
-class TestReadOnlyFormatInvocationsAllowed:
-    """The flag-gated tools without their write flag are read-only for a
-    reviewer — only the deny direction was covered before."""
+    def test_reviewer_rustfmt_check_denied(self):
+        assert run_hook(HOOK, bash_input("rustfmt --check src/x.rs", agent_type="staff-backend-engineer")) == "deny"
+
+    def test_reviewer_prettier_check_denied(self):
+        assert run_hook(HOOK, bash_input("npx prettier --check src/x.ts", agent_type="staff-frontend-engineer")) == "deny"
+
+    def test_reviewer_terraform_fmt_check_denied(self):
+        assert run_hook(HOOK, bash_input("terraform fmt -check x.tf", agent_type="staff-platform-engineer")) == "deny"
+
+    def test_reviewer_terraform_fmt_write_false_denied(self):
+        # The exact flag from the hook's motivating-incident comment — the old
+        # exemption is gone, so -write=false now denies like every other fmt.
+        assert run_hook(HOOK, bash_input("terraform fmt -write=false x.tf", agent_type="staff-platform-engineer")) == "deny"
+
+
+class TestReadOnlyDualUseInvocationsAllowed:
+    """Dual-use text tools without their write flag are read-only for a
+    reviewer and must stay allowed — only the -i form denies. (Linter read
+    forms, ruff check / eslint, are covered in TestBashInPlaceEditFamily.)"""
 
     def test_reviewer_sed_without_dash_i_allowed(self):
         assert run_hook(HOOK, bash_input("sed s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
 
     def test_reviewer_perl_without_dash_i_allowed(self):
         assert run_hook(HOOK, bash_input("perl -pe s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
-
-    def test_reviewer_prettier_check_allowed(self):
-        assert run_hook(HOOK, bash_input("npx prettier --check src/x.ts", agent_type="staff-frontend-engineer")) == "allow"
 
 
 class TestKnownGapBypass:
@@ -490,3 +520,25 @@ class TestFullRoster:
         for agent in roster:
             decision = run_hook(HOOK, bash_input("sed -i s/a/b/ src/x.ts", agent_type=agent))
             assert decision == "deny", f"{agent} did not deny a mutation"
+
+    def test_file_backed_reviewers_are_all_gated(self):
+        """Every file-backed reviewer agent must appear in the gate roster.
+
+        The gate roster (_LIB_REVIEW_ONLY_AGENTS) and the file-backed reviewer
+        roster (CANARY_AGENTS in test_agent_roster.py — the agents/*.md
+        personas that emit findings output) are deliberately kept as separate
+        sources of truth: the gate additionally carries the harness built-ins
+        Explore/Plan, which have no .md file, so the relation is subset, not
+        equality. Without this cross-check the split is a silent-drift hazard:
+        a new staff-* reviewer registered in CANARY_AGENTS (forced by
+        test_doc_counts) but forgotten in _LIB_REVIEW_ONLY_AGENTS would be
+        un-gated and free to mutate the tree under review. This test turns
+        that omission into a loud failure."""
+        gate_roster = set(_review_only_roster())
+        file_backed_reviewers = {name.removesuffix(".md") for name in CANARY_AGENTS}
+        missing = file_backed_reviewers - gate_roster
+        assert not missing, (
+            f"file-backed reviewer(s) {sorted(missing)} are registered in "
+            f"CANARY_AGENTS but missing from _LIB_REVIEW_ONLY_AGENTS — they "
+            f"would be un-gated and able to mutate the tree under review"
+        )

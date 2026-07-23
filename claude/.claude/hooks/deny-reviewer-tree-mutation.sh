@@ -27,26 +27,30 @@
 # (code.claude.com/docs/en/hooks) already consumed by
 # nudge-error-mode-analysis.sh / nudge-handoff-near-context-cap.sh.
 #
-# Grounding — each in-place-edit family entry below is denied because the
-# tool's OWN documented flag is what makes an invocation read-only; absent
-# that flag, the tool writes:
-#   - terraform fmt / tofu fmt: writes by default. `-check` ("don't write
-#     to files; return nonzero if input would change") and `-write=false`
-#     ("don't write to source files") are Terraform/OpenTofu's own
-#     read-only flags — exempted.
-#   - sed -i / perl -i: `-i`/`--in-place` (a token starting with `-i`) is
-#     the in-place-edit flag for both; without it, both print to stdout.
-#   - gofmt: writes only with `-w` ("write result to source file instead
-#     of stdout"); without it, prints to stdout.
-#   - prettier: writes only with `--write`; without it, prints to stdout.
-#   - eslint: writes only with `--fix`; without it, only reports.
-#   - ruff format: writes by default (no --check exemption is granted here
-#     — see Known gaps). ruff check: read-only unless `--fix` is present.
-#   - black / isort: write by default; no --check/--diff exemption is
-#     granted here (see Known gaps).
-#   - rustfmt: writes by default. `--check` ("run in 'check' mode... exits
-#     with 1 and prints a diff if formatting is required") is rustfmt's own
-#     read-only flag — exempted.
+# Grounding — the in-place-edit family splits into two tiers:
+#
+# Pure code formatters (black, isort, gofmt, prettier, rustfmt, and
+# terraform/tofu `fmt`) are denied on ANY invocation, regardless of flags. A
+# review-only agent reads diffs; it never reformats the tree under review, so
+# no read-only mode is exempted — over-denying a check-mode invocation
+# (`rustfmt --check`, `prettier --check`, `terraform fmt -check`) is a
+# sanctioned deny, not a missed mutation: a reviewer reads the diff, it does
+# not need to run the formatter even to verify. terraform/tofu are gated on
+# the `fmt` subcommand so their read-only subcommands (validate, plan) stay
+# available. This is the deliberate simplification over per-tool write-flag
+# parsing — one uniform rule for the tier that has no read-only reviewer use.
+#
+# Dual-use tools KEEP write-flag gating, because their bare / read-only forms
+# are ordinary review actions and denying them would break real review work:
+#   - sed / perl: `-i` (a token starting with `-i`) is the in-place-edit flag;
+#     without it both print to stdout — a reviewer runs `sed -n`, `perl -ne`
+#     constantly, so only the `-i` form denies.
+#   - eslint: writes only with `--fix`; without it, only reports — a reviewer
+#     legitimately lints, so only `--fix` denies.
+#   - ruff: `ruff format` denies unconditionally (any invocation, like the
+#     pure-formatter tier above — there is no --check exemption); only
+#     `ruff check` is flag-gated, denying on `--fix` and otherwise staying
+#     allowed as read-only linting.
 #
 # Known gaps (what this model does NOT close):
 #   - Arbitrary Bash write-target resolution (`cp scratch src/x`,
@@ -59,11 +63,12 @@
 #     reviewers work in /tmp.
 #   - Combined short-option clusters (`sed -ni`, `perl -pi`) and GNU sed's
 #     `--in-place` long form are not matched by the `-i`-prefix check below
-#     — only literal `-i`/`-i<suffix>` tokens are. `black --check` /
-#     `isort --check`/`--diff` / `ruff format --check` are denied
-#     unconditionally rather than exempted, unlike terraform/rustfmt above
-#     — a false deny on a genuinely read-only invocation of these three, not
-#     a missed mutation.
+#     — only literal `-i`/`-i<suffix>` tokens are, a missed mutation for the
+#     dual-use text tools. Separately, every pure formatter's read-only check
+#     mode (`rustfmt --check`, `prettier --check`, `terraform fmt -check`,
+#     `black --check`, `ruff format --check`) is denied by the unconditional
+#     rule above — a false deny on a genuinely read-only invocation, not a
+#     missed mutation (see Grounding).
 #   - Does not resolve a fragment's effective cwd (unlike
 #     require-worktree-for-git-writes.sh's -C/cd threading): a reviewer
 #     never has a legitimate git-write or in-place-format target anywhere,
@@ -272,37 +277,36 @@ case "$TOOL_NAME" in
       # Closed in-place-edit family. Each tool word is matched the same way
       # _lib_fragment_invokes_git matches "git": an exact word, or a word
       # ending in "/<tool>" (absolute/relative path invocation).
+      # Pure code formatters. A review-only agent reads diffs; it never
+      # reformats the tree under review, so these deny on ANY invocation —
+      # no read-only mode is exempted. This is the deliberate simplification
+      # over per-tool write-flag parsing (-w / --write / --check /
+      # -write=false): under the cooperative threat model, over-denying a
+      # formatter's check mode (e.g. `rustfmt --check`, `prettier --check`)
+      # is a clear sanctioned deny, not a mutation escape — a reviewer reads
+      # the diff, it does not need to run the formatter even to verify.
+      for formatter in black isort gofmt prettier rustfmt; do
+        if _fragment_invokes_tool "$fragment" "$formatter"; then
+          emit_deny "Blocked by reviewer-tree-mutation hook: '$formatter' reformats files and a review-only agent never reformats the tree under review. $SANCTIONED_ALTERNATIVE"
+          exit 0
+        fi
+      done
+
+      # terraform / tofu are multi-command tools; only the fmt subcommand
+      # writes. Gate on the fmt subcommand so read-only subcommands (validate,
+      # plan) stay available, but deny fmt regardless of -check / -write=false
+      # — same over-deny-the-check-mode stance as the pure formatters above.
       if _fragment_invokes_tool "$fragment" terraform || _fragment_invokes_tool "$fragment" tofu; then
-        if _fragment_has_token "$fragment" fmt \
-          && ! _fragment_has_token "$fragment" -check \
-          && ! _fragment_has_token "$fragment" -write=false; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: 'terraform/tofu fmt' rewrites files in place unless -check or -write=false is given. $SANCTIONED_ALTERNATIVE"
+        if _fragment_has_token "$fragment" fmt; then
+          emit_deny "Blocked by reviewer-tree-mutation hook: 'terraform/tofu fmt' reformats files and a review-only agent never reformats the tree under review. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
       fi
 
-      if _fragment_invokes_tool "$fragment" sed || _fragment_invokes_tool "$fragment" perl; then
-        if _fragment_has_token_prefix "$fragment" -i; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: 'sed -i'/'perl -i' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
-          exit 0
-        fi
-      fi
-
-      if _fragment_invokes_tool "$fragment" gofmt && _fragment_has_token "$fragment" -w; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: 'gofmt -w' rewrites the source file in place. $SANCTIONED_ALTERNATIVE"
-        exit 0
-      fi
-
-      if _fragment_invokes_tool "$fragment" prettier && _fragment_has_token "$fragment" --write; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: 'prettier --write' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
-        exit 0
-      fi
-
-      if _fragment_invokes_tool "$fragment" eslint && _fragment_has_token "$fragment" --fix; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: 'eslint --fix' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
-        exit 0
-      fi
-
+      # Linters and text tools KEEP write-flag gating — unlike the pure
+      # formatters above, their bare / read-only forms (`ruff check`, `eslint`
+      # without --fix, `sed`/`perl` without -i) are ordinary review actions a
+      # reviewer legitimately runs, so only the mutating flag/subcommand denies.
       if _fragment_invokes_tool "$fragment" ruff; then
         if _fragment_has_token "$fragment" format; then
           emit_deny "Blocked by reviewer-tree-mutation hook: 'ruff format' rewrites files in place. $SANCTIONED_ALTERNATIVE"
@@ -314,19 +318,16 @@ case "$TOOL_NAME" in
         fi
       fi
 
-      if _fragment_invokes_tool "$fragment" black; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: 'black' rewrites files in place by default. $SANCTIONED_ALTERNATIVE"
+      if _fragment_invokes_tool "$fragment" eslint && _fragment_has_token "$fragment" --fix; then
+        emit_deny "Blocked by reviewer-tree-mutation hook: 'eslint --fix' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
         exit 0
       fi
 
-      if _fragment_invokes_tool "$fragment" isort; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: 'isort' rewrites files in place by default. $SANCTIONED_ALTERNATIVE"
-        exit 0
-      fi
-
-      if _fragment_invokes_tool "$fragment" rustfmt && ! _fragment_has_token "$fragment" --check; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: 'rustfmt' rewrites files in place unless --check is given. $SANCTIONED_ALTERNATIVE"
-        exit 0
+      if _fragment_invokes_tool "$fragment" sed || _fragment_invokes_tool "$fragment" perl; then
+        if _fragment_has_token_prefix "$fragment" -i; then
+          emit_deny "Blocked by reviewer-tree-mutation hook: 'sed -i'/'perl -i' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
+          exit 0
+        fi
       fi
     # <<< here-string, not < <(...) process substitution: _lib_split_fragments
     # emits no trailing newline for a single, unsplit fragment, and a
