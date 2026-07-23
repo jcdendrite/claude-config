@@ -220,8 +220,18 @@ def fake_gh(tmp_path, monkeypatch):
     return _make_env
 
 
-def _run_script(repo: Path, env: dict, args: list[str] | None = None) -> subprocess.CompletedProcess:
-    """Run the cleanup script in repo with the given environment."""
+def _run_script(
+    repo: Path,
+    env: dict,
+    args: list[str] | None = None,
+    stdin=subprocess.DEVNULL,
+) -> subprocess.CompletedProcess:
+    """Run the cleanup script in repo with the given environment.
+
+    stdin defaults to DEVNULL (non-TTY) — every existing caller relies on
+    non-TTY behavior; the TTY/pty tests bypass this helper entirely via
+    direct subprocess.Popen.
+    """
     cmd = [str(_SCRIPT)] + (args or [])
     return subprocess.run(
         cmd,
@@ -230,6 +240,7 @@ def _run_script(repo: Path, env: dict, args: list[str] | None = None) -> subproc
         capture_output=True,
         text=True,
         check=False,
+        stdin=stdin,
     )
 
 
@@ -828,8 +839,9 @@ def _make_tier_b_branch(repo: Path, remote: Path, branch_name: str) -> None:
 class TestTierBReachableNoMergedPR:
     """Branches reachable from origin/main but with no merged PR for this name."""
 
-    def test_reachable_no_pr_deletes_with_tty_stdin(self, fake_gh, tmp_path):
-        """Tier B branch: plain invocation with a TTY stdin auto-deletes, no prompt."""
+    @pytest.mark.parametrize("reply", [b"y\n", b"Y\n"], ids=["lowercase-y", "uppercase-Y"])
+    def test_reachable_no_pr_tty_y_deletes(self, fake_gh, tmp_path, reply):
+        """Tier B branch: TTY stdin prompts [y/N]; replying y or Y deletes it."""
         local, remote = _make_repo_with_remote(tmp_path)
         _make_tier_b_branch(local, remote, "tier-b-branch")
         env = fake_gh({})
@@ -842,6 +854,7 @@ class TestTierBReachableNoMergedPR:
                 stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             os.close(slave_fd)
+            os.write(master_fd, reply)
             proc.wait(timeout=30)
             os.close(master_fd)
         except Exception:
@@ -853,15 +866,90 @@ class TestTierBReachableNoMergedPR:
 
         assert proc.returncode == 0
         stdout = proc.stdout.read().decode()
-        assert "[y/N]" not in stdout
-        assert "prompt" not in stdout.lower()
+        assert "[y/N]" in stdout
         branches = subprocess.run(
             ["git", "branch"], cwd=local, capture_output=True, text=True
         ).stdout
         assert "tier-b-branch" not in branches
 
-    def test_reachable_no_pr_deletes_with_non_tty_stdin(self, fake_gh, tmp_path):
-        """Tier B branch: plain invocation with non-TTY stdin auto-deletes, no prompt."""
+    def test_reachable_no_pr_tty_n_survives(self, fake_gh, tmp_path):
+        """Tier B branch: TTY stdin prompts [y/N]; replying n keeps it."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "tier-b-branch")
+        env = fake_gh({})
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                [str(_SCRIPT)], cwd=local,
+                env=env,
+                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            os.close(slave_fd)
+            os.write(master_fd, b"n\n")
+            proc.wait(timeout=30)
+            os.close(master_fd)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+            raise
+
+        assert proc.returncode == 0
+        stdout = proc.stdout.read().decode()
+        assert "[y/N]" in stdout
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-b-branch" in branches
+
+    def test_two_tier_b_branches_prompt_independently(self, fake_gh, tmp_path):
+        """Two Tier B branches in one TTY run are prompted one at a time,
+        not decided by a single batch answer: a y for the first and an n
+        for the second must produce two separate [y/N] prompts and two
+        independent outcomes."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        # Branch names are chosen so git for-each-ref's default alphabetical
+        # sort prompts "tier-b-first" before "tier-b-second"; that ordering is
+        # what maps the "y\n" reply to the first branch and "n\n" to the second.
+        # Renaming to non-alphabetically-ordered names would silently invert
+        # which branch gets which reply (same dependency the sibling
+        # TestTierBPromptEOFDoesNotAbortPendingTierADeletes class documents).
+        _make_tier_b_branch(local, remote, "tier-b-first")
+        _make_tier_b_branch(local, remote, "tier-b-second")
+        env = fake_gh({})
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                [str(_SCRIPT)], cwd=local,
+                env=env,
+                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            os.close(slave_fd)
+            os.write(master_fd, b"y\n")
+            os.write(master_fd, b"n\n")
+            proc.wait(timeout=30)
+            os.close(master_fd)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+            raise
+
+        assert proc.returncode == 0
+        stdout = proc.stdout.read().decode()
+        assert stdout.count("[y/N]") == 2
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-b-first" not in branches
+        assert "tier-b-second" in branches
+
+    def test_reachable_no_pr_non_tty_skips_with_warning(self, fake_gh, tmp_path):
+        """Tier B branch: non-TTY stdin skips with a warning, never deletes."""
         local, remote = _make_repo_with_remote(tmp_path)
         _make_tier_b_branch(local, remote, "tier-b-branch")
         env = fake_gh({})
@@ -872,17 +960,18 @@ class TestTierBReachableNoMergedPR:
         )
         assert result.returncode == 0
         stdout = result.stdout.decode()
-        assert "[y/N]" not in stdout
-        assert "prompt" not in stdout.lower()
+        assert "no TTY for prompt" in stdout
+        assert "--yes" not in stdout
         branches = subprocess.run(
             ["git", "branch"], cwd=local, capture_output=True, text=True
         ).stdout
-        assert "tier-b-branch" not in branches
+        assert "tier-b-branch" in branches
 
-    def test_tier_a_and_tier_b_both_deleted_together(self, fake_gh, tmp_path):
-        """A Tier A (gh-confirmed) and a Tier B (reachable, no PR) branch in the same
-        plain, non-dry-run run are both deleted, with no cross-contamination between
-        the parallel MERGED_BRANCHES/MERGED_PR_INFO_VALUES arrays."""
+    def test_tier_a_deletes_tier_b_skipped_non_tty(self, fake_gh, tmp_path):
+        """A Tier A (gh-confirmed) branch is deleted and a Tier B
+        (reachable, no PR) branch is skipped with a warning in the same
+        non-TTY run, with no cross-contamination between the parallel
+        MERGED_BRANCHES/MERGED_PR_INFO_VALUES/TIER_VALUES arrays."""
         local, remote = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "tier-a-branch")
         _make_tier_b_branch(local, remote, "tier-b-branch")
@@ -896,19 +985,21 @@ class TestTierBReachableNoMergedPR:
         stdout = result.stdout.decode()
         assert "tier-a-branch" in stdout
         assert "tier-b-branch" in stdout
+        # The removed --yes flag must not resurface in the end-of-run skip
+        # report (plan B11: strip "rerun with --yes" at all three report sites).
+        assert "--yes" not in stdout
         branches = subprocess.run(
             ["git", "branch"], cwd=local, capture_output=True, text=True
         ).stdout
         assert "tier-a-branch" not in branches
-        assert "tier-b-branch" not in branches
+        assert "tier-b-branch" in branches
 
-    def test_open_pr_survives_alongside_tier_b_auto_delete_same_run(self, fake_gh, tmp_path):
+    def test_open_pr_survives_alongside_tier_b_skip_non_tty(self, fake_gh, tmp_path):
         """The reachability-path analogue of the 2026-07-19 incident: an
         open-PR branch and a separate Tier-B-shaped (reachable, no PR)
-        branch in the same run. The open-PR branch must survive and the
-        Tier-B branch must still be deleted — proving the open-PR guard
-        wins per-branch rather than being short-circuited by Tier B's
-        now-unconditional auto-delete for any other candidate in the sweep."""
+        branch in the same non-TTY run. The open-PR branch survives via
+        the open-PR guard, and the Tier-B branch survives via the no-TTY
+        skip — the two guards act independently per branch."""
         local, remote = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/in-review")
         _make_tier_b_branch(local, remote, "tier-b-branch")
@@ -925,7 +1016,7 @@ class TestTierBReachableNoMergedPR:
             ["git", "branch"], cwd=local, capture_output=True, text=True
         ).stdout
         assert "feat/in-review" in branches, "branch with an open PR must survive"
-        assert "tier-b-branch" not in branches
+        assert "tier-b-branch" in branches, "Tier B branch must survive the non-TTY skip"
 
     def test_unmerged_branch_not_touched(self, fake_gh, tmp_path):
         """Tier C branch (not reachable from origin/main, no merged PR) is never deleted."""
@@ -943,8 +1034,8 @@ class TestTierBReachableNoMergedPR:
         ).stdout
         assert "unmerged-branch" in branches
 
-    def test_dry_run_lists_confirmed_and_reachable_together(self, tmp_path):
-        """Dry-run lists Tier A and Tier B branches under one 'Would clean up' heading."""
+    def test_dry_run_separates_confirmed_and_probable(self, tmp_path):
+        """Dry-run shows Tier A under 'confirmed merged' and Tier B under 'probable merges'."""
         local, remote = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "tier-a-branch")
         _make_tier_b_branch(local, remote, "tier-b-branch")
@@ -963,13 +1054,15 @@ class TestTierBReachableNoMergedPR:
         )
         assert result.returncode == 0
         output = result.stdout.decode()
-        assert "Would clean up:" in output
-        assert "prompt" not in output.lower()
-        assert "probable" not in output.lower()
+        assert "Would clean up (confirmed merged):" in output
+        assert "Probable merges (would prompt):" in output
         assert "tier-a-branch" in output
         assert "tier-b-branch" in output
         assert "reachable from origin/main; no merged PR for this name" in output
         assert "tier-c-branch" not in output
+        # The removed --yes flag must not resurface in the dry-run headings
+        # (plan B11: strip "rerun with --yes" at all three report sites).
+        assert "--yes" not in output
 
     def test_existing_tier_a_silent_clean_preserved(self, tmp_path):
         """Tier A branch (gh-confirmed merged) cleans silently, no prompt needed."""
@@ -994,6 +1087,50 @@ class TestTierBReachableNoMergedPR:
         ).stdout
         assert "tier-a-branch" not in branches
         assert b"prompt" not in result.stdout.lower()
+
+
+class TestTierBPromptEOFDoesNotAbortPendingTierADeletes:
+    """A closed pty master before any reply reaches read() (EOF, e.g.
+    Ctrl-D) must resolve each pending Tier B prompt as "keep", not abort
+    the script under set -e — which, since Tier A and Tier B share one
+    confirmation loop, would otherwise drop a not-yet-appended Tier A
+    delete. Branch names are chosen so both Tier B branches sort before
+    the Tier A branch in git for-each-ref's alphabetical order: if Tier A
+    sorted first it would already be in TO_DELETE before the loop reaches
+    the EOF-triggering Tier B branch, and this test would pass even
+    without the `read -r _REPLY || _REPLY=""` guard."""
+
+    def test_eof_on_prompt_keeps_tier_b_and_still_deletes_later_tier_a(self, fake_gh, tmp_path):
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "aaa-tier-b-one")
+        _make_tier_b_branch(local, remote, "aaa-tier-b-two")
+        _make_feature_branch(local, "zzz-tier-a")
+        env = fake_gh({"zzz-tier-a": {"number": 55, "mergedAt": "2026-02-01"}})
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                [str(_SCRIPT)], cwd=local,
+                env=env,
+                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            os.close(slave_fd)
+            os.close(master_fd)  # EOF before any reply is sent
+            proc.wait(timeout=30)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+            raise
+
+        assert proc.returncode == 0, "EOF on the prompt must not abort the script under set -e"
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "aaa-tier-b-one" in branches, "EOF resolves to keep, not delete"
+        assert "aaa-tier-b-two" in branches, "EOF resolves to keep, not delete"
+        assert "zzz-tier-a" not in branches, "Tier A delete must not be dropped by the EOF abort"
 
 
 class TestLockedWorktreeLiveness:
@@ -1539,8 +1676,10 @@ class TestCheckedOutNonCandidateStaysSilent:
 class TestTierBWithStaleMergedRowReportsBothSignals:
     """A branch can be both reachable from origin/<default> and carry a
     same-named merged PR whose tip does not match — Tier B by reachability,
-    stale by name. It is still cleaned, but the reason line names the
-    same-named PR rather than claiming no merged PR exists for the name."""
+    stale by name. Under non-TTY stdin it is skipped with a warning, not
+    cleaned; a sibling test covers the --dry-run preview, where the reason
+    line names the same-named merged PR rather than claiming no merged PR
+    exists for the name."""
 
     _STALE_MERGED_ROW = {
         "tier-b-with-stale-name": [
@@ -1548,7 +1687,7 @@ class TestTierBWithStaleMergedRowReportsBothSignals:
         ],
     }
 
-    def test_tier_b_reachable_with_stale_merged_row_still_cleaned(self, tmp_path, fake_gh):
+    def test_tier_b_reachable_with_stale_merged_row_skipped_non_tty(self, tmp_path, fake_gh):
         local, remote = _make_repo_with_remote(tmp_path)
         _make_tier_b_branch(local, remote, "tier-b-with-stale-name")
 
@@ -1556,11 +1695,14 @@ class TestTierBWithStaleMergedRowReportsBothSignals:
         result = _run_script(local, env)
 
         assert result.returncode == 0
+        assert "no TTY for prompt" in result.stdout
         ref_check = subprocess.run(
             ["git", "rev-parse", "--verify", "refs/heads/tier-b-with-stale-name"],
             cwd=local, capture_output=True,
         )
-        assert ref_check.returncode != 0, "reachability still qualifies the branch for Tier B cleanup"
+        assert ref_check.returncode == 0, (
+            "reachability qualifies the branch for Tier B, but non-TTY stdin skips it rather than deleting"
+        )
 
     def test_tier_b_reason_names_the_same_named_merged_pr(self, tmp_path, fake_gh):
         """The reason string only appears in the dry-run preview; a plain
