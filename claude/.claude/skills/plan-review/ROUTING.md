@@ -28,7 +28,7 @@ Always spawn `ciso-reviewer` when the plan touches auth/authz, secrets, tokens, 
 
 Spawn per question (not per file-path domain) — "plan touches backend" isn't enough; the question needs a specific shape.
 
-When you spawn: pick the specialist that serves the question (table below is reference, not roster) and pass plan scope, section, specific question, **Item ownership** routing, AND — for re-review rounds — prior findings + what's been applied. Reviewers without prior context re-discover; that's wasted spawn.
+When you spawn: pick the specialist that serves the question (table below is reference, not roster) and pass plan scope, section, specific question, **Item ownership** routing, AND — for re-review rounds — prior findings + what's been applied, plus the **Ledger cross-check** instruction below when the plan carries an assumption ledger. Reviewers without prior context re-discover; that's wasted spawn.
 
 | Domain | Agent | Focus |
 |--------|-------|-------|
@@ -44,6 +44,10 @@ When you spawn: pick the specialist that serves the question (table below is ref
 Project-level plan-review skills may extend this table with project-specific reviewer roles, but must not remove or narrow the `ciso-reviewer` trigger conditions.
 
 Specialist agents must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. If findings genuinely exceed the budget, the agent must prioritize by severity and explicitly note that lower-severity items were omitted. When spawning, include this constraint in the agent prompt.
+
+## Ledger cross-check
+
+When the plan carries an assumption ledger (see `plan-it` Step 5) and this is a re-review of a prior round, include this instruction in every spawned reviewer's prompt: diff the current plan revision against every `[verified]` and `[engineer-verified]` ledger row for continued consistency. Do not resolve a contradiction against an `[engineer-verified]` row unilaterally — flag it to the human instead, mirroring the tag's own rule for the plan author. If the revision touches a row already confirmed in a prior round, the reviewer's findings must name it under **Previously-settled, now reopened** — surfacing the human's own version of the failure (re-litigating something already decided), not just the agent's.
 
 ## Reconciliation
 

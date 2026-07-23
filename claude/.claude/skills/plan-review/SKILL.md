@@ -71,7 +71,7 @@ Markers of over-elaboration:
 
 3. **Are foundation-correctness tripwires clean?** These fire on observable plan text, not on judgment calls. If any fire, stop — output "Foundation concern: [one sentence]" + "Lighter alternative: [one sentence pointing to source]" as the primary output; do not spawn specialists until the foundation question is resolved.
 
-   - **Over-powered primitive.** Plan uses a mechanism heavier, more invasive, or wider-scope than the task needs. Required: name the lighter primitive in the source documentation and justify why it fails. If not enumerated, the foundation is the finding, not the hardening on top of it.
+   - **Over-powered primitive.** Plan uses a mechanism heavier, more invasive, or wider-scope than the task needs. Required: **at least two** lighter primitives named from the source documentation, each with a one-sentence justification for why it fails — the same threshold `plan-it` Step 5 sets for the author, so a one-alternative plan fails here rather than passing review while violating the authoring rule. If fewer than two are enumerated, the foundation is the finding, not the hardening on top of it.
    - **Compounding layers.** Plan stacks multiple layers (validation, retry, fallback, defense, schema-drift handling, etc.), each closing a gap the prior layer's existence created. Required: ask "what foundational change dissolves these?" before scoring any layer individually.
    - **Self-referential findings.** Plan cites its own prior findings ("addresses the gap from the previous draft," "closes the issue raised in the prior pass"). Required: treat each self-reference as evidence the foundation generates problems faster than patches close them.
    - **Misordered observe-then-mutate steps.** Plan caveats a step's output as possibly-stale or adds a re-check because a *later* step in the same plan changes the state that output reads. Required: re-sequence — move the observing step (check / read / capture / query) after the last step that mutates the state it reads — do not caveat a self-inflicted staleness.
@@ -81,9 +81,11 @@ If over-elaborated or any foundation tripwire fires: stop. Surface the simpler d
 
 Question implementation choices, not feature scope — the ticket itself isn't reviewed here, that goes back to the author.
 
+If the plan carries an assumption ledger and this is a re-review round, note it here — the cross-check itself runs in each spawned reviewer's fresh context at Step 5 (see `ROUTING.md`'s Ledger cross-check).
+
 ## Step 5 — Evaluate
 
-Evaluate the plan against the **Base checklist** first, then each detected **Domain checklist**. For multi-phase plans, evaluate each phase against the relevant checklists. Reference the specific phase/section when reporting findings.
+Evaluate the plan against the **Base checklist** first, then each detected **Domain checklist**. For multi-phase plans, evaluate each phase against the relevant checklists. Reference the specific phase/section when reporting findings. When the plan carries an assumption ledger, every spawned reviewer also gets the ledger cross-check instruction from `ROUTING.md` — diffing the revision against every `[verified]`/`[engineer-verified]` row for continued consistency.
 
 ## Base checklist
 
@@ -231,6 +233,8 @@ For each finding, state:
 5. **Suggested resolution** (concrete, not "consider improving")
 
 If any items were flagged by B7 (scope creep), include an **Out of Scope** section listing them. The reviewer can decide whether to bring them into scope or create follow-up tickets.
+
+If any spawned reviewer's ledger cross-check finds the revision touching a row already confirmed in a prior round, include a **Previously-settled, now reopened** section naming the row and what changed — this surfaces the human's own version of the failure (re-litigating something already decided), not just the agent's.
 
 End with a verdict: **Approve**, **Approve with changes** (list what), or **Request changes** (list blockers).
 

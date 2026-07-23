@@ -88,6 +88,60 @@ acceptance criteria as the termination condition.
    Sourcegraph. Collapsed into Approach rationale for single-PR scope rather
    than a separate section (per plan-it's Approach section description).
 
+## Assumption ledger — worked example and grammar
+
+Step 5's assumption ledger exists because a plan revision can silently
+contradict a fact the same session already verified — attention is
+captured by whatever finding is currently active. The catch tends to come
+from fresh context (a human's outside-view question, or a `plan-review`
+reviewer subagent), not from the authoring session re-checking itself. The
+ledger gives that fresh-context check something concrete to diff against.
+
+### Grammar
+
+```
+Root: <one-line problem/threat statement>
+
+Row 1 [mechanism]: <name> — anchors: root — <one-line justification>
+Row 2 [assumption]: <claim> [verified: <source>] — anchors: row1
+Row 3 [assumption]: <claim> [unverified] — anchors: row1
+Row 4 [assumption]: <claim> [engineer-verified] — anchors: root
+```
+
+Every row's `anchors:` value is either `root` or an already-numbered row —
+this is what makes ledger completeness a parse (every row traces back to
+root) rather than another judgment call.
+
+### Worked example
+
+```
+Root: a plan revision can silently contradict a fact the same session
+already verified, because attention is captured by whatever finding is
+currently active.
+
+Row 1 [mechanism]: content-addressed plan-review marker — anchors: root —
+forces re-review on any plan edit; an existence-only marker does not.
+Row 2 [assumption]: require-code-review.sh already content-addresses its
+marker via `git diff --cached | sha256sum`
+[verified: claude/.claude/hooks/require-code-review.sh] — anchors: row1
+Row 3 [assumption]: no other repo mechanism relies on
+plan-review-markers/ existence-only semantics [unverified] — anchors: row1
+Row 4 [assumption]: the structural-completeness hook and Stop-hook +
+cross-check subagent are deferred until this hypothesis validates on live
+plans [engineer-verified] — anchors: root
+```
+
+### Why three tags, not two
+
+A binary verified/unverified split loses the case where the *human*
+supplied the fact directly — that source can't be re-derived by a grep or
+doc lookup, but it also must never be silently overridden by the agent's
+own investigation finding something that looks contradictory. Splitting
+out `[engineer-verified]` gives a reviewer (per `plan-review`) a clear job:
+resolve `[unverified]` rows by checking them, but *escalate*
+`[engineer-verified]` contradictions to the human rather than resolving
+them unilaterally.
+
 ## Anti-patterns confirmed across sources
 
 - Hour/day estimates — no single-PR template uses them; Squarespace's Timeline

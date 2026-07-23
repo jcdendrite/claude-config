@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
+from pathlib import Path
 
+import pytest
 from helpers import HOOKS_DIR
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
@@ -18,6 +21,50 @@ def _run_lib_fn(fn_call: str) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def _active_plan_hash(repo: Path, env_overrides: dict | None = None) -> str:
+    """Shell out to the real _lib_active_plan_hash against `repo`."""
+    result = subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_hash "$1"', "_active_plan_hash", str(repo)],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, **(env_overrides or {})},
+    )
+    return result.stdout.strip()
+
+
+def _find_case_insensitive_collation_locale() -> str | None:
+    """Return an installed locale whose collation interleaves upper- and
+    lowercase (so `sort` orders `B.md`/`a.md` differently than the C locale
+    does), or None if the machine only has C/POSIX available."""
+    try:
+        installed = subprocess.run(
+            ["locale", "-a"], capture_output=True, text=True, check=True
+        ).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    for candidate in installed:
+        if candidate.lower().replace("-", "") in ("c", "posix", "c.utf8"):
+            continue
+        ordering = subprocess.run(
+            ["bash", "-c", 'printf "B\\na\\n" | sort'],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "LC_ALL": candidate},
+        )
+        if ordering.returncode == 0 and ordering.stdout == "a\nB\n":
+            return candidate
+    return None
+
+
+def _init_repo(repo: Path) -> None:
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
 
 
 class TestMarkerLibRepoHash:
@@ -59,3 +106,210 @@ class TestMarkerLibRepoHash:
         assert from_lib == from_inline, (
             f"Library hash {from_lib!r} != inline recipe {from_inline!r}"
         )
+
+
+class TestLibActivePlanHash:
+    """Tests for _lib_active_plan_hash (GH #466). Relational assertions
+    only -- never a golden sha256 literal -- since the exact digest recipe
+    is free to evolve as long as the write side and read side agree."""
+
+    def test_empty_when_no_plans_dir(self, tmp_path):
+        repo = tmp_path / "no-plans"
+        _init_repo(repo)
+        assert _active_plan_hash(repo) == ""
+
+    def test_empty_when_plans_dir_empty(self, tmp_path):
+        repo = tmp_path / "empty-plans"
+        _init_repo(repo)
+        (repo / ".claude" / "plans").mkdir(parents=True)
+        assert _active_plan_hash(repo) == ""
+
+    def test_empty_when_all_plans_committed_clean(self, tmp_path):
+        repo = tmp_path / "clean-plans"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        subprocess.run(["git", "add", ".claude/plans/p.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "plan"], cwd=repo, check=True)
+        assert _active_plan_hash(repo) == ""
+
+    def test_nonempty_when_plan_active(self, tmp_path):
+        repo = tmp_path / "active-plan"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        assert _active_plan_hash(repo) != ""
+
+    def test_stable_under_reordered_active_set(self, tmp_path):
+        """The same two active plans, recreated in reverse filesystem order
+        within the same repo, must still produce the same hash -- LC_ALL=C
+        sort normalizes enumeration order regardless of on-disk creation
+        order. Holds the repo path (and so every hashed path) constant so
+        creation order is the only variable -- comparing across two
+        different tmp_path repos would also vary the absolute path prefix
+        embedded in the hash, confounding the assertion."""
+        repo = tmp_path / "order-repo"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "aaa.md").write_text("first\n")
+        (plans_dir / "zzz.md").write_text("second\n")
+        forward_order_hash = _active_plan_hash(repo)
+
+        for existing in plans_dir.iterdir():
+            existing.unlink()
+        (plans_dir / "zzz.md").write_text("second\n")
+        (plans_dir / "aaa.md").write_text("first\n")
+        reverse_order_hash = _active_plan_hash(repo)
+
+        assert forward_order_hash == reverse_order_hash
+
+    def test_content_edit_changes_hash(self, tmp_path):
+        repo = tmp_path / "edit-plan"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        plan = plans_dir / "p.md"
+        plan.write_text("# plan v1\n")
+        before = _active_plan_hash(repo)
+        plan.write_text("# plan v2\n")
+        after = _active_plan_hash(repo)
+        assert before != after
+
+    def test_active_set_change_changes_hash(self, tmp_path):
+        repo = tmp_path / "add-plan"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "a.md").write_text("plan a\n")
+        before = _active_plan_hash(repo)
+        (plans_dir / "b.md").write_text("plan b\n")
+        after = _active_plan_hash(repo)
+        assert before != after
+
+    def test_spaces_in_filename_round_trips(self, tmp_path):
+        """A plan filename containing spaces must produce a non-empty hash,
+        and re-running against the unchanged file must reproduce it
+        identically -- guards against unquoted word-splitting in the file
+        enumeration loop."""
+        repo = tmp_path / "spacey-plan"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "my plan draft.md").write_text("# spacey plan\n")
+        first = _active_plan_hash(repo)
+        second = _active_plan_hash(repo)
+        assert first != ""
+        assert first == second
+
+    def test_deleted_tracked_plan_disarms_rather_than_failing(self, tmp_path):
+        """A committed plan deleted from the worktree shows up as modified
+        vs HEAD but has no bytes left to hash. Counting it as active would
+        make the hash unconditionally unobtainable -- denying every write
+        forever instead of disarming, and with no file left for the user to
+        repair."""
+        repo = tmp_path / "deleted-plan"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        plan = plans_dir / "p.md"
+        plan.write_text("# plan\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "plan"], cwd=repo, check=True)
+        assert _active_plan_hash(repo) == "", "committed clean plan should not arm the gate"
+
+        plan.unlink()
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. "{LIB_SH}"; _lib_active_plan_hash "$1"',
+                "_active_plan_hash",
+                str(repo),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"deleting a plan must not be a hash failure, got exit {result.returncode} "
+            f"stdout={result.stdout!r}"
+        )
+        assert result.stdout.strip() == "", "a deleted plan leaves nothing active to gate"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_plan_exits_nonzero_and_names_the_file(self, tmp_path):
+        """An active-but-unhashable plan must be distinguishable from "no
+        active plan". Both used to return empty with status 0, so every
+        caller read the failure as "gate disarmed" and allowed. The exit
+        status carries the distinction; stdout carries the offending path so
+        the caller's deny message can point the user at it."""
+        repo = tmp_path / "unreadable-plan"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        plan = plans_dir / "p.md"
+        plan.write_text("# plan\n")
+        plan.chmod(0o000)
+        try:
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'. "{LIB_SH}"; _lib_active_plan_hash "$1"',
+                    "_active_plan_hash",
+                    str(repo),
+                ],
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            plan.chmod(0o644)
+
+        assert result.returncode == 1, (
+            f"expected exit 1 for an unhashable active plan, got {result.returncode}"
+        )
+        assert result.stdout.strip() == str(plan), (
+            f"stdout must name the offending plan file, got {result.stdout!r}"
+        )
+
+    def test_hash_is_invariant_under_ambient_locale(self, tmp_path):
+        """`LC_ALL=C sort` in the enumeration is load-bearing, not cosmetic:
+        marker.sh runs in the user's Bash-tool locale and the hook runs in
+        the harness hook environment, so a bare `sort` honoring $LC_COLLATE
+        would order a >=2-plan set differently on each side and wedge the
+        gate into a permanent false-deny. The filenames must be a pair the
+        two collations genuinely disagree on -- C sorts uppercase before
+        lowercase, most UTF-8 collations interleave them -- since an
+        all-lowercase pair sorts identically everywhere and would make this
+        test vacuous."""
+        alt_locale = _find_case_insensitive_collation_locale()
+        if alt_locale is None:
+            pytest.skip("no non-C collation locale installed to contrast against")
+
+        repo = tmp_path / "locale-repo"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "B.md").write_text("upper\n")
+        (plans_dir / "a.md").write_text("lower\n")
+
+        assert _active_plan_hash(repo, env_overrides={"LC_ALL": "C"}) == _active_plan_hash(
+            repo, env_overrides={"LC_ALL": alt_locale}
+        )
+
+    def test_non_ascii_filename_round_trips(self, tmp_path):
+        """A plan filename containing non-ASCII characters must produce a
+        non-empty hash, and re-running against the unchanged file must
+        reproduce it identically -- guards against a byte-width assumption
+        in the file enumeration or hashing path."""
+        repo = tmp_path / "unicode-plan"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "plan-été-日本.md").write_text("# unicode plan\n")
+        first = _active_plan_hash(repo)
+        second = _active_plan_hash(repo)
+        assert first != ""
+        assert first == second

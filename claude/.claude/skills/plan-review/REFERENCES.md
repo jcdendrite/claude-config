@@ -9,10 +9,17 @@ lives here (edit-time reference) rather than in SKILL.md (runtime-loaded body)
 because it is design provenance for a skill editor, not an instruction that
 changes review behavior.
 
+Keep one row per Step 4 tripwire. A tripwire missing from this table reads
+as "has no canonical principle behind it," which is a different claim from
+"nobody has filled in the row yet."
+
 | SKILL.md Step 4 tripwire | Canonical CLAUDE.md principle |
 |---|---|
 | Over-powered primitive | §Engineering Judgment — Default-suspect over-powered primitives |
 | Compounding layers | §Working Style — Compounding defensive layers are a wrong-foundation tell |
+| Self-referential findings | §Working Style — same bullet as Compounding layers, which covers a design that "starts citing its own prior findings" |
+| Misordered observe-then-mutate steps | None — skill-local. CLAUDE.md has no ordering/self-inflicted-staleness principle to operationalize; this tripwire generalizes a single observed planning failure (see the surfacing incident below) rather than a stated global rule. |
+| Overcorrection that negates a named allowance | §Working Style — Scope discipline, Axis 2 (the in-file opportunistic-refactoring license is the allowance most often negated) |
 
 ## Load-on-demand routing architecture
 
@@ -44,6 +51,10 @@ Step 4's foundation tripwires (over-powered primitive, compounding layers, self-
 The lesson the rules encode: gap-finding on a wrong foundation elaborates the wrong foundation. The tripwires anchor Step 4 to observable surface features (layer counts, self-references, heavier-than-needed mechanism) so they fire even when the AI's internal reasoning is coherent. See also `claude/.claude/CLAUDE.md` Engineering Judgment and Working Style for the global-level statement of the same heuristics.
 
 The fourth tripwire (misordered observe-then-mutate steps) was added after a planning session repeatedly proposed annotating a CI-status check as possibly-stale rather than relocating it after the push that invalidated its result — an ordering bug papered over with a compensating caveat.
+
+The fifth tripwire (overcorrection that negates a named allowance) has a different provenance from the first four: no single plan surfaced it. It came from a judgment-activation pass closing the gap where CLAUDE.md's principles were loaded in every session but did not fire at the moment a judgment-class error was being made — so the rule is anchored to observable plan text (a blanket rule whose wording contradicts an allowance CLAUDE.md names) rather than to a remembered incident.
+
+Keep a paragraph here per tripwire. When Step 4 gains a rule and this section does not, the omission reads as "that rule has no recorded origin" — and the count drift is invisible until someone compares the two files line by line.
 
 ## Hook enforcement — 2026-05-05
 

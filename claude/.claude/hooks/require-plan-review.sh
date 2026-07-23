@@ -20,8 +20,17 @@
 #   liveness (kill -0) on each gate hit; dead PIDs are evicted automatically,
 #   which handles orphaned markers from sessions that errored before cleanup.
 # - Completion marker (~/.claude/plan-review-markers/<repo-hash>.<session_id>):
-#   written by /plan-review when the review is clean. Existence-checked;
-#   allows Write/Edit/ExitPlanMode until the next session.
+#   written by /plan-review when the review is clean. Content is the
+#   sha256 hash of the active plan file set (paths + contents), computed by
+#   _lib_active_plan_hash in _lib.sh. Content-addressed, not
+#   existence-checked: this hook recomputes the same hash at gate time and
+#   allows only on an exact match, so editing a reviewed plan (including a
+#   ledger row) re-arms the gate on the next Write/Edit/ExitPlanMode.
+#   Mirrors require-code-review.sh's staged-diff-hash marker.
+#   When an active plan cannot be hashed at all (unreadable, vanished),
+#   _lib_active_plan_hash exits non-zero and this hook denies with a
+#   repair-the-file message rather than allowing — an unhashable plan is
+#   an unknown review state, not an absent one.
 # The markers are keyed per-session (not singletons) to prevent parallel
 # sessions from overwriting each other's markers.
 #
@@ -66,28 +75,35 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-# Check whether any uncommitted or modified plan file exists in .claude/plans/.
-# A plan file that is tracked and identical to HEAD is historical (its PR
-# shipped) and does not arm the gate. Untracked or modified plan files are
-# active work and do.
-PLANS_DIR="$REPO_ROOT/.claude/plans"
-if [ ! -d "$PLANS_DIR" ]; then
+# Compute the content-addressed hash of the active plan file set (paths +
+# contents; see _lib_active_plan_hash in _lib.sh for the full contract). A
+# plan file that is tracked and identical to HEAD is historical (its PR
+# shipped) and does not contribute to the hash. Empty result means no plan
+# is active -- gate disarmed, covering both an absent .claude/plans/ and one
+# containing only historical plans.
+# Keep this a top-level assignment. Inside a function, `local VAR=$(...)`
+# reports `local`'s exit status (always 0) and would mask the failure; a
+# refactor that moves this must split the declaration from the assignment.
+if ! CURRENT_HASH=$(_lib_active_plan_hash "$REPO_ROOT"); then
+  # A plan is active but could not be hashed; stdout carries the offending
+  # path. Fail closed. This deny is deliberately worded differently from the
+  # missing-marker deny below: telling the user to run /plan-review here
+  # would be circular, since marker.sh hits the identical condition and
+  # aborts. This hook gates only Write/Edit/MultiEdit/ExitPlanMode, so Bash
+  # stays available to repair the file — point at that escape hatch.
+  emit_deny "Blocked by plan-review gate: cannot read the active plan file '$CURRENT_HASH', so the gate cannot tell whether the plan has been reviewed.
+
+This is not a missing review — running /plan-review will fail the same way, because it hashes the same file. Repair the file first, using a Bash command (this gate does not block Bash):
+
+  - Unreadable due to permissions → chmod +r '$CURRENT_HASH'
+  - A broken symlink, or a stale file you no longer need → rm '$CURRENT_HASH'
+  - Belongs elsewhere → mv it out of .claude/plans/
+
+Then retry. If the file is genuinely gone, the gate disarms on its own."
   exit 0
 fi
 
-NEEDS_REVIEW=0
-while IFS= read -r PLAN_FILE; do
-  # 5s ceiling matches _lib_jq's established precedent; git ls-files/diff are
-  # fast on local disk but can stall indefinitely on NFS or a locked .git/index.
-  if timeout 5 git -C "$REPO_ROOT" ls-files --error-unmatch -- "$PLAN_FILE" >/dev/null 2>&1 \
-     && timeout 5 git -C "$REPO_ROOT" diff --quiet HEAD -- "$PLAN_FILE" 2>/dev/null; then
-    continue
-  fi
-  NEEDS_REVIEW=1
-  break
-done < <(find "$PLANS_DIR" -maxdepth 1 -type f \( -name "*.md" -o -name "*.txt" \) 2>/dev/null)
-
-if [ "$NEEDS_REVIEW" -eq 0 ]; then
+if [ -z "$CURRENT_HASH" ]; then
   exit 0
 fi
 
@@ -110,11 +126,19 @@ if [ -n "$SESSION_ID" ]; then
     fi
   fi
 
-  # Completion-marker check.
+  # Completion-marker check: allow only when the marker's stored hash
+  # matches the active plan set's current hash. An edit to any active plan
+  # since the marker was written (including a ledger row) changes
+  # CURRENT_HASH, so the comparison fails and the gate re-arms. Mirrors
+  # require-code-review.sh's staged-diff-hash compare, including the
+  # tr -d '[:space:]' defense against a trailing newline on the read side.
   REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
   MARKER="$HOME/.claude/plan-review-markers/$REPO_HASH.$SESSION_ID"
   if [ -f "$MARKER" ]; then
-    exit 0
+    MARKER_HASH=$(tr -d '[:space:]' < "$MARKER")
+    if [ "$MARKER_HASH" = "$CURRENT_HASH" ]; then
+      exit 0
+    fi
   fi
 fi
 

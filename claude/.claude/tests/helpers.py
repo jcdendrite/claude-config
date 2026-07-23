@@ -334,9 +334,31 @@ def plan_review_marker_path(home: Path, repo: Path, session_id: str) -> Path:
 
 
 def write_plan_review_marker(home: Path, repo: Path, session_id: str) -> Path:
+    """Write a plan-review completion marker whose content is the real
+    active-plan hash for `repo`, computed by shelling out to the production
+    `_lib_active_plan_hash` (_lib.sh) rather than reimplementing the recipe
+    in Python, which would diverge silently on any
+    newline/delimiter/normalization detail.
+
+    Note the tradeoff, and do not mistake this for the technique
+    `write_marker`/`write_skill_review_marker` use: those recompute the hash
+    independently in Python from a real `git diff`, so they can catch drift
+    in the shell-side recipe. This one calls the very function under test, so
+    a test that seeds a marker here and asserts the hook allows is checking
+    that the function agrees with itself across two invocations -- not that
+    its output is correct. Independent correctness is covered by the
+    relational unit tests in `hooks/tests/test_marker_lib.py`, which do not
+    route through this helper."""
     marker = plan_review_marker_path(home, repo, session_id)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("reviewed\n")
+    lib_sh = HOOKS_DIR / "_lib.sh"
+    active_plan_hash = subprocess.run(
+        ["bash", "-c", f'. "{lib_sh}"; _lib_active_plan_hash "$1"', "write_plan_review_marker", str(repo)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    marker.write_text(active_plan_hash)
     return marker
 
 
