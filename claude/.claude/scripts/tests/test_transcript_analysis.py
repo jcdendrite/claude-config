@@ -3292,6 +3292,380 @@ class TestSkillInvocation:
 
 
 # ---------------------------------------------------------------------------
+# skill-invocation: --branches, --include-subagents, name normalization
+# ---------------------------------------------------------------------------
+
+
+def _skill_inv_args(*, projects="*", branches=None, include_subagents=False):
+    """Args object for cmd_skill_invocation. projects='*' takes the explicit-glob
+    escape hatch, bypassing git derivation — the default for cases that only
+    exercise counting/filtering logic on fake_projects data."""
+    return argparse.Namespace(
+        projects=projects, branches=branches, include_subagents=include_subagents
+    )
+
+
+class TestSkillInvocationScoping:
+    """Covers the branch/subagent scoping the procedural-fidelity consumer needs.
+
+    The default (no flags) path is pinned by TestSkillInvocation above; these
+    cases assert the opt-in behavior and that enabling it does not change what
+    the default reports. They pass projects='*' (explicit escape hatch) so the
+    git-derivation path is exercised separately in TestSkillInvocationRepoScope.
+    """
+
+    def _run(self, capsys, **kw):
+        _mod.cmd_skill_invocation(_skill_inv_args(**kw))
+        return capsys.readouterr().out
+
+    def test_branch_filter_excludes_other_branches(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="wanted", content=[_skill_use("b1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="other", content=[_skill_use("b2", "plan-review")]),
+        ])
+        out = self._run(capsys, branches="wanted")
+        assert "code-review" in out, "on-branch skill should be counted"
+        assert "plan-review" not in out, "off-branch skill must be excluded"
+
+    def test_branch_filter_accepts_comma_separated_list(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="b-one", content=[_skill_use("m1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="b-two", content=[_skill_use("m2", "plan-review")]),
+            _asst("claude-sonnet-4-6", branch="b-three", content=[_skill_use("m3", "handoff")]),
+        ])
+        out = self._run(capsys, branches="b-one,b-two")
+        assert "code-review" in out and "plan-review" in out
+        assert "handoff" not in out, "branch outside the list must be excluded"
+
+    def test_branch_filter_applies_to_slash_invocations(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "s.jsonl", [
+            _user_msg("<command-name>/plan-it</command-name>", branch="wanted"),
+            _user_msg("<command-name>/handoff</command-name>", branch="other"),
+        ])
+        out = self._run(capsys, branches="wanted")
+        assert "plan-it" in out
+        assert "handoff" not in out, "off-branch slash invocation must be excluded"
+
+    def test_unfiltered_run_still_counts_records_without_gitbranch(self, fake_projects, capsys):
+        """A record with no gitBranch is counted when no --branches filter is given —
+        guards the default-output regression noted in the plan."""
+        rec = {
+            "type": "assistant",
+            "message": {"model": "claude-sonnet-4-6", "content": [_skill_use("nb", "code-review")]},
+        }
+        _write_jsonl(fake_projects / "s.jsonl", [rec])
+        out = self._run(capsys)
+        assert "code-review" in out, "branchless record must still count when unfiltered"
+
+    def test_subagent_invocation_ignored_by_default(self, fake_projects, capsys):
+        session_id = "sess-sub"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [_asst("claude-opus-4-7", branch="main")])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True,
+                  content=[_skill_use("sa1", "code-review")]),
+        ])
+        out = self._run(capsys)
+        assert "No skill invocations found." in out
+
+    def test_include_subagents_reports_sidechain_row(self, fake_projects, capsys):
+        session_id = "sess-sub"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [_asst("claude-opus-4-7", branch="main")])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True,
+                  content=[_skill_use("sa1", "code-review")]),
+        ])
+        out = self._run(capsys, include_subagents=True)
+        cols = _table_cols(out, header_contains="thread", row_contains="code-review",
+                           row_startswith=True)
+        assert cols["thread"] == "sidechain", f"expected sidechain thread row: {cols}"
+        assert int(cols["top-level"]) == 1, f"expected 1 sidechain invocation: {cols}"
+
+    def test_main_and_sidechain_kept_on_separate_rows(self, fake_projects, capsys):
+        session_id = "sess-both"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_skill_use("m1", "code-review")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True,
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        out = self._run(capsys, include_subagents=True)
+        rows = [ln for ln in out.splitlines() if ln.startswith("code-review")]
+        assert len(rows) == 2, f"expected separate main and sidechain rows, got: {rows}"
+        # The thread value is the second whitespace-delimited column; compare on the
+        # parsed token rather than a padded-substring match, which would break on a
+        # benign column-width change.
+        threads = {r.split()[1] for r in rows}
+        assert threads == {"main", "sidechain"}, f"expected one main and one sidechain row, got: {rows}"
+
+    def test_thread_column_absent_without_flag(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("t1", "code-review")]),
+        ])
+        out = self._run(capsys)
+        header = [ln for ln in out.splitlines() if "user-slash" in ln][0]
+        assert "thread" not in header, f"default output must not gain a thread column: {header!r}"
+
+    def test_branch_filter_composes_with_include_subagents(self, fake_projects, capsys):
+        session_id = "sess-mix"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [_asst("claude-opus-4-7", branch="wanted")])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="wanted", sidechain=True,
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="other", sidechain=True,
+                  content=[_skill_use("s2", "plan-review")]),
+        ])
+        out = self._run(capsys, branches="wanted", include_subagents=True)
+        assert "code-review" in out
+        assert "plan-review" not in out, "off-branch subagent invocation must be excluded"
+
+
+class TestSkillInvocationNameNormalization:
+    """Worktree-qualified and colon-prefixed skill-name handling (row hygiene)."""
+
+    def _run(self, capsys, **kw):
+        _mod.cmd_skill_invocation(_skill_inv_args(**kw))
+        return capsys.readouterr().out
+
+    def test_worktree_qualified_name_collapses_to_bare(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", content=[
+                _skill_use("c1", ".claude/worktrees/b1/claude:code-review"),
+                _skill_use("c2", "claude:code-review"),
+            ]),
+        ])
+        out = self._run(capsys)
+        rows = [ln for ln in out.splitlines() if ln.startswith("claude:code-review")]
+        assert len(rows) == 1, f"expected one collapsed row, got: {rows}"
+        cols = _table_cols(out, header_contains="user-slash",
+                           row_contains="claude:code-review", row_startswith=True)
+        assert int(cols["top-level"]) == 2, f"both spellings should sum into one row: {cols}"
+        assert "worktrees" not in out, "path fragment must not survive normalization"
+
+    def test_plugin_prefix_preserved(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main",
+                  content=[_skill_use("p1", "skill-management:skill-review")]),
+        ])
+        out = self._run(capsys)
+        assert "skill-management:skill-review" in out, "plugin qualifier must be preserved"
+
+    def test_attribution_parent_normalized_in_routed_pairs(self, fake_projects, capsys):
+        """The ROUTED PAIRS parent is normalized too, so a worktree-qualified
+        attributionSkill does not carry its path into output."""
+        rec = _asst("claude-sonnet-4-6", branch="main",
+                    content=[_skill_use("r1", "code-review")])
+        rec["attributionSkill"] = ".claude/worktrees/some-branch/claude:ready-for-review"
+        _write_jsonl(fake_projects / "s.jsonl", [rec])
+        out = self._run(capsys)
+        assert "ready-for-review -> code-review" in out, "normalized pair should appear"
+        assert "worktrees" not in out, "attribution path fragment must not survive"
+
+
+class TestSkillInvocationProvenance:
+    """Only input['skill'] is extracted — never input['args'], which carries
+    absolute paths even for an in-scope session's own record. Scoping the read to
+    this repo cannot prevent this leak (the path is inside a dir that IS in
+    scope), so the extract-only-skill rule is its own supporting invariant and
+    needs its own regression test."""
+
+    def test_args_value_never_appears_in_output(self, fake_projects, capsys):
+        skill_with_args = {
+            "type": "tool_use", "id": "a1", "name": "Skill",
+            "input": {"skill": "code-review", "args": "/abs/path/secret-name"},
+        }
+        _write_jsonl(fake_projects / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", content=[skill_with_args]),
+        ])
+        _mod.cmd_skill_invocation(_skill_inv_args())
+        out = capsys.readouterr().out
+        assert "code-review" in out, "the skill name must still be counted"
+        assert "secret-name" not in out, "input['args'] value must never reach output"
+        assert "/abs/path" not in out, "no fragment of input['args'] may reach output"
+
+
+class TestSkillInvocationRepoScope:
+    """The repo-scoped default (--projects unset) derives this repo's worktree
+    slugs via git and fails closed. subprocess.run is stubbed at the module seam
+    used by TestPrLink, so no real git repo is needed."""
+
+    def _worktree_porcelain(self, *paths):
+        return "\n".join(f"worktree {p}\nHEAD 0000\nbranch refs/heads/x\n" for p in paths)
+
+    def test_scoped_default_reads_only_this_repos_dirs(self, tmp_path, monkeypatch, capsys):
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        theirs = projects / "-other-project"
+        mine.mkdir(parents=True)
+        theirs.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("x1", "code-review")]),
+        ])
+        _write_jsonl(theirs / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("x2", "plan-review")]),
+        ])
+        # cwd "/repo/main" maps via the real _path_to_project_slug to "-repo-main"
+        # (only '/' and '.' become '-'); git lists that one worktree. Let the real
+        # function run — a hand-copied lambda would freeze it against future drift.
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            assert cmd[:3] == ["git", "worktree", "list"]
+            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo/main"), "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
+        out = capsys.readouterr().out
+        assert "code-review" in out, "in-scope skill must appear"
+        assert "plan-review" not in out, "another project's skill must not appear"
+
+    def test_fail_closed_when_git_unavailable(self, fake_projects, monkeypatch, capsys):
+        """git failing must exit non-zero with NOTHING on stdout — not fall back to '*'."""
+        def boom(cmd, *a, **k):
+            raise FileNotFoundError("git")
+        monkeypatch.setattr(subprocess, "run", boom)
+        with pytest.raises(SystemExit):
+            _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
+        captured = capsys.readouterr()
+        assert captured.out == "", "fail-closed path must print nothing to stdout"
+        assert "refusing" in captured.err.lower(), "should explain the refusal on stderr"
+
+    def test_fail_closed_when_cwd_not_in_worktrees(self, fake_projects, monkeypatch, capsys):
+        """git succeeds but resolves a repo unrelated to cwd (GIT_DIR / submodule):
+        the cwd-not-in-slugs guard must fail closed."""
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/somewhere/else")
+
+        def fake_run(cmd, *a, **k):
+            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/a/foreign/repo"), "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit):
+            _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
+        assert capsys.readouterr().out == "", "fail-closed path must print nothing to stdout"
+
+    def test_explicit_projects_never_invokes_git(self, fake_projects, monkeypatch, capsys):
+        """The escape hatch: an explicit --projects must not touch the git derivation."""
+        def boom(cmd, *a, **k):
+            raise AssertionError("git must not be called when --projects is explicit")
+        monkeypatch.setattr(subprocess, "run", boom)
+        _write_jsonl(fake_projects / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("e1", "code-review")]),
+        ])
+        # Must not raise AssertionError from boom, and must produce output.
+        _mod.cmd_skill_invocation(argparse.Namespace(projects="*", branches=None, include_subagents=False))
+        assert "code-review" in capsys.readouterr().out
+
+    def test_scope_matches_by_literal_name_not_glob(self, tmp_path, monkeypatch, capsys):
+        """A derived slug is matched as a literal directory name, not a glob. A
+        slug containing a glob metacharacter (from a `*`/`?`/`[` in the home or
+        username path) must not widen the read to a sibling project dir the
+        wildcard would otherwise match — string equality does not; Path.glob
+        would."""
+        projects = tmp_path / "projects"
+        mine = projects / "-home-u-r*-main"       # in-scope slug carries a '*'
+        theirs = projects / "-home-u-rX-main"     # a wildcard on 'mine' would match this
+        mine.mkdir(parents=True)
+        theirs.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("y1", "code-review")]),
+        ])
+        _write_jsonl(theirs / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("y2", "plan-review")]),
+        ])
+        # The real _path_to_project_slug maps "/home/u/r*/main" -> "-home-u-r*-main"
+        # ('/' and '.' -> '-'; the '*' is preserved), so no monkeypatch is needed —
+        # letting it run is what makes this a real test of the '*' surviving into a
+        # slug and still being matched literally.
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/home/u/r*/main")
+
+        def fake_run(cmd, *a, **k):
+            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/home/u/r*/main"), "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
+        out = capsys.readouterr().out
+        assert "code-review" in out, "the exact-name dir must be read"
+        assert "plan-review" not in out, "a glob metacharacter must not widen the match to a sibling dir"
+
+    def test_multiple_worktrees_all_in_scope(self, tmp_path, monkeypatch, capsys):
+        """git worktree list returns main + a linked worktree, and cwd is the
+        *linked* one (a non-first entry). Both of this repo's worktree project dirs
+        must contribute — not just the first — which a first-match-only bug in the
+        slug list would break."""
+        projects = tmp_path / "projects"
+        main_dir = projects / "-repo"                        # slug of /repo
+        linked_dir = projects / "-repo--claude-worktrees-feat"  # slug of the linked worktree
+        main_dir.mkdir(parents=True)
+        linked_dir.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(main_dir / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("m1", "code-review")]),
+        ])
+        _write_jsonl(linked_dir / "s.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", content=[_skill_use("l1", "handoff")]),
+        ])
+        # cwd is the linked worktree (the second git entry), not the main one.
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/.claude/worktrees/feat")
+
+        def fake_run(cmd, *a, **k):
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                self._worktree_porcelain("/repo", "/repo/.claude/worktrees/feat"), "",
+            )
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
+        out = capsys.readouterr().out
+        assert "code-review" in out, "the main worktree's skill must appear"
+        assert "handoff" in out, "the linked worktree's skill must appear"
+
+
+class TestIterSessionsOrdering:
+    """iter_sessions must yield in a single flat sort over full file paths, NOT
+    grouped by directory. cmd_audit_routing's redact-label first pass assigns
+    Project-N labels by first-seen order, and this repo's own worktree dirs
+    (-home-u-repo vs -home-u-repo--claude-worktrees-b) are the prefix-colliding
+    pair whose flat-sort vs dir-grouped order differs."""
+
+    def test_flat_path_order_across_prefix_colliding_dirs(self, tmp_path):
+        projects = tmp_path / "projects"
+        main_dir = projects / "-home-u-repo"
+        wt_dir = projects / "-home-u-repo--claude-worktrees-b"
+        main_dir.mkdir(parents=True)
+        wt_dir.mkdir(parents=True)
+        _write_jsonl(main_dir / "a.jsonl", [_asst("claude-sonnet-4-6", branch="main")])
+        _write_jsonl(wt_dir / "m.jsonl", [_asst("claude-sonnet-4-6", branch="b")])
+        yielded = [jsonl for jsonl, _records in _mod.iter_sessions(projects, "*")]
+        # The flat full-path sort places the worktree dir's file first ('-' 0x2D <
+        # '/' 0x2F at the byte after the shared prefix); a dir-grouped traversal
+        # would place the main dir first. Pin the flat order explicitly.
+        expected = sorted(projects.glob("*/*.jsonl"))
+        assert yielded == expected, (
+            f"iter_sessions must yield in flat full-path sort order; got "
+            f"{[p.parent.name + '/' + p.name for p in yielded]}"
+        )
+
+
+class TestPathToProjectSlug:
+    """The slug transform and its known, accepted lossiness."""
+
+    def test_main_repo_path(self):
+        assert _mod._path_to_project_slug("/home/u/repo") == "-home-u-repo"
+
+    def test_worktree_path(self):
+        assert (_mod._path_to_project_slug("/home/u/repo/.claude/worktrees/b")
+                == "-home-u-repo--claude-worktrees-b")
+
+    def test_known_slug_collision_is_accepted(self):
+        """`/` and `.` both map to `-`, so distinct paths can collapse to one slug.
+        This is Claude Code's own dir-naming scheme, not ours to change; the repo
+        scoping accepts this residual (see _repo_scoped_project_slugs). Pinned so a
+        later refactor cannot silently assume injectivity."""
+        assert _mod._path_to_project_slug("/home/u/a/b") == _mod._path_to_project_slug("/home/u/a.b")
+
+
+# ---------------------------------------------------------------------------
 # iter_sessions subagent merge
 # ---------------------------------------------------------------------------
 

@@ -220,14 +220,18 @@ bin          sessions   turns  skill-inv  skill/1k commits  w-skill  wo-skill  n
 
 ## skill-invocation
 
-**Purpose.** Per-skill invocation-source tally across the full corpus, split into three buckets: `top-level` (description-triggered Skill tool_use on a main-thread turn with no parent skill active), `routed` (Skill tool_use fired while another skill's body was active — `attributionSkill` is non-empty), and `user-slash` (user record containing `<command-name>/skillname</command-name>`, the `/slash` invocation path). The classification summary at the bottom identifies routed-only candidates (name-only eligible) and slash-only candidates (disable-model-invocation eligible) for skill-description budget analysis.
+**Purpose.** Per-skill invocation-source tally for a scoped set of projects (this repo by default), split into three buckets: `top-level` (description-triggered Skill tool_use on a main-thread turn with no parent skill active), `routed` (Skill tool_use fired while another skill's body was active — `attributionSkill` is non-empty), and `user-slash` (user record containing `<command-name>/skillname</command-name>`, the `/slash` invocation path). The classification summary at the bottom identifies routed-only candidates (name-only eligible) and slash-only candidates (disable-model-invocation eligible) for skill-description budget analysis.
+
+**Scope defaults to this repo.** With `--projects` unset, the read is scoped to *this repository's own worktrees*, derived from `git worktree list` and matched by exact directory identity. This is a minimization control: the output is routinely quoted into public PR descriptions, and skill names on the machine can themselves be private-project identifiers. It fails closed (error, no output) rather than falling back to a machine-wide read if the repo scope cannot be derived. Passing an explicit `--projects` glob is an escape hatch for corpus analysis — the output is then no longer scoped to this repo.
 
 **Flags.**
-- `--projects GLOB` — project directory glob (default: `*`, all projects)
+- `--projects GLOB` — project directory glob. Default: this repo's own worktrees only (publish-safe); an explicit glob is the escape hatch (not repo-scoped).
+- `--branches B1,B2,...` — restrict to named `gitBranch` values (default: all branches in scope).
+- `--include-subagents` — also count invocations inside spawned subagents, adding a `thread` column (`main` vs `sidechain`). Off by default so budget analysis stays main-thread-only; the fidelity consumer opts in.
 
-**Sample output.**
+**Sample output** (default scope — this repo, main thread):
 ```
-SKILL INVOCATION SOURCES (full corpus)
+SKILL INVOCATION SOURCES (this repo; main thread)
 skill                                    top-level  routed  user-slash    total
 --------------------------------------------------------------------------------
 code-review                                    207       8           2      217
@@ -252,7 +256,7 @@ CLASSIFICATION SUMMARY
     (none)
 ```
 
-**When to reach for it.** Audit which skills are reaching users via description-matching versus only via explicit `/slash` invocation or routing from a parent skill. The classification summary surfaces routed-only candidates (their description never independently fires — name-only conversion saves description-budget tokens) and slash-only candidates (only reach users via explicit command — disable-model-invocation conversion is safe).
+**When to reach for it.** Two consumers. (1) Auditing which skills reach users via description-matching versus only via explicit `/slash` invocation or routing from a parent skill — the classification summary surfaces routed-only candidates (their description never independently fires — name-only conversion saves description-budget tokens) and slash-only candidates (only reach users via explicit command — disable-model-invocation conversion is safe). (2) The `skill-fidelity-reviewer` at `/ready-for-review`, which runs `--branches <branch> --include-subagents` to list every procedure a branch's work committed to, then checks each was executed rather than silently abbreviated.
 
 ---
 

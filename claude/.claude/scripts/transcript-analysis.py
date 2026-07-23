@@ -342,6 +342,48 @@ def _fmt_date(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%d")
 
 
+def _read_session_file(jsonl: Path, include_subagents: bool) -> list[dict]:
+    """Read one transcript file's records, merging its subagent files when asked.
+
+    Shared by iter_sessions (which selects files by glob) and _iter_scoped_sessions
+    (which selects project dirs by exact-name identity, then reads each file).
+    Keeping the per-file read here means the two selection strategies cannot drift
+    in how they parse records or merge subagent files.
+
+    When include_subagents=True, records from split subagent files under
+    <session_id>/subagents/*.jsonl are appended. Those files carry
+    isSidechain: true on assistant records. Returns [] for an unreadable file.
+    """
+    records: list[dict] = []
+    try:
+        with open(jsonl) as fh:
+            for raw in fh:
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                records.append(rec)
+    except OSError:
+        return []
+
+    if include_subagents:
+        subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
+        if subagent_dir.is_dir():
+            for sub_jsonl in sorted(subagent_dir.glob("*.jsonl")):
+                try:
+                    with open(sub_jsonl) as fh:
+                        for raw in fh:
+                            try:
+                                rec = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
+                            records.append(rec)
+                except OSError:
+                    continue
+
+    return records
+
+
 def iter_sessions(
     projects_dir: Path,
     projects_glob: str = "*",
@@ -349,40 +391,16 @@ def iter_sessions(
 ) -> Iterator[tuple[Path, list[dict]]]:
     """Yield (jsonl_path, records) for each transcript file matching the glob.
 
-    When include_subagents=True, records from split subagent files under
-    <session_id>/subagents/*.jsonl are appended to the session's record list
-    before yielding. Those files carry isSidechain: true on assistant records
-    and represent subagent turns written to the SUBAGENT_SUBDIR layout by
-    Claude Code. Sessions with no subagents/ directory are yielded unchanged.
+    Files are yielded in a single flat sort over their full paths — NOT grouped
+    by directory. This ordering is load-bearing: cmd_audit_routing's redact-label
+    first pass assigns Project-N labels by first-seen order, so grouping by
+    directory would relabel projects whenever one project-dir name is a lexical
+    prefix of a sibling's (exactly this repo's own worktree naming, e.g.
+    -home-u-repo vs -home-u-repo--claude-worktrees-b). See _read_session_file for
+    the per-file read and the include_subagents merge behavior.
     """
     for jsonl in sorted(projects_dir.glob(f"{projects_glob}/*.jsonl")):
-        records: list[dict] = []
-        try:
-            with open(jsonl) as fh:
-                for raw in fh:
-                    try:
-                        rec = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    records.append(rec)
-        except OSError:
-            continue
-
-        if include_subagents:
-            subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
-            if subagent_dir.is_dir():
-                for sub_jsonl in sorted(subagent_dir.glob("*.jsonl")):
-                    try:
-                        with open(sub_jsonl) as fh:
-                            for raw in fh:
-                                try:
-                                    rec = json.loads(raw)
-                                except json.JSONDecodeError:
-                                    continue
-                                records.append(rec)
-                    except OSError:
-                        continue
-
+        records = _read_session_file(jsonl, include_subagents)
         if records:
             yield jsonl, records
 
@@ -1134,6 +1152,133 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
         print(output_text)
 
 
+def _path_to_project_slug(path: str) -> str:
+    """Map an absolute path to Claude Code's project-directory slug.
+
+    Claude Code names each project dir under ~/.claude/projects/ by taking the
+    session's cwd and replacing every '/' and '.' with '-'. Verified against real
+    dirs: /home/u/repo -> -home-u-repo;
+    /home/u/repo/.claude/worktrees/b -> -home-u-repo--claude-worktrees-b.
+    """
+    return re.sub(r"[/.]", "-", path)
+
+
+def _repo_scoped_project_slugs() -> list[str]:
+    """Exact project-dir slugs for this repo's own worktrees (main + linked).
+
+    This is the minimization control for `skill-invocation`: its output is
+    routinely quoted into public PR descriptions, and transcripts under
+    ~/.claude/projects/ span every project on the machine. Scoping the read to
+    this repository — by *identity*, via `git worktree list`, matched as exact dir
+    names — guarantees no other project's skill names can enter the output. It is
+    deliberately not a path glob: a `<slug>*`-style match scopes by where a dir
+    sits in the path string, which a foreign repo cloned under this repo's
+    worktrees/, a sibling `<repo>-fork`, or a lossy-slug collision all defeat.
+
+    Fails closed (SystemExit) rather than returning a machine-wide scope whenever
+    the environment is not a recognizable git worktree of this repo — a silent
+    fallback to "*" would reintroduce the cross-project read this exists to
+    prevent.
+    """
+    try:
+        # timeout guards the fail-closed posture: a hung local git (stale lock,
+        # network-mounted .git) would otherwise block the whole CLI with no exit.
+        # 10s is generous for a local `worktree list` (no network/credential work)
+        # while still bounding a wedged invocation.
+        proc = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        OSError,
+    ) as exc:
+        print(
+            f"skill-invocation: cannot determine repo scope (git worktree list failed: {exc}); "
+            "refusing machine-wide scope",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    prefix = "worktree "
+    worktree_paths = [
+        line[len(prefix):] for line in proc.stdout.splitlines() if line.startswith(prefix)
+    ]
+    if not worktree_paths:
+        print(
+            "skill-invocation: git listed no worktrees; refusing machine-wide scope",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    slugs = [_path_to_project_slug(p) for p in worktree_paths]
+
+    # Poisoned-environment guard: git can succeed yet resolve a repo unrelated to
+    # the cwd (GIT_DIR exported, submodule, bare layout). If the cwd does not map
+    # to one of the enumerated worktree slugs, the scope may not be this repo's —
+    # fail closed rather than emit a foreign project's names.
+    if _path_to_project_slug(os.getcwd()) not in slugs:
+        print(
+            "skill-invocation: working directory is not within the resolved repo worktrees; "
+            "refusing to emit a scope that may not be this repo's",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return slugs
+
+
+def _normalize_skill_name(raw: str) -> str:
+    """Strip a directory qualifier from a transcript skill name.
+
+    input["skill"] is a display label, not a stable identifier. Claude Code
+    qualifies project-scoped skills by the directory they were found in, so the
+    same skill is recorded under several spellings depending on the invoking
+    session's working directory:
+
+        plan-it
+        claude:plan-it
+        .claude/worktrees/some-branch/claude:plan-it
+        claude/.claude/worktrees/some-branch/nested/claude:plan-it
+
+    Collapsing these spellings stops one skill from splitting across several rows.
+    This is row-hygiene, not the security control: within a repo-scoped read the
+    only path fragment that can appear is *this* repo's own worktree branch (its
+    project dirs are the only ones read), which is public. Cross-project
+    minimization is enforced upstream by _repo_scoped_project_slugs, not here.
+
+    A remaining ``plugin:skill`` or ``dir:skill`` prefix is deliberately kept: it
+    carries no path, and dropping it would need this script to hardcode the stow
+    package name, which varies per installation. Resolving such a prefix to a
+    skill body is the reviewer agent's job, not the extractor's.
+    """
+    return raw.rsplit("/", 1)[-1]
+
+
+def _iter_scoped_sessions(slugs: list[str], include_subagents: bool):
+    """Yield sessions from an explicit set of exact project-dir slugs.
+
+    Matching is by identity, not location: enumerate the directory names under
+    PROJECTS_DIR and keep only those whose name is string-equal to one of the
+    scoped slugs. This deliberately does NOT route the slug through Path.glob —
+    a slug containing a glob metacharacter (a `*`/`?`/`[` in the machine's home
+    or username path) would otherwise be interpreted as a wildcard and could
+    widen the match beyond this repo's own worktrees. Visiting each directory at
+    most once also makes double-counting impossible.
+    """
+    wanted = set(slugs)
+    if not PROJECTS_DIR.is_dir():
+        return
+    for project_dir in sorted(PROJECTS_DIR.iterdir()):
+        if project_dir.name in wanted and project_dir.is_dir():
+            for jsonl in sorted(project_dir.glob("*.jsonl")):
+                records = _read_session_file(jsonl, include_subagents)
+                if records:
+                    yield jsonl, records
+
+
 def cmd_skill_invocation(args: argparse.Namespace) -> None:
     """Per-skill invocation-source tally across the full corpus.
 
@@ -1147,89 +1292,176 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
 
     Identifies routed-only candidates (zero top-level or slash) and slash-only candidates
     (zero top-level or routed) for skill-description budget analysis.
-    """
-    projects_glob = _projects_glob(args)
 
-    skill_top: dict[str, int] = defaultdict(int)    # skill -> top-level invocation count
-    skill_routed: dict[str, int] = defaultdict(int)  # skill -> routed invocation count
-    skill_slash: dict[str, int] = defaultdict(int)   # skill -> user-slash invocation count
+    Two consumers ask different questions of this data, so subagent turns are opt-in:
+
+    - Skill-description budget analysis asks whether a skill's *description* draws
+      auto-triggers on the main thread. Sidechain turns are noise there, so they are
+      excluded by default.
+    - Procedural-fidelity review asks which procedures a branch's work committed to.
+      A skill invoked inside a spawned agent binds exactly as much as a main-thread
+      one, so --include-subagents folds those in and adds a thread column keeping the
+      two distinguishable rather than silently merged.
+
+    --branches scopes to named gitBranch values; --projects scopes to project dirs and
+    defaults to every project on the machine, which is rarely what a branch-scoped
+    caller wants (branch names are not unique across repos).
+    """
+    branch_filter = _branch_filter(args)
+    include_subagents = bool(getattr(args, "include_subagents", False))
+
+    # OUTPUT INVARIANT — provenance, not shape. This output is routinely quoted
+    # into public PR descriptions. Its safety rests on WHAT records are read, not
+    # on scrubbing names after the fact: skill names are user-defined strings and
+    # can themselves be private-project identifiers (a plugin namespace with no
+    # path separator at all). So the control is to scope the read to this repo's
+    # own project dirs (_repo_scoped_project_slugs) — the default when --projects
+    # is unset. An explicit --projects is an escape hatch for corpus analysis;
+    # the caller then owns that the output is no longer publish-safe.
+    #
+    # Supporting rules: only input["skill"] is extracted (never input["args"],
+    # which holds absolute paths even for in-scope sessions); and
+    # _normalize_skill_name collapses this repo's own worktree-qualified spellings
+    # for row-hygiene. Neither is the security boundary — scoping is.
+    projects_arg = getattr(args, "projects", None)
+    if projects_arg:
+        session_iter = iter_sessions(PROJECTS_DIR, projects_arg, include_subagents=include_subagents)
+    else:
+        session_iter = _iter_scoped_sessions(_repo_scoped_project_slugs(), include_subagents)
+
+    # Counters are keyed by (skill, thread). Without --include-subagents every
+    # thread is "main", which keeps the default output shape unchanged.
+    skill_top: dict[tuple[str, str], int] = defaultdict(int)     # -> top-level count
+    skill_routed: dict[tuple[str, str], int] = defaultdict(int)  # -> routed count
+    skill_slash: dict[tuple[str, str], int] = defaultdict(int)   # -> user-slash count
     routed_pairs: dict[tuple[str, str], int] = defaultdict(int)  # (parent, child) -> count
 
-    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for _jsonl, records in session_iter:
         for rec in records:
-            if rec.get("type") == "assistant" and not bool(rec.get("isSidechain")):
+            sidechain = bool(rec.get("isSidechain"))
+            if sidechain and not include_subagents:
+                continue
+            # Unfiltered runs must still count records that carry no gitBranch,
+            # so the branch test applies only when a filter was requested.
+            if branch_filter and (rec.get("gitBranch") or "") not in branch_filter:
+                continue
+            thread = "sidechain" if sidechain else "main"
+            rtype = rec.get("type")
+            if rtype == "assistant":
                 for block in ((rec.get("message") or {}).get("content") or []):
                     if not isinstance(block, dict) or block.get("type") != "tool_use":
                         continue
                     if block.get("name") != "Skill":
                         continue
-                    skill = (block.get("input") or {}).get("skill") or ""
+                    skill = _normalize_skill_name((block.get("input") or {}).get("skill") or "")
                     if not skill:
                         continue
-                    attribution = rec.get("attributionSkill") or ""
+                    attribution = _normalize_skill_name(rec.get("attributionSkill") or "")
                     if attribution:
-                        skill_routed[skill] += 1
+                        skill_routed[(skill, thread)] += 1
                         routed_pairs[(attribution, skill)] += 1
                     else:
-                        skill_top[skill] += 1
-            elif rec.get("type") == "user" and not bool(rec.get("isSidechain")):
+                        skill_top[(skill, thread)] += 1
+            elif rtype == "user":
                 content_raw = (rec.get("message") or {}).get("content", "")
                 content_str = content_raw if isinstance(content_raw, str) else _content_text(content_raw)
                 for m in re.finditer(r"<command-name>/([^<]+)</command-name>", content_str):
-                    skill_slash[m.group(1)] += 1
+                    skill_slash[(_normalize_skill_name(m.group(1)), thread)] += 1
 
-    all_skills: set[str] = set(skill_top) | set(skill_routed) | set(skill_slash)
+    keyed = set(skill_top) | set(skill_routed) | set(skill_slash)
+    all_skills: set[str] = {skill for skill, _thread in keyed}
 
     if not all_skills:
         print("No skill invocations found.")
         return
 
+    def _thread_total(s: str, thread: str) -> int:
+        return skill_top[(s, thread)] + skill_routed[(s, thread)] + skill_slash[(s, thread)]
+
     # Sort by total descending, then alphabetically for ties.
     def _skill_total(s: str) -> int:
-        return skill_top[s] + skill_routed[s] + skill_slash[s]
+        return sum(_thread_total(s, thread) for thread in ("main", "sidechain"))
 
     sorted_skills = sorted(all_skills, key=lambda s: (-_skill_total(s), s))
 
-    print("SKILL INVOCATION SOURCES (full corpus)")
-    header = f"{'skill':<40} {'top-level':>10}  {'routed':>6}  {'user-slash':>10}  {'total':>7}"
+    scope_parts = [
+        "explicit --projects (not repo-scoped)" if projects_arg else "this repo",
+        "main+subagents" if include_subagents else "main thread",
+    ]
+    if branch_filter:
+        scope_parts.append(f"branches: {','.join(sorted(branch_filter))}")
+    print(f"SKILL INVOCATION SOURCES ({'; '.join(scope_parts)})")
+
+    if include_subagents:
+        header = (
+            f"{'skill':<40} {'thread':<10} {'top-level':>10}  "
+            f"{'routed':>6}  {'user-slash':>10}  {'total':>7}"
+        )
+    else:
+        header = f"{'skill':<40} {'top-level':>10}  {'routed':>6}  {'user-slash':>10}  {'total':>7}"
     print(header)
     print("-" * len(header))
+
     for skill in sorted_skills:
-        top = skill_top[skill]
-        routed = skill_routed[skill]
-        slash = skill_slash[skill]
-        total = top + routed + slash
-        print(f"{skill:<40} {top:>10}  {routed:>6}  {slash:>10}  {total:>7}")
+        # The skill label repeats on every row rather than blanking on
+        # continuation rows: consumers grep individual lines out of this table,
+        # and a blanked label makes a grepped line unattributable.
+        threads = ("main", "sidechain") if include_subagents else ("main",)
+        for thread in threads:
+            if include_subagents and not _thread_total(skill, thread):
+                continue
+            top = skill_top[(skill, thread)]
+            routed = skill_routed[(skill, thread)]
+            slash = skill_slash[(skill, thread)]
+            total = top + routed + slash
+            if include_subagents:
+                print(
+                    f"{skill:<40} {thread:<10} {top:>10}  "
+                    f"{routed:>6}  {slash:>10}  {total:>7}"
+                )
+            else:
+                print(f"{skill:<40} {top:>10}  {routed:>6}  {slash:>10}  {total:>7}")
 
     if routed_pairs:
         print("\nROUTED PAIRS (parent -> child : count)")
         for (parent, child), count in sorted(routed_pairs.items(), key=lambda kv: (-kv[1], kv[0])):
             print(f"  {parent} -> {child} : {count}")
 
-    # Classification summary: load-bearing, routed-only, slash-only.
-    load_bearing = [s for s in sorted_skills if skill_top[s] > 0 or skill_slash[s] > 0]
-    routed_only = [s for s in sorted_skills if skill_top[s] == 0 and skill_slash[s] == 0 and skill_routed[s] > 0]
-    slash_only = [s for s in sorted_skills if skill_top[s] == 0 and skill_routed[s] == 0 and skill_slash[s] > 0]
+    # Classification summary: load-bearing, routed-only, slash-only. Counts
+    # aggregate across threads — the classification answers a per-skill
+    # question ("is this description load-bearing?"), not a per-thread one.
+    def _agg(counter: dict[tuple[str, str], int], s: str) -> int:
+        return sum(counter[(s, thread)] for thread in ("main", "sidechain"))
+
+    load_bearing = [s for s in sorted_skills if _agg(skill_top, s) > 0 or _agg(skill_slash, s) > 0]
+    routed_only = [
+        s for s in sorted_skills
+        if _agg(skill_top, s) == 0 and _agg(skill_slash, s) == 0 and _agg(skill_routed, s) > 0
+    ]
+    slash_only = [
+        s for s in sorted_skills
+        if _agg(skill_top, s) == 0 and _agg(skill_routed, s) == 0 and _agg(skill_slash, s) > 0
+    ]
 
     print("\nCLASSIFICATION SUMMARY")
     print("  Load-bearing (any top-level or slash invocations):")
     if load_bearing:
         for s in load_bearing:
-            print(f"    {s} ({skill_top[s]} top, {skill_slash[s]} slash)")
+            print(f"    {s} ({_agg(skill_top, s)} top, {_agg(skill_slash, s)} slash)")
     else:
         print("    (none)")
 
     print("  Routed-only candidates (zero top-level and zero slash — name-only eligible):")
     if routed_only:
         for s in routed_only:
-            print(f"    {s} (0 top, {skill_routed[s]} routed, 0 slash)")
+            print(f"    {s} (0 top, {_agg(skill_routed, s)} routed, 0 slash)")
     else:
         print("    (none)")
 
     print("  Slash-only candidates (zero top, zero routed — disable-model-invocation eligible):")
     if slash_only:
         for s in slash_only:
-            print(f"    {s} (0 top, 0 routed, {skill_slash[s]} slash)")
+            print(f"    {s} (0 top, 0 routed, {_agg(skill_slash, s)} slash)")
     else:
         print("    (none)")
 
@@ -2891,7 +3123,16 @@ def main() -> None:
             " Identifies name-only and disable-model-invocation candidates for budget relief."
         ),
     )
-    p_skill_inv.add_argument("--projects", default="*", metavar="GLOB")
+    p_skill_inv.add_argument(
+        "--projects", default=None, metavar="GLOB",
+        help="Project-dir glob. Default: this repo's own worktrees only (publish-safe). "
+             "Passing an explicit glob is an escape hatch — output is then not scoped to this repo.",
+    )
+    p_skill_inv.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
+    p_skill_inv.add_argument(
+        "--include-subagents", action="store_true",
+        help="Count skill invocations inside spawned subagents too, split by a thread column.",
+    )
     p_skill_inv.set_defaults(func=cmd_skill_invocation)
 
     p_review_trace = sub.add_parser(
