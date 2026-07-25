@@ -35,7 +35,8 @@ If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStar
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base:
   `gh pr view --json number,baseRefName`
-- If no PR exists, step 6 will open one after verification and review.
+- If no PR exists, step 5 authors the body and step 6 opens the PR from it,
+  after verification and review.
 - **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 9's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
 ## 2. Verification (halt on fail)
@@ -115,30 +116,26 @@ deviation with a rationale — a low bar. Fix findings in a new commit (normal
 staged-diff `/code-review` + marker gate), then return to step 2; don't re-run
 this step on its own output.
 
-## 5. Sync PR description (warn + fix; skip if no PR)
+## 5. PR description (unconditional; warn + fix)
 
-Invoke the `sync-pr-description` skill via the Skill tool against this
-branch's PR. It compares the body against branch state, verifies content
-claims, preserves coordination steps, and applies the fix with
-`gh pr edit`. Warn + fix; skip only if no PR exists. Unskippable when a
-PR exists — markdown, skill, and config diffs benefit from the same pass.
+Invoke the `pr-description` skill via the Skill tool. It owns body content in
+both directions and runs the same checks either way; the standard lives there,
+not here — don't restate it.
+Never skipped — markdown, skill, and config diffs benefit from the same pass.
+Pass it this run's `$ARGUMENTS`, plus the `## Deferred review findings` block
+if step 3's `/code-review` returned one (≥1 DEFER, no open PR). With a PR open
+it applies the fix itself via `gh pr edit --body-file`; with none, it writes the
+body to a temp file and ends its report with a `BODY_FILE: <path>` line.
 
 ## 6. Create PR if missing (skip if PR already exists)
 
 Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
-Body (omit `$ARGUMENTS` if empty; use single-quoted `<<'EOF'` heredoc; capture PR number for step 7). If `/code-review` returned a `## Deferred review findings` block at review time (≥1 DEFER, no open PR), assign it to `DEFERRED_FINDINGS` and it will be spliced in above; otherwise set `DEFERRED_FINDINGS` to empty string:
-```
-## Summary
-$(git log $(git merge-base origin/$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main) HEAD)..HEAD --format="- %s")
-$ARGUMENTS
-## Test plan
-- [ ] (fill in manual verification steps)
-$DEFERRED_FINDINGS
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-```
+
+The body is step 5's file; this step composes none of its own. Bash calls share no shell state, so bind both values and run both commands in **one** call — `TITLE` from the title derived above, `BODY_FILE` from step 5's `BODY_FILE:` report line. Guard, then create: `[ -f "$BODY_FILE" ] && [ -n "$(tr -d '[:space:]' < "$BODY_FILE")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "$TITLE" --body-file "$BODY_FILE"`. `-f` catches an unset or missing path; `-s` alone would pass the whitespace-only file a truncated write leaves. Halting matters because an empty-bodied PR is unrepairable: step 5 takes its *sync* path once a PR exists, and sync checks a body against branch state rather than authoring one. Capture the PR number for step 7.
+
 ## 7. Final hygiene recheck (halt on fail)
 
-Steps 3, 4, and 5 may have produced new commits or body edits. Reconfirm:
+Steps 3–6 may have produced new commits or body writes. Reconfirm:
 
 - Working tree is clean.
 - All commits are pushed. If `git status` shows the branch ahead of
@@ -146,7 +143,7 @@ Steps 3, 4, and 5 may have produced new commits or body edits. Reconfirm:
   now — those commits are inside the approved scope of this gate and
   the user does not need to re-authorize the push. After pushing,
   re-verify the branch is no longer ahead.
-- PR body edit (if any) landed — re-fetch with `gh pr view` and confirm.
+- The PR body landed, whether step 5 edited it or step 6 created the PR from it — re-fetch with `gh pr view` and confirm.
 - Branch is not behind the base branch — if steps 3–6 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
 
 ## 8. CI status (warn only)
@@ -192,6 +189,6 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 
 - Verification: commands run and their results.
 - Code review: findings fixed, or "none."
-- PR description: sections updated, or "already in sync" / "no PR."
+- PR description: authored for a new PR, or updated / "already in sync."
 - CI: status per check.
 - Branch: clean, pushed, PR #N ready for review.

@@ -138,7 +138,7 @@ flowchart LR
 - **`/skill-review`** — behavioral-equivalence audit when a `SKILL.md` changes. **Hook-enforced.** See [docs/skills.md](docs/skills.md#project-scoped-plugins).
 - **`/agent-review`** — same audit for agent files (`claude/.claude/agents/*.md` or `plugins/*/agents/*.md`). Dispatcher-invoked by `/code-review`; **not** hook-enforced. See [docs/skills.md — Skill architecture notes](docs/skills.md#skill-architecture-notes).
 - **`/ready-for-review`** — final tests + cumulative-diff review before push.
-- **`/sync-pr-description`** — verify and sync the PR description against branch state.
+- **`/pr-description`** — author a PR body to standard, or verify an existing one against branch state.
 - **`/respond-pr`** — fetch and reply to all PR comments with `[Claude Code]` attribution.
 
 **Hook transitions:**
