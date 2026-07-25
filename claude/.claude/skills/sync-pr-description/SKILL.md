@@ -2,10 +2,11 @@
 name: sync-pr-description
 description: >
   Verify and sync the current branch's open PR description against branch
-  state — flag per-commit narratives, stale content claims, TBD markers,
-  and files missing from the body; preserve coordination steps; apply the
-  fix with gh pr edit. Dispatched from /ready-for-review step 4 and the
-  /handoff pre-write checklist; also run standalone.
+  state — read the body end to end for self-consistency, then flag
+  per-commit narratives, stale content claims, TBD markers, and files
+  missing from the body; preserve coordination steps; apply the fix with
+  gh pr edit. Dispatched from /ready-for-review step 5 and the /handoff
+  pre-write checklist; also run standalone.
 ---
 
 # Sync PR description
@@ -13,8 +14,29 @@ description: >
 Precondition: resolve the PR with `gh pr view --json number,body,title`.
 If the branch has no open PR, report "no PR to sync" and stop.
 
-The PR description is for the reviewer, not for posterity. Compare
-the body against branch state:
+The PR description is for the reviewer, not for posterity.
+
+**Reader-coherence pass.** Before the pattern checks below, read the
+body end to end as the reviewer will and answer: **does this document
+make sense on its own?** Judge the body against itself — comparison
+against branch state and file content comes after. Those checks are
+pattern matches; none of them surfaces "this section contradicts
+itself" or "this text should not be here at all."
+
+Markers, illustrative rather than exhaustive:
+
+- A heading whose own body negates it — a "why I skipped X" section
+  whose text says X was not skipped.
+- Two sections that contradict each other — a "no breaking changes"
+  claim up top against a breaking change in the deploy notes.
+- Leftover template instruction text: placeholder prompts the
+  template's own directions said to remove once a condition holds.
+- Any span a reader arriving cold would stop on and ask "what is this?"
+
+If nothing fires after a careful read, say so — but the read is
+required.
+
+Then compare the body against branch state:
 
 - `git log <base>..HEAD --oneline`
 - `git diff <base>..HEAD --name-only`
@@ -41,7 +63,11 @@ Flag and fix:
 
 Propose an updated body and apply with `gh pr edit <n> --body`. Keep
 the project's template structure intact — refresh content inside
-existing sections, don't restructure.
+existing sections, don't restructure. Exception: a section the
+template's own instructions say to delete once a condition holds is
+meant to be removed, not emptied or annotated — give any action item
+inside it a disposition first (see "Coordination-step preservation"
+below).
 
 **Coordination-step preservation.** Before applying `gh pr edit <n> --body`, enumerate every action item the existing body carries — coordination steps, pre-deploy commands, manual external-system setup, sync workflows. For each, give it an explicit disposition: survive into the new body, answer-and-strip (Claude resolved it — see the "Reviewer-action items Claude can answer itself" bullet above), or strip-as-stale (no longer applies — see the `TBD` / `pending` markers bullet above). Deliberate removal is fine; silent loss during a wholesale restructure is the failure mode.
 
