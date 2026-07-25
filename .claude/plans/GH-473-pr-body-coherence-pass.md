@@ -30,6 +30,13 @@ classification: **one-off**, present in one sub-window only. Per that
 skill's Step 7, a one-off is reported but must not drive machinery. This
 plan is deliberately sized to a narrow, targeted change for that reason.
 
+"One-off" here describes observed frequency, not reproducibility. The
+issue argues the pattern is mechanically reproducible — any PR whose body
+is generated once under one set of facts and then outlives them will
+recreate it — and nothing in this sweep contradicts that. The label
+justifies not building enforcement machinery today; it is not grounds to
+decline coverage if a second instance surfaces.
+
 ## Approach
 
 Add a named **reader-coherence pass** that runs before the existing pattern
@@ -100,10 +107,10 @@ default (no 500-line override for this skill)
 Row 6 [assumption]: docs/skills.md:11 enumerates this skill's checks by name
 and goes stale on a new check; README.md:141 and docs/skills.md:42 are
 generic and do not [verified: grep of docs surfaces] — anchors: row1
-Row 7 [assumption]: this defect class is a one-off, not recurring — zero
-instances across 40 public-repo PRs with full comment history and 15
-cross-repo sessions where the skill fired [verified: error-mode-analysis data
-pass, this session] — anchors: root
+Row 7 [assumption]: this defect class is a one-off by observed frequency,
+not by reproducibility — zero further instances across 40 public-repo PRs
+with full comment history and 15 cross-repo sessions where the skill fired
+[verified: error-mode-analysis data pass, this session] — anchors: root
 Row 8 [assumption]: no enforcing test ships with this change; the repo's
 add-a-test-with-a-new-convention precedent covers cross-file wiring, and an
 assert on prose inside one file has no cross-file coupling to break
@@ -115,7 +122,8 @@ Row 10 [assumption]: sync-pr-description/SKILL.md:7 and docs/skills.md:11 both
 name "/ready-for-review step 4" but the sync dispatch is step 5; step 4 is
 "Skill-procedural-fidelity review" [verified: grep of `^## [0-9]` headings in
 ready-for-review/SKILL.md — step 5 is "Sync PR description"] — anchors: none
-(incidental; both lines are rewritten by edits 0 and 3 regardless)
+(incidental; both lines are rewritten by edit 0 and the `docs/skills.md`
+edit regardless)
 ```
 
 ### Lighter primitives considered and rejected
@@ -137,7 +145,7 @@ check three lighter alternatives:
 
 ## Critical files
 
-**`claude/.claude/skills/sync-pr-description/SKILL.md`** — three edits, ~18
+**`claude/.claude/skills/sync-pr-description/SKILL.md`** — four edits, ~27
 lines added net.
 
 0. Frontmatter `description` (`:3-8`) enumerates the checks by name — *"flag
@@ -193,8 +201,9 @@ lines added net.
      template's own directions said to remove once a condition holds.
    - Any span a reader arriving cold would stop on and ask "what is this?"
 
-   If nothing fires after a careful read, say so — but the read is
-   required.
+   If nothing fires after a careful read, say so — naming the sections
+   you read end to end. A bare negative cannot distinguish a coherent
+   body from a skipped pass.
    ```
 
    The markers are illustrations, not the definition — writing them as a
@@ -207,6 +216,10 @@ lines added net.
    Content-claim-verification bullet, whose reference point is file
    content at HEAD. The text names no platform-specific template file,
    per the repo rule that stowed skill bodies stay platform-agnostic.
+   The closing line makes the negative result carry an artifact — the
+   sections actually read — because a bare "nothing fired" is
+   indistinguishable from a pass that never ran, and no test asserts on
+   this prose (see Row 8).
 
 2. Append the deletion carve-out to `:42-44`, which becomes:
 
@@ -221,14 +234,33 @@ lines added net.
    ```
 
    The trailing cross-reference matters: a template-deletable section can
-   carry a live coordination step (the motivating "why I skipped testing"
-   shape plausibly says "verify manually before merge"). Without it the
-   exception reads as unqualified delete-on-sight and can silently drop
-   that item — the exact failure the file's own Coordination-step
-   preservation paragraph exists to prevent, and one the "not emptied or
-   annotated" clause forecloses leaving a stub for. The pointer uses the
-   same idiom the two adjacent bullets already use rather than restating
-   the rule.
+   carry a live coordination step the deletion would otherwise take with
+   it. Without it the exception reads as unqualified delete-on-sight and
+   can silently drop that item — the exact failure the file's own
+   Coordination-step preservation paragraph exists to prevent, and one the
+   "not emptied or annotated" clause forecloses leaving a stub for. That
+   paragraph's "survive" disposition therefore has to name the section a
+   surviving item moves to; a survivor whose container is deleted and
+   whose destination is unnamed is the same silent loss by another route.
+   The pointer uses the same idiom the two adjacent bullets already use
+   rather than restating the rule.
+
+3. Give the "survive" disposition a destination, in the
+   **Coordination-step preservation** paragraph. `For each, give it an
+   explicit disposition: survive into the new body, answer-and-strip`
+   becomes:
+
+   ```markdown
+   For each, give it an explicit disposition: survive into the new body
+   — and when its own section is being deleted under the exception
+   above, name the remaining section it moves to, since a survivor with
+   no home is the silent loss in disguise — answer-and-strip
+   ```
+
+   The clause lands here, not in the exception, because this paragraph is
+   where the three dispositions are defined; putting the destination rule
+   beside the disposition it qualifies keeps one authoritative home for
+   the enumeration rather than splitting it across two sections.
 
 **`docs/skills.md:11`** — the bullet enumerates checks by name
 (*"content-claim verification, coordination-step preservation, backtick
@@ -244,7 +276,8 @@ numbers the sync dispatch **step 5**; step 4 is *"Skill-procedural-fidelity
 review,"* added in commit `c623ea5` (#469), which shifted sync down by one. No
 test pins the step number — the assertion at `test_skills.py:445` matches only
 the invocation-verb substring — so nothing catches the drift. The first two
-lines are already being rewritten by edits 0 and 3; the docstring is the third
+lines are already being rewritten by edit 0 and the `docs/skills.md` edit; the
+docstring is the third
 arm of the same drift, corrected per CLAUDE.md's audit-structural-siblings rule
 rather than left for a future contributor to trip over. Carry this section into
 the PR description.

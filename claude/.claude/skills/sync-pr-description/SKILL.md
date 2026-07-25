@@ -33,8 +33,9 @@ Markers, illustrative rather than exhaustive:
   template's own directions said to remove once a condition holds.
 - Any span a reader arriving cold would stop on and ask "what is this?"
 
-If nothing fires after a careful read, say so — but the read is
-required.
+If nothing fires after a careful read, say so — naming the sections
+you read end to end. A bare negative cannot distinguish a coherent
+body from a skipped pass.
 
 Then compare the body against branch state:
 
@@ -69,7 +70,7 @@ meant to be removed, not emptied or annotated — give any action item
 inside it a disposition first (see "Coordination-step preservation"
 below).
 
-**Coordination-step preservation.** Before applying `gh pr edit <n> --body`, enumerate every action item the existing body carries — coordination steps, pre-deploy commands, manual external-system setup, sync workflows. For each, give it an explicit disposition: survive into the new body, answer-and-strip (Claude resolved it — see the "Reviewer-action items Claude can answer itself" bullet above), or strip-as-stale (no longer applies — see the `TBD` / `pending` markers bullet above). Deliberate removal is fine; silent loss during a wholesale restructure is the failure mode.
+**Coordination-step preservation.** Before applying `gh pr edit <n> --body`, enumerate every action item the existing body carries — coordination steps, pre-deploy commands, manual external-system setup, sync workflows. For each, give it an explicit disposition: survive into the new body — and when its own section is being deleted under the exception above, name the remaining section it moves to, since a survivor with no home is the silent loss in disguise — answer-and-strip (Claude resolved it — see the "Reviewer-action items Claude can answer itself" bullet above), or strip-as-stale (no longer applies — see the `TBD` / `pending` markers bullet above). Deliberate removal is fine; silent loss during a wholesale restructure is the failure mode.
 
 **Backtick hygiene.** When constructing the new body via
 `gh pr edit <n> --body "$(cat <<'EOF' … EOF )"`, write backticks
