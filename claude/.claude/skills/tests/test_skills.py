@@ -441,7 +441,7 @@ class TestConventionSkillWiring:
         assert "invoke the `sql-query-conventions`" in self._skill_body("code-review")
 
     def test_ready_for_review_invokes_sync_pr_description(self):
-        """ready-for-review step 4 must have an actionable invoke pointer to sync-pr-description."""
+        """ready-for-review step 5 must have an actionable invoke pointer to sync-pr-description."""
         assert "Invoke the `sync-pr-description`" in self._skill_body("ready-for-review")
 
     def test_handoff_runs_sync_pr_description(self):
