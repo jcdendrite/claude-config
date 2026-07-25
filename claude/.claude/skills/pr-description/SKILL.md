@@ -145,6 +145,11 @@ Then, by mode:
   form makes the path extractable rather than transcribed.
 - **Sync mode:** apply with `gh pr edit <n> --body-file <path>`.
 
+Write the path out as literal text in both commands — not a `$VAR` holding
+it. A redaction gate scans the file named by `--body-file` and resolves that
+argument statically, so a shell variable is opaque to it and the call fails
+closed.
+
 When a body already exists, keep the project's template structure intact —
 refresh content inside existing sections, don't restructure. Exception: a
 section the template's own instructions say to delete once a condition holds
