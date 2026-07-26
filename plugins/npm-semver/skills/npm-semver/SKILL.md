@@ -24,18 +24,14 @@ constant, a build-injected string) — every other site should read from
 
 ## Bump magnitude
 
-Determine the bump by backward compatibility against the package's declared
-public API, not by diff size. From [semver.org 2.0.0](https://semver.org/spec/v2.0.0.html):
+Per semver.org 2.0.0, determine the bump by backward compatibility against the
+package's declared public API, not by diff size.
 
-> increment the: MAJOR version when you make incompatible API changes, MINOR
-> version when you add functionality in a backward compatible manner, PATCH
-> version when you make backward compatible bug fixes.
-
-Semver.org also requires a declared public API for this to mean anything: "If
-you're not sure whether to declare something as part of your public API,
-you're probably worried about the wrong things." Define what the package
-exposes (exports, CLI surface, documented config) and bump against that
-surface, not against internal refactors that don't cross it.
+A declared public API is the precondition. Define what the package exposes
+(exports, CLI surface, documented config) and bump against that surface, not
+against internal refactors that don't cross it. Being unsure whether something
+belongs to the public API is itself the signal — the surface hasn't been
+declared yet, and no additional bump rule will resolve it.
 
 | Change to the package | Bump |
 |---|---|

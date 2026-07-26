@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -900,3 +901,242 @@ def test_handoff_and_brief_reference_resume_context_literally(skill_name: str) -
         f"{skill_name}/SKILL.md must give a literal resume-context invocation, "
         "not just mention the name in passing"
     )
+
+
+# --- Citation placement: URLs live in REFERENCES.md, not in a SKILL.md body ---
+#
+# A SKILL.md body loads into the session on every skill fire; REFERENCES.md never
+# does. A citation URL in a body is therefore re-read on every fire by a reader
+# that cannot click it. URLs that are *functional* (a namespace URI a parser
+# needs, an attack payload, a placeholder) are a different thing entirely, and in
+# this corpus they are always inside a fenced code block or an inline code span —
+# so stripping code regions first separates the two classes with no allowlist.
+
+_URL_RE = re.compile(r"https?://")
+
+# An opening fence: up to 3 leading spaces, then 3+ backticks or 3+ tildes.
+_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+# An inline code span: a run of N backticks, content, then a matching run of N.
+# The lookarounds pin both delimiters to *whole* backtick runs. Without them the
+# opener backtracks to a shorter run when no equal-length closer exists — so
+# ````text``` would match as a 3-tick span, and any URL between the delimiters
+# would be blanked even though CommonMark leaves the whole thing as literal text.
+# That direction of error is the dangerous one: it exempts a real citation from
+# the scan. `.` excludes newlines, so a span stays on one line.
+_INLINE_CODE_RE = re.compile(r"(?<!`)(?P<ticks>`+)(?!`)(?P<body>.+?)(?<!`)(?P=ticks)(?!`)")
+
+
+def _blank_frontmatter(markdown_text: str) -> str:
+    """Blank the leading YAML frontmatter block, preserving the line count.
+
+    No current `description` holds a URL, but frontmatter is metadata rather than
+    body prose, so excluding it makes the invariant unambiguous rather than
+    accidentally true.
+
+    Deliberately does not reuse validate_skill_structure.parse_frontmatter, which
+    is imported in this module: that function answers "what are the frontmatter
+    values" and returns a parsed dict, while this one answers "which lines are
+    frontmatter" and must return text with the line count intact so violation
+    line numbers stay accurate. Same delimiter, different questions.
+    """
+    lines = markdown_text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return markdown_text
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return "\n".join([""] * (index + 1) + lines[index + 1 :])
+    return markdown_text
+
+
+def _closed_fence_line_indices(lines: list[str]) -> set[int]:
+    """Indices of every line belonging to a *closed* fenced code block.
+
+    An unterminated fence contributes nothing. CommonMark says an unclosed fence
+    runs to the end of the document, and this scan deliberately diverges: under
+    that rule a contributor who forgets one closing fence would silently exempt
+    every line after it — including real citation URLs — with no visible symptom.
+    Treating the unterminated remainder as prose errs toward over-flagging, which
+    surfaces as a test failure pointing at the malformed fence. Every gap in this
+    scan is deliberately biased that direction.
+    """
+    inside: set[int] = set()
+    open_index: int | None = None
+    open_run = ""
+
+    for index, line in enumerate(lines):
+        if open_index is None:
+            fence_match = _FENCE_OPEN_RE.match(line)
+            if fence_match:
+                open_index, open_run = index, fence_match.group(1)
+            continue
+        # A closing fence is a bare run of the opener's character, at least as
+        # long as the opener, with no trailing info string.
+        candidate = line.strip()
+        if candidate and set(candidate) == {open_run[0]} and len(candidate) >= len(open_run):
+            inside.update(range(open_index, index + 1))
+            open_index = None
+
+    return inside
+
+
+def _blank_code_regions(markdown_text: str) -> str:
+    """Blank fenced code blocks and inline code spans, preserving the line count.
+
+    Fences are resolved before inline spans so a ``` delimiter is never misread as
+    three consecutive single-backtick span openers. Blanked regions become empty
+    lines rather than being deleted, so a violation's reported line number still
+    matches the real file.
+    """
+    lines = markdown_text.split("\n")
+    fenced = _closed_fence_line_indices(lines)
+    return "\n".join(
+        "" if index in fenced else _INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), line)
+        for index, line in enumerate(lines)
+    )
+
+
+def _all_skill_md_files() -> list[Path]:
+    """Every SKILL.md in the repo, across all three roots that hold one.
+
+    Single-level globs only — never rglob or `**`. `.claude/worktrees/` holds
+    full checkouts of this repo whose SKILL.md files carry live pre-fix URLs, and
+    a recursive glob from the repo root would scan them and fail on another
+    branch's content.
+    """
+    repo_root = Path(__file__).resolve().parents[4]
+    found: list[Path] = []
+    for base, pattern in [
+        (repo_root / "claude" / ".claude" / "skills", "*/SKILL.md"),
+        (repo_root / ".claude" / "skills", "*/SKILL.md"),
+        (repo_root / "plugins", "*/skills/*/SKILL.md"),
+    ]:
+        matched = list(base.glob(pattern))
+        # Per-root, not just in aggregate: Path.glob on a missing directory
+        # returns empty rather than raising, so a rename that relocates one root
+        # would otherwise shrink the scanned corpus silently while the other two
+        # roots kept the suite green.
+        assert matched, f"{base}/{pattern} matched no SKILL.md — this glob root is wrong"
+        found.extend(matched)
+    return sorted(found)
+
+
+def test_skill_bodies_carry_no_citation_urls() -> None:
+    """No SKILL.md body may contain a URL outside a code fence or code span.
+
+    Reports every violation at once rather than failing on the first, so a
+    contributor fixes the whole set in one pass.
+
+    Enforcement point: this is a pytest/CI check only, NOT a commit gate. The
+    sibling SKILL.md rules in validate_skill_structure.py are enforced at commit
+    time by require-skill-review.sh, and this one deliberately is not: that
+    validator ships to downstream repos inside the skill-management plugin, so
+    putting a claude-config-internal placement convention there would impose it
+    on every consumer that installed the plugin for frontmatter validation. The
+    tradeoff is that a leaked URL is caught by CI rather than at `git commit`.
+
+    Two CommonMark forms are deliberately not handled: 4-space-indented code
+    blocks, and inline code spans that cross a newline. No SKILL.md in this repo
+    uses either form to hold a URL, before or after this convention was applied,
+    so the machinery would be untested coverage for a shape that does not occur.
+    Both gaps err toward over-flagging — the block reads as prose and the test
+    fails with a line number pointing straight at it, whose fix is to fence the
+    block rather than to widen the parser. Every deliberate gap here is biased
+    that direction; see _closed_fence_line_indices for why under-flagging is
+    treated as the unacceptable failure mode.
+    """
+    repo_root = Path(__file__).resolve().parents[4]
+    skill_files = _all_skill_md_files()
+
+    violations: list[str] = []
+    for path in skill_files:
+        prose = _blank_code_regions(_blank_frontmatter(path.read_text()))
+        for lineno, line in enumerate(prose.split("\n"), start=1):
+            if _URL_RE.search(line):
+                violations.append(f"  {path.relative_to(repo_root)}:{lineno}")
+
+    assert not violations, (
+        "SKILL.md bodies must not carry citation URLs — a body is re-read on "
+        "every skill fire by a reader that cannot follow a link. Move the URL "
+        "(and any verbatim source quote) to a REFERENCES.md beside the SKILL.md, "
+        "keeping any rule-generalizing rationale in the body. A bare authority "
+        "name may stay where the claim is contestable. If the URL is functional "
+        "rather than a citation, put it in a code fence or code span.\n"
+        + "\n".join(violations)
+    )
+
+
+@pytest.mark.parametrize(
+    ("markdown", "url_survives"),
+    [
+        pytest.param("```\nhttps://example.test\n```\n", False, id="fence-backtick"),
+        pytest.param("~~~\nhttps://example.test\n~~~\n", False, id="fence-tilde"),
+        # The only fence shape actually present in this corpus. A helper matching
+        # on "the opening line is exactly the delimiter" passes every other case
+        # here and fails this one.
+        pytest.param(
+            '```python\nurl = "https://example.test"\n```\n', False, id="fence-info-string"
+        ),
+        pytest.param("Payload: `https://evil.test/x`\n", False, id="span-single-backtick"),
+        pytest.param("Payload: ``https://evil.test/`x``\n", False, id="span-multi-backtick"),
+        pytest.param("See https://example.test for details.\n", True, id="bare-url-in-prose"),
+        pytest.param("See [the docs](https://example.test).\n", True, id="markdown-link"),
+        # The three cases below pin under-flagging bugs — the failure direction
+        # that silently exempts a real citation from the scan. Each one returned
+        # False (URL swallowed) before the delimiter-run lookarounds and the
+        # closed-fence requirement were added.
+        pytest.param(
+            "````see https://leaked.test``` end\n", True, id="span-mismatched-run-lengths"
+        ),
+        pytest.param(
+            "````\nhttps://in-fence.test\n```\nstill fenced\n````\n",
+            False,
+            id="fence-longer-opener-ignores-shorter-closer",
+        ),
+        pytest.param(
+            "```python\nx = 1\n\nUnclosed, so this is prose: https://leaked.test\n",
+            True,
+            id="fence-unterminated-falls-back-to-prose",
+        ),
+    ],
+)
+def test_blank_code_regions_distinguishes_functional_urls_from_citations(
+    markdown: str, url_survives: bool
+) -> None:
+    """The helper must bite on both strip paths, not just the fenced one.
+
+    A corpus that happens to pass proves nothing about the algorithm; these cases
+    are what prove it. The span cases specifically guard `review-permissions`,
+    whose attack payload is a URL inside an inline code span.
+    """
+    assert bool(_URL_RE.search(_blank_code_regions(markdown))) is url_survives
+
+
+def test_blank_code_regions_handles_all_three_forms_in_one_document() -> None:
+    """A fence, a span, and a real leaked citation in one file.
+
+    This is the actual shape of ai-instruction-and-memory-files/SKILL.md. A
+    two-pass bug — fence-stripping running past its own closing delimiter and
+    swallowing a later line — would pass every single-form case above and only
+    surface here. Also pins line-number preservation, which the corpus scan's
+    file:line reporting depends on.
+    """
+    document = (
+        "# Heading\n"  # 1
+        "```python\n"  # 2
+        'u = "https://in-fence.test"\n'  # 3
+        "```\n"  # 4
+        "Span: `https://in-span.test`\n"  # 5
+        "Leak: [docs](https://leaked.test)\n"  # 6
+    )
+    prose_lines = _blank_code_regions(document).split("\n")
+
+    flagged = [i for i, line in enumerate(prose_lines, start=1) if _URL_RE.search(line)]
+    assert flagged == [6], f"expected only the markdown link on line 6 to survive, got {flagged}"
+
+
+def test_blank_frontmatter_excludes_metadata_from_the_scan() -> None:
+    """Frontmatter is metadata, not body prose — excluded so the rule is exact."""
+    document = "---\nname: demo\nhomepage: https://example.test\n---\n\nBody prose.\n"
+    assert not _URL_RE.search(_blank_frontmatter(document))
+    assert "Body prose." in _blank_frontmatter(document)

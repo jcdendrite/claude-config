@@ -35,8 +35,7 @@ Examples:
 ### Why no `<type>/` prefix?
 
 Industry guides often recommend `<type>/<ticket>-<topic>` — e.g.,
-`feature/GH-1234-checkout` ([Conventional Branch](https://conventional-branch.github.io/)).
-That pattern adds signal when:
+`feature/GH-1234-checkout`. That pattern adds signal when:
 
 - The team uses branch-prefix-keyed automation (changelog generation,
   CI gating by branch type, auto-deploy paths).
@@ -45,10 +44,6 @@ That pattern adds signal when:
 When neither applies — the ticket system already carries the work
 type as a label, and no automation keys off the branch prefix — the
 type prefix duplicates the tracker metadata without adding signal.
-[Lullabot's ADR](https://architecture.lullabot.com/adr/20220920-git-branch-naming/)
-documents the same tradeoff and the same conclusion: *"For our
-purposes we don't need the branch to indicate if it is a feature or
-a fix... Instead we rely on the ticket's type."*
 
 If a specific project needs prefix-keyed automation, add the type
 prefix at that project's CLAUDE.md level. The global default stays
