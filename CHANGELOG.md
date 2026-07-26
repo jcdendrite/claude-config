@@ -4,6 +4,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ## [Unreleased]
 
+### Changed
+
+- **Citation placement normalized across skills** — `SKILL.md` bodies carry the rule and the rationale that lets it generalize; canonical URLs and verbatim source quotes live in a co-located `REFERENCES.md`, which is never loaded at skill runtime. Four skills moved their citations (`ai-instruction-and-memory-files`, `branch-creation`, `claude-hook-review`, `npm-semver`), and `test_skill_bodies_carry_no_citation_urls` now asserts the split so it cannot silently regress. Plugin bumps: `claude-hook-review` 2.0.1, `npm-semver` 1.0.2 — both patch, provenance storage only, no rule change, so pinning consumers need not re-pin.
+
 ### Removed
 
 - **Retired `check-runner` agent.** Transcript-corpus measurement (649 sessions, 784 dispatches) showed neither the context-cost nor verdict-ergonomics justification holds. Parent runs checks inline. Removes the agent, `check-runner-bash-guard.sh` hook, and dispatch-id contract. See `docs/case-studies/check-runner.md#retirement`.

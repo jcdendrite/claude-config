@@ -36,13 +36,12 @@ only to verify a specific URL or quote.
 
 ## 1. Claude Code loads CLAUDE.md only — NOT AGENTS.md
 
-Verbatim from [Claude Code — How Claude remembers your project](https://code.claude.com/docs/en/memory):
-
-> "Claude Code reads CLAUDE.md, not AGENTS.md. If your repository already uses AGENTS.md for other coding agents, create a CLAUDE.md that imports it so both tools read the same instructions without duplicating them."
-
-Confirming signals:
-- Zero entries for "AGENTS.md" in the [claude-code changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md) — the support was never added.
-- Claude Code is explicitly absent from the [agents.md supporting-tools list](https://agents.md) (Codex, Cursor, Gemini CLI, Windsurf, Amp, Aider, etc. are listed).
+Per Anthropic's Claude Code memory docs, Claude Code reads CLAUDE.md, not
+AGENTS.md. When a repo already uses AGENTS.md for other coding agents, create a
+CLAUDE.md that imports it so both tools read the same instructions without
+duplicating them (independently corroborated: zero AGENTS.md entries in the
+Claude Code changelog, and Claude Code is absent from agents.md's
+supported-tools list).
 
 **The Anthropic-documented single-source-of-truth pattern is:**
 
@@ -76,16 +75,14 @@ CLAUDE.md all load together.
 
 ## 2. Length targets
 
-Official threshold: **under 200 lines per CLAUDE.md file** ([Claude Code
-— memory](https://code.claude.com/docs/en/memory): "Longer files consume
-more context and reduce adherence"). The unit is **lines** — no
+Official threshold: **under 200 lines per CLAUDE.md file** — longer files
+consume more context and reduce adherence. The unit is **lines** — no
 Anthropic source attaches a word-count threshold. Within that cap, line
 count undercounts density (long-paragraph lines bury rules), and
 attention decays in the middle ("lost in the middle"). Apply the
 **behavior test** below per line; place critical rules near start or end. CLAUDE.md is **advisory** while
-hooks are **deterministic** ([Claude Code Best Practices](https://code.claude.com/docs/en/best-practices):
-hooks "guarantee the action happens") — prefer a hook or structural
-test when a rule can be encoded as one. The 200-line cap is hook-enforced at commit time by `check-claude-md-length.sh` for CLAUDE.md and AGENTS.md.
+hooks are **deterministic**; they guarantee the action happens — prefer a
+hook or structural test when a rule can be encoded as one. The 200-line cap is hook-enforced at commit time by `check-claude-md-length.sh` for CLAUDE.md and AGENTS.md.
 
 ### The behavior test
 
@@ -139,8 +136,7 @@ Claude Code when both files exist. Zero maintenance, single source.
 
 Auto-memory at `~/.claude/projects/<project>/memory/` is adjacent to
 CLAUDE.md but serves a different role. It's machine-local and per
-working tree — never a place for team rules. From
-[Claude Code — memory](https://code.claude.com/docs/en/memory):
+working tree — never a place for team rules.
 
 |                  | CLAUDE.md files                                   | Auto memory                                                      |
 | :--------------- | :------------------------------------------------ | :--------------------------------------------------------------- |

@@ -11,6 +11,12 @@ citing a claim.
   — the "under 200 lines per CLAUDE.md file" size threshold, CLAUDE.md-loaded-not-AGENTS.md,
   the `@AGENTS.md` import pattern, the auto-memory role split, the MEMORY.md 200-line/25KB load limit.
 
+  > "Longer files consume more context and reduce adherence"
+
+  > "Claude Code reads CLAUDE.md, not AGENTS.md. If your repository already uses
+  > AGENTS.md for other coding agents, create a CLAUDE.md that imports it so both
+  > tools read the same instructions without duplicating them."
+
   > "Use CLAUDE.md files when you want to guide Claude's behavior.
   > Auto memory lets Claude learn from your corrections without manual
   > effort."
@@ -21,6 +27,8 @@ citing a claim.
   > reads them on demand..."
 - [Claude Code — Best Practices](https://code.claude.com/docs/en/best-practices)
   — CLAUDE.md is advisory while hooks are deterministic; the over-specified-CLAUDE.md failure mode.
+
+  > hooks "guarantee the action happens"
 - [claude-code CHANGELOG.md](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)
   — zero AGENTS.md entries, confirming AGENTS.md support was never added.
 

@@ -71,7 +71,7 @@ Two non-obvious constraints for new gates:
 **Fail-closed** when the gate prevents a leak: parse failure → deny (a hook that can't read its input can't verify the operation is safe). All gate-class hooks use `_lib.sh::_lib_parse_tool_input_or_deny` as the canonical fail-closed pattern — source that function rather than reimplementing the inline JQ_EXIT check.
 
 The helper uses a single `_lib_jq` call to extract both `.tool_name` and `.tool_input.command`. Three deny paths protect against silent-allow:
-- **(a) jq non-zero exit** — parse failure, `timeout` exit=124, or missing jq binary; also fires when `.tool_input` is not an object (jq structural-type error). Per [Anthropic's PreToolUse hook contract](https://docs.claude.com/en/docs/claude-code/hooks#pretooluse), `.tool_name` and `.tool_input` are always present on a real hook event; jq failure indicates malformed or spoofed input.
+- **(a) jq non-zero exit** — parse failure, `timeout` exit=124, or missing jq binary; also fires when `.tool_input` is not an object (jq structural-type error). Per Anthropic's PreToolUse hook contract, `.tool_name` and `.tool_input` are always present on a real hook event; jq failure indicates malformed or spoofed input.
 - **(b) empty INPUT** — stdin EOF, closed pipe, or harness misbehavior.
 - **(c) empty TOOL_NAME** — valid JSON but `.tool_name` absent (e.g. `{}`), indicating the call did not originate from a real tool invocation.
 

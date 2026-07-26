@@ -23,6 +23,10 @@ From the hooks-guide troubleshooting section:
 
 > "If you see 'command not found', use absolute paths or `$CLAUDE_PROJECT_DIR` to reference scripts."
 
+**PreToolUse event contract (grounds Section 4, fail-closed posture):**
+
+From the hooks reference, PreToolUse section (`https://docs.claude.com/en/docs/claude-code/hooks#pretooluse`): `.tool_name` and `.tool_input` are always present on a real hook event. That is what makes a jq failure on either field evidence of malformed or spoofed input rather than a legitimate variation, and therefore what licenses the deny rather than a fall-through.
+
 ## Motivating failure (Sections 7 and 10)
 
 A hook PR that shelled out to an external daemon command passed `/code-review` without `staff-platform-engineer` ever being consulted. A follow-up manual review found a Medium-severity unbounded-latency bug: the external command could hang indefinitely with no timeout guard, blocking every matching tool invocation until the OS fired a default timeout.
