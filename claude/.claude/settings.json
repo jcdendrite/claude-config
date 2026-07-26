@@ -42,7 +42,7 @@
     "brief": "name-only",
     "handoff": "name-only",
     "read-docx-comments": "name-only",
-    "sync-pr-description": "name-only",
+    "pr-description": "name-only",
     "transcript-analysis": "name-only",
     "transcript-narrative": "name-only",
     "error-mode-analysis": "name-only",

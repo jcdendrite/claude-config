@@ -399,7 +399,7 @@ class TestNameDispatchedNoTriggerContracts:
 class TestConventionSkillWiring:
     """Assert that name-dispatched skills are explicitly wired into consumers.
 
-    test-conventions, sql-query-conventions, and sync-pr-description rely on
+    test-conventions, sql-query-conventions, and pr-description rely on
     explicit Read/invoke pointers rather than description-based auto-trigger
     (which never fires). These tests prevent silent regression of the wiring.
     """
@@ -440,13 +440,58 @@ class TestConventionSkillWiring:
         """code-review must have an actionable invoke pointer to sql-query-conventions."""
         assert "invoke the `sql-query-conventions`" in self._skill_body("code-review")
 
-    def test_ready_for_review_invokes_sync_pr_description(self):
-        """ready-for-review step 5 must have an actionable invoke pointer to sync-pr-description."""
-        assert "Invoke the `sync-pr-description`" in self._skill_body("ready-for-review")
+    def test_ready_for_review_invokes_pr_description(self):
+        """ready-for-review step 5 must have an actionable invoke pointer to pr-description."""
+        assert "Invoke the `pr-description`" in self._skill_body("ready-for-review")
 
-    def test_handoff_runs_sync_pr_description(self):
-        """handoff's pre-write checklist must have an actionable run pointer to sync-pr-description."""
-        assert "run the `sync-pr-description`" in self._skill_body("handoff")
+    def test_handoff_runs_pr_description(self):
+        """handoff's pre-write checklist must have an actionable run pointer to pr-description."""
+        assert "run the `pr-description`" in self._skill_body("handoff")
+
+
+class TestPrDescriptionTwoModeDispatch:
+    """Pin pr-description's author/sync branching, in both directions.
+
+    The wiring tests above only prove that /ready-for-review and /handoff name
+    the skill; they stay green if its body collapses back to sync-only. That
+    collapse is the regression that matters: with no author mode, step 5 has
+    nothing to do on a branch without a PR, and the first PR body — the one
+    reviewers read first — goes out unchecked again.
+
+    The negative assertion is not redundant with the positive one. A body that
+    describes author mode while still carrying the old "no open PR, stop"
+    precondition is self-contradicting, and a presence-only check passes it.
+    """
+
+    def test_pr_description_declares_author_mode(self):
+        """pr-description must dispatch to an authoring mode when no PR is open."""
+        assert "No open PR → author mode." in _skill_file("pr-description").read_text()
+
+    def test_pr_description_declares_sync_mode(self):
+        """pr-description must still dispatch to the sync mode when a PR is open."""
+        assert "Open PR → sync mode." in _skill_file("pr-description").read_text()
+
+    def test_pr_description_has_no_stop_on_missing_pr_precondition(self):
+        """pr-description must not retain a precondition that halts when no PR exists."""
+        assert "no PR to sync" not in _skill_file("pr-description").read_text()
+
+
+class TestReadyForReviewBodyFileGuard:
+    """Pin that step 6 rejects a whitespace-only body file, not merely an empty one.
+
+    The guard protects an unrecoverable state: once a PR exists carrying an
+    empty body, step 5 takes its sync path, which checks a body against branch
+    state rather than authoring one from nothing. A bare `-s` test passes a
+    file holding only a newline -- the shape a truncated write leaves behind --
+    so the check must strip whitespace before testing for content.
+
+    Reverting to `-s` is a silent regression: it reads as equivalent and passes
+    every other test in this suite.
+    """
+
+    def test_body_file_check_strips_whitespace_before_testing_content(self):
+        """step 6's guard must strip whitespace rather than rely on a byte-size test."""
+        assert "tr -d '[:space:]'" in _skill_file("ready-for-review").read_text()
 
 
 class TestContinuityFileBucketCrosscheck:
