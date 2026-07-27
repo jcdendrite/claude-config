@@ -2,14 +2,17 @@
 # Trimmed shared helper library for skill-management plugin hooks.
 # Source this file (do NOT invoke it). Contains only the helpers needed by
 # require-skill-review.sh: _lib_jq, _lib_parse_tool_input_or_deny,
-# _marker_lib_repo_hash, and _lib_chains_marker_write_before_commit. No git
-# helpers, no worktree-enforcement helpers.
+# _marker_lib_repo_hash, _lib_marker_value_present, and
+# _lib_chains_marker_write_before_commit. No git helpers, no
+# worktree-enforcement helpers.
 #
 # _marker_lib_repo_hash must stay byte-identical to the same function in the
 # stowed claude/.claude/hooks/_lib.sh — marker.sh (the write side) always
 # sources the stowed copy directly ($HOME/.claude/hooks/_lib.sh), never a
 # plugin-bundled one, so a divergence here breaks the repo-hash used to key
 # markers between the write side and this hook's read side.
+# _lib_marker_value_present is duplicated from that same file for the same
+# reason the others are: a plugin cannot source across the plugin boundary.
 
 # Backstop against a hung jq (~5s, not a per-fire latency budget).
 # Cites guard-settings-session-keys.sh's git_capped 5s precedent.
@@ -91,6 +94,82 @@ _lib_parse_tool_input_or_deny() {
 # Usage: hash=$(_marker_lib_repo_hash "$REPO_ROOT")
 _marker_lib_repo_hash() {
   printf '%s' "$1" | sha256sum | awk '{print $1}'
+}
+
+# _lib_marker_value_present MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX...
+# Returns 0 (true) iff some file in MARKERS_DIR whose name begins with one of
+# the supplied prefixes holds EXPECTED_VALUE as a whole line.
+#
+# Completion markers are content-addressed: the stored value is a hash of
+# exactly the state that was reviewed. That content is the authorization, so
+# the read asks "has this state been reviewed?" rather than "did this filename
+# review it?" — the filename keys only namespace concurrent writers apart.
+#
+# One `grep` process regardless of marker count. Marker directories are
+# unbounded and already hold thousands of entries, so a per-file `cat` loop
+# would put a fork count proportional to review history on a hook that fires
+# on every git commit.
+#
+# `-x` (whole-line) is load-bearing, not stylistic: with a bare `-F` a stored
+# value that merely CONTAINS the expected hash — a truncated write, or a
+# longer digest sharing this one as a prefix — would falsely release the gate.
+#
+# `nullglob` is equally load-bearing. Bash's default expands a zero-match
+# pattern to the literal, unexpanded pattern string, which grep then tries to
+# open as a real path and fails on (exit 2) — and "no marker exists yet for
+# this prefix" is the single most common call, so the default behavior would
+# misreport the common case as an error rather than as a clean not-found.
+# The shopt state is saved and restored so callers that rely on the default
+# glob behavior elsewhere are unaffected.
+#
+# The function BODY is kept byte-identical to the same function in the stowed
+# claude/.claude/hooks/_lib.sh; see the header note on why this file duplicates
+# rather than sources. The comment block above it intentionally differs (it
+# names this file's own consumer), so a drift check must diff the body, not the
+# whole block — a wholesale diff reports expected comment divergence and would
+# bury a real body drift in the noise. test_require_skill_review.py asserts the
+# body parity mechanically.
+_lib_marker_value_present() {
+  local markers_dir="$1" expected_value="$2"
+  shift 2
+  [ -n "$markers_dir" ] || return 1
+  [ -n "$expected_value" ] || return 1
+  [ -d "$markers_dir" ] || return 1
+  [ "$#" -gt 0 ] || return 1
+
+  local nullglob_was_set=0
+  if shopt -q nullglob; then nullglob_was_set=1; fi
+  shopt -s nullglob
+  local -a marker_files=()
+  local prefix
+  for prefix in "$@"; do
+    [ -n "$prefix" ] || continue
+    marker_files+=("$markers_dir/$prefix"*)
+  done
+  if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
+
+  [ "${#marker_files[@]}" -gt 0 ] || return 1
+  # -e pins EXPECTED_VALUE as the pattern even if it begins with a dash; the
+  # stderr redirect swallows the "Is a directory" noise a stray subdirectory
+  # under MARKERS_DIR would otherwise produce.
+  #
+  # SCALE BOUNDARY: the matched files become one argv, so a single prefix
+  # holding roughly 13k-30k markers (host-dependent; ARG_MAX bounded by the
+  # stack rlimit) makes grep fail to exec with E2BIG. That is a nonzero exit,
+  # which every call site reads as "no matching marker" — so it fails CLOSED,
+  # denying rather than releasing. Completion markers are never pruned today
+  # (marker.sh clear-stale only evicts active-bypass markers), so the ceiling
+  # is reachable by unattended growth. Whoever adds marker retention should
+  # remove this note; until then a wedged gate at that scale is a deny with no
+  # diagnostic, and manual pruning of ~/.claude/*-markers/ is the workaround.
+  # A flat glob (not `grep -r`) is deliberate: recursion would let a file
+  # nested in a stray subdirectory authorize a gate.
+  #
+  # Callers must test truthiness, never `[ $? -eq 1 ]`: grep reports a plain
+  # no-match as 1 but returns 2 when any argv entry errors — which a stray
+  # subdirectory under MARKERS_DIR ("Is a directory") triggers even under -q.
+  # Both are correctly false here; an exact-code check would not be.
+  grep -qFx -e "$expected_value" -- "${marker_files[@]}" 2>/dev/null
 }
 
 # Decide whether a command chains `marker.sh write <skill>` before its first

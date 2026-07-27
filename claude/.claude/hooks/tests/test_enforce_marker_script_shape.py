@@ -1,12 +1,20 @@
 """Tests for enforce-marker-script-shape.sh."""
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
+import time
+
 import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    edit_input,
+    multiedit_input,
     run_hook,
     run_hook_reason,
+    write_input,
 )
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
@@ -585,3 +593,407 @@ class TestDevNullRedirectBoundaryDenied:
     )
     def test_devnull_boundary_denied(self, command):
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command)) == "deny"
+
+
+MARKER = "~/.claude/scripts/marker.sh"
+
+# Representative members of _LIB_NO_GATE_RELEASE_AGENTS. The full-roster
+# coverage lives in test_lib.py against the array itself; these exercise the
+# hook end-to-end for an implementer, a stack specialist, the security
+# reviewer, and a harness built-in.
+NO_GATE_RELEASE_AGENTS = ["code-writer", "staff-sdet", "ciso-reviewer", "Explore"]
+
+# Agent types that keep the documented delegation escape hatch: both carry the
+# full tool set, so they can genuinely run a review skill themselves.
+GATE_RELEASE_ALLOWED_AGENTS = ["general-purpose", "claude"]
+
+
+class TestGateReleaseAuthority:
+    """Only a caller that could have run the review may release the gate.
+
+    marker.sh resolves session_id by walking the process ancestor chain, so a
+    subagent's marker write is attributed to — and releases the gate for — the
+    whole parent session.
+    """
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "skill", ["code-review", "skill-review", "plan-review", "ready-for-review"]
+    )
+    def test_write_denied_for_no_release_agents(self, agent_type, skill):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} write {skill}", agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "target", ["plan-review", "ready-for-review", "respond-pr", "memory-skill"]
+    )
+    def test_activate_denied_for_no_release_agents(self, agent_type, target):
+        """`activate` is the more dangerous verb: the active-bypass marker holds a
+        live PID and releases the plan gate with no hash comparison at all."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} activate {target}", agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Chained forms — the check runs before Stage 2, which is what makes
+            # these reachable at all.
+            f"{MARKER} write plan-review && {MARKER} deactivate plan-review",
+            f"{MARKER} write code-review && git commit -m foo",
+            # Wrapped forms — Stage 2 fast-exits these and leaves them to
+            # permissions.allow, so a check placed after it would let them through.
+            f"bash -c '{MARKER} write plan-review'",
+            f"MARKER_DEBUG=1 {MARKER} write plan-review",
+            "./.claude/scripts/marker.sh write plan-review",
+            f"echo hi; {MARKER} activate plan-review",
+        ],
+    )
+    def test_wrapped_and_chained_forms_denied(self, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"{MARKER} deactivate plan-review",
+            f"{MARKER} clear-stale",
+            f"{MARKER} clear-stale --dry-run",
+        ],
+    )
+    def test_gate_rearming_ops_still_allowed(self, agent_type, command):
+        """deactivate and clear-stale re-arm gates rather than releasing them."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
+    def test_full_tool_set_agents_may_still_write(self, agent_type):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} write plan-review", agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    def test_main_session_may_still_write(self):
+        """Absent agent_type is the main session — the ordinary path."""
+        assert (
+            run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(f"{MARKER} write plan-review"))
+            == "allow"
+        )
+
+    def test_empty_agent_type_may_still_write(self):
+        """An explicitly empty agent_type is also the main session."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} write plan-review", agent_type=""),
+            )
+            == "allow"
+        )
+
+    def test_reviewer_may_still_grep_for_marker_script(self):
+        """The accepted false-deny is narrow: matching the op keyword, not the
+        bare tool name, keeps ordinary reviewer greps working."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("grep -rn marker.sh claude/", agent_type="staff-sdet"),
+            )
+            == "allow"
+        )
+
+    def test_non_string_agent_type_does_not_match_the_roster(self):
+        """A contract-violating agent_type must not accidentally satisfy the predicate.
+
+        `jq -r` renders a non-string value rather than failing, so AGENT_TYPE
+        becomes that rendering. The predicate is exact-match against a closed
+        set, so no rendering of a structured value can match a roster entry —
+        this pins that, rather than the (untriggerable-by-payload) jq read
+        failure the hook's status check guards against."""
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"{MARKER} write plan-review"},
+            "agent_type": {"unexpected": "object"},
+        }
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload) == "allow"
+
+    def test_deny_reason_directs_agent_to_report_upward(self):
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"{MARKER} write plan-review", agent_type="code-writer"),
+        )
+        assert "code-writer" in reason
+        assert "report" in reason.lower()
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Variable indirection: the path is assigned, then invoked through
+            # the variable, so `marker.sh` and the op keyword are no longer
+            # textually adjacent.
+            "MS=~/.claude/scripts/marker.sh; $MS write plan-review",
+            # Function-wrapper indirection: same adjacency break.
+            'f() { ~/.claude/scripts/marker.sh "$@"; }; f write plan-review',
+        ],
+    )
+    def test_bash_arm_does_not_match_shell_indirection(self, command):
+        """Pins the Bash arm's ACCEPTED scope limit rather than an intended behavior.
+
+        This arm matches command text, so it only fires while `marker.sh` and
+        the op keyword stay adjacent — the same carve-out Stage 2 already
+        documents for wrapped forms. These commands are not pre-approved in
+        permissions.allow either, so they surface as a permission prompt rather
+        than a silent allow, and the path-based Write/Edit arm below is what
+        makes the overall no-gate-release property hold.
+
+        If a future change makes the Bash arm indirection-proof, this test
+        should be inverted to assert deny — it is a scope pin, not a guarantee
+        that indirection ought to work.
+        """
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+
+class TestGateReleaseAuthorityFileWrites:
+    """The path-based arm: marker state is guarded on the file-write surface too.
+
+    Gating only Bash leaves the property false — every agent in
+    _LIB_NO_GATE_RELEASE_AGENTS carries the Write tool, so it could fabricate a
+    marker file directly and never invoke marker.sh at all. This arm matches on
+    the resolved target path, so no shell-level indirection applies to it.
+    """
+
+    @pytest.fixture
+    def marker_home(self, tmp_path):
+        home = tmp_path / "home"
+        for kind in ("review-markers", "plan-review-markers", "skill-review-markers",
+                     "ready-for-review-markers"):
+            (home / ".claude" / kind).mkdir(parents=True)
+        (home / ".claude" / ".plan-review-active.d").mkdir(parents=True)
+        return home
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            ".claude/review-markers/deadbeef.session",
+            ".claude/plan-review-markers/deadbeef.session",
+            ".claude/skill-review-markers/deadbeef.session",
+            ".claude/ready-for-review-markers/deadbeef.session",
+            ".claude/.plan-review-active.d/session",
+        ],
+    )
+    def test_marker_path_write_denied(self, marker_home, agent_type, relative_path):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(marker_home / relative_path), agent_type=agent_type),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("tool_input_builder", [write_input, edit_input, multiedit_input])
+    def test_every_file_write_tool_is_covered(self, marker_home, tool_input_builder):
+        """Write, Edit, and MultiEdit all reach the same state, so all three are gated."""
+        payload = tool_input_builder(
+            str(marker_home / ".claude/review-markers/deadbeef.session"),
+            agent_type="code-writer",
+        )
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=marker_home) == "deny"
+
+    def test_tilde_path_denied(self, marker_home):
+        """A tilde-form path resolves to the same file, so it is denied identically."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input("~/.claude/review-markers/deadbeef.session", agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    def test_traversal_path_denied(self, marker_home):
+        """Path normalization closes the `..` route into the markers directory."""
+        sneaky = str(marker_home / ".claude/plans/../review-markers/deadbeef.session")
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(sneaky, agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
+    def test_full_tool_set_agents_may_write_markers(self, marker_home, agent_type):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(
+                    str(marker_home / ".claude/review-markers/deadbeef.session"),
+                    agent_type=agent_type,
+                ),
+                home=marker_home,
+            )
+            == "allow"
+        )
+
+    def test_main_session_may_write_markers(self, marker_home):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(marker_home / ".claude/review-markers/deadbeef.session")),
+                home=marker_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            "src/feature.py",
+            ".claude/plans/some-plan.md",
+            ".claude/sessions/12345",
+            "agent-reviews/staff-sdet-1-branch.md",
+        ],
+    )
+    def test_non_marker_paths_allowed(self, marker_home, relative_path):
+        """The arm is scoped to marker state — ordinary writes are untouched.
+
+        agent-reviews/ matters specifically: reviewers must stay able to write
+        their findings files."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(marker_home / relative_path), agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "allow"
+        )
+
+    def test_stow_directory_fold_physical_path_denied(self, marker_home, tmp_path):
+        """The markers directory has more than one path alias; all of them are gated.
+
+        Under stow directory-fold, `~/.claude` is a symlink to the stow package
+        rather than a directory of per-file symlinks, so the same marker file is
+        also addressable as `<repo>/claude/.claude/<kind>-markers/...` — a path
+        that contains no `$HOME` component at all. Matching the directory SHAPE
+        rather than a `$HOME` prefix is what covers both aliases.
+        """
+        physical = tmp_path / "repo" / "claude" / ".claude" / "review-markers" / "forged"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(physical), agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    def test_traversal_path_denied_without_realpath(self, marker_home, tmp_path):
+        """The deny must not depend on `realpath` being installed.
+
+        realpath is GNU coreutils and is absent on stock macOS. A `..` segment
+        keeps a marker path from carrying a literal `$HOME/.claude/` prefix
+        until something normalizes it, so a check that leaned on realpath would
+        silently ALLOW this write on those machines — turning a missing
+        optional binary into a gate bypass.
+        """
+        stub_bin = tmp_path / "no-realpath-bin"
+        stub_bin.mkdir()
+        # A PATH containing everything the hook needs EXCEPT realpath.
+        for binary in ("bash", "jq", "grep", "sed", "dirname", "cat", "timeout"):
+            resolved = shutil.which(binary)
+            if resolved:
+                (stub_bin / binary).symlink_to(resolved)
+        assert shutil.which("realpath", path=str(stub_bin)) is None
+
+        sneaky = str(marker_home / "unrelated" / ".." / ".claude" / "review-markers" / "m")
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(sneaky, agent_type="code-writer"),
+                home=marker_home,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "deny"
+        )
+
+    def test_large_write_cost_stays_near_the_parse_floor(self, marker_home):
+        """A multi-MB Write must not cost much more than parsing it already does.
+
+        This arm fires on every file write, and $INPUT carries the whole file
+        content, so every check here is linear in payload size — including the
+        jq parse the hook must do regardless. The property worth pinning is
+        therefore relative, not absolute: the hook should add only a modest
+        multiple of the parse it cannot avoid. An absolute budget would either
+        flake on a slow runner or be too loose to catch a regression.
+
+        The floor is measured in-process from the same _lib.sh the hook uses,
+        so machine speed cancels out.
+        """
+        payload = write_input(str(marker_home / "big-generated-file.json"))
+        payload["tool_input"]["content"] = "x" * (5 * 1024 * 1024)
+        payload_json = json.dumps(payload)
+
+        floor_harness = (
+            f"emit_deny() {{ :; }}; . {HOOKS_DIR / '_lib.sh'}; "
+            "_lib_parse_tool_input_or_deny x"
+        )
+        started = time.monotonic()
+        subprocess.run(["bash", "-c", floor_harness], input=payload_json,
+                       capture_output=True, text=True, check=False)
+        floor_seconds = time.monotonic() - started
+
+        started = time.monotonic()
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=marker_home) == "allow"
+        hook_seconds = time.monotonic() - started
+
+        allowed = floor_seconds * 2.5 + 0.5
+        assert hook_seconds < allowed, (
+            f"a 5MB Write cost {hook_seconds:.2f}s against a {floor_seconds:.2f}s "
+            f"parse-only floor (allowed {allowed:.2f}s). This arm is doing more "
+            f"content-proportional work than the parse it cannot avoid."
+        )
+
+    def test_deny_reason_names_the_path_and_directs_upward(self, marker_home):
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            write_input(
+                str(marker_home / ".claude/review-markers/deadbeef.session"),
+                agent_type="code-writer",
+            ),
+            home=marker_home,
+        )
+        assert "code-writer" in reason
+        assert "report" in reason.lower()
+        assert "review-markers" in reason

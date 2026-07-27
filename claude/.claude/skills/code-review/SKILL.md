@@ -373,7 +373,7 @@ If the review is **clean** (no blockers, no unresolved critical findings, and yo
 ~/.claude/scripts/marker.sh write code-review
 ```
 
-This writes the hash of the currently staged diff into a per-session marker keyed by `<repo-hash>.<session-id>`. The pre-commit hook reads the same session-id from its JSON payload and compares the staged-diff hash against THIS session's marker — match means the commit is allowed through. Per-session keying prevents two parallel sessions in the same worktree from overwriting each other's markers. Re-staging any change invalidates the marker automatically.
+This writes the hash of the currently staged diff into a marker file named `<repo-hash>.<session-id>`. The pre-commit hook recomputes the staged-diff hash and allows the commit when any marker under this repo-hash holds that value — the stored hash is the authorization, so a review still covering the staged state counts even from another session. The session id in the filename only prevents two parallel sessions in the same worktree from overwriting each other's markers. Re-staging any change invalidates the marker automatically.
 
 If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
 
