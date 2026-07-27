@@ -6,7 +6,7 @@ import re
 import subprocess
 
 import pytest
-from helpers import SCRIPTS_DIR
+from helpers import HOOKS_DIR, SCRIPTS_DIR, bash_input, run_hook
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
@@ -56,7 +56,7 @@ class TestMarkerScriptSessionMissing:
 
     def test_no_marker_written_when_session_file_missing(self, isolated_home, git_repo):
         _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
-        marker_dir = isolated_home / ".claude" / "review-markers"
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], (
             f"marker.sh wrote a stray marker when session file was absent: {stray}"
@@ -78,7 +78,7 @@ class TestMarkerScriptHappyPath:
         sid = self._seed_session(isolated_home)
         result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
-        marker_dir = isolated_home / ".claude" / "review-markers"
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
         files = list(marker_dir.iterdir())
         assert len(files) == 1
         assert files[0].name.endswith(f".{sid}")
@@ -270,7 +270,7 @@ class TestMarkerScriptEmptyStagedGuard:
         (git_repo / "file.txt").write_text("first\nsecond\nthird\n")
         result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
-        marker_dir = isolated_home / ".claude" / "review-markers"
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
         assert len(list(marker_dir.iterdir())) == 1
 
     def test_code_review_empty_staged_unstaged_tracked_exits_2(
@@ -285,7 +285,7 @@ class TestMarkerScriptEmptyStagedGuard:
         assert result.returncode == 2
         assert "git add" in result.stderr
         assert "/code-review" in result.stderr
-        marker_dir = isolated_home / ".claude" / "review-markers"
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"guard should not write a marker: {stray}"
 
@@ -302,7 +302,7 @@ class TestMarkerScriptEmptyStagedGuard:
         subprocess.run(["git", "checkout", "--", "file.txt"], cwd=git_repo, check=True)
         result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
-        marker_dir = isolated_home / ".claude" / "review-markers"
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
         assert len(list(marker_dir.iterdir())) == 1
 
     # ── skill-review (path-scoped to SKILL.md) ────────────────────────────
@@ -405,7 +405,147 @@ class TestMarkerScriptStalePidLookup:
         sid, _ = self._seed_session(isolated_home)
         result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
-        marker_dir = isolated_home / ".claude" / "review-markers"
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
         files = list(marker_dir.iterdir())
         assert len(files) == 1
         assert files[0].name.endswith(f".{sid}")
+
+
+class TestMarkerDirectoryNamingConvention:
+    """`write <skill>` must land its marker in ~/.claude/<skill>-markers/.
+
+    A marker directory whose name does not derive mechanically from the skill
+    name is unguessable: a session debugging a blocked commit infers the
+    directory from the skill it just ran, looks in a path that does not exist,
+    and reads the absent directory as a failed marker write.
+
+    These assert on the directory marker.sh actually creates, not on the path
+    literal in its source. Source-scanning would pass on a shadowed duplicate
+    `case` arm (bash dispatches on the first match; a later arm carrying the
+    right literal would satisfy a text scan while the live arm stayed broken)
+    and would fail on a refactor to a shared "${SKILL}-markers" expansion that
+    preserves the invariant.
+    """
+
+    WRITE_SKILLS = ("code-review", "skill-review", "plan-review", "ready-for-review")
+
+    def _seed_session(self, home):
+        sessions_dir = home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        sid = "test-session-naming"
+        (sessions_dir / str(os.getpid())).write_text(sid)
+        return sid
+
+    @pytest.mark.parametrize("skill", WRITE_SKILLS)
+    def test_write_lands_in_skill_derived_directory(
+        self, skill, isolated_home, git_repo
+    ):
+        sid = self._seed_session(isolated_home)
+        # plan-review hashes the active plan set; seeding one unconditionally
+        # gives every arm the same preconditions so the loop stays uniform.
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+
+        result = _run(["write", skill], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        expected_dir = isolated_home / ".claude" / f"{skill}-markers"
+        assert expected_dir.is_dir(), (
+            f"`marker.sh write {skill}` must create ~/.claude/{skill}-markers/ "
+            f"so a session can derive the directory from the skill name"
+        )
+        written = [f.name for f in expected_dir.iterdir()]
+        assert len(written) == 1 and written[0].endswith(f".{sid}"), (
+            f"expected one marker keyed <repo-hash>.{sid} in "
+            f"{expected_dir.name}/, found {written}"
+        )
+
+    @pytest.mark.parametrize("skill", WRITE_SKILLS)
+    def test_write_touches_no_other_marker_directory(
+        self, skill, isolated_home, git_repo
+    ):
+        """The inverse guard: an arm that writes some other skill's directory
+        (a copy-paste slip between adjacent `case` arms) would leave the
+        assertion above green, since that arm's own directory is created too."""
+        self._seed_session(isolated_home)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+
+        assert (
+            _run(["write", skill], cwd=git_repo, home=isolated_home).returncode == 0
+        )
+
+        # isolated_home pre-creates code-review-markers/, so presence alone
+        # proves nothing — a stray is a *non-empty* foreign marker directory.
+        strays = sorted(
+            d.name
+            for d in (isolated_home / ".claude").iterdir()
+            if d.is_dir()
+            and d.name.endswith("-markers")
+            and d.name != f"{skill}-markers"
+            and any(d.iterdir())
+        )
+        assert strays == [], (
+            f"`marker.sh write {skill}` also wrote into {strays}; each write "
+            f"arm must touch only its own marker directory"
+        )
+
+    def test_write_roster_is_closed_and_self_reported(self, isolated_home, git_repo):
+        """Pin WRITE_SKILLS by execution rather than by reading marker.sh's
+        source. Rejecting an unlisted skill proves the roster is closed — the
+        parametrized guards above only prove each listed skill is accepted,
+        which stays green if the dispatch grows an extra arm. Reading the
+        roster back off the rejection message keeps the guards iterating the
+        same set the script advertises at runtime."""
+        result = _run(["write", "not-a-real-skill"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, (
+            "`marker.sh write` must reject a skill outside its roster; got "
+            f"exit {result.returncode}"
+        )
+
+        advertised = re.search(r"'write' supports: (.+?)\s*$", result.stderr, re.M)
+        assert advertised, (
+            f"rejection message no longer advertises the write roster: {result.stderr!r}"
+        )
+        assert tuple(s.strip() for s in advertised.group(1).split(",")) == self.WRITE_SKILLS, (
+            f"marker.sh advertises write skills {advertised.group(1)!r}; the "
+            f"convention guards iterate {self.WRITE_SKILLS} — reconcile the two"
+        )
+
+        strays = [
+            d.name
+            for d in (isolated_home / ".claude").iterdir()
+            if d.is_dir() and d.name.endswith("-markers") and any(d.iterdir())
+        ]
+        assert strays == [], f"a rejected write still created markers in {strays}"
+
+
+class TestMarkerWriteSatisfiesTheGate:
+    """marker.sh (write side) and require-code-review.sh (read side) each
+    build the marker path independently. Prove they agree by execution rather
+    than by inspection: the rest of the hook suite seeds markers through a
+    Python-side path helper, which only shows that the helper and the hook
+    agree with each other — both could drift from marker.sh in lockstep and
+    stay green."""
+
+    def test_write_code_review_marker_opens_the_commit_gate(
+        self, isolated_home, git_repo
+    ):
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        sid = "test-session-roundtrip"
+        (sessions_dir / str(os.getpid())).write_text(sid)
+
+        result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        assert (
+            run_hook(
+                HOOKS_DIR / "require-code-review.sh",
+                bash_input("git commit -m roundtrip", session_id=sid),
+                cwd=git_repo,
+            )
+            == "allow"
+        )

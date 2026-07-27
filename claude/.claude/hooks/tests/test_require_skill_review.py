@@ -259,6 +259,8 @@ class TestRequireSkillReview:
             == "deny"
         )
 
+    # -- Skill ↔ hook alignment ------------------------------------------
+
     def test_skill_marker_write_command_matches_hook_path(self, isolated_home, git_repo):
         """Regression guard against the SKILL command and HOOK getting out
         of sync on path derivation.
@@ -297,6 +299,47 @@ class TestRequireSkillReview:
                 cwd=git_repo,
             )
             == "allow"
+        )
+
+    def test_skill_marker_write_command_covers_a_plugin_skill_diff(
+        self, isolated_home, git_repo
+    ):
+        """The same recipe-vs-hook agreement as the test above, for the second
+        of the two pathspecs the write side scopes its hash to.
+
+        The write side hashes `claude/.claude/skills/**/SKILL.md` *and*
+        `plugins/*/skills/**/SKILL.md`. A drift in the second is invisible to
+        every stowed-path case, because dropping a pathspec that matches
+        nothing in the fixture leaves the hash unchanged — both sides go on
+        computing it from the same empty diff and agree on a value that proves
+        nothing. Staging a plugin-located SKILL.md is what makes the second
+        pathspec load-bearing for the assertion."""
+        sid = "test-session-skill-cmd-plugin"
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / str(os.getpid())).write_text(sid)
+
+        _stage_plugin_skill_change(git_repo)
+        skill_command = extract_skill_command(SKILL_REVIEW_SKILL, "skill-review-marker-write")
+        run_skill_command(skill_command, cwd=git_repo, isolated_home=isolated_home)
+
+        # Sanity check, same as the sibling test: separates "the recipe never
+        # wrote anything" from "it wrote a value the hook rejects", so a
+        # regression here names its own cause.
+        assert skill_review_marker_path(isolated_home, git_repo, session_id=sid).exists(), (
+            "SKILL.md marker-write recipe ran but no marker landed at the "
+            "path the hook computes — the skill and hook disagree on layout."
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=sid),
+                cwd=git_repo,
+            )
+            == "allow"
+        ), (
+            "a marker written for a plugin-located SKILL.md must satisfy the "
+            "hook — write and read side disagree on the plugin pathspec"
         )
 
     def test_empty_staged_diff_allows(self, isolated_home, git_repo):

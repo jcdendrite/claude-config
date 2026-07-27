@@ -153,7 +153,7 @@ case "$TOOL_NAME" in
     # not on a `$HOME` prefix, because the same marker file is reachable under
     # more than one path string and a $HOME-anchored glob only recognizes one
     # of them:
-    #   - a `..` segment ($HOME/x/../.claude/review-markers/m) does not carry
+    #   - a `..` segment ($HOME/x/../.claude/code-review-markers/m) does not carry
     #     the literal $HOME/.claude/ prefix until something normalizes it, and
     #     realpath is GNU coreutils — absent on stock macOS, where a
     #     $HOME-anchored match would therefore silently allow the write;

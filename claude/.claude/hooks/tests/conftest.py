@@ -15,7 +15,7 @@ from helpers import HOOKS_DIR
 def isolated_home(monkeypatch, tmp_path):
     """Sandbox $HOME so the hooks' marker files don't collide with real state."""
     home = tmp_path / "home"
-    (home / ".claude" / "review-markers").mkdir(parents=True)
+    (home / ".claude" / "code-review-markers").mkdir(parents=True)
     hooks_dir = home / ".claude" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
     (hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")

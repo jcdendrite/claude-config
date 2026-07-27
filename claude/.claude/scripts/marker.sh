@@ -144,9 +144,9 @@ case "$SUBCOMMAND" in
         # silently force a re-review. Same shape in every arm below.
         MARKER_VALUE=$(git diff --cached | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2; exit 2; }
-        mkdir -p "$HOME/.claude/review-markers"
+        mkdir -p "$HOME/.claude/code-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
-          > "$HOME/.claude/review-markers/$REPO_HASH.$SESSION_ID"
+          > "$HOME/.claude/code-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       skill-review)
         SESSION_ID=$(_resolve_session_id) || exit 2

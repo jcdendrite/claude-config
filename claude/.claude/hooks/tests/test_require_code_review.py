@@ -24,13 +24,14 @@ CODE_REVIEW_SKILL = SKILLS_DIR / "code-review" / "SKILL.md"
 
 
 class TestRequireCodeReview:
-    # The marker layout is ~/.claude/review-markers/<repo-hash>.<session_id>.
-    # The hook reads session_id from its JSON payload and checks the
-    # matching session's marker. Tests below thread session_id through
-    # `bash_input` and `write_marker` for paths that exercise the marker
-    # check. Tests that exit early (non-bash tool, non-commit command,
-    # outside-repo, empty staged diff) don't need session_id — the hook
-    # returns before reaching the marker logic.
+    # The marker layout is ~/.claude/code-review-markers/<repo-hash>.<session_id>.
+    # The hook allows when any marker under this repo-hash holds the
+    # staged diff's hash, across every session suffix — the stored hash
+    # is the authorization, not the filename. Tests below thread
+    # session_id through `bash_input` and `write_marker` because the
+    # write side still keys on it. Tests that exit early (non-bash tool,
+    # non-commit command, outside-repo, empty staged diff) don't need
+    # session_id — the hook returns before reaching the marker logic.
 
     def test_no_marker_denies_commit(self, isolated_home, git_repo):
         assert (
@@ -218,7 +219,7 @@ class TestRequireCodeReview:
         sessions_dir.mkdir(parents=True)
         (sessions_dir / str(os.getpid())).write_text(sid)
 
-        markers_dir = isolated_home / ".claude" / "review-markers"
+        markers_dir = isolated_home / ".claude" / "code-review-markers"
         if markers_dir.exists():
             for f in markers_dir.glob("*"):
                 f.unlink()

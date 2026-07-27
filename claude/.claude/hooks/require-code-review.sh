@@ -9,7 +9,7 @@
 #
 # How it works:
 # - The /code-review skill writes
-#   ~/.claude/review-markers/<repo-hash>.<session_id> with the sha256 hash of
+#   ~/.claude/code-review-markers/<repo-hash>.<session_id> with the sha256 hash of
 #   `git diff --cached` when the review is clean. The marker lives under
 #   $HOME (not inside the repo) so it never pollutes `git status` or risks
 #   being accidentally committed.
@@ -89,7 +89,7 @@ CURRENT_HASH=$(git diff --cached | sha256sum | awk '{print $1}')
 # covered exactly this diff — so the question is "has this diff been
 # reviewed?", not "did this session review it?". An empty CURRENT_HASH
 # (sha256sum unavailable) never matches, so a hashing failure denies.
-if _lib_marker_value_present "$HOME/.claude/review-markers" "$CURRENT_HASH" "$REPO_HASH."; then
+if _lib_marker_value_present "$HOME/.claude/code-review-markers" "$CURRENT_HASH" "$REPO_HASH."; then
   exit 0
 fi
 
@@ -97,4 +97,4 @@ fi
 # Build the reason as a bash variable so the conditional marker-chain
 # note can be interpolated; jq -Rs handles JSON-encoding safely
 # regardless of what characters appear in the appended note.
-emit_deny "Commit blocked by code-review gate: the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit."
+emit_deny "Commit blocked by code-review gate: the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/code-review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit."
