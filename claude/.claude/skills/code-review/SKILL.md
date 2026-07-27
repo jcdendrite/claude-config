@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Principal-engineer review before presenting code. TRIGGER when: code is about to be presented, or the user asks for a code review. DO NOT TRIGGER when: cosmetic-only changes (typo, formatting, CSS with no behavioral delta); only one specialized file type staged (SKILL.md→skill-review, agent→agent-review, plan→plan-review, CLAUDE.md/AGENTS.md/memory→ai-instruction-and-memory-files); fresh review-markers/ entry covers the diff."
+description: "Principal-engineer review before presenting code. TRIGGER when: code is about to be presented, or the user asks for a code review. DO NOT TRIGGER when: cosmetic-only changes (typo, formatting, CSS with no behavioral delta); only one specialized file type staged (SKILL.md→skill-review, agent→agent-review, plan→plan-review, CLAUDE.md/AGENTS.md/memory→ai-instruction-and-memory-files); fresh code-review-markers/ entry covers the diff."
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
@@ -373,9 +373,9 @@ If the review is **clean** (no blockers, no unresolved critical findings, and yo
 ~/.claude/scripts/marker.sh write code-review
 ```
 
-This writes the hash of the currently staged diff into a marker file named `<repo-hash>.<session-id>`. The pre-commit hook recomputes the staged-diff hash and allows the commit when any marker under this repo-hash holds that value — the stored hash is the authorization, so a review still covering the staged state counts even from another session. The session id in the filename only prevents two parallel sessions in the same worktree from overwriting each other's markers. Re-staging any change invalidates the marker automatically.
+This writes the hash of the currently staged diff into `~/.claude/code-review-markers/<repo-hash>.<session-id>`. The pre-commit hook recomputes the staged-diff hash and allows the commit when any marker under this repo-hash holds that value — the stored hash is the authorization, so a review still covering the staged state counts even from another session. The session id in the filename only prevents two parallel sessions in the same worktree from overwriting each other's markers. Re-staging any change invalidates the marker automatically.
 
-If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
+Run the command standalone, or chained only as `marker.sh write code-review && git commit …` — the invocation-shape gate denies every other chain tail. If it fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
 
 **Do NOT write the marker if:**
 

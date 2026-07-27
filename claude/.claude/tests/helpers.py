@@ -296,7 +296,7 @@ DEFAULT_TEST_SESSION_ID = "test-session-default"
 
 def marker_path(home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID) -> Path:
     repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
-    return home / ".claude" / "review-markers" / f"{repo_hash}.{session_id}"
+    return home / ".claude" / "code-review-markers" / f"{repo_hash}.{session_id}"
 
 
 def staged_diff_hash(repo: Path) -> str:

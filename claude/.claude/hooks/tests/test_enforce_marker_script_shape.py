@@ -794,7 +794,7 @@ class TestGateReleaseAuthorityFileWrites:
     @pytest.fixture
     def marker_home(self, tmp_path):
         home = tmp_path / "home"
-        for kind in ("review-markers", "plan-review-markers", "skill-review-markers",
+        for kind in ("code-review-markers", "plan-review-markers", "skill-review-markers",
                      "ready-for-review-markers"):
             (home / ".claude" / kind).mkdir(parents=True)
         (home / ".claude" / ".plan-review-active.d").mkdir(parents=True)
@@ -804,7 +804,7 @@ class TestGateReleaseAuthorityFileWrites:
     @pytest.mark.parametrize(
         "relative_path",
         [
-            ".claude/review-markers/deadbeef.session",
+            ".claude/code-review-markers/deadbeef.session",
             ".claude/plan-review-markers/deadbeef.session",
             ".claude/skill-review-markers/deadbeef.session",
             ".claude/ready-for-review-markers/deadbeef.session",
@@ -825,7 +825,7 @@ class TestGateReleaseAuthorityFileWrites:
     def test_every_file_write_tool_is_covered(self, marker_home, tool_input_builder):
         """Write, Edit, and MultiEdit all reach the same state, so all three are gated."""
         payload = tool_input_builder(
-            str(marker_home / ".claude/review-markers/deadbeef.session"),
+            str(marker_home / ".claude/code-review-markers/deadbeef.session"),
             agent_type="code-writer",
         )
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=marker_home) == "deny"
@@ -835,7 +835,7 @@ class TestGateReleaseAuthorityFileWrites:
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                write_input("~/.claude/review-markers/deadbeef.session", agent_type="code-writer"),
+                write_input("~/.claude/code-review-markers/deadbeef.session", agent_type="code-writer"),
                 home=marker_home,
             )
             == "deny"
@@ -843,7 +843,7 @@ class TestGateReleaseAuthorityFileWrites:
 
     def test_traversal_path_denied(self, marker_home):
         """Path normalization closes the `..` route into the markers directory."""
-        sneaky = str(marker_home / ".claude/plans/../review-markers/deadbeef.session")
+        sneaky = str(marker_home / ".claude/plans/../code-review-markers/deadbeef.session")
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -859,7 +859,7 @@ class TestGateReleaseAuthorityFileWrites:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 write_input(
-                    str(marker_home / ".claude/review-markers/deadbeef.session"),
+                    str(marker_home / ".claude/code-review-markers/deadbeef.session"),
                     agent_type=agent_type,
                 ),
                 home=marker_home,
@@ -871,7 +871,7 @@ class TestGateReleaseAuthorityFileWrites:
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                write_input(str(marker_home / ".claude/review-markers/deadbeef.session")),
+                write_input(str(marker_home / ".claude/code-review-markers/deadbeef.session")),
                 home=marker_home,
             )
             == "allow"
@@ -909,7 +909,7 @@ class TestGateReleaseAuthorityFileWrites:
         that contains no `$HOME` component at all. Matching the directory SHAPE
         rather than a `$HOME` prefix is what covers both aliases.
         """
-        physical = tmp_path / "repo" / "claude" / ".claude" / "review-markers" / "forged"
+        physical = tmp_path / "repo" / "claude" / ".claude" / "code-review-markers" / "forged"
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -937,7 +937,7 @@ class TestGateReleaseAuthorityFileWrites:
                 (stub_bin / binary).symlink_to(resolved)
         assert shutil.which("realpath", path=str(stub_bin)) is None
 
-        sneaky = str(marker_home / "unrelated" / ".." / ".claude" / "review-markers" / "m")
+        sneaky = str(marker_home / "unrelated" / ".." / ".claude" / "code-review-markers" / "m")
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -989,11 +989,11 @@ class TestGateReleaseAuthorityFileWrites:
         reason = run_hook_reason(
             ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
             write_input(
-                str(marker_home / ".claude/review-markers/deadbeef.session"),
+                str(marker_home / ".claude/code-review-markers/deadbeef.session"),
                 agent_type="code-writer",
             ),
             home=marker_home,
         )
         assert "code-writer" in reason
         assert "report" in reason.lower()
-        assert "review-markers" in reason
+        assert "code-review-markers" in reason
