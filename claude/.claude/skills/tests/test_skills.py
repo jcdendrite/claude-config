@@ -525,6 +525,40 @@ class TestContinuityFileBucketCrosscheck:
         )
 
 
+class TestHandoffMarkerExpiry:
+    """Pin handoff's instruction to land marker-covered work before the boundary.
+
+    Review-completion markers under ~/.claude/*-markers/ are keyed by the
+    writing session's id, and both resume paths start a session under a new
+    id: resume-context.sh's launch mode execs a fresh claude process, and
+    /clear rotates the id inside the existing process (cleanup-session-id.sh's
+    content-match guard exists for exactly that same-PID/new-id race). A
+    handoff written while a fresh marker covers finished work therefore
+    strands that work — the resuming session hits the pre-commit gate and has
+    to re-run the whole review to commit a diff that was already reviewed.
+    """
+
+    def test_handoff_section5_says_markers_do_not_survive_resume(self):
+        """§5 must state that listed markers won't satisfy a gate after resume,
+        and direct the writer to commit marker-covered finished work first."""
+        body = _skill_file("handoff").read_text()
+        assert "keyed to the session that wrote them" in body
+        assert "will satisfy a pre-commit gate" in body
+        assert (
+            "Commit work that is finished and already covered by a completion marker "
+            "*before* writing this file" in body
+        )
+
+    def test_handoff_prewrite_checklist_verifies_marker_covered_work_committed(self):
+        """The pre-write checklist must carry the commit-first verification, with the
+        §3 fallback for work that is not commit-ready."""
+        assert (
+            "§5 is reconciled: finished work a live completion marker covers is committed "
+            "before this file is written; where it is not, §3 names the review skill the "
+            "resuming session must re-run to commit it" in _skill_file("handoff").read_text()
+        )
+
+
 class TestHandoffTaskListPersistence:
     """Pin the §2.6 task-list serialization and resume directive in handoff.
 
