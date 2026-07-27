@@ -10,12 +10,15 @@ Analyzes a *delivered body of work* (many sessions and PRs, potentially spanning
 Identify the branches, PRs, sessions, and date range under analysis. Use `transcript-analysis.py buckets` to enumerate branches and models:
 
 ```bash
-python3 ~/.claude/scripts/transcript-analysis.py buckets
+python3 ~/.claude/scripts/transcript-analysis.py buckets \
+  --projects="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)" | tr '/.' '-')*"
 ```
+
+Always scope `--projects` — an unscoped run pools every project on the machine (see `transcript-analysis`'s Caveats). Derive it from `--git-common-dir`, which resolves to the main repo's `.git` from inside any worktree, so the prefix is stable wherever the session started; the trailing `*` then also picks up per-worktree project dirs and sessions started in a repo subdirectory. Do not derive it from `pwd`: the project dir is named for the session's *startup* cwd, which need not match the shell's cwd at query time. The glob is prefix-based, so a sibling directory sharing the prefix also matches — for `buckets` that over-includes rows in a report, which is visible in the output, rather than silently returning nothing.
 
 `buckets`, `review-trace`, and `fail-seq` all accept `--projects GLOB` (cross-repo), `--branches B1,B2,...` (multiple branches/PRs at once), and (on `review-trace`) `--since`/`--until DATE` — the tooling already spans repos and calendar time; scope is a choice, not a limitation.
 
-**Default to breadth, not the narrowest concrete option.** A single PR or session is the highest-noise, lowest-confidence sample available — one human comment or one bad turn looks identical to a systemic gap when it's the only data point. Absent an explicit request to narrow (the user names one PR/branch), default the scope to: the current project, all branches, last 6 weeks. If a scoping question to the user goes unanswered, widen the default rather than narrowing it — the cost of over-scoping is a longer report; the cost of under-scoping is a false pattern promoted to a fix.
+**Default to breadth, not the narrowest concrete option.** A single PR or session is the highest-noise, lowest-confidence sample available — one human comment or one bad turn looks identical to a systemic gap when it's the only data point. Absent an explicit request to narrow (the user names one PR/branch), default the scope to: the current project, all branches, last 6 weeks. If a scoping question to the user goes unanswered, widen the default rather than narrowing it — the cost of over-scoping is a longer report; the cost of under-scoping is a false pattern promoted to a fix. Take the analysis window from `review-trace --since/--until`, not `buckets`' Date range column (see `transcript-analysis`'s Caveats).
 
 ## Step 2 — Collect transcript signals
 
@@ -28,13 +31,29 @@ Invoke `transcript-narrative` and `transcript-analysis` by name — do not resta
 
 ## Step 3 — Collect PR review comments
 
-A distinct second source, not a subset of the transcript. Human PR reviewers comment on the PR itself; those exchanges never appear in the session transcript unless the AI was asked to read them. Fetch all three comment types with `--paginate` — skipping any one, or omitting `--paginate`, silently truncates the signal and undercounts human-caught findings:
+A distinct second source, not a subset of the transcript. Human PR reviewers comment on the PR itself; those exchanges never appear in the session transcript unless the AI was asked to read them. Fetch all three comment kinds in one read-only GraphQL round trip rather than three separate paginated REST calls:
+
+`-F pr=` is required — `-f` sends a string and the `Int!` variable rejects it.
+
+<!-- HOOK_TEST_FIXTURE: fetch-pr-comments — the hook-alignment test suite reads this exact fenced block to verify require-respond-pr.sh allows it, so a regression to a denied REST form cannot land silently. Do not duplicate elsewhere; the test re-reads it from here. -->
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate
-gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate --jq '.[] | select(.body != "")'
-gh api repos/{owner}/{repo}/issues/{number}/comments --paginate
+gh api graphql -f owner=OWNER -f repo=REPO -F pr=NUMBER -f query='
+query($owner:String!, $repo:String!, $pr:Int!) {
+  repository(owner:$owner, name:$repo) { pullRequest(number:$pr) {
+    comments(first:100)      { totalCount pageInfo{endCursor} nodes{ author{login} body } }
+    reviews(first:100)       { totalCount pageInfo{endCursor} nodes{ author{login} state body } }
+    reviewThreads(first:100) { totalCount pageInfo{endCursor} nodes{ comments(first:100){
+                                 totalCount nodes{ author{login} path body } } } }
+  } }
+}'
 ```
+
+Compare each `totalCount` against its returned node count, including the nested `comments` inside each review thread. Where they differ — say `reviewThreads.totalCount` is 38 but 20 nodes came back — re-run the whole query (there is no per-connection call to isolate), adding `after:"<endCursor>"` only to the connection(s) still short and merging in only those; the other connection(s)' nodes come back as the same first page you already have. `reviewThreads.comments` carries its own `totalCount`/`pageInfo` per thread, one level below the top-level `reviewThreads` cursor — a thread over 100 comments needs this same after-cursor merge applied to that one thread alone. Do not reach for `--paginate`: it drives one cursor across the whole query, so with three connections the shared cursor diverges from at least one connection's own position — an observed run exited 0 while returning an empty node list for `reviewThreads` from the second page on, and a clean exit was not evidence the fetch was complete. Truncating one connection undercounts human-caught findings exactly the way fetching only inline comments does. This is a GraphQL-specific hazard: `gh api --paginate` tracks one `$endCursor` per query, so it doesn't extend to `respond-pr`'s three separate REST `--paginate` calls — each of those follows its own response `Link` header for its one endpoint and is unaffected.
+
+Skip reviews whose `body` is empty — a bare approval carries no finding to correlate.
+
+This query reads. Posting any reply goes through `/respond-pr`, never this surface.
 
 Correlate each comment against the error-mode list being built in Step 4. A finding raised and resolved only in a PR thread — never surfaced in the session — is exactly what an analysis based on transcripts alone would silently drop.
 

@@ -136,6 +136,47 @@ def _count_name_only_skills() -> int:
     )
 
 
+_GROUND_EVERY_CHOICE_BULLET = "- **Ground every choice.**"
+_GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
+
+
+def _count_ground_every_choice_categories() -> int:
+    """Return the number of decision categories nested under "Ground every choice".
+
+    Unlike the other ground truths here, the source is prose rather than a
+    roster or a config file — the categories exist only as nested list items,
+    so this fact compares one part of CLAUDE.md against another part of the
+    same file. That is weaker than the sibling facts, which check a doc claim
+    against an independent structured source: a single edit that changed both
+    the count word and the bullet list would agree while both were wrong. It
+    is the only ground truth this claim has, but do not read the registry as
+    uniformly independent.
+
+    The scan is bounded at both ends rather than counting indented bullets
+    file-wide: it starts at the "Ground every choice" bullet and stops at the
+    next top-level list item or heading, so an indented bold list added
+    elsewhere in CLAUDE.md cannot silently move this count.
+
+    Stopping at a heading alone would be enough today (this is the last
+    bullet in its section) but would break the moment a bullet is appended
+    after it, so both terminators are checked.
+    """
+    text = (REPO_ROOT / _GLOBAL_CLAUDE_MD).read_text()
+    anchors = text.count(_GROUND_EVERY_CHOICE_BULLET)
+    if anchors != 1:
+        raise ValueError(
+            f"Expected exactly one {_GROUND_EVERY_CHOICE_BULLET!r} anchor in "
+            f"{_GLOBAL_CLAUDE_MD}, found {anchors}. Zero means the bullet was "
+            "reworded and this ground truth no longer has a scan start; more "
+            "than one means the scan boundary is ambiguous."
+        )
+    body = text.split(_GROUND_EVERY_CHOICE_BULLET, 1)[1]
+    terminator = re.search(r"^(?:- |#)", body, re.MULTILINE)
+    if terminator:
+        body = body[: terminator.start()]
+    return len(re.findall(r"^  - \*\*", body, re.MULTILINE))
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -175,6 +216,21 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 rel_path="docs/skills.md",
                 pattern=r"(\w+) bundled skills are disabled in this repo",
                 description="docs/skills.md: N bundled skills disabled",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_ground_every_choice_categories,
+        label='count of decision categories nested under "Ground every choice" in claude/.claude/CLAUDE.md',
+        occurrences=[
+            # Anchored on the bullet's own bold lead-in: a bare
+            # "(\w+) categories" also matches Axis 3's "the following content
+            # categories are read-only", which would break the
+            # exactly-one-match invariant.
+            Occurrence(
+                rel_path=_GLOBAL_CLAUDE_MD,
+                pattern=r"\*\*Ground every choice\.\*\* (\w+) categories of decision",
+                description="claude/.claude/CLAUDE.md: N categories of decision requiring citation",
             ),
         ],
     ),
