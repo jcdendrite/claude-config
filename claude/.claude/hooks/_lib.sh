@@ -167,6 +167,11 @@ _lib_marker_value_present() {
   # diagnostic, and manual pruning of ~/.claude/*-markers/ is the workaround.
   # A flat glob (not `grep -r`) is deliberate: recursion would let a file
   # nested in a stray subdirectory authorize a gate.
+  #
+  # Callers must test truthiness, never `[ $? -eq 1 ]`: grep reports a plain
+  # no-match as 1 but returns 2 when any argv entry errors — which a stray
+  # subdirectory under MARKERS_DIR ("Is a directory") triggers even under -q.
+  # Both are correctly false here; an exact-code check would not be.
   grep -qFx -e "$expected_value" -- "${marker_files[@]}" 2>/dev/null
 }
 
@@ -554,13 +559,22 @@ _lib_is_review_only_agent() {
 # enforce-marker-script-shape.sh to deny `marker.sh write` and
 # `marker.sh activate` from these callers.
 #
-# The boundary is grounded in the agent roster's own tool lists: none of these
-# identities carries the `Skill` tool, so none of them can invoke a review
-# skill at all, and any marker write from one is necessarily unearned rather
-# than merely unusual. test_agent_roster.py asserts that property mechanically
-# against agents/*.md frontmatter, so adding a `Skill`-carrying agent here (or
-# granting `Skill` to one already listed) fails a test rather than silently
-# widening what a subagent can release.
+# The boundary rests on two different grounds, and conflating them misleads
+# whoever adds the next entry:
+#   - Every file-backed identity here (code-writer, the staff-* reviewers,
+#     ciso-reviewer, skill-fidelity-reviewer) declares no `Skill` tool in its
+#     agents/*.md frontmatter, so it cannot invoke a review skill at all.
+#     test_agent_roster.py asserts that mechanically, so granting `Skill` to
+#     one of them fails a test rather than silently widening what a subagent
+#     can release.
+#   - The two harness built-ins (Explore, Plan) are understood to carry
+#     `Skill` — they ship with the harness, so this repo holds no frontmatter
+#     and no registry that could confirm or falsify it. They are listed on
+#     mandate (they are dispatched read-only), which holds either way; do not
+#     rewrite this as a tool-absence claim on the strength of the harness
+#     behaving one way today.
+# Either way a marker write from one of these identities is unearned rather
+# than merely unusual, which is what the deny turns on.
 #
 # Derived from _LIB_REVIEW_ONLY_AGENTS rather than re-enumerated, so a persona
 # added there is covered here automatically. `general-purpose` and `claude`

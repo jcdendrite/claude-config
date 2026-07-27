@@ -325,6 +325,27 @@ class TestRequireSkillReview:
     def test_non_bash_tool_allowed(self, isolated_home, git_repo):
         assert run_hook(SKILL_REVIEW_HOOK, edit_input("/tmp/foo.txt"), cwd=git_repo) == "allow"
 
+    def test_non_bash_tool_allowed_even_with_unreviewed_skill_staged(
+        self, isolated_home, git_repo
+    ):
+        """The tool-name filter must short-circuit before the gate logic.
+
+        This is the state where the hook WOULD deny a `git commit`: SKILL.md
+        changes staged, no marker written. A non-Bash payload must still be
+        allowed, which pins the filter itself rather than the incidental fact
+        that a non-Bash payload yields an empty COMMAND — the gate would also
+        return "allow" here if the filter silently stopped running, so the
+        staged-and-unreviewed setup is what makes this assertion load-bearing.
+        """
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(SKILL_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo)
+            == "deny"
+        ), "precondition: this state must deny a git commit, or the test proves nothing"
+        assert (
+            run_hook(SKILL_REVIEW_HOOK, edit_input("/tmp/foo.txt"), cwd=git_repo) == "allow"
+        )
+
     def test_outside_git_repo_allowed(self, isolated_home, tmp_path):
         """Hook should bail rather than false-deny when git can't resolve a repo."""
         non_repo = tmp_path / "not-a-repo"
@@ -700,6 +721,54 @@ class TestRequireSkillReview:
             "produces a different hash than the stowed claude/.claude/hooks/_lib.sh "
             f"copy — plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )
+
+    def test_plugin_lib_sh_marker_value_present_matches_stowed_lib_sh(self, tmp_path):
+        """_lib_marker_value_present must behave identically in the plugin's
+        trimmed _lib.sh and the stowed copy.
+
+        This function is the read side of every content-addressed gate. A
+        security-relevant fix applied to only one copy — tightening the
+        whole-line match, say — would leave the other releasing gates on
+        values it should reject, and require-skill-review.sh's own behavioral
+        tests would not necessarily probe the exact edge the fix addressed.
+        Same reasoning as the _marker_lib_repo_hash parity test above, applied
+        to the other shared function both copies carry.
+        """
+        markers = tmp_path / "markers"
+        markers.mkdir()
+        (markers / "abc123.session-one").write_text("deadbeef\n")
+        (markers / "other999.session-two").write_text("cafebabe\n")
+
+        harness = '. "$1"; _lib_marker_value_present "$2" "$3" "$4"; echo "exit=$?"'
+        # (expected_value, prefix, must_authorize)
+        cases = [
+            ("deadbeef", "abc123.", True),
+            ("deadbee", "abc123.", False),  # substring must not match
+            ("deadbeefextra", "abc123.", False),  # superstring must not match
+            ("cafebabe", "abc123.", False),  # value sits under another prefix
+            ("deadbeef", "nosuch.", False),  # prefix matches nothing
+        ]
+        for expected_value, prefix, must_authorize in cases:
+            outputs = [
+                subprocess.run(
+                    ["bash", "-c", harness, "_", str(lib), str(markers), expected_value, prefix],
+                    capture_output=True, text=True, check=False,
+                ).stdout
+                for lib in (_PLUGIN_LIB, _STOWED_LIB)
+            ]
+            assert outputs[0] == outputs[1], (
+                "plugins/skill-management/hooks/_lib.sh's _lib_marker_value_present "
+                "disagrees with the stowed claude/.claude/hooks/_lib.sh copy for "
+                f"value={expected_value!r} prefix={prefix!r} — "
+                f"plugin: {outputs[0]!r}, stowed: {outputs[1]!r}"
+            )
+            # Pin the shared verdict too, so the copies agreeing on a WRONG
+            # answer still fails rather than passing as "identical".
+            expected_exit = "exit=0\n" if must_authorize else "exit=1\n"
+            assert outputs[0] == expected_exit, (
+                f"both _lib.sh copies returned {outputs[0]!r} for "
+                f"value={expected_value!r} prefix={prefix!r}; expected {expected_exit!r}"
+            )
 
     def test_plugin_lib_sh_parses_tool_input_same_as_stowed_lib_sh(self):
         """_lib_parse_tool_input_or_deny (and the _lib_jq it calls) must behave

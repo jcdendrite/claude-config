@@ -23,6 +23,13 @@
 #     re-arm gates rather than release them).
 #   - Marker state reached by a tool other than Bash/Write/Edit/MultiEdit
 #     (none exists today) would be ungated.
+#   - Both arms key on `.agent_type`, which the harness populates only for
+#     subagents it dispatches. A nested top-level session shelled out of a
+#     Bash tool call (`claude -p ...`) would carry no agent_type and read as
+#     the main session. Unconfirmed whether that is reachable from a subagent's
+#     execution context; if it is, every agent-identity-keyed hook shares it
+#     (deny-reviewer-tree-mutation.sh has the same dependency), so the fix
+#     belongs at the permission layer for the whole class rather than here.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed
@@ -62,9 +69,11 @@ _lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON."
 # Gate-release authority
 # ---------------------------------------------------------------------------
 # A review gate may be released only by a caller that could have run the
-# review. Agents in _LIB_NO_GATE_RELEASE_AGENTS carry no `Skill` tool, so none
-# of them can invoke a review skill at all — a marker written by one asserts a
-# review that could not have happened. marker.sh resolves session_id by walking
+# review. No agent in _LIB_NO_GATE_RELEASE_AGENTS could have: most carry no
+# `Skill` tool and cannot invoke a review skill at all, and the two harness
+# built-ins that do carry it (Explore, Plan) are dispatched read-only by
+# mandate. Either way a marker written by one asserts a review that could not
+# have happened. marker.sh resolves session_id by walking
 # the process ancestor chain to the Claude main process, so such a write is
 # indistinguishable from the parent session's and releases the gate for the
 # whole session, not just the subagent.
@@ -78,7 +87,7 @@ _lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON."
 # path, so no shell-level indirection can evade it. The Bash arm necessarily
 # matches command text and inherits that surface's limits — see its own note.
 #
-GATE_RELEASE_DENIAL_GUIDANCE="Releasing a gate requires having run the review that the gate demands, and this agent type carries no Skill tool — it cannot invoke a review skill at all, so a marker it writes would assert a review that never happened. Marker writes are attributed to the parent session, so this would release the gate for the whole session, not just this subagent.
+GATE_RELEASE_DENIAL_GUIDANCE="Releasing a gate requires having run the review that the gate demands, and this agent type could not have run it — either it carries no Skill tool and cannot invoke a review skill at all, or it is dispatched read-only by mandate. Either way a marker it writes would assert a review that never happened. Marker writes are attributed to the parent session, so this would release the gate for the whole session, not just this subagent.
 
 Report the denial to the dispatching session instead: name the gate that blocked you, the command or path it blocked, and what you had completed. The dispatching session runs the review skill (or delegates it to a general-purpose subagent, which does carry Skill) and re-dispatches you.
 
@@ -153,10 +162,19 @@ case "$TOOL_NAME" in
     #     <repo>/claude/.claude/<kind>-markers/, which never contains $HOME at
     #     all (see require-worktree-for-file-writes.sh on the fold topology).
     # Matching the shape covers every alias of the same file without depending
-    # on normalization succeeding. realpath is still applied as a best-effort
-    # extra candidate (it collapses `..` and resolves symlinks pointing into
-    # the directory), but it is no longer load-bearing — its absence narrows
-    # nothing that the shape match does not already catch.
+    # on normalization succeeding. realpath is still applied as a second
+    # candidate and IS load-bearing for one vector the shape match cannot see:
+    # a symlink whose own path contains no marker-shaped segment but which
+    # resolves into the markers directory (an agent with Bash can create one).
+    # Only the resolved path exposes that, so do not "optimize" this call away
+    # behind a substring pre-check on the raw path — the shape match covers
+    # `..` traversal and the stow fold, not symlink aliasing.
+    #
+    # That vector is closed only when realpath actually completes: _lib_capped
+    # caps it, and on timeout NORMALIZED_TARGET is empty and the loop falls
+    # back to the raw path alone. Deliberate — blocking every file write on a
+    # stalled $HOME mount is the worse failure — but it means a symlink alias
+    # is caught on a healthy filesystem, not unconditionally.
     #
     # Over-matching is the safe direction: this branch only ever produces a
     # deny, and it only runs for agents that may never write marker state at

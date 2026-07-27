@@ -362,11 +362,20 @@ class TestAgentFrontmatter:
 
 
 # Members of _LIB_NO_GATE_RELEASE_AGENTS that are harness built-ins with no
-# agents/*.md file in this repo. Both carry the Skill tool, so their inclusion
-# rests on mandate (they are dispatched read-only) rather than on tool absence,
-# and the frontmatter assertion below cannot apply to them. Enumerated as a
-# closed set so a typo'd or renamed roster entry fails the test rather than
-# silently skipping it.
+# agents/*.md file in this repo. Both are understood to carry the Skill tool,
+# so their inclusion rests on mandate (they are dispatched read-only) rather
+# than on tool absence, and the frontmatter assertions below cannot apply to
+# them. Enumerated as a closed set so a typo'd or renamed roster entry fails
+# the test rather than silently skipping it.
+#
+# Two platform assumptions ride on this exemption, neither checkable from this
+# repo — record them here so they are searchable rather than silent:
+#   - What tools the harness grants these two. There is no registry to read,
+#     so the mandate grounding is what the deny actually rests on.
+#   - That a subagent cannot itself invoke Task. If that ever changes, either
+#     built-in could delegate a marker write to a full-tool-set agent and
+#     release a gate, which is exactly what the Task assertion below closes
+#     for the file-backed members. Re-derive this exemption if it does.
 HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS = {"Explore", "Plan"}
 
 
@@ -386,11 +395,13 @@ class TestNoGateReleaseRosterSync:
     """The no-gate-release boundary is grounded in the agent roster's tool lists.
 
     enforce-marker-script-shape.sh denies `marker.sh write` / `activate` to
-    these agents on the stated grounds that none of them can invoke a review
-    skill — they carry no `Skill` tool, so any marker they write asserts a
-    review that could not have happened. That grounding is only as good as the
-    frontmatter it describes, so it is asserted here rather than verified by
-    hand at review time.
+    these agents on the stated grounds that none of them could have run the
+    review a gate demands, so any marker they write asserts a review that
+    could not have happened. For the file-backed members that grounding is
+    tool absence (no `Skill`, and no `Task` to delegate it with); for the
+    harness built-ins it is mandate, which no frontmatter records. Only the
+    first kind is checkable here, so it is asserted rather than verified by
+    hand at review time, and the second is pinned as a closed exemption set.
     """
 
     def test_roster_members_have_agent_files_or_are_named_builtins(self):
@@ -405,14 +416,28 @@ class TestNoGateReleaseRosterSync:
                 f"note on why the tools: assertion cannot apply to it."
             )
 
+    @staticmethod
+    def _declared_tools(name: str) -> set[str]:
+        """Tools an agent file grants, via the strict-YAML frontmatter parser.
+
+        Routed through parse_frontmatter rather than a `^tools:` regex so that
+        YAML list form (`tools:\\n  - Skill`) and multi-line values are read
+        correctly — a regex silently reports "Skill absent" for both, which
+        would turn this assertion into a false pass on exactly the frontmatter
+        shape it exists to catch.
+        """
+        fm = parse_frontmatter(AGENTS_DIR / f"{name}.md")
+        declared = fm.get("tools")
+        assert declared, f"{name}.md: no 'tools:' field found in frontmatter"
+        if isinstance(declared, str):
+            return {t.strip() for t in declared.split(",")}
+        return {str(t).strip() for t in declared}
+
     def test_roster_members_do_not_carry_the_skill_tool(self):
         for name in _no_gate_release_agents():
             if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
                 continue
-            content = (AGENTS_DIR / f"{name}.md").read_text()
-            tools_match = re.search(r"^tools:\s*(.+)$", content, re.MULTILINE)
-            assert tools_match, f"{name}.md: no 'tools:' line found in frontmatter"
-            declared = {t.strip() for t in tools_match.group(1).split(",")}
+            declared = self._declared_tools(name)
             assert "Skill" not in declared, (
                 f"{name}.md declares the Skill tool, but it is listed in "
                 f"_LIB_NO_GATE_RELEASE_AGENTS — whose deny is justified in "
@@ -420,6 +445,29 @@ class TestNoGateReleaseRosterSync:
                 f"run a review skill at all. Granting Skill here makes that "
                 f"justification false. Either drop Skill from this agent, or "
                 f"remove it from the roster and re-derive the boundary."
+            )
+
+    def test_roster_members_do_not_carry_the_task_tool(self):
+        """Task absence is what closes the delegate-to-a-full-tool-set escape.
+
+        Denying these agents a direct marker write accomplishes nothing if they
+        can dispatch a subagent that is allowed to make one — `general-purpose`
+        is deliberately off the roster precisely because it can genuinely run a
+        review. The boundary therefore rests on no roster member being able to
+        dispatch at all, which is true today only by inspection of the same
+        frontmatter the Skill assertion reads.
+        """
+        for name in _no_gate_release_agents():
+            if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
+                continue
+            declared = self._declared_tools(name)
+            assert "Task" not in declared, (
+                f"{name}.md declares the Task tool, but it is listed in "
+                f"_LIB_NO_GATE_RELEASE_AGENTS. A member that can dispatch a "
+                f"subagent can have that subagent write the marker instead, "
+                f"which reopens the gate-release path this roster closes. "
+                f"Either drop Task from this agent, or remove it from the "
+                f"roster and re-derive the boundary."
             )
 
     def test_harness_builtin_exemptions_have_no_agent_file(self):

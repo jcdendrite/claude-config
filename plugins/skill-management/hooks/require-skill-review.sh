@@ -28,6 +28,7 @@
 # - The marker is scoped to SKILL.md diffs only (not the full staged diff),
 #   so re-staging non-SKILL.md files after a clean skill-review does not
 #   invalidate the marker.
+set -uo pipefail
 
 emit_deny() {
   local reason="$1"
@@ -44,6 +45,14 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
 fi
 
 _lib_parse_tool_input_or_deny "Blocked by skill-review gate: could not parse tool-input JSON."
+
+# Filter by tool name in the hook itself rather than relying on the
+# settings.json matcher — the "if" field is a hint only (see the warning
+# above), and a non-Bash payload yields an empty COMMAND that would otherwise
+# reach the git-commit grep and pass by accident rather than by intent.
+if [ "$TOOL_NAME" != "Bash" ]; then
+  exit 0
+fi
 
 # Only gate git commit commands — exit 0 (no opinion) for everything else.
 # Match `git commit` at the start of the command OR after a shell separator

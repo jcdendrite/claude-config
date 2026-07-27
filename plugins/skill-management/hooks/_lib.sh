@@ -122,9 +122,13 @@ _marker_lib_repo_hash() {
 # The shopt state is saved and restored so callers that rely on the default
 # glob behavior elsewhere are unaffected.
 #
-# Kept byte-identical to the same function in the stowed
-# claude/.claude/hooks/_lib.sh; see the header note on why this file
-# duplicates rather than sources.
+# The function BODY is kept byte-identical to the same function in the stowed
+# claude/.claude/hooks/_lib.sh; see the header note on why this file duplicates
+# rather than sources. The comment block above it intentionally differs (it
+# names this file's own consumer), so a drift check must diff the body, not the
+# whole block — a wholesale diff reports expected comment divergence and would
+# bury a real body drift in the noise. test_require_skill_review.py asserts the
+# body parity mechanically.
 _lib_marker_value_present() {
   local markers_dir="$1" expected_value="$2"
   shift 2
@@ -160,6 +164,11 @@ _lib_marker_value_present() {
   # diagnostic, and manual pruning of ~/.claude/*-markers/ is the workaround.
   # A flat glob (not `grep -r`) is deliberate: recursion would let a file
   # nested in a stray subdirectory authorize a gate.
+  #
+  # Callers must test truthiness, never `[ $? -eq 1 ]`: grep reports a plain
+  # no-match as 1 but returns 2 when any argv entry errors — which a stray
+  # subdirectory under MARKERS_DIR ("Is a directory") triggers even under -q.
+  # Both are correctly false here; an exact-code check would not be.
   grep -qFx -e "$expected_value" -- "${marker_files[@]}" 2>/dev/null
 }
 
