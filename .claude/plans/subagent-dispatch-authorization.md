@@ -151,7 +151,7 @@ the false pass on the naive form; the indentation-aware form was then probed
 against the same mutation on the real files and correctly failed]
 — anchors: row3
 
-Row 9 [assumption]: the rule's original justification ("the user configured
+Row 10 [assumption]: the rule's original justification ("the user configured
 that instruction") is false for project-scope config in a repo the user
 cloned but did not author; reworded to rest on the user putting the
 instruction in play, rather than adding trusted-vs-untrusted caveats
@@ -159,10 +159,10 @@ instruction in play, rather than adding trusted-vs-untrusted caveats
 no-meaningful-delta since an attacker-authored config file can already
 instruct arbitrary tool use] — anchors: row1
 
-Row 10 [assumption]: authorization is scoped to configured instructions rather
+Row 11 [assumption]: authorization is scoped to configured instructions rather
 than a blanket override [engineer-verified] — anchors: root
 
-Row 11 [assumption]: scope is CLAUDE.md plus the two skip-lists — not the
+Row 12 [assumption]: scope is CLAUDE.md plus the two skip-lists — not the
 six-site sweep [engineer-verified] — anchors: root
 ```
 
