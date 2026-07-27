@@ -494,12 +494,15 @@ the cross-repo bypass's read/write confinement. Its denial text for the read
 path is untouched (Issue 2); Edit 5 adds a separate write-path denial rather
 than rewording that one.
 
-## Issues to file
+## Follow-up items and their disposition
 
-Each carries its corroboration numbers inline, so the next session does not
-re-derive them.
+Six candidates came out of this triage. Four were filed as issues; two were
+kept as watch-items recorded here rather than filed, because neither prescribes
+a fix yet. Each carries its corroboration numbers inline, so a later session
+does not re-derive them.
 
-1. **`review-trace` and `judgment-pair` misattribute sessions to the first
+1. **Filed as #482.** **`review-trace` and `judgment-pair` misattribute sessions
+   to the first
    record's branch** — two sites, plus `review-trace`'s model attribution. Cite
    168/725 sessions and the 771-of-989 worst case, and note that `review-trace`
    is the subcommand `error-mode-analysis` Step 2 calls most load-bearing, so the
@@ -512,7 +515,7 @@ re-derive them.
    worktree-per-branch, since each linked worktree gets its own project
    directory. That is real but platform-specific to one worktree convention, so
    it cannot go in a globally-stowed skill body — it needs a tool-side answer.
-2. **The respond-pr gate conflates reads with writes.** Edits 4 and 5 closed
+2. **Filed as #483.** **The respond-pr gate conflates reads with writes.** Edits 4 and 5 closed
    the concrete write gaps, so what remains here is the design question and
    472's candidate fix #4. The gate blocks *fetches* to force comprehensive
    reading, but the integrity concern it protects is a *mutation* concern —
@@ -556,7 +559,7 @@ re-derive them.
    untested, which for a security control is indistinguishable from absent.
    It sits in Issue 2 rather than here because asserting it means exercising
    `/respond-pr`'s own write path, a different file than this branch touches.
-3. **Collapse `error-mode-analysis` to one full-fidelity artifact, pilot-gated.**
+3. **Filed as #484.** **Collapse `error-mode-analysis` to one full-fidelity artifact, pilot-gated.**
    Extract the two scans from `deny-private-project-refs.sh` into a standalone
    scan mode, pilot against past reports, then remove the fresh-authoring step.
    Carry ledger row 15's narrow framing: person names, absolute paths, and
@@ -565,15 +568,17 @@ re-derive them.
    own counter-consideration too: roughly a third of that report's lines carried
    an identifier before scrubbing, several mid-quote, which is the missed-span
    risk the two-artifact design exists to prevent.
-4. **Worktree-enforcement denial volume** — 517 denials / 235 sessions / max 26,
+4. **Not filed — watch-item, recorded here.** **Worktree-enforcement denial
+   volume** — 517 denials / 235 sessions / max 26,
    zero main-tree writes landed. The hook is correct; the open question is
-   whether a session-start reminder earns its context cost. File with the
-   numbers and no prescribed fix.
-5. **Tracker cross-references built from a recalled internal ID** — one confirmed
+   whether a session-start reminder earns its context cost. There is no
+   prescribed fix to file against, so the numbers live here until one exists.
+5. **Not filed — watch-item, recorded here.** **Tracker cross-references built
+   from a recalled internal ID** — one confirmed
    occurrence on one machine, one tracker, `[unverified]` here (ledger row 12).
-   File with that caveat explicit; revisit for a global rule only on a second
-   occurrence or cross-tracker confirmation.
-6. **`\s` in hook regexes is a GNU grep extension, not POSIX ERE** — **38
+   Revisit for a global rule only on a second
+   occurrence or cross-tracker confirmation; N=1 does not yet support an issue.
+6. **Filed as #485.** **`\s` in hook regexes is a GNU grep extension, not POSIX ERE** — **38
    occurrences across 7 hooks** `[verified: for each `claude/.claude/hooks/*.sh`,
    comment lines stripped, then `grep -o '\s'` counted;
    `require-ready-for-review.sh` 14, `require-stow-reminder.sh` 8,
