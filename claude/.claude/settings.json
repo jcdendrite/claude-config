@@ -263,6 +263,11 @@
             "type": "command",
             "command": "~/.claude/hooks/deny-reviewer-tree-mutation.sh",
             "statusMessage": "Checking reviewer read-only gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/enforce-marker-script-shape.sh",
+            "statusMessage": "Checking gate-release authority..."
           }
         ]
       },

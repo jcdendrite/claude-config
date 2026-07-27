@@ -1,6 +1,10 @@
-"""Unit tests for _lib_parse_tool_input_or_deny and _lib_jq in _lib.sh.
+"""Unit tests for _lib.sh helpers.
 
-Each test drives the helpers via a throwaway shell harness that defines
+Covers _lib_parse_tool_input_or_deny and _lib_jq, plus the marker-read helper
+_lib_marker_value_present and the gate-release agent predicate
+_lib_is_no_gate_release_agent.
+
+The parse tests drive the helper via a throwaway shell harness that defines
 emit_deny before sourcing _lib.sh (the canonical caller pattern), then calls
 _lib_parse_tool_input_or_deny and reports either DENY:<msg> or OK:<tool>:<cmd>.
 """
@@ -238,3 +242,224 @@ def test_newline_injection_in_tool_name_denied() -> None:
     result = _run_harness('{"tool_name":"Bash\\ninjected","tool_input":{"command":"echo safe"}}')
     assert result.returncode == 0
     assert result.stdout.startswith("DENY:"), repr(result.stdout)
+
+
+# --- _lib_marker_value_present -------------------------------------------
+#
+# Completion markers are content-addressed: the stored value is the whole
+# authorization, and the filename prefix only namespaces concurrent writers
+# apart. These tests pin that read contract, plus the two shell-level
+# properties the helper depends on — whole-line matching, and a zero-match
+# glob reporting "not found" rather than erroring on an unexpanded pattern.
+
+
+def _marker_value_present(
+    markers_dir: Path, expected: str, *prefixes: str
+) -> subprocess.CompletedProcess:
+    """Run _lib_marker_value_present; returncode 0 means found."""
+    argv = [
+        "bash", "-c", f'. {_LIB_SH}; _lib_marker_value_present "$@"', "bash",
+        str(markers_dir), expected, *prefixes,
+    ]
+    return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def _write_marker(
+    markers_dir: Path, name: str, value: str, *, trailing_newline: bool = True
+) -> None:
+    markers_dir.mkdir(parents=True, exist_ok=True)
+    (markers_dir / name).write_text(value + ("\n" if trailing_newline else ""))
+
+
+def test_marker_value_present_matches_stored_value(tmp_path: Path) -> None:
+    """A marker holding the expected value under a matching prefix is found."""
+    _write_marker(tmp_path, "repohash.session-a", "deadbeef")
+    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode == 0
+
+
+def test_marker_value_present_matches_across_session_keys(tmp_path: Path) -> None:
+    """The session suffix is not part of the read predicate.
+
+    This is the defect the helper exists to close: a marker written under one
+    session id must authorize a read from any other session, because the stored
+    hash — not the filename — proves which state was reviewed.
+    """
+    _write_marker(tmp_path, "repohash.session-that-has-since-ended", "deadbeef")
+    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode == 0
+
+
+def test_marker_value_present_rejects_different_value(tmp_path: Path) -> None:
+    """A marker under a matching prefix holding a different value is not a match."""
+    _write_marker(tmp_path, "repohash.session-a", "deadbeef")
+    assert _marker_value_present(tmp_path, "cafebabe", "repohash.").returncode != 0
+
+
+def test_marker_value_present_tolerates_missing_trailing_newline(tmp_path: Path) -> None:
+    """A stored value with no trailing newline still matches.
+
+    grep treats a final unterminated line as a line, so the read side does not
+    depend on the writer's newline discipline.
+    """
+    _write_marker(tmp_path, "repohash.session-a", "deadbeef", trailing_newline=False)
+    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode == 0
+
+
+def test_marker_value_present_scans_multiple_prefixes(tmp_path: Path) -> None:
+    """A match under any supplied prefix counts — the sibling-worktree fallback tier."""
+    _write_marker(tmp_path, "siblinghash.session-a", "deadbeef")
+    result = _marker_value_present(tmp_path, "deadbeef", "currenthash.", "siblinghash.")
+    assert result.returncode == 0
+
+
+def test_marker_value_present_ignores_non_matching_prefix(tmp_path: Path) -> None:
+    """The right value stored under the wrong repo-hash prefix must not release.
+
+    This is the cross-repo boundary: dropping the repo key entirely would let a
+    review performed against a different codebase authorize this one.
+    """
+    _write_marker(tmp_path, "otherrepohash.session-a", "deadbeef")
+    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode != 0
+
+
+def test_marker_value_present_requires_whole_line_match(tmp_path: Path) -> None:
+    """A stored value that merely CONTAINS the expected value is not a match.
+
+    Pins the `-x` (whole-line) flag: a regression to bare `-F` would let a
+    longer digest sharing this one as a substring release the gate.
+    """
+    _write_marker(tmp_path, "repohash.session-a", "deadbeefextra")
+    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode != 0
+
+
+def test_marker_value_present_rejects_stored_value_shorter_than_expected(tmp_path: Path) -> None:
+    """The inverse substring direction: stored value is a proper prefix of expected."""
+    _write_marker(tmp_path, "repohash.session-a", "dead")
+    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode != 0
+
+
+def test_marker_value_present_zero_match_glob_reports_not_found(tmp_path: Path) -> None:
+    """No marker for this prefix → clean not-found, not a grep error.
+
+    Without `nullglob`, bash expands a zero-match `prefix*` to the literal
+    unexpanded pattern string, which grep then fails to open. "No marker exists
+    yet" is the most common call, so that failure mode would misreport the
+    common case as an error. The empty-stderr assertion is what catches it.
+    """
+    result = _marker_value_present(tmp_path, "deadbeef", "nosuchrepohash.")
+    assert result.returncode != 0
+    assert result.stderr == "", repr(result.stderr)
+
+
+def test_marker_value_present_absent_directory_reports_not_found(tmp_path: Path) -> None:
+    """A markers directory that does not exist yet is not-found, not an error."""
+    result = _marker_value_present(tmp_path / "never-created", "deadbeef", "repohash.")
+    assert result.returncode != 0
+    assert result.stderr == "", repr(result.stderr)
+
+
+def test_marker_value_present_requires_a_prefix(tmp_path: Path) -> None:
+    """With no prefixes supplied, the helper reports not-found rather than scanning all."""
+    _write_marker(tmp_path, "repohash.session-a", "deadbeef")
+    assert _marker_value_present(tmp_path, "deadbeef").returncode != 0
+
+
+def test_marker_value_present_empty_expected_value_reports_not_found(tmp_path: Path) -> None:
+    """An empty expected value never matches.
+
+    A caller reaches this helper with an uncomputed hash only by skipping its
+    own fail-closed check; matching an empty marker file there would convert a
+    hashing failure into a gate release.
+    """
+    _write_marker(tmp_path, "repohash.session-a", "")
+    assert _marker_value_present(tmp_path, "", "repohash.").returncode != 0
+
+
+def test_marker_value_present_ignores_subdirectories(tmp_path: Path) -> None:
+    """A stray subdirectory under the markers dir does not produce grep noise."""
+    _write_marker(tmp_path, "repohash.session-a", "deadbeef")
+    (tmp_path / "repohash.stray-subdir").mkdir()
+    result = _marker_value_present(tmp_path, "deadbeef", "repohash.")
+    assert result.returncode == 0
+    assert result.stderr == "", repr(result.stderr)
+
+
+def test_marker_value_present_restores_nullglob_state() -> None:
+    """The helper must not leak `nullglob` into its caller's shell.
+
+    Hooks source _lib.sh and then run their own globs; silently flipping a
+    shell option under them would change unrelated behavior far from this
+    call site.
+    """
+    harness = (
+        f". {_LIB_SH}; "
+        "_lib_marker_value_present /nonexistent-markers-dir val prefix. ; "
+        "shopt -q nullglob && echo LEAKED || echo RESTORED"
+    )
+    result = subprocess.run(
+        ["bash", "-c", harness], capture_output=True, text=True, check=False
+    )
+    assert result.stdout.strip() == "RESTORED", repr(result.stdout)
+
+
+# --- _lib_is_no_gate_release_agent ---------------------------------------
+
+
+def _is_no_gate_release_agent(agent_type: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_is_no_gate_release_agent "$1"', "bash", agent_type],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _no_gate_release_agents() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_no_gate_release_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def test_no_gate_release_set_covers_every_review_only_agent() -> None:
+    """The set is a superset of the review-only roster, by derivation not by copy."""
+    review_only = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert review_only, "review-only roster must not be empty"
+    assert set(review_only) <= set(_no_gate_release_agents())
+
+
+def test_no_gate_release_set_includes_code_writer() -> None:
+    """code-writer is an implementer, so it is absent from the review-only roster —
+    but it is exactly the identity that can release a gate it could not have
+    earned, so the no-release set must name it separately."""
+    assert "code-writer" in _no_gate_release_agents()
+
+
+@pytest.mark.parametrize(
+    "agent_type", ["code-writer", "staff-sdet", "ciso-reviewer", "Explore", "Plan"]
+)
+def test_no_gate_release_agent_matches_roster_members(agent_type: str) -> None:
+    assert _is_no_gate_release_agent(agent_type)
+
+
+@pytest.mark.parametrize(
+    "agent_type",
+    ["general-purpose", "claude", "", "code-write", "code-writer-x", "CODE-WRITER"],
+)
+def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
+    """Exact match only.
+
+    Empty agent_type is the main session and must pass. general-purpose and
+    claude carry the full tool set and can genuinely run a review skill, so
+    they keep the documented delegation escape hatch. The near-miss strings
+    pin that the predicate is not doing prefix or case-insensitive matching.
+    """
+    assert not _is_no_gate_release_agent(agent_type)
