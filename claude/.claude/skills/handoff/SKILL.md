@@ -76,7 +76,7 @@ Header line: working directory + current git branch. Then list paths edited this
 ## §5 Active gates / markers
 List active markers under `~/.claude/*-markers/` and `~/.claude/.*-active.d/` — filenames, which skill wrote each, and (for completion markers) the staged-diff hash the marker covers.
 
-Completion markers are keyed to the session that wrote them, and resuming starts a new session — so nothing listed here will satisfy a pre-commit gate afterward. Commit work that is finished and already covered by a completion marker *before* writing this file; a marker left to expire costs the resuming session a full re-review to get the same commit through. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
+A completion marker stays valid past the session boundary, but only while the state it covers is unchanged — staging any further change invalidates it. Finished work left uncommitted therefore reaches the resuming session one incidental edit away from a full re-review; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
 
 ## §6 Open questions / decisions deferred
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.

@@ -525,29 +525,48 @@ class TestContinuityFileBucketCrosscheck:
         )
 
 
-class TestHandoffMarkerExpiry:
+class TestHandoffCommitMarkerCoveredWork:
     """Pin handoff's instruction to land marker-covered work before the boundary.
 
-    Review-completion markers under ~/.claude/*-markers/ are keyed by the
-    writing session's id, and both resume paths start a session under a new
-    id: resume-context.sh's launch mode execs a fresh claude process, and
-    /clear rotates the id inside the existing process (cleanup-session-id.sh's
-    content-match guard exists for exactly that same-PID/new-id race). A
-    handoff written while a fresh marker covers finished work therefore
-    strands that work — the resuming session hits the pre-commit gate and has
-    to re-run the whole review to commit a diff that was already reviewed.
+    A completion marker records a hash of the exact state that was reviewed,
+    and the pre-commit gate authorizes on that stored hash, so the marker
+    outlives the session that wrote it. What it does not outlive is a change
+    to the state: the gate recomputes the current diff's hash at commit time,
+    and the marker's stored value stops matching it. Finished-but-uncommitted
+    work therefore survives the boundary only while the resuming session
+    leaves it untouched, which is why handoff tells the writer to commit it
+    rather than merely describe it.
     """
 
-    def test_handoff_section5_says_markers_do_not_survive_resume(self):
-        """§5 must state that listed markers won't satisfy a gate after resume,
-        and direct the writer to commit marker-covered finished work first."""
+    def test_handoff_section5_directs_committing_marker_covered_work(self):
+        """§5 must scope marker validity to the unchanged state and direct the
+        writer to commit finished marker-covered work before writing the file."""
         body = _skill_file("handoff").read_text()
-        assert "keyed to the session that wrote them" in body
-        assert "nothing listed here will satisfy a pre-commit gate" in body
-        assert (
-            "Commit work that is finished and already covered by a completion marker "
-            "*before* writing this file" in body
-        )
+        # The affirmative clause is the load-bearing one — it replaced the
+        # false "markers die with their session" claim — so assert it from the
+        # start of its sentence. A bare "stays valid past the session boundary"
+        # substring would still match a negated rewrite ("never stays valid
+        # past the session boundary"); including the subject leaves nowhere to
+        # insert the negation without breaking the match.
+        assert "A completion marker stays valid past the session boundary" in body
+        assert "only while the state it covers is unchanged" in body
+        assert "staging any further change invalidates it" in body
+        assert "commit it *before* writing this file" in body
+
+    def test_handoff_section5_does_not_claim_markers_die_with_their_session(self):
+        """Guard against reintroducing the session-keyed expiry claim.
+
+        Gates authorize on a marker's stored hash, not on the session id in
+        its filename, so text asserting that a marker is spent once its
+        session ends is false — and costly, because it sends the writer down a
+        re-review path that is not required. The claim gets its own assertion
+        because it is plausible on its face and was true of an earlier gate
+        implementation, which makes it the likely thing for a future edit to
+        reintroduce.
+        """
+        body = _skill_file("handoff").read_text()
+        assert "keyed to the session that wrote them" not in body
+        assert "nothing listed here will satisfy a pre-commit gate" not in body
 
     def test_handoff_prewrite_checklist_verifies_marker_covered_work_committed(self):
         """The pre-write checklist must carry the commit-first verification, with the
