@@ -120,19 +120,33 @@ class TestRequireCodeReview:
             == "allow"
         )
 
-    def test_other_sessions_marker_does_not_authorize_commit(self, isolated_home, git_repo):
-        """Regression: session A's marker must NOT authorize session B's
-        commit, even when B's staged diff has the same hash as A's reviewed
-        diff. The gate's bypass requires THIS session's marker — review is
-        per-session, not per-diff.
+    def test_other_sessions_marker_authorizes_identical_staged_diff(self, isolated_home, git_repo):
+        """Session A's marker authorizes session B's commit of the identical diff.
 
-        This is the load-bearing safety property of session-keyed markers.
-        Without it, a future refactor that "simplifies" by accepting any
-        matching hash would silently re-introduce cross-session leakage,
-        the failure mode that motivated this design."""
+        The marker's stored hash proves a review covered exactly this staged
+        state; the filename's session suffix only keeps parallel sessions from
+        overwriting each other's markers. Keying the read on it denies a
+        resumed session (new session_id) a review it already completed."""
         diff_hash = staged_diff_hash(git_repo)
         write_marker(isolated_home, git_repo, diff_hash, session_id="session-A")
-        # Session B's commit, same staged diff, but B has no marker.
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id="session-B"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_other_sessions_marker_does_not_authorize_a_changed_diff(self, isolated_home, git_repo):
+        """The negative half: acceptance is by diff hash, not by marker existence.
+
+        Without this, dropping the session key would degrade the gate from a
+        content check to an existence check."""
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id="session-A")
+        # Re-stage a different change; the reviewed hash no longer describes it.
+        (git_repo / "newly_added.py").write_text("print('unreviewed')\n")
+        subprocess.run(["git", "add", "newly_added.py"], cwd=git_repo, check=True)
         assert (
             run_hook(
                 CODE_REVIEW_HOOK,
@@ -142,15 +156,47 @@ class TestRequireCodeReview:
             == "deny"
         )
 
-    def test_no_session_id_in_input_denies(self, isolated_home, git_repo):
-        """Without session_id in the hook payload, no per-session marker can
-        be keyed — deny even if a marker file happens to exist on disk.
-        Older Claude Code versions or payload-schema drift land here; the
-        gate fail-closes rather than silently bypassing."""
+    def test_no_session_id_in_input_reads_marker(self, isolated_home, git_repo):
+        """A payload with no session_id still finds a marker covering this diff.
+
+        This gate reads no session-scoped state at all, so a payload that
+        cannot be session-keyed is not thereby unreviewed."""
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo))
         # bash_input() with session_id=None omits the field entirely.
         assert (
             run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo)
+            == "allow"
+        )
+
+    def test_no_session_id_and_no_matching_marker_denies(self, isolated_home, git_repo):
+        """Fail-closed still holds: no session_id and no covering review → deny."""
+        assert (
+            run_hook(CODE_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo)
+            == "deny"
+        )
+
+    def test_marker_under_another_repo_hash_does_not_authorize(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The repo-hash prefix stays part of the read predicate.
+
+        Only the session suffix is globbed. A review of an identical diff in a
+        different repository reviewed different code, so its marker must not
+        release this gate."""
+        other_repo = tmp_path / "other-repo"
+        other_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
+
+        # Same diff hash, filed under the other repo's repo-hash prefix.
+        write_marker(isolated_home, other_repo, staged_diff_hash(git_repo), session_id="s")
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id="s"),
+                cwd=git_repo,
+            )
             == "deny"
         )
 

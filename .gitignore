@@ -38,3 +38,13 @@ claude/.claude/data-file-read-guard.md
 # claude/.claude/hooks/_lib.sh (worktree) and docs/error-mode-nudge.md (nudge).
 claude/.claude/worktree-required
 claude/.claude/.error-mode-nudge-enabled
+
+# Review-gate marker state is per-machine session bookkeeping written by
+# ~/.claude/scripts/marker.sh, never content that ships with the package.
+# Under stow directory-fold (~/.claude is a symlink to the package rather than
+# a directory of per-file symlinks), these land physically inside the repo, so
+# without these entries a completed review's markers would show up in
+# `git status` and could be committed — publishing local session ids and
+# handing every stow user a set of pre-satisfied gates.
+claude/.claude/*-markers/
+claude/.claude/.*-active.d/

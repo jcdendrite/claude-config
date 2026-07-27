@@ -1,10 +1,12 @@
 """Tests for require-plan-review.sh."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+import time
 
 import pytest
 from helpers import (
@@ -103,9 +105,38 @@ class TestRequirePlanReview:
             == "allow"
         )
 
-    def test_other_sessions_marker_does_not_authorize(self, plan_review_repo, plan_review_home):
-        """Marker for session A must NOT bypass session B's gate."""
+    def test_other_sessions_marker_authorizes_at_matching_plan_hash(
+        self, plan_review_repo, plan_review_home
+    ):
+        """A marker written by session A releases session B's gate at the same plan hash.
+
+        The stored hash is the authorization: it proves the review covered
+        exactly this plan state. The filename's session suffix only keeps
+        parallel writers from clobbering each other. Reading it as a predicate
+        is what made a resumed session (new session_id) re-arm a gate with no
+        review actually missing.
+        """
         write_plan_review_marker(plan_review_home, plan_review_repo, "session-A")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "session-B"},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_other_sessions_marker_does_not_authorize_a_changed_plan(
+        self, plan_review_repo, plan_review_home
+    ):
+        """The negative half: cross-session acceptance is by hash, not by existence.
+
+        Session A's marker must not release session B once the plan text has
+        changed — otherwise dropping the session key would degrade the gate to
+        an existence check.
+        """
+        write_plan_review_marker(plan_review_home, plan_review_repo, "session-A")
+        (plan_review_repo / ".claude" / "plans" / "impl-plan.md").write_text("edited after review\n")
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
@@ -290,16 +321,36 @@ class TestRequirePlanReview:
             == "allow"
         )
 
-    def test_no_session_id_in_input_denies(self, plan_review_repo, plan_review_home):
-        """Without session_id in the hook payload, no per-session marker can be
-        keyed — deny even if a marker directory exists. Mirrors the same invariant
-        in require-code-review.sh and require-respond-pr.sh: missing session_id
-        must fail-closed, not silently allow. This is a load-bearing safety
-        property of the per-session marker design."""
-        # Write a marker for a known session so the marker dir exists, but the
-        # payload has no session_id — the hook must not accept the existing marker.
+    def test_no_session_id_in_input_reads_completion_marker(
+        self, plan_review_repo, plan_review_home
+    ):
+        """A payload with no session_id still finds a marker covering this plan state.
+
+        session_id is required only for the active-bypass marker, which asserts
+        a per-process property ("a review is running right now"). The completion
+        marker asserts a property of the plan state itself, so a payload that
+        cannot be session-keyed is not thereby unreviewed.
+        """
         write_plan_review_marker(plan_review_home, plan_review_repo, "some-other-session")
         # write_input() uses no session_id field.
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                write_input(str(plan_review_repo / "src" / "foo.py")),
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_no_session_id_and_no_matching_marker_denies(
+        self, plan_review_repo, plan_review_home
+    ):
+        """Fail-closed still holds: no session_id and no covering review → deny.
+
+        The gate now turns on the marker's content rather than on session
+        identity, so this is the assertion that pins "unreviewed denies" —
+        a missing session_id must not become an allow path.
+        """
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
@@ -1052,17 +1103,32 @@ class TestRequirePlanReviewExitPlanMode:
         )
         assert result == "deny"
 
-    def test_other_sessions_completion_marker_does_not_authorize_exitplanmode(
+    def test_other_sessions_completion_marker_authorizes_exitplanmode(
         self, plan_review_repo, plan_review_home
     ):
-        """Session A's completion marker does not release session B's ExitPlanMode gate.
+        """Session A's completion marker releases session B's ExitPlanMode gate.
 
-        The hook keys completion markers per-session ($REPO_HASH.$SESSION_ID).
-        A marker written by a different session must not authorize ExitPlanMode,
-        mirroring the cross-session isolation that exists for Write/Edit.
+        ExitPlanMode reads the completion marker on the same content-addressed
+        terms as Write/Edit: the stored hash proves the plan set was reviewed,
+        regardless of which session ran the review. Only the active-bypass
+        marker is session-scoped, and ExitPlanMode is excluded from that bypass
+        entirely (a review in progress is not a review complete).
         """
         other_sid = "test-session-epm-other"
         write_plan_review_marker(plan_review_home, plan_review_repo, other_sid)
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(), "session_id": "test-session-epm-current"},
+            cwd=plan_review_repo,
+        )
+        assert result == "allow"
+
+    def test_other_sessions_completion_marker_does_not_authorize_changed_plan_exitplanmode(
+        self, plan_review_repo, plan_review_home
+    ):
+        """The negative half for ExitPlanMode: acceptance is by hash, not existence."""
+        write_plan_review_marker(plan_review_home, plan_review_repo, "test-session-epm-other")
+        (plan_review_repo / ".claude" / "plans" / "impl-plan.md").write_text("edited after review\n")
         result = run_hook(
             REQUIRE_PLAN_REVIEW_HOOK,
             {**exitplanmode_input(), "session_id": "test-session-epm-current"},
@@ -1106,4 +1172,312 @@ def test_settings_exitplanmode_matcher_exists_and_isolated():
     for block in write_edit_blocks:
         assert "ExitPlanMode" not in block.get("matcher", ""), (
             "ExitPlanMode must not be bundled into the Edit|Write|MultiEdit matcher"
+        )
+
+
+PLAN_TEXT = "# Implementation plan\n\nStep 1...\n"
+
+
+def _init_repo_with_plan(root, plan_text: str = PLAN_TEXT):
+    """A git repo with one commit and an untracked plan at a fixed relative path.
+
+    The commit is what makes `git worktree add` possible; the plan stays
+    untracked so it counts as active.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
+    (root / "README.md").write_text("seed\n")
+    subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=root, check=True)
+    plans_dir = root / ".claude" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    (plans_dir / "impl-plan.md").write_text(plan_text)
+    return root
+
+
+class TestRequirePlanReviewCrossWorktree:
+    """The #426 repro: a plan copied into a fresh worktree.
+
+    _lib_active_plan_hash hashes repo-RELATIVE paths plus contents, so the
+    identical plan at the identical relative path hashes identically in both
+    worktrees. The gate must honor a review performed in either one — but only
+    across worktrees of the same repository, never across repositories.
+    """
+
+    def test_sibling_worktree_marker_authorizes(self, tmp_path, plan_review_home):
+        main = _init_repo_with_plan(tmp_path / "main-repo")
+        sibling = tmp_path / "sibling-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feature", str(sibling)],
+            cwd=main, check=True,
+        )
+        (sibling / ".claude" / "plans").mkdir(parents=True, exist_ok=True)
+        (sibling / ".claude" / "plans" / "impl-plan.md").write_text(PLAN_TEXT)
+
+        # Review recorded against the main worktree only.
+        write_plan_review_marker(plan_review_home, main, "session-in-main")
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(sibling / "src" / "foo.py")), "session_id": "session-in-sibling"},
+                cwd=sibling,
+                home=plan_review_home,
+            )
+            == "allow"
+        )
+
+    def test_sibling_worktree_marker_does_not_authorize_a_diverged_plan(
+        self, tmp_path, plan_review_home
+    ):
+        """A sibling's review covers the sibling's plan text, not any plan text."""
+        main = _init_repo_with_plan(tmp_path / "main-repo")
+        sibling = tmp_path / "sibling-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feature", str(sibling)],
+            cwd=main, check=True,
+        )
+        (sibling / ".claude" / "plans").mkdir(parents=True, exist_ok=True)
+        (sibling / ".claude" / "plans" / "impl-plan.md").write_text("a different plan\n")
+
+        write_plan_review_marker(plan_review_home, main, "session-in-main")
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(sibling / "src" / "foo.py")), "session_id": "session-in-sibling"},
+                cwd=sibling,
+                home=plan_review_home,
+            )
+            == "deny"
+        )
+
+    def test_unrelated_repo_marker_does_not_authorize(self, tmp_path, plan_review_home):
+        """Identical plan text in an UNRELATED repository must not release this gate.
+
+        This is why the read stays keyed to `git worktree list` output rather
+        than scanning the marker directory repo-agnostically: the plan text
+        would have been reviewed, but against a different codebase.
+        """
+        target = _init_repo_with_plan(tmp_path / "target-repo")
+        unrelated = _init_repo_with_plan(tmp_path / "unrelated-repo")
+
+        # Same plan text, same relative path → same active-plan hash, but the
+        # marker is filed under the unrelated repo's repo-hash.
+        write_plan_review_marker(plan_review_home, unrelated, "session-elsewhere")
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(target / "src" / "foo.py")), "session_id": "session-here"},
+                cwd=target,
+                home=plan_review_home,
+            )
+            == "deny"
+        )
+
+    def test_decoy_marker_under_same_prefix_does_not_false_accept(
+        self, plan_review_repo, plan_review_home
+    ):
+        """A stale marker beside the correct one must not widen the match.
+
+        The read scans every marker sharing this repo-hash prefix, so a stale
+        entry from an earlier plan state coexists with the current one. Only an
+        exact content match may release.
+        """
+        decoy = plan_review_marker_path(plan_review_home, plan_review_repo, "stale-session")
+        decoy.parent.mkdir(parents=True, exist_ok=True)
+        decoy.write_text("0" * 64 + "\n")
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "session-x"},
+                cwd=plan_review_repo,
+                home=plan_review_home,
+            )
+            == "deny"
+        )
+
+        write_plan_review_marker(plan_review_home, plan_review_repo, "real-session")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "session-x"},
+                cwd=plan_review_repo,
+                home=plan_review_home,
+            )
+            == "allow"
+        )
+
+    def test_failed_worktree_enumeration_fails_closed(self, tmp_path, plan_review_home):
+        """A `git worktree list` that fails must deny, not scan fewer prefixes and allow.
+
+        A partial or failed enumeration yields fewer worktrees, and fewer
+        worktrees still "succeeds" at finding nothing — so treating enumeration
+        failure as a clean miss is indistinguishable from a real miss only in
+        the deny direction. This pins that it stays in that direction.
+        """
+        main = _init_repo_with_plan(tmp_path / "main-repo")
+        sibling = tmp_path / "sibling-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feature", str(sibling)],
+            cwd=main, check=True,
+        )
+        (sibling / ".claude" / "plans").mkdir(parents=True, exist_ok=True)
+        (sibling / ".claude" / "plans" / "impl-plan.md").write_text(PLAN_TEXT)
+        write_plan_review_marker(plan_review_home, main, "session-in-main")
+
+        # Sanity: without the stub, tier 2 finds the main worktree's marker.
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(sibling / "src" / "foo.py")), "session_id": "s"},
+                cwd=sibling,
+                home=plan_review_home,
+            )
+            == "allow"
+        )
+
+        # Stub git: passes everything through except `worktree list`, which fails.
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        real_git = shutil.which("git")
+        stub = stub_dir / "git"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "worktree" ]; then exit 1; fi\n'
+            "done\n"
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(sibling / "src" / "foo.py")), "session_id": "s"},
+                cwd=sibling,
+                home=plan_review_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+
+# Marker directories grow without bound (GC is deferred) and this gate fires on
+# every Write/Edit/MultiEdit/ExitPlanMode, so the read's cost must not scale
+# with review history. A one-time manual `time` validates today's directory size
+# once and gives no signal as it grows — hence an assertion.
+#
+# The assertion is BASELINE-RELATIVE, not an absolute wall-clock budget. An
+# absolute ceiling loose enough to survive a throttled CI runner is far too
+# loose to catch the regression that matters (a read that forks per marker
+# instead of once), and one tight enough to catch it flakes on a loaded runner.
+# Comparing a seeded run against an unseeded run on the SAME machine in the
+# SAME test cancels machine speed out and measures the property we actually
+# care about: does marker count drive cost? A single-grep read is ~flat in
+# marker count; a per-file `cat`/subprocess loop is linear, so a regression
+# blows past the ratio on any hardware.
+#
+# NOT covered here, deliberately: the ARG_MAX/E2BIG ceiling at roughly
+# 13k-30k markers under one prefix. That regime fails closed (see the SCALE
+# BOUNDARY note on _lib_marker_value_present in _lib.sh) and seeding 30k files
+# per run costs more than the coverage is worth while marker retention remains
+# unimplemented and out of scope.
+SEEDED_MARKER_COUNT = 3000
+SEEDED_SIBLING_WORKTREE_COUNT = 8
+# A correct read spends a constant number of processes regardless of marker
+# count, so seeding thousands of markers should barely move the needle. The
+# allowance is generous because subprocess startup and git calls dominate the
+# measured window; a per-marker fork loop still overshoots it by orders of
+# magnitude.
+MARKER_SCALING_RATIO = 3.0
+# Absolute slack so a near-zero baseline on a fast machine can't make the
+# ratio arbitrarily sensitive to scheduler noise.
+MARKER_SCALING_SLACK_SECONDS = 1.0
+
+
+def _seed_markers(markers_dir, prefix: str, count: int) -> None:
+    markers_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(count):
+        (markers_dir / f"{prefix}seeded-session-{i}").write_text(f"{i:064x}\n")
+
+
+def _time_hook(repo, home) -> float:
+    started = time.monotonic()
+    assert (
+        run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**write_input(str(repo / "src" / "foo.py")), "session_id": "s"},
+            cwd=repo,
+            home=home,
+        )
+        == "allow"
+    )
+    return time.monotonic() - started
+
+
+class TestRequirePlanReviewLatency:
+    def test_marker_count_does_not_drive_read_cost(self, tmp_path, plan_review_home):
+        """Tier 1 (current repo-hash prefix) stays ~flat as markers accumulate."""
+        main = _init_repo_with_plan(tmp_path / "main-repo")
+        write_plan_review_marker(plan_review_home, main, "tier1-session")
+
+        baseline_seconds = _time_hook(main, plan_review_home)
+
+        markers_dir = plan_review_home / ".claude" / "plan-review-markers"
+        main_hash = hashlib.sha256(str(main.resolve()).encode()).hexdigest()
+        # Half the noise shares the scanned prefix; half sits under an unrelated
+        # repo-hash, so the glob must discriminate rather than scan everything.
+        _seed_markers(markers_dir, f"{main_hash}.", SEEDED_MARKER_COUNT // 2)
+        _seed_markers(markers_dir, "0" * 64 + ".", SEEDED_MARKER_COUNT // 2)
+
+        seeded_seconds = _time_hook(main, plan_review_home)
+
+        allowed = baseline_seconds * MARKER_SCALING_RATIO + MARKER_SCALING_SLACK_SECONDS
+        assert seeded_seconds < allowed, (
+            f"tier-1 read took {seeded_seconds:.3f}s with {SEEDED_MARKER_COUNT} "
+            f"markers vs {baseline_seconds:.3f}s with none — over the allowed "
+            f"{allowed:.3f}s. The read is scaling with marker count, which means "
+            f"it is forking per marker instead of running one grep."
+        )
+
+    def test_worktree_count_does_not_drive_tier_two_cost(self, tmp_path, plan_review_home):
+        """Tier 2 enumerates and hashes every worktree, so its cost is checked
+        against worktree count, not marker count.
+
+        Tier 1 misses for the whole window between authoring a plan and its
+        first clean review, so this path is paid per edit while drafting — the
+        common case, not a rare deny path.
+        """
+        main = _init_repo_with_plan(tmp_path / "main-repo")
+        first_sibling = tmp_path / "sibling-worktree-0"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feature-0", str(first_sibling)],
+            cwd=main, check=True,
+        )
+        (first_sibling / ".claude" / "plans").mkdir(parents=True, exist_ok=True)
+        (first_sibling / ".claude" / "plans" / "impl-plan.md").write_text(PLAN_TEXT)
+        # Review recorded against main only, so the sibling always reaches tier 2.
+        write_plan_review_marker(plan_review_home, main, "tier2-session")
+
+        baseline_seconds = _time_hook(first_sibling, plan_review_home)
+
+        for index in range(1, SEEDED_SIBLING_WORKTREE_COUNT):
+            extra = tmp_path / f"sibling-worktree-{index}"
+            subprocess.run(
+                ["git", "worktree", "add", "-q", "-b", f"feature-{index}", str(extra)],
+                cwd=main, check=True,
+            )
+
+        seeded_seconds = _time_hook(first_sibling, plan_review_home)
+
+        allowed = baseline_seconds * MARKER_SCALING_RATIO + MARKER_SCALING_SLACK_SECONDS
+        assert seeded_seconds < allowed, (
+            f"tier-2 read took {seeded_seconds:.3f}s across "
+            f"{SEEDED_SIBLING_WORKTREE_COUNT} worktrees vs {baseline_seconds:.3f}s "
+            f"across 1 — over the allowed {allowed:.3f}s."
         )

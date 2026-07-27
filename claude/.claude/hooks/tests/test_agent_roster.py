@@ -8,10 +8,11 @@ agent is added to the roster without the required frontmatter or output section.
 from __future__ import annotations
 
 import re
+import subprocess
 
 import pytest
 import yaml
-from helpers import CLAUDE_DIR
+from helpers import CLAUDE_DIR, HOOKS_DIR
 from validate_skill_structure import parse_frontmatter
 
 AGENTS_DIR = CLAUDE_DIR / "agents"
@@ -357,4 +358,108 @@ class TestAgentFrontmatter:
         assert set(NON_REVIEWER_MODELS) == set(NON_REVIEWER_AGENTS), (
             f"NON_REVIEWER_MODELS keys {sorted(NON_REVIEWER_MODELS)} differ from "
             f"NON_REVIEWER_AGENTS {sorted(NON_REVIEWER_AGENTS)}. Keep them in sync."
+        )
+
+
+# Members of _LIB_NO_GATE_RELEASE_AGENTS that are harness built-ins with no
+# agents/*.md file in this repo. Both carry the Skill tool, so their inclusion
+# rests on mandate (they are dispatched read-only) rather than on tool absence,
+# and the frontmatter assertion below cannot apply to them. Enumerated as a
+# closed set so a typo'd or renamed roster entry fails the test rather than
+# silently skipping it.
+HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS = {"Explore", "Plan"}
+
+
+def _no_gate_release_agents() -> list[str]:
+    """Read _LIB_NO_GATE_RELEASE_AGENTS from _lib.sh — the shipping source of truth."""
+    lib = HOOKS_DIR / "_lib.sh"
+    result = subprocess.run(
+        ["bash", "-c", f". {lib}; _lib_no_gate_release_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+class TestNoGateReleaseRosterSync:
+    """The no-gate-release boundary is grounded in the agent roster's tool lists.
+
+    enforce-marker-script-shape.sh denies `marker.sh write` / `activate` to
+    these agents on the stated grounds that none of them can invoke a review
+    skill — they carry no `Skill` tool, so any marker they write asserts a
+    review that could not have happened. That grounding is only as good as the
+    frontmatter it describes, so it is asserted here rather than verified by
+    hand at review time.
+    """
+
+    def test_roster_members_have_agent_files_or_are_named_builtins(self):
+        for name in _no_gate_release_agents():
+            if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
+                continue
+            assert (AGENTS_DIR / f"{name}.md").is_file(), (
+                f"_LIB_NO_GATE_RELEASE_AGENTS names '{name}', but "
+                f"agents/{name}.md does not exist. Either the roster entry is "
+                f"misspelled, or it is a harness built-in that must be added to "
+                f"HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS in this file with a "
+                f"note on why the tools: assertion cannot apply to it."
+            )
+
+    def test_roster_members_do_not_carry_the_skill_tool(self):
+        for name in _no_gate_release_agents():
+            if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
+                continue
+            content = (AGENTS_DIR / f"{name}.md").read_text()
+            tools_match = re.search(r"^tools:\s*(.+)$", content, re.MULTILINE)
+            assert tools_match, f"{name}.md: no 'tools:' line found in frontmatter"
+            declared = {t.strip() for t in tools_match.group(1).split(",")}
+            assert "Skill" not in declared, (
+                f"{name}.md declares the Skill tool, but it is listed in "
+                f"_LIB_NO_GATE_RELEASE_AGENTS — whose deny is justified in "
+                f"enforce-marker-script-shape.sh by these agents being unable to "
+                f"run a review skill at all. Granting Skill here makes that "
+                f"justification false. Either drop Skill from this agent, or "
+                f"remove it from the roster and re-derive the boundary."
+            )
+
+    def test_harness_builtin_exemptions_have_no_agent_file(self):
+        """The exemption list must stay an exemption, not a bypass.
+
+        If an agent file appears for one of these names, the frontmatter
+        assertion becomes applicable and the exemption should be dropped."""
+        for name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
+            assert not (AGENTS_DIR / f"{name}.md").is_file(), (
+                f"agents/{name}.md now exists, so {name} is no longer a harness "
+                f"built-in exemption. Remove it from "
+                f"HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS so its tools: line is checked."
+            )
+
+    def test_exemptions_are_all_roster_members(self):
+        """A stale exemption for an agent no longer on the roster is dead weight."""
+        roster = set(_no_gate_release_agents())
+        stale = HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS - roster
+        assert not stale, (
+            f"HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS names {sorted(stale)}, which "
+            f"is no longer in _LIB_NO_GATE_RELEASE_AGENTS. Drop the stale entry."
+        )
+
+    def test_exemption_set_is_pinned(self):
+        """Tripwire: the exemption set must not grow silently.
+
+        Every other test in this class validates the exemption set against
+        itself — "has no agent file" is true by construction for any name that
+        does not have one yet, so adding a misspelled or fictitious agent to
+        BOTH _LIB_NO_GATE_RELEASE_AGENTS and the exemption set in one diff
+        would skip the frontmatter check with every test still green. There is
+        no independent registry of harness built-ins in this repo to check
+        against, so this pins the contents explicitly instead: growing the
+        exemption set requires editing this assertion, which puts a reviewer in
+        front of the claim that the new name really is a Skill-carrying harness
+        built-in gated by mandate rather than by tool absence.
+        """
+        assert {"Explore", "Plan"} == HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS, (
+            "The harness-built-in exemption set changed. Each member is exempt "
+            "from the no-Skill frontmatter assertion, so adding one removes real "
+            "coverage. Confirm the new name is genuinely a harness built-in with "
+            "no agents/*.md file, then update this assertion deliberately."
         )

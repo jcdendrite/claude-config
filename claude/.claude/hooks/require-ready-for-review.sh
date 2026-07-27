@@ -7,10 +7,9 @@
 # runs cumulative /code-review, syncs PR body, and checks CI before the
 # human reviews. Without enforcement, Claude habitually pushes wrap-up
 # commits straight to a PR without running the gate. Mirrors the
-# require-code-review.sh pattern: marker keyed by session, content matches
-# the artifact about to be published (HEAD SHA, not staged-diff hash —
-# the analogue is the squash-merge artifact reviewers see, not the
-# upcoming commit).
+# require-code-review.sh pattern: the marker's content matches the artifact
+# about to be published (HEAD SHA, not staged-diff hash — the analogue is
+# the squash-merge artifact reviewers see, not the upcoming commit).
 #
 # Two-marker pattern:
 # - Active marker (~/.claude/.ready-for-review-active.d/<session_id>):
@@ -25,6 +24,12 @@
 #   step 7 only when every halt-on-fail step passed. Pushes against the
 #   recorded HEAD are allowed; new commits invalidate the marker
 #   automatically (HEAD moves) and force a re-run.
+#   The <session_id> in the filename is a WRITE-side key only: it keeps
+#   parallel sessions from overwriting each other's markers. The read globs
+#   across it, because the stored HEAD SHA — not the filename — is what
+#   proves the gate ran against this exact artifact. Reading the session key
+#   as an authorization predicate would deny a resumed session (new
+#   session_id) a gate run it already completed at the same HEAD.
 #
 # Bypass cases (allow without checking marker):
 # - Not Bash tool, or not git push / gh pr ready / gh pr review --approve etc.
@@ -160,23 +165,23 @@ if [ -z "$PR_NUMBER" ]; then
   exit 0
 fi
 
-# Completion-marker check.
-if [ -n "$SESSION_ID" ]; then
-  REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-  MARKER="$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
-  if [ -f "$MARKER" ]; then
-    MARKER_HEAD=$(tr -d '[:space:]' < "$MARKER")
-    CURRENT_HEAD=$(cd "$CWD" 2>/dev/null && git rev-parse HEAD 2>/dev/null)
-    if [ -n "$MARKER_HEAD" ] && [ -n "$CURRENT_HEAD" ] && [ "$MARKER_HEAD" = "$CURRENT_HEAD" ]; then
-      exit 0
-    fi
-  fi
+# Completion-marker check. Allow when any marker under this repo-hash holds
+# the current HEAD SHA: the stored SHA is the authorization, since it names
+# the exact artifact the gate ran against. A new commit moves HEAD, so no
+# marker matches and the gate re-arms — that content-addressing is what makes
+# reading across the filename's session key safe.
+# An unresolvable HEAD leaves CURRENT_HEAD empty, which never matches, so a
+# failed rev-parse denies rather than releasing the gate.
+CURRENT_HEAD=$(cd "$CWD" 2>/dev/null && git rev-parse HEAD 2>/dev/null)
+REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+if _lib_marker_value_present "$HOME/.claude/ready-for-review-markers" "$CURRENT_HEAD" "$REPO_HASH."; then
+  exit 0
 fi
 
 # No active marker, no matching completion marker, gh pr view confirmed
 # the branch has an open PR — block.
 if $is_gh_pr_ready; then
-  emit_deny "PR ready-for-review marking blocked by ready-for-review gate: this PR has not been gated by /ready-for-review in THIS session, or HEAD has moved since the gate ran. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
+  emit_deny "PR ready-for-review marking blocked by ready-for-review gate: no /ready-for-review gate run covering the current HEAD was found — either this PR has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
 else
-  emit_deny "Push to a branch with an open PR blocked by ready-for-review gate: this branch's HEAD has not been gated by /ready-for-review in THIS session, or HEAD has moved since the gate ran. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
+  emit_deny "Push to a branch with an open PR blocked by ready-for-review gate: no /ready-for-review gate run covering this branch's current HEAD was found — either this branch has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
 fi

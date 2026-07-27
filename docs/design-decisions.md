@@ -6,9 +6,13 @@ Non-obvious choices and the reasoning behind them. For longer-form writeups with
 
 A CLAUDE.md instruction is advisory: the model reads it, weighs it against context, and can decide that "this change is too trivial to need a review." A PreToolUse hook is a denial: the commit doesn't happen until the condition is met, regardless of what the model thinks about the change's complexity. The model decides advisory rules don't apply on simple changes — it happens reliably, not occasionally. A hook can't be talked out of it; it either finds the marker or it doesn't. The enforcement lives at the tool-call boundary where the model has no agency to override it.
 
-## 2. Per-session marker keyed on diff sha256
+## 2. Content-addressed review markers
 
-The review marker filename is `~/.claude/review-markers/<repo-hash>.<session-id>`. The session-id component prevents two parallel Claude Code sessions running in the same worktree from overwriting each other's markers — each session's marker is its own file, so session A reviewing a diff doesn't clear session B's gate. The sha256 is taken from the staged diff at the time `/code-review` runs; the hook recomputes the sha256 at commit time and compares. If even one line has been re-staged since the review ran, the sha256 doesn't match and the gate fires again — no manual invalidation needed, no timer to expire, no way to accidentally commit a diff that wasn't reviewed.
+A marker's *content* — not its filename, and not its mere existence — is what authorizes a gate to open. The sha256 is taken from the staged diff at the time `/code-review` runs; the hook recomputes the sha256 at commit time and compares. If even one line has been re-staged since the review ran, the sha256 doesn't match and the gate fires again — no manual invalidation needed, no timer to expire, no way to accidentally commit a diff that wasn't reviewed.
+
+That content-addressing is what makes the filename a pure implementation detail. The marker lives at `~/.claude/review-markers/<repo-hash>.<session-id>`, where the session-id component exists so two parallel Claude Code sessions in the same worktree don't overwrite each other's markers — a write-side concern. Reading it back as an *authorization* predicate was a mistake worth naming: it narrowed the gate to "this session reviewed this state" when the property the gate wants is "this state has been reviewed," so a session resumed under a new id was denied a review it had genuinely completed. The gate now matches on content across every session suffix under the repo-hash. The repo-hash stays part of the read, because an identical diff in an unrelated repository was reviewed against different code.
+
+The same reasoning generalizes past `/code-review`: `/plan-review` hashes the active plan set, `/ready-for-review` stores the gated HEAD sha, `/skill-review` hashes the SKILL.md-scoped diff. For the read semantics each gate applies, and for the separate question of *who* may write a marker at all, see [`hooks.md` — Marker keying and gate-release authority](hooks.md#marker-keying-and-gate-release-authority).
 
 ## 3. Specialist reviewer roster (8 personas)
 

@@ -360,15 +360,74 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
-    def test_other_sessions_completion_marker_does_not_authorize(
+    def test_other_sessions_completion_marker_authorizes_at_same_head(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
-        """Per-session keying: A's completion marker must NOT authorize B's
-        push, even with the same HEAD SHA."""
+        """A's completion marker authorizes B's push at the same HEAD SHA.
+
+        The stored SHA names the exact artifact the gate ran against, so it is
+        the authorization; the filename's session suffix only keeps parallel
+        sessions from overwriting each other's markers."""
         head = head_sha(repo_on_feature_branch)
         marker_a = rfr_completion_marker(isolated_home, repo_on_feature_branch, "A")
         marker_a.parent.mkdir(parents=True, exist_ok=True)
         marker_a.write_text(head + "\n")
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="B"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    def test_other_sessions_completion_marker_does_not_authorize_moved_head(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """The negative half: acceptance is by HEAD SHA, not by marker existence.
+
+        A new commit moves HEAD past what the gate actually reviewed, so the
+        marker must stop authorizing — otherwise dropping the session key would
+        degrade the gate to an existence check."""
+        marker_a = rfr_completion_marker(isolated_home, repo_on_feature_branch, "A")
+        marker_a.parent.mkdir(parents=True, exist_ok=True)
+        marker_a.write_text(head_sha(repo_on_feature_branch) + "\n")
+
+        (repo_on_feature_branch / "after_gate.py").write_text("print('ungated')\n")
+        subprocess.run(["git", "add", "after_gate.py"], cwd=repo_on_feature_branch, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "commit after the gate ran"],
+            cwd=repo_on_feature_branch, check=True,
+        )
+
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="B"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_marker_under_another_repo_hash_does_not_authorize(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, tmp_path
+    ):
+        """The repo-hash prefix stays part of the read predicate.
+
+        Only the session suffix is globbed. All four gates share this read
+        shape, so this invariant is pinned per-gate rather than once — a change
+        that widens the glob for this hook alone must fail here."""
+        other_repo = tmp_path / "other-repo"
+        other_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
+
+        # Correct HEAD sha, filed under the other repo's hash prefix.
+        decoy = rfr_completion_marker(isolated_home, other_repo, "A")
+        decoy.parent.mkdir(parents=True, exist_ok=True)
+        decoy.write_text(head_sha(repo_on_feature_branch) + "\n")
+
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -381,8 +440,11 @@ class TestRequireReadyForReview:
     def test_no_session_id_denies_when_pr_exists(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
-        """Without session_id in the hook payload, no per-session marker can
-        be keyed — deny when a PR exists."""
+        """Fail-closed: no session_id and no gate run covering HEAD → deny.
+
+        session_id is needed only for the active-bypass marker; the completion
+        read no longer consults it. This pins that an unparseable payload still
+        denies rather than becoming an allow path."""
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,

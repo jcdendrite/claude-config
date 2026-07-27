@@ -96,9 +96,78 @@ _lib_parse_tool_input_or_deny() {
 # Compute the marker repo-hash for an absolute repo-toplevel path.
 # Input must have no trailing newline -- printf '%s' omits one, so the SHA
 # covers exactly the bytes of $1.
+# This binds PATH identity, not REPOSITORY identity: it digests the toplevel
+# path string, not the initial commit, remote URL, or .git inode. A worktree
+# removed and later replaced by an unrelated repository at the same absolute
+# path inherits the old path's markers. Harmless today (a stale marker still
+# has to match the content hash to authorize anything), but do not read this
+# hash as proof that two markers came from the same repository.
 # Usage: hash=$(_marker_lib_repo_hash "$REPO_ROOT")
 _marker_lib_repo_hash() {
   printf '%s' "$1" | sha256sum | awk '{print $1}'
+}
+
+# _lib_marker_value_present MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX...
+# Returns 0 (true) iff some file in MARKERS_DIR whose name begins with one of
+# the supplied prefixes holds EXPECTED_VALUE as a whole line.
+#
+# Completion markers are content-addressed: the stored value is a hash of
+# exactly the state that was reviewed. That content is the authorization, so
+# the read asks "has this state been reviewed?" rather than "did this filename
+# review it?" — the filename keys only namespace concurrent writers apart.
+#
+# One `grep` process regardless of marker count. Marker directories are
+# unbounded and already hold thousands of entries, so a per-file `cat` loop
+# would put a fork count proportional to review history on a hook that fires
+# on every Write/Edit.
+#
+# `-x` (whole-line) is load-bearing, not stylistic: with a bare `-F` a stored
+# value that merely CONTAINS the expected hash — a truncated write, or a
+# longer digest sharing this one as a prefix — would falsely release the gate.
+#
+# `nullglob` is equally load-bearing. Bash's default expands a zero-match
+# pattern to the literal, unexpanded pattern string, which grep then tries to
+# open as a real path and fails on (exit 2) — and "no marker exists yet for
+# this prefix" is the single most common call, so the default behavior would
+# misreport the common case as an error rather than as a clean not-found.
+# The shopt state is saved and restored so callers that rely on the default
+# glob behavior elsewhere are unaffected.
+_lib_marker_value_present() {
+  local markers_dir="$1" expected_value="$2"
+  shift 2
+  [ -n "$markers_dir" ] || return 1
+  [ -n "$expected_value" ] || return 1
+  [ -d "$markers_dir" ] || return 1
+  [ "$#" -gt 0 ] || return 1
+
+  local nullglob_was_set=0
+  if shopt -q nullglob; then nullglob_was_set=1; fi
+  shopt -s nullglob
+  local -a marker_files=()
+  local prefix
+  for prefix in "$@"; do
+    [ -n "$prefix" ] || continue
+    marker_files+=("$markers_dir/$prefix"*)
+  done
+  if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
+
+  [ "${#marker_files[@]}" -gt 0 ] || return 1
+  # -e pins EXPECTED_VALUE as the pattern even if it begins with a dash; the
+  # stderr redirect swallows the "Is a directory" noise a stray subdirectory
+  # under MARKERS_DIR would otherwise produce.
+  #
+  # SCALE BOUNDARY: the matched files become one argv, so a single prefix
+  # holding roughly 13k-30k markers (host-dependent; ARG_MAX bounded by the
+  # stack rlimit) makes grep fail to exec with E2BIG. That is a nonzero exit,
+  # which every call site reads as "no matching marker" — so it fails CLOSED,
+  # denying rather than releasing. Completion markers are never pruned today
+  # (marker.sh clear-stale only evicts active-bypass markers), so the ceiling
+  # is reachable by unattended growth. Whoever adds marker retention should
+  # remove this note; until then a wedged gate at that scale is a deny with no
+  # diagnostic, and manual pruning of ~/.claude/*-markers/ is the workaround.
+  # A flat glob (not `grep -r`) is deliberate: recursion would let a file
+  # nested in a stray subdirectory authorize a gate.
+  grep -qFx -e "$expected_value" -- "${marker_files[@]}" 2>/dev/null
 }
 
 # Compute a content-addressed hash of the "active" plan file set in a
@@ -475,6 +544,45 @@ _lib_is_review_only_agent() {
   [ -n "$agent_type" ] || return 1
   local candidate
   for candidate in "${_LIB_REVIEW_ONLY_AGENTS[@]}"; do
+    [ "$agent_type" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+# Agent identities that may never release a review gate — every review-only
+# persona above, plus the code-writer implementer. Sourced by
+# enforce-marker-script-shape.sh to deny `marker.sh write` and
+# `marker.sh activate` from these callers.
+#
+# The boundary is grounded in the agent roster's own tool lists: none of these
+# identities carries the `Skill` tool, so none of them can invoke a review
+# skill at all, and any marker write from one is necessarily unearned rather
+# than merely unusual. test_agent_roster.py asserts that property mechanically
+# against agents/*.md frontmatter, so adding a `Skill`-carrying agent here (or
+# granting `Skill` to one already listed) fails a test rather than silently
+# widening what a subagent can release.
+#
+# Derived from _LIB_REVIEW_ONLY_AGENTS rather than re-enumerated, so a persona
+# added there is covered here automatically. `general-purpose` and `claude`
+# carry the full tool set and can genuinely run a review skill, so they are
+# deliberately absent — that is the documented delegation escape hatch.
+_LIB_NO_GATE_RELEASE_AGENTS=(
+  "${_LIB_REVIEW_ONLY_AGENTS[@]}"
+  code-writer
+)
+_lib_no_gate_release_agents() {
+  printf '%s\n' "${_LIB_NO_GATE_RELEASE_AGENTS[@]}"
+}
+
+# _lib_is_no_gate_release_agent AGENT_TYPE
+# Returns 0 (true) iff AGENT_TYPE exactly matches an entry in
+# _LIB_NO_GATE_RELEASE_AGENTS. Empty input (agent_type absent from the
+# PreToolUse payload, e.g. the main session) never matches.
+_lib_is_no_gate_release_agent() {
+  local agent_type="$1"
+  [ -n "$agent_type" ] || return 1
+  local candidate
+  for candidate in "${_LIB_NO_GATE_RELEASE_AGENTS[@]}"; do
     [ "$agent_type" = "$candidate" ] && return 0
   done
   return 1

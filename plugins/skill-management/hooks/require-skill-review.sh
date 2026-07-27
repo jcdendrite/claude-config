@@ -14,16 +14,17 @@
 #   of `git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'` when the review
 #   is clean. The marker lives under $HOME (not inside the repo) so it never
 #   pollutes `git status` or risks being accidentally committed.
-# - This hook reads session_id from its JSON payload, recomputes the same
-#   path-scoped diff hash at commit time, and compares against THIS session's
-#   marker. Match = the staged skill changes were reviewed by this session,
-#   allow the commit. Mismatch/missing = deny and redirect Claude to run
-#   /skill-review.
-# - Per-session keying (vs. a singleton path keyed only by repo-hash)
-#   prevents two parallel sessions in the same worktree from overwriting
-#   each other's markers when they stage different diffs. Each session
-#   writes its own marker; the gate checks the calling session's marker
-#   specifically.
+# - This hook recomputes the same path-scoped diff hash at commit time and
+#   looks for any marker under this repo-hash holding that value. Match =
+#   the staged skill changes were reviewed, allow the commit. Mismatch/missing
+#   = deny and redirect Claude to run /skill-review.
+# - The <session_id> in the filename is a WRITE-side key only: it prevents
+#   two parallel sessions in the same worktree from overwriting each other's
+#   markers when they stage different diffs. The read globs across it,
+#   because the stored hash — not the filename — is what proves the review
+#   covered this diff. Reading the session key as an authorization predicate
+#   would deny a resumed session (new session_id) a review it already
+#   completed against the identical staged state.
 # - The marker is scoped to SKILL.md diffs only (not the full staged diff),
 #   so re-staging non-SKILL.md files after a clean skill-review does not
 #   invalidate the marker.
@@ -172,20 +173,15 @@ if _lib_chains_marker_write_before_commit "$COMMAND" skill-review; then
 fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 CURRENT_HASH=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
 
-# Empty session_id (older Claude Code versions or payload-schema drift) can't
-# key a per-session marker — fall through to deny.
-if [ -n "$SESSION_ID" ]; then
-  MARKER="$HOME/.claude/skill-review-markers/$REPO_HASH.$SESSION_ID"
-  if [ -f "$MARKER" ]; then
-    MARKER_HASH=$(tr -d '[:space:]' < "$MARKER")
-    if [ "$MARKER_HASH" = "$CURRENT_HASH" ]; then
-      # Marker hash matches currently staged skill diff — review is current, allow.
-      exit 0
-    fi
-  fi
+# Allow when any marker under this repo-hash holds the currently staged skill
+# diff's hash. The stored hash is the authorization — it proves a review
+# covered exactly this diff — so the question is "has this diff been
+# reviewed?", not "did this session review it?". An empty CURRENT_HASH
+# (sha256sum unavailable) never matches, so a hashing failure denies.
+if _lib_marker_value_present "$HOME/.claude/skill-review-markers" "$CURRENT_HASH" "$REPO_HASH."; then
+  exit 0
 fi
 
 # No marker, or marker hash does not match the current staged skill state.

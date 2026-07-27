@@ -26,11 +26,15 @@ _PLUGIN_LIB = _PLUGINS_DIR / "skill-management" / "hooks" / "_lib.sh"
 _STOWED_LIB = HOOKS_DIR / "_lib.sh"
 
 
-def _stage_skill_change(git_repo):
-    """Stage a SKILL.md change so the hook has a non-empty skill diff to check."""
+def _stage_skill_change(git_repo, body: str = ""):
+    """Stage a SKILL.md change so the hook has a non-empty skill diff to check.
+
+    `body` appends extra content, so a second call stages a diff with a
+    different hash than the first.
+    """
     skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
     skill_file.parent.mkdir(parents=True, exist_ok=True)
-    skill_file.write_text("## test skill\n")
+    skill_file.write_text("## test skill\n" + body)
     subprocess.run(
         ["git", "add", str(skill_file.relative_to(git_repo))],
         cwd=git_repo,
@@ -166,19 +170,30 @@ class TestRequireSkillReview:
             == "allow"
         )
 
-    def test_other_sessions_marker_does_not_authorize_commit(self, isolated_home, git_repo):
-        """Regression: session A's marker must NOT authorize session B's
-        commit, even when B's staged diff has the same hash as A's reviewed
-        diff. The gate's bypass requires THIS session's marker — review is
-        per-session, not per-diff.
+    def test_other_sessions_marker_authorizes_identical_staged_diff(self, isolated_home, git_repo):
+        """Session A's marker authorizes session B's commit of the identical diff.
 
-        This is the load-bearing safety property of session-keyed markers.
-        Without it, a future refactor that "simplifies" by accepting any
-        matching hash would silently re-introduce cross-session leakage,
-        the failure mode that motivated this design."""
+        The marker's stored hash proves a review covered exactly this staged
+        skill diff; the filename's session suffix only keeps parallel sessions
+        from overwriting each other's markers. Keying the read on it denies a
+        resumed session (new session_id) a review it already completed."""
         _stage_skill_change(git_repo)
         write_skill_review_marker(isolated_home, git_repo, session_id="session-A")
-        # Session B's commit, same staged diff, but B has no marker.
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id="session-B"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_other_sessions_marker_does_not_authorize_a_changed_diff(self, isolated_home, git_repo):
+        """The negative half: acceptance is by diff hash, not by marker existence."""
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo, session_id="session-A")
+        # Stage a further skill change the recorded hash cannot describe.
+        _stage_skill_change(git_repo, body="\n\nAn unreviewed addition.\n")
         assert (
             run_hook(
                 SKILL_REVIEW_HOOK,
@@ -188,16 +203,59 @@ class TestRequireSkillReview:
             == "deny"
         )
 
-    def test_no_session_id_in_input_denies(self, isolated_home, git_repo):
-        """Without session_id in the hook payload, no per-session marker can
-        be keyed — deny even if a marker file happens to exist on disk.
-        Older Claude Code versions or payload-schema drift land here; the
-        gate fail-closes rather than silently bypassing."""
+    def test_no_session_id_in_input_reads_marker(self, isolated_home, git_repo):
+        """A payload with no session_id still finds a marker covering this diff.
+
+        This gate reads no session-scoped state at all, so a payload that
+        cannot be session-keyed is not thereby unreviewed."""
         _stage_skill_change(git_repo)
         write_skill_review_marker(isolated_home, git_repo)
         # bash_input() with session_id=None omits the field entirely.
         assert (
             run_hook(SKILL_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo)
+            == "allow"
+        )
+
+    def test_no_session_id_and_no_matching_marker_denies(self, isolated_home, git_repo):
+        """Fail-closed still holds: no session_id and no covering review → deny."""
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(SKILL_REVIEW_HOOK, bash_input("git commit -m foo"), cwd=git_repo)
+            == "deny"
+        )
+
+    def test_marker_under_another_repo_hash_does_not_authorize(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The repo-hash prefix stays part of the read predicate.
+
+        Only the session suffix is globbed. All four gates share this read
+        shape, so this invariant is pinned per-gate rather than once — a change
+        that widens the glob for this hook alone must fail here."""
+        _stage_skill_change(git_repo)
+        other_repo = tmp_path / "other-repo"
+        other_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
+
+        # Produce the correct marker value, then relocate it under the other
+        # repo's hash prefix so only the prefix differs.
+        write_skill_review_marker(isolated_home, git_repo, "s")
+        correct_marker = skill_review_marker_path(isolated_home, git_repo, "s")
+        correct_value = correct_marker.read_text()
+        correct_marker.unlink()
+
+        decoy = skill_review_marker_path(isolated_home, other_repo, "s")
+        decoy.parent.mkdir(parents=True, exist_ok=True)
+        decoy.write_text(correct_value)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id="s"),
+                cwd=git_repo,
+            )
             == "deny"
         )
 
