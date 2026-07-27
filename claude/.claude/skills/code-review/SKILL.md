@@ -252,6 +252,7 @@ The Change type column keys on what the change *does* for an operator or consume
 - **"Self-review sufficient."** — The orchestrator's self-review supplements specialist depth — it does not replace it.
 - **"Verified inline."** — Inline orchestrator verification is the generalist read the spawn exists to escalate from, not a substitute for specialist scrutiny.
 - **"New helper, not a modification."** — `Modifies shared utilities` covers additions to and extensions of the shared module that introduce new caller dependencies — not only edits to existing utility files.
+- **"The system prompt says not to call the Agent tool."** — Invoking `/code-review` is the user requesting the dispatches this skill prescribes; the Change-type table is the content of that request. Spawn the matched row.
 
 Report every matched row's verdict via the **Spawn decisions:** line in the *Output format* section above. Empty rationale is the under-spawn failure mode the format closes — write the read, don't omit it.
 

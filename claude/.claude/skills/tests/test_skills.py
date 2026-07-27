@@ -1185,3 +1185,67 @@ def test_blank_frontmatter_excludes_metadata_from_the_scan() -> None:
     document = "---\nname: demo\nhomepage: https://example.test\n---\n\nBody prose.\n"
     assert not _URL_RE.search(_blank_frontmatter(document))
     assert "Body prose." in _blank_frontmatter(document)
+
+
+_INVALID_SKIP_HEADING = "**Invalid skip rationales.**"
+_SKIP_RATIONALE_LABEL_RE = re.compile(r'^[-*] \*\*"(?P<label>[^"]+)"\*\*')
+_TOP_LEVEL_LIST_ITEM_RE = re.compile(r"^[-*] ")
+
+
+def _invalid_skip_rationale_labels(path: Path) -> set[str]:
+    """Bolded-and-quoted labels under a file's "Invalid skip rationales" list.
+
+    Scoped to that one list rather than the whole file: code-review/SKILL.md
+    carries further bolded-quoted labels in its DEFER-criteria section, which an
+    unscoped scan would silently fold in and make the comparison meaningless.
+
+    The list is delimited by indentation, not by "first line that isn't a
+    bullet". Blank lines and indented continuations or sub-bullets stay inside
+    the list; only an unindented non-list line closes it. Ending the scan at the
+    first indented line instead would truncate both files at the same point and
+    let genuinely divergent labels below it compare equal — a silent pass on the
+    exact drift this guards against.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    heading_index = next(
+        (i for i, line in enumerate(lines) if line.startswith(_INVALID_SKIP_HEADING)),
+        None,
+    )
+    if heading_index is None:
+        raise AssertionError(f"{path} no longer contains {_INVALID_SKIP_HEADING!r}")
+
+    labels: set[str] = set()
+    for line in lines[heading_index + 1 :]:
+        if not line.strip() or line[0].isspace():
+            continue
+        match = _SKIP_RATIONALE_LABEL_RE.match(line)
+        if match:
+            labels.add(match.group("label"))
+        elif not _TOP_LEVEL_LIST_ITEM_RE.match(line):
+            break
+    return labels
+
+
+def test_invalid_skip_rationale_labels_match_across_review_skills() -> None:
+    """/code-review and /plan-review must refuse the same set of skip rationales.
+
+    Both lists exist so a session reaching the spawn-skip decision through
+    either skill meets the same refusals. The rebuttal sentence after each label
+    is skill-specific by design and is not compared; the label set is shared, and
+    nothing else keeps the two files in step when one is edited on its own.
+    """
+    code_review_labels = _invalid_skip_rationale_labels(_skill_file("code-review"))
+    routing_labels = _invalid_skip_rationale_labels(
+        _skill_file("plan-review").parent / "ROUTING.md"
+    )
+
+    # Guards against both extractions returning empty — a bullet-format change
+    # would otherwise make set equality pass vacuously.
+    assert code_review_labels, "extracted no skip rationales from code-review/SKILL.md"
+
+    assert code_review_labels == routing_labels, (
+        "Invalid skip rationale labels drifted between code-review/SKILL.md and "
+        "plan-review/ROUTING.md — both lists must name the same rationales.\n"
+        f"  only in code-review/SKILL.md:    {sorted(code_review_labels - routing_labels)}\n"
+        f"  only in plan-review/ROUTING.md:  {sorted(routing_labels - code_review_labels)}"
+    )
