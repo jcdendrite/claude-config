@@ -73,10 +73,12 @@ Steps the prior agent flagged as irreversible or shared-state — do not execute
 ## §4 Files modified this session
 Header line: working directory + current git branch. Then list paths edited this session and their state (staged / unstaged / committed). Include the most recent uncommitted work.
 
-## §5 Active gates / markers
-List active markers under `~/.claude/*-markers/` and `~/.claude/.*-active.d/` — filenames, which skill wrote each, and (for completion markers) the staged-diff hash the marker covers.
+## §5 Gates / markers
+List markers under `~/.claude/*-markers/` and `~/.claude/.*-active.d/` — filenames, which skill wrote each, and for completion markers, the state whose hash it stores. Each skill hashes the state it reviewed: staged diff for `/code-review` and `/skill-review`, active plan set for `/plan-review`, HEAD SHA for `/ready-for-review`.
 
-A completion marker stays valid past the session boundary, but only while the state it covers is unchanged — staging any further change invalidates it. Finished work left uncommitted therefore reaches the resuming session one incidental edit away from a full re-review; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
+A completion marker stays valid past the session boundary, but only while the state it covers is unchanged — any further change to that state invalidates it. Finished work left uncommitted therefore reaches the resuming session one incidental edit away from a full re-review; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
+
+Committing can also disarm a gate outright rather than invalidating its marker: `/plan-review`'s gate arms only on an uncommitted or modified plan file, so committing the plan leaves its marker on disk gating nothing and unable to match again. Label such a marker historical. An unlabelled marker reads to the resuming session as load-bearing.
 
 ## §6 Open questions / decisions deferred
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.
@@ -118,6 +120,7 @@ Before writing the file, verify:
 - If the handoff reason is context-limit, §2.5 names what was mid-flight at the time of the handoff
 - §2.6 is populated — a faithful task-list serialization with per-item ordinal, status, and blocking edges, or "None." — and carries the resume directive
 - §5 is reconciled: finished work a live completion marker covers is committed before this file is written; where it is not, §3 names the review skill the resuming session must re-run to commit it
+- Every §5 marker is labelled live or historical — a marker whose covered state was committed or superseded is not listed as if it still gates
 - If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `pr-description` skill before writing this file
 - Load-bearing claims in §2/§3/§6 carry a confidence tag — `[engineer-confirmed]`, `[verified: <evidence>]` (the command run, file read, or test output that established it), or `[assumed]` — so the resuming session re-verifies only what was never verified
 - Every §3 step has been re-checked against the §3.5 categorization rule: a step matching any §3.5 anchor shape is mis-bucketed — move it to §3.5 (bulk deletes include removing many branches or worktrees in one command). A cited justification ("per repo convention", "per memory") does not downgrade a step's irreversibility; a step claiming a convention names the file that states it
