@@ -130,6 +130,104 @@ class TestRequireRespondPr:
         allowed, bounding PATTERN_ISSUE_WRITE_CMD from the other side."""
         assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
 
+    # -- Flags interposed between the subcommand root and the write verb -----
+    # `-R`/`--repo` is an inherited flag on `gh pr` and `gh issue`, so it is
+    # valid syntax to place it before the write verb rather than after it:
+    # `gh pr --repo o/r comment 5` resolves to the same command as
+    # `gh pr comment 5 --repo o/r`. Both orderings must gate identically.
+    #
+    # These deny for every repo, same or cross: the cross-repo release is
+    # reads-only, so naming another repo never turns a write into a read.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr --repo other/repo comment 5 --body hi",
+            "gh pr -R other/repo comment 5 --body hi",
+            "gh pr --repo=other/repo comment 5 --body hi",
+            "gh pr --repo other/repo review 5 --approve",
+            "gh issue --repo other/repo comment 5 --body hi",
+            "gh issue -R other/repo comment 5 --body hi",
+            # Same repo as origin -- nothing about the flag's position may
+            # release the gate's own current-repo case.
+            "gh pr -R foo/bar comment 5 --body hi",
+            "gh issue -R foo/bar comment 5 --body hi",
+            # Root position: ahead of the `pr`/`issue` token, not just ahead
+            # of the verb. gh dispatches the write from here too.
+            "gh --repo other/repo pr comment 5 --body hi",
+            "gh -R other/repo pr comment 5 --body hi",
+            "gh --repo other/repo issue comment 5 --body hi",
+            "gh -R foo/bar pr review 5 --approve",
+            # Glued short-flag value, no separator at all.
+            "gh pr -Rother/repo comment 5 --body hi",
+            "gh -Rother/repo pr comment 5 --body hi",
+            "gh issue -Rfoo/bar comment 5 --body hi",
+        ],
+    )
+    def test_interposed_flag_before_write_verb_denied(
+        self, isolated_home, current_repo_foo_bar, command
+    ):
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr --repo other/repo view 5",
+            "gh pr -R other/repo list",
+            "gh issue --repo other/repo list",
+        ],
+    )
+    def test_interposed_flag_before_read_verb_allowed(
+        self, isolated_home, current_repo_foo_bar, command
+    ):
+        """Interposing the flag must not by itself trip the write arm.
+
+        Holds at any tolerance width, including none -- these carry no
+        `comment`/`review` token to reach. Kept as the read-side companion to
+        the deny group above, not as a bound on how wide the span is; the two
+        groups below are what pin the width.
+        """
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr list --search comment is:open",
+            "gh pr list --search review",
+            "gh issue list --search comment",
+        ],
+    )
+    def test_flag_tolerance_does_not_span_a_positional(
+        self, isolated_home, current_repo_foo_bar, command
+    ):
+        """Bounds the tolerated span from above.
+
+        Widening it to arbitrary text -- e.g. the `[^|&;]*` the `api` arms use
+        -- flips every one of these to deny, since each carries the bare word
+        `comment` or `review` after a non-flag positional.
+        """
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr -R review view 5",
+            "gh pr --repo comment view 5",
+            "gh issue -R comment view 5",
+        ],
+    )
+    def test_flag_value_equal_to_write_verb_allowed(
+        self, isolated_home, current_repo_foo_bar, command
+    ):
+        """Bounds the tolerated span from below -- the flag's value is required.
+
+        With the value optional, the engine may decline to consume it and match
+        the value itself as the write verb, denying these reads. Nothing
+        security-relevant escapes either way (an over-deny is the safe
+        direction), but a gate that blocks ordinary reads gets worked around.
+        """
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
+
     # -- Case-insensitive mutating-method matching ---------------------------
     # `gh` normalizes -X/--method before sending, so a lowercase or
     # mixed-case spelling issues the same real write as the uppercase form
@@ -339,10 +437,37 @@ class TestRequireRespondPr:
             "gh api repos/other/repo/pulls/5/comments",
             "gh api repos/other/repo/pulls/5/reviews",
             "gh api repos/other/repo/issues/5/comments",
+            # Single-comment URL shape, the arm the numbered-URL cases above
+            # do not reach. Its deny cases all carry a write flag, so without
+            # this the arm has no read-side assertion and a future change to
+            # the cross-repo extraction could start denying external reads
+            # through it unnoticed.
+            "gh api repos/other/repo/pulls/comments/12345",
+            "gh api repos/other/repo/issues/comments/12345",
         ],
     )
     def test_cross_repo_reads_allowed(self, isolated_home, current_repo_foo_bar, command):
         assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api repos/other/repo/issues/5/comments --input reply.json",
+            "gh api repos/other/repo/pulls/5/comments --input=reply.json",
+            "gh api repos/other/repo/issues/comments/12345 --input reply.json",
+        ],
+    )
+    def test_cross_repo_file_sourced_rest_body_denied(
+        self, isolated_home, current_repo_foo_bar, command
+    ):
+        """Isolates the file-sourced-body write signal on a REST endpoint.
+
+        A body read from a file is a body whatever the endpoint, but there is
+        no `-X` and no field flag here, so this shape reads as a fieldless GET
+        to every other signal. Re-scoping the signal to `graphql` alone flips
+        all three of these to allow -- verified by ablation, not assumed.
+        """
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "deny"
 
     # The bypass releases reads only. Research on an external repo is a read; a
     # write to one still owes the [Claude Code] attribution prefix, because that

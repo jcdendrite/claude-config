@@ -91,7 +91,7 @@ fi
 # Bypass: fresh marker for THIS session's session_id means we're inside the
 # skill and should let its own gh commands through. Empty session_id (older
 # Claude Code versions, payload-schema drift) falls through to the gate.
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
+SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 if [ -n "$SESSION_ID" ]; then
   MARKER="$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
   if [ -f "$MARKER" ]; then
@@ -186,10 +186,31 @@ COMMAND_FLAT=${COMMAND_UNWRAPPED//$'\n'/ }
 # after `api`. Requiring the two literally adjacent would miss that shape
 # and fall through to allow, since no other arm matches a bare `graphql`
 # positional.
+#
+# `gh pr` and `gh issue` need the same tolerance for the same reason, but not
+# the same expression. `gh` accepts `-R`/`--repo` anywhere ahead of the verb —
+# `gh --repo o/r pr comment N`, `gh pr --repo o/r comment N`, and
+# `gh pr comment N --repo o/r` all dispatch the same write — so requiring the
+# verb adjacent to `pr`/`issue` misses the first two, and a missed arm allows.
+# Hence the run appears twice below, once in each position the flag can take.
+# All three spellings of its value are accepted: separated, `=`-joined, and
+# glued short-form (`-Ro/r`).
+#
+# The tolerated span is that one flag and its value, not arbitrary text.
+# `[^|&;]*` is safe after `api`, whose target is a distinctive URL or the
+# literal `graphql`; it is not safe here, because `comment` and `review` are
+# ordinary words that appear in search strings and titles, so an unbounded
+# span would deny `gh pr list --search comment`. The value is required rather
+# than optional for the same reason in miniature: with it optional, the regex
+# engine may decline to consume the flag's value and match the value itself
+# as the verb, so `gh pr -R review view 5` — a read — would deny. The
+# separator stays optional only because a glued value has none; a space after
+# the flag still forces the following token to be read as the value.
+PATTERN_REPO_FLAG_RUN='((-R|--repo)([[:space:]]+|=)?[^[:space:]]+[[:space:]]+)*'
 PATTERN_REST_NUMBERED='gh[[:space:]]+api[[:space:]]+[^|&;]*(pulls|issues)/[0-9]+/(comments|reviews)'
 PATTERN_REST_COMMENT_ID='gh[[:space:]]+api[[:space:]]+[^|&;]*repos/[^/[:space:]]+/[^/[:space:]]+/(pulls|issues)/comments/[0-9]+'
-PATTERN_PR_WRITE_CMD='gh[[:space:]]+pr[[:space:]]+(comment|review)([[:space:]]|$)'
-PATTERN_ISSUE_WRITE_CMD='gh[[:space:]]+issue[[:space:]]+comment([[:space:]]|$)'
+PATTERN_PR_WRITE_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'pr[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'(comment|review)([[:space:]]|$)'
+PATTERN_ISSUE_WRITE_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'issue[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'comment([[:space:]]|$)'
 PATTERN_GRAPHQL_MUTATION='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*(add|update|delete|submit)[A-Za-z]*(Comment|Review)'
 PATTERN_GRAPHQL_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*(query=@|--input([[:space:]]|=))'
 PATTERN_ANY_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*(query=@|--input([[:space:]]|=))'
