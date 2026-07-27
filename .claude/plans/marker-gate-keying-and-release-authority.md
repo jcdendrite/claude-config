@@ -73,6 +73,16 @@ content (whitespace-stripped) equal to `<expected-value>`. Implemented as a
 single `grep -lFx` over the globbed set rather than a per-file `cat` loop, so
 process count stays constant regardless of marker count.
 
+**The glob must be `nullglob`-safe.** Bash's default glob behavior expands a
+zero-match `<repo-hash>.*` to the literal, unexpanded pattern string, which
+`grep` then tries to open as a real path and fails with "no such file"
+(exit 2) rather than "ran, found nothing" (exit 1) — and "no marker exists yet
+for this repo-hash" is the single most common call (first-ever review, or any
+repo with no prior marker), so a naive implementation misclassifies the common
+case as an error. Set `shopt -s nullglob` for the glob expansion (portable to
+bash 3.2+, no GNU/BSD divergence) or pre-check for an empty match set before
+invoking `grep`.
+
 Applied per gate:
 
 | Gate | Read glob after change | Session key | Repo key |
@@ -108,6 +118,17 @@ Enumerating the current repository's own worktree roots via
 `git worktree list --porcelain`, hashing each, and globbing that bounded set
 closes #426 with no cross-repo exposure. This is the lighter primitive that
 satisfies the requirement; the wider read is not needed to get it.
+
+**What the sibling-worktree scan actually authorizes, named explicitly.** The
+scan validates content-identity of the plan text (the active-plan-set hash
+matches some sibling worktree's marker), not state-identity of that sibling's
+full checkout. Two worktrees on divergent branches that happen to hold
+byte-identical plan files (a shared template, or a coincidentally identical
+plan) would cross-validate even though the review in one never assessed the
+other's actual HEAD. This is bounded to same-repo worktrees, so it is not a
+new external-attacker surface, but it is a broader acceptance than "the #426
+repro" alone — noted here so a future reader doesn't read the glob as a
+stronger state guarantee than it provides.
 
 **Divergence from #426's own proposed fix, stated for the reviewer.** The issue
 proposes content-keying "while keeping the session-scoping guarantee."
@@ -161,6 +182,16 @@ live Claude PID, which the gate honors for all `Write`/`Edit` with no hash
 comparison and no review whatsoever. The reported incident used `write`, which
 at least carries a hash. Gating only `write` would leave the stronger bypass
 open. `deactivate` and `clear-stale` are not gated — they only re-arm gates.
+
+**`deactivate`'s narrow blast radius, noted for completeness.** A
+mandate-scoped subagent can still call `marker.sh deactivate plan-review`,
+which resolves `session_id` via the same ancestor walk and clears the
+*parent* session's active-bypass marker. This is directionally safe — it
+re-arms a gate rather than releasing one — but it is still a narrow-mandate
+agent mutating the parent's review-in-progress state, which could disrupt a
+live `/plan-review` run outside its own turn. Not gated by this change; worth
+one line in the hook comment alongside the existing `deactivate`/`clear-stale`
+rationale.
 
 ### Prose
 
@@ -239,22 +270,34 @@ Ordered so each step leaves the tree green. Steps 1–2 are the shared
 foundation; 3–6 are independent per-gate applications; 7–9 close out.
 
 1. **`claude/.claude/hooks/_lib.sh`** — add `_lib_marker_value_present`
-   (single `grep -lFx` over globbed prefixes; return non-zero on absent
-   directory or no match). Add `_LIB_NO_GATE_RELEASE_AGENTS` and
+   (single `grep -lFx` over globbed prefixes, `shopt -s nullglob`'d so a
+   zero-match glob returns "not found" rather than a grep error on a literal
+   pattern string; return non-zero on absent directory or no match). Add
+   `_LIB_NO_GATE_RELEASE_AGENTS` and
    `_lib_is_no_gate_release_agent` directly beside the existing
    `_LIB_REVIEW_ONLY_AGENTS` / `_lib_is_review_only_agent`, reusing that
    exact-match loop shape. No call sites yet.
 2. **`claude/.claude/hooks/tests/test_lib.py`** — cover the new helper and
    predicate before wiring callers: match, no-match, trailing newline,
-   multiple glob prefixes, absent directory, and a matching value present under
-   a *non*-matching prefix (must not match).
+   multiple glob prefixes, absent directory, a matching value present under
+   a *non*-matching prefix (must not match), a stored value that is a proper
+   substring/prefix of the expected value (must not match — pins the `-x`
+   whole-line exactness against a future regression to bare `-lF`), and a
+   zero-match glob returning cleanly rather than a `grep` error on the
+   unexpanded literal pattern.
 3. **`claude/.claude/hooks/require-plan-review.sh`** — replace the
    single-path read (~135–142) with the two-tier lookup: current repo-hash
    prefix, then sibling-worktree prefixes on a miss. Enumerate worktrees via
    `_lib_capped git worktree list --porcelain`, status-checked and
    fail-closed on partial enumeration, matching `_lib_active_plan_hash`'s
    discipline. Reword the deny message off "this session." Leave the
-   active-marker block (~118–127) untouched.
+   active-marker block (~118–127) untouched. **`test_require_plan_review.py`
+   already has two tests that encode the invariant this step reverses —
+   `test_other_sessions_marker_does_not_authorize` and
+   `test_no_session_id_in_input_denies`. Rewrite them deliberately to assert
+   the new cross-session-acceptance behavior; do not let them surface as
+   surprise CI failures and patch them reactively — they are the canary for
+   the defect this plan closes.**
 4. **`claude/.claude/hooks/require-code-review.sh`** — replace read at ~90–95
    with `_lib_marker_value_present` on `<repo-hash>.*`; reword deny message.
 5. **`claude/.claude/hooks/require-ready-for-review.sh`** — replace read at
@@ -283,13 +326,27 @@ foundation; 3–6 are independent per-gate applications; 7–9 close out.
 
 **Modify:** the files named in steps 1–9 above, plus:
 
-- `claude/.claude/hooks/tests/test_hook_alignment.py` — it re-reads the
-  `HOOK_TEST_FIXTURE` fenced blocks from `plan-review/SKILL.md` and asserts
-  they match `require-plan-review.sh`'s marker layout. Changing the read path
-  may break those assertions; check and update in step 8.
-- `claude/.claude/hooks/tests/test_agent_roster.py` — inspect its roster-sync
-  assertion and extend it to cover `_LIB_NO_GATE_RELEASE_AGENTS` if it
-  enumerates the review-only set.
+- `claude/.claude/hooks/tests/test_require_plan_review.py`,
+  `test_require_code_review.py`, and `test_require_skill_review.py` (lines
+  ~504–604 in the plan-review file, parallel blocks in the others) — these
+  re-read the `HOOK_TEST_FIXTURE` fenced blocks from each skill's SKILL.md and
+  assert they match the hook's marker-write recipe. Changing the read path may
+  break those assertions; check and update in step 8. (`test_hook_alignment.py`
+  is a separate, generic three-layer suite — docs-coverage, hook-class header
+  validation, deny-envelope-on-malformed-input — with no `HOOK_TEST_FIXTURE`
+  references; it is not the file that needs updating for this change.)
+- `claude/.claude/hooks/tests/test_require_plan_review.py` — additionally,
+  rewrite `test_other_sessions_marker_does_not_authorize` and
+  `test_no_session_id_in_input_denies` (see step 3): these currently assert
+  the cross-session-denial behavior this plan makes obsolete.
+- `claude/.claude/hooks/tests/test_agent_roster.py` — add a mandatory (not
+  conditional) roster-sync test: for every name in
+  `_LIB_NO_GATE_RELEASE_AGENTS`, assert `agents/<name>.md`'s `tools:`
+  frontmatter excludes `Skill`, mirroring the shape of the existing
+  roster-sync assertions. This is the mechanical enforcement for the
+  boundary's own grounding (assumption row 8): a future agent added to or
+  removed from the no-release set without a matching `tools:` change must
+  fail this test, not rely on manual verification.
 
 **Reuse rather than reimplement:**
 
@@ -316,8 +373,12 @@ New test cases:
 - `test_require_plan_review.py` — a marker written under session A releases for
   session B at the same plan hash; a plan edit still re-arms; the #426 repro
   (plan copied into a sibling worktree) passes; a marker from an unrelated repo
-  root with identical plan content does **not** release; partial
-  `git worktree list` output fails closed.
+  root with identical plan content does **not** release; a byte-different
+  decoy marker coexisting in the same scanned repo-hash prefix as the correct
+  one does **not** cause a false accept; partial `git worktree list` output
+  fails closed. Plus the rewritten
+  `test_other_sessions_marker_does_not_authorize` and
+  `test_no_session_id_in_input_denies` (see step 3).
 - `test_require_code_review.py`, `test_require_ready_for_review.py`, and the
   plugin's `require-skill-review` tests — cross-session acceptance at a
   matching value; rejection at a changed value; rejection of a matching value
@@ -330,16 +391,27 @@ New test cases:
   `.agent_type` allowed; unreadable `.agent_type` denies; a review-only agent's
   plain `grep -rn marker.sh` still allowed.
 
+**Accepted, untested edge cases (stated, not silent).** A torn/partial marker
+write read mid-scan, and a stale sibling-worktree repo-hash whose checkout has
+since been removed, both fail closed by construction (a torn read either
+mismatches the expected hash or errors past `grep -lFx`; a stale hash yields a
+no-match glob) — the plan's cooperative, non-adversarial threat model does not
+warrant dedicated tests for either, but both are noted here rather than left
+as an unstated gap.
+
 **Manual end-to-end** (the incident, replayed): in a worktree with one
 uncommitted plan, run `/plan-review`, note the marker, then start a fresh
 session in the same worktree and attempt an `Edit` — allowed, no new review.
 Then dispatch a `code-writer` subagent and have it attempt
 `marker.sh write plan-review` — denied, reports back.
 
-**Latency check:** time `require-plan-review.sh` against the real
-`~/.claude/plan-review-markers/` (~1000+ entries) on both tiers — the
-common-path hit (current repo-hash) and the fallback scan — and confirm each
-stays within the budget the existing two capped git calls already establish.
+**Latency check:** an automated pytest case (not a one-time manual `time`
+invocation — the marker directory's growth is unbounded and deferred, see Out
+of scope, so a manual check validates today's size once and gives no
+regression signal as it grows) that seeds N synthetic markers, runs
+`require-plan-review.sh` against both tiers — the common-path hit (current
+repo-hash) and the fallback scan — and asserts wall-time stays under a
+numeric budget set from the existing two capped git calls' own budget.
 
 **Rollback:** all changes are shell and test files; `git revert` restores prior
 behavior with no state migration, since existing markers keep their filenames
@@ -357,10 +429,22 @@ before merging.
 - **Marker-directory garbage collection.** The directories grow without bound
   and this change reads more of them than before. Related to the in-flight
   `sessions-dir-gc` work; file separately rather than bundling.
+- **`_marker_lib_repo_hash`'s `sha256sum` dependency has no BSD/macOS
+  fallback** (unlike `_lib_jq`/`_lib_capped`, which document one). Pre-existing
+  gap, not introduced by this change — but the sibling-worktree fallback tier
+  turns one call into ~21 (today's worktree count) on the miss path, all
+  against the same missing binary, on the machine class (stow-distributed, any
+  cloner) this repo targets. Accepted as-is for this change; fixing it is a
+  separate, broader fix to a helper with many other call sites.
 - **Issues #430 and #415**, which touch adjacent surfaces (the marker-shape
   hook's heredoc scanning; the ready-for-review push gate) but are distinct
   defects.
-- **Specialist plan review.** `ciso-reviewer`, `staff-platform-engineer`, and
-  `staff-sdet` were not spawned for this review round (session constraint, not
-  a judgment that they are out of lane). Run them against this plan before
-  implementation begins.
+- **Specialist plan review — complete.** `ciso-reviewer`,
+  `staff-platform-engineer`, and `staff-sdet` were spawned against this plan on
+  resume. Their findings are incorporated above: the `nullglob` fix (Read
+  side), the content-identity-vs-state-identity note (Read side), the
+  `deactivate` blast-radius note (Write side), the mandatory roster-sync test
+  and corrected `test_hook_alignment.py` citation (Critical files), the
+  automated latency assertion and new edge-case tests (Verification), the two
+  named existing tests to rewrite (step 3), and the `sha256sum` fallback note
+  (above). No blocking findings remained unaddressed.
