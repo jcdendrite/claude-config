@@ -43,6 +43,7 @@ Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
 - `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis and `--deny-only` to isolate sessions that hit an enforcement hook.
 - `judgment-pair` captures what the human said immediately after a review output. Tool-result turns, `isMeta` injections, and `isCompactSummary` records between the review and the user reply are automatically skipped. Use `--out` to save output to a file for offline curation.
 - `audit-routing --redact` remaps project names to anonymized labels for public reporting — use this flag when posting output to GitHub issues.
+- `--projects` defaults to `*` — every project on the machine. `buckets` groups by bare branch name with no project column, so an unscoped run silently pools every repo sharing a branch name (`main` is the usual casualty) into one row, and its Date range column describes whatever the glob matched rather than a bounded window — `buckets` takes no `--since`/`--until`. Scope `--projects` to the directory name under `~/.claude/projects/`, which is the session's *startup* cwd (not the current shell cwd) with `/` and `.` both replaced by `-` — derive it with `git rev-parse --path-format=absolute --git-common-dir` rather than `pwd` (see `error-mode-analysis`'s Step 1 for the full derivation, which is stable across worktrees); use `review-trace --since/--until` for a bounded window.
 
 ## Example usage
 
