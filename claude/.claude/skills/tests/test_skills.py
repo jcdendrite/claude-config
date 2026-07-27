@@ -543,7 +543,7 @@ class TestHandoffMarkerExpiry:
         and direct the writer to commit marker-covered finished work first."""
         body = _skill_file("handoff").read_text()
         assert "keyed to the session that wrote them" in body
-        assert "will satisfy a pre-commit gate" in body
+        assert "nothing listed here will satisfy a pre-commit gate" in body
         assert (
             "Commit work that is finished and already covered by a completion marker "
             "*before* writing this file" in body
