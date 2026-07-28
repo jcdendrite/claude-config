@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Principal-engineer review before presenting code. TRIGGER when: code is about to be presented, or the user asks for a code review. DO NOT TRIGGER when: cosmetic-only changes (typo, formatting, CSS with no behavioral delta); only one specialized file type staged (SKILL.md→skill-review, agent→agent-review, plan→plan-review, CLAUDE.md/AGENTS.md/memory→ai-instruction-and-memory-files); fresh code-review-markers/ entry covers the diff."
+description: "Principal-engineer review before presenting code. Also the gate on `git commit`. TRIGGER when: code is about to be presented, a commit is pending, or the user asks for a review. skill-review, agent-review, and ai-instruction-and-memory-files run from inside this review, never instead of it; plan-review gates separately and also fires. DO NOT TRIGGER when: a fresh code-review-markers/ entry already covers the staged diff."
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
