@@ -10,16 +10,20 @@ repo adds on top, see the [README](../README.md#auto-mode).
 
 ## Requirements
 
-- **Plan:** Max, Team, Enterprise, or Anthropic API. Not available on Pro, or
-  on Bedrock, Vertex, or Foundry.
+- **Plan:** All plans. On Team and Enterprise, an Owner must first enable auto
+  mode in Claude Code admin settings before members can turn it on.
 - **Model:** Auto mode requires a supported *session* model — the eligible set
-  is plan-dependent (see the
+  is provider-dependent, not plan-dependent (see the
   [permission modes reference](https://code.claude.com/docs/en/permission-modes)
-  for the authoritative list). Opus is eligible on all qualifying plans; Sonnet
-  is additionally eligible on Team, Enterprise, and API, but **not on Max**.
-  This repo ships `opusplan` as the default, which routes auto mode to Sonnet
-  during execution — on Max that produces "unavailable for this model." The
-  `claude-auto` wrapper described below handles this automatically.
+  for the authoritative list). On the Anthropic API and Claude Platform on AWS,
+  Opus 4.6+, Sonnet 4.6+, or Fable 5 qualify. On Amazon Bedrock, Google Cloud's
+  Agent Platform, Microsoft Foundry, and the Claude apps gateway, only Sonnet
+  5, Opus 4.7+, or Fable 5 qualify. Auto mode also anchors the session to one
+  model for its entire lifetime — there's no plan-mode-to-execution switch the
+  way `opusplan` provides, so `opusplan` itself isn't a valid session model for
+  it. This repo ships `opusplan` as the default; the `claude-auto` wrapper
+  described below lets you start auto mode directly on a concrete, eligible
+  model of your choosing instead.
 - **Claude Code:** a recent release — check `claude --version` against the
   [permission modes reference](https://code.claude.com/docs/en/permission-modes).
 
@@ -30,17 +34,20 @@ then accept the one-time opt-in prompt. To start directly in auto mode, use the
 `claude-auto` wrapper shipped by this repo:
 
 ```bash
-claude-auto                          # defaults to Opus (eligible on all plans)
+ANTHROPIC_MODEL=sonnet claude-auto   # start auto mode on Sonnet
+ANTHROPIC_MODEL=opus claude-auto     # start auto mode on Opus
 claude-auto "summarize the open PRs"  # positional prompt passes through
-ANTHROPIC_MODEL=sonnet claude-auto   # Sonnet override (Team/Enterprise/API only)
 ```
 
-The wrapper resolves the model mismatch between `opusplan`'s Sonnet execution
-and auto mode's session-model requirement. On Team, Enterprise, and API plans,
-Sonnet is eligible for auto mode, so `claude --permission-mode auto` also works
-directly — the wrapper is most useful on Max, where only Opus qualifies.
-`ANTHROPIC_MODEL` is Claude Code's built-in model env var and applies to all
-invocation forms.
+The wrapper resolves the mismatch between `opusplan` (a plan-mode/execution
+model pair) and auto mode's requirement for one concrete session model — it
+doesn't choose that model for you, so set `ANTHROPIC_MODEL` to an eligible
+model (see Requirements above) before running it. Without `ANTHROPIC_MODEL`
+set, `claude-auto` starts auto mode on whatever your configured default model
+is, which fails if that default is `opusplan` or otherwise ineligible.
+`claude --permission-mode auto` also works directly once your default is
+already a single eligible model. `ANTHROPIC_MODEL` is Claude Code's built-in
+model env var and applies to all invocation forms.
 
 To make auto mode the default, add to `~/.claude/settings.json`:
 
@@ -124,9 +131,9 @@ leave auto mode.
 ## Subagent delegation under auto mode
 
 Auto mode anchors the session to one model for its entire lifetime — there is
-no plan-mode-to-execution model switch the way `opusplan` provides. On Max that
-anchor is Opus (the only auto-eligible session model), so every subagent that
-*inherits* the parent model runs on Opus too.
+no plan-mode-to-execution model switch the way `opusplan` provides. Every
+subagent that *inherits* the parent model runs on whatever that anchor model
+is.
 
 Subagent model is resolved in this order — the first that applies wins:
 
@@ -138,22 +145,24 @@ Subagent model is resolved in this order — the first that applies wins:
 The routinely-dispatched built-in and repo-shipped subagents resolve as
 follows:
 
-| Agent | Model under an Opus auto-mode parent | Why |
+| Agent | Model under an auto-mode parent | Why |
 |---|---|---|
 | `Explore` | Haiku | Pinned by Claude Code; read-only search |
 | `staff-*`, `ciso-reviewer` | Sonnet | `model: sonnet` frontmatter in `~/.claude/agents/` |
 | `code-writer` | Sonnet | `model: sonnet` frontmatter |
-| `general-purpose` | **Opus (inherited)** | No model of its own — falls through to the parent |
+| `general-purpose` | **Inherited from parent** | No model of its own — falls through to the parent |
 
-So dispatching `general-purpose` for whole-file discovery or research from an
-Opus auto-mode parent runs that work on Opus — roughly 5x the per-token cost of
-Sonnet. To keep it off Opus, pass an explicit `model: sonnet`
-on the `Agent` dispatch; resolution step 2 overrides the inherited parent at
-step 4.
+If the session is anchored to Opus (`ANTHROPIC_MODEL=opus claude-auto`, or a
+manual Shift+Tab into auto mode from an Opus session), dispatching
+`general-purpose` without an explicit model runs that work on Opus — roughly
+5x the per-token cost of Sonnet. To keep it off Opus, pass an explicit
+`model: sonnet` on the `Agent` dispatch; resolution step 2 overrides the
+inherited parent at step 4.
 
-Since a session cannot reliably tell whether it is in auto mode, treat this as
-unconditional: always dispatch `general-purpose` with an explicit `model`. See
-the Model Routing section of the global `CLAUDE.md`.
+Since a session cannot reliably tell whether it is in auto mode, or which
+model that session is anchored to, treat this as unconditional: always
+dispatch `general-purpose` with an explicit `model`. See the Model Routing
+section of the global `CLAUDE.md`.
 
 Do **not** reach for `CLAUDE_CODE_SUBAGENT_MODEL` to solve this. It sits at
 resolution step 1 and overrides *every* subagent's model — including the
