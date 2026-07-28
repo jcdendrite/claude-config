@@ -435,6 +435,49 @@ _lib_worktree_enforcement_active() {
   return 1
 }
 
+# _lib_valid_session_id_component SESSION_ID
+# Returns 0 (true) iff SESSION_ID is safe to use as a single filesystem path
+# component (e.g. "$STATE_DIR/$SESSION_ID"). Every call site that builds such
+# a path takes SESSION_ID straight from the hook payload's `.session_id` with
+# no further sanitization, so a value containing ".." or "/" escapes the
+# intended directory once concatenated in — turning an `rm -f`, `>`, or
+# `touch` against that path into an operation against a caller-chosen path
+# instead. Harness session ids are UUIDs, so this conservative allow-list
+# (letters, digits, underscore, hyphen) has ample room without ever needing
+# '.' or '/'. Empty input is rejected — callers must not fall through to an
+# unvalidated empty SESSION_ID.
+_lib_valid_session_id_component() {
+  local session_id="$1"
+  [[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]]
+}
+
+# _lib_first_live_linked_worktree REPO_ROOT
+# Prints the path of the first linked worktree of REPO_ROOT whose directory is
+# present on disk and returns 0; prints nothing and returns 1 when there is
+# none. `git worktree list` still reports entries whose directory was deleted
+# but not pruned, so each candidate is tested rather than trusting the entry
+# count. Callers use this to distinguish "session is in the main tree while the
+# work belongs in a worktree" from "this repo has no worktree at all" — the
+# latter is the ordinary state just before `git worktree add`, and carries no
+# wrong-tree risk because there is no second tree to confuse the first with.
+# Parses newline-delimited output, so a worktree path containing a literal
+# newline (pathological, and unhandled here) would be split across two lines
+# and matched incorrectly; git's own docs recommend `-z` for that case.
+_lib_first_live_linked_worktree() {
+  local repo_root="$1" worktree_path
+  [ -n "$repo_root" ] || return 1
+  while IFS= read -r worktree_path; do
+    [ -n "$worktree_path" ] || continue
+    [ "$worktree_path" = "$repo_root" ] && continue
+    if [ -d "$worktree_path" ]; then
+      printf '%s' "$worktree_path"
+      return 0
+    fi
+  done < <(_lib_capped git -C "$repo_root" worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{print substr($0, 10)}')
+  return 1
+}
+
 # _lib_stray_marker_hint REPO_ROOT
 # Returns a hint string when the repo-root sentinel exists in the working
 # tree but is not tracked in the git index — a stray copy still enforces

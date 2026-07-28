@@ -463,3 +463,119 @@ def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
     pin that the predicate is not doing prefix or case-insensitive matching.
     """
     assert not _is_no_gate_release_agent(agent_type)
+
+
+# --- _lib_valid_session_id_component --------------------------------------
+#
+# Every call site that builds a filesystem path from a hook-payload-supplied
+# session id ("$STATE_DIR/$SESSION_ID") relies on this predicate to reject a
+# value that would escape the intended directory once concatenated in.
+
+
+def _valid_session_id_component(session_id: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_valid_session_id_component "$1"', "bash", session_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "550e8400-e29b-41d4-a716-446655440000",  # a real harness session id (UUID)
+        "abc123",
+        "session_ID-with-underscores",
+    ],
+)
+def test_valid_session_id_component_accepts_uuid_shaped_ids(session_id: str) -> None:
+    assert _valid_session_id_component(session_id)
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "",
+        "../canary",
+        "../../etc/passwd",
+        "foo/bar",
+        "/absolute/path",
+        "session id with spaces",
+        "session;rm -rf /",
+        ".",
+        "..",
+    ],
+)
+def test_valid_session_id_component_rejects_path_escaping_ids(session_id: str) -> None:
+    """Each of these, concatenated into "$DIR/$SESSION_ID", would either
+    escape DIR (`../`, an absolute path) or otherwise fail to name a single
+    safe path component."""
+    assert not _valid_session_id_component(session_id)
+
+
+# --- _lib_first_live_linked_worktree --------------------------------------
+
+
+def _first_live_linked_worktree(repo_root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_first_live_linked_worktree "$1"', "bash", str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    (path / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
+def test_first_live_linked_worktree_finds_a_present_worktree(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    wt = tmp_path / "wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(wt)
+
+
+def test_first_live_linked_worktree_ignores_a_stale_unpruned_entry(tmp_path: Path) -> None:
+    """`git worktree list` still reports an entry whose directory was deleted
+    without `git worktree prune` or `git worktree remove`. That stale entry
+    must not count as a live worktree."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    wt = tmp_path / "wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(["rm", "-rf", str(wt)], check=True)
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""

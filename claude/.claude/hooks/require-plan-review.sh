@@ -73,8 +73,15 @@ esac
 # repo-scope guard below and the deny gate.
 TARGET_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty')
 
+# Resolve the repo from the payload's cwd rather than this hook process's
+# ambient cwd, so the marker is keyed to the tree the session is working in.
+# Downstream hashing already threads this root (_lib_active_plan_hash), so
+# root resolution is the only site that needs converting here.
+CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+[ -z "$CWD" ] && CWD="$PWD"
+
 # Not in a git repo — can't check for plan files or key the marker.
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
@@ -120,7 +127,11 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 # a genuinely per-session property, and it is PID-liveness-checked.
 # Skip this bypass for ExitPlanMode — the active marker means plan-review
 # is in progress (not yet complete), so ExitPlanMode must still be blocked.
-if [ -n "$SESSION_ID" ] && [ "$TOOL_NAME" != "ExitPlanMode" ]; then
+# An id that is not a safe single path component (e.g. containing "../") is
+# treated the same as absent: ACTIVE_MARKER below concatenates it into a
+# path, and skipping the bypass here just means the completion-marker check
+# further down decides the gate instead — never less safe than the bypass.
+if [ -n "$SESSION_ID" ] && [ "$TOOL_NAME" != "ExitPlanMode" ] && _lib_valid_session_id_component "$SESSION_ID"; then
   ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
   if [ -f "$ACTIVE_MARKER" ]; then
     STORED_PID=$(cat "$ACTIVE_MARKER" 2>/dev/null | tr -d '[:space:]')

@@ -103,3 +103,42 @@ class TestRequireRoutingRead:
         assert not routing_marker.exists(), (
             "deactivate-gate did not remove the routing-read marker"
         )
+
+    # -- Hostile session_id ---------------------------------------------------
+
+    def test_traversal_session_id_allows_and_does_not_touch_marker_dir(
+        self, isolated_home
+    ):
+        """Pins the disposition an unusable session_id gets from this gate,
+        and that nothing outside the marker directory is written.
+
+        This gate is activation-shaped: ACTIVE_MARKER's presence turns
+        enforcement on, and its absence means plan-review is not running, so
+        the standing default is allow. An unusable session_id leaves that
+        question unanswerable — the same position as an absent id — so it
+        allows too.
+
+        The bypass-shaped gates (require-memory-skill.sh,
+        require-respond-pr.sh) invert this: there the marker grants an
+        exception to a standing deny, so an unusable id withholds the
+        exception and the gate denies. Their sibling tests assert 'deny' for
+        the identical input, and that difference is intentional.
+
+        What this test does NOT pin: that the guard prevented the traversed
+        path from being built. It cannot. ACTIVE_MARKER and ROUTING_MARKER
+        embed the same session_id at the same depth under sibling
+        directories, so a traversing id resolves both to one file — which
+        then reads as an active session whose routing marker is fresh, i.e.
+        allow. Guard present and guard absent produce the same verdict here,
+        so no assertion can separate them. The guard still belongs (this hook
+        must not build attacker-shaped paths, and its absence is a real
+        defect in the write-sink hooks), but the property is pinned by
+        test_lib.py's direct unit tests of _lib_valid_session_id_component
+        and by the write-sink hooks' own traversal tests, not by this one."""
+        canary = isolated_home / ".claude" / "canary"
+        canary.write_text("untouched\n")
+
+        assert run_hook(REQUIRE_ROUTING_READ_HOOK, agent_input(session_id="../canary")) == "allow"
+        assert canary.read_text() == "untouched\n", (
+            "a traversal session_id must not touch a file outside the marker dir"
+        )

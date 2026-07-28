@@ -71,7 +71,7 @@ Steps the prior agent flagged as irreversible or shared-state — do not execute
 **Underlying principle:** if the action mutates shared state that cannot be put back by running a different command, or has externally-observable side effects outside the repo (writes to production data, package publications, infra mutations, public release artifacts), it belongs in §3.5, not §3.
 
 ## §4 Files modified this session
-Header line: working directory + current git branch. Then list paths edited this session and their state (staged / unstaged / committed). Include the most recent uncommitted work.
+Header line: working directory + current git branch. Derive both from the worktree the work actually lives in rather than from ambient shell state — a session that drifted reports the main checkout and the default branch, sending the resuming session to the wrong tree with a header that looks authoritative. When the work lives in a linked worktree, name that path and direct the resuming session to re-enter it before running any command or dispatching any subagent: the anchor is session-scoped and does not survive the session boundary, so a resumed session starts in the main checkout. Then list paths edited this session and their state (staged / unstaged / committed). Include the most recent uncommitted work.
 
 ## §5 Gates / markers
 List markers under `~/.claude/*-markers/` and `~/.claude/.*-active.d/` — filenames, which skill wrote each, and for completion markers, the state whose hash it stores. Each skill hashes the state it reviewed: staged diff for `/code-review` and `/skill-review`, active plan set for `/plan-review`, HEAD SHA for `/ready-for-review`.

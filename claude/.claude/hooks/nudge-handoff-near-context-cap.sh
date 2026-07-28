@@ -49,6 +49,13 @@ TRANSCRIPT_PATH=""
 ) 2>/dev/null || true
 [ -z "$SESSION_ID" ] && exit 0
 
+# SESSION_ID feeds DRIFT_MARKER and FIRED_MARKER below as a path component
+# ("../" would escape MARKER_DIR); fail the same way an empty id already does.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+_lib_valid_session_id_component "$SESSION_ID" || exit 0
+
 # Kill-switch: suppress nudge for automated pipelines or user opt-out.
 if [ -f "$HOME/.claude/.handoff-nudge-disabled" ]; then
   exit 0

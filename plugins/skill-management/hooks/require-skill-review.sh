@@ -63,7 +63,16 @@ if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)';
   exit 0
 fi
 
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+# Resolve the repo from the payload's cwd rather than this hook process's
+# ambient cwd, and thread that one root through every git call below. The
+# marker's path (repo hash) and its value (staged SKILL.md diff hash) must
+# describe the same tree: resolving the root one way and hashing the diff
+# another lets a session whose shell drifted to a different working tree of
+# the same repo satisfy the gate with a review of a tree nobody reviewed.
+CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+[ -z "$CWD" ] && CWD="$PWD"
+
+REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   # Not in a git repo — let git surface the error itself
   exit 0
@@ -71,14 +80,14 @@ fi
 
 # Early exit: if no SKILL.md files are staged, this hook is a no-op.
 # Commits that don't touch any skill file are not gated by skill-review.
-SKILL_DIFF=$(git diff --cached --name-only -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md')
+SKILL_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md')
 if [ -z "$SKILL_DIFF" ]; then
   exit 0
 fi
 
 # Empty staged diff: amend-message-only, --allow-empty, or nothing to commit.
 # No new content to review; let git decide whether the commit is valid.
-if [ -z "$(git diff --cached 2>/dev/null)" ]; then
+if [ -z "$(git -C "$REPO_ROOT" diff --cached 2>/dev/null)" ]; then
   exit 0
 fi
 
@@ -119,7 +128,7 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
   for STAGED_PATH in "${STAGED_SKILL_PATHS[@]}"; do
     BLOB_PATH="$STAGED_BLOB_DIR/$STAGED_PATH"
     mkdir -p "$(dirname "$BLOB_PATH")"
-    if git show ":$STAGED_PATH" > "$BLOB_PATH" 2>/dev/null; then
+    if git -C "$REPO_ROOT" show ":$STAGED_PATH" > "$BLOB_PATH" 2>/dev/null; then
       STAGED_BLOB_PATHS+=("$BLOB_PATH")
     fi
     # If git show fails (unmerged path, index corruption), skip — the
@@ -147,7 +156,7 @@ fi
 CORPUS_PATHS=()
 while IFS= read -r CORPUS_PATH; do
   [ -n "$CORPUS_PATH" ] && CORPUS_PATHS+=("$CORPUS_PATH")
-done < <(git ls-files 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 2>/dev/null)
+done < <(git -C "$REPO_ROOT" ls-files 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 2>/dev/null)
 
 # Overlay staged blobs: replace corpus path with staged blob path for any
 # staged SKILL.md (so the warning reflects the post-commit state of staged files).
@@ -182,7 +191,7 @@ if _lib_chains_marker_write_before_commit "$COMMAND" skill-review; then
 fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-CURRENT_HASH=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
+CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
 
 # Allow when any marker under this repo-hash holds the currently staged skill
 # diff's hash. The stored hash is the authorization — it proves a review

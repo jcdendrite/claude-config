@@ -304,6 +304,29 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
+    def test_traversal_session_id_denies_and_does_not_touch_marker_dir(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """A session_id of '../canary' must not read through the traversal:
+        ACTIVE_MARKER concatenates it into .ready-for-review-active.d/../canary,
+        which resolves to a file one level up ($HOME/.claude/canary). The
+        invalid id must skip the active-marker bypass entirely and fall
+        through to the completion-marker check, which finds no match here
+        and denies."""
+        canary = isolated_home / ".claude" / "canary"
+        canary.write_text("untouched\n")
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="../canary"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+        assert canary.read_text() == "untouched\n", (
+            "a traversal session_id must not touch a file outside the marker dir"
+        )
+
     # -- Completion-marker check ------------------------------------------
 
     def test_no_marker_denies(

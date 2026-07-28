@@ -90,9 +90,11 @@ fi
 
 # Bypass: fresh marker for THIS session's session_id means we're inside the
 # skill and should let its own gh commands through. Empty session_id (older
-# Claude Code versions, payload-schema drift) falls through to the gate.
+# Claude Code versions, payload-schema drift) falls through to the gate. An id
+# that is not a safe single path component (e.g. containing "../") is treated
+# the same way: MARKER below concatenates it into a path.
 SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
-if [ -n "$SESSION_ID" ]; then
+if [ -n "$SESSION_ID" ] && _lib_valid_session_id_component "$SESSION_ID"; then
   MARKER="$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
   if [ -f "$MARKER" ]; then
     STORED_PID=$(cat "$MARKER" 2>/dev/null | tr -d '[:space:]')

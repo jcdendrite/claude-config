@@ -218,3 +218,24 @@ class TestRequireMemorySkill:
         )
         memory_md = str(memory_tree / "MEMORY.md")
         assert run_hook(HOOK_PATH, _memory_input(edit_input(memory_md), sid)) == "deny"
+
+    # -- Hostile session_id ---------------------------------------------------
+
+    def test_traversal_session_id_denies_and_does_not_touch_marker_dir(
+        self, isolated_home, memory_tree
+    ):
+        """A session_id of '../canary' must not read or write through the
+        traversal: ACTIVE_MARKER concatenates it into
+        .memory-skill-active.d/../canary, which resolves to a file one level
+        up ($HOME/.claude/canary). The invalid id must skip the active-marker
+        bypass entirely and fall through to the gate's normal deny — not be
+        treated as an authorization to allow."""
+        canary = isolated_home / ".claude" / "canary"
+        canary.write_text("untouched\n")
+        memory_md = str(memory_tree / "MEMORY.md")
+        payload = _memory_input(edit_input(memory_md), "../canary")
+
+        assert run_hook(HOOK_PATH, payload) == "deny"
+        assert canary.read_text() == "untouched\n", (
+            "a traversal session_id must not touch a file outside the marker dir"
+        )

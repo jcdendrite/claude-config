@@ -407,6 +407,28 @@ class TestRequireRespondPr:
             == "deny"
         )
 
+    def test_traversal_session_id_denies_and_does_not_touch_marker_dir(
+        self, isolated_home, current_repo_foo_bar
+    ):
+        """A session_id of '../canary' must not read through the traversal:
+        MARKER concatenates it into .respond-pr-active.d/../canary, which
+        resolves to a file one level up ($HOME/.claude/canary). The invalid
+        id must skip the bypass entirely and fall through to the normal
+        arm-matching gate, which denies this command on its own merits."""
+        canary = isolated_home / ".claude" / "canary"
+        canary.write_text("untouched\n")
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5/comments", session_id="../canary"),
+                cwd=current_repo_foo_bar,
+            )
+            == "deny"
+        )
+        assert canary.read_text() == "untouched\n", (
+            "a traversal session_id must not touch a file outside the marker dir"
+        )
+
     def test_alive_pid_bypass_marker_allows(self, isolated_home, current_repo_foo_bar):
         """Active marker with a live PID bypasses the gate for any session duration."""
         sid = "long-run-session"

@@ -144,8 +144,11 @@ if [ -n "$CURRENT_BRANCH" ] && [ -n "$DEFAULT_BRANCH" ] && [ "$CURRENT_BRANCH" =
   exit 0
 fi
 
-# Active-marker bypass: the skill is currently running.
-if [ -n "$SESSION_ID" ]; then
+# Active-marker bypass: the skill is currently running. An id that is not a
+# safe single path component (e.g. containing "../") is treated the same as
+# absent: skipping the bypass just means the completion-marker check further
+# down decides the gate instead.
+if [ -n "$SESSION_ID" ] && _lib_valid_session_id_component "$SESSION_ID"; then
   ACTIVE_MARKER="$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
   if [ -f "$ACTIVE_MARKER" ]; then
     STORED_PID=$(cat "$ACTIVE_MARKER" 2>/dev/null | tr -d '[:space:]')

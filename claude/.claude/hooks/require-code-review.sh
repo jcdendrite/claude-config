@@ -59,7 +59,16 @@ if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)';
   exit 0
 fi
 
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+# Resolve the repo from the payload's cwd rather than this hook process's
+# ambient cwd, and thread that one root through every git call below. The
+# marker's path (repo hash) and its value (staged-diff hash) must describe the
+# same tree: resolving the root one way and hashing the diff another lets a
+# session whose shell drifted to a different working tree of the same repo
+# satisfy the gate with a review of a tree nobody reviewed.
+CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+[ -z "$CWD" ] && CWD="$PWD"
+
+REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   # Not in a git repo — let git surface the error itself
   exit 0
@@ -67,7 +76,7 @@ fi
 
 # Empty staged diff: amend-message-only, --allow-empty, or nothing to commit.
 # No new content to review; let git decide whether the commit is valid.
-if [ -z "$(git diff --cached 2>/dev/null)" ]; then
+if [ -z "$(git -C "$REPO_ROOT" diff --cached 2>/dev/null)" ]; then
   exit 0
 fi
 
@@ -82,7 +91,7 @@ if _lib_chains_marker_write_before_commit "$COMMAND" code-review; then
 fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-CURRENT_HASH=$(git diff --cached | sha256sum | awk '{print $1}')
+CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
 
 # Allow when any marker under this repo-hash holds the currently staged
 # diff's hash. The stored hash is the authorization — it proves a review

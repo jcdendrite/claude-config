@@ -51,9 +51,19 @@ _walk_session() {
 }
 
 _resolve_session_id() {
-  local out
+  local out sid
   out=$(_walk_session) || return 2
-  printf '%s' "${out%% *}"
+  sid="${out%% *}"
+  # Chokepoint for every marker.sh path built from a session id (~15
+  # constructions below): reject here once rather than at each call site. An
+  # id containing '..' or '/' would escape the marker/active directories once
+  # concatenated into a path, turning `rm -f`/`>` against it into an
+  # operation against a caller-chosen path.
+  if ! _lib_valid_session_id_component "$sid"; then
+    printf 'marker.sh: SESSION_ID %s is not a valid path component. Abort without writing a marker.\n' "$sid" >&2
+    return 2
+  fi
+  printf '%s' "$sid"
 }
 
 _resolve_claude_pid() {
@@ -67,6 +77,41 @@ _resolve_claude_pid() {
   printf '%s' "${out##* }"
 }
 
+_refuse_main_tree_under_enforcement() {
+  # A marker's path (repo hash) and its contents (staged diff, HEAD, plan set)
+  # are all keyed to the tree this script resolves. When the reviewed work
+  # lives in a linked worktree but this invocation resolves to the main tree,
+  # the marker records a review of a tree nobody reviewed — and the reading
+  # hook, resolving the same way, accepts it. There is no payload to import a
+  # trusted directory from, so refuse instead of guessing.
+  local root="$1" session_git_dir common_git_dir worktree
+  _lib_worktree_enforcement_active "$root" || return 0
+  # One rev-parse call, one line per query flag, in the order given. For the
+  # main working tree both paths are identical; for a linked worktree
+  # --absolute-git-dir points at <common>/worktrees/<name>.
+  {
+    read -r session_git_dir
+    read -r common_git_dir
+  } < <(_lib_capped git -C "$root" rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
+  if [ -z "${session_git_dir:-}" ] || [ -z "${common_git_dir:-}" ]; then
+    printf 'marker.sh: could not determine git state for %s. Refusing to write a marker under worktree enforcement.\n' "$root" >&2
+    return 2
+  fi
+  [ "$session_git_dir" != "$common_git_dir" ] && return 0
+  # Main tree, but no linked worktree exists: there is no second tree for this
+  # marker to be confused with, so it correctly describes the only tree there
+  # is. Refusing here would wedge a repo whose staged state was produced
+  # outside Claude Code's gated tool calls — a hand-staged edit in a terminal
+  # or editor, a CI checkout, or work staged before the repo opted in. The
+  # worktree hooks gate tool calls, not ambient git state, so that condition is
+  # reachable and legitimate.
+  worktree=$(_lib_first_live_linked_worktree "$root") || return 0
+  printf 'marker.sh: refusing to write a marker from the main working tree (%s) while worktree enforcement is active and a linked worktree exists (%s).\n' "$root" "$worktree" >&2
+  printf 'Markers are keyed to the tree they are written from, so this would record the review against the wrong tree.\n' >&2
+  printf 'Re-enter the branch worktree — EnterWorktree{path: "%s"} — and re-run the review skill there.\n' "$worktree" >&2
+  return 2
+}
+
 _resolve_repo_root() {
   # tr -d '\n' is load-bearing: git rev-parse appends a trailing newline.
   # require-* hooks compute the hash via printf '%s' "$REPO_ROOT" (no newline),
@@ -77,18 +122,14 @@ _resolve_repo_root() {
     printf 'marker.sh: not inside a git repository\n' >&2
     return 2
   fi
+  _refuse_main_tree_under_enforcement "$root" || return 2
   printf '%s' "$root"
 }
 
-_resolve_repo_hash() {
-  local root
-  root=$(_resolve_repo_root) || return 2
-  _marker_lib_repo_hash "$root"
-}
-
 _guard_staged_vs_unstaged() {
+  local repo_root="$1"; shift
   local skill="$1"; shift
-  if git diff --cached --quiet -- "$@" && ! git diff --quiet -- "$@"; then
+  if git -C "$repo_root" diff --cached --quiet -- "$@" && ! git -C "$repo_root" diff --quiet -- "$@"; then
     # shellcheck disable=SC2016 # single-quoted for literal display text (the
     # backtick-quoted `git add` is markdown-style formatting, not command
     # substitution); %s below is the only intended expansion.
@@ -137,12 +178,13 @@ case "$SUBCOMMAND" in
     case "$SKILL" in
       code-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        REPO_HASH=$(_resolve_repo_hash) || exit 2
-        _guard_staged_vs_unstaged code-review
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        _guard_staged_vs_unstaged "$REPO_ROOT" code-review
         # Compute before redirecting: `>` truncates the marker before the
         # pipeline runs, so a failed hash would destroy a valid marker and
         # silently force a re-review. Same shape in every arm below.
-        MARKER_VALUE=$(git diff --cached | sha256sum | awk '{print $1}')
+        MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$HOME/.claude/code-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
@@ -150,11 +192,12 @@ case "$SUBCOMMAND" in
         ;;
       skill-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        REPO_HASH=$(_resolve_repo_hash) || exit 2
-        _guard_staged_vs_unstaged skill-review 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        _guard_staged_vs_unstaged "$REPO_ROOT" skill-review 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'
         # The pathspecs are load-bearing: scope the hash to SKILL.md diffs only (both stowed
         # and plugin locations), matching what require-skill-review.sh checks at commit time.
-        MARKER_VALUE=$(git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
+        MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$HOME/.claude/skill-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
@@ -162,8 +205,8 @@ case "$SUBCOMMAND" in
         ;;
       plan-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        REPO_HASH=$(_resolve_repo_hash) || exit 2
         REPO_ROOT=$(_resolve_repo_root) || exit 2
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
         # Content-addressed: the marker holds a hash of the active plan file
         # set (paths + contents), so editing a reviewed plan re-arms
         # require-plan-review.sh on the next gate hit. _lib_active_plan_hash
@@ -183,8 +226,9 @@ case "$SUBCOMMAND" in
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        REPO_HASH=$(_resolve_repo_hash) || exit 2
-        MARKER_VALUE=$(git rev-parse HEAD)
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        MARKER_VALUE=$(git -C "$REPO_ROOT" rev-parse HEAD)
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not resolve HEAD. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$HOME/.claude/ready-for-review-markers"
         printf '%s\n' "$MARKER_VALUE" \

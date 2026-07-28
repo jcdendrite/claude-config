@@ -547,6 +547,31 @@ class TestRequirePlanReview:
             == "deny"
         )
 
+    # -- Hostile session_id ---------------------------------------------------
+
+    def test_traversal_session_id_denies_and_does_not_touch_marker_dir(
+        self, plan_review_repo, plan_review_home
+    ):
+        """A session_id of '../canary' must not read through the traversal:
+        ACTIVE_MARKER concatenates it into .plan-review-active.d/../canary,
+        which resolves to a file one level up ($HOME/.claude/canary). The
+        invalid id must skip the active-marker bypass entirely and fall
+        through to the completion-marker check, which finds no match here
+        and denies."""
+        canary = plan_review_home / ".claude" / "canary"
+        canary.write_text("untouched\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "../canary"},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+        assert canary.read_text() == "untouched\n", (
+            "a traversal session_id must not touch a file outside the marker dir"
+        )
+
     # -- SKILL.md fixture alignment -----------------------------------------
 
     def test_skill_activate_command_creates_bypass_marker(

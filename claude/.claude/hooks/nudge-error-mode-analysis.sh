@@ -86,8 +86,17 @@ if [ "$PERMISSION_MODE" = "plan" ]; then
   exit 0
 fi
 
-# 4. Require a session id and a readable transcript file.
+# 4. Require a session id and a readable transcript file. SESSION_ID feeds
+# FIRED_MARKER and CHECKPOINT_FILE below as a path component ("../" would
+# escape their marker directories), so an id that is not a safe single path
+# component is rejected the same way an empty one already is.
 if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
+  exit 0
+fi
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+if ! _lib_valid_session_id_component "$SESSION_ID"; then
   exit 0
 fi
 

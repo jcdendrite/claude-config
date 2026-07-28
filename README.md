@@ -160,6 +160,8 @@ flowchart LR
 | `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
 | `cleanup-handoff-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session handoff-nudge marker files written by its paired UserPromptSubmit hook |
 | `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
+| `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
+| `cleanup-worktree-anchor-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session worktree-anchor marker its paired UserPromptSubmit hook wrote |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
 
 See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all hooks, skills, scripts, and project-scoped plugins, see [`docs/hooks.md`](docs/hooks.md), [`docs/skills.md`](docs/skills.md), and [`docs/scripts.md`](docs/scripts.md).
