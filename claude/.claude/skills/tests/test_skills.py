@@ -60,6 +60,8 @@ from validate_skill_structure import (
 SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
 # Plugins live two levels above the .claude/ dir: <repo>/plugins/<name>/skills/<skill>/SKILL.md
 _PLUGINS_DIR = SKILLS_DIR.parent.parent.parent / "plugins"
+# The stowed global instruction file, installed to ~/.claude/CLAUDE.md.
+_GLOBAL_CLAUDE_MD = SKILLS_DIR.parent / "CLAUDE.md"
 
 
 def _skill_file(skill_name: str) -> Path:
@@ -529,13 +531,15 @@ class TestHandoffCommitMarkerCoveredWork:
     """Pin handoff's instruction to land marker-covered work before the boundary.
 
     A completion marker records a hash of the exact state that was reviewed,
-    and the pre-commit gate authorizes on that stored hash, so the marker
-    outlives the session that wrote it. What it does not outlive is a change
-    to the state: the gate recomputes the current diff's hash at commit time,
-    and the marker's stored value stops matching it. Finished-but-uncommitted
-    work therefore survives the boundary only while the resuming session
-    leaves it untouched, which is why handoff tells the writer to commit it
-    rather than merely describe it.
+    and the gate authorizes on that stored hash, so the marker outlives the
+    session that wrote it. What it does not outlive is a change to the state:
+    the gate recomputes that state's hash when it fires, and the marker's
+    stored value stops matching it. Which state each marker covers varies by
+    skill — staged diff, active plan set, HEAD sha — so the assertion below
+    pins the state-scoped phrasing rather than any one skill's state.
+    Finished-but-uncommitted work therefore survives the boundary only while
+    the resuming session leaves it untouched, which is why handoff tells the
+    writer to commit it rather than merely describe it.
     """
 
     def test_handoff_section5_directs_committing_marker_covered_work(self):
@@ -547,11 +551,57 @@ class TestHandoffCommitMarkerCoveredWork:
         # start of its sentence. A bare "stays valid past the session boundary"
         # substring would still match a negated rewrite ("never stays valid
         # past the session boundary"); including the subject leaves nowhere to
-        # insert the negation without breaking the match.
+        # insert the negation without breaking the match. The invalidation
+        # clause below is pinned subject-first for the same reason: "any
+        # further change to that state" sits directly against "invalidates",
+        # so "does not invalidate" cannot be slipped in without breaking it.
         assert "A completion marker stays valid past the session boundary" in body
         assert "only while the state it covers is unchanged" in body
-        assert "staging any further change invalidates it" in body
+        assert "any further change to that state invalidates it" in body
         assert "commit it *before* writing this file" in body
+
+    def test_handoff_section5_maps_each_marker_to_the_state_it_covers(self):
+        """§5 must name which state each skill's completion marker hashes.
+
+        The four gates hash different things, and an agent that assumes the
+        staged diff universally will mis-read a plan-review or
+        ready-for-review marker. The mapping is asserted per skill so a future
+        edit cannot swap two entries — a mis-map reads as authoritative and
+        would reinstate exactly the wrong model this section exists to give.
+        """
+        body = _skill_file("handoff").read_text()
+        assert "the state whose hash it stores" in body
+        assert "staged diff for `/code-review` and `/skill-review`" in body
+        assert "active plan set for `/plan-review`" in body
+        assert "HEAD SHA for `/ready-for-review`" in body
+
+    def test_handoff_section5_directs_labelling_disarmed_gates_historical(self):
+        """§5 must distinguish a marker whose gate disarmed from one that expired.
+
+        Committing a plan file empties the active-plan set, so the plan-review
+        gate stops arming at all and the marker it left behind can never match
+        again. That is a different outcome from a marker invalidated by a
+        changed state, and §5 lists both kinds under one header — so without
+        an explicit label, a disarmed gate's marker reads to the resuming
+        session as still load-bearing.
+        """
+        body = _skill_file("handoff").read_text()
+        assert "committing the plan leaves its marker on disk gating nothing" in body
+        assert "Label such a marker historical" in body
+
+    def test_handoff_prewrite_checklist_verifies_marker_live_or_historical(self):
+        """The pre-write checklist must carry the live/historical verification.
+
+        Split from the §5-body assertion above because the two regress
+        independently: losing the body text means the writer is never told to
+        label, while losing the checklist line means the writer is told but
+        never verifies before writing. The failure modes differ, so the tests
+        do too — matching how the commit-first rule is covered by a body test
+        and a checklist test rather than one bundled assertion.
+        """
+        body = _skill_file("handoff").read_text()
+        assert "Every §5 marker is labelled live or historical" in body
+        assert "committed or superseded is not listed as if it still gates" in body
 
     def test_handoff_section5_does_not_claim_markers_die_with_their_session(self):
         """Guard against reintroducing the session-keyed expiry claim.
@@ -576,6 +626,67 @@ class TestHandoffCommitMarkerCoveredWork:
             "before this file is written; where it is not, §3 names the review skill the "
             "resuming session must re-run to commit it" in _skill_file("handoff").read_text()
         )
+
+
+class TestGlobalInstructionsDescribeMarkerGatesAsContentAddressed:
+    """Pin the global instruction file's account of how review gates authorize.
+
+    Every gate recomputes a hash of the state it guards and allows only on an
+    exact match against a marker's stored content; the marker file's existence
+    authorizes nothing. The distinction is not academic — an agent holding the
+    presence model treats any marker on disk as a live gate, so it reads a
+    stale marker as permission and a disarmed gate as an unexplained anomaly.
+
+    This file is stowed to ~/.claude/CLAUDE.md and loads in every session, so
+    a wrong account here is the most expensive place in the repo to carry one.
+    """
+
+    def test_global_instructions_state_gates_match_on_marker_content(self):
+        """The §Safety marker bullet must describe content-matching and the deny
+        outcome, not mere marker presence."""
+        body = _GLOBAL_CLAUDE_MD.read_text()
+        assert "Gates match on a marker's **content**" in body
+        assert "a hash of the exact state that was reviewed" in body
+        # The deny outcome is asserted separately from the match rule: text
+        # that says gates match on content but stops short of naming what
+        # happens when they don't leaves "stale marker" and "no marker"
+        # looking like different outcomes, when both deny.
+        assert "the stored hash stops matching and the gate denies" in body
+        # Pinned positively as well as negatively. The guard below can only
+        # catch a literal revert of the sentence this bullet replaced; any
+        # paraphrase of the presence claim slips past it. Requiring the
+        # contrast clause to survive leaves a reintroduced presence claim
+        # nowhere to sit that does not read as self-contradiction.
+        assert "not on the file's presence" in body
+
+    def test_global_instructions_state_markers_outlive_their_session(self):
+        """The bullet must say a still-covering marker counts across sessions.
+
+        Separate from the deny rule above because the two are opposite faces
+        of content-addressing and regress independently: drop the deny clause
+        and a stale marker reads as permission; drop this one and a valid
+        marker reads as expired, sending the next session to re-run a review
+        the gate would already have released. The handoff skill carries a
+        dedicated guard against the same session-keyed-expiry misconception,
+        which is what marks it as recurring enough to pin in both files.
+        """
+        body = _GLOBAL_CLAUDE_MD.read_text()
+        assert "keeps counting across sessions" in body
+
+    def test_global_instructions_do_not_claim_gates_check_marker_presence(self):
+        """Guard against reintroducing the presence-checked claim.
+
+        It described an earlier gate implementation, which is what makes it
+        the likely thing for a future edit to restore — the same reasoning
+        that earns the handoff skill's session-expiry claim its own guard.
+        A bare "presence" search would false-positive on the corrected text,
+        which names presence to deny it, so pin the false predicate instead.
+        This catches a literal revert only; the paraphrase class is held out
+        by the positive contrast clause asserted above, not by this list.
+        """
+        body = _GLOBAL_CLAUDE_MD.read_text()
+        assert "gate on their presence" not in body
+        assert "gates on their presence" not in body
 
 
 class TestHandoffTaskListPersistence:
