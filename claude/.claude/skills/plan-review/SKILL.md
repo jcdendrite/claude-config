@@ -1,11 +1,10 @@
 ---
 name: plan-review
 description: >
-  Review implementation plans before presenting to the user.
-  TRIGGER when: an implementation plan has been written or updated in .claude/plans/
-  or is about to be presented to the user for review.
-  DO NOT TRIGGER when: the plan is a trivial one-liner (single migration, config
-  change), or the user has explicitly said to skip review.
+  Review implementation plans before presenting to the user. A plan file in .claude/plans/
+  gates Write/Edit/MultiEdit/ExitPlanMode until this runs; triviality and user waivers do not release it.
+  TRIGGER when: a plan is written or updated in .claude/plans/, or is about to be presented.
+  DO NOT TRIGGER when: the plan lives outside .claude/plans/ (chat-level or /tmp drafts).
 user-invocable: true
 ---
 
