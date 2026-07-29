@@ -62,6 +62,7 @@ def _make_claude_shim(
     marketplace_location: Path,
     installed_plugins: list[dict],
     update_log: Path,
+    fail_for_plugin_ids: frozenset[str] = frozenset(),
 ) -> None:
     """Write a fake claude executable to bin_dir.
 
@@ -71,7 +72,10 @@ def _make_claude_shim(
       claude plugin list --json
       claude plugin update <plugin> --scope <scope>
 
-    update_log records each "plugin update" invocation as a JSON line.
+    update_log records each "plugin update" invocation as a JSON line
+    (plugin id, scope, cwd at call time, and outcome "success"/"failure").
+    Plugin ids in fail_for_plugin_ids still get an update_log entry but the
+    shim exits 1 instead of 0, simulating a failed update for that entry.
     """
     installed_json = json.dumps(installed_plugins)
     marketplace_list_json = json.dumps([{
@@ -82,9 +86,10 @@ def _make_claude_shim(
 
     shim = textwrap.dedent(f"""\
         #!/usr/bin/env python3
-        import json, sys
+        import json, os, sys
 
         args = sys.argv[1:]
+        FAIL_FOR_PLUGIN_IDS = {repr(sorted(fail_for_plugin_ids))}
 
         def is_subcommand(*parts):
             return args[:len(parts)] == list(parts)
@@ -105,8 +110,18 @@ def _make_claude_shim(
             # args: plugin update <id> --scope <scope>
             scope_idx = args.index("--scope") if "--scope" in args else -1
             scope = args[scope_idx + 1] if scope_idx >= 0 and scope_idx + 1 < len(args) else ""
+            fails = plugin_id in FAIL_FOR_PLUGIN_IDS
+            outcome = "failure" if fails else "success"
             with open({repr(str(update_log))}, "a") as f:
-                f.write(json.dumps({{"plugin": plugin_id, "scope": scope}}) + "\\n")
+                f.write(json.dumps({{
+                    "plugin": plugin_id,
+                    "scope": scope,
+                    "cwd": os.getcwd(),
+                    "outcome": outcome,
+                }}) + "\\n")
+            if fails:
+                print(f"ERROR: update failed for {{plugin_id}}", file=sys.stderr)
+                sys.exit(1)
             sys.exit(0)
 
         print(f"Unhandled: {{args}}", file=sys.stderr)
@@ -427,6 +442,155 @@ class TestMarketplaceNotConfigured:
 
         assert result.returncode == 1
         assert "claude-config" in result.stderr.lower() or "not configured" in result.stderr.lower()
+
+
+class TestAllProjects:
+    def test_other_repos_project_plugins_included(self, tmp_path: Path) -> None:
+        marketplace = _make_marketplace_dir(
+            tmp_path / "marketplace",
+            [{"name": "tool", "version": "2.0.0"}],
+        )
+        update_log = tmp_path / "updates.log"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        this_repo = tmp_path / "this-repo"
+        this_repo.mkdir()
+        other_repo = tmp_path / "other-repo"
+        other_repo.mkdir()
+        _make_claude_shim(
+            bin_dir, marketplace,
+            [_make_installed_plugin("tool", "1.0.0", project_path=str(other_repo))],
+            update_log,
+        )
+
+        result = _run_script("--all-projects", "--dry-run", bin_dir=bin_dir, cwd=this_repo)
+
+        assert result.returncode == 0
+        assert "tool" in result.stdout
+        assert str(other_repo) in result.stdout
+
+    def test_update_runs_with_cwd_set_to_project_path(self, tmp_path: Path) -> None:
+        marketplace = _make_marketplace_dir(
+            tmp_path / "marketplace",
+            [{"name": "tool", "version": "2.0.0"}],
+        )
+        update_log = tmp_path / "updates.log"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        this_repo = tmp_path / "this-repo"
+        this_repo.mkdir()
+        other_repo = tmp_path / "other-repo"
+        other_repo.mkdir()
+        _make_claude_shim(
+            bin_dir, marketplace,
+            [_make_installed_plugin("tool", "1.0.0", project_path=str(other_repo))],
+            update_log,
+        )
+
+        result = _run_script("--all-projects", "--yes", bin_dir=bin_dir, cwd=this_repo)
+
+        assert result.returncode == 0
+        calls = _read_update_log(update_log)
+        assert len(calls) == 1
+        assert calls[0]["plugin"] == "tool@claude-config"
+        assert calls[0]["scope"] == "project"
+        assert calls[0]["cwd"] == str(other_repo.resolve())
+
+    def test_missing_project_path_skipped_with_warning(self, tmp_path: Path) -> None:
+        marketplace = _make_marketplace_dir(
+            tmp_path / "marketplace",
+            [{"name": "tool", "version": "2.0.0"}],
+        )
+        update_log = tmp_path / "updates.log"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        this_repo = tmp_path / "this-repo"
+        this_repo.mkdir()
+        missing_repo = tmp_path / "deleted-repo"  # never created on disk
+
+        _make_claude_shim(
+            bin_dir, marketplace,
+            [_make_installed_plugin("tool", "1.0.0", project_path=str(missing_repo))],
+            update_log,
+        )
+
+        result = _run_script("--all-projects", "--yes", bin_dir=bin_dir, cwd=this_repo)
+
+        assert result.returncode == 1
+        assert _read_update_log(update_log) == []
+        assert str(missing_repo) in result.stderr
+
+    def test_one_failure_does_not_block_other_project_updates(self, tmp_path: Path) -> None:
+        marketplace = _make_marketplace_dir(
+            tmp_path / "marketplace",
+            [
+                {"name": "flaky", "version": "2.0.0"},
+                {"name": "stable", "version": "2.0.0"},
+            ],
+        )
+        update_log = tmp_path / "updates.log"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        this_repo = tmp_path / "this-repo"
+        this_repo.mkdir()
+        repo_a = tmp_path / "repo-a"
+        repo_a.mkdir()
+        repo_b = tmp_path / "repo-b"
+        repo_b.mkdir()
+        _make_claude_shim(
+            bin_dir, marketplace,
+            [
+                _make_installed_plugin("flaky", "1.0.0", project_path=str(repo_a)),
+                _make_installed_plugin("stable", "1.0.0", project_path=str(repo_b)),
+            ],
+            update_log,
+            fail_for_plugin_ids=frozenset({"flaky@claude-config"}),
+        )
+
+        result = _run_script("--all-projects", "--yes", bin_dir=bin_dir, cwd=this_repo)
+
+        assert result.returncode == 1
+        calls = {c["plugin"]: c for c in _read_update_log(update_log)}
+        assert set(calls) == {"flaky@claude-config", "stable@claude-config"}
+        assert calls["flaky@claude-config"]["outcome"] == "failure"
+        assert calls["flaky@claude-config"]["cwd"] == str(repo_a.resolve())
+        assert calls["stable@claude-config"]["outcome"] == "success"
+        assert calls["stable@claude-config"]["cwd"] == str(repo_b.resolve())
+        assert "flaky" in result.stderr
+
+    def test_user_scope_entries_run_without_cd_alongside_project_sweep(self, tmp_path: Path) -> None:
+        marketplace = _make_marketplace_dir(
+            tmp_path / "marketplace",
+            [
+                {"name": "tool", "version": "2.0.0"},
+                {"name": "global-tool", "version": "2.0.0"},
+            ],
+        )
+        update_log = tmp_path / "updates.log"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        this_repo = tmp_path / "this-repo"
+        this_repo.mkdir()
+        other_repo = tmp_path / "other-repo"
+        other_repo.mkdir()
+        _make_claude_shim(
+            bin_dir, marketplace,
+            [
+                _make_installed_plugin("tool", "1.0.0", project_path=str(other_repo)),
+                _make_installed_plugin("global-tool", "1.0.0", scope="user"),
+            ],
+            update_log,
+        )
+
+        result = _run_script("--all-projects", "--yes", bin_dir=bin_dir, cwd=this_repo)
+
+        assert result.returncode == 0
+        calls = {c["plugin"]: c for c in _read_update_log(update_log)}
+        assert set(calls) == {"tool@claude-config", "global-tool@claude-config"}
+        assert calls["tool@claude-config"]["scope"] == "project"
+        assert calls["tool@claude-config"]["cwd"] == str(other_repo.resolve())
+        assert calls["global-tool@claude-config"]["scope"] == "user"
+        assert calls["global-tool@claude-config"]["cwd"] == str(this_repo.resolve())
 
 
 class TestBadArguments:
