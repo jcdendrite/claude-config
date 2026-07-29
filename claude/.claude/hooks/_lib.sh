@@ -469,6 +469,18 @@ _lib_valid_session_id_component() {
 # deny, a 1 withholds the exception and the deny stands; where the gate has
 # further checks below, a 1 just means those checks decide instead.
 #
+# Deliberately tree-agnostic, and narrower than it looks. The marker path holds
+# a session id and no repo hash, so a live marker releases its gate for every
+# repo and worktree the session touches while the owning skill runs — unlike
+# the completion markers, which _marker_lib_repo_hash binds to one tree. That
+# is the intended reading of "a review is running in THIS process right now",
+# but it rests on the session staying in one tree for the length of the bypass
+# window, which entering a worktree mid-session breaks. Two known consequences,
+# both predating this function's extraction: a skill that halts between its
+# activate and deactivate steps leaves the gate released until the process
+# exits, and a tree switch inside the window carries the release across.
+# Scoping these markers by repo hash is the fix if that becomes load-bearing.
+#
 # Usage: if _lib_active_bypass_marker_live ".respond-pr-active.d" "$SESSION_ID"; then exit 0; fi
 _lib_active_bypass_marker_live() {
   # Arity guard. Under `set -u` a call that omits an argument aborts the whole
