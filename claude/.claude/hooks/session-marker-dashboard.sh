@@ -25,6 +25,16 @@ if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
 
+# SESSION_ID feeds each marker_status path below as a path component ("../"
+# would probe a caller-chosen path's existence/mtime); fail the same way an
+# empty id already does.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+if ! _lib_valid_session_id_component "$SESSION_ID"; then
+  exit 0
+fi
+
 marker_status() {
   local marker="$1"
   if [ ! -f "$marker" ]; then

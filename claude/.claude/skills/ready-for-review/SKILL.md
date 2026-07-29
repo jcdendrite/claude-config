@@ -32,6 +32,7 @@ If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStar
 
 ## 1. Preconditions (halt on fail)
 
+- **Session is anchored in the branch's worktree.** Under worktree enforcement, confirm the working directory is this branch's linked worktree and not the main checkout — an unanchored session runs verification, writes review markers, and dispatches subagents against the main checkout on the default branch, so every check below passes against the wrong tree (and the next bullet fails with a misleading reason). Re-enter the worktree per `branch-management/SKILL.md` § "Anchor the session in the worktree", then restart this step.
 - Current branch is not the default branch (`main` / `master` / `develop`).
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base:

@@ -6,7 +6,15 @@ import re
 import subprocess
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, bash_input, run_hook
+from helpers import (
+    CANARY_CONTENT,
+    HOOKS_DIR,
+    SCRIPTS_DIR,
+    TRAVERSAL_SESSION_ID,
+    bash_input,
+    plant_traversal_canary,
+    run_hook,
+)
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
@@ -61,6 +69,77 @@ class TestMarkerScriptSessionMissing:
         assert stray == [], (
             f"marker.sh wrote a stray marker when session file was absent: {stray}"
         )
+
+
+class TestMarkerScriptSessionIdValidation:
+    """The session file's CONTENT — not just its presence — feeds every
+    write/activate/deactivate path as a filesystem path component. A session
+    file holding a value like '../canary' (e.g. corrupted, or a hostile
+    subagent racing to write its own sessions/<pid> entry) must be rejected
+    by the same _resolve_session_id() chokepoint that handles a missing
+    session file, rather than flowing into `rm -f`/`>` against a path outside
+    the marker/active directories."""
+
+    def _seed_session(self, home, sid: str):
+        sessions_dir = home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / str(os.getpid())).write_text(sid)
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["write", "code-review"],
+            ["write", "skill-review"],
+            ["write", "plan-review"],
+            ["write", "ready-for-review"],
+            ["activate", "plan-review"],
+            ["activate", "ready-for-review"],
+            ["activate", "respond-pr"],
+            ["activate", "memory-skill"],
+            ["deactivate", "plan-review"],
+            ["deactivate", "ready-for-review"],
+            ["deactivate", "respond-pr"],
+            ["deactivate", "memory-skill"],
+        ],
+    )
+    def test_exits_2_when_session_id_is_path_escaping(self, isolated_home, git_repo, args):
+        self._seed_session(isolated_home, TRAVERSAL_SESSION_ID)
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, (
+            f"marker.sh {' '.join(args)} should exit 2 for a path-escaping "
+            f"session id, got {result.returncode}. stderr: {result.stderr!r}"
+        )
+
+    def test_no_marker_written_for_path_escaping_session_id(self, isolated_home, git_repo):
+        self._seed_session(isolated_home, TRAVERSAL_SESSION_ID)
+        canary = plant_traversal_canary(isolated_home)
+
+        _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
+
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], (
+            f"marker.sh wrote a stray marker for a path-escaping session id: {stray}"
+        )
+        assert canary.read_text() == CANARY_CONTENT, (
+            "a path-escaping session id must not let 'write' touch a file "
+            "outside the markers directory"
+        )
+
+    def test_no_active_marker_written_for_path_escaping_session_id(
+        self, isolated_home, git_repo
+    ):
+        self._seed_session(isolated_home, TRAVERSAL_SESSION_ID)
+        canary = plant_traversal_canary(isolated_home)
+
+        _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        active_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        stray = list(active_dir.iterdir()) if active_dir.exists() else []
+        assert stray == [], (
+            f"marker.sh wrote a stray active marker for a path-escaping session id: {stray}"
+        )
+        assert canary.read_text() == CANARY_CONTENT
 
 
 class TestMarkerScriptHappyPath:

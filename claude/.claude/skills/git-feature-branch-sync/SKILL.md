@@ -16,7 +16,7 @@ Examples below use `main` / `origin/main` as the default-branch
 placeholder. Check with `git symbolic-ref refs/remotes/origin/HEAD`.
 
 Pre-creation concerns (branch naming, starting from a fresh default
-tip) live in the `branch-creation` skill.
+tip) live in the `branch-management` skill.
 
 ## Detecting divergence
 

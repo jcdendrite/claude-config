@@ -27,7 +27,22 @@ _lib_parse_tool_input_or_deny "Blocked by routing-read gate: could not parse too
 [ "$TOOL_NAME" = "Agent" ] || exit 0
 
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
+# Absent session_id (older Claude Code versions, payload-schema drift) has no
+# marker to check at all, so there is nothing to distinguish "plan-review
+# active" from "not active" and the safer default is to allow.
 [ -n "$SESSION_ID" ] || exit 0
+
+# An id that is not a safe single path component (e.g. containing "../") is
+# never concatenated into a marker path, so it leaves this hook in the same
+# position as an absent one: ACTIVE_MARKER is what distinguishes "plan-review
+# active" from "not active", and without a usable id that question cannot be
+# answered. Allow, for the same reason the absent case allows.
+#
+# Note this is the opposite default from the bypass-shaped gates
+# (require-memory-skill.sh, require-respond-pr.sh), where the marker grants an
+# exception to a standing deny and an unusable id must therefore withhold it.
+# Here the marker turns enforcement ON, so an unusable id must not turn it on.
+_lib_valid_session_id_component "$SESSION_ID" || exit 0
 
 # Only enforce during an active plan-review session.
 ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
@@ -36,7 +51,7 @@ ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
 # Allow if a fresh (< 60 min) routing-read marker exists.
 ROUTING_MARKER="$HOME/.claude/.plan-review-routing-read.d/$SESSION_ID"
 if [ -f "$ROUTING_MARKER" ] && [ -n "$(find "$ROUTING_MARKER" -mmin -60 2>/dev/null)" ]; then
-    exit 0
+  exit 0
 fi
 
 emit_deny "Agent spawn blocked by plan-review routing gate: Read ~/.claude/skills/plan-review/ROUTING.md before spawning any specialist agent. All spawn criteria (always-spawn rules, item ownership, reconciliation logic) live exclusively in ROUTING.md."

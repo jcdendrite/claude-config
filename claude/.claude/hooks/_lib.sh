@@ -435,6 +435,117 @@ _lib_worktree_enforcement_active() {
   return 1
 }
 
+# _lib_valid_session_id_component SESSION_ID
+# Returns 0 (true) iff SESSION_ID is safe to use as a single filesystem path
+# component (e.g. "$STATE_DIR/$SESSION_ID"). Every call site that builds such
+# a path takes SESSION_ID straight from the hook payload's `.session_id` with
+# no further sanitization, so a value containing ".." or "/" escapes the
+# intended directory once concatenated in — turning an `rm -f`, `>`, or
+# `touch` against that path into an operation against a caller-chosen path
+# instead. Harness session ids are UUIDs, so this conservative allow-list
+# (letters, digits, underscore, hyphen) has ample room without ever needing
+# '.' or '/'. Empty input is rejected — callers must not fall through to an
+# unvalidated empty SESSION_ID.
+_lib_valid_session_id_component() {
+  local session_id="$1"
+  [[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]]
+}
+
+# _lib_active_bypass_marker_live MARKER_DIR_NAME SESSION_ID
+# Returns 0 (true) iff $HOME/.claude/MARKER_DIR_NAME/SESSION_ID holds the PID
+# of a live process — that is, the skill which writes this marker is running
+# right now, in this session. Returns 1 in every other case, and evicts the
+# marker as an orphan when it exists but its stored PID is dead or unreadable,
+# so a session that died before its cleanup step cannot wedge a gate open.
+#
+# Session-id validation lives here rather than at each call site, which makes
+# "never build a filesystem path out of an unvalidated session id" a property
+# of this function instead of something every caller has to remember. An empty
+# or path-escaping id returns 1 having touched the filesystem not at all.
+#
+# This function reports only whether the marker is live; it takes no position
+# on the tool call itself. What a 1 means is the caller's to decide, and it
+# differs by gate shape: where the marker grants an exception to a standing
+# deny, a 1 withholds the exception and the deny stands; where the gate has
+# further checks below, a 1 just means those checks decide instead.
+#
+# Deliberately tree-agnostic, and narrower than it looks. The marker path holds
+# a session id and no repo hash, so a live marker releases its gate for every
+# repo and worktree the session touches while the owning skill runs — unlike
+# the completion markers, which _marker_lib_repo_hash binds to one tree. That
+# is the intended reading of "a review is running in THIS process right now".
+#
+# The weak part is the liveness test rather than the keying. The stored PID is
+# the session's, and a session outlives any one skill invocation, so the bypass
+# outlasts what it was scoped to in two ways: a skill that halts between its
+# activate and deactivate steps leaves the gate released until the process
+# exits, and a tree switch inside the window carries the release across. Both
+# predate this function's extraction. Bounding the marker's age would cover
+# both — require-routing-read.sh already gates a sibling marker that way, and
+# session-marker-dashboard.sh already reports these as stale past an hour with
+# no gate acting on it. Repo-keying the path would cover only the second.
+#
+# Usage: if _lib_active_bypass_marker_live ".respond-pr-active.d" "$SESSION_ID"; then exit 0; fi
+_lib_active_bypass_marker_live() {
+  # Arity guard. Under `set -u` a call that omits an argument aborts the whole
+  # hook process at expansion time rather than returning here, and a gate hook
+  # that dies before emitting a decision has no defined disposition. Degrade a
+  # malformed call to the same withheld-bypass outcome as every other rejection
+  # path instead. `[ ]` rather than `(( ))`: a standalone arithmetic command
+  # evaluating to zero is itself a non-zero exit status, which `set -e` callers
+  # would abort on.
+  [ "$#" -eq 2 ] || return 1
+  local marker_dir_name="$1" session_id="$2"
+  _lib_valid_session_id_component "$session_id" || return 1
+  # No empty-$HOME guard here, unlike _lib_worktree_enforcement_active above.
+  # That one probes a path whose mere presence force-enables enforcement for
+  # every repo on the machine, so an empty $HOME there fails toward more
+  # enforcement from a root-writable path. This function's sinks fail the other
+  # way: with an empty $HOME the marker read simply misses and the bypass is
+  # withheld, leaving the gate enforcing.
+  local marker="$HOME/.claude/$marker_dir_name/$session_id"
+  [ -f "$marker" ] || return 1
+  local stored_pid
+  # `|| true` keeps this line's status irrelevant to a caller's shell options.
+  # The pipeline reports failure under `pipefail` when `cat` loses a race with
+  # the marker's removal even though `tr` succeeds on empty stdin; a `set -e`
+  # caller would then abort mid-gate-check rather than fall through to the
+  # eviction below. No caller sets `-e` today — this keeps that from mattering.
+  stored_pid=$(cat "$marker" 2>/dev/null | tr -d '[:space:]') || true
+  if [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$marker" 2>/dev/null
+  return 1
+}
+
+# _lib_first_live_linked_worktree REPO_ROOT
+# Prints the path of the first linked worktree of REPO_ROOT whose directory is
+# present on disk and returns 0; prints nothing and returns 1 when there is
+# none. `git worktree list` still reports entries whose directory was deleted
+# but not pruned, so each candidate is tested rather than trusting the entry
+# count. Callers use this to distinguish "session is in the main tree while the
+# work belongs in a worktree" from "this repo has no worktree at all" — the
+# latter is the ordinary state just before `git worktree add`, and carries no
+# wrong-tree risk because there is no second tree to confuse the first with.
+# Parses newline-delimited output, so a worktree path containing a literal
+# newline (pathological, and unhandled here) would be split across two lines
+# and matched incorrectly; git's own docs recommend `-z` for that case.
+_lib_first_live_linked_worktree() {
+  local repo_root="$1" worktree_path
+  [ -n "$repo_root" ] || return 1
+  while IFS= read -r worktree_path; do
+    [ -n "$worktree_path" ] || continue
+    [ "$worktree_path" = "$repo_root" ] && continue
+    if [ -d "$worktree_path" ]; then
+      printf '%s' "$worktree_path"
+      return 0
+    fi
+  done < <(_lib_capped git -C "$repo_root" worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{print substr($0, 10)}')
+  return 1
+}
+
 # _lib_stray_marker_hint REPO_ROOT
 # Returns a hint string when the repo-root sentinel exists in the working
 # tree but is not tracked in the git index — a stray copy still enforces

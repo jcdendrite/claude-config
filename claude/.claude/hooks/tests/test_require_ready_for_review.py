@@ -10,6 +10,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
+    assert_gate_handles_traversal_session_id,
     bash_input,
     edit_input,
     extract_skill_command,
@@ -302,6 +303,23 @@ class TestRequireReadyForReview:
                 cwd=repo_on_feature_branch,
             )
             == "deny"
+        )
+
+    def test_traversal_session_id_denies_and_does_not_touch_marker_dir(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """A session_id of '../canary' must not read through the traversal:
+        ACTIVE_MARKER concatenates it into .ready-for-review-active.d/../canary,
+        which resolves to a file one level up ($HOME/.claude/canary). The
+        invalid id must skip the active-marker bypass entirely and fall
+        through to the completion-marker check, which finds no match here
+        and denies."""
+        assert_gate_handles_traversal_session_id(
+            READY_FOR_REVIEW_HOOK,
+            lambda sid: bash_input("git push origin feature", session_id=sid),
+            isolated_home,
+            expected_decision="deny",
+            cwd=repo_on_feature_branch,
         )
 
     # -- Completion-marker check ------------------------------------------
