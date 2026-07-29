@@ -239,6 +239,10 @@ If any items were flagged by B7 (scope creep), include an **Out of Scope** secti
 
 If any spawned reviewer's ledger cross-check finds the revision touching a row already confirmed in a prior round, include a **Previously-settled, now reopened** section naming the row and what changed — this surfaces the human's own version of the failure (re-litigating something already decided), not just the agent's.
 
+<!-- DISPOSITION_RULE:plan-review-fix-or-ask start -->
+**Enforcement-invariant findings are fix-or-ask.** When a finding is that the plan opens a path around an enforcement invariant — a gate, hook, permission check, required-approval, or marker guarantee that some mechanism currently makes unbypassable — the verdict may not be "Approve with changes: disclose in PR body." This finding class has exactly two dispositions: **Request changes** until the plan closes the hole, or a blocking one-line decision point via `AskUserQuestion` (e.g., "this design lets a UI flip bypass the full gate — accept?") before the verdict is finalized. Disclosure without a fix or explicit user acceptance is not informed consent — approval of a plan does not surface a hole buried mid-document to the human reading it.
+<!-- DISPOSITION_RULE:plan-review-fix-or-ask end -->
+
 End with a verdict: **Approve**, **Approve with changes** (list what), or **Request changes** (list blockers).
 
 ## Record review completion + deactivate

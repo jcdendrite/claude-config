@@ -1,7 +1,8 @@
 """Skill eval harness for claude-config.
 
-Measures each skill's trigger-cases.json against its declared TRIGGER /
-DO NOT TRIGGER conditions, using one of three methods declared per case file:
+Measures each skill's *-cases.json against its declared TRIGGER / DO NOT
+TRIGGER conditions (or, for disposition-fidelity, its declared disposition
+rule), using one of four methods declared per case file:
 
 - runtime: spawn `claude -p` and watch for the Skill tool to fire. Measures
   real auto-dispatch; faithful only when the skill triggers headlessly.
@@ -13,6 +14,12 @@ DO NOT TRIGGER conditions, using one of three methods declared per case file:
   Measures whether the model actually delegates to a subagent when given a full
   task scenario. Used for skills like subagent-delegation whose effect is the
   parent's tool choice, not a Skill invocation.
+- disposition-fidelity: ask `claude -p` to review a fixed scenario twice —
+  once with no guidance (baseline) and once with the skill's governing rule
+  text extracted live from its SKILL.md (treatment) — then judge each
+  review's disposition against the case's rubric. Measures whether the rule
+  text actually drives the correct disposition, not just whether it fires.
+  See evals/README.md's disposition-fidelity section for the two-layer model.
 
 LOCAL USE ONLY — never run in CI. Uses the session's Claude subscription
 auth (no ANTHROPIC_API_KEY required; no per-token charge on Max plan).
@@ -57,12 +64,17 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 # Measurement method declared per case file. `runtime` spawns `claude -p` and
 # watches for the Skill tool to fire; `description-fidelity` asks `claude -p` to
 # classify which skill a query should match; `behavioral-dispatch` spawns
-# `claude -p` and watches for the Task tool to fire. See evals/README.md. A
+# `claude -p` and watches for the Task tool to fire; `disposition-fidelity`
+# asks `claude -p` to review a scenario with and without the skill's governing
+# rule text and judges each review's disposition. See evals/README.md. A
 # case file must declare exactly one of these.
 RUNTIME_METHOD = "runtime"
 DESCRIPTION_FIDELITY_METHOD = "description-fidelity"
 BEHAVIORAL_DISPATCH_METHOD = "behavioral-dispatch"
-VALID_METHODS = frozenset((RUNTIME_METHOD, DESCRIPTION_FIDELITY_METHOD, BEHAVIORAL_DISPATCH_METHOD))
+DISPOSITION_FIDELITY_METHOD = "disposition-fidelity"
+VALID_METHODS = frozenset((
+    RUNTIME_METHOD, DESCRIPTION_FIDELITY_METHOD, BEHAVIORAL_DISPATCH_METHOD, DISPOSITION_FIDELITY_METHOD,
+))
 
 # Skill-tool detection: Claude Code auto-triggers a skill by calling the Skill tool.
 # Read is NOT included — its input is a file path, not a skill name.
@@ -89,10 +101,10 @@ def find_skill_dir(skill_name: str) -> Path | None:
 
 def discover_case_files() -> list[Path]:
     results = []
-    for p in SKILLS_DIR.glob("*/evals/trigger-cases.json"):
+    for p in SKILLS_DIR.glob("*/evals/*-cases.json"):
         results.append(p)
     if PLUGINS_DIR.exists():
-        for p in PLUGINS_DIR.glob("*/skills/*/evals/trigger-cases.json"):
+        for p in PLUGINS_DIR.glob("*/skills/*/evals/*-cases.json"):
             results.append(p)
     return sorted(results)
 
@@ -703,6 +715,387 @@ def run_dispatch_sample(args: tuple) -> tuple[str | None, list[str]]:
     return (skill_name if dispatched else None, [])
 
 
+# --- disposition-fidelity measurement -----------------------------------------
+#
+# Neither trigger detection nor classification: this measures whether a skill's
+# governing rule text actually drives the correct review *disposition*. Each
+# sample runs two `claude -p` reviews of the same scenario — baseline (a
+# neutral frame only, no rule) and treatment (the neutral frame plus the rule
+# text extracted live from the current SKILL.md) — then a third `claude -p`
+# call judges each review's disposition against the case's rubric. See
+# evals/README.md's disposition-fidelity section for the full design rationale
+# (neutral-frame isolation, the routine gate, the drift alarm).
+
+# Gate thresholds for score_disposition_results(). Heuristic acceptance
+# thresholds for a local-only dev tool (not a production SLA or vendor-
+# specified value — CLAUDE.md's numeric-literal citation requirement is
+# scoped to network/timeout/retry contexts, which these aren't).
+DISPOSITION_MIN_EFFECTIVE_SAMPLES = 6  # below this, exclusions hollow the denominator too far to trust the rate
+# 0.8 (not 0.5): a correct rule blocks near-always, so this catches a
+# ~0.95 -> ~0.55 efficacy regression that a lower bar would let pass forever.
+DISPOSITION_PASS_THRESHOLD = 0.8
+# Non-gating: baseline creeping to this rate means the no-guidance control is
+# starting to block on its own — re-author the fixture.
+DISPOSITION_DRIFT_ALARM_THRESHOLD = 0.3
+
+# Neutral per-skill task frame. Deliberately says nothing about the disposition
+# rule under test — it is the no-guidance control half of the baseline/
+# treatment pair. Keyed by skill_name because plan-review and code-review
+# review different artifacts (a plan vs. a diff).
+DISPOSITION_FRAMES: dict[str, str] = {
+    "plan-review": (
+        "You are reviewing an implementation plan before it proceeds to execution. "
+        "Read the plan below and decide your review disposition: Approve, Approve "
+        "with changes, or Request changes. State your verdict as the last line of "
+        "your reply, in the form 'Verdict: <your verdict>'."
+    ),
+    "code-review": (
+        "You are reviewing a code diff before it merges. Read the diff below and "
+        "decide your review disposition for each finding: ADDRESS (fix it before "
+        "merge, or raise a blocking stop-and-ask) or DEFER (note it and proceed). "
+        "State your verdict as the last line of your reply, in the form "
+        "'Verdict: <your verdict>'."
+    ),
+}
+
+
+def extract_governing_rule(skill_md_path: Path, anchor_name: str) -> str:
+    """Extract the text of a `<!-- DISPOSITION_RULE:<anchor_name> ... -->` anchor block.
+
+    Returns the text strictly between the start and end anchor comments, with
+    the anchor comment lines themselves excluded. Keyed specifically on the
+    `DISPOSITION_RULE:` prefix so this never matches the pre-existing
+    `HOOK_TEST_FIXTURE` comments already present in these same SKILL.md files.
+
+    Raises ValueError — never returns an empty string or silently no-ops — when
+    the anchor is missing, misspelled, duplicated, or only one of start/end is
+    present. A silent no-op here would make treatment == baseline and destroy
+    the eval's signal without any indication why; a silently-picked duplicate
+    would extract text from the wrong start/end pair without any indication
+    the SKILL.md contains two blocks under the same name.
+    """
+    text = skill_md_path.read_text()
+    start_marker = f"<!-- DISPOSITION_RULE:{anchor_name} start -->"
+    end_marker = f"<!-- DISPOSITION_RULE:{anchor_name} end -->"
+    start_count = text.count(start_marker)
+    end_count = text.count(end_marker)
+    if start_count > 1 or end_count > 1:
+        raise ValueError(
+            f"DISPOSITION_RULE anchor {anchor_name!r} in {skill_md_path}: "
+            f"appears more than once (start x{start_count}, end x{end_count}) — "
+            "duplicate anchor names are not supported, rename one of them"
+        )
+    start_idx = text.find(start_marker)
+    end_idx = text.find(end_marker)
+    if start_idx == -1 or end_idx == -1:
+        raise ValueError(
+            f"DISPOSITION_RULE anchor {anchor_name!r} not found (or incomplete) in "
+            f"{skill_md_path} — start present: {start_idx != -1}, end present: {end_idx != -1}"
+        )
+    if end_idx < start_idx:
+        raise ValueError(
+            f"DISPOSITION_RULE anchor {anchor_name!r} in {skill_md_path}: "
+            "end marker appears before start marker"
+        )
+    return text[start_idx + len(start_marker):end_idx].strip()
+
+
+def build_disposition_prompt(frame: str, scenario: str, rule_text: str | None) -> str:
+    """Assemble a disposition-fidelity review prompt.
+
+    Baseline arm passes rule_text=None (neutral frame + scenario only).
+    Treatment arm passes the anchor text extracted live via
+    extract_governing_rule().
+    """
+    parts = [frame, f"\n<scenario>\n{scenario}\n</scenario>"]
+    if rule_text is not None:
+        parts.append(f"\n<governing_rule>\n{rule_text}\n</governing_rule>")
+    return "\n".join(parts)
+
+
+def parse_disposition_answer(raw_output: str) -> str | None:
+    """Parse a disposition judge's reply into "BLOCKING", "PERMISSIVE", or None.
+
+    Mirrors parse_classification_answer's parsing style: last non-empty line,
+    punctuation/quotes stripped, case-insensitive match. The strip set is
+    wider than parse_classification_answer's — it also covers `!`, `,`, and
+    markdown emphasis (`**BLOCKING**`), since a judge asked for a bare verdict
+    word plausibly still wraps it in sentence or markdown punctuation. Falls
+    back to a whole-text `\bBLOCKING\b` / `\bPERMISSIVE\b` search when the
+    last line keeps the label but embeds it in a short sentence (e.g.
+    "Verdict: BLOCKING") rather than being the bare word — a realistic
+    non-compliance mode for a judge asked for a one-word reply. Unlike
+    parse_classification_answer's fallback (which only risks masking a
+    shorter name inside a longer one, resolved by longest-name-first), a
+    disposition reply can contain BOTH labels via ordinary negation prose
+    ("not blocking, it's clearly permissive") — picking one by any fixed
+    priority would silently invert the judge's actual verdict. So the
+    fallback requires *exactly one* label present; both-or-neither returns
+    None. Returns None for neither/both label — the sample is excluded from
+    the denominator, not folded into either arm (see run_disposition_sample())
+    — so an under-stripped parser would silently manifest as extra exclusions
+    rather than a visible parse failure or a mislabeled sample.
+    """
+    text = raw_output.strip()
+    if not text:
+        return None
+
+    last_line = ""
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            last_line = line.strip().strip("\"'`.,!* ").upper()
+            break
+    if last_line in ("BLOCKING", "PERMISSIVE"):
+        return last_line
+
+    # Best-effort fallback for a prose-wrapped answer, searching the whole
+    # text rather than last-line-only since the label can land anywhere in a
+    # judge reply that ignored the one-word-only instruction. Requires
+    # exactly one label present — see the both-labels note above.
+    text_upper = text.upper()
+    found_labels = [label for label in ("BLOCKING", "PERMISSIVE") if re.search(rf"\b{label}\b", text_upper)]
+    return found_labels[0] if len(found_labels) == 1 else None
+
+
+def judge_disposition(review_output: str, rubric: str, judge_model: str, cwd: Path) -> str | None:
+    """Classify a review's disposition as BLOCKING or PERMISSIVE against a case rubric.
+
+    A second `claude -p` call, mirroring run_description_fidelity_sample's
+    subprocess.run shape exactly (blocking call, plain text output, no
+    --output-format) since this is a plain classification question, not a
+    dispatch measurement. cwd must be the isolated disposition project — the
+    same "repo's real hooks/skills fire" concern that requires an isolated
+    cwd for the review calls applies equally here; a judge call is still a
+    `claude -p` invocation subject to whatever project settings its cwd carries.
+
+    Returns None (excluded from the denominator, per run_disposition_sample())
+    on timeout, a non-zero exit code, or empty stdout — not just on an
+    unparseable label. subprocess.run does not raise on a non-zero exit unless
+    check=True is passed; without the returncode check, a failed call (auth
+    expiry, rate limit, CLI crash) that still writes something to stdout would
+    otherwise be judged as if it were a real answer, silently corrupting the
+    block-rate gate instead of being excluded.
+    """
+    prompt = (
+        "You are classifying a review's stated disposition against a rubric.\n\n"
+        f"<rubric>\n{rubric}\n</rubric>\n\n"
+        f"<review>\n{review_output}\n</review>\n\n"
+        "Based only on the rubric above, is the review's disposition BLOCKING or "
+        "PERMISSIVE? Reply with exactly one line containing only the word "
+        "BLOCKING or PERMISSIVE. Do not explain."
+    )
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", prompt, "--model", judge_model, "--no-session-persistence"],
+            cwd=str(cwd),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=SAMPLE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+
+    return parse_disposition_answer(proc.stdout)
+
+
+def run_disposition_sample(args: tuple) -> tuple[bool | None, bool | None]:
+    """Run one disposition-fidelity sample: baseline + treatment review, each judged.
+
+    Called from worker processes. args is a positional 7-tuple:
+        (frame, scenario, rule_text, rubric, disposition_project, model, judge_model).
+    Both this unpack and the construction in run_disposition_case() must be
+    updated together.
+
+    Returns (treatment_blocked, baseline_blocked). Either is None when its
+    judge call times out, errors, or returns neither label — excluded from
+    the denominator, never folded into a label (see run_disposition_case()).
+
+    Known limitation: unlike prime_dispatch_session's warm-dispatch path,
+    these calls pass --no-session-persistence (no need to --resume them), so
+    they do not leak a ~/.claude/projects/<hash> session-store directory the
+    way run_description_fidelity_sample's isolated_project calls still do
+    (that pre-existing leak is out of scope here — see evals/README.md).
+    """
+    frame, scenario, rule_text, rubric, disposition_project, model, judge_model = args
+
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+    def _run_review(prompt: str) -> str | None:
+        try:
+            proc = subprocess.run(
+                ["claude", "-p", prompt, "--model", model, "--no-session-persistence"],
+                cwd=str(disposition_project),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=SAMPLE_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+        # A non-zero exit or empty stdout means the review never actually
+        # completed (auth expiry, rate limit, CLI crash) — treat it the same
+        # as a timeout (excluded downstream) rather than feeding a failed
+        # call's leftover stdout to the judge as if it were a real review.
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None
+        return proc.stdout
+
+    baseline_output = _run_review(build_disposition_prompt(frame, scenario, None))
+    treatment_output = _run_review(build_disposition_prompt(frame, scenario, rule_text))
+
+    baseline_answer = (
+        judge_disposition(baseline_output, rubric, judge_model, disposition_project)
+        if baseline_output is not None else None
+    )
+    treatment_answer = (
+        judge_disposition(treatment_output, rubric, judge_model, disposition_project)
+        if treatment_output is not None else None
+    )
+
+    label_to_blocked = {"BLOCKING": True, "PERMISSIVE": False}
+    return label_to_blocked.get(treatment_answer), label_to_blocked.get(baseline_answer)
+
+
+def score_disposition_results(treatment_results: list[bool], baseline_results: list[bool]) -> dict:
+    """Aggregate one case's non-excluded sample labels into rates and a verdict.
+
+    Pure function — shared by run_disposition_case() and its unit tests, the
+    same extraction pattern score_classification() uses for run_case(). Both
+    input lists have already had excluded (None) samples dropped by the
+    caller; this function only does the rate math, the
+    DISPOSITION_MIN_EFFECTIVE_SAMPLES inconclusive floor, the
+    DISPOSITION_PASS_THRESHOLD gate, and the DISPOSITION_DRIFT_ALARM_THRESHOLD
+    diagnostic — none of which needs a ProcessPoolExecutor or a live claude -p
+    call to test.
+    """
+    treatment_n = len(treatment_results)
+    baseline_n = len(baseline_results)
+    treatment_block_rate = (sum(treatment_results) / treatment_n) if treatment_n else 0.0
+    baseline_block_rate = (sum(baseline_results) / baseline_n) if baseline_n else 0.0
+
+    inconclusive = treatment_n < DISPOSITION_MIN_EFFECTIVE_SAMPLES
+    passed = (not inconclusive) and treatment_block_rate >= DISPOSITION_PASS_THRESHOLD
+    drift_alarm = baseline_block_rate >= DISPOSITION_DRIFT_ALARM_THRESHOLD
+
+    return {
+        "treatment_block_rate": treatment_block_rate,
+        "baseline_block_rate": baseline_block_rate,
+        "inconclusive": inconclusive,
+        "passed": passed,
+        "drift_alarm": drift_alarm,
+    }
+
+
+def run_disposition_case(
+    case: dict,
+    skill_name: str,
+    run_context: dict,
+    model: str,
+    judge_model: str,
+    samples: int,
+    workers: int,
+    verbose: bool,
+) -> dict:
+    """Run samples for one disposition-fidelity case and score both arms.
+
+    A dedicated two-rate aggregator — run_case()'s single trigger_rate shape
+    doesn't fit a baseline/treatment pair, so this owns its own scoring, gate,
+    and verbose print (run_case()'s verbose print does not apply here).
+
+    Gate: passed = treatment_block_rate >= DISPOSITION_PASS_THRESHOLD over
+    non-excluded treatment samples. If the post-exclusion treatment sample
+    count falls under DISPOSITION_MIN_EFFECTIVE_SAMPLES, the case is marked
+    inconclusive rather than pass/fail. baseline_block_rate is diagnostic,
+    not gating: a non-gating drift alarm prints when it crosses
+    DISPOSITION_DRIFT_ALARM_THRESHOLD ("control now blocks on its own"),
+    catching silent fixture rot a static authoring `note` cannot. The rate
+    math and gate itself live in score_disposition_results() — this function
+    owns only sample orchestration and the print/return formatting.
+    """
+    missing_fields = [f for f in ("scenario_file", "rule_anchor", "judge_rubric") if not case.get(f)]
+    if missing_fields:
+        raise ValueError(
+            f"disposition-fidelity case {case.get('id', '<no id>')!r} for skill {skill_name!r} "
+            f"is missing required field(s): {missing_fields} — matches the loud-failure discipline "
+            "extract_governing_rule() documents for itself; test_trigger_cases_files_well_formed "
+            "should have caught this in the normal pytest suite before it reached a live run"
+        )
+
+    case_id = case.get("id", case["scenario_file"])
+    scenario = (REPO_ROOT / case["scenario_file"]).read_text()
+    skill_dir = find_skill_dir(skill_name)
+    if skill_dir is None:
+        raise ValueError(f"disposition-fidelity case {case_id!r}: skill {skill_name!r} not found")
+    if skill_name not in DISPOSITION_FRAMES:
+        raise ValueError(
+            f"disposition-fidelity case {case_id!r}: no DISPOSITION_FRAMES entry for "
+            f"skill {skill_name!r} — add one before authoring a case file for this skill"
+        )
+    rule_text = extract_governing_rule(skill_dir / "SKILL.md", case["rule_anchor"])
+    frame = DISPOSITION_FRAMES[skill_name]
+    rubric = case["judge_rubric"]
+
+    sample_arg = (frame, scenario, rule_text, rubric, run_context["disposition_project"], model, judge_model)
+    sample_args = [sample_arg] * samples
+
+    treatment_results: list[bool] = []
+    baseline_results: list[bool] = []
+    excluded_treatment = 0
+    excluded_baseline = 0
+
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(run_disposition_sample, a) for a in sample_args]
+        for fut in as_completed(futures):
+            treatment_blocked, baseline_blocked = fut.result()
+            if treatment_blocked is None:
+                excluded_treatment += 1
+            else:
+                treatment_results.append(treatment_blocked)
+            if baseline_blocked is None:
+                excluded_baseline += 1
+            else:
+                baseline_results.append(baseline_blocked)
+
+    score = score_disposition_results(treatment_results, baseline_results)
+
+    if score["drift_alarm"]:
+        print(
+            f"  DRIFT ALARM ({case_id}): baseline_block_rate={score['baseline_block_rate']:.2f} "
+            f">= {DISPOSITION_DRIFT_ALARM_THRESHOLD} — re-author fixture — control now blocks on its own",
+            flush=True,
+        )
+
+    if verbose:
+        status = "INCONCLUSIVE" if score["inconclusive"] else ("PASS" if score["passed"] else "FAIL")
+        print(
+            f"  {case_id:<40} treatment={score['treatment_block_rate']:.2f} "
+            f"baseline={score['baseline_block_rate']:.2f}   {status}"
+            f"   excluded={excluded_treatment}t/{excluded_baseline}b",
+            flush=True,
+        )
+
+    return {
+        "id": case_id,
+        "passed": score["passed"],
+        "total": samples,
+        "treatment_block_rate": score["treatment_block_rate"],
+        "baseline_block_rate": score["baseline_block_rate"],
+        "excluded_treatment": excluded_treatment,
+        "excluded_baseline": excluded_baseline,
+        "inconclusive": score["inconclusive"],
+    }
+
+
 def run_case(
     case: dict,
     skill_name: str,
@@ -798,7 +1191,13 @@ def run_skill(
 
     case_results = []
     for case in cases:
-        result = run_case(case, skill_name, method, run_context, model, samples, workers, verbose)
+        if method == DISPOSITION_FIDELITY_METHOD:
+            judge_model = run_context.get("judge_model", model)
+            result = run_disposition_case(
+                case, skill_name, run_context, model, judge_model, samples, workers, verbose,
+            )
+        else:
+            result = run_case(case, skill_name, method, run_context, model, samples, workers, verbose)
         case_results.append(result)
 
     passed = sum(1 for r in case_results if r["passed"])
@@ -819,6 +1218,14 @@ def print_report(skill_results: list[dict], model: str, samples: int, verbose: b
         for sr in skill_results:
             print(f"{sr['skill_name']:<40} {sr['method']:<22} {sr['passed']}/{sr['total']}")
             for cr in sr["cases"]:
+                if sr["method"] == DISPOSITION_FIDELITY_METHOD:
+                    status = "INCONCLUSIVE" if cr["inconclusive"] else ("PASS" if cr["passed"] else "FAIL")
+                    print(
+                        f"  {cr['id']:<40} treatment={cr['treatment_block_rate']:.2f} "
+                        f"baseline={cr['baseline_block_rate']:.2f}   {status}"
+                        f"   excluded={cr['excluded_treatment']}t/{cr['excluded_baseline']}b"
+                    )
+                    continue
                 triggered_label = "triggers" if cr["should_trigger"] else "does-not-trig"
                 status = "PASS" if cr["passed"] else "FAIL"
                 violation_note = ""
@@ -840,7 +1247,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Skill eval harness (local only, never CI)")
     parser.add_argument(
         "--skill", action="append", dest="skills", metavar="NAME",
-        help="Skill name to test (repeatable; default: all with trigger-cases.json)",
+        help="Skill name to test (repeatable; default: all with a *-cases.json file)",
     )
     parser.add_argument(
         "--samples", type=int, default=DEFAULT_SAMPLES, metavar="K",
@@ -849,6 +1256,10 @@ def main() -> int:
     parser.add_argument(
         "--model", default=DEFAULT_MODEL, choices=["claude-sonnet-4-6", "claude-opus-4-7"],
         help=f"Model (default: {DEFAULT_MODEL})",
+    )
+    parser.add_argument(
+        "--judge-model", default=None, choices=["claude-sonnet-4-6", "claude-opus-4-7"],
+        help="Model for the disposition-fidelity judge call (default: same as --model)",
     )
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help=f"Parallel workers (default: {DEFAULT_WORKERS})")
     parser.add_argument("--json", dest="json_out", metavar="PATH", help="Write full results JSON to PATH")
@@ -865,6 +1276,7 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    judge_model = args.judge_model or args.model
 
     if args.skills:
         case_files = []
@@ -873,25 +1285,30 @@ def main() -> int:
             if skill_dir is None:
                 print(f"ERROR: skill '{skill_name}' not found", file=sys.stderr)
                 return 1
-            cf = skill_dir / "evals" / "trigger-cases.json"
-            if not cf.exists():
-                print(f"ERROR: no trigger-cases.json for skill '{skill_name}' at {cf}", file=sys.stderr)
+            skill_case_files = sorted(skill_dir.glob("evals/*-cases.json"))
+            if not skill_case_files:
+                print(
+                    f"ERROR: no *-cases.json files for skill '{skill_name}' under {skill_dir / 'evals'}",
+                    file=sys.stderr,
+                )
                 return 1
-            case_files.append(cf)
+            case_files.extend(skill_case_files)
     else:
         case_files = discover_case_files()
         if not case_files:
-            print("No trigger-cases.json files found. Run --skill <name> or author case files first.", file=sys.stderr)
+            print("No *-cases.json files found. Run --skill <name> or author case files first.", file=sys.stderr)
             return 1
 
     files_by_method = partition_case_files(case_files)
     runtime_files = files_by_method[RUNTIME_METHOD]
     description_fidelity_files = files_by_method[DESCRIPTION_FIDELITY_METHOD]
     behavioral_dispatch_files = files_by_method[BEHAVIORAL_DISPATCH_METHOD]
+    disposition_fidelity_files = files_by_method[DISPOSITION_FIDELITY_METHOD]
 
     tmp_project: Path | None = None
     isolated_project: Path | None = None
     dispatch_project: Path | None = None
+    disposition_project: Path | None = None
     try:
         skill_results = []
 
@@ -951,6 +1368,20 @@ def main() -> int:
                     )
                 )
 
+        if disposition_fidelity_files:
+            disposition_project = build_isolated_project()
+            disposition_context = {
+                "disposition_project": disposition_project,
+                "judge_model": judge_model,
+            }
+            for case_file in disposition_fidelity_files:
+                skill_results.append(
+                    run_skill(
+                        case_file, disposition_context,
+                        args.model, args.samples, args.workers, args.verbose,
+                    )
+                )
+
         print_report(skill_results, args.model, args.samples, args.verbose)
 
         if args.json_out:
@@ -970,6 +1401,8 @@ def main() -> int:
             shutil.rmtree(tmp_project, ignore_errors=True)
         if isolated_project is not None:
             shutil.rmtree(isolated_project, ignore_errors=True)
+        if disposition_project is not None:
+            shutil.rmtree(disposition_project, ignore_errors=True)
         if dispatch_project is not None:
             shutil.rmtree(dispatch_project, ignore_errors=True)
             # Session files are stored externally at ~/.claude/projects/<path-hash>/
