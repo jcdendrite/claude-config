@@ -85,6 +85,8 @@ not want to extend. Mirror existing entries when in doubt.
 
 **Global skill bodies stay platform-agnostic.** Skills under `claude/.claude/skills/` are stowed to every user who clones this repo — their bodies must read cleanly regardless of stack. Encode the generic concept; do not hardcode engine/platform-specific tokens (`pg_cron`, `net.http_post`, vendor API names). Stack-specific examples and checks belong in a project-layer skill (`<skill>-<project>/SKILL.md`) that the base skill loads via its project-layer glob — e.g. `/code-review`'s Step 0.5 globs `.claude/skills/code-review-*/SKILL.md`.
 
+**Plans in this repo affect all stow users.** A plan touching anything under `claude/` is not personal-machine tooling — `claude/` installs to every contributor who runs `./install.sh`. When authoring or reviewing such a plan (`/plan-it`, `/plan-review`), frame the user surface and threat model as "every stow consumer," not the session owner alone. This also governs what a plan file itself may contain: a plan committed under `.claude/plans/` ships in the same PR as the implementation, so cited evidence (command output, file listings) is subject to the same redaction rules as any other public-repo content — see "Redact private-project-identifying content" below. Illustrate with placeholder paths and names, not the contributor's own.
+
 ## Review pipeline
 
 `/plan-it` is the prescribed entry for plan creation. `/plan-review` and
