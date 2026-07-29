@@ -355,11 +355,11 @@ levels up):
   Reconciliation rewrite narrows this gap — it replaces `ROUTING.md:60`'s
   affirmative "skip duplicates" drop-license with a never-removes-a-finding
   rule — but does not close it), and orthogonal to this ticket; filing it here
-  would put a seventh file in scope. **File a tracked GitHub issue for it at PR
-  handoff and cite the issue number in this bullet** — an unfiled follow-up on
-  a finding-loss path is indistinguishable from a dropped one.
+  would put a seventh file in scope. Filed as
+  [jcdendrite/claude-config#503](https://github.com/jcdendrite/claude-config/issues/503).
 - A length cap or independent review marker for `ROUTING.md` (ledger row 9).
-  Real gap, wider than this ticket — file a tracked issue at PR handoff.
+  Real gap, wider than this ticket. Filed as
+  [jcdendrite/claude-config#504](https://github.com/jcdendrite/claude-config/issues/504).
 - A `docs/case-studies/` writeup. `review-vs-babysitting.md:70` records a
   fitting instance (CISO and SDET converged on the same `-ge 0` guard; CISO's
   sign analysis was wrong and its recommendation would have introduced a bug),
