@@ -22,8 +22,8 @@ repo adds on top, see the [README](../README.md#auto-mode).
   model for its entire lifetime — there's no plan-mode-to-execution switch the
   way `opusplan` provides, so `opusplan` itself isn't a valid session model for
   it. This repo ships `opusplan` as the default; the `claude-auto` wrapper
-  described below lets you start auto mode directly on a concrete, eligible
-  model of your choosing instead.
+  described below starts auto mode on a concrete, eligible model instead —
+  Sonnet unless you name another.
 - **Claude Code:** a recent release — check `claude --version` against the
   [permission modes reference](https://code.claude.com/docs/en/permission-modes).
 
@@ -34,20 +34,23 @@ then accept the one-time opt-in prompt. To start directly in auto mode, use the
 `claude-auto` wrapper shipped by this repo:
 
 ```bash
-ANTHROPIC_MODEL=sonnet claude-auto   # start auto mode on Sonnet
-ANTHROPIC_MODEL=opus claude-auto     # start auto mode on Opus
+claude-auto                           # start auto mode on Sonnet
+claude-auto --model opus              # start auto mode on Opus
 claude-auto "summarize the open PRs"  # positional prompt passes through
 ```
 
 The wrapper resolves the mismatch between `opusplan` (a plan-mode/execution
-model pair) and auto mode's requirement for one concrete session model — it
-doesn't choose that model for you, so set `ANTHROPIC_MODEL` to an eligible
-model (see Requirements above) before running it. Without `ANTHROPIC_MODEL`
-set, `claude-auto` starts auto mode on whatever your configured default model
-is, which fails if that default is `opusplan` or otherwise ineligible.
-`claude --permission-mode auto` also works directly once your default is
-already a single eligible model. `ANTHROPIC_MODEL` is Claude Code's built-in
-model env var and applies to all invocation forms.
+model pair) and auto mode's requirement for one concrete session model. It
+takes the same `--model` flag as `claude` and passes it through untouched. With
+no `--model`, it uses `ANTHROPIC_MODEL` if that is set, and `sonnet` otherwise
+— the alias resolves to the latest Sonnet, which auto mode accepts on every
+provider. That last step is a flat fallback, not a compatibility check: naming
+no model gets you Sonnet even when your configured default was already
+eligible. The tradeoff is deliberate — the wrapper can't read which model your
+settings resolve to, and always landing on an eligible one beats failing to
+start against a default like `opusplan`. Name the model explicitly whenever you
+care which one you get. `claude --permission-mode auto` also works directly
+once your default is already a single eligible model.
 
 To make auto mode the default, add to `~/.claude/settings.json`:
 
@@ -152,7 +155,7 @@ follows:
 | `code-writer` | Sonnet | `model: sonnet` frontmatter |
 | `general-purpose` | **Inherited from parent** | No model of its own — falls through to the parent |
 
-If the session is anchored to Opus (`ANTHROPIC_MODEL=opus claude-auto`, or a
+If the session is anchored to Opus (`claude-auto --model opus`, or a
 manual Shift+Tab into auto mode from an Opus session), dispatching
 `general-purpose` without an explicit model runs that work on Opus — roughly
 5x the per-token cost of Sonnet. To keep it off Opus, pass an explicit
