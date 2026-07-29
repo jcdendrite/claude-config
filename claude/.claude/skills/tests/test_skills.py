@@ -999,6 +999,26 @@ def test_disposition_rule_anchors_present() -> None:
 _LEGACY_TRIGGER_METHODS = {"runtime", "description-fidelity", "behavioral-dispatch"}
 
 
+def _validate_disposition_fidelity_case(case: dict, prefix: str, repo_root: Path) -> None:
+    """Field validation for a single `method: "disposition-fidelity"` case.
+
+    Extracted from test_trigger_cases_files_well_formed's discovery loop so it
+    is unit-testable against synthetic cases (see TestValidateDispositionFidelityCase)
+    without waiting for a real *-cases.json fixture to land in the repo.
+    """
+    scenario_file = case.get("scenario_file")
+    assert isinstance(scenario_file, str) and scenario_file, f"{prefix}: 'scenario_file' must be a non-empty string"
+    assert (repo_root / scenario_file).exists(), (
+        f"{prefix}: scenario_file {scenario_file!r} does not exist at {repo_root / scenario_file}"
+    )
+    assert isinstance(case.get("rule_anchor"), str) and case["rule_anchor"], (
+        f"{prefix}: 'rule_anchor' must be a non-empty string"
+    )
+    assert isinstance(case.get("judge_rubric"), str) and case["judge_rubric"], (
+        f"{prefix}: 'judge_rubric' must be a non-empty string"
+    )
+
+
 def test_trigger_cases_files_well_formed() -> None:
     """Every *-cases.json file found under skills/ or plugins/ must be valid.
 
@@ -1064,21 +1084,55 @@ def test_trigger_cases_files_well_formed() -> None:
                         f"({data['skill_name']!r}) — a skill cannot be a misfire of itself"
                     )
             elif method == "disposition-fidelity":
-                scenario_file = case.get("scenario_file")
-                assert isinstance(scenario_file, str) and scenario_file, (
-                    f"{prefix}: 'scenario_file' must be a non-empty string"
-                )
-                assert (repo_root / scenario_file).exists(), (
-                    f"{prefix}: scenario_file {scenario_file!r} does not exist at {repo_root / scenario_file}"
-                )
-                assert isinstance(case.get("rule_anchor"), str) and case["rule_anchor"], (
-                    f"{prefix}: 'rule_anchor' must be a non-empty string"
-                )
-                assert isinstance(case.get("judge_rubric"), str) and case["judge_rubric"], (
-                    f"{prefix}: 'judge_rubric' must be a non-empty string"
-                )
+                _validate_disposition_fidelity_case(case, prefix, repo_root)
             else:
                 raise AssertionError(f"{path}: unrecognized method {method!r} — add a validation branch here")
+
+
+class TestValidateDispositionFidelityCase:
+    """Synthetic-case coverage for _validate_disposition_fidelity_case.
+
+    No real *-cases.json with method "disposition-fidelity" exists in the
+    repo yet (that method ships with zero active cases — see
+    evals/README.md), so without this class the branch is unexercised until
+    the first real fixture lands. Uses an existing repo file as a stand-in
+    scenario_file — the validator only checks existence, not content shape.
+    """
+
+    _REPO_ROOT = Path(__file__).resolve().parents[4]
+    _EXISTING_SCENARIO_FILE = "evals/fixtures/dispatch-session-handoff.md"
+
+    def test_valid_case_passes(self) -> None:
+        case = {
+            "scenario_file": self._EXISTING_SCENARIO_FILE,
+            "rule_anchor": "some-anchor",
+            "judge_rubric": "some rubric",
+        }
+        _validate_disposition_fidelity_case(case, "prefix", self._REPO_ROOT)  # must not raise
+
+    def test_missing_scenario_file_key_raises(self) -> None:
+        case = {"rule_anchor": "some-anchor", "judge_rubric": "some rubric"}
+        with pytest.raises(AssertionError, match="scenario_file"):
+            _validate_disposition_fidelity_case(case, "prefix", self._REPO_ROOT)
+
+    def test_nonexistent_scenario_file_raises(self) -> None:
+        case = {
+            "scenario_file": "evals/fixtures/does-not-exist-xyz.md",
+            "rule_anchor": "some-anchor",
+            "judge_rubric": "some rubric",
+        }
+        with pytest.raises(AssertionError, match="does not exist"):
+            _validate_disposition_fidelity_case(case, "prefix", self._REPO_ROOT)
+
+    def test_empty_rule_anchor_raises(self) -> None:
+        case = {"scenario_file": self._EXISTING_SCENARIO_FILE, "rule_anchor": "", "judge_rubric": "some rubric"}
+        with pytest.raises(AssertionError, match="rule_anchor"):
+            _validate_disposition_fidelity_case(case, "prefix", self._REPO_ROOT)
+
+    def test_missing_judge_rubric_key_raises(self) -> None:
+        case = {"scenario_file": self._EXISTING_SCENARIO_FILE, "rule_anchor": "some-anchor"}
+        with pytest.raises(AssertionError, match="judge_rubric"):
+            _validate_disposition_fidelity_case(case, "prefix", self._REPO_ROOT)
 
 
 def test_skill_overrides_documented_in_docs_skills_md() -> None:

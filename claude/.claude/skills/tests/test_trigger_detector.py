@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import run_skill_evals
 from run_skill_evals import (
     DISPOSITION_MIN_EFFECTIVE_SAMPLES,
     DISPOSITION_PASS_THRESHOLD,
@@ -685,6 +686,46 @@ class TestRunDispositionCaseFieldValidation:
         with pytest.raises(ValueError, match="missing required field"):
             run_disposition_case(
                 case, "code-review", run_context={}, model="claude-sonnet-4-6",
+                judge_model="claude-sonnet-4-6", samples=1, workers=1, verbose=False,
+            )
+
+    def test_unknown_skill_name_raises_value_error(self) -> None:
+        """find_skill_dir() returning None (no such skill directory) must fail loudly, not KeyError later.
+
+        scenario_file must point at a real file — run_disposition_case() reads the scenario
+        before checking skill_dir, so a nonexistent scenario_file would fail on the wrong line.
+        """
+        case = {
+            "id": "test-case",
+            "scenario_file": "evals/fixtures/dispatch-session-handoff.md",
+            "rule_anchor": "some-anchor",
+            "judge_rubric": "some rubric",
+        }
+        with pytest.raises(ValueError, match="not found"):
+            run_disposition_case(
+                case, "nonexistent-skill-xyz", run_context={}, model="claude-sonnet-4-6",
+                judge_model="claude-sonnet-4-6", samples=1, workers=1, verbose=False,
+            )
+
+    def test_skill_without_disposition_frame_raises_value_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A real skill dir with no DISPOSITION_FRAMES entry — the exact mistake the code's own
+        comment warns a new disposition-cases.json author to avoid (add a frame before authoring).
+
+        DISPOSITION_FRAMES is monkeypatched to empty rather than relying on "ready-for-review"
+        staying absent from the production dict — a future PR adding that key would otherwise
+        make this test fail on a different, misdirecting ValueError (an anchor-not-found error
+        from extract_governing_rule) instead of ceasing to exercise the branch under test.
+        """
+        monkeypatch.setattr(run_skill_evals, "DISPOSITION_FRAMES", {})
+        case = {
+            "id": "test-case",
+            "scenario_file": "evals/fixtures/dispatch-session-handoff.md",
+            "rule_anchor": "some-anchor",
+            "judge_rubric": "some rubric",
+        }
+        with pytest.raises(ValueError, match="no DISPOSITION_FRAMES entry"):
+            run_disposition_case(
+                case, "ready-for-review", run_context={}, model="claude-sonnet-4-6",
                 judge_model="claude-sonnet-4-6", samples=1, workers=1, verbose=False,
             )
 
