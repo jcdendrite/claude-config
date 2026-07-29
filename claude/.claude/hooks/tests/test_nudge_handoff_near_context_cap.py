@@ -267,6 +267,35 @@ class TestNudgeHandoffNearContextCap:
             # Restore permissions so pytest cleanup can delete tmp_path.
             marker_dir.chmod(0o755)
 
+    def test_traversal_session_id_does_not_create_file_outside_marker_dir(self, tmp_path):
+        """A session_id containing '../' must not let the fire-path `touch
+        "$FIRED_MARKER"` escape .handoff-nudge-fired.d/.
+
+        Deliberately does NOT plant a canary at the traversal target first:
+        FIRED_MARKER is both the "already fired" existence check and the
+        write target at the identical path, so a pre-planted canary would
+        make the check true and suppress the fire — collapsing guard-present
+        (never reaches the check) and guard-absent (reaches it, finds
+        "already fired", suppresses) onto the same observable outcome. What
+        discriminates instead: whether a file is newly created outside the
+        marker directory at all. With an above-threshold transcript and no
+        pre-existing marker, the guard blocks before FIRED_MARKER is even
+        built; without it, the touch would create ~/.claude/canary."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [_assistant_record(cache_read=80000, cache_create=20000, input_tok=15000, output_tok=20000)],
+        )
+        canary_path = tmp_path / ".claude" / "canary"
+
+        result = _run_hook(_base_payload(transcript, session_id="../canary"), tmp_path)
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert not canary_path.exists(), (
+            "a traversal session_id must not create a file outside .handoff-nudge-fired.d/"
+        )
+
     def test_latency_under_500ms(self, tmp_path):
         """Hook completes in under 500ms even with a ~10 MB transcript (10000 valid JSONL lines).
 

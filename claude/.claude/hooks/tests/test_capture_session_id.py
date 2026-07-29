@@ -88,3 +88,27 @@ class TestCaptureSessionId:
         assert result.returncode == 0
         assert len(self._sessions_files(isolated_home)) == 1
         assert result.stderr == ""
+
+    def test_traversal_session_id_does_not_overwrite_active_marker_canary(
+        self, isolated_home
+    ):
+        """The lookup file (sessions/$CLAUDE_PID) is keyed by claude_pid, not
+        session_id, so it isn't this hook's traversal sink. The active.d
+        rewrite loop is: it builds `$_active_dir/$SESSION_ID` directly from
+        the payload and, when that path already exists, overwrites it with
+        the resolved claude_pid — an escape here truncates and rewrites an
+        attacker-chosen file. A session_id of '../canary' with
+        .plan-review-active.d present must not touch a file living one
+        level up, in ~/.claude directly."""
+        active_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        active_dir.mkdir(parents=True)
+        canary = isolated_home / ".claude" / "canary"
+        canary.write_text("untouched\n")
+
+        result = self._run_capturing_stderr(json.dumps({"session_id": "../canary"}))
+
+        assert result.returncode == 0
+        assert canary.read_text() == "untouched\n"
+        assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert "not a valid path component" in result.stderr

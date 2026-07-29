@@ -142,3 +142,32 @@ class TestSessionMarkerDashboard:
         """Hook must always exit 0 to avoid blocking session startup."""
         result = _run_dashboard({"session_id": "sess-exit-check"}, isolated_home)
         assert result.returncode == 0
+
+    def test_traversal_session_id_produces_no_output(self, isolated_home):
+        """A traversal session_id must not make this read-only hook report
+        marker status for a file outside the three *-active.d/ directories.
+
+        All three directories (.plan-review-active.d, .ready-for-review-active.d,
+        .respond-pr-active.d) sit one level under ~/.claude, so a session_id of
+        '../canary' resolves every marker_status() call to the same file —
+        planting a canary there would make all three read as "present",
+        which is the discriminating signal: with the guard, the hook exits
+        before any marker_status() call and produces the documented
+        all-absent disposition (no output); without it, the canary would be
+        misreported as three present markers and the hook would emit a
+        dashboard payload.
+
+        At least one *-active.d directory must already exist for this to be
+        meaningful: `[ -f ]` on a path that walks '..' through a nonexistent
+        directory component fails closed (ENOENT) regardless of the guard,
+        which would make the traversal inert by accident."""
+        marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        canary = isolated_home / ".claude" / "canary"
+        canary.write_text("untouched\n")
+
+        result = _run_dashboard({"session_id": "../canary"}, isolated_home)
+
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert canary.read_text() == "untouched\n"
