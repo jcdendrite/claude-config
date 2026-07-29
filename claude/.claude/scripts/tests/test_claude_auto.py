@@ -1,6 +1,6 @@
-"""Tests for the claude-auto wrapper's model-selection precedence.
+"""Tests for claude-auto.sh's model-selection precedence.
 
-The wrapper has no launcher seam of its own — it calls `claude` by name — so
+The script has no launcher seam of its own — it calls `claude` by name — so
 every test prepends a stub `claude` to PATH that records its argv. That stub is
 what keeps these tests away from the real binary.
 
@@ -16,27 +16,7 @@ import os
 import subprocess
 from pathlib import Path
 
-_REPO_ROOT = Path(
-    subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=Path(__file__).resolve().parent,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-)
-
-# Unlike its siblings under claude/.local/bin/, claude-auto carries its logic
-# directly rather than dispatching to a claude/.claude/scripts/*.sh file, so
-# this reaches across the tree from the repo root instead of climbing a fixed
-# number of parents — a count that silently resolves elsewhere if either
-# directory moves.
-_SCRIPT = _REPO_ROOT / "claude" / ".local" / "bin" / "claude-auto"
-
-
-def test_script_under_test_exists() -> None:
-    """Fail with a clear message rather than a FileNotFoundError per test."""
-    assert _SCRIPT.is_file(), f"claude-auto not found at {_SCRIPT} — did it move?"
+_SCRIPT = Path(__file__).parent.parent / "claude-auto.sh"
 
 _RECORDER_STUB = """#!/usr/bin/env bash
 printf '%s\\n' "$@" > "{recorder}"
