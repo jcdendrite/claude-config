@@ -473,13 +473,17 @@ _lib_valid_session_id_component() {
 # a session id and no repo hash, so a live marker releases its gate for every
 # repo and worktree the session touches while the owning skill runs — unlike
 # the completion markers, which _marker_lib_repo_hash binds to one tree. That
-# is the intended reading of "a review is running in THIS process right now",
-# but it rests on the session staying in one tree for the length of the bypass
-# window, which entering a worktree mid-session breaks. Two known consequences,
-# both predating this function's extraction: a skill that halts between its
+# is the intended reading of "a review is running in THIS process right now".
+#
+# The weak part is the liveness test rather than the keying. The stored PID is
+# the session's, and a session outlives any one skill invocation, so the bypass
+# outlasts what it was scoped to in two ways: a skill that halts between its
 # activate and deactivate steps leaves the gate released until the process
-# exits, and a tree switch inside the window carries the release across.
-# Scoping these markers by repo hash is the fix if that becomes load-bearing.
+# exits, and a tree switch inside the window carries the release across. Both
+# predate this function's extraction. Bounding the marker's age would cover
+# both — require-routing-read.sh already gates a sibling marker that way, and
+# session-marker-dashboard.sh already reports these as stale past an hour with
+# no gate acting on it. Repo-keying the path would cover only the second.
 #
 # Usage: if _lib_active_bypass_marker_live ".respond-pr-active.d" "$SESSION_ID"; then exit 0; fi
 _lib_active_bypass_marker_live() {
