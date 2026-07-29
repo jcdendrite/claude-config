@@ -99,20 +99,21 @@ fi
 
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 
-# Fail open if we can't key the per-session marker.
+# Fail open if we can't key the per-session marker at all: an absent
+# session_id (older Claude Code versions, payload-schema drift) leaves no
+# marker path to build, so there is nothing to distinguish "skill active"
+# from "skill not active" and the safer default is to allow.
 if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
 
 # Active-bypass: alive PID stored in the marker means the skill is active —
-# allow through. Dead or unreadable PID → evict the orphan.
-ACTIVE_MARKER="$HOME/.claude/.memory-skill-active.d/$SESSION_ID"
-if [ -f "$ACTIVE_MARKER" ]; then
-  STORED_PID=$(cat "$ACTIVE_MARKER" 2>/dev/null | tr -d '[:space:]')
-  if [[ "$STORED_PID" =~ ^[0-9]+$ ]] && kill -0 "$STORED_PID" 2>/dev/null; then
-    exit 0
-  fi
-  rm -f "$ACTIVE_MARKER" 2>/dev/null
+# allow through. A non-empty id that is not a safe single path component
+# (e.g. containing "../") withholds the bypass and falls through to the deny
+# below rather than being treated as absent — the point of validating it is
+# to never build that path, not to grant the allow anyway.
+if _lib_active_bypass_marker_live ".memory-skill-active.d" "$SESSION_ID"; then
+  exit 0
 fi
 
 emit_deny "Memory write blocked by ai-instruction-and-memory-files gate. You are writing to $FILE_PATH, which is part of Claude Code's auto-memory file system (MEMORY.md index or a new topic file). Invoke the ai-instruction-and-memory-files skill via the Skill tool first — it covers MEMORY.md index format, topic-file frontmatter, length budgets, and the type classification (user / feedback / project / reference). The skill's Step 0 activates a bypass marker so all memory writes in the session pass through after the skill is loaded."

@@ -8,6 +8,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
+    assert_gate_handles_traversal_session_id,
     bash_input,
     edit_input,
     extract_skill_command,
@@ -405,6 +406,22 @@ class TestRequireRespondPr:
                 cwd=current_repo_foo_bar,
             )
             == "deny"
+        )
+
+    def test_traversal_session_id_denies_and_does_not_touch_marker_dir(
+        self, isolated_home, current_repo_foo_bar
+    ):
+        """A session_id of '../canary' must not read through the traversal:
+        MARKER concatenates it into .respond-pr-active.d/../canary, which
+        resolves to a file one level up ($HOME/.claude/canary). The invalid
+        id must skip the bypass entirely and fall through to the normal
+        arm-matching gate, which denies this command on its own merits."""
+        assert_gate_handles_traversal_session_id(
+            RESPOND_PR_HOOK,
+            lambda sid: bash_input("gh api repos/foo/bar/pulls/5/comments", session_id=sid),
+            isolated_home,
+            expected_decision="deny",
+            cwd=current_repo_foo_bar,
         )
 
     def test_alive_pid_bypass_marker_allows(self, isolated_home, current_repo_foo_bar):

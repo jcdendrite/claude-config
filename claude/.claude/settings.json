@@ -113,6 +113,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/nudge-error-mode-analysis.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-worktree-anchor.sh"
           }
         ]
       }
@@ -131,6 +135,14 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/cleanup-handoff-nudge-marker.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/cleanup-worktree-anchor-nudge-marker.sh"
           }
         ]
       }

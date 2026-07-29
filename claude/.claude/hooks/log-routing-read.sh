@@ -18,6 +18,14 @@ esac
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 [ -n "$SESSION_ID" ] || exit 0
 
+# SESSION_ID feeds ACTIVE_MARKER (below) and the routing-read marker path
+# (further below) as a path component ("../" would escape their marker
+# directories); fail the same way an empty id already does.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+_lib_valid_session_id_component "$SESSION_ID" || exit 0
+
 # Only write the marker when a plan-review session is active. Without this
 # guard a Read of ROUTING.md outside plan-review (e.g., an editing session)
 # would falsely authorize a later plan-review Agent spawn.

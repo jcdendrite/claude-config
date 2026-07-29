@@ -14,6 +14,7 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    assert_gate_handles_traversal_session_id,
     bash_input,
     edit_input,
     exitplanmode_input,
@@ -545,6 +546,28 @@ class TestRequirePlanReview:
                 cwd=plan_review_repo,
             )
             == "deny"
+        )
+
+    # -- Hostile session_id ---------------------------------------------------
+
+    def test_traversal_session_id_denies_and_does_not_touch_marker_dir(
+        self, plan_review_repo, plan_review_home
+    ):
+        """A session_id of '../canary' must not read through the traversal:
+        ACTIVE_MARKER concatenates it into .plan-review-active.d/../canary,
+        which resolves to a file one level up ($HOME/.claude/canary). The
+        invalid id must skip the active-marker bypass entirely and fall
+        through to the completion-marker check, which finds no match here
+        and denies."""
+        assert_gate_handles_traversal_session_id(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            lambda sid: {
+                **write_input(str(plan_review_repo / "src" / "foo.py")),
+                "session_id": sid,
+            },
+            plan_review_home,
+            expected_decision="deny",
+            cwd=plan_review_repo,
         )
 
     # -- SKILL.md fixture alignment -----------------------------------------

@@ -21,6 +21,14 @@ changes review behavior.
 | Item 9d — Suppression without rationale | §Engineering Judgment — Ground every choice (inline lint/type-check suppressions) |
 | Item 9e — New dependency without provenance | §Engineering Judgment — Ground every choice (new third-party dependencies) |
 
+## Reconciliation
+
+The escalation-only discriminator in the Reconciliation section — what
+convergence does and does not decorrelate, and why prescribed co-ownership
+disclaims independence without disqualifying escalation — is grounded in
+`docs/design-decisions.md` §3's `### Sources` block. See that block for the
+citations rather than restating them here.
+
 ## Finding disposition
 
 ### Default ADDRESS / opportunistic refactoring

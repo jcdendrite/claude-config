@@ -10,6 +10,8 @@ _lib_parse_tool_input_or_deny and reports either DENY:<msg> or OK:<tool>:<cmd>.
 """
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -463,3 +465,270 @@ def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
     pin that the predicate is not doing prefix or case-insensitive matching.
     """
     assert not _is_no_gate_release_agent(agent_type)
+
+
+# --- _lib_valid_session_id_component --------------------------------------
+#
+# Every call site that builds a filesystem path from a hook-payload-supplied
+# session id ("$STATE_DIR/$SESSION_ID") relies on this predicate to reject a
+# value that would escape the intended directory once concatenated in.
+
+
+def _valid_session_id_component(session_id: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_valid_session_id_component "$1"', "bash", session_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "550e8400-e29b-41d4-a716-446655440000",  # a real harness session id (UUID)
+        "abc123",
+        "session_ID-with-underscores",
+    ],
+)
+def test_valid_session_id_component_accepts_uuid_shaped_ids(session_id: str) -> None:
+    assert _valid_session_id_component(session_id)
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "",
+        "../canary",
+        "../../etc/passwd",
+        "foo/bar",
+        "/absolute/path",
+        "session id with spaces",
+        "session;rm -rf /",
+        ".",
+        "..",
+    ],
+)
+def test_valid_session_id_component_rejects_path_escaping_ids(session_id: str) -> None:
+    """Each of these, concatenated into "$DIR/$SESSION_ID", would either
+    escape DIR (`../`, an absolute path) or otherwise fail to name a single
+    safe path component."""
+    assert not _valid_session_id_component(session_id)
+
+
+# --- _lib_active_bypass_marker_live ---------------------------------------
+#
+# The four bypass-shaped gates (require-{memory-skill,plan-review,
+# ready-for-review,respond-pr}.sh) share this helper, so the liveness,
+# orphan-eviction, and traversal properties are pinned once here rather than
+# four times over. Each hook's own test file still asserts the disposition its
+# gate produces when the helper returns false, which is what differs by gate.
+
+_MARKER_DIR_NAME = ".test-skill-active.d"
+
+
+def _active_bypass_marker_live(home: Path, session_id: str) -> bool:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_active_bypass_marker_live "$1" "$2"',
+            "bash",
+            _MARKER_DIR_NAME,
+            session_id,
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _write_active_bypass_marker(home: Path, session_id: str, content: str) -> Path:
+    marker_dir = home / ".claude" / _MARKER_DIR_NAME
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    marker = marker_dir / session_id
+    marker.write_text(content)
+    return marker
+
+
+def test_active_bypass_marker_live_true_for_live_pid(tmp_path) -> None:
+    """The whole point of the marker: a running skill's PID means the gate
+    should let that session's own calls through."""
+    _write_active_bypass_marker(tmp_path, "sess-live", str(os.getpid()))
+    assert _active_bypass_marker_live(tmp_path, "sess-live")
+
+
+def test_active_bypass_marker_live_false_when_no_marker(tmp_path) -> None:
+    assert not _active_bypass_marker_live(tmp_path, "sess-absent")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "2147483647",  # above the default pid_max — no such process
+        "",
+        "not-a-pid",
+        "-1",
+    ],
+    ids=["dead-pid", "empty", "non-numeric", "negative"],
+)
+def test_active_bypass_marker_live_evicts_orphan(tmp_path, content: str) -> None:
+    """A marker whose PID is dead or unreadable is an orphan from a session
+    that died before its cleanup step. It must not release the gate, and it
+    must be removed so it cannot accumulate."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-orphan", content)
+    assert not _active_bypass_marker_live(tmp_path, "sess-orphan")
+    assert not marker.exists(), "an orphaned marker must be evicted, not left in place"
+
+
+def test_active_bypass_marker_live_keeps_live_marker(tmp_path) -> None:
+    """Eviction is for orphans only — a live marker must survive being read,
+    or the first gate hit would revoke the running skill's own bypass."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-keep", str(os.getpid()))
+    assert _active_bypass_marker_live(tmp_path, "sess-keep")
+    assert marker.exists()
+
+
+def test_active_bypass_marker_live_false_for_traversal_id_without_touching_target(
+    tmp_path,
+) -> None:
+    """The guard is inside the helper, so a path-escaping id must be rejected
+    before the marker path is built — even when a live-PID file sits exactly
+    where the traversal would resolve. Planting the PID there is what
+    discriminates: without the guard the helper would read it, find it live,
+    and return true."""
+    (tmp_path / ".claude" / _MARKER_DIR_NAME).mkdir(parents=True)
+    canary = tmp_path / ".claude" / "canary"
+    canary.write_text(str(os.getpid()))
+
+    assert not _active_bypass_marker_live(tmp_path, "../canary")
+    assert canary.exists(), "a traversal id must not let the eviction rm escape the marker dir"
+
+
+# Empty session_id is deliberately NOT tested here. `$HOME/.claude/<dir>/` with
+# an empty id names the marker directory itself, which `[ -f ]` rejects whether
+# or not the guard ran — no canary placement can separate the two states, so any
+# such test would pass with the guard deleted and pin nothing. Empty-id
+# rejection is pinned where it is discriminating: the parametrized rejection
+# table for _lib_valid_session_id_component above, which includes "".
+
+
+# --- Universal adoption of the session-id guard ----------------------------
+
+
+def test_every_hook_that_paths_a_session_id_validates_it() -> None:
+    """Any hook that interpolates SESSION_ID into a filesystem path must also
+    call the guard — either directly or via _lib_active_bypass_marker_live.
+
+    This is a convention test, not a behavior test: it proves the call is
+    written, not that it runs. Each hook's own traversal test pins the runtime
+    behavior. This one exists because the failure it catches is a NEW hook
+    added later that builds a marker path and forgets to validate — a file
+    that has no traversal test yet by definition, so no behavioral test can
+    cover it. Ten hooks currently qualify; the guard was applied to all of
+    them as a class rather than to the one where the defect first surfaced.
+    """
+    hooks_dir = _LIB_SH.parent
+    repo_root = hooks_dir.parents[3]
+    hook_files = [
+        path
+        for path in sorted(hooks_dir.glob("*.sh")) + sorted(repo_root.glob("plugins/*/hooks/*.sh"))
+        if path.name != "_lib.sh"
+    ]
+    assert hook_files, "no hook scripts found — the glob is wrong, not the repo"
+
+    # Matches "<anything>/$SESSION_ID" and "<anything>/${SESSION_ID}", which is
+    # the shape that turns an unvalidated id into a path outside the intended
+    # directory. A bare $SESSION_ID (logged, compared, passed as an argument)
+    # is not a path build and does not require the guard.
+    builds_path_re = re.compile(r"/\$\{?SESSION_ID\b")
+    guards = ("_lib_valid_session_id_component", "_lib_active_bypass_marker_live")
+
+    unguarded = []
+    matched_any = []
+    for hook in hook_files:
+        text = hook.read_text()
+        if not builds_path_re.search(text):
+            continue
+        matched_any.append(hook.name)
+        if not any(guard in text for guard in guards):
+            unguarded.append(hook.name)
+
+    assert matched_any, (
+        "no hook matched the path-building pattern — the regex has drifted from "
+        "the code and this test is now vacuous"
+    )
+    assert not unguarded, (
+        "these hooks build a filesystem path from session_id without validating "
+        f"it first: {unguarded}. Call _lib_valid_session_id_component, or route "
+        "the marker read through _lib_active_bypass_marker_live."
+    )
+
+
+# --- _lib_first_live_linked_worktree --------------------------------------
+
+
+def _first_live_linked_worktree(repo_root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_first_live_linked_worktree "$1"', "bash", str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    (path / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
+def test_first_live_linked_worktree_finds_a_present_worktree(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    wt = tmp_path / "wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(wt)
+
+
+def test_first_live_linked_worktree_ignores_a_stale_unpruned_entry(tmp_path: Path) -> None:
+    """`git worktree list` still reports an entry whose directory was deleted
+    without `git worktree prune` or `git worktree remove`. That stale entry
+    must not count as a live worktree."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    wt = tmp_path / "wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(["rm", "-rf", str(wt)], check=True)
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""

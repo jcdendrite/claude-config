@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR
+from helpers import HOOKS_DIR, SCRIPTS_DIR, TRAVERSAL_SESSION_ID
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-error-mode-analysis.sh"
 
@@ -483,6 +483,43 @@ class TestNudgeErrorModeAnalysis:
         _write_denial_transcript(transcript, FRICTION_THRESHOLD + 4)
         result = _run_hook(_base_payload(transcript), tmp_path)
         assert result.returncode == 0
+
+    def test_traversal_session_id_blocks_before_reaching_checkpoint_write(self, tmp_path):
+        """A session_id shaped like a path traversal must be rejected before
+        the hook ever builds a --checkpoint argument from it.
+
+        FIRED_MARKER (.error-mode-nudge-fired.d/$SESSION_ID) and
+        CHECKPOINT_FILE (.error-mode-nudge-checkpoint.d/$SESSION_ID) are
+        sibling directories at the same depth under ~/.claude, so a
+        traversing id resolves both to the same file. Planting a canary at
+        that resolved path to protect against the checkpoint write would
+        also make the FIRED_MARKER "already fired" check true — so the hook
+        would suppress and exit before spawning python3 whether or not the
+        guard ran, and no assertion could separate the two cases (the same
+        collapse test_require_routing_read.py documents).
+
+        What DOES discriminate: without the guard this session_id reaches
+        step 7 and spawns python3 with a --checkpoint path pointing outside
+        .error-mode-nudge-checkpoint.d/ (the traversal target, where
+        friction-count would then write); with the guard, the hook exits at
+        the validation step and python3 is never spawned at all — the same
+        gate-before-spawn property test_already_fired_is_silent_and_python3_not_spawned
+        pins for the fired-marker gate."""
+        transcript = tmp_path / "t.jsonl"
+        _write_denial_transcript(transcript, FRICTION_THRESHOLD)
+        fake_bin = _fake_bin_dir(tmp_path, "traversal-spawn-check")
+        spawn_counter = tmp_path / "python3-spawn-count"
+        shim_path = _fake_python3(
+            fake_bin,
+            f"#!/bin/bash\necho invoked >> {spawn_counter}\nexit 0\n",
+        )
+        payload = _base_payload(transcript, session_id=TRAVERSAL_SESSION_ID)
+        result = _run_hook(payload, tmp_path, extra_env={"PATH": shim_path})
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert not spawn_counter.exists(), (
+            "python3 must not be spawned for a path-traversal session_id"
+        )
 
     def test_latency_under_2s_for_realistic_transcript(self, tmp_path):
         """Hook completes well under the 10s timeout wrapper for a transcript far

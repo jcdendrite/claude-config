@@ -14,9 +14,9 @@ argument-hint: "[optional topic or ticket id]"
 
 ## Step 1 — Branch + plan file
 
-**If plan mode is active:** write the plan to the harness-provided plan path (named in the plan-mode system-reminder). Skip branch creation here — plan mode would block it. Resume the branch-creation flow only after `ExitPlanMode` is approved: derive the slug, run `branch-creation`, and move the plan file to `.claude/plans/<topic-slug>.md` on the new branch.
+**If plan mode is active:** write the plan to the harness-provided plan path (named in the plan-mode system-reminder). Skip branch creation here — plan mode would block it. Resume the branch-management flow only after `ExitPlanMode` is approved: derive the slug, run `branch-management`, and move the plan file to `.claude/plans/<topic-slug>.md` on the new branch.
 
-**Otherwise:** if on the default branch, invoke the `branch-creation` skill to pick a slug and start from a fresh default tip. If already on a feature branch, keep it and derive the slug from the branch name — if the branch name contains `/` (e.g. `GH-42/add-auth`), use only the portion after the last `/`. Plan path is `.claude/plans/<topic-slug>.md` on the implementation branch (per `branch-creation`'s "plan files go on the implementation branch" rule).
+**Otherwise:** if on the default branch, invoke the `branch-management` skill to pick a slug and start from a fresh default tip. If already on a feature branch, keep it and derive the slug from the branch name — if the branch name contains `/` (e.g. `GH-42/add-auth`), use only the portion after the last `/`. Plan path is `.claude/plans/<topic-slug>.md` on the implementation branch (per `branch-management`'s "plan files go on the implementation branch" rule).
 
 If `.claude/plans/<topic-slug>.md` already exists, open it for revision in place rather than scaffolding a new file.
 

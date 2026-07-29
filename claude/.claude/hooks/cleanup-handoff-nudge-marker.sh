@@ -15,6 +15,13 @@ INPUT=$(cat 2>/dev/null)
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 [ -z "$SESSION_ID" ] && exit 0
 
+# SESSION_ID feeds the rm -f targets below as a path component ("../" would
+# escape MARKER_DIR); fail the same way an empty id already does.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+_lib_valid_session_id_component "$SESSION_ID" || exit 0
+
 MARKER_DIR="$HOME/.claude/.handoff-nudge-fired.d"
 
 rm -f "${MARKER_DIR}/${SESSION_ID}" 2>/dev/null || true

@@ -27,6 +27,28 @@ as "has no canonical principle behind it," which is a different claim from
 
 **The pattern:** SKILL.md's Reviewer routing section contains a single unconditional directive: `Read ~/.claude/skills/plan-review/ROUTING.md before any spawn decision.` All spawn criteria — including the always-spawn rules for ciso-reviewer and staff-product-engineer — live exclusively in ROUTING.md. The model reads ROUTING.md on demand before making any spawn decision.
 
+## Reconciliation discriminator
+
+The escalation-only discriminator in ROUTING.md's Reconciliation section —
+what convergence does and does not decorrelate, and why prescribed
+co-ownership disclaims independence without disqualifying escalation — is
+grounded in `docs/design-decisions.md` §3's `### Sources` block. See that
+block for the citations rather than restating them here.
+
+## Finding-enumeration requirement
+
+Output format's positive enumeration requirement ("Every finding a spawned
+reviewer returns must appear in the rendered output") is plan-review's
+counterpart to `code-review/SKILL.md`'s Finding disposition step ("walk
+*every* reviewer-spawned finding and tag it ADDRESS or DEFER"). The two are
+not equivalent: plan-review has no ADDRESS/DEFER disposition station, so its
+requirement stops at enumeration rather than tagging. Deliberately not
+mirrored as a full disposition mechanism — the gap this closes is a finding
+going unlisted, not a missing taxonomy, and a taxonomy would be a heavier
+mechanism than that gap requires. Reconciliation's dedup rule (ROUTING.md)
+already covers *how* two attributed findings merge into one entry; this
+requirement only guarantees the merged or standalone entry is present at all.
+
 ## Smoke test — 2026-05-05
 
 Post-extraction smoke test to verify ROUTING.md is reachable and substantively consulted, not just linked-and-ignored.

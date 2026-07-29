@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from helpers import (
+    CANARY_CONTENT,
     HOOKS_DIR,
+    TRAVERSAL_SESSION_ID,
     agent_input,
     plan_review_routing_read_marker_path,
+    plant_traversal_canary,
     read_input,
     run_hook,
     write_plan_review_active_marker,
@@ -66,3 +69,42 @@ class TestLogRoutingRead:
         sid = "session-always-allow"
         write_plan_review_active_marker(isolated_home, sid)
         assert run_hook(LOG_ROUTING_READ_HOOK, read_input(ROUTING_MD_PATH, session_id=sid)) == "allow"
+
+    def test_traversal_session_id_allows_and_does_not_touch_marker_dir(self, isolated_home):
+        """A session_id of '../canary' must not reach this hook's write.
+
+        ACTIVE_MARKER (.plan-review-active.d/$SESSION_ID) and the
+        routing-read write target (.plan-review-routing-read.d/$SESSION_ID)
+        are sibling directories at the same depth under ~/.claude, so a
+        traversing id resolves both to one file. The canary planted there is
+        therefore both what makes ACTIVE_MARKER's existence check pass — a
+        precondition for reaching the touch at all — and the file the touch
+        would act on.
+
+        Assert on mtime, not content: the write is a `touch`, which never
+        changes content, so a content-equality assertion passes whether or
+        not the guard ran and pins nothing. mtime is what separates the two
+        states — guard present, the hook exits before the touch and mtime
+        holds; guard absent, the touch executes and mtime advances.
+
+        .plan-review-active.d must exist for the traversal to resolve at
+        all: `[ -f ]` on a path whose intermediate directory component is
+        missing is false regardless of the guard, which would make this test
+        pass vacuously in both states.
+
+        (The sibling gate require-routing-read.sh is genuinely
+        non-discriminable under the same collapse because it only reads. Do
+        not carry that reasoning to a hook that writes.)"""
+        (isolated_home / ".claude" / ".plan-review-active.d").mkdir(parents=True, exist_ok=True)
+        canary = plant_traversal_canary(isolated_home)
+        mtime_before = canary.stat().st_mtime_ns
+
+        assert run_hook(
+            LOG_ROUTING_READ_HOOK,
+            read_input(ROUTING_MD_PATH, session_id=TRAVERSAL_SESSION_ID),
+        ) == "allow"
+        assert canary.stat().st_mtime_ns == mtime_before, (
+            "a traversal session_id must not reach the touch on a file "
+            "outside .plan-review-routing-read.d/"
+        )
+        assert canary.read_text() == CANARY_CONTENT

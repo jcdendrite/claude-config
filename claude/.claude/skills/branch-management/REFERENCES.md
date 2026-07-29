@@ -1,4 +1,4 @@
-# References — branch-creation
+# References — branch-management
 
 Sources behind the naming rules in SKILL.md. Not loaded at skill runtime; read
 manually when verifying a rule still holds or adding new guidance.

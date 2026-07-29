@@ -264,12 +264,20 @@ Other spawned specialists must return ≤2K tokens of structured findings (check
 
 ## Reconciliation
 
-After spawned reviewers return findings, pause if findings concentrate on a single surface — the same feature, implementation detail, or design choice attracting multiple gaps. If two specialists flag the same `file:line` with the same root cause, present the finding once with both reviewer attributions rather than as duplicate findings. Two readings:
+After spawned reviewers return findings, pause if findings concentrate on a single surface — the same feature, implementation detail, or design choice attracting multiple gaps. If two specialists flag the same `file:line` with the same root cause, present the finding once with both reviewer attributions rather than as duplicate findings.
+
+**Reconciliation decides escalation only, never a finding's survival.** A reconciliation reading never removes a finding, never changes how it is dispositioned downstream, and is never a reason to skip a spawn — every converged finding proceeds exactly as it would have. The only question in play: does this convergence justify replacing the surface and re-running Step 1?
+
+Two readings:
 
 - **Implementation-wrong-shape.** The surface is the wrong abstraction; gaps will keep multiplying as you patch. Replace, don't patch-by-patch.
-- **Prompt-overlap artifact.** Reviewers given similar prompts produce N voices of the same observation. Convergence looks like signal but is framing-induced.
+- **Correlated-reviewer artifact.** Reviewers converge without independent corroboration — either similar prompts producing N voices of the same observation (prompt overlap), or a shared base model drawing convergent flags on a pattern over-represented as a smell in training data regardless of whether it's wrong here (shared-model prior). Convergence looks like signal but isn't. Tighter prompts fix the former on the next spawn; they do nothing for the latter.
 
-You judge which applies. Don't treat convergence as automatic authority for "patch each gap." If implementation-wrong-shape, replace the surface and re-run Step 1. If prompt-overlap, apply the underlying finding once, skip duplicates, and note the overlap so the next spawn uses tighter prompts.
+**Discriminator**, replacing "you judge which applies": read what each convergent finding *names as the failure*. Distinct failure modes on one surface — a lock-budget risk, a consumer-contract break, a missing rollback — support escalation, because the surface is load-bearing in several directions. One failure mode in N voices, or findings that fail to name a consequence traceable in this code, do not.
+
+Convergence the Item-ownership table itself prescribes (two reviewers assigned to the same item by the routing contract, not by independent discovery) disclaims independence — it does not disqualify escalation. It is still escalation-eligible on the discriminator's own terms: `staff-data-engineer` flagging an RLS object as unenforceable and `ciso-reviewer` flagging the same line as a cross-tenant read path are two distinct failure modes on one surface and should escalate.
+
+If implementation-wrong-shape, replace the surface and re-run Step 1. If correlated-reviewer artifact, present the finding once with both reviewer attributions; when the cause is prompt overlap, note it so the next spawn uses tighter prompts.
 
 ## Finding disposition
 

@@ -283,6 +283,73 @@ def agent_input(session_id: str | None = None) -> dict:
     return payload
 
 
+# -- Hostile session_id ------------------------------------------------------
+#
+# Every hook that builds a filesystem path from the payload's `.session_id`
+# guards it with `_lib_valid_session_id_component` (_lib.sh). The tests that
+# pin that guard all share one setup: put a file where a traversing id would
+# resolve, run the hook with that id, and check the file survived. The three
+# names below are that shared setup; the per-hook sink assertions are not
+# shared, because each hook reaches the traversed path by a different sink
+# (`rm -f`, `touch`, a truncating write, a `--checkpoint` argument) and the
+# assertion that discriminates guard-present from guard-absent differs with it.
+
+TRAVERSAL_SESSION_ID = "../canary"
+"""A session_id that escapes one directory level when concatenated into
+`$HOME/.claude/<marker-dir>/$SESSION_ID`, resolving to `$HOME/.claude/canary`.
+Single level is deliberate: every marker directory this suite exercises sits
+directly under `~/.claude`, so one `..` lands in a directory that exists and
+the traversal is live rather than inert on a missing path component."""
+
+CANARY_CONTENT = "untouched\n"
+
+
+def plant_traversal_canary(home: Path, name: str = "canary") -> Path:
+    """Create the file that `TRAVERSAL_SESSION_ID` resolves to, and return it.
+
+    `name` covers hooks that build more than one path from the session id
+    (e.g. a marker plus a `-drift` sidecar), each needing its own canary.
+    """
+    canary = home / ".claude" / name
+    canary.write_text(CANARY_CONTENT)
+    return canary
+
+
+def assert_gate_handles_traversal_session_id(
+    hook: Path,
+    make_input,
+    home: Path,
+    expected_decision: str,
+    cwd: Path | None = None,
+) -> None:
+    """Assert a PreToolUse gate's decision for a traversing session_id, and
+    that it touched nothing outside its marker directory.
+
+    `make_input` is a callable taking a session id and returning the hook
+    payload, rather than a prebuilt payload: the helper supplies
+    `TRAVERSAL_SESSION_ID` itself, so a caller cannot pass a payload carrying
+    some other id and leave the test asserting nothing.
+
+    `expected_decision` is per-hook and not a constant. Bypass-shaped gates
+    (the marker grants an exception to a standing deny) must withhold the
+    exception and deny; activation-shaped gates (the marker turns enforcement
+    on) must leave it off and allow. Callers state which they are.
+    """
+    payload = make_input(TRAVERSAL_SESSION_ID)
+    # A make_input that drops the id it was handed would leave this test
+    # asserting a hook's disposition for an ordinary payload — passing, and
+    # pinning nothing about traversal. Checking the built payload closes that,
+    # since supplying the id is the only reason the callable form exists.
+    assert TRAVERSAL_SESSION_ID in json.dumps(payload), (
+        f"make_input did not thread the session id into the payload: {payload!r}"
+    )
+    canary = plant_traversal_canary(home)
+    assert run_hook(hook, payload, cwd=cwd) == expected_decision
+    assert canary.read_text() == CANARY_CONTENT, (
+        "a traversal session_id must not touch a file outside the marker dir"
+    )
+
+
 def git_toplevel(repo: Path) -> str:
     """Return what `git rev-parse --show-toplevel` sees — this is what the
     hook hashes, and it may differ from `str(repo)` when /tmp is a symlink."""

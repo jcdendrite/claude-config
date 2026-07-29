@@ -77,19 +77,13 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Bypass: fresh marker for THIS session's session_id means we're inside the
-# skill and should let its own gh commands through. Empty session_id (older
-# Claude Code versions, payload-schema drift) falls through to the gate.
+# Bypass: live marker for THIS session's session_id means we're inside the
+# skill and should let its own gh commands through. An empty session_id (older
+# Claude Code versions, payload-schema drift) or a path-escaping one falls
+# through to the gate.
 SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
-if [ -n "$SESSION_ID" ]; then
-  MARKER="$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
-  if [ -f "$MARKER" ]; then
-    STORED_PID=$(cat "$MARKER" 2>/dev/null | tr -d '[:space:]')
-    if [[ "$STORED_PID" =~ ^[0-9]+$ ]] && kill -0 "$STORED_PID" 2>/dev/null; then
-      exit 0
-    fi
-    rm -f "$MARKER" 2>/dev/null
-  fi
+if _lib_active_bypass_marker_live ".respond-pr-active.d" "$SESSION_ID"; then
+  exit 0
 fi
 
 # grep matches within a line and `.` never crosses a newline, so any command
