@@ -48,7 +48,9 @@ Collapse the `main`/`sidechain` rows for one skill into a single evaluation — 
 For each resolved, in-scope skill:
 
 1. Read its body and identify what it **specifies as output** — a plan file, a written review, a named artifact, a required step sequence.
-2. Decide whether execution is **decidable from your evidence** — the diff text and the plan path, nothing else. The test is not whether an artifact exists but whether you can judge that the skill was carried out. Undecidable when the skill specifies no artifact (`branch-management`, `subagent-delegation`); when the artifact never enters a branch diff (`handoff`, `brief` — user-scope continuity files); when it is a pull-request body or review comment (`pr-description`); or when it is diff-visible but its correctness turns on input you were not given (`respond-pr`, whose commit can only be judged against review comments you do not have). An artifact written outside the repo and later staged onto the branch IS decidable — judge it. A skill with both decidable and undecidable outputs is not dismissed: evaluate the decidable ones and record the remainder. Record every undecidable case — under `## Dismissed as undecidable` when your prompt gives `findings_path`, otherwise in the inline count — do not flag it, and do not go looking for it on disk: `resume-context` moves a continuity file aside once consumed, so absence there is not evidence either way.
+2. Decide whether execution is **decidable from your evidence** — the diff text and the plan path, nothing else. The test is not whether an artifact exists but whether you can judge that the skill was carried out. Undecidable when the skill specifies no artifact (`branch-management`, `subagent-delegation`); when the artifact never enters a branch diff (`handoff`, `brief` — user-scope continuity files); when it is a pull-request body or review comment (`pr-description`); or when it is diff-visible but its correctness turns on input you were not given (`respond-pr`, whose commit can only be judged against review comments you do not have). An artifact written outside the repo and later staged onto the branch IS decidable — judge it. A skill with both decidable and undecidable outputs is not dismissed: evaluate the decidable ones and record the remainder.
+
+   **The moment you reach an undecidable determination for a skill, write its record before moving to the next skill** — under `## Dismissed as undecidable` when your prompt gives `findings_path` (exact structure below), otherwise in the inline count. This is a separate obligation from explaining *why* the skill is undecidable, not a restatement of it: a case that took real reasoning to resolve — an artifact that genuinely exists but sits structurally outside your evidence, like `pr-description`'s PR body — needs the structural record exactly as much as an easy no-artifact case does. Writing the prose explanation is not writing the record. Do not flag it, and do not go looking for it on disk: `resume-context` moves a continuity file aside once consumed, so absence there is not evidence either way.
 3. For the rest, check the diff and plan for evidence those artifacts were produced.
 4. Apply the standard below.
 
@@ -113,27 +115,18 @@ When your invocation prompt includes `findings_path: <path>`:
 
 When `findings_path` is absent, ignore this section and use the **Inline output** format.
 
-### Dismissed-as-undecidable addendum (this agent only)
+### Dismissed-as-undecidable output structure (this agent only)
 
-The file-based protocol above is shared across every reviewer agent; the
-dismissal concept from step 2 of "The comparison" exists only here, so it is
-layered on as an addendum rather than folded into the shared block.
+The file-based protocol above is shared across every reviewer agent; this
+structure exists only here, so it is specified separately rather than folded
+into the shared block. Step 2 already told you to write this the moment you
+reach each undecidable determination — this is the exact shape to write it in:
 
-**Before returning, check this addendum against every dismissal you made in
-step 2 — before writing your closing summary.** If you dismissed even one
-skill as undecidable, the two requirements below are not optional follow-ups:
-write them into the findings file itself, not as prose reasoning about the
-dismissal. A dismissal explained only in narrative text and never placed
-under the required heading is indistinguishable, to the parent session
-reading this file, from a dismissal that was never recorded at all — even
-when your reasoning about *why* it's undecidable was itself correct.
-
-- When using file-based output, add `## Dismissed as undecidable` between the
+- File-based output: add `## Dismissed as undecidable` between the
   per-finding H2s and `## Recommendations`: one line per skill, naming the
   skill and the reason. Not a finding — still required, since this is the
   parent's only visible record that coverage was declined rather than clean.
-- Extend the pointer line to:
-  `Wrote findings to <path>. Found <N> issues, <M> dismissed as undecidable.
+- Pointer line: `Wrote findings to <path>. Found <N> issues, <M> dismissed as undecidable.
   <One-sentence summary>.` A dismissal is never counted in `<N>`. This pointer
   line is the only surface `/ready-for-review` reads when `findings_path` is
   set.
