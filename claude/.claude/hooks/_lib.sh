@@ -34,6 +34,47 @@ _lib_capped() {
   fi
 }
 
+# Canonical jq-encode-or-hard-block body for a gate hook's deny path.
+# Deliberately NOT named `emit_deny`: sourcing this file must not silently
+# satisfy the "CALLER MUST define emit_deny" contract below on its own, or a
+# hook that forgets its own bootstrap `emit_deny` would inherit this one
+# silently instead of bash's loud "command not found" —
+# test_missing_emit_deny_loud_fail in test_lib.py pins that. Each gate hook
+# defines a minimal bootstrap `emit_deny` before sourcing this file (so a
+# failed `source` can still deny), then re-points `emit_deny` at this
+# function immediately after a successful source:
+#   emit_deny() { printf '%s\n' "$1" >&2; exit 2; }
+#   if ! . ".../_lib.sh" 2>/dev/null; then emit_deny "..."; fi
+#   emit_deny() { _lib_emit_deny "$1"; }
+# An accidentally-dropped re-point line degrades UX only (every deny in that
+# hook falls back to the bootstrap stub's plain exit-2 stderr instead of this
+# function's JSON envelope) — it does not weaken the fail-closed guarantee,
+# since the bootstrap stub still blocks. _lib_jq's timeout backstop is safe
+# to rely on unconditionally here (unlike in the bootstrap stub) because this
+# function only ever runs after _lib.sh
+# has fully sourced.
+_lib_emit_deny() {
+  local reason="$1"
+  local reason_json
+  reason_json=$(printf '%s' "$reason" | _lib_jq -Rs . 2>/dev/null)
+  if [ -z "$reason_json" ]; then
+    # jq is absent, failed, or was killed by the timeout backstop. Exit 2 is
+    # the harness's blocking path for PreToolUse and carries the reason on
+    # stderr, so it needs no JSON encoding. Emitting a half-built payload on
+    # exit 0 instead would parse as no-decision and let the tool run.
+    #
+    # The fixed prefix is load-bearing: every gate parses its input with jq
+    # before any command filtering, so a missing jq denies every tool call
+    # with the parse-failure reason below — which names the wrong cause.
+    # Without this line the session has no in-agent route to a fix.
+    printf 'Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, which runs outside the tool-call path these hooks gate; in a headless or non-interactive run, ensure jq is installed in the execution environment beforehand. Underlying gate reason follows.\n%s\n' \
+      "$reason" >&2
+    exit 2
+  fi
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+    "$reason_json"
+}
+
 # Reads stdin into INPUT (global), extracts TOOL_NAME and COMMAND (globals)
 # via a single _lib_jq call using ASCII Unit Separator (0x1f) as delimiter.
 # The single call surfaces a structural-type error when .tool_input is non-object
@@ -53,7 +94,8 @@ _lib_capped() {
 # exits 0 — caller never checks $?. Never call this with `|| true` or in
 # a pipeline. CALLER MUST define emit_deny before sourcing _lib.sh so this
 # helper can resolve it; the canonical pattern (define-emit_deny-then-source)
-# is enforced by test_hook_alignment.py.
+# is enforced by test_hook_alignment.py. See _lib_emit_deny above for the
+# post-source re-pointing pattern hooks use to pick up the shared body.
 _lib_parse_tool_input_or_deny() {
   local deny_msg="${1:-Blocked: could not parse tool-input JSON.}"
   INPUT=$(cat)  # command substitution strips trailing newlines — safe for JSON payloads

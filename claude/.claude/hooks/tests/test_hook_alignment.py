@@ -375,9 +375,16 @@ class TestGateHookBehavior:
         to source _lib.sh BEFORE any other logic that could emit a deny for a
         different reason. The test cannot structurally distinguish "denied due to
         missing _lib.sh" from "denied for another reason" — it only verifies that
-        a deny is emitted and that exit code is 0. If a future hook violates the
-        define-emit_deny → source-lib → gate-logic ordering, this test may give
-        a false pass on the missing-lib path while actually testing something else.
+        a deny is emitted. If a future hook violates the define-emit_deny →
+        source-lib → gate-logic ordering, this test may give a false pass on the
+        missing-lib path while actually testing something else.
+
+        The pre-source `emit_deny` bootstrap (see _lib.sh's _lib_emit_deny
+        contract comment) is a minimal hard-block stub — it does not attempt
+        jq encoding, since _lib.sh (and thus _lib_jq's timeout backstop) isn't
+        available yet. So this path always exits 2 with the reason on stderr,
+        never the exit-0 JSON envelope the post-source path produces; accept
+        either shape via _assert_blocks, matching the jq-absent tests below.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_hook = Path(tmpdir) / hook.name
@@ -387,8 +394,7 @@ class TestGateHookBehavior:
             # the missing _lib.sh path, not an unrelated guard.
             payload = '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}'
             result = _run_hook_raw(tmp_hook, payload, cwd=Path(tmpdir))
-        assert result.returncode == 0, f"{hook.name}: exit code must be 0, got {result.returncode}"
-        _assert_deny_schema(result, hook.name, "missing-lib-sh")
+        _assert_blocks(result, hook.name, "missing-lib-sh", "could not source _lib.sh")
 
     def test_deny_envelope_schema_shape(self, hook: Path) -> None:
         """Every deny envelope must match the required JSON schema shape.
