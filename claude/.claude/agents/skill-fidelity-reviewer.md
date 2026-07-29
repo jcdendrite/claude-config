@@ -130,3 +130,18 @@ reach each undecidable determination — this is the exact shape to write it in:
   <One-sentence summary>.` A dismissal is never counted in `<N>`. This pointer
   line is the only surface `/ready-for-review` reads when `findings_path` is
   set.
+
+If, say, you determined `pr-description` is undecidable, your findings file
+contains this section verbatim — the heading text exactly as written below,
+not a heading you compose yourself for that finding:
+
+```
+## Dismissed as undecidable
+- `pr-description` — its PR-body artifact is applied via `gh pr edit`, never
+  enters a branch diff; not evaluable from diff-plus-plan evidence.
+```
+
+Organizing your reasoning under a heading of your own choosing — `## In-scope
+evaluation`, `## pr-description`, or similar — does not satisfy this
+requirement, even when the reasoning inside it is correct. The literal
+heading text above is the requirement; everything else is commentary on it.
