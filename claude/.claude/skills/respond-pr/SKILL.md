@@ -1,6 +1,6 @@
 ---
 name: respond-pr
-description: "Respond to PR review comments on the current branch's PR. TRIGGER when: replying to PR review comments, or posting any reply to a GitHub PR. Enforces required attribution prefix. DO NOT TRIGGER when: default branch with no PR open; no unread review comments; or the conversation is about a different PR."
+description: "Respond to PR review comments on the current branch's PR. Enforces required attribution prefix. The gate matches command shape, so it fires on any branch and with no unread comments. TRIGGER when: reading or posting any PR/issue comment or review in this repo. DO NOT TRIGGER when: no comment read or post is attempted, or it only reads another repo."
 argument-hint: "[PR number]"
 ---
 

@@ -7,7 +7,9 @@ Layer 1 — Static checks: every .sh hook in claude/.claude/hooks/ and
 plugins/*/hooks/ (excluding _lib.sh siblings) must declare a
 `# hook-class: <value>` header on line 2 with a valid value, and hooks
 matching gate-naming prefixes or the EXPLICIT_GATES set must declare
-`# hook-class: gate`.
+`# hook-class: gate`. Layer 1 also pins each gate-backed review skill to the
+hook that gates it — both files present, and the hook still wired into a
+PreToolUse matcher group.
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -131,6 +133,85 @@ def test_hook_documented_in_hooks_md(hook: Path) -> None:
     assert bullet_pattern.search(doc_text), (
         f"{hook.name}: not documented in docs/hooks.md — add an entry "
         f"under Gate hooks or Utility hooks"
+    )
+
+
+# ------------------------------------------------------------------ #
+# Layer 1 — Gate/skill pairing                                       #
+# ------------------------------------------------------------------ #
+
+_SKILLS_DIR = _REPO_ROOT / "claude" / ".claude" / "skills"
+_SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.json"
+
+# Review skills whose descriptions advertise a gate, paired with the hook that
+# enforces it. Each of these skills states a gate fact in its own frontmatter
+# description; that claim is only true while the named hook still exists under
+# that name.
+_GATE_RELEASING_SKILLS: list[tuple[str, str]] = [
+    ("code-review", "require-code-review.sh"),
+    ("plan-review", "require-plan-review.sh"),
+    ("ready-for-review", "require-ready-for-review.sh"),
+    ("respond-pr", "require-respond-pr.sh"),
+]
+
+
+@pytest.mark.parametrize(
+    ("skill_name", "hook_name"),
+    _GATE_RELEASING_SKILLS,
+    ids=[s for s, _ in _GATE_RELEASING_SKILLS],
+)
+def test_gate_backed_skill_has_a_live_gate(skill_name: str, hook_name: str) -> None:
+    """A gate-backed review skill's hook must exist AND still be wired.
+
+    These four skills describe themselves as gates ("Also the gate on
+    `git commit`", "gates Write/Edit/MultiEdit/ExitPlanMode until this runs").
+    That wording is a promise about whether an operation will be allowed, so
+    it goes stale if the hook is renamed, deleted, or quietly unwired from
+    settings.json while the skill keeps advertising the gate.
+
+    Checking the hook file exists is not enough on its own: a require-*.sh
+    left on disk but absent from every PreToolUse matcher group never fires,
+    and the skill's description would still claim it does. So this asserts
+    presence of both files and that the hook's command appears in a
+    PreToolUse group — the same settings.json parse (json.loads, not a
+    substring match) used by test_settings_json_contains_hook_entry in
+    test_check_claude_md_length.py.
+
+    Matcher content is deliberately not asserted: these four gates span
+    different surfaces (Bash for commit/push/PR-comment gates, an
+    Edit/Write/ExitPlanMode group for plan-review), so there is no single
+    correct matcher to pin.
+
+    Scope limit worth stating plainly: this proves the gate is armed, not
+    that the skill's DO NOT TRIGGER clauses stay honorable by that gate's
+    predicate. Honorability is a judgment about a bash predicate and is not
+    mechanically decidable — see docs/hooks.md, "What a gate-backed skill's
+    description may promise", which states that rule for humans to apply.
+    """
+    skill_file = _SKILLS_DIR / skill_name / "SKILL.md"
+    hook_file = _MAIN_HOOKS_DIR / hook_name
+    assert skill_file.is_file(), (
+        f"{skill_name}: SKILL.md missing at {skill_file}, but {hook_name} "
+        f"still gates on its marker — the gate can no longer be released"
+    )
+    assert hook_file.is_file(), (
+        f"{hook_name}: missing, but {skill_name}/SKILL.md still describes "
+        f"itself as gate-backed — update that description or restore the hook"
+    )
+
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    wired = [
+        entry
+        for group in settings.get("hooks", {}).get("PreToolUse", [])
+        if isinstance(group, dict)
+        for entry in group.get("hooks", [])
+        if isinstance(entry, dict)
+        and entry.get("command", "").endswith(f"/{hook_name}")
+    ]
+    assert wired, (
+        f"{hook_name}: present on disk but not wired into any PreToolUse "
+        f"matcher group in {_SETTINGS_PATH.name} — the gate never fires, yet "
+        f"{skill_name}/SKILL.md still describes itself as gate-backed"
     )
 
 

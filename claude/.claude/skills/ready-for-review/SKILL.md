@@ -3,10 +3,11 @@ name: ready-for-review
 description: >
   Pre-handoff gate: runs verification, code review, syncs or opens a
   PR. TRIGGER when: handing off to a human reviewer — wrapping up a
-  branch with an open PR, "ship it" intent, or before spawning a
-  multi-persona review (CISO + staff-* engineers) or /ultrareview.
-  DO NOT TRIGGER when: during active iteration, on diff-only
-  requests, or on the default branch.
+  branch, "ship it" intent, before a multi-persona review (CISO +
+  staff-* engineers) or /ultrareview, or on any push to a branch with
+  an open PR, mid-iteration included.
+  DO NOT TRIGGER when: no push or gh pr ready is attempted, or on the
+  default branch.
 argument-hint: "[optional PR context]"
 ---
 
