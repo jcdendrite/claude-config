@@ -9,17 +9,22 @@
 #
 # Run this script from the root of the consumer repo whose plugins you want to
 # update. Project-scope plugin entries are filtered to those installed in the
-# current project root; user-scope entries are shown regardless of cwd.
+# current project root; user-scope entries are shown regardless of cwd. Pass
+# --all-projects to sweep project-scope entries across every repo on the
+# machine instead — updates are applied by cd-ing into each entry's own
+# project root, since the claude CLI has no cwd-override flag.
 #
 # Usage:
 #   update-claude-config-plugins.sh
 #   update-claude-config-plugins.sh --dry-run
 #   update-claude-config-plugins.sh --yes
 #   update-claude-config-plugins.sh --dry-run --yes
+#   update-claude-config-plugins.sh --all-projects --yes
 #
 # Exit codes:
 #   0  success (including no-op)
-#   1  prerequisite error (marketplace not configured, CLI unavailable)
+#   1  prerequisite error (marketplace not configured, CLI unavailable);
+#      also set post-hoc if any --all-projects update fails or is skipped
 #   2  bad arguments
 
 set -euo pipefail
@@ -29,16 +34,18 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 usage() {
-  echo "Usage: $(basename "$0") [--dry-run] [--yes]" >&2
+  echo "Usage: $(basename "$0") [--dry-run] [--yes] [--all-projects]" >&2
 }
 
 DRY_RUN=0
 ASSUME_YES=0
+ALL_PROJECTS=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --dry-run) DRY_RUN=1 ;;
-    --yes)     ASSUME_YES=1 ;;
-    *)         usage; exit 2 ;;
+    --dry-run)      DRY_RUN=1 ;;
+    --yes)          ASSUME_YES=1 ;;
+    --all-projects) ALL_PROJECTS=1 ;;
+    *)              usage; exit 2 ;;
   esac
   shift
 done
@@ -159,7 +166,7 @@ declare -a OUTDATED_PROJECT_PATHS=()
 while IFS=$'\t' read -r entry_name installed_version entry_scope entry_project_path; do
   [ -z "$entry_name" ] && continue
 
-  if [ "$entry_scope" = "project" ] && [ "$entry_project_path" != "$PROJECT_ROOT" ]; then
+  if [ "$ALL_PROJECTS" -eq 0 ] && [ "$entry_scope" = "project" ] && [ "$entry_project_path" != "$PROJECT_ROOT" ]; then
     continue
   fi
 
@@ -274,18 +281,26 @@ if [ ! -t 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
 fi
 
 UPDATED_COUNT=0
+FAILED_COUNT=0
 
 for i in "${!OUTDATED_NAMES[@]}"; do
   plugin_name="${OUTDATED_NAMES[$i]}"
   entry_scope="${OUTDATED_SCOPES[$i]}"
+  entry_project_path="${OUTDATED_PROJECT_PATHS[$i]}"
   installed_ver="${OUTDATED_INSTALLED_VERSIONS[$i]}"
   latest_ver="${OUTDATED_LATEST_VERSIONS[$i]}"
+
+  if [ "$entry_scope" = "project" ]; then
+    scope_label="project, path: ${entry_project_path}"
+  else
+    scope_label="$entry_scope"
+  fi
 
   if [ "$ASSUME_YES" -eq 1 ]; then
     DO_UPDATE=1
   else
     printf "Update %s (%s → %s, scope: %s)? [y/N]: " \
-      "$plugin_name" "$installed_ver" "$latest_ver" "$entry_scope"
+      "$plugin_name" "$installed_ver" "$latest_ver" "$scope_label"
     read -r REPLY
     if [[ "$REPLY" == "y" || "$REPLY" == "Y" ]]; then
       DO_UPDATE=1
@@ -295,7 +310,20 @@ for i in "${!OUTDATED_NAMES[@]}"; do
   fi
 
   if [ "$DO_UPDATE" -eq 1 ]; then
-    claude plugin update "${plugin_name}@claude-config" --scope "$entry_scope"
+    if [ "$ALL_PROJECTS" -eq 1 ] && [ "$entry_scope" = "project" ]; then
+      if [ ! -d "$entry_project_path" ]; then
+        echo "WARNING: project path no longer exists, skipping ${plugin_name}: ${entry_project_path}" >&2
+        FAILED_COUNT=$(( FAILED_COUNT + 1 ))
+        continue
+      fi
+      if ! (cd "$entry_project_path" && claude plugin update "${plugin_name}@claude-config" --scope project); then
+        echo "WARNING: update failed for ${plugin_name} in ${entry_project_path}" >&2
+        FAILED_COUNT=$(( FAILED_COUNT + 1 ))
+        continue
+      fi
+    else
+      claude plugin update "${plugin_name}@claude-config" --scope "$entry_scope"
+    fi
     UPDATED_COUNT=$(( UPDATED_COUNT + 1 ))
   fi
 done
@@ -306,4 +334,8 @@ done
 
 if [ "$UPDATED_COUNT" -gt 0 ]; then
   echo "Restart Claude Code for the updated plugins to take effect."
+fi
+
+if [ "$FAILED_COUNT" -gt 0 ]; then
+  exit 1
 fi
