@@ -117,7 +117,16 @@ When `findings_path` is absent, ignore this section and use the **Inline output*
 
 The file-based protocol above is shared across every reviewer agent; the
 dismissal concept from step 2 of "The comparison" exists only here, so it is
-layered on as an addendum rather than folded into the shared block:
+layered on as an addendum rather than folded into the shared block.
+
+**Before returning, check this addendum against every dismissal you made in
+step 2 — before writing your closing summary.** If you dismissed even one
+skill as undecidable, the two requirements below are not optional follow-ups:
+write them into the findings file itself, not as prose reasoning about the
+dismissal. A dismissal explained only in narrative text and never placed
+under the required heading is indistinguishable, to the parent session
+reading this file, from a dismissal that was never recorded at all — even
+when your reasoning about *why* it's undecidable was itself correct.
 
 - When using file-based output, add `## Dismissed as undecidable` between the
   per-finding H2s and `## Recommendations`: one line per skill, naming the
