@@ -27,6 +27,14 @@ as "has no canonical principle behind it," which is a different claim from
 
 **The pattern:** SKILL.md's Reviewer routing section contains a single unconditional directive: `Read ~/.claude/skills/plan-review/ROUTING.md before any spawn decision.` All spawn criteria — including the always-spawn rules for ciso-reviewer and staff-product-engineer — live exclusively in ROUTING.md. The model reads ROUTING.md on demand before making any spawn decision.
 
+## Reconciliation discriminator
+
+The escalation-only discriminator in ROUTING.md's Reconciliation section —
+what convergence does and does not decorrelate, and why prescribed
+co-ownership disclaims independence without disqualifying escalation — is
+grounded in `docs/design-decisions.md` §3's `### Sources` block. See that
+block for the citations rather than restating them here.
+
 ## Smoke test — 2026-05-05
 
 Post-extraction smoke test to verify ROUTING.md is reachable and substantively consulted, not just linked-and-ignored.
