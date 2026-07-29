@@ -47,9 +47,10 @@ Collapse the `main`/`sidechain` rows for one skill into a single evaluation — 
 
 For each resolved, in-scope skill:
 
-1. Read its body and identify what it **specifies as output** — a plan file, a written review, a marker, a PR edit, a named artifact, a required step sequence. Skills that specify no artifact (e.g. `branch-management`, `subagent-delegation`) are dismissed in one line, not analyzed.
-2. Check the diff and plan for evidence those artifacts were produced.
-3. Apply the standard below.
+1. Read its body and identify what it **specifies as output** — a plan file, a written review, a named artifact, a required step sequence.
+2. Decide whether execution is **decidable from your evidence** — the diff text and the plan path, nothing else. The test is not whether an artifact exists but whether you can judge that the skill was carried out. Undecidable when the skill specifies no artifact (`branch-management`, `subagent-delegation`); when the artifact never enters a branch diff (`handoff`, `brief` — user-scope continuity files); when it is a pull-request body or review comment (`pr-description`); or when it is diff-visible but its correctness turns on input you were not given (`respond-pr`, whose commit can only be judged against review comments you do not have). An artifact written outside the repo and later staged onto the branch IS decidable — judge it. A skill with both decidable and undecidable outputs is not dismissed: evaluate the decidable ones and record the remainder. Record every undecidable case — under `## Dismissed as undecidable` when your prompt gives `findings_path`, otherwise in the inline count — do not flag it, and do not go looking for it on disk: `resume-context` moves a continuity file aside once consumed, so absence there is not evidence either way.
+3. For the rest, check the diff and plan for evidence those artifacts were produced.
+4. Apply the standard below.
 
 ## The standard
 
@@ -67,7 +68,7 @@ You read a skill body only to extract *what it requires*. Do not adopt its voice
 
 ### Inline output
 
-Start with one line: how many skills were in the list, how many resolved to a body, how many were in scope.
+Start with one line: how many skills were in the list, how many resolved to a body, how many were in scope, and how many were dismissed as undecidable.
 
 For each in-scope skill with a finding:
 1. **Skill name**
@@ -75,7 +76,10 @@ For each in-scope skill with a finding:
 3. **What the diff/plan shows** (produced / absent / reframed)
 4. **Verdict** — `[SILENT-SKIP]`, `[REBUTTED-RATIONALE]`, or `[DISCLOSED]` (disclosed = not a finding, listed for completeness)
 
-End with one of: **No fidelity concerns**, **Approve with concerns** (list), or **Request changes** (list silent-abbreviation findings). Do not pad with praise or restate the diff. Findings or nothing.
+If any skill was dismissed as undecidable, list each with a one-line reason
+before the verdict — a dismissal is not a finding but must still be visible.
+
+End with one of: **No fidelity concerns**, **Approve with concerns** (list), or **Request changes** (list silent-abbreviation findings). Do not pad with praise or restate the diff. Findings, dismissals, or nothing.
 
 ### File-based output
 
@@ -108,3 +112,19 @@ When your invocation prompt includes `findings_path: <path>`:
    explicitly and fall back to the **Inline output** format.
 
 When `findings_path` is absent, ignore this section and use the **Inline output** format.
+
+### Dismissed-as-undecidable addendum (this agent only)
+
+The file-based protocol above is shared across every reviewer agent; the
+dismissal concept from step 2 of "The comparison" exists only here, so it is
+layered on as an addendum rather than folded into the shared block:
+
+- When using file-based output, add `## Dismissed as undecidable` between the
+  per-finding H2s and `## Recommendations`: one line per skill, naming the
+  skill and the reason. Not a finding — still required, since this is the
+  parent's only visible record that coverage was declined rather than clean.
+- Extend the pointer line to:
+  `Wrote findings to <path>. Found <N> issues, <M> dismissed as undecidable.
+  <One-sentence summary>.` A dismissal is never counted in `<N>`. This pointer
+  line is the only surface `/ready-for-review` reads when `findings_path` is
+  set.

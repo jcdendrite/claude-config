@@ -453,6 +453,47 @@ class TestConventionSkillWiring:
         assert "run the `pr-description`" in self._skill_body("handoff")
 
 
+class TestSkillFidelityReviewerUndecidableDismissal:
+    """Pin the decidability-keyed dismissal rule and its visible output slot.
+
+    skill-fidelity-reviewer's only evidence is the diff text and the plan
+    path; it has no Bash. A rule keyed on artifact *location* rather than
+    *decidability* mis-fires in both directions: it would evaluate
+    respond-pr's diff-visible commit (whose correctness depends on review
+    comments the reviewer never sees), and it would sweep plan-it's plan
+    file into a bare ~/.claude/-prefix dismissal (plan-it writes there in
+    plan mode before staging the file onto the branch). The dismissal must
+    also be visible: without an Output-format slot, a dismissed skill
+    produced no signal at all -- silent non-coverage in place of the false
+    positive the rule exists to fix.
+    """
+
+    def _body(self):
+        return TestConventionSkillWiring()._agent_body("skill-fidelity-reviewer")
+
+    def test_declares_decidability_test(self):
+        """The dismissal rule must be keyed on decidability, not artifact presence."""
+        assert "decidable from your evidence" in self._body()
+
+    def test_prohibits_disk_hunt_for_dismissed_artifacts(self):
+        """The reviewer must not search disk for a dismissed skill's artifact."""
+        assert "do not go looking for it on disk" in self._body()
+
+    def test_pointer_line_reports_dismissed_count(self):
+        """The pointer line -- the only surface /ready-for-review reads when
+        findings_path is set -- must report dismissals, not just carry the
+        step-2 instruction to record them. A single `in body` check on the
+        bare phrase is satisfied by the step-2 occurrence alone, so this
+        pins the fuller pointer-line fragment specifically."""
+        assert "issues, <M> dismissed as undecidable" in self._body()
+
+    def test_inline_output_reports_dismissed_separately(self):
+        """Inline mode's opening count line must separate dismissed skills
+        from in-scope ones -- the only feasible verification for that
+        branch, since findings_path dispatch never reaches inline mode."""
+        assert "how many were dismissed as undecidable" in self._body()
+
+
 class TestPrDescriptionTwoModeDispatch:
     """Pin pr-description's author/sync branching, in both directions.
 
