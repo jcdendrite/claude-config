@@ -478,6 +478,12 @@ class TestSkillFidelityReviewerUndecidableDismissal:
     positive the rule exists to fix.
     """
 
+    # Shared with test_undecidable_examples_exclude_a_known_decidable_skill,
+    # which uses this same literal as its enumeration-clause slice-end anchor
+    # -- rewording it fails both tests; the other test's ValueError on a
+    # missing anchor is expected collateral, not a separate defect.
+    _DISK_HUNT_PROHIBITION = "do not go looking for it on disk"
+
     def _body(self):
         return _agent_body("skill-fidelity-reviewer")
 
@@ -487,7 +493,7 @@ class TestSkillFidelityReviewerUndecidableDismissal:
 
     def test_prohibits_disk_hunt_for_dismissed_artifacts(self):
         """The reviewer must not search disk for a dismissed skill's artifact."""
-        assert "do not go looking for it on disk" in self._body()
+        assert self._DISK_HUNT_PROHIBITION in self._body()
 
     def test_undecidable_examples_exclude_a_known_decidable_skill(self):
         """plan-it's plan file is staged onto the branch and is decidable --
@@ -500,7 +506,7 @@ class TestSkillFidelityReviewerUndecidableDismissal:
         that false dismissal silently."""
         body = self._body()
         start = body.index("Undecidable when")
-        end = body.index("do not go looking for it on disk")
+        end = body.index(self._DISK_HUNT_PROHIBITION)
         assert end > start, (
             "anchor order inverted -- a duplicate/earlier occurrence of one "
             "anchor would otherwise silently degrade this to a vacuous "
