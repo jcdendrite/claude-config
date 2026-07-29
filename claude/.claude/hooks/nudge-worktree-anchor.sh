@@ -149,7 +149,7 @@ fi
 ADDITIONAL_CONTEXT=$(printf '%s\n%s\n%s' \
   "This session's working directory is the MAIN working tree ($REPO_ROOT) of a repo that requires worktrees, and a linked worktree already exists (e.g. $LINKED_WORKTREE)." \
   "Commands, dispatched subagents, and review markers will describe the main checkout on the default branch, not the branch the work belongs to — verification can pass against a tree nobody changed." \
-  "Before further work, enter the worktree the task belongs to: EnterWorktree{path: \"<worktree path>\"}. See branch-creation/SKILL.md § \"Anchor the session in the worktree\".")
+  "Before further work, enter the worktree the task belongs to: EnterWorktree{path: \"<worktree path>\"}. See branch-management/SKILL.md § \"Anchor the session in the worktree\".")
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 printf '%s\n' "$REPO_ROOT" > "$STATE_FILE" 2>/dev/null || true

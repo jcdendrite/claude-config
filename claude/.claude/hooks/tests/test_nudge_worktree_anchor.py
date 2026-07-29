@@ -11,7 +11,12 @@ import json
 import os
 import subprocess
 
-from helpers import HOOKS_DIR
+from helpers import (
+    CANARY_CONTENT,
+    HOOKS_DIR,
+    TRAVERSAL_SESSION_ID,
+    plant_traversal_canary,
+)
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-worktree-anchor.sh"
 
@@ -178,13 +183,12 @@ class TestSessionIdPathTraversal:
     ):
         repo, _wt = opted_in_with_worktree
         state_dir = isolated_home / ".claude" / ".worktree-anchor-nudge.d"
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
+        canary = plant_traversal_canary(isolated_home)
 
-        result = _run(repo, isolated_home, session_id="../canary")
+        result = _run(repo, isolated_home, session_id=TRAVERSAL_SESSION_ID)
 
         assert result.returncode == 0
-        assert canary.read_text() == "untouched\n", (
+        assert canary.read_text() == CANARY_CONTENT, (
             "a traversal session_id must not overwrite a file outside the state dir"
         )
         assert not state_dir.exists() or list(state_dir.iterdir()) == [], (
@@ -197,13 +201,12 @@ class TestSessionIdPathTraversal:
         """Mirrors the write case for _rearm's `rm -f "$STATE_FILE"`, exercised
         by a request that reaches a re-arming branch (anchored worktree)."""
         repo, wt = opted_in_with_worktree
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
+        canary = plant_traversal_canary(isolated_home)
 
-        result = _run(wt, isolated_home, session_id="../canary")
+        result = _run(wt, isolated_home, session_id=TRAVERSAL_SESSION_ID)
 
         assert result.returncode == 0
-        assert canary.exists() and canary.read_text() == "untouched\n", (
+        assert canary.exists() and canary.read_text() == CANARY_CONTENT, (
             "a traversal session_id must not delete a file outside the state dir"
         )
 

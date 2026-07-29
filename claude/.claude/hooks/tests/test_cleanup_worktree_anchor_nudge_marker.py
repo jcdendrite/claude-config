@@ -12,7 +12,12 @@ import os
 import subprocess
 from pathlib import Path
 
-from helpers import HOOKS_DIR
+from helpers import (
+    CANARY_CONTENT,
+    HOOKS_DIR,
+    TRAVERSAL_SESSION_ID,
+    plant_traversal_canary,
+)
 
 CLEANUP_HOOK = HOOKS_DIR / "cleanup-worktree-anchor-nudge-marker.sh"
 
@@ -84,10 +89,9 @@ class TestCleanupWorktreeAnchorNudgeMarker:
         """A session_id containing '../' must not let the rm -f escape the
         state directory (Fix 1's guard, applied identically to this
         destructor)."""
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
+        canary = plant_traversal_canary(isolated_home)
 
-        result = _run({"session_id": "../canary"}, isolated_home)
+        result = _run({"session_id": TRAVERSAL_SESSION_ID}, isolated_home)
 
         assert result.returncode == 0
-        assert canary.read_text() == "untouched\n"
+        assert canary.read_text() == CANARY_CONTENT

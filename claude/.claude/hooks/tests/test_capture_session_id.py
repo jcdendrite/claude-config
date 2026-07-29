@@ -5,7 +5,12 @@ import json
 import subprocess
 from pathlib import Path
 
-from helpers import HOOKS_DIR
+from helpers import (
+    CANARY_CONTENT,
+    HOOKS_DIR,
+    TRAVERSAL_SESSION_ID,
+    plant_traversal_canary,
+)
 
 CAPTURE_SESSION_ID_HOOK = HOOKS_DIR / "capture-session-id.sh"
 
@@ -102,13 +107,14 @@ class TestCaptureSessionId:
         level up, in ~/.claude directly."""
         active_dir = isolated_home / ".claude" / ".plan-review-active.d"
         active_dir.mkdir(parents=True)
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
+        canary = plant_traversal_canary(isolated_home)
 
-        result = self._run_capturing_stderr(json.dumps({"session_id": "../canary"}))
+        result = self._run_capturing_stderr(
+            json.dumps({"session_id": TRAVERSAL_SESSION_ID})
+        )
 
         assert result.returncode == 0
-        assert canary.read_text() == "untouched\n"
+        assert canary.read_text() == CANARY_CONTENT
         assert self._sessions_files(isolated_home) == []
         assert "[capture-session-id]" in result.stderr
         assert "not a valid path component" in result.stderr

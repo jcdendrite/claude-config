@@ -1,5 +1,5 @@
 ---
-name: branch-creation
+name: branch-management
 description: >
   Name a feature branch, start it clean, and anchor the session in its
   worktree.

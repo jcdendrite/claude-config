@@ -47,7 +47,7 @@ Collapse the `main`/`sidechain` rows for one skill into a single evaluation — 
 
 For each resolved, in-scope skill:
 
-1. Read its body and identify what it **specifies as output** — a plan file, a written review, a marker, a PR edit, a named artifact, a required step sequence. Skills that specify no artifact (e.g. `branch-creation`, `subagent-delegation`) are dismissed in one line, not analyzed.
+1. Read its body and identify what it **specifies as output** — a plan file, a written review, a marker, a PR edit, a named artifact, a required step sequence. Skills that specify no artifact (e.g. `branch-management`, `subagent-delegation`) are dismissed in one line, not analyzed.
 2. Check the diff and plan for evidence those artifacts were produced.
 3. Apply the standard below.
 

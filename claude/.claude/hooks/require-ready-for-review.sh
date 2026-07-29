@@ -144,19 +144,11 @@ if [ -n "$CURRENT_BRANCH" ] && [ -n "$DEFAULT_BRANCH" ] && [ "$CURRENT_BRANCH" =
   exit 0
 fi
 
-# Active-marker bypass: the skill is currently running. An id that is not a
-# safe single path component (e.g. containing "../") is treated the same as
-# absent: skipping the bypass just means the completion-marker check further
-# down decides the gate instead.
-if [ -n "$SESSION_ID" ] && _lib_valid_session_id_component "$SESSION_ID"; then
-  ACTIVE_MARKER="$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
-  if [ -f "$ACTIVE_MARKER" ]; then
-    STORED_PID=$(cat "$ACTIVE_MARKER" 2>/dev/null | tr -d '[:space:]')
-    if [[ "$STORED_PID" =~ ^[0-9]+$ ]] && kill -0 "$STORED_PID" 2>/dev/null; then
-      exit 0
-    fi
-    rm -f "$ACTIVE_MARKER" 2>/dev/null
-  fi
+# Active-marker bypass: the skill is currently running. An absent or
+# path-escaping id withholds the bypass, which just means the
+# completion-marker check further down decides the gate instead.
+if _lib_active_bypass_marker_live ".ready-for-review-active.d" "$SESSION_ID"; then
+  exit 0
 fi
 
 # PR existence check: only gate when the branch actually has an open PR.

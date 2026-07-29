@@ -14,6 +14,7 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    assert_gate_handles_traversal_session_id,
     bash_input,
     edit_input,
     exitplanmode_input,
@@ -558,18 +559,15 @@ class TestRequirePlanReview:
         invalid id must skip the active-marker bypass entirely and fall
         through to the completion-marker check, which finds no match here
         and denies."""
-        canary = plan_review_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
-        assert (
-            run_hook(
-                REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": "../canary"},
-                cwd=plan_review_repo,
-            )
-            == "deny"
-        )
-        assert canary.read_text() == "untouched\n", (
-            "a traversal session_id must not touch a file outside the marker dir"
+        assert_gate_handles_traversal_session_id(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            lambda sid: {
+                **write_input(str(plan_review_repo / "src" / "foo.py")),
+                "session_id": sid,
+            },
+            plan_review_home,
+            expected_decision="deny",
+            cwd=plan_review_repo,
         )
 
     # -- SKILL.md fixture alignment -----------------------------------------

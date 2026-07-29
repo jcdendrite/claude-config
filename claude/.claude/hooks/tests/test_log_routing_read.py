@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from helpers import (
+    CANARY_CONTENT,
     HOOKS_DIR,
+    TRAVERSAL_SESSION_ID,
     agent_input,
     plan_review_routing_read_marker_path,
+    plant_traversal_canary,
     read_input,
     run_hook,
     write_plan_review_active_marker,
@@ -93,13 +96,15 @@ class TestLogRoutingRead:
         non-discriminable under the same collapse because it only reads. Do
         not carry that reasoning to a hook that writes.)"""
         (isolated_home / ".claude" / ".plan-review-active.d").mkdir(parents=True, exist_ok=True)
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
+        canary = plant_traversal_canary(isolated_home)
         mtime_before = canary.stat().st_mtime_ns
 
-        assert run_hook(LOG_ROUTING_READ_HOOK, read_input(ROUTING_MD_PATH, session_id="../canary")) == "allow"
+        assert run_hook(
+            LOG_ROUTING_READ_HOOK,
+            read_input(ROUTING_MD_PATH, session_id=TRAVERSAL_SESSION_ID),
+        ) == "allow"
         assert canary.stat().st_mtime_ns == mtime_before, (
             "a traversal session_id must not reach the touch on a file "
             "outside .plan-review-routing-read.d/"
         )
-        assert canary.read_text() == "untouched\n"
+        assert canary.read_text() == CANARY_CONTENT

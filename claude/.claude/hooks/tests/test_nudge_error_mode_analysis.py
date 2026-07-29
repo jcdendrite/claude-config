@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR
+from helpers import HOOKS_DIR, SCRIPTS_DIR, TRAVERSAL_SESSION_ID
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-error-mode-analysis.sh"
 
@@ -513,7 +513,7 @@ class TestNudgeErrorModeAnalysis:
             fake_bin,
             f"#!/bin/bash\necho invoked >> {spawn_counter}\nexit 0\n",
         )
-        payload = _base_payload(transcript, session_id="../canary")
+        payload = _base_payload(transcript, session_id=TRAVERSAL_SESSION_ID)
         result = _run_hook(payload, tmp_path, extra_env={"PATH": shim_path})
         assert result.returncode == 0
         assert result.stdout.strip() == ""

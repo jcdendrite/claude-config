@@ -8,6 +8,7 @@ from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
     agent_input,
+    assert_gate_handles_traversal_session_id,
     bash_input,
     extract_skill_command,
     run_hook,
@@ -135,10 +136,9 @@ class TestRequireRoutingRead:
         defect in the write-sink hooks), but the property is pinned by
         test_lib.py's direct unit tests of _lib_valid_session_id_component
         and by the write-sink hooks' own traversal tests, not by this one."""
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
-
-        assert run_hook(REQUIRE_ROUTING_READ_HOOK, agent_input(session_id="../canary")) == "allow"
-        assert canary.read_text() == "untouched\n", (
-            "a traversal session_id must not touch a file outside the marker dir"
+        assert_gate_handles_traversal_session_id(
+            REQUIRE_ROUTING_READ_HOOK,
+            lambda sid: agent_input(session_id=sid),
+            isolated_home,
+            expected_decision="allow",
         )

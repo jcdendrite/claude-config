@@ -12,7 +12,12 @@ import os
 import subprocess
 from pathlib import Path
 
-from helpers import HOOKS_DIR
+from helpers import (
+    CANARY_CONTENT,
+    HOOKS_DIR,
+    TRAVERSAL_SESSION_ID,
+    plant_traversal_canary,
+)
 
 CLEANUP_HOOK = HOOKS_DIR / "cleanup-handoff-nudge-marker.sh"
 
@@ -105,13 +110,11 @@ class TestCleanupHandoffNudgeMarker:
         accident rather than by the guard."""
         marker_dir = _marker_dir(isolated_home)
         marker_dir.mkdir(parents=True)
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
-        drift_canary = isolated_home / ".claude" / "canary-drift"
-        drift_canary.write_text("untouched\n")
+        canary = plant_traversal_canary(isolated_home)
+        drift_canary = plant_traversal_canary(isolated_home, "canary-drift")
 
-        result = _run({"session_id": "../canary"}, isolated_home)
+        result = _run({"session_id": TRAVERSAL_SESSION_ID}, isolated_home)
 
         assert result.returncode == 0
-        assert canary.read_text() == "untouched\n"
-        assert drift_canary.read_text() == "untouched\n"
+        assert canary.read_text() == CANARY_CONTENT
+        assert drift_canary.read_text() == CANARY_CONTENT

@@ -127,19 +127,12 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 # a genuinely per-session property, and it is PID-liveness-checked.
 # Skip this bypass for ExitPlanMode — the active marker means plan-review
 # is in progress (not yet complete), so ExitPlanMode must still be blocked.
-# An id that is not a safe single path component (e.g. containing "../") is
-# treated the same as absent: ACTIVE_MARKER below concatenates it into a
-# path, and skipping the bypass here just means the completion-marker check
-# further down decides the gate instead — never less safe than the bypass.
-if [ -n "$SESSION_ID" ] && [ "$TOOL_NAME" != "ExitPlanMode" ] && _lib_valid_session_id_component "$SESSION_ID"; then
-  ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
-  if [ -f "$ACTIVE_MARKER" ]; then
-    STORED_PID=$(cat "$ACTIVE_MARKER" 2>/dev/null | tr -d '[:space:]')
-    if [[ "$STORED_PID" =~ ^[0-9]+$ ]] && kill -0 "$STORED_PID" 2>/dev/null; then
-      exit 0
-    fi
-    rm -f "$ACTIVE_MARKER" 2>/dev/null
-  fi
+# An absent or path-escaping id withholds the bypass, which just means the
+# completion-marker check further down decides the gate instead — never less
+# safe than the bypass would have been.
+if [ "$TOOL_NAME" != "ExitPlanMode" ] \
+  && _lib_active_bypass_marker_live ".plan-review-active.d" "$SESSION_ID"; then
+  exit 0
 fi
 
 # Completion-marker check: allow only when some marker's stored hash equals

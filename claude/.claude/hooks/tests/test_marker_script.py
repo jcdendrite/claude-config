@@ -6,7 +6,15 @@ import re
 import subprocess
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, bash_input, run_hook
+from helpers import (
+    CANARY_CONTENT,
+    HOOKS_DIR,
+    SCRIPTS_DIR,
+    TRAVERSAL_SESSION_ID,
+    bash_input,
+    plant_traversal_canary,
+    run_hook,
+)
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
@@ -95,7 +103,7 @@ class TestMarkerScriptSessionIdValidation:
         ],
     )
     def test_exits_2_when_session_id_is_path_escaping(self, isolated_home, git_repo, args):
-        self._seed_session(isolated_home, "../canary")
+        self._seed_session(isolated_home, TRAVERSAL_SESSION_ID)
         result = _run(args, cwd=git_repo, home=isolated_home)
         assert result.returncode == 2, (
             f"marker.sh {' '.join(args)} should exit 2 for a path-escaping "
@@ -103,9 +111,8 @@ class TestMarkerScriptSessionIdValidation:
         )
 
     def test_no_marker_written_for_path_escaping_session_id(self, isolated_home, git_repo):
-        self._seed_session(isolated_home, "../canary")
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
+        self._seed_session(isolated_home, TRAVERSAL_SESSION_ID)
+        canary = plant_traversal_canary(isolated_home)
 
         _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
 
@@ -114,7 +121,7 @@ class TestMarkerScriptSessionIdValidation:
         assert stray == [], (
             f"marker.sh wrote a stray marker for a path-escaping session id: {stray}"
         )
-        assert canary.read_text() == "untouched\n", (
+        assert canary.read_text() == CANARY_CONTENT, (
             "a path-escaping session id must not let 'write' touch a file "
             "outside the markers directory"
         )
@@ -122,9 +129,8 @@ class TestMarkerScriptSessionIdValidation:
     def test_no_active_marker_written_for_path_escaping_session_id(
         self, isolated_home, git_repo
     ):
-        self._seed_session(isolated_home, "../canary")
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
+        self._seed_session(isolated_home, TRAVERSAL_SESSION_ID)
+        canary = plant_traversal_canary(isolated_home)
 
         _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
 
@@ -133,7 +139,7 @@ class TestMarkerScriptSessionIdValidation:
         assert stray == [], (
             f"marker.sh wrote a stray active marker for a path-escaping session id: {stray}"
         )
-        assert canary.read_text() == "untouched\n"
+        assert canary.read_text() == CANARY_CONTENT
 
 
 class TestMarkerScriptHappyPath:

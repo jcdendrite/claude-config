@@ -10,6 +10,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
+    assert_gate_handles_traversal_session_id,
     bash_input,
     edit_input,
     extract_skill_command,
@@ -313,18 +314,12 @@ class TestRequireReadyForReview:
         invalid id must skip the active-marker bypass entirely and fall
         through to the completion-marker check, which finds no match here
         and denies."""
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
-        assert (
-            run_hook(
-                READY_FOR_REVIEW_HOOK,
-                bash_input("git push origin feature", session_id="../canary"),
-                cwd=repo_on_feature_branch,
-            )
-            == "deny"
-        )
-        assert canary.read_text() == "untouched\n", (
-            "a traversal session_id must not touch a file outside the marker dir"
+        assert_gate_handles_traversal_session_id(
+            READY_FOR_REVIEW_HOOK,
+            lambda sid: bash_input("git push origin feature", session_id=sid),
+            isolated_home,
+            expected_decision="deny",
+            cwd=repo_on_feature_branch,
         )
 
     # -- Completion-marker check ------------------------------------------

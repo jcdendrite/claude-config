@@ -9,6 +9,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
+    assert_gate_handles_traversal_session_id,
     bash_input,
     edit_input,
     extract_skill_command,
@@ -230,12 +231,10 @@ class TestRequireMemorySkill:
         up ($HOME/.claude/canary). The invalid id must skip the active-marker
         bypass entirely and fall through to the gate's normal deny — not be
         treated as an authorization to allow."""
-        canary = isolated_home / ".claude" / "canary"
-        canary.write_text("untouched\n")
         memory_md = str(memory_tree / "MEMORY.md")
-        payload = _memory_input(edit_input(memory_md), "../canary")
-
-        assert run_hook(HOOK_PATH, payload) == "deny"
-        assert canary.read_text() == "untouched\n", (
-            "a traversal session_id must not touch a file outside the marker dir"
+        assert_gate_handles_traversal_session_id(
+            HOOK_PATH,
+            lambda sid: _memory_input(edit_input(memory_md), sid),
+            isolated_home,
+            expected_decision="deny",
         )

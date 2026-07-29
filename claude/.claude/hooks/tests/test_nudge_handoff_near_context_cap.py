@@ -17,7 +17,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from helpers import HOOKS_DIR
+from helpers import HOOKS_DIR, TRAVERSAL_SESSION_ID
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-handoff-near-context-cap.sh"
 
@@ -288,7 +288,9 @@ class TestNudgeHandoffNearContextCap:
         )
         canary_path = tmp_path / ".claude" / "canary"
 
-        result = _run_hook(_base_payload(transcript, session_id="../canary"), tmp_path)
+        result = _run_hook(
+            _base_payload(transcript, session_id=TRAVERSAL_SESSION_ID), tmp_path
+        )
 
         assert result.returncode == 0
         assert result.stdout.strip() == ""
