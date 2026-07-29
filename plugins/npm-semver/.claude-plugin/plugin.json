@@ -1,7 +1,7 @@
 {
   "name": "npm-semver",
   "description": "Semver and version-field discipline for published npm packages. Install at project scope in any repo that publishes an npm package.",
-  "version": "1.1.0",
+  "version": "1.0.3",
   "author": {
     "name": "Cordova Strategy"
   },
