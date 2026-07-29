@@ -89,15 +89,19 @@ def run_hook(
 ) -> str:
     """Invoke `hook` with `tool_input` as JSON stdin. Return the decision.
 
-    Silent exit (exit 0, empty stdout) maps to "allow" to match the hook
-    protocol, where absence of output means "no opinion". A non-empty stdout
-    payload is expected to carry `hookSpecificOutput.permissionDecision` —
-    missing it raises `KeyError`, since for every hook that always emits
-    `hookSpecificOutput` that shape break is itself a regression worth a hard
-    test failure. Hooks that legitimately emit a decision-less advisory
-    payload (e.g. a PostToolUse `systemMessage`) should use
-    `run_hook_advisory` instead, which treats that absence as "no opinion"
-    rather than a broken payload.
+    Silent exit 0 (empty stdout) maps to "allow" to match the hook protocol,
+    where absence of output means "no opinion". Exit 2 (empty stdout) maps to
+    "deny": per the harness's PreToolUse contract, exit 2 is itself the
+    blocking signal, delivered via stderr rather than a JSON payload — a gate
+    hook's jq-absent fallback takes exactly this path. Without this mapping,
+    an exit-2 block with empty stdout would be misread as "allow". A
+    non-empty stdout payload is expected to carry
+    `hookSpecificOutput.permissionDecision` — missing it raises `KeyError`,
+    since for every hook that always emits `hookSpecificOutput` that shape
+    break is itself a regression worth a hard test failure. Hooks that
+    legitimately emit a decision-less advisory payload (e.g. a PostToolUse
+    `systemMessage`) should use `run_hook_advisory` instead, which treats
+    that absence as "no opinion" rather than a broken payload.
 
     home: when set, overrides $HOME in the subprocess environment so the
     hook writes into an isolated temp directory rather than real ~/.claude.
@@ -115,7 +119,7 @@ def run_hook(
         check=False,
     )
     if not result.stdout.strip():
-        return "allow"
+        return "deny" if result.returncode == 2 else "allow"
     payload = json.loads(result.stdout)
     return payload["hookSpecificOutput"]["permissionDecision"]
 

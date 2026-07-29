@@ -2089,7 +2089,12 @@ class TestDenyPrivateProjectRefs:
         it, it must deny (fail-closed), not exit 0 — a broken _lib.sh must
         not silently turn the redaction gate into a no-op. Exercised by
         running a copy of the hook from a directory with no _lib.sh
-        alongside it, so `. "$(dirname "$0")/_lib.sh"` fails."""
+        alongside it, so `. "$(dirname "$0")/_lib.sh"` fails.
+
+        The pre-source `emit_deny` bootstrap (see _lib.sh's _lib_emit_deny
+        contract comment) is a minimal hard-block stub — it exits 2 with the
+        reason on stderr rather than the exit-0 JSON envelope the post-source
+        path produces, since _lib_jq isn't available yet to encode one."""
         isolated_hook = tmp_path / "deny-private-project-refs.sh"
         isolated_hook.write_bytes(DENY_PRIVATE_PROJECT_REFS_HOOK.read_bytes())
         isolated_hook.chmod(0o755)
@@ -2101,7 +2106,6 @@ class TestDenyPrivateProjectRefs:
             cwd=claude_config_repo,
             check=False,
         )
-        assert result.stdout.strip(), "expected a deny verdict when _lib.sh is unsourceable"
-        payload = json.loads(result.stdout)
-        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "_lib.sh" in payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert result.returncode == 2, f"expected hard-block exit 2, got {result.returncode}"
+        assert not result.stdout.strip(), f"expected no stdout, got {result.stdout!r}"
+        assert "_lib.sh" in result.stderr

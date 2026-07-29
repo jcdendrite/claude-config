@@ -61,6 +61,8 @@ A subagent that hits a review gate is expected to report the denial upward; the 
 
 ## Gate deadlock recovery
 
+With `jq` unavailable (missing from `PATH`, failing, or hung past its 5s timeout backstop), every gate hook hard-blocks by design rather than silently allowing. In an interactive session, the recovery route is the `!` shell escape, which runs outside the tool-call path these hooks gate, to install or repair `jq`. A headless or non-interactive run has no `!` escape, so `jq` must already be installed in the execution environment beforehand.
+
 Active-bypass markers from sessions that crash before cleanup evict themselves automatically: the hooks check `kill -0` against the stored PID and evict dead entries on the next gate hit. The remaining case is a *live session* whose review skill cannot execute — harness-blocked, failing to load, or unable to produce a completion marker due to a tool error.
 
 For three gates, the gating condition is removable via Bash without destroying work:

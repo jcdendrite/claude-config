@@ -45,10 +45,25 @@ set -uo pipefail   # explicit failure modes: unbound vars fail loudly,
 emit_deny() {
   local reason="$1"
   local reason_json
-  reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  local payload
-  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
-  printf '%s\n' "$payload"
+  # Defined before _lib.sh is sourced so a failed source can still deny,
+  # which means _lib_jq may not exist yet. Prefer it when it does, for its
+  # timeout backstop.
+  if declare -F _lib_jq >/dev/null 2>&1; then
+    reason_json=$(printf '%s' "$reason" | _lib_jq -Rs . 2>/dev/null)
+  else
+    reason_json=$(printf '%s' "$reason" | jq -Rs . 2>/dev/null)
+  fi
+  if [ -z "$reason_json" ]; then
+    # jq is absent, failed, or was killed by the timeout backstop. Exit 2 is
+    # the harness's blocking path for PreToolUse and carries the reason on
+    # stderr, so it needs no JSON encoding. Emitting a half-built payload on
+    # exit 0 instead would parse as no-decision and let the tool run.
+    printf 'Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, which runs outside the tool-call path these hooks gate; in a headless or non-interactive run, ensure jq is installed in the execution environment beforehand. Underlying gate reason follows.\n%s\n' \
+      "$reason" >&2
+    exit 2
+  fi
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+    "$reason_json"
 }
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
@@ -60,7 +75,7 @@ _lib_parse_tool_input_or_deny "Blocked by <gate-name> gate: could not parse tool
 # INPUT, TOOL_NAME, COMMAND now set. Gate logic follows.
 ```
 
-Exit code is always `0`; the hook signals via stdout JSON, not via exit code.
+Exit code is `0` for both allowing (no output) and the normal deny case (JSON payload on stdout, jq available to encode the reason). `emit_deny` itself is two-path: it falls back to `2` — the harness's own PreToolUse blocking primitive, reason on stderr instead of stdout — only when it cannot encode the reason as JSON (jq missing, failed, or timed out), per the skeleton above. A hook whose `emit_deny` always exits 0 and never takes that fallback fails open the moment jq is unavailable: a half-built JSON payload on exit 0 parses as no-decision, and the harness lets the tool call through.
 
 Two non-obvious constraints for new gates:
 - `"permissionDecision"` must be exactly `"deny"` (lowercase) — the runtime is case-sensitive; `"Deny"`, `"block"`, or any variant silently allows.
@@ -76,6 +91,8 @@ The helper uses a single `_lib_jq` call to extract both `.tool_name` and `.tool_
 - **(c) empty TOOL_NAME** — valid JSON but `.tool_name` absent (e.g. `{}`), indicating the call did not originate from a real tool invocation.
 
 The helper uses a 5s `timeout` backstop around every jq call (citing `guard-settings-session-keys.sh`'s `git_capped` precedent). On systems without `timeout` (BSD/macOS default), the helper falls back to bare `jq`; `install.sh` warns at onboarding time (including the `gtimeout` macOS alias case). This is a latency backstop, not a correctness boundary.
+
+**A fourth silent-allow path, distinct from the three above: `emit_deny` itself failing to encode its own reason.** The three deny paths above cover `_lib_parse_tool_input_or_deny` failing to parse the *tool-input*; they all still assume `emit_deny` can successfully build the deny JSON it reports through. When jq is missing from `PATH`, fails, or is killed by the timeout backstop, `printf '%s' "$reason" | jq -Rs .` returns empty, and a naive `emit_deny` that only ever exits 0 emits a half-built payload (`"permissionDecisionReason":}}`) that fails to parse — the harness reads unparseable stdout on exit 0 as no decision, and the tool call it was supposed to block proceeds. The Section 3 skeleton's `emit_deny` closes this with a two-path body: encode with jq when possible, and on empty output, print a diagnostic naming jq as the cause plus the original reason to stderr and `exit 2` — the harness's PreToolUse blocking primitive, which needs no JSON encoding at all.
 
 The canonical pattern — define `emit_deny` **before** sourcing `_lib.sh`, then call the helper:
 

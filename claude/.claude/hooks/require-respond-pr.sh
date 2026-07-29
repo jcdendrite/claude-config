@@ -50,36 +50,25 @@
 
 set -uo pipefail
 
+# Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
+# Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
+# source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
+# for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  local reason="$1"
-  local reason_json
-  # This function is defined before _lib.sh is sourced, so that a failure to
-  # source can still deny — which means _lib_jq may not exist yet. Prefer it
-  # when it does, for its timeout backstop, and fall back to bare jq when it
-  # does not. If jq is missing or hung, hand-build the JSON string rather than
-  # emitting nothing: empty stdout reads to the harness as allow, which would
-  # turn the stated closed posture open on exactly the path meant to deny.
-  if declare -F _lib_jq >/dev/null 2>&1; then
-    reason_json=$(printf '%s' "$reason" | _lib_jq -Rs . 2>/dev/null)
-  else
-    reason_json=$(printf '%s' "$reason" | jq -Rs . 2>/dev/null)
-  fi
-  if [ -z "$reason_json" ]; then
-    # Every reason string in this file is ASCII with no control characters, so
-    # escaping backslashes and double quotes yields a valid JSON string.
-    local escaped=${reason//\\/\\\\}
-    escaped=${escaped//\"/\\\"}
-    reason_json="\"$escaped\""
-  fi
-  local payload
-  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
-  printf '%s\n' "$payload"
+  printf '%s\n' "$1" >&2
+  exit 2
 }
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  # False positive: shellcheck's static pass doesn't model this stub-then-
+  # override redefinition, which resolves correctly at call time (see
+  # _lib.sh's _lib_emit_deny comment). Considered moving the definition
+  # after the call instead, but that defeats the bootstrap's job of
+  # covering the case where sourcing _lib.sh itself fails.
+  # shellcheck disable=SC2218
   emit_deny "Blocked by respond-pr gate: could not source _lib.sh."
-  exit 0
 fi
+emit_deny() { _lib_emit_deny "$1"; }
 
 _lib_parse_tool_input_or_deny "Blocked by respond-pr gate: could not parse tool-input JSON."
 

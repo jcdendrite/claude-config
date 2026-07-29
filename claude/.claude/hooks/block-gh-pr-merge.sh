@@ -8,10 +8,15 @@
 # would miss the bare `gh pr merge` (no-args) form; self-filtering is the only
 # shape that covers both. Fires on every Bash call; fast-exits for non-merge cmds.
 #
-# Fail posture: fail-closed on JSON parse error (jq non-zero exit → deny).
-# Fail-open when jq is not installed (pre-flight guard → exit 0), on missing
-# tool_name, or on missing/non-string command field (allow through —
-# cannot confirm the call is a Bash merge attempt, so do not block).
+# Fail posture: fail-closed on JSON parse error (jq non-zero exit → deny) and
+# on jq missing/failed/hung (emit_deny's exit-2 fallback). Because this hook
+# has no `if` matcher and fires on every Bash call, and its `TOOL_NAME !=
+# Bash` / empty-`COMMAND` fast paths sit after `_lib_parse_tool_input_or_deny`,
+# a missing jq denies every Bash call, not only merge attempts — the same
+# posture every other gate hook now has. Fail-open only on missing/non-string
+# command field (allow through — cannot confirm the call is a Bash merge
+# attempt, so do not block). A missing tool_name does NOT fail open: _lib.sh's
+# empty-TOOL_NAME check denies it.
 #
 # Known gaps (out of scope by design):
 #   - `gh api repos/OWNER/REPO/pulls/N/merge` — the gh-api path to merge.
@@ -25,21 +30,25 @@
 
 set -uo pipefail
 
-command -v jq >/dev/null 2>&1 || exit 0
-
+# Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
+# Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
+# source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
+# for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  local reason="$1"
-  local reason_json
-  reason_json=$(printf '%s' "$reason" | jq -Rs .)
-  local payload
-  payload=$(printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}' "$reason_json")
-  printf '%s\n' "$payload"
+  printf '%s\n' "$1" >&2
+  exit 2
 }
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  # False positive: shellcheck's static pass doesn't model this stub-then-
+  # override redefinition, which resolves correctly at call time (see
+  # _lib.sh's _lib_emit_deny comment). Considered moving the definition
+  # after the call instead, but that defeats the bootstrap's job of
+  # covering the case where sourcing _lib.sh itself fails.
+  # shellcheck disable=SC2218
   emit_deny "Blocked by gh-pr-merge gate: could not source _lib.sh."
-  exit 0
 fi
+emit_deny() { _lib_emit_deny "$1"; }
 
 _lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON for gh-pr-merge gate."
 

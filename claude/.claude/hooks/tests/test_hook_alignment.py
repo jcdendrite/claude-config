@@ -18,13 +18,16 @@ every deny envelope it emits must match the expected schema shape.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
+from helpers import bash_input, write_input
 
 # ------------------------------------------------------------------ #
 # Paths                                                               #
@@ -294,7 +297,14 @@ class TestHookClassHeader:
 # ------------------------------------------------------------------ #
 
 
-def _run_hook_raw(hook: Path, stdin_text: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+def _run_hook_raw(
+    hook: Path, stdin_text: str, cwd: Path | None = None, env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Run `hook` with raw stdin. `env`, when given, is merged on top of the
+    real environment (not a replacement) — every case below only means to
+    override PATH and/or HOME, and the hook still needs the rest of the real
+    environment (e.g. TERM, LANG) to behave normally."""
+    subprocess_env = {**os.environ, **env} if env is not None else None
     return subprocess.run(
         [str(hook)],
         input=stdin_text,
@@ -302,6 +312,7 @@ def _run_hook_raw(hook: Path, stdin_text: str, cwd: Path | None = None) -> subpr
         text=True,
         check=False,
         cwd=cwd,
+        env=subprocess_env,
     )
 
 
@@ -364,9 +375,16 @@ class TestGateHookBehavior:
         to source _lib.sh BEFORE any other logic that could emit a deny for a
         different reason. The test cannot structurally distinguish "denied due to
         missing _lib.sh" from "denied for another reason" — it only verifies that
-        a deny is emitted and that exit code is 0. If a future hook violates the
-        define-emit_deny → source-lib → gate-logic ordering, this test may give
-        a false pass on the missing-lib path while actually testing something else.
+        a deny is emitted. If a future hook violates the define-emit_deny →
+        source-lib → gate-logic ordering, this test may give a false pass on the
+        missing-lib path while actually testing something else.
+
+        The pre-source `emit_deny` bootstrap (see _lib.sh's _lib_emit_deny
+        contract comment) is a minimal hard-block stub — it does not attempt
+        jq encoding, since _lib.sh (and thus _lib_jq's timeout backstop) isn't
+        available yet. So this path always exits 2 with the reason on stderr,
+        never the exit-0 JSON envelope the post-source path produces; accept
+        either shape via _assert_blocks, matching the jq-absent tests below.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_hook = Path(tmpdir) / hook.name
@@ -376,8 +394,7 @@ class TestGateHookBehavior:
             # the missing _lib.sh path, not an unrelated guard.
             payload = '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}'
             result = _run_hook_raw(tmp_hook, payload, cwd=Path(tmpdir))
-        assert result.returncode == 0, f"{hook.name}: exit code must be 0, got {result.returncode}"
-        _assert_deny_schema(result, hook.name, "missing-lib-sh")
+        _assert_blocks(result, hook.name, "missing-lib-sh", "could not source _lib.sh")
 
     def test_deny_envelope_schema_shape(self, hook: Path) -> None:
         """Every deny envelope must match the required JSON schema shape.
@@ -390,3 +407,283 @@ class TestGateHookBehavior:
         if not result.stdout.strip():
             pytest.skip("hook did not emit output on malformed input — tested by test_malformed_input_denied")
         _assert_deny_schema(result, hook.name, "schema-shape")
+
+
+# ------------------------------------------------------------------ #
+# Layer 2 — GH-480: missing-binary behavior (jq / sha256sum / gh)    #
+# ------------------------------------------------------------------ #
+
+
+@pytest.fixture(scope="session")
+def _path_without(tmp_path_factory: pytest.TempPathFactory):
+    """Return a builder `_path_without(binary) -> str`: a PATH string built
+    as a symlink farm mirroring the real PATH, with `binary` omitted.
+
+    A full mirror (not a hand-picked minimal tool subset) is deliberate:
+    under-symlinking is a silent false pass here — a hook denying because
+    some OTHER required tool is missing looks identical to the hook denying
+    correctly for the binary this test actually targets. First real PATH
+    directory wins on a duplicate basename, mirroring normal PATH shadowing
+    order; unreadable directories are skipped rather than raising. Farms are
+    memoized per binary for the whole test session, since every case that
+    asks to remove the same binary gets an identical farm.
+    """
+    cache: dict[str, str] = {}
+
+    def _build(binary: str) -> str:
+        if binary in cache:
+            return cache[binary]
+        farm_dir = tmp_path_factory.mktemp(f"path-without-{binary}")
+        seen: set[str] = set()
+        for real_dir in os.environ.get("PATH", "").split(os.pathsep):
+            if not real_dir:
+                continue
+            try:
+                entries = os.listdir(real_dir)
+            except OSError:
+                continue
+            for name in entries:
+                if name == binary or name in seen:
+                    continue
+                src = Path(real_dir) / name
+                try:
+                    if not os.access(src, os.X_OK):
+                        continue
+                except OSError:
+                    continue
+                seen.add(name)
+                try:
+                    (farm_dir / name).symlink_to(src)
+                except OSError:
+                    continue
+        path_str = str(farm_dir)
+        assert shutil.which(binary, path=path_str) is None, (
+            f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
+        )
+        cache[binary] = path_str
+        return path_str
+
+    return _build
+
+
+def _assert_blocks(
+    result: subprocess.CompletedProcess,
+    hook_name: str,
+    context: str,
+    expected_reason_substring: str,
+) -> None:
+    """Accept either legitimate blocking shape a gate hook may take: exit 0
+    with a valid deny envelope (the normal jq-present path), or exit 2 with
+    the expected reason substring on stderr (emit_deny's jq-absent
+    fallback).
+
+    Non-empty stderr alone does not qualify as "blocked": a bash syntax
+    error or a `set -e` command failure both exit 2 with stderr, so a hook
+    mangled during the mechanical 24-file emit_deny edit would pass a bare
+    stderr-non-empty check. Requiring the specific reason substring closes
+    that gap. All 24 parse-failure reasons share the substring "parse
+    tool-input JSON"; the jq-absent diagnostic adds "jq".
+    """
+    if result.returncode == 0:
+        _assert_deny_schema(result, hook_name, context)
+        payload = json.loads(result.stdout.strip())
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert expected_reason_substring in reason, (
+            f"{hook_name} [{context}]: deny reason missing expected substring "
+            f"{expected_reason_substring!r}: {reason!r}"
+        )
+        return
+    assert result.returncode == 2, (
+        f"{hook_name} [{context}]: expected exit 0 (deny JSON) or exit 2 (stderr "
+        f"block), got {result.returncode}\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+    assert expected_reason_substring in result.stderr, (
+        f"{hook_name} [{context}]: exit 2 stderr missing expected substring "
+        f"{expected_reason_substring!r}: {result.stderr!r}"
+    )
+
+
+@pytest.mark.parametrize("hook", GATE_HOOKS, ids=[h.name for h in GATE_HOOKS])
+def test_blocks_when_jq_absent(hook: Path, _path_without) -> None:
+    """GH-480: with jq entirely absent from PATH, every gate hook must hard-
+    block (exit 2, diagnostic on stderr) rather than emit malformed deny
+    JSON on exit 0 — which the harness reads as no decision and lets the
+    tool call proceed."""
+    result = _run_hook_raw(hook, "not json", env={"PATH": _path_without("jq")})
+    _assert_blocks(result, hook.name, "jq-absent-malformed-input", "jq")
+
+
+@pytest.mark.parametrize("hook", GATE_HOOKS, ids=[h.name for h in GATE_HOOKS])
+def test_blocks_when_jq_absent_with_valid_payload(hook: Path, _path_without) -> None:
+    """Same as test_blocks_when_jq_absent, but with a well-formed Bash
+    payload — the realistic case: a legitimate tool call arrives while jq
+    happens to be unavailable, not a malformed request that would deny for
+    an unrelated reason regardless of jq. Every gate parses input with jq
+    before any tool-specific dispatch, so a Bash payload exercises the same
+    jq-absent path uniformly across all 24 gates, including the ones that
+    gate a different tool (Edit/Write/MultiEdit/ExitPlanMode)."""
+    payload = json.dumps(bash_input("echo hello"))
+    result = _run_hook_raw(hook, payload, env={"PATH": _path_without("jq")})
+    _assert_blocks(result, hook.name, "jq-absent-valid-payload", "jq")
+
+
+def _init_repo_with_commit(repo: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "file.txt").write_text("first\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+
+def _sha256sum_case_code_review(tmp_path: Path) -> tuple[Path, Path, dict, str]:
+    """require-code-review.sh: a staged change reaching the marker check via
+    a `git commit` command. With sha256sum absent, both the repo-hash and
+    the staged-diff-hash computations fail, so CURRENT_HASH comes back
+    empty; _lib_marker_value_present's empty-expected-value guard then
+    denies via the hook's own ordinary "not reviewed" message — not via
+    emit_deny's jq fallback, since jq itself is untouched here."""
+    repo = tmp_path / "code-review-repo"
+    repo.mkdir()
+    _init_repo_with_commit(repo)
+    (repo / "file.txt").write_text("first\nsecond\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+    hook = _MAIN_HOOKS_DIR / "require-code-review.sh"
+    return hook, repo, bash_input("git commit -m test"), "have not been reviewed"
+
+
+def _sha256sum_case_plan_review(tmp_path: Path) -> tuple[Path, Path, dict, str]:
+    """require-plan-review.sh: an active (untracked) plan file, whose
+    content hash requires sha256sum via _lib_active_plan_hash. With
+    sha256sum absent, the hash fails per-file and the hook denies via its
+    own "cannot read the active plan file" message."""
+    repo = tmp_path / "plan-review-repo"
+    repo.mkdir()
+    _init_repo_with_commit(repo)
+    plans_dir = repo / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "impl-plan.md").write_text("# Implementation plan\n\nStep 1...\n")
+    hook = _MAIN_HOOKS_DIR / "require-plan-review.sh"
+    return hook, repo, write_input(str(repo / "some_file.py")), "cannot read the active plan file"
+
+
+def _sha256sum_case_skill_review(tmp_path: Path) -> tuple[Path, Path, dict, str]:
+    """require-skill-review.sh (skill-management plugin): a staged SKILL.md
+    change reaching the marker check via a `git commit` command. Same
+    empty-hash fail-closed path as the code-review case above."""
+    repo = tmp_path / "skill-review-repo"
+    repo.mkdir()
+    _init_repo_with_commit(repo)
+    skill_file = repo / "claude" / ".claude" / "skills" / "test-skill" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True, exist_ok=True)
+    skill_file.write_text("## test skill\n")
+    subprocess.run(["git", "add", str(skill_file.relative_to(repo))], cwd=repo, check=True)
+    hook = _REPO_ROOT / "plugins" / "skill-management" / "hooks" / "require-skill-review.sh"
+    return hook, repo, bash_input("git commit -m test", session_id="test-session"), "have not been audited"
+
+
+_SHA256SUM_MARKER_GATE_CASES = [
+    _sha256sum_case_code_review,
+    _sha256sum_case_plan_review,
+    _sha256sum_case_skill_review,
+]
+
+
+@pytest.mark.parametrize(
+    "build_case",
+    _SHA256SUM_MARKER_GATE_CASES,
+    ids=[fn.__name__ for fn in _SHA256SUM_MARKER_GATE_CASES],
+)
+def test_marker_gate_blocks_without_sha256sum(build_case, tmp_path: Path, _path_without) -> None:
+    """GH-480 ledger row 4a: the marker-check gates that shell out to
+    sha256sum (require-code-review.sh, require-plan-review.sh,
+    plugins/skill-management/hooks/require-skill-review.sh) must still deny
+    when it is absent from PATH — an unhashable diff/plan must never read as
+    an authorized match. jq stays on PATH for this test: the deny comes from
+    each hook's own hash-mismatch fail-closed logic, not from emit_deny's jq
+    fallback, so the result is always the normal exit-0 deny envelope."""
+    hook, cwd, payload, expected_substring = build_case(tmp_path)
+    env = {"PATH": _path_without("sha256sum"), "HOME": str(tmp_path / "home")}
+    result = _run_hook_raw(hook, json.dumps(payload), cwd=cwd, env=env)
+    _assert_blocks(result, hook.name, "sha256sum-absent", expected_substring)
+
+
+def test_ready_for_review_allows_when_gh_absent(tmp_path: Path, _path_without) -> None:
+    """GH-480 ledger row 4b, corrected against measurement.
+
+    require-ready-for-review.sh is the one gate that shells out to `gh`
+    (`gh pr view`, guarding the PR-existence check at line ~183). The plan
+    this test was specified from assumed gh's absence "fails closed"
+    (ledger row 4b), by analogy with sha256sum. Measured directly — a valid
+    `git push` payload, `gh` removed from PATH, jq present — it does not:
+    PR_NUMBER comes back empty exactly as it would for "no open PR" or "gh
+    not configured", both of which this hook already documents as fail-open
+    ("gh pr view fails ... fail-open to keep the user unblocked"). This test
+    pins that actual, deliberate behavior rather than force a "blocks"
+    assertion the hook was never designed to satisfy; flagged to the
+    dispatching session rather than resolved by changing the hook's fail
+    posture, which is outside GH-480's jq-encoding scope.
+    """
+    repo = tmp_path / "ready-for-review-repo"
+    repo.mkdir()
+    _init_repo_with_commit(repo)
+
+    hook = _MAIN_HOOKS_DIR / "require-ready-for-review.sh"
+    payload = bash_input("git push", session_id="gh-absent-test")
+    env = {"PATH": _path_without("gh"), "HOME": str(tmp_path / "home")}
+    result = _run_hook_raw(hook, json.dumps(payload), cwd=repo, env=env)
+    assert result.returncode == 0, (
+        f"expected exit 0 (documented fail-open), got {result.returncode}: "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert not result.stdout.strip(), f"expected silent allow, got stdout={result.stdout!r}"
+
+
+def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
+    """GH-480: a jq that hangs (never returns) must not hold the gate open
+    indefinitely. Every gate calls _lib_jq twice on a hung binary: once
+    inside _lib_parse_tool_input_or_deny (parsing the payload), which times
+    out and calls emit_deny with a parse-failure reason; emit_deny then
+    tries _lib_jq again to encode that reason, and also times out. Both
+    calls share the same 5s backstop, so the two chain to ~10s rather than
+    ~5s — measured directly against require-code-review.sh, not assumed.
+
+    Builds its own fake-slow-jq PATH rather than reusing test_lib.py's
+    idiom verbatim: that idiom's symlinked-tool list omits `sleep`, so its
+    fake jq script (`sleep 10`) fails instantly with "command not found"
+    there instead of actually hanging — it still passes (a crashed jq also
+    denies), but it does not exercise the timeout backstop it's named for.
+    """
+    timeout_path = shutil.which("timeout")
+    if not timeout_path:
+        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+
+    stub_bin = tmp_path / "stub_bin"
+    stub_bin.mkdir()
+    fake_jq = stub_bin / "jq"
+    fake_jq.write_text("#!/bin/bash\nsleep 10\n")
+    fake_jq.chmod(0o755)
+    (stub_bin / "timeout").symlink_to(timeout_path)
+    (stub_bin / "bash").symlink_to(bash_path)
+    for cmd in ("head", "tail", "cat", "cut", "printf", "sleep", "grep", "dirname", "git"):
+        cmd_path = shutil.which(cmd)
+        if cmd_path:
+            (stub_bin / cmd).symlink_to(cmd_path)
+
+    hook = _MAIN_HOOKS_DIR / "require-code-review.sh"
+    start = time.monotonic()
+    result = _run_hook_raw(hook, "not json", env={"PATH": str(stub_bin)})
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 2, (
+        f"expected exit 2 once both timeout backstops fire, got {result.returncode}: "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "jq" in result.stderr, repr(result.stderr)
+    # 12s = 2 x _lib_jq's 5s backstop (measured ~10.0s end-to-end) plus the
+    # same ~20% buffer test_lib.py's single-call hung-jq test gives its own
+    # 5s backstop (elapsed < 6).
+    assert elapsed < 12, f"hung-jq test took {elapsed:.1f}s — timeout backstops did not fire as expected"

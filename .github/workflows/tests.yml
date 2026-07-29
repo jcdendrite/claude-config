@@ -23,8 +23,11 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-24.04
-    # pytest alone consumes 72-92s of this budget; the shellcheck step adds
-    # ~10s. Two minutes left no headroom for a new step.
+    # pytest alone consumes 72-92s of this budget; one hung-jq test can
+    # additionally take up to ~12s
+    # (claude/.claude/hooks/tests/test_hook_alignment.py, "elapsed < 12");
+    # the shellcheck step adds ~10s. Two minutes left no headroom for a new
+    # step.
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
