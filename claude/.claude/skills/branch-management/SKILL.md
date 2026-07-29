@@ -72,11 +72,21 @@ anything other than `main`, substitute accordingly. Check with
 ## Anchor the session in the worktree
 
 When the branch lives in a linked worktree, creating the worktree is
-only half the step — the session must also enter it:
+only half the step — the session must also enter it, as the very next
+call, before any other command touches the new path:
 
     git worktree add .claude/worktrees/<branch> -b <branch>
 
-then `EnterWorktree{path: ".claude/worktrees/<branch>"}`.
+then `EnterWorktree{path: "<absolute path to the worktree>"}`.
+
+`EnterWorktree` resolves a relative path against the session's current
+working directory, not the repo root, and has no idempotent path for
+"already there": if a `cd` — even a read-only one, to peek at a file —
+reaches the worktree first, a relative path doubles onto itself and an
+absolute path is rejected as already the current directory. Either way
+the anchor never completes, leaving the session on raw shell state
+with none of `EnterWorktree`'s other effects (subagent inheritance,
+`ExitWorktree` tracking). Pass an absolute path and call it first.
 
 Creating a worktree does not move the session into it. A session's
 working directory has an anchor that a stray `cd` is reset back to,
@@ -94,8 +104,9 @@ directory in the agent's prompt does not change where its commands
 run.
 
 The anchor is session-scoped. A resumed session starts unanchored, so
-re-enter the worktree before running commands or dispatching
-subagents.
+re-enter the worktree before running *any* other command or
+dispatching subagents — a read-only lookup counts too, since it's the
+`cd` that breaks the anchor described above.
 
 ## Plan files go on the implementation branch
 
