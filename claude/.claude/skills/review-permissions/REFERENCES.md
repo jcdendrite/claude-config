@@ -17,6 +17,24 @@ The bare-name entries are accepted at global scope because:
 
 Checklist item 10 (PATH-resolved commands) applies. Justification accepted.
 
+### `cleanup-idle-open-pr-worktrees` bare-name entries
+
+`settings.json` contains both absolute-path entries
+(`Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)`) and bare-name
+entries (`Bash(cleanup-idle-open-pr-worktrees)`,
+`Bash(cleanup-idle-open-pr-worktrees --dry-run)`), for the same reasons
+recorded in the `cleanup-merged-branches` decision above: installed to
+`~/.local/bin/` by `install.sh`, calls only absolute paths, execs no
+untrusted input.
+
+`--idle-hours=N` invocations are deliberately not pre-authorized — the
+no-globs rule (checklist items 1–9) rules out a wildcard entry for an
+arbitrary `N`, so a non-default threshold prompts for approval on first use.
+This is an accepted ergonomic tradeoff, not a gap: the two pre-authorized
+shapes (bare invocation, `--dry-run`) cover the common case.
+
+Checklist item 10 (PATH-resolved commands) applies. Justification accepted.
+
 ### `npm run lint`, `npm run typecheck`, `npm run build` — intentionally not in the global allow list
 
 These three entries would let subagent-dispatched checks (see

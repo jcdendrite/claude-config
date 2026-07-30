@@ -15,69 +15,17 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from conftest import (
+    _commit,
+    _dead_pid,
+    _init_repo,
+    _make_feature_branch,
+    _make_repo_with_remote,
+    _make_worktree,
+)
 
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "cleanup-merged-branches.sh"
-
-
-# ---------------------------------------------------------------------------
-# Repo helpers
-# ---------------------------------------------------------------------------
-
-def _init_repo(path: Path) -> None:
-    """Initialise a git repo with one commit and a remote pointing at itself."""
-    path.mkdir(parents=True, exist_ok=True)
-    # --initial-branch=main avoids depending on the system's init.defaultBranch setting,
-    # which varies across git versions and CI environments.
-    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
-
-
-def _commit(repo: Path, message: str = "commit") -> None:
-    (repo / "file.txt").write_text(message + "\n")
-    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
-
-
-def _make_repo_with_remote(tmp_path: Path) -> tuple[Path, Path]:
-    """Return (local_repo, bare_remote) with origin configured and default branch set."""
-    bare = tmp_path / "remote.git"
-    bare.mkdir()
-    subprocess.run(["git", "init", "--bare", "-q", "--initial-branch=main"], cwd=bare, check=True)
-
-    local = tmp_path / "local"
-    _init_repo(local)
-    _commit(local, "init")
-    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=local, check=True)
-    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=local, check=True)
-    # Set origin/HEAD so the script can resolve the default branch
-    subprocess.run(["git", "remote", "set-head", "origin", "main"], cwd=local, check=True)
-    return local, bare
-
-
-def _make_feature_branch(repo: Path, branch_name: str, return_to: str = "main") -> None:
-    """Create and push a feature branch in repo, then return to return_to."""
-    subprocess.run(["git", "checkout", "-q", "-b", branch_name], cwd=repo, check=True)
-    _commit(repo, f"work on {branch_name}")
-    subprocess.run(["git", "push", "-q", "origin", branch_name], cwd=repo, check=True)
-    subprocess.run(["git", "checkout", "-q", return_to], cwd=repo, check=True)
-
-
-def _make_worktree(repo: Path, branch_name: str, wt_path: Path) -> None:
-    """Add a linked worktree for branch_name at wt_path."""
-    subprocess.run(
-        ["git", "worktree", "add", str(wt_path), branch_name],
-        cwd=repo,
-        check=True,
-    )
-
-
-def _dead_pid() -> int:
-    """Return a pid that is guaranteed not to be running."""
-    proc = subprocess.Popen(["true"])
-    proc.wait()
-    return proc.pid
 
 
 def _rev_parse(repo: Path, ref: str) -> str:
@@ -643,10 +591,11 @@ class TestGhMissing:
     def test_gh_missing_exits_nonzero(self, tmp_path):
         local, _ = _make_repo_with_remote(tmp_path)
         # Build a minimal PATH: a tmpdir with symlinks to every tool the
-        # script needs (git, python3, bash) but no gh — so command -v gh fails.
+        # script needs (git, python3, bash, dirname — the last for sourcing
+        # _worktree-lib.sh) but no gh — so command -v gh fails.
         bin_dir = tmp_path / "min_bin"
         bin_dir.mkdir()
-        for tool in ("git", "python3", "bash", "grep", "awk", "sed"):
+        for tool in ("git", "python3", "bash", "grep", "awk", "sed", "dirname"):
             tool_path = subprocess.run(["which", tool], capture_output=True, text=True).stdout.strip()
             if tool_path:
                 (bin_dir / tool).symlink_to(tool_path)
