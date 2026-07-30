@@ -19,6 +19,8 @@ YELLOW='\033[33m'
 BLUE='\033[34m'
 MAGENTA='\033[35m'
 RED='\033[31m'
+WHITE='\033[97m'
+GRAY='\033[90m'
 
 # --- Context progress bar ---
 build_bar() {
@@ -106,7 +108,19 @@ if [ -n "$account_text" ]; then
     if [ "${#account_text}" -gt "$max_account_len" ]; then
         account_text="${account_text:0:$((max_account_len - 1))}…"
     fi
-    account_display=$(printf "  ${DIM}%s${RESET}" "$account_text")
+    # Plan and email get distinct colors instead of a single DIM span: DIM is
+    # already the "no data yet" placeholder style elsewhere in this script
+    # (e.g. the context bar before it loads), so wrapping real account data
+    # in DIM made loaded and unloaded states look the same.
+    if [[ "$account_text" == *" · "* ]]; then
+        account_plan_shown="${account_text%% · *}"
+        account_email_shown="${account_text#* · }"
+        account_display=$(printf "  ${WHITE}%s${RESET} · ${GRAY}%s${RESET}" "$account_plan_shown" "$account_email_shown")
+    elif [ -n "$account_plan" ]; then
+        account_display=$(printf "  ${WHITE}%s${RESET}" "$account_text")
+    else
+        account_display=$(printf "  ${GRAY}%s${RESET}" "$account_text")
+    fi
 fi
 
 # --- Dynamic truncation limits based on terminal width ---
