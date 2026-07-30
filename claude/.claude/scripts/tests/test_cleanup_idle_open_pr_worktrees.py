@@ -690,16 +690,14 @@ class TestGhFailureModes:
     precondition respectively) that must all fail closed — remove nothing —
     but are distinguished in their error text."""
 
-    def test_no_upstream_remote_is_a_usage_error(self, tmp_path):
+    def test_no_upstream_remote_is_a_usage_error(self, tmp_path, fake_gh):
         from conftest import _init_repo
 
         repo = tmp_path / "no-origin-repo"
         _init_repo(repo)
         _commit(repo, "init")
-        env = {**os.environ}
-        result = subprocess.run(
-            [str(_SCRIPT)], cwd=str(repo), env=env, capture_output=True, text=True,
-        )
+        env = fake_gh([])
+        result = _run_script(repo, env)
         assert result.returncode != 0
         assert "no 'origin' remote" in result.stderr
 
