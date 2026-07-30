@@ -484,6 +484,29 @@ class TestWorktreeInUseSkipped:
         assert wt_path.exists()
 
 
+class TestSelfWorktreeNeverRemoved:
+    """The worktree the script is currently running from must never become
+    a removal candidate, even when its own branch has an idle, non-draft,
+    open PR — the WORKTREE_PATH == REPO_ROOT guard is the last safety check
+    standing between the classification loop and the script removing the
+    checkout it is executing from."""
+
+    def test_worktree_running_the_script_is_never_a_removal_candidate(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/self")
+        wt_path = tmp_path / "self-tree"
+        _make_worktree(local, "feat/self", wt_path)
+
+        env = fake_gh([
+            {"headRefName": "feat/self", "number": 9, "isDraft": False, "updatedAt": _iso(hours_ago=10)},
+        ])
+        result = _run_script(wt_path, env)
+
+        assert result.returncode == 0, result.stderr
+        assert "Removed:" not in result.stdout
+        assert wt_path.exists(), "the worktree running the script must never remove itself"
+
+
 class TestMultiRowBulkResponse:
     """A single bulk response mixing draft, recently-active, stale, and
     in-use branches: each lands in its correct bucket and the end-of-run
