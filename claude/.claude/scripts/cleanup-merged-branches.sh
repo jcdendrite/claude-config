@@ -55,94 +55,11 @@
 
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Progress helpers (stderr-only, no-op when stderr is not a TTY)
-# ---------------------------------------------------------------------------
-
-progress() {
-  [ -t 2 ] || return 0
-  local i=$1 n=$2 label=$3
-  printf '\r  [%d/%d] %-60.60s' "$i" "$n" "$label" >&2
-}
-
-clear_progress() {
-  [ -t 2 ] || return 0
-  printf '\r%-80s\r' '' >&2
-}
-
-# ---------------------------------------------------------------------------
-# Live-worktree detection
-#
-# A worktree must not be removed while a live process is working inside it:
-# that process would be left with a deleted working directory. Detection is
-# OS-level (process working directories), not tied to any project's tooling.
-# ---------------------------------------------------------------------------
-
-# Snapshot of every readable process working directory. Populated once by
-# collect_process_cwds; PROCESS_CWD_SCAN records whether the scan succeeded.
-declare -a PROCESS_CWDS=()
-PROCESS_CWD_SCAN="unknown"
-
-collect_process_cwds() {
-  PROCESS_CWDS=()
-  PROCESS_CWD_SCAN="unavailable"
-  local proc_cwd pid cwd line
-  if readlink /proc/self/cwd >/dev/null 2>&1; then
-    # Linux: each /proc/<pid>/cwd is a symlink to that process's cwd.
-    for proc_cwd in /proc/[0-9]*/cwd; do
-      pid="${proc_cwd#/proc/}"; pid="${pid%/cwd}"
-      [ "$pid" = "$$" ] && continue
-      cwd=$(readlink "$proc_cwd" 2>/dev/null) || continue
-      if [ -n "$cwd" ]; then
-        PROCESS_CWDS+=("$cwd")
-      fi
-    done
-  elif command -v lsof >/dev/null 2>&1; then
-    # No procfs (e.g. macOS): `lsof -d cwd` reports each process's cwd.
-    # -F pn emits a `p<pid>` line, an `fcwd` line, then an `n<path>` line per
-    # process; the case below picks p and n lines and ignores any other.
-    pid=""
-    while IFS= read -r line; do
-      case "$line" in
-        p*) pid="${line#p}" ;;
-        n*)
-          [ "$pid" = "$$" ] && continue
-          cwd="${line#n}"
-          if [ -n "$cwd" ]; then
-            PROCESS_CWDS+=("$cwd")
-          fi
-          ;;
-      esac
-    done < <(lsof -d cwd -F pn 2>/dev/null)
-  fi
-  # A scan that finds zero process working directories has not worked — at
-  # minimum the invoking shell should appear. Leave PROCESS_CWD_SCAN as
-  # "unavailable" in that case so worktree_in_use reports "could not
-  # determine" and worktrees are skipped conservatively, rather than
-  # treated as idle and deleted on the strength of an empty snapshot.
-  if [ "${#PROCESS_CWDS[@]}" -gt 0 ]; then
-    PROCESS_CWD_SCAN="ok"
-  fi
-  return 0
-}
-
-# worktree_in_use <path> — is any live process working inside <path>?
-#   0 = in use   1 = idle   2 = could not determine
-# Matches against the collect_process_cwds snapshot, so the OS is scanned
-# once per run rather than once per branch.
-worktree_in_use() {
-  [ "$PROCESS_CWD_SCAN" = "unavailable" ] && return 2
-  local target="$1" resolved cwd
-  # Canonicalize so symlinked path components match the kernel-canonical
-  # cwd strings reported by /proc and lsof.
-  resolved=$(cd "$target" 2>/dev/null && pwd -P) || resolved="$target"
-  for cwd in "${PROCESS_CWDS[@]+"${PROCESS_CWDS[@]}"}"; do
-    if [ "$cwd" = "$resolved" ] || [[ "$cwd" == "$resolved"/* ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
+# Progress helpers, live-worktree detection (collect_process_cwds /
+# worktree_in_use), and the branch -> worktree path/lock lookup
+# (resolve_worktree_for_branch) are shared with cleanup-idle-open-pr-worktrees.sh.
+# shellcheck source=_worktree-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/_worktree-lib.sh"
 
 # ---------------------------------------------------------------------------
 # Argument validation
@@ -470,23 +387,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
 
   _dry_print_branch_with_lock() {
     local _branch="$1"
-    local _locked=0
-    local _matched=0
-    local _cand_path=""
-    local _wt_path=""
-    while IFS= read -r _line; do
-      if [[ "$_line" == "worktree "* ]]; then
-        _cand_path="${_line#worktree }"
-        _matched=0
-      elif [[ "$_line" == "branch refs/heads/${_branch}" ]]; then
-        _matched=1
-        _wt_path="$_cand_path"
-      elif [ "$_matched" -eq 1 ] && [[ "$_line" == "locked"* ]]; then
-        _locked=1
-      elif [ -z "$_line" ]; then
-        _matched=0
-      fi
-    done < <(git worktree list --porcelain)
+    resolve_worktree_for_branch "$_branch"
+    local _wt_path="$WORKTREE_PATH"
+    local _locked="$WORKTREE_LOCKED"
     local _tag=""
     if [ -n "$_wt_path" ] && [ "$_wt_path" != "$REPO_ROOT" ]; then
       local _in_use=0
@@ -597,42 +500,7 @@ for BRANCH in "${TO_DELETE[@]}"; do
 
   echo "  ${BRANCH}:"
 
-  # Use --porcelain to get the exact path; do NOT construct from branch name
-  # (slashes in branch names would break path interpolation).
-  # The `locked` line appears after `branch` in a porcelain record, so we
-  # use a deferred-commit pattern: finalize path + lock state at each record
-  # boundary rather than at the moment the branch line is matched.
-  WORKTREE_PATH=""
-  WORKTREE_LOCKED=0
-  WORKTREE_LOCK_PID=""
-  _CANDIDATE_PATH=""
-  _CANDIDATE_LOCKED=0
-  _CANDIDATE_LOCK_PID=""
-  _CANDIDATE_MATCHED=0
-  _commit_wt_candidate() {
-    if [ "$_CANDIDATE_MATCHED" -eq 1 ]; then
-      WORKTREE_PATH="$_CANDIDATE_PATH"
-      WORKTREE_LOCKED="$_CANDIDATE_LOCKED"
-      WORKTREE_LOCK_PID="$_CANDIDATE_LOCK_PID"
-    fi
-  }
-  while IFS= read -r line; do
-    if [[ "$line" == "worktree "* ]]; then
-      _commit_wt_candidate
-      _CANDIDATE_PATH="${line#worktree }"
-      _CANDIDATE_LOCKED=0
-      _CANDIDATE_LOCK_PID=""
-      _CANDIDATE_MATCHED=0
-    elif [[ "$line" == "branch refs/heads/${BRANCH}" ]]; then
-      _CANDIDATE_MATCHED=1
-    elif [[ "$line" == "locked"* ]]; then
-      _CANDIDATE_LOCKED=1
-      if [[ "$line" =~ pid[[:space:]]+([0-9]+) ]]; then
-        _CANDIDATE_LOCK_PID="${BASH_REMATCH[1]}"
-      fi
-    fi
-  done < <(git worktree list --porcelain)
-  _commit_wt_candidate
+  resolve_worktree_for_branch "$BRANCH"
 
   if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" != "$REPO_ROOT" ]; then
     WORKTREE_IN_USE=0
