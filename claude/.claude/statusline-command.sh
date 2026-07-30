@@ -70,11 +70,54 @@ fi
 # --- Session cost ---
 cost_display=$(printf "\$%.4f" "$total_cost")
 
+# --- Account (plan / email, from Claude Code's local account state) ---
+# ~/.claude.json isn't part of the documented statusline stdin schema — it's
+# Claude Code's own local state file, read directly since no stdin field or
+# CLI subcommand exposes this. Only these two fields are ever extracted.
+# Undocumented/internal: if a future Claude Code version renames or drops
+# these fields, the segment just goes empty (see the `-n "$account_text"`
+# guard below) — it won't error the statusline.
+account_info_file="$HOME/.claude.json"
+account_email=""
+account_plan=""
+if [ -f "$account_info_file" ]; then
+    # Strip control/escape bytes: these values flow into the final `echo -e`
+    # assembly below, which reinterprets backslash escapes in the whole
+    # string — an unstripped ESC byte here would let a crafted
+    # emailAddress/organizationType (e.g. from a compromised SSO-managed
+    # org profile) inject terminal escape sequences (OSC title-set,
+    # clipboard writes, output hiding) at render time.
+    account_email=$(jq -r '.oauthAccount.emailAddress // empty' "$account_info_file" 2>/dev/null | tr -d '[:cntrl:]')
+    account_plan=$(jq -r '.oauthAccount.organizationType // empty' "$account_info_file" 2>/dev/null | tr -d '[:cntrl:]')
+fi
+
+account_text=""
+if [ -n "$account_plan" ] && [ -n "$account_email" ]; then
+    account_text="${account_plan} · ${account_email}"
+elif [ -n "$account_plan" ]; then
+    account_text="$account_plan"
+elif [ -n "$account_email" ]; then
+    account_text="$account_email"
+fi
+
+max_account_len=40
+account_reserve=0
+account_display=""
+if [ -n "$account_text" ]; then
+    if [ "${#account_text}" -gt "$max_account_len" ]; then
+        account_text="${account_text:0:$((max_account_len - 1))}…"
+    fi
+    account_display=$(printf "  ${DIM}%s${RESET}" "$account_text")
+    account_reserve=$(( ${#account_text} + 2 ))
+fi
+
 # --- Dynamic truncation limits based on terminal width ---
 # Fixed visible chars: model(~12) + separators(~8) + bar([10 wide]=15) + rates(12) + cost(7) ≈ 54
+# account_reserve adds the (optional, variable-length) account segment on top,
+# same treatment as git branch's own budget share below.
 _terminal_cols=$(stty size </dev/tty 2>/dev/null | awk '{print $2}')
 [[ "$_terminal_cols" =~ ^[0-9]+$ ]] || _terminal_cols=${COLUMNS:-80}
-_available=$(( _terminal_cols - 54 ))
+_available=$(( _terminal_cols - 54 - account_reserve ))
 [ "$_available" -lt 20 ] && _available=20
 max_path_len=$(( _available * 55 / 100 ))
 _max_branch_name=$(( _available * 45 / 100 - 3 ))
@@ -101,4 +144,4 @@ if [ "${#short_cwd}" -gt "$max_path_len" ]; then
 fi
 
 # --- Assemble status line ---
-echo -e "${CYAN}${model}${RESET}  ${ctx_display}  ${rate_display}  ${YELLOW}${cost_display}${RESET}  ${BLUE}${short_cwd}${RESET}${git_branch}"
+echo -e "${CYAN}${model}${RESET}  ${ctx_display}  ${rate_display}  ${YELLOW}${cost_display}${RESET}${account_display}  ${BLUE}${short_cwd}${RESET}${git_branch}"
