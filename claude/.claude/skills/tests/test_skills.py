@@ -65,6 +65,19 @@ _PLUGINS_DIR = SKILLS_DIR.parent.parent.parent / "plugins"
 _GLOBAL_CLAUDE_MD = SKILLS_DIR.parent / "CLAUDE.md"
 
 
+_AGENTS_DIR = SKILLS_DIR.parent / "agents"
+
+
+def _agent_body(agent_name: str) -> str:
+    """Read a claude/.claude/agents/<name>.md body by name."""
+    return (_AGENTS_DIR / f"{agent_name}.md").read_text()
+
+
+def _skill_body(skill_name: str) -> str:
+    """Read a stowed skill's SKILL.md body by name."""
+    return (SKILLS_DIR / skill_name / "SKILL.md").read_text()
+
+
 def _skill_file(skill_name: str) -> Path:
     """Locate a SKILL.md by name — stowed skills first, then plugin skills."""
     candidate = SKILLS_DIR / skill_name / "SKILL.md"
@@ -408,14 +421,11 @@ class TestConventionSkillWiring:
     (which never fires). These tests prevent silent regression of the wiring.
     """
 
-    AGENTS_DIR = Path(__file__).resolve().parent.parent.parent / "agents"
-    SKILLS_DIR_ROOT = Path(__file__).resolve().parent.parent.parent / "skills"
-
     def _agent_body(self, name: str) -> str:
-        return (self.AGENTS_DIR / f"{name}.md").read_text()
+        return _agent_body(name)
 
     def _skill_body(self, name: str) -> str:
-        return (self.SKILLS_DIR_ROOT / name / "SKILL.md").read_text()
+        return _skill_body(name)
 
     def test_code_writer_references_test_conventions(self):
         """code-writer must tell the writer to consult test-conventions for test code."""
@@ -451,6 +461,91 @@ class TestConventionSkillWiring:
     def test_handoff_runs_pr_description(self):
         """handoff's pre-write checklist must have an actionable run pointer to pr-description."""
         assert "run the `pr-description`" in self._skill_body("handoff")
+
+
+class TestSkillFidelityReviewerUndecidableDismissal:
+    """Pin the decidability-keyed dismissal rule and its visible output slot.
+
+    skill-fidelity-reviewer's only evidence is the diff text and the plan
+    path; it has no Bash. A rule keyed on artifact *location* rather than
+    *decidability* mis-fires in both directions: it would evaluate
+    respond-pr's diff-visible commit (whose correctness depends on review
+    comments the reviewer never sees), and it would sweep plan-it's plan
+    file into a bare ~/.claude/-prefix dismissal (plan-it writes there in
+    plan mode before staging the file onto the branch). The dismissal must
+    also be visible: without an Output-format slot, a dismissed skill
+    produced no signal at all -- silent non-coverage in place of the false
+    positive the rule exists to fix.
+    """
+
+    # Shared with test_undecidable_examples_exclude_a_known_decidable_skill,
+    # which uses this same literal as its enumeration-clause slice-end anchor
+    # -- rewording it fails both tests; the other test's ValueError on a
+    # missing anchor is expected collateral, not a separate defect.
+    _DISK_HUNT_PROHIBITION = "do not go looking for it on disk"
+
+    def _body(self):
+        return _agent_body("skill-fidelity-reviewer")
+
+    def test_declares_decidability_test(self):
+        """The dismissal rule must be keyed on decidability, not artifact presence."""
+        assert "decidable from your evidence" in self._body()
+
+    def test_prohibits_disk_hunt_for_dismissed_artifacts(self):
+        """The reviewer must not search disk for a dismissed skill's artifact."""
+        assert self._DISK_HUNT_PROHIBITION in self._body()
+
+    def test_undecidable_examples_exclude_a_known_decidable_skill(self):
+        """plan-it's plan file is staged onto the branch and is decidable --
+        a location-keyed rule (bare ~/.claude/ prefix) would wrongly sweep it
+        into the undecidable-example list alongside handoff/brief. Scope the
+        check to the enumeration clause itself (elsewhere in the body,
+        `plan-it` legitimately appears as a skill-invocation-label example
+        and in the anti-adoption guard) and pin its absence there, so a
+        future edit widening the illustrative examples can't reintroduce
+        that false dismissal silently."""
+        body = self._body()
+        start = body.index("Undecidable when")
+        end = body.index(self._DISK_HUNT_PROHIBITION)
+        assert end > start, (
+            "anchor order inverted -- a duplicate/earlier occurrence of one "
+            "anchor would otherwise silently degrade this to a vacuous "
+            "always-pass empty-slice check"
+        )
+        enumeration_clause = body[start:end]
+        assert "plan-it" not in enumeration_clause
+
+    def test_pointer_line_reports_dismissed_count(self):
+        """The pointer line -- the only surface /ready-for-review reads when
+        findings_path is set -- must report dismissals, not just carry the
+        step-2 instruction to record them. A single `in body` check on the
+        bare phrase is satisfied by the step-2 occurrence alone, so this
+        pins the fuller pointer-line fragment specifically."""
+        assert "issues, <M> dismissed as undecidable" in self._body()
+
+    def test_file_based_output_gains_dismissed_section(self):
+        """The file-based output structure must include the dismissal H2 --
+        confirmed by mutation testing that the other four assertions stay
+        green even if this heading is deleted, silently reverting dismissals
+        to invisible in the findings file a human actually reads. A bare
+        `"## Dismissed as undecidable" in body` check would pass on the
+        unrelated backtick cross-reference in step 2's prose alone (verified
+        by mutation: deleting the addendum bullet below leaves that phrase
+        present via the step-2 occurrence), so this pins the bullet text
+        that actually mandates the heading, not just the heading string."""
+        assert "add `## Dismissed as undecidable` between the" in self._body()
+
+    def test_inline_output_lists_dismissals_before_verdict(self):
+        """Inline mode must list each dismissal with a reason, not just carry
+        it in the opening count -- confirmed by mutation testing that the
+        other four assertions stay green even if this sentence is dropped."""
+        assert "list each with a one-line reason" in self._body()
+
+    def test_inline_output_reports_dismissed_separately(self):
+        """Inline mode's opening count line must separate dismissed skills
+        from in-scope ones -- the only feasible verification for that
+        branch, since findings_path dispatch never reaches inline mode."""
+        assert "how many were dismissed as undecidable" in self._body()
 
 
 class TestPrDescriptionTwoModeDispatch:
