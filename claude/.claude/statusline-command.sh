@@ -101,23 +101,21 @@ elif [ -n "$account_email" ]; then
 fi
 
 max_account_len=40
-account_reserve=0
 account_display=""
 if [ -n "$account_text" ]; then
     if [ "${#account_text}" -gt "$max_account_len" ]; then
         account_text="${account_text:0:$((max_account_len - 1))}…"
     fi
     account_display=$(printf "  ${DIM}%s${RESET}" "$account_text")
-    account_reserve=$(( ${#account_text} + 2 ))
 fi
 
 # --- Dynamic truncation limits based on terminal width ---
-# Fixed visible chars: model(~12) + separators(~8) + bar([10 wide]=15) + rates(12) + cost(7) ≈ 54
-# account_reserve adds the (optional, variable-length) account segment on top,
-# same treatment as git branch's own budget share below.
+# cwd/branch render on their own line (see Assemble status line below), so
+# they get the terminal's full width instead of sharing it with the
+# fixed-width model/bar/rate/cost/account segment on line 1.
 _terminal_cols=$(stty size </dev/tty 2>/dev/null | awk '{print $2}')
 [[ "$_terminal_cols" =~ ^[0-9]+$ ]] || _terminal_cols=${COLUMNS:-80}
-_available=$(( _terminal_cols - 54 - account_reserve ))
+_available=$_terminal_cols
 [ "$_available" -lt 20 ] && _available=20
 max_path_len=$(( _available * 55 / 100 ))
 _max_branch_name=$(( _available * 45 / 100 - 3 ))
@@ -144,4 +142,5 @@ if [ "${#short_cwd}" -gt "$max_path_len" ]; then
 fi
 
 # --- Assemble status line ---
-echo -e "${CYAN}${model}${RESET}  ${ctx_display}  ${rate_display}  ${YELLOW}${cost_display}${RESET}${account_display}  ${BLUE}${short_cwd}${RESET}${git_branch}"
+echo -e "${CYAN}${model}${RESET}  ${ctx_display}  ${rate_display}  ${YELLOW}${cost_display}${RESET}${account_display}"
+echo -e "${BLUE}${short_cwd}${RESET}${git_branch}"
