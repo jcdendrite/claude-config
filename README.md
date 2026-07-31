@@ -21,6 +21,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
 - [What this installs](#what-this-installs)
 - [Configuration](#configuration)
   - [Worktree enforcement](#worktree-enforcement)
+  - [Repo relocation](#repo-relocation)
   - [Private-project redaction](#private-project-redaction)
   - [Auto mode](#auto-mode)
   - [Output preferences](#output-preferences)
@@ -300,6 +301,24 @@ grep -qxF '**/.claude/worktrees/' "$f" 2>/dev/null || echo '**/.claude/worktrees
 ```
 
 Without this, a `git add -A` in a repo that never got the per-repo `.gitignore` line (see above) can sweep live worktrees into a commit.
+
+### Repo relocation
+
+Moving or renaming this checkout (`mv ~/External/claude-config ~/somewhere-else`) breaks every stow symlink under `~/.claude/` and `~/.local/bin/` at once — the symlinks stow created encode the checkout's location, and since `~/.claude/hooks/`, `~/.claude/skills/`, and the `~/.local/bin/*` wrappers are themselves part of what breaks, nothing is left running inside the checkout that could detect or explain the failure. Two guardrails address this:
+
+1. **`deny-repo-relocation.sh`** (always on, no opt-in) stops Claude Code itself from performing an unsupported `mv`/`rsync --remove-source-files` of this checkout's root (or an ancestor of it) and points at `relocate-claude-config` instead. It's a best-effort guard against the common literal-path case, not a hard security boundary: a source argument reached only through a shell variable, command substitution, or a preceding `cd` fails open (allow) rather than deny. In that case the command never invokes `relocate-claude-config`, so its destination-side validation never runs either — the repo, and every hook symlink under `~/.claude/hooks/`, can land anywhere, unchecked, not merely broken stow symlinks. See [`docs/hooks.md`](docs/hooks.md) for the full documented known gaps.
+2. **`relocate-claude-config`** is the single supported command for both deliberate relocation and after-the-fact repair:
+
+   ```bash
+   relocate-claude-config <new-path>          # repo hasn't moved yet: unstows, mv's, re-stows
+   relocate-claude-config --repair <new-path> # repo already moved outside a Claude Code session
+   ```
+
+   The primary form unstows the current checkout, moves it, and re-stows at the new location — do not run it while other Claude Code sessions are active, since every hook under `~/.claude/hooks/` is briefly absent between the unstow and re-stow steps, and a concurrent session's tool call in that window gets a hard deny. `--repair` is for when the checkout was already moved outside any Claude Code session (a manual `mv`, a Finder drag, a sync-tool restore, or a crash mid-relocation) — it quarantines (never deletes) any `~/.claude` or `~/.local/bin` entry left as a dangling symlink into the old location, then re-stows at the location you give it. Both modes canonicalize the destination and refuse one outside `$HOME` unless you pass `--allow-outside-home`.
+
+   A one-line manifest, `~/.claude-config-source`, records the checkout's current absolute path — `install.sh` writes it, and `relocate-claude-config` reads and rewrites it — so the command can find the checkout even when the `~/.claude` symlinks it depends on for everything else are the very thing it's asked to fix. `relocate-claude-config` is installed as a **real file copy** (`install -m 755`), not a stow symlink, since a stow-managed wrapper would inherit the exact failure it exists to repair.
+
+**Optional, manual, macOS-only hardening:** `chflags uchg <repo-root>` (clear with `chflags nouchg <repo-root>`) makes macOS refuse to rename or delete the checkout's top-level directory entry, even for the owner, without an explicit `nouchg` first. It is not wired into `install.sh` and never will be by default: Linux's equivalent (`chattr +i`) needs root, so the mechanism would silently cover macOS only; and even on macOS, the flag also blocks creating, removing, or renaming any entry *directly inside* the flagged directory — a `git pull` or `git checkout` that adds or removes a top-level file in this repo would fail outright. If you want the extra defense-in-depth and accept that tradeoff, set it yourself; it is not something any script here toggles automatically.
 
 ### Private-project redaction
 

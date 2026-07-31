@@ -732,3 +732,106 @@ def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
 
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+# --- _lib_fragment_command_word / _lib_fragment_invokes_tool /
+#     _lib_fragment_has_token --------------------------------------------
+#
+# Promoted out of deny-reviewer-tree-mutation.sh into _lib.sh once
+# deny-repo-relocation.sh needed the identical "does this fragment invoke
+# tool X" check. Previously covered only indirectly through
+# deny-reviewer-tree-mutation.sh's black-box tests, which stopped being
+# sufficient once a second hook depends on the same shared functions.
+
+
+def _fragment_command_word(fragment: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_command_word "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _fragment_invokes_tool(fragment: str, tool: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_invokes_tool "$1" "$2"', "bash", fragment, tool],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _fragment_has_token(fragment: str, token: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_has_token "$1" "$2"', "bash", fragment, token],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestFragmentCommandWord:
+    def test_bare_command_returns_itself(self) -> None:
+        assert _fragment_command_word("black src/x.py") == "black"
+
+    def test_skips_leading_env_var_assignment(self) -> None:
+        assert _fragment_command_word("FOO=1 black src/x.py") == "black"
+
+    def test_skips_sudo_runner(self) -> None:
+        assert _fragment_command_word("sudo black src/x.py") == "black"
+
+    def test_skips_runner_and_connector_subtoken(self) -> None:
+        assert _fragment_command_word("poetry run black src/x.py") == "black"
+
+    def test_skips_npx_flag_before_command(self) -> None:
+        assert _fragment_command_word("npx --yes prettier --write x.ts") == "prettier"
+
+    def test_resolves_absolute_path_runner_and_command(self) -> None:
+        assert _fragment_command_word("/usr/bin/python -m black src/x.py") == "black"
+
+    def test_argument_word_is_not_mistaken_for_command_word(self) -> None:
+        """The whole reason this is a command-word scan, not an any-word
+        scan: a tool name appearing only as an argument must not resolve as
+        the command."""
+        assert _fragment_command_word("grep -rn black .") == "grep"
+
+    def test_empty_fragment_returns_empty(self) -> None:
+        assert _fragment_command_word("") == ""
+
+
+class TestFragmentInvokesTool:
+    def test_exact_match(self) -> None:
+        assert _fragment_invokes_tool("mv /a /b", "mv")
+
+    def test_path_qualified_match(self) -> None:
+        assert _fragment_invokes_tool("/usr/bin/mv /a /b", "mv")
+
+    def test_no_match_for_different_tool(self) -> None:
+        assert not _fragment_invokes_tool("cp /a /b", "mv")
+
+    def test_no_match_when_tool_name_is_only_an_argument(self) -> None:
+        assert not _fragment_invokes_tool("grep mv notes.txt", "mv")
+
+    def test_runner_wrapped_match(self) -> None:
+        assert _fragment_invokes_tool("sudo env X=1 rsync -a /a /b", "rsync")
+
+
+class TestFragmentHasToken:
+    def test_standalone_token_matches(self) -> None:
+        assert _fragment_has_token("rsync -a --remove-source-files /a /b", "--remove-source-files")
+
+    def test_token_as_substring_of_longer_word_does_not_match(self) -> None:
+        assert not _fragment_has_token("rsync --remove-source-files-extra /a /b", "--remove-source-files")
+
+    def test_token_at_string_start_matches(self) -> None:
+        assert _fragment_has_token("fmt x.tf", "fmt")
+
+    def test_token_at_string_end_matches(self) -> None:
+        assert _fragment_has_token("terraform fmt", "fmt")
+
+    def test_missing_token_does_not_match(self) -> None:
+        assert not _fragment_has_token("rsync -a /a /b", "--remove-source-files")
