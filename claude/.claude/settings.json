@@ -249,6 +249,11 @@
             "type": "command",
             "command": "~/.claude/hooks/deny-reviewer-tree-mutation.sh",
             "statusMessage": "Checking reviewer read-only gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-repo-relocation.sh",
+            "statusMessage": "Checking repo-relocation guard..."
           }
         ]
       },

@@ -13,7 +13,13 @@ if [ ${#missing[@]} -gt 0 ]; then
   exit 1
 fi
 
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+# pwd -P (not pwd) canonicalizes away any symlink in the invocation path, so
+# REPO_DIR matches the canonicalized form the marketplace-registration check
+# below compares against — otherwise a symlink-adjacent invocation of this
+# script could make REPO_DIR byte-differ from the marketplace's recorded
+# .path even though they name the same directory, thrashing (remove+re-add)
+# the registration on every run.
+REPO_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 cd "$REPO_DIR"
 mkdir -p "$HOME/.local/bin"
 # Both target directories are created before stow runs so stow links their
@@ -22,6 +28,21 @@ mkdir -p "$HOME/.local/bin"
 # would put every file Claude Code writes at runtime inside the git clone.
 mkdir -p "$HOME/.claude"
 stow -v --adopt -t "$HOME" claude
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: repo-relocation-manifest — start
+# Record this checkout's location so relocate-claude-config can find it
+# later without depending on a live ~/.claude symlink (which its own repair
+# mode may need to work around). Single-line, idempotent overwrite.
+printf '%s\n' "$REPO_DIR" > "$HOME/.claude-config-source"
+
+# Real file copy (not stow) — relocate-claude-config's whole purpose is to
+# keep working when the exact symlink chain it repairs has already failed,
+# so it cannot itself be a stow-managed symlink into this checkout.
+install -m 755 -- "$REPO_DIR/claude/.claude/scripts/relocate-claude-config.sh" "$HOME/.local/bin/relocate-claude-config"
+# INSTALL_TEST_FIXTURE: repo-relocation-manifest — end
 
 # Harden ~/.claude and ~/.claude.json against other local accounts. $HOME is
 # commonly 755 (set once at account creation, not by umask), and under the
@@ -62,17 +83,35 @@ SETTINGS_FILE="$HOME/.claude/settings.json"
 if [ -f "$SETTINGS_FILE" ]; then
   echo ""
   echo "=== Registering marketplaces ==="
-  existing_marketplaces="$(claude plugin marketplace list --json 2>/dev/null | jq -r '.[].name')"
+  # INSTALL_TEST_FIXTURE: repo-relocation-marketplace — start
+  marketplace_list_json="$(claude plugin marketplace list --json 2>/dev/null)"
+  existing_marketplaces="$(echo "$marketplace_list_json" | jq -r '.[].name')"
 
   # This repo is itself a marketplace. A directory source needs an absolute
   # path, which is machine-specific and cannot live in the stowed settings.json
-  # — so register it here from this checkout's location.
-  if echo "$existing_marketplaces" | grep -qFx "claude-config"; then
+  # — so register it here from this checkout's location. Compares the
+  # recorded .path (not just the name — .repo is github-source-only and is
+  # what the extraKnownMarketplaces loop below already uses) in canonicalized
+  # form against REPO_DIR (itself already canonicalized via pwd -P above), so
+  # a stale post-move registration is re-added instead of silently reported
+  # as "already registered".
+  claude_config_recorded_path="$(echo "$marketplace_list_json" | jq -r '.[] | select(.name == "claude-config") | .path // empty')"
+  claude_config_recorded_real=""
+  if [ -n "$claude_config_recorded_path" ]; then
+    claude_config_recorded_real="$(readlink -f -- "$claude_config_recorded_path" 2>/dev/null || echo "$claude_config_recorded_path")"
+  fi
+  if [ -n "$claude_config_recorded_path" ] && [ "$claude_config_recorded_real" = "$REPO_DIR" ]; then
     echo "  ✓ claude-config (already registered)"
   else
-    echo "  → adding claude-config ($REPO_DIR)"
+    if [ -n "$claude_config_recorded_path" ]; then
+      echo "  → re-registering claude-config: $claude_config_recorded_path -> $REPO_DIR"
+      claude plugin marketplace remove claude-config
+    else
+      echo "  → adding claude-config ($REPO_DIR)"
+    fi
     claude plugin marketplace add "$REPO_DIR" --scope user
   fi
+  # INSTALL_TEST_FIXTURE: repo-relocation-marketplace — end
 
   while IFS=$'\t' read -r name source_type repo; do
     # claude-config is registered separately above as a directory source; skip

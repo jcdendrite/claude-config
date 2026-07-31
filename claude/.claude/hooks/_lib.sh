@@ -408,6 +408,69 @@ _lib_split_fragments() {
     | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
 }
 
+# Resolve a fragment's effective command word: skip leading env-var
+# assignments and a closed set of runner/wrapper words (plus each runner's
+# connector sub-token), then return the first remaining word. `npx prettier`,
+# `python -m black`, `sudo env X=1 isort` resolve to prettier/black/isort.
+#
+# WHY command-word, not any-word (unlike the shared _lib_fragment_invokes_git
+# used for git): a tool name like black/sed/mv is a common word that can
+# legitimately appear as an argument in a read-only command (`grep black
+# file`), so an any-word scan would false-deny it; "git" doesn't have that
+# problem.
+#
+# Shared by deny-reviewer-tree-mutation.sh and deny-repo-relocation.sh.
+_lib_fragment_command_word() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local word cmd="" expect_after_runner=false
+  for word in $fragment; do
+    # Leading env-var assignment (VAR=val); precedes the command. A flag like
+    # --write=false starts with '-' and does not match, so it is never eaten.
+    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      continue
+    fi
+    if $expect_after_runner; then
+      # A runner's own connector sub-token or flag (e.g. `poetry run`,
+      # `python -m`, `npx --yes`) — skip it; the command is still ahead.
+      case "$word" in
+        run|exec|dlx|tool|-*) continue ;;
+      esac
+      expect_after_runner=false
+    fi
+    # Matched against the basename, not the full path, so an absolute or
+    # relative runner path (e.g. /usr/local/bin/pnpm) still resolves like
+    # the bare name.
+    case "${word##*/}" in
+      sudo|doas|env|command|time|nice|xargs|npx|pnpm|yarn|bunx|bun|pipx|uvx|uv|poetry|pipenv|rye|hatch|pdm|python|python2|python3|node|deno)
+        expect_after_runner=true
+        continue ;;
+    esac
+    cmd="$word"
+    break
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  printf '%s' "$cmd"
+}
+
+# True iff the fragment's command word equals $2, or ends in "/$2" (an
+# absolute/relative path invocation, e.g. /usr/bin/terraform).
+_lib_fragment_invokes_tool() {
+  local fragment="$1" tool="$2"
+  local cmd
+  cmd=$(_lib_fragment_command_word "$fragment")
+  [[ -n "$cmd" && ( "$cmd" == "$tool" || "$cmd" == */"$tool" ) ]]
+}
+
+# True iff $2 appears in $1 as a standalone whitespace-delimited token — for
+# exact-flag checks (e.g. --fix, --remove-source-files) where a real value
+# never appends more non-space characters.
+_lib_fragment_has_token() {
+  local fragment="$1" token="$2"
+  [[ "$fragment" =~ (^|[[:space:]])${token}([[:space:]]|$) ]]
+}
+
 # Decide whether a command chains `marker.sh write <skill>` before its first
 # `git commit`. PreToolUse hooks fire once per Bash tool call before the chain
 # runs, so an on-disk marker check denies naturally-typed forms like

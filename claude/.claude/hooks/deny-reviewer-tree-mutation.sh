@@ -147,75 +147,8 @@ _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
 SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. To verify a claim empirically, copy the file to /tmp and mutate the copy there. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
 
-# Local to this hook (not _lib.sh — these are in-place-edit-family word
-# matchers, a different concern than _lib.sh's git-parsing helpers).
-
-# Resolve a fragment's effective command word: skip leading env-var
-# assignments (VAR=val) and a closed set of runner/wrapper words (plus each
-# runner's connector sub-token), then return the first remaining word.
-# `npx prettier`, `python -m black`, `xargs sed`, `sudo env X=1 isort` resolve
-# to prettier/black/sed/isort; `grep black` / `echo isort` resolve to grep/echo.
-#
-# WHY command-word, not any-word (unlike the shared _lib_fragment_invokes_git
-# used for git): the in-place-edit family names (black, isort, sed, ruff…) are
-# common English/identifier words that legitimately appear as arguments in a
-# reviewer's read-only commands (`grep black file`, `git log --grep isort`),
-# so an any-word scan false-denies them. "git" is not a common argument word,
-# so its any-word scan stays. Runner set is closed, same discipline as the
-# _LIB_* enumerations — extended deliberately, not accreted.
-_fragment_command_word() {
-  local fragment="$1"
-  local saved_opts=$-
-  set -f
-  local word cmd="" expect_after_runner=false
-  for word in $fragment; do
-    # Leading env-var assignment (VAR=val); precedes the command. A flag like
-    # --write=false starts with '-' and does not match, so it is never eaten.
-    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
-      continue
-    fi
-    if $expect_after_runner; then
-      # A runner's own connector sub-token or flag (e.g. `poetry run`,
-      # `python -m`, `npx --yes`) — skip it; the command is still ahead.
-      case "$word" in
-        run|exec|dlx|tool|-*) continue ;;
-      esac
-      expect_after_runner=false
-    fi
-    # Match the runner set against the command's basename, so an absolute or
-    # relative path form (/usr/local/bin/pnpm, ~/.nvm/.../bin/node) resolves
-    # the same as the bare name — every runner is covered by path, with no
-    # separate path-qualified alternation that could cover only a subset or
-    # drift from the bare list.
-    case "${word##*/}" in
-      sudo|doas|env|command|time|nice|xargs|npx|pnpm|yarn|bunx|bun|pipx|uvx|uv|poetry|pipenv|rye|hatch|pdm|python|python2|python3|node|deno)
-        expect_after_runner=true
-        continue ;;
-    esac
-    cmd="$word"
-    break
-  done
-  if [[ "$saved_opts" != *f* ]]; then set +f; fi
-  printf '%s' "$cmd"
-}
-
-# True iff the fragment's command word equals $2, or ends in "/$2" (an
-# absolute/relative path invocation, e.g. /usr/bin/terraform).
-_fragment_invokes_tool() {
-  local fragment="$1" tool="$2"
-  local cmd
-  cmd=$(_fragment_command_word "$fragment")
-  [[ -n "$cmd" && ( "$cmd" == "$tool" || "$cmd" == */"$tool" ) ]]
-}
-
-# True iff $2 appears in $1 as a standalone whitespace-delimited token
-# (anchored to string edges or whitespace on both sides) — for exact-flag
-# checks (--write, --fix, --check, fmt, format, check) where a real value
-# never appends more non-space characters.
-_fragment_has_token() {
-  local fragment="$1" token="$2"
-  [[ "$fragment" =~ (^|[[:space:]])${token}([[:space:]]|$) ]]
-}
+# Local to this hook, not _lib.sh: this -i-prefix matcher is the only
+# in-place-edit-family word matcher without a second caller elsewhere.
 
 # True iff $1 contains a whitespace-delimited token STARTING with $2 — for
 # flags whose value is attached with no separator (sed/perl's -i[SUFFIX]).
@@ -305,7 +238,7 @@ case "$TOOL_NAME" in
       # is a clear sanctioned deny, not a mutation escape — a reviewer reads
       # the diff, it does not need to run the formatter even to verify.
       for formatter in black isort gofmt prettier rustfmt; do
-        if _fragment_invokes_tool "$fragment" "$formatter"; then
+        if _lib_fragment_invokes_tool "$fragment" "$formatter"; then
           emit_deny "Blocked by reviewer-tree-mutation hook: '$formatter' reformats files and a review-only agent never reformats the tree under review. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
@@ -315,8 +248,8 @@ case "$TOOL_NAME" in
       # writes. Gate on the fmt subcommand so read-only subcommands (validate,
       # plan) stay available, but deny fmt regardless of -check / -write=false
       # — same over-deny-the-check-mode stance as the pure formatters above.
-      if _fragment_invokes_tool "$fragment" terraform || _fragment_invokes_tool "$fragment" tofu; then
-        if _fragment_has_token "$fragment" fmt; then
+      if _lib_fragment_invokes_tool "$fragment" terraform || _lib_fragment_invokes_tool "$fragment" tofu; then
+        if _lib_fragment_has_token "$fragment" fmt; then
           emit_deny "Blocked by reviewer-tree-mutation hook: 'terraform/tofu fmt' reformats files and a review-only agent never reformats the tree under review. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
@@ -326,7 +259,7 @@ case "$TOOL_NAME" in
       # formatters above, their bare / read-only forms (`ruff check`, `eslint`
       # without --fix, `sed`/`perl` without -i) are ordinary review actions a
       # reviewer legitimately runs, so only the mutating flag/subcommand denies.
-      if _fragment_invokes_tool "$fragment" ruff; then
+      if _lib_fragment_invokes_tool "$fragment" ruff; then
         # Deny `ruff format` (any invocation) and any ruff invocation carrying
         # a --fix or --fix-only token (both write to disk). Matched as exact
         # tokens, NOT a --fix* prefix, so the read-only `--fixable` selector
@@ -335,20 +268,20 @@ case "$TOOL_NAME" in
         # reads available. Gated on the flag, NOT on a literal `check` token,
         # so `ruff check --fix-only` and bare `ruff --fix` (implicit-check
         # form) are both caught; `ruff check` alone stays allowed.
-        if _fragment_has_token "$fragment" format \
-          || _fragment_has_token "$fragment" --fix \
-          || _fragment_has_token "$fragment" --fix-only; then
+        if _lib_fragment_has_token "$fragment" format \
+          || _lib_fragment_has_token "$fragment" --fix \
+          || _lib_fragment_has_token "$fragment" --fix-only; then
           emit_deny "Blocked by reviewer-tree-mutation hook: 'ruff format' / 'ruff --fix' rewrites files in place. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
       fi
 
-      if _fragment_invokes_tool "$fragment" eslint && _fragment_has_token "$fragment" --fix; then
+      if _lib_fragment_invokes_tool "$fragment" eslint && _lib_fragment_has_token "$fragment" --fix; then
         emit_deny "Blocked by reviewer-tree-mutation hook: 'eslint --fix' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
         exit 0
       fi
 
-      if _fragment_invokes_tool "$fragment" sed || _fragment_invokes_tool "$fragment" perl; then
+      if _lib_fragment_invokes_tool "$fragment" sed || _lib_fragment_invokes_tool "$fragment" perl; then
         if _fragment_has_token_prefix "$fragment" -i; then
           emit_deny "Blocked by reviewer-tree-mutation hook: 'sed -i'/'perl -i' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
           exit 0
