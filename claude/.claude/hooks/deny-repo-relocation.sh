@@ -13,45 +13,34 @@
 # own physical (post-symlink) path rather than `git rev-parse` on cwd, since
 # this hook can fire from a Bash call made in any repo, not just this one.
 #
-# Threat framing: this is a best-effort guard against the common literal-path
-# case, not a hard security boundary — closing it fully would mean adopting
-# the same cwd-threading machinery require-worktree-for-git-writes.sh needed
-# parse-git-command.py for, for a hook whose job is catching the common case.
-# The actual security investment against a semi-trusted destination argument
-# (a prompt-injected agent steered into invoking the sanctioned escape hatch
-# this hook names) lives on the destination side, in
+# Threat framing: this is a best-effort guard against the common
+# literal-path case, not a hard security boundary — closing it fully would
+# require the same cwd-threading machinery require-worktree-for-git-writes.sh
+# needed parse-git-command.py for. The actual security investment against a
+# semi-trusted destination argument lives on the destination side, in
 # relocate-claude-config.sh's own validation — see that script's header.
 #
 # Known gaps (what this model does NOT close):
-#   - A source argument indirected through a shell variable ($REPO), command
-#     substitution, or a preceding `cd` in the same command (which changes
-#     the effective relative-path base this hook has no way to thread) is
-#     not resolved. These cases FAIL OPEN (allow) rather than deny: denying
-#     every unresolvable source would deny the overwhelming majority of
-#     ordinary, repo-unrelated mv/rsync usage that happens to use a
-#     variable, defeating the "zero cost to normal workflows" design goal.
-#     For the adversarial case this hook pair exists to address, this gap is
-#     stronger than "breaks stow": a source-obfuscated `mv` never invokes
-#     relocate-claude-config.sh at all, so that script's own destination-side
-#     validation (refusing an outside-$HOME or dangling-symlink target,
-#     confirming the source looks like a real checkout) never runs either —
-#     the repo, and every hook symlink under ~/.claude/hooks/, can land
-#     anywhere, unchecked.
+#   - A source indirected through a shell variable, command substitution, or
+#     a preceding `cd` (which shifts the relative-path base this hook can't
+#     thread) is not resolved and FAILS OPEN (allow) — denying every
+#     unresolvable source would over-deny ordinary, repo-unrelated mv/rsync
+#     usage. Worse than "breaks stow": an obfuscated `mv` never invokes
+#     relocate-claude-config.sh either, so its destination-side validation
+#     never runs — the repo can land anywhere, unchecked.
 #   - Equivalent-relocation forms this pattern-match doesn't cover at all:
 #     `cp -r ... && rm -rf ...`, `python3 -c "os.rename(...)"`, `ditto` plus
 #     a delete, or a GUI/Finder move — none of these are closable by a
 #     Bash-command-pattern hook.
 #   - Same alias/wrapper-script/quoted-command-name indirection gaps as
-#     deny-reviewer-tree-mutation.sh (which _lib_fragment_command_word's
-#     word-scan shares): a command reached only through an alias, a wrapper
-#     script, or a quoted command name (`bash -c "mv ..."`, `'mv' src dst`)
-#     is undecidable at this level.
+#     deny-reviewer-tree-mutation.sh (which shares _lib_fragment_command_word's
+#     word-scan): a command reached only through an alias, a wrapper script,
+#     or a quoted command name (`bash -c "mv ..."`, `'mv' src dst`) is
+#     undecidable at this level.
 #   - `mv`/`rsync` flags that consume the following word as a value (e.g.
-#     `-t DIR`, `--target-directory=DIR`) are not specially recognized —
-#     every non-flag word after the command word is treated as a candidate
-#     positional argument, so a flag's value word could be misjudged as a
-#     source. This can only produce an over-deny (a benign command wrongly
-#     flagged), never a missed relocation, so it is left unhandled.
+#     `-t DIR`) are not specially recognized, so a flag's value word could be
+#     misjudged as a source. This can only over-deny, never miss a real
+#     relocation, so it is left unhandled.
 
 set -uo pipefail
 
@@ -100,15 +89,12 @@ CWD=$(_lib_jq -r '.cwd // empty' <<< "$INPUT" 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Given a fragment already confirmed to invoke mv/rsync, print every
-# positional (non-flag) argument following the command word, one per line,
-# EXCLUDING THE LAST — mv/rsync take one or more sources followed by a
-# single destination, and the destination is not what this hook judges (the
-# destination-side hardening lives in relocate-claude-config.sh — see this
-# file's header). Mirrors the env-var/runner-skip resolution
-# _lib_fragment_command_word (_lib.sh) uses to find the command word itself;
-# duplicated rather than shared because that function's contract returns
-# only the command word, not the words after it, and generalizing it for
-# this hook's single, narrow caller was not worth widening its contract.
+# positional (non-flag) argument after the command word, one per line,
+# EXCLUDING THE LAST — mv/rsync take source(s) then a destination, and the
+# destination is judged by relocate-claude-config.sh, not here. Mirrors
+# _lib_fragment_command_word's env-var/runner-skip resolution but duplicated
+# rather than shared, since that function returns only the command word, not
+# the words after it.
 _relocation_positional_sources() {
   local fragment="$1"
   local saved_opts=$-
@@ -148,13 +134,12 @@ _relocation_positional_sources() {
 
 # Resolve a candidate source argument to its canonical absolute path, or
 # print nothing (unresolved) on failure — the caller treats an unresolved
-# source as fail-open (allow), per this hook's documented row1c gap.
-# Skips candidates carrying unexpanded shell syntax this hook cannot
-# evaluate ($VAR, $(...), backticks) rather than resolving them literally
-# as filenames. readlink -f runs first (verified to work on both this
-# machine's BSD readlink and GNU coreutils); the cd+pwd -P fallback only
-# covers readlink being entirely absent from PATH, not readlink -f failing
-# on a particular candidate.
+# source as fail-open, per this hook's documented "Known gaps" above. Skips
+# candidates carrying unexpanded shell syntax ($VAR, $(...), backticks)
+# rather than resolving them literally as filenames. readlink -f runs first
+# (works on both BSD and GNU readlink); the cd+pwd -P fallback only covers
+# readlink being entirely absent from PATH, not readlink -f failing on a
+# particular candidate.
 _relocation_resolve_source() {
   local cwd="$1" candidate="$2" resolved
   case "$candidate" in

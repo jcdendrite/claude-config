@@ -68,7 +68,7 @@ err() {
 # older stow run (predating install.sh's mkdir -p guard) can leave behind,
 # where the whole ~/.claude directory is one symlink into
 # <repo>/claude/.claude, rather than a real directory whose individual
-# entries are symlinks (row2b).
+# entries are symlinks.
 claude_is_tree_folded() {
   [ -L "$HOME/.claude" ]
 }
@@ -92,14 +92,11 @@ write_manifest() {
   printf '%s\n' "$1" > "$MANIFEST"
 }
 
-# Canonicalize $1 to an absolute, symlink-resolved path, printing nothing and
-# returning 1 on failure. Same readlink -f + cd/pwd -P fallback pattern as
-# deny-repo-relocation.sh's _relocation_resolve_source (verified there to
-# work on both BSD and GNU readlink); the cd/pwd -P branch only covers
-# readlink being entirely absent from PATH, not readlink -f failing on a
-# particular path. Duplicated here rather than shared via _lib.sh: this
-# script must keep working even when ~/.claude — and therefore _lib.sh — is
-# broken, which is exactly the scenario --repair exists for.
+# Canonicalize $1 to an absolute, symlink-resolved path, printing nothing
+# and returning 1 on failure. Same readlink -f + cd/pwd -P fallback pattern
+# as deny-repo-relocation.sh's _relocation_resolve_source; duplicated rather
+# than sourced from _lib.sh per this script's header (must keep working even
+# when ~/.claude is broken).
 _readlink_f() {
   local target="$1" resolved
   if command -v readlink >/dev/null 2>&1; then
@@ -127,11 +124,10 @@ canonicalize_for_comparison() {
 }
 
 # Resolve the LIVE ~/.claude symlink target, handling both the fresh
-# per-entry-symlink form stow leaves today and the legacy tree-folded form
-# (row2b). Prints the resolved repo dir, or fails (return 1, no stdout) when
-# neither form yields a usable, existing directory. Shared by
-# resolve_current_repo_dir below as both its cross-validation signal and its
-# own fallback candidate.
+# per-entry-symlink form stow leaves today and the legacy tree-folded form.
+# Prints the resolved repo dir, or fails (return 1, no stdout) when neither
+# form yields a usable, existing directory. Shared by resolve_current_repo_dir
+# below as both its cross-validation signal and its own fallback candidate.
 _resolve_live_claude_repo_dir() {
   local candidate
 
@@ -158,20 +154,14 @@ _resolve_live_claude_repo_dir() {
 }
 
 # Resolve the current claude-config checkout's absolute path. Tries the
-# manifest first (fast, authoritative once a prior install.sh or
-# relocate-claude-config run has written it), cross-validated against a LIVE
-# ~/.claude symlink resolution whenever one is available. The manifest alone
-# is not a trustworthy root of trust: it is a bare dotfile at $HOME, outside
-# any git repo, so nothing in this repo's hook set restricts writes to it —
-# a prompt-injected agent could point it at an attacker-built directory
-# entirely upstream of this script's own destination-side validation.
-# Requiring agreement with the live symlink (when one exists) closes that:
-# an attacker would need to also control the live ~/.claude symlink target,
-# which is exactly the thing relocate-claude-config keeps consistent with
-# the manifest in the first place. A live probe unavailable (e.g. ~/.claude
-# isn't stow-managed yet — the expected first-run state) is not itself a
-# mismatch; the manifest is used alone in that case, since there is no live
-# signal to contradict it.
+# manifest first, cross-validated against a LIVE ~/.claude symlink
+# resolution whenever one is available. The manifest alone is not a
+# trustworthy root of trust — it's a bare dotfile at $HOME, outside any git
+# repo and unrestricted by this repo's hooks, so a prompt-injected agent
+# could point it at an attacker-built directory. Requiring agreement with
+# the live symlink closes that: an attacker would also need to control the
+# live symlink target. No live probe available (e.g. ~/.claude isn't
+# stow-managed yet) is not itself a mismatch — the manifest is used alone.
 #
 # Return codes:
 #   0  resolved (stdout: the repo path)
@@ -180,10 +170,9 @@ _resolve_live_claude_repo_dir() {
 #      already printed the explanation via err(), caller should not also
 #      print its generic "could not locate" message
 #
-# "Live" is load-bearing: this function is only used by the primary
-# (non-repair) mode, where the checkout has not moved yet and its symlinks
-# are expected to still resolve; --repair mode never calls this, since by
-# definition the old location is already gone.
+# "Live" is load-bearing: only the primary (non-repair) mode calls this,
+# where symlinks are expected to still resolve; --repair mode never does,
+# since the old location is already gone by definition.
 resolve_current_repo_dir() {
   local manifest_candidate="" live_candidate=""
 
@@ -298,16 +287,15 @@ _ensure_backup_dir_is_not_a_symlink() {
   fi
 }
 
-# Quarantine-move (never delete — row2c) every symlink directly inside $1
-# whose target does not exist. A live (non-broken) symlink, or a real
-# file/directory, is left untouched — only a confirmed-broken symlink is
-# quarantined, since a dangling-symlink check alone can false-positive on a
-# target that is merely temporarily unreachable (an unmounted volume, an
-# offline network share, a mid-sync cloud-storage path), not genuinely
-# broken; quarantining instead of deleting keeps a wrongly-triggered repair
+# Quarantine-move (never delete) every symlink directly inside $1 whose
+# target does not exist; a live symlink or real file/directory is left
+# untouched. Quarantine instead of delete because a dangling-symlink check
+# alone can false-positive on a target that's merely temporarily
+# unreachable (unmounted volume, offline share, mid-sync cloud path), not
+# genuinely broken — quarantining keeps a wrongly-triggered repair
 # reversible. Echoes true/false on stdout (not a bare return status) so the
 # caller's `&&`-chained bookkeeping reads cleanly regardless of shell option
-# state — see quarantine_dangling_claude_entries below.
+# state.
 _quarantine_dangling_children() {
   local dir="$1" found=false
   _ensure_backup_dir_is_not_a_symlink
@@ -328,16 +316,12 @@ _quarantine_dangling_children() {
 }
 
 # --repair only. Quarantine-moves every dangling symlink under BOTH
-# ~/.claude (handling the tree-folded single-symlink form and the fresh
-# per-entry form, row2b) AND ~/.local/bin. ~/.local/bin shares the identical
-# dangling-symlink shape after an out-of-band move: `stow --adopt` refuses
-# outright ("existing target is not owned by stow") when a dangling entry is
-# in its way — measured directly against a real `mv`-without-unstow
-# scenario — the same failure mode ~/.claude's own entries would produce, so
-# leaving ~/.local/bin unquarantined here would make --repair's own re-stow
-# step fail. No tree-folded form applies to ~/.local/bin (install.sh's
-# mkdir -p "$HOME/.local/bin" always precedes stow), so only the per-entry
-# case is relevant there.
+# ~/.claude (handling both the tree-folded and per-entry forms) AND
+# ~/.local/bin — `stow --adopt` refuses outright when a dangling entry is in
+# its way, so leaving ~/.local/bin unquarantined would make --repair's own
+# re-stow step fail. No tree-folded form applies to ~/.local/bin
+# (install.sh's mkdir -p always precedes stow), so only the per-entry case
+# is relevant there.
 quarantine_dangling_claude_entries() {
   local quarantined_any=false
   _ensure_backup_dir_is_not_a_symlink
@@ -364,10 +348,10 @@ quarantine_dangling_claude_entries() {
 
 # Determine the marketplace's current registration state for claude-config
 # by comparing the canonicalized recorded .path (from `claude plugin
-# marketplace list --json` — not .repo, which is github-source-only, per
-# row3b) against the canonicalized new repo path: no-op if already correct,
-# remove+add if registered under a different path, add if not registered at
-# all — three distinct idempotent states, not a blind remove-then-add.
+# marketplace list --json` — not .repo, which is github-source-only) against
+# the canonicalized new repo path: no-op if already correct, remove+add if
+# registered under a different path, add if not registered at all — three
+# distinct idempotent states, not a blind remove-then-add.
 sync_marketplace_registration() {
   local new_repo_path="$1"
 

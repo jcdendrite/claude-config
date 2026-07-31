@@ -147,13 +147,8 @@ _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
 SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. To verify a claim empirically, copy the file to /tmp and mutate the copy there. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
 
-# Local to this hook (not _lib.sh — this is an in-place-edit-family word
-# matcher, a different concern than _lib.sh's git-parsing helpers).
-# _fragment_command_word/_fragment_invokes_tool/_fragment_has_token were
-# promoted to _lib_fragment_command_word/_lib_fragment_invokes_tool/
-# _lib_fragment_has_token in _lib.sh once deny-repo-relocation.sh needed the
-# identical "does this fragment invoke tool X" check; only this hook's
-# -i-prefix matcher (below) has no second caller yet.
+# Local to this hook, not _lib.sh: this -i-prefix matcher is the only
+# in-place-edit-family word matcher without a second caller elsewhere.
 
 # True iff $1 contains a whitespace-delimited token STARTING with $2 — for
 # flags whose value is attached with no separator (sed/perl's -i[SUFFIX]).
