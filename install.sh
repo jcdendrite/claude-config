@@ -167,9 +167,9 @@ check_private_projects_file() {
 # their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: local-bin-path — start
 # Whether $1 already has a non-comment line mentioning $2 — excludes
-# comment-only lines so a stale "# TODO: add ~/.local/bin" note doesn't
-# false-positive as already-configured (matches the comment/blank exclusion
-# check_private_projects_file already uses above for the same reason).
+# comment-only lines (same reason check_private_projects_file above excludes
+# comment/blank lines) so a stale "# TODO: add ~/.local/bin" note doesn't
+# false-positive as already-configured.
 _file_has_active_reference() {
   local file="$1" needle="$2"
   [ -f "$file" ] && grep -v '^[[:space:]]*#' -- "$file" 2>/dev/null | grep -Fq -- "$needle"
