@@ -22,16 +22,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
-
-REPO_ROOT = Path(
-    subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=Path(__file__).resolve().parent,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+from helpers import (
+    REPO_ROOT,
+    init_ci_detect_step_test_repo,
+    run_ci_detect_step,
 )
 
 DISCOVERY_SCRIPT = REPO_ROOT / "scripts" / "list-shell-files.sh"
@@ -235,98 +229,13 @@ class TestDetectStepFailOpenSetsShellChanged:
     shell_changed correctly.
     """
 
-    @staticmethod
-    def _extract_run_block() -> str:
-        """Pull the `run:` script for the step with `id: detect` out of
-        tests.yml via pyyaml, locating the step by id rather than regexing
-        the YAML."""
-        workflow_path = REPO_ROOT / ".github" / "workflows" / "tests.yml"
-        workflow = yaml.safe_load(workflow_path.read_text())
-        steps = workflow["jobs"]["tests"]["steps"]
-        detect_steps = [step for step in steps if step.get("id") == "detect"]
-        assert len(detect_steps) == 1, (
-            "Expected exactly one step with id: detect in tests.yml — did "
-            "the step move or get renamed?"
-        )
-        return detect_steps[0]["run"]
-
-    @staticmethod
-    def _substitute_expressions(script: str, base_sha: str, head_sha: str) -> str:
-        """Replace GitHub Actions `${{ }}` expressions with literal values.
-
-        This textual substitution is the one unavoidable fidelity gap in this
-        test: the real Actions runner evaluates these expressions with its own
-        expression engine before handing bash the resulting script, and that
-        evaluator isn't available here, so plain string substitution stands in
-        for it. Forcing github.event_name to a non-"pull_request" value routes
-        through the push-event branch, which is the one that reads
-        github.event.before / github.sha into BASE/HEAD.
-        """
-        substitutions = {
-            "${{ github.event_name }}": "push",
-            "${{ github.event.pull_request.base.sha }}": "unused-in-push-branch",
-            "${{ github.event.pull_request.head.sha }}": "unused-in-push-branch",
-            "${{ github.event.before }}": base_sha,
-            "${{ github.sha }}": head_sha,
-        }
-        for placeholder, value in substitutions.items():
-            script = script.replace(placeholder, value)
-        return script
-
-    @staticmethod
-    def _init_repo(tmp_path: Path, second_commit_files: dict[str, str]) -> tuple[Path, str, str]:
-        """Build a throwaway two-commit git repo; return (repo, base_sha, head_sha)."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-        (repo / "README.md").write_text("initial\n")
-        subprocess.run(["git", "add", "."], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
-        base_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
-        ).stdout.strip()
-
-        for rel_path, content in second_commit_files.items():
-            path = repo / rel_path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
-        subprocess.run(["git", "add", "."], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "second"], cwd=repo, check=True)
-        head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
-        ).stdout.strip()
-
-        return repo, base_sha, head_sha
-
-    @classmethod
-    def _run_detect(cls, repo: Path, base_sha: str, head_sha: str) -> dict[str, str]:
-        """Run the substituted detect script under bash; parse GITHUB_OUTPUT."""
-        script = cls._substitute_expressions(cls._extract_run_block(), base_sha, head_sha)
-        github_output = repo / "github_output.txt"
-        github_output.write_text("")
-        env = {**os.environ, "GITHUB_OUTPUT": str(github_output)}
-        result = subprocess.run(
-            ["bash", "-c", script], cwd=repo, env=env, capture_output=True, text=True
-        )
-        assert result.returncode == 0, (
-            f"detect step exited nonzero: {result.stdout}\n{result.stderr}"
-        )
-        outputs: dict[str, str] = {}
-        for line in github_output.read_text().splitlines():
-            if "=" in line:
-                key, _, value = line.partition("=")
-                outputs[key] = value
-        return outputs
-
     def test_resolvable_base_with_shell_file_changed_sets_shell_changed_true(
         self, tmp_path: Path
     ):
-        repo, base_sha, head_sha = self._init_repo(
+        repo, base_sha, head_sha = init_ci_detect_step_test_repo(
             tmp_path, {"scripts/example.sh": "#!/bin/bash\necho hi\n"}
         )
-        outputs = self._run_detect(repo, base_sha, head_sha)
+        outputs = run_ci_detect_step(repo, base_sha, head_sha)
         assert outputs.get("shell_changed") == "true", (
             "Expected shell_changed=true for a resolvable BASE with a .sh "
             f"file changed; got outputs: {outputs}"
@@ -344,9 +253,11 @@ class TestDetectStepFailOpenSetsShellChanged:
         reports green. If this assertion fails, that is exactly the
         regression that has crept back in.
         """
-        repo, _base_sha, head_sha = self._init_repo(tmp_path, {"README.md": "second\n"})
+        repo, _base_sha, head_sha = init_ci_detect_step_test_repo(
+            tmp_path, {"README.md": "second\n"}
+        )
         zero_sha = "0" * 40
-        outputs = self._run_detect(repo, zero_sha, head_sha)
+        outputs = run_ci_detect_step(repo, zero_sha, head_sha)
         assert outputs.get("shell_changed") == "true", (
             "shell_changed must be 'true' when BASE is the zero SHA (the "
             f"fail-open path) — got {outputs.get('shell_changed')!r}. The "
@@ -358,10 +269,10 @@ class TestDetectStepFailOpenSetsShellChanged:
     def test_resolvable_base_with_only_non_shell_file_changed_sets_shell_changed_false(
         self, tmp_path: Path
     ):
-        repo, base_sha, head_sha = self._init_repo(
+        repo, base_sha, head_sha = init_ci_detect_step_test_repo(
             tmp_path, {"docs/notes.md": "some notes\n"}
         )
-        outputs = self._run_detect(repo, base_sha, head_sha)
+        outputs = run_ci_detect_step(repo, base_sha, head_sha)
         assert outputs.get("shell_changed") == "false", (
             "Expected shell_changed=false for a resolvable BASE touching only "
             f"a non-shell, non-test file; got outputs: {outputs}"

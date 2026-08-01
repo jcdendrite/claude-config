@@ -61,7 +61,11 @@ def rule_frontmatter_violations(rule_file: Path) -> list[str]:
         return [f"{rule_file} has invalid or unterminated YAML frontmatter: {exc}"]
 
     if "paths" not in frontmatter:
-        return [f"{rule_file} frontmatter is missing a `paths` key"]
+        return [
+            f"{rule_file} frontmatter is missing a `paths` key — path-scope "
+            "it as a real rule, or move edit-time reference material to "
+            "`docs/` instead"
+        ]
 
     paths = frontmatter["paths"]
     if not (isinstance(paths, list) and paths):
@@ -135,6 +139,7 @@ class TestRuleFrontmatterViolations:
         f = self._write_rule(tmp_path, "---\nother_key: x\n---\n\nbody\n")
         violations = rule_frontmatter_violations(f)
         assert violations and "missing a `paths` key" in violations[0]
+        assert "move edit-time reference material to `docs/`" in violations[0]
 
     def test_empty_paths_list_fails(self, tmp_path):
         f = self._write_rule(tmp_path, "---\npaths: []\n---\n\nbody\n")
