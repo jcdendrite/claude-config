@@ -34,6 +34,84 @@ _lib_capped() {
   fi
 }
 
+# Portable equivalent of GNU `realpath -m TARGET`: lexically normalizes a
+# path without requiring TARGET or any ancestor to exist. Every caller uses
+# -m specifically because TARGET can be a file about to be created (a Write
+# on a new path), so a resolver that requires existence isn't a substitute.
+#
+# GNU coreutils' realpath supports -m natively (Linux, and macOS with
+# Homebrew coreutils installed as grealpath). BSD/macOS's own realpath has
+# never accepted -m -- confirmed against macOS 26 -- and exits non-zero
+# with "illegal option" rather than degrading, unlike readlink -f, which
+# Apple's own readlink has supported natively since macOS 12.3.
+#
+# Fallback: walk up from TARGET to the nearest existing ancestor (including
+# "/" and "."), resolve that ancestor with plain realpath (supported
+# everywhere), and reattach the nonexistent suffix components. This matches
+# every caller's actual use case -- only the leaf path segment is new; its
+# parent directory already exists -- without needing an external dependency.
+#
+# The reattached suffix is not lexically normalized the way GNU's -m
+# normalizes a full path, so a `..` component inside it is refused outright
+# (fail closed, empty output) rather than passed through unresolved: every
+# caller of this function uses the result in a same-prefix security
+# boundary check (require-plan-review.sh's repo/agent-reviews scoping,
+# require-memory-skill.sh's memory-tree classification), and an unresolved
+# `..` inside a not-yet-existing suffix can make a path that is genuinely
+# outside the intended boundary textually satisfy a prefix match against
+# it -- the opposite of failing closed. Rejecting is simpler and safer than
+# hand-rolling a `..`-climbing normalizer that must also correctly handle
+# climbing back out through the already-resolved ancestor portion.
+#
+# Internal subprocess calls are wrapped in _lib_capped for the same 5s
+# timeout backstop every other filesystem-facing helper in this file gets.
+# `timeout` needs the external `realpath`/`grealpath` binary to exec, which
+# is why this wrapping lives inside the individual calls below rather than
+# around the whole _lib_realpath_m call -- `timeout` cannot wrap a shell
+# function directly.
+_lib_realpath_m() {
+  local target="$1"
+  local resolved
+  if resolved=$(_lib_capped realpath -m -- "$target" 2>/dev/null) && [ -n "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+  if command -v grealpath >/dev/null 2>&1 \
+    && resolved=$(_lib_capped grealpath -m -- "$target" 2>/dev/null) && [ -n "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+  local suffix="" current="$target" suffix_component
+  while true; do
+    if [ -e "$current" ]; then
+      resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
+      if [ -z "$suffix" ]; then
+        printf '%s\n' "$resolved"
+      elif [ "$resolved" = "/" ]; then
+        printf '/%s\n' "$suffix"
+      else
+        printf '%s/%s\n' "$resolved" "$suffix"
+      fi
+      return 0
+    fi
+    if [ "$current" = "/" ] || [ "$current" = "." ]; then
+      return 1
+    fi
+    suffix_component=$(basename -- "$current")
+    case "$suffix_component" in
+      ..)
+        return 1
+        ;;
+    esac
+    if [ -z "$suffix" ]; then
+      suffix="$suffix_component"
+    else
+      suffix="$suffix_component/$suffix"
+    fi
+    current=$(dirname -- "$current")
+  done
+}
+
 # Canonical jq-encode-or-hard-block body for a gate hook's deny path.
 # Deliberately NOT named `emit_deny`: sourcing this file must not silently
 # satisfy the "CALLER MUST define emit_deny" contract below on its own, or a

@@ -60,19 +60,49 @@ collect_process_cwds() {
     # No procfs (e.g. macOS): `lsof -d cwd` reports each process's cwd.
     # -F pn emits a `p<pid>` line, an `fcwd` line, then an `n<path>` line per
     # process; the case below picks p and n lines and ignores any other.
+    #
+    # lsof itself is a running process at the moment it scans, and it
+    # inherits this shell's cwd at fork time -- so it reports its own entry
+    # with the caller's cwd, under lsof's own PID, which is never equal to
+    # $$. Excluding only $$ therefore leaves this shell's own cwd wrongly
+    # marked "in use" by lsof's self-report. Run lsof in the background via
+    # a temp file (rather than process substitution) specifically so `$!`
+    # captures its PID for exclusion alongside $$ -- process substitution
+    # doesn't reliably expose the substituted command's PID.
+    # GNU mktemp requires the template to end in XXXXXX; a bare prefix
+    # (no X's) is a BSD-only tolerance and errors "too few X's in template"
+    # under GNU coreutils -- the exact CI platform (ubuntu-24.04) this fix
+    # must also work on.
+    local lsof_tmp lsof_pid
+    lsof_tmp=$(mktemp -t worktree-lib-lsof.XXXXXX) || return 0
+    trap 'rm -f "$lsof_tmp"' EXIT
+    lsof -d cwd -F pn >"$lsof_tmp" 2>/dev/null &
+    lsof_pid=$!
+    # `|| true`: under `set -e`, `wait` reports the backgrounded job's own
+    # exit status, and a shimmed/failing lsof (as in the both-probes-
+    # unavailable test) would otherwise abort this function's caller
+    # mid-scan rather than falling through to the empty-file read below.
+    wait "$lsof_pid" 2>/dev/null || true
     pid=""
     while IFS= read -r line; do
       case "$line" in
         p*) pid="${line#p}" ;;
         n*)
           [ "$pid" = "$$" ] && continue
+          [ "$pid" = "$lsof_pid" ] && continue
           cwd="${line#n}"
           if [ -n "$cwd" ]; then
             PROCESS_CWDS+=("$cwd")
           fi
           ;;
       esac
-    done < <(lsof -d cwd -F pn 2>/dev/null)
+    done < "$lsof_tmp"
+    rm -f "$lsof_tmp"
+    # Reset explicitly on the normal-completion path so this function's
+    # temp-file trap doesn't linger process-wide and collide with a trap
+    # the caller sets afterward -- this repo's convention is a single
+    # composed EXIT trap per script, not one per library function.
+    trap - EXIT
   fi
   # A scan that finds zero process working directories has not worked — at
   # minimum the invoking shell should appear. Leave PROCESS_CWD_SCAN as

@@ -187,6 +187,33 @@ echo "exit:$RC"
             "the invoking shell's own cwd must not read as 'in use by a live process'"
         )
 
+    def test_scans_ok_and_does_not_self_report_via_lsof_branch(
+        self, tmp_path, readlink_always_fails_path
+    ):
+        """Same self-exclusion requirement, forced through the lsof branch
+        specifically (via the readlink shim, mirroring
+        TestCollectProcessCwdsLsofFallback below). lsof is itself a running
+        process at scan time and inherits the caller's cwd at fork —
+        excluding only the scanning shell's own $$ is not sufficient; lsof's
+        own PID must be excluded too, or the scanning shell's own cwd is
+        wrongly read back as 'in use' by lsof's self-report."""
+        target = tmp_path / "self-dir-lsof"
+        target.mkdir()
+        env = {**os.environ, "PATH": f"{readlink_always_fails_path}:{os.environ['PATH']}"}
+        result = _run_bash(f'''
+cd "{target}"
+collect_process_cwds
+echo "scan:$PROCESS_CWD_SCAN"
+RC=0
+worktree_in_use "{target}" || RC=$?
+echo "exit:$RC"
+''', env=env)
+        assert result.returncode == 0, result.stderr
+        assert "scan:ok" in result.stdout
+        assert "exit:1" in result.stdout, (
+            "the invoking shell's own cwd must not read as 'in use' by lsof's own self-report"
+        )
+
 
 class TestCollectProcessCwdsLsofFallback:
     """When /proc is unavailable (forced here via a failing readlink shim),

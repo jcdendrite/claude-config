@@ -173,12 +173,19 @@ while IFS= read -r CHANGED_FILE; do
   ROOT=$(find_plugin_root "$CHANGED_FILE") || continue
   [ -z "$ROOT" ] && continue
   ALREADY_SEEN=0
-  for EXISTING_ROOT in "${PLUGIN_ROOTS[@]}"; do
-    if [ "$EXISTING_ROOT" = "$ROOT" ]; then
-      ALREADY_SEEN=1
-      break
-    fi
-  done
+  # Guard before iterating: on bash <4.4 (including stock macOS bash 3.2),
+  # `for x in "${arr[@]}"` on an EMPTY array triggers "unbound variable"
+  # under `set -u` — this hits on the common case of PLUGIN_ROOTS still
+  # being empty at the first changed file. Same guard as npm-semver's
+  # sibling hook uses for the identical shape.
+  if [ "${#PLUGIN_ROOTS[@]}" -gt 0 ]; then
+    for EXISTING_ROOT in "${PLUGIN_ROOTS[@]}"; do
+      if [ "$EXISTING_ROOT" = "$ROOT" ]; then
+        ALREADY_SEEN=1
+        break
+      fi
+    done
+  fi
   [ "$ALREADY_SEEN" -eq 0 ] && PLUGIN_ROOTS+=("$ROOT")
 done <<< "$CHANGED_FILES"
 
