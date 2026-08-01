@@ -95,11 +95,12 @@
 
 ### When to write it and what to include
 
-Code comments and durable in-repo documentation (REFERENCES.md, doc files, README sections) must be readable by a future contributor who has not read the PR description, commit message, or planning document. In particular:
+Code comments and durable in-repo documentation (REFERENCES.md, doc files, README sections) must be readable by a future contributor who has not read the PR description, commit message, or planning document. This section governs comments and durable docs only — PR body and commit-message conciseness is `pr-description`'s concern, not this section's. In particular:
 
 - **No PR-defined terminology** (e.g., "Defense A", "Action 6", "Pattern C"). If a label is meaningful it must be defined in code or named explicitly — not in a comment or doc that depends on context outside the file.
 - **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message or PR body.
 - **Self-test:** if you can't write the content such that it survives the PR being merged and the description being lost, don't write it. Move the rationale to the commit message instead.
+- **One line, not a paragraph.** State the non-obvious constraint in a single sentence. A multi-paragraph rationale block is a signal the comment is doing the PR description's job instead of the code's — trim the narration, not the fact: a compressed comment that drops the actual constraint is worse than a verbose one that keeps it.
 
 ## Output Preferences
 

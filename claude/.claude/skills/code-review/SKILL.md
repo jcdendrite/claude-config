@@ -46,11 +46,12 @@ Question implementation choices, not feature scope. Feature scope is fixed by th
 
 ## Step 1.5 — Judgment-activation pass
 
-Evaluate the diff against CLAUDE.md §Engineering Judgment and §Working Style — being loaded is not the same as being applied. The tripwires below fire on **diff surface**, not on internal reasoning, so they catch judgment-class defects even when the author's reasoning reads as coherent:
+Evaluate the diff against CLAUDE.md §Engineering Judgment, §Working Style, and §Code Comments, Documentation, and Prose — being loaded is not the same as being applied. The tripwires below fire on **diff surface**, not on internal reasoning, so they catch judgment-class defects even when the author's reasoning reads as coherent:
 
 - **Unverified external-state claim** — the diff or its commit message asserts state the author cannot observe (which env vars or secrets exist, CI/config contents, whether a migration was already applied, git blame or authorship, that a referenced file exists on `main`) without tool output or an explicit "unverified" flag. Default to flag — the model cannot observe external state by reading source files.
 - **Out-of-scope file edits** — files changed that the stated task did not require, especially copy, comment, or cosmetic edits on unrelated files. Distinct from item 14 (don't *fix* unchanged code): this is having *edited* what was out of scope.
 - **Preserved-record edits** — edits to already-applied migrations, changelog or incident records, or anchor fixtures.
+- **Non-durable comment** — a new or modified comment that narrates PR/incident history, references "this diff," or re-litigates a rejected alternative at length, rather than stating a durable fact about the code.
 
 ## Base checklist
 
