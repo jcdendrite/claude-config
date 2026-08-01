@@ -1,21 +1,19 @@
-> ## ⚠️ STATUS: IN PROGRESS — NOT REVIEWED, NOT APPROVED, PIVOT PENDING
+> ## STATUS: resumed after a machine switch — Mechanism 1 resolved, ready for plan-review
 >
-> This plan was captured mid-session for off-machine backup before the engineer
-> shut down their machine. It is **not** a finished, reviewed plan — do not
-> implement from it as-is. Full continuity detail, including the exact open
-> question and every decision that led here, is at
-> `~/.claude/handoffs/gha-comment-durability-root-cause-pivot-handoff.md`
-> (private, not in this repo). **Read that file first on resume.**
+> This plan was originally captured mid-session for off-machine backup. On
+> resume, the private continuity file it pointed to
+> (`~/.claude/handoffs/gha-comment-durability-root-cause-pivot-handoff.md`)
+> was not present on the resuming machine, so this revision proceeds from
+> this plan document and the PR body alone.
 >
-> In short: this plan went through two confirmed pivots and has a third,
-> **unconfirmed**, proposal awaited from the engineer. Mechanism 1 below (the
-> in-rule-file "durable comment" bullet) has been **deleted** per the
-> engineer's explicit instruction — restating a general CLAUDE.md rule inside
-> a domain-specific rule file is itself the anti-pattern this plan was trying
-> to prevent. What replaces it is an open question — see "Mechanism 1
-> (pending)" below. Mechanisms 2–4 (citation grounding, rule corrections, CI
-> deny-list) are unaffected by this open question and were fully
-> plan-reviewed and grounded this session.
+> **Mechanism 1 is resolved, not pending.** The proposed replacement — cite
+> `§Code Comments, Documentation, and Prose` and add a fourth tripwire bullet
+> to `claude/.claude/skills/code-review/SKILL.md` Step 1.5 — already landed
+> on `main` via a separate, already-merged PR, word-for-word matching the
+> wording proposed below. Mechanism 1 is dropped from this PR's scope
+> entirely: implementing it again would duplicate/conflict with `main`.
+> Mechanisms 2–4 (citation grounding, rule corrections, CI deny-list) are
+> unaffected and proceed as originally grounded.
 
 # Ground the GitHub Actions rule's citations and give the review pipeline the missing durable-comment check
 
@@ -33,15 +31,13 @@ A separate, independently-motivated finding: `github-actions-workflows.md`'s sec
 
 ## Approach
 
-### Mechanism 1 (PENDING — engineer has not yet confirmed)
+### Mechanism 1 — RESOLVED, out of scope for this PR
 
 **What was rejected:** a bullet inside `github-actions-workflows.md` restating the durable-comment standard for a GHA-specific audience. The engineer's explicit correction: the GHA rule file must not repeat general instructions — that's the anti-pattern, independent of how well-scoped the restatement is. Deleted, not narrowed.
 
-**What was proposed as the replacement, awaiting confirmation:** fix the actual point of failure — `claude/.claude/skills/code-review/SKILL.md` Step 1.5 (`:49`). Two changes:
-1. Add `§Code Comments, Documentation, and Prose` to the citation alongside the two sections already named.
-2. Add a fourth tripwire bullet, matching the shape of the existing three (`unverified-external-state-claim`, `out-of-scope-file-edits`, `preserved-record-edits`): a new or modified comment that narrates PR/incident history, references "this diff," or re-litigates a rejected alternative at length, rather than stating a durable fact about the code.
+**What was proposed as the replacement:** fix the actual point of failure — `claude/.claude/skills/code-review/SKILL.md` Step 1.5. Two changes: add `§Code Comments, Documentation, and Prose` to the citation alongside the two sections already named, and add a fourth tripwire bullet matching the shape of the existing three.
 
-This is higher blast radius than the deleted bullet — it changes every future `/code-review` invocation, not just GHA-domain reviews — and editing `claude/.claude/skills/*.md` requires `/skill-review` before commit (hook-enforced per `.claude/rules/review-pipeline-dispatch.md`). **Do not implement this without the engineer's explicit confirmation on resume.** If confirmed, draft the exact wording, then run `/skill-review` and a fresh full `/plan-review` (this is a materially different, higher-stakes mechanism than what was reviewed earlier this session) before touching the file. If rejected, ask what replaces it, or confirm the plan proceeds with only Mechanisms 2–4 below and no comment-durability fix in this PR at all.
+**Resolution:** a separate, already-merged PR landed this exact change — `claude/.claude/skills/code-review/SKILL.md` Step 1.5 now cites all three sections and carries a "Non-durable comment" tripwire matching the proposed wording verbatim. Nothing left to do here; this PR does not touch `code-review/SKILL.md`.
 
 ### 2. `docs/rules-references.md` — a new flat file, not a REFERENCES.md
 
@@ -55,7 +51,7 @@ This is higher blast radius than the deleted bullet — it changes every future 
 
 Content otherwise follows the established `REFERENCES.md` shape (n=17 surveyed: no frontmatter, H1, then a one-paragraph "not loaded at runtime — read when editing" opener — four files carry this sentence byte-identical; bare URLs are the dominant form).
 
-**Diagnostic fix at the boundary.** `test_rules_frontmatter.py:64`'s violation message currently reads only `"... frontmatter is missing a \`paths\` key"` — a contributor who drops reference material in a rules directory reads that as "add `paths:`," the exact wrong fix (it would make the file load everywhere). Extend the message to name the resolution: path-scope it as a real rule, or move edit-time reference material to `docs/`.
+**Diagnostic fix at the boundary.** `test_rules_frontmatter.py:64`'s violation message currently reads only `"... frontmatter is missing a \`paths\` key"` — a contributor who drops reference material in a rules directory reads that as "add `paths:`," the exact wrong fix (it would make the file load everywhere). Extend the message to name the resolution: path-scope it as a real rule, or move edit-time reference material to `docs/`. Extend `test_missing_paths_key_fails` (the existing test covering this violation) to assert the new resolution-guidance substring is present in `violations[0]`, not just the pre-existing "missing a `paths` key" prefix — otherwise the new guidance text has no test pinning it and can regress silently.
 
 ### 3. Rule-file corrections — each re-grounded, not carried from an earlier draft
 
@@ -82,13 +78,15 @@ Citation research (2026-07-30, `docs.github.com` + `github.com`) found drift in 
 
 *Why non-optional, not deferred.* GitHub's source sentence covers `pull_request_target` and `workflow_run` identically as privileged triggers. The existing bullet's own closing advice — "use `pull_request` for untrusted contributions instead" — creates the exact gap it leaves unnamed: a reader who needs write access for a fork PR follows that advice, hits `pull_request`'s read-only fork token, and reaches for the one privileged trigger the rule never mentions.
 
+*Citation check required at implementation time (flagged by plan-review):* confirm GitHub's source sentence genuinely names `pull_request_target` and `workflow_run` together, rather than this correction inferring `workflow_run` coverage from `pull_request_target`-specific wording — this file already had two truncated/drifted quotes found this cycle, so re-verify the joint claim specifically against the live page, not just re-transcribe it from this plan.
+
 **OIDC bullet, subject-claim clause appended** (dropping the reviewer-proposed "never a wildcard" — GitHub's own AWS how-to ships `repo:octo-org/octo-repo:*` as a supported example, so that claim would misattribute vendor guidance):
 
 > The trust decision moves to the cloud side: GitHub says you "must define at least one condition, so that untrusted repositories can't request access tokens" — but a repo-only condition still grants every branch, tag, and PR in that repo. Pin the narrowest subject the job needs, typically `repo:ORG/REPO:environment:NAME` or `repo:ORG/REPO:ref:refs/heads/BRANCH`.
 
-**Injection bullet, replacement** (dropping `with:`/`if:`/`actions/github-script` as named sinks — GitHub presents `with:` on a JavaScript action as its *recommended safe pattern*; and GitHub no longer publishes an enumerated field list, only a suffix heuristic):
+**Injection bullet, replacement** (field-agnostic on the sink, not scoped to `run:` — GitHub's own script-injection guidance defines the risk by whether a value is "interpreted as executable code," not by which YAML key carries it; `with:` is GitHub's recommended safe pattern only because the receiving action normally treats the value as an inert argument, e.g. `uses: fakeaction/checktitle@v3` / `with: {title: ${{ github.event.pull_request.title }}}` — but `actions/github-script`'s `script:` input is passed via `with:` and is itself executed as code, so it remains a sink; GitHub no longer publishes an enumerated field list, only a suffix heuristic):
 
-> **Never interpolate untrusted `${{ github.event.* }}` values into a `run:` script or your own composite/custom action.** GitHub treats the whole `github` context as potentially attacker-controlled — fields "typically end with `body`, `default_branch`, `email`, `head_ref`, `label`, `message`, `name`, `page_name`, `ref`, and `title`," plus branch names and email addresses. GitHub's preferred fix, in order: pass the value as an argument to a JavaScript action rather than inlining it; for inline scripts, "set the value of the expression to an intermediate environment variable" and reference `"$VAR"` quoted, not the raw `${{ }}` expression.
+> **Never interpolate untrusted `${{ github.event.* }}` values anywhere they will be interpreted as executable code — a `run:` script, your own composite/custom action, or a `with:` field the receiving action itself executes rather than treats as an inert argument (e.g. `actions/github-script`'s `script:` input).** GitHub treats the whole `github` context as potentially attacker-controlled — fields "typically end with `body`, `default_branch`, `email`, `head_ref`, `label`, `message`, `name`, `page_name`, `ref`, and `title`," plus branch names and email addresses. `${{ }}` expansion happens before the action runs regardless of the YAML key, so the test isn't "is this field named `with:`" — it's "does the receiving action execute this input, or only pass it through as data." Before trusting any `with:` field with an untrusted value, check the receiving action's own docs or source for whether it executes that field; `actions/github-script`'s `script:` is one instance of this class, not the only one. GitHub's preferred fix, in order: pass the value as an argument to a JavaScript action rather than inlining it; for inline scripts, "set the value of the expression to an intermediate environment variable" and reference `"$VAR"` quoted, not the raw `${{ }}` expression.
 
 **Header, full replacement:**
 
@@ -110,9 +108,18 @@ SKIP_REGEX='^(LICENSE$|CHANGELOG\.md$|CODE_OF_CONDUCT\.md$|SECURITY\.md$|CONTRIB
 
 `changed=true` unless every changed path matches `SKIP_REGEX`. `shell_changed`/`SHELL_REGEX` is untouched — it already has a sound design (`TestCiGateCoversDiscovery` derives its ground truth from the production discovery script `scripts/list-shell-files.sh`) and no gap was found there.
 
-**Guard test, `claude/.claude/hooks/tests/test_ci_path_filter.py`** (new file, mirrors `test_shellcheck.py`'s `TestCiGateCoversDiscovery` shape — extract the pattern from `tests.yml` via `re.search`, shell out to real `grep -E`):
-- Assert each of the five deny-list paths matches `SKIP_REGEX`.
-- Assert a representative set of the 13 previously-missing paths does **not** match — `install.sh`, `evals/run_skill_evals.py`, `claude/.claude/CLAUDE.md`, `.claude/rules/skill-and-agent-self-review.md`, `claude/.claude/rules/github-actions-workflows.md`, `docs/rules-references.md`, `.claude-plugin/marketplace.json`, `claude/.claude/statusline-command.sh`, `.shellcheckrc`, `scripts/list-shell-files.sh`.
+**Guard test, `claude/.claude/hooks/tests/test_ci_path_filter.py`** (new file). Plan-review (three specialists, converging independently) found that pattern-only string checks against `SKIP_REGEX` cannot see the actual `changed=true/false` boolean this mechanism exists to get right — a future implementation slip (inverted quantifier) or an accidentally-broadened `SKIP_REGEX` would pass every pattern-level assertion while silently reintroducing fail-open skipping. Two test classes, mirroring both of `test_shellcheck.py`'s existing patterns for the same reason that file uses both:
+
+1. **Pattern-bound class, mirrors `TestCiGateCoversDiscovery`** (extract `SKIP_REGEX` from `tests.yml` via `re.search`, shell out to real `grep -E`):
+   - Assert each of the five deny-list paths matches `SKIP_REGEX`.
+   - Assert a representative set of the 13 previously-missing paths does **not** match — `install.sh`, `evals/run_skill_evals.py`, `claude/.claude/CLAUDE.md`, `.claude/rules/skill-and-agent-self-review.md`, `claude/.claude/rules/github-actions-workflows.md`, `docs/rules-references.md`, `.claude-plugin/marketplace.json`, `claude/.claude/statusline-command.sh`, `.shellcheckrc`, `scripts/list-shell-files.sh`.
+   - **Bound the deny-list itself:** assert the full set of tracked files (`git ls-files`) matching `SKIP_REGEX` equals exactly the intended 5-file list — not a spot check, so a future edit that widens the pattern (e.g. `CHANGELOG\.md$` → `.*\.md$`) fails immediately rather than passing every sampled check.
+
+2. **Execution-level class, mirrors `TestDetectStepFailOpenSetsShellChanged`** (extract the `detect` step's real `run:` block via `yaml.safe_load` by step `id`, substitute `${{ }}` expressions, run under bash against a throwaway two-commit git repo, parse `GITHUB_OUTPUT` — same `_extract_run_block`/`_substitute_expressions`/`_init_repo`/`_run_detect` shape, adapted to the `detect` step's own output var): assert `changed`
+   - is `false` for a diff touching only deny-listed files,
+   - is `true` for a diff mixing one deny-listed and one non-deny-listed file (the actual quantifier under test — "unless *every* changed path matches"),
+   - is `true` for a diff touching only a non-deny-listed file,
+   - is `false` for an empty diff, deliberately (not merely unspecified/absent).
 
 No chicken-and-egg risk: the new test file matches under the *old* `REGEX` and trivially runs under the new `SKIP_REGEX`.
 
@@ -125,12 +132,16 @@ recurring defect class; the GHA rule file's own claims also carried no URLs.
 Row 1 [mechanism, SUPERSEDED]: a GHA-specific durable-comment bullet — REJECTED
   by the engineer as itself an anti-pattern (restating a general instruction in
   a domain rule file). Replacement mechanism proposed (fix code-review/SKILL.md
-  Step 1.5's missing citation + missing tripwire) but NOT yet confirmed — see
-  "Mechanism 1 (pending)" above. Root cause established via error-mode-analysis:
-  the violating diff went through /code-review with 3 specialists who read the
-  file closely and found nothing, because Step 1.5 never cited the relevant
-  CLAUDE.md section and had no matching tripwire [verified: read the original
-  commit's own code-review agent-review artifacts in full, this session].
+  Step 1.5's missing citation + missing tripwire) — RESOLVED: a separate,
+  already-merged PR landed this exact change on `main` [verified: read
+  claude/.claude/skills/code-review/SKILL.md Step 1.5 on main this session —
+  citation and "Non-durable comment" tripwire present, matching proposed
+  wording]. Out of scope for this PR. Root cause established via
+  error-mode-analysis: the violating diff went through /code-review with 3
+  specialists who read the file closely and found nothing, because Step 1.5
+  never cited the relevant CLAUDE.md section and had no matching tripwire
+  [verified: read the original commit's own code-review agent-review
+  artifacts in full, in the prior session].
 Row 2 [mechanism]: docs/rules-references.md — anchors: root — holds URLs,
   verbatim quotes, and fetch dates outside any loaded surface.
 Row 3 [mechanism]: rule-file corrections (citation drift + three security
@@ -170,13 +181,12 @@ Row 11 [assumption]: Notion IAC-standards page is a separate brief for a
 
 **Modify**
 - `claude/.claude/rules/github-actions-workflows.md` — header replacement; apply corrections 2, 3, 5, 6, 7. **No new prose bullet** — Mechanism 1's original bullet is deleted, not added here. Keep `paths:` frontmatter untouched.
-- `claude/.claude/skills/tests/test_rules_frontmatter.py:64` — extend the violation message to name both resolutions.
+- `claude/.claude/skills/tests/test_rules_frontmatter.py:64` — extend the violation message to name both resolutions; extend `test_missing_paths_key_fails` to assert the new substring.
 - `.github/workflows/tests.yml:64-71` — replace `REGEX`/allow-list logic with `SKIP_REGEX`/deny-list.
-- **PENDING:** `claude/.claude/skills/code-review/SKILL.md:49` — only if Mechanism 1's replacement is confirmed. Requires `/skill-review`.
 
 **Create**
 - `docs/rules-references.md` — one entry per claim (URL, blockquoted verbatim source text, fetch date, drift note where applicable). No count claims.
-- `claude/.claude/hooks/tests/test_ci_path_filter.py` — guard test for `SKIP_REGEX`.
+- `claude/.claude/hooks/tests/test_ci_path_filter.py` — two test classes: a pattern-bound class (deny-list positives/negatives + the full-`git ls-files`-match bound) and an execution-level class exercising the `detect` step's real `run:` body (deny-list-only / mixed / non-deny-list-only / empty diffs) — see Mechanism 4 above.
 
 **Do not touch:** the other three rules files; anything in the downstream repo; `.claude/rules/` project-scoped rules; `SHELL_REGEX`/`shell_changed`.
 
@@ -187,14 +197,14 @@ Row 11 [assumption]: Notion IAC-standards page is a separate brief for a
 3. `.venv/bin/pytest claude/.claude/hooks/tests/test_ci_path_filter.py -v` before pushing.
 4. Live load check: open any `.github/workflows/*.yml` in a fresh session and confirm the rule still fires after editing.
 5. Every citation in `docs/rules-references.md` re-verified against the live doc at implementation time, not transcribed from this plan.
-6. If Mechanism 1's replacement is confirmed: `/skill-review` on the `code-review/SKILL.md` edit, then a fresh full `/plan-review`, before `/code-review` on the implementation.
-7. `/code-review` before handoff regardless.
+6. `/code-review` before handoff.
 
 ## Out of scope
 
+- **Mechanism 1 (`code-review/SKILL.md` citation + tripwire)** — already landed on `main` via a separate, already-merged PR with wording matching what was proposed here. Not touched by this PR.
 - **Notion IAC-standards page** — separate brief, different repo.
 - **The downstream repo's PRs** — the violation is already fixed there.
 - **`REFERENCES.md` for the other three rules files** — brief forbids the sweep.
 - **The `actions/checkout` protection GitHub has since added for `pull_request_target`** — recorded as a drift note in the reference file only.
-- **`if:` and `actions/github-script` as named injection sinks** — GitHub's own docs don't name them.
+- **`if:` as a named injection sink** — GitHub's own docs don't name it; `actions/github-script`'s `script:` field is named in the corrected bullet as an execution-semantics exception to the `with:` framing, not dropped.
 - **Diagnosing why the downstream session's authoring reasoning went wrong** — not observable; the review-pipeline gap is diagnosable and is what this plan addresses instead.
