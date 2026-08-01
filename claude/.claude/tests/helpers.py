@@ -12,11 +12,16 @@ import re
 import subprocess
 from pathlib import Path
 
+import yaml
+
 CLAUDE_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = CLAUDE_DIR.parent.parent
 
 HOOKS_DIR = CLAUDE_DIR / "hooks"
 SKILLS_DIR = CLAUDE_DIR / "skills"
 SCRIPTS_DIR = CLAUDE_DIR / "scripts"
+
+_CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
 # SKILL.md fences may be indented when the fixture sits inside a
 # numbered list (e.g. respond-pr's "0. **Enable hook bypass.**"). The
@@ -526,3 +531,90 @@ def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
         env=_build_subprocess_env(isolated_home, None),
         check=True,
     )
+
+
+def extract_ci_detect_step_run_block() -> str:
+    """Pull the `run:` script for tests.yml's step with `id: detect` via
+    pyyaml, locating the step by id rather than regexing the YAML."""
+    workflow = yaml.safe_load(_CI_DETECT_STEP_WORKFLOW.read_text())
+    steps = workflow["jobs"]["tests"]["steps"]
+    detect_steps = [step for step in steps if step.get("id") == "detect"]
+    assert len(detect_steps) == 1, (
+        "Expected exactly one step with id: detect in tests.yml — did "
+        "the step move or get renamed?"
+    )
+    return detect_steps[0]["run"]
+
+
+def substitute_ci_detect_step_expressions(script: str, base_sha: str, head_sha: str) -> str:
+    """Replace GitHub Actions `${{ }}` expressions with literal values.
+
+    This textual substitution is the one unavoidable fidelity gap in this
+    test: the real Actions runner evaluates these expressions with its own
+    expression engine before handing bash the resulting script, and that
+    evaluator isn't available here, so plain string substitution stands in
+    for it. Forcing github.event_name to a non-"pull_request" value routes
+    through the push-event branch, which is the one that reads
+    github.event.before / github.sha into BASE/HEAD.
+    """
+    substitutions = {
+        "${{ github.event_name }}": "push",
+        "${{ github.event.pull_request.base.sha }}": "unused-in-push-branch",
+        "${{ github.event.pull_request.head.sha }}": "unused-in-push-branch",
+        "${{ github.event.before }}": base_sha,
+        "${{ github.sha }}": head_sha,
+    }
+    for placeholder, value in substitutions.items():
+        script = script.replace(placeholder, value)
+    return script
+
+
+def init_ci_detect_step_test_repo(
+    tmp_path: Path, second_commit_files: dict[str, str]
+) -> tuple[Path, str, str]:
+    """Build a throwaway two-commit git repo; return (repo, base_sha, head_sha)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "README.md").write_text("initial\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    for rel_path, content in second_commit_files.items():
+        path = repo / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "second"], cwd=repo, check=True)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    return repo, base_sha, head_sha
+
+
+def run_ci_detect_step(repo: Path, base_sha: str, head_sha: str) -> dict[str, str]:
+    """Run the substituted detect script under bash; parse GITHUB_OUTPUT."""
+    script = substitute_ci_detect_step_expressions(
+        extract_ci_detect_step_run_block(), base_sha, head_sha
+    )
+    github_output = repo / "github_output.txt"
+    github_output.write_text("")
+    env = {**os.environ, "GITHUB_OUTPUT": str(github_output)}
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=repo, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, (
+        f"detect step exited nonzero: {result.stdout}\n{result.stderr}"
+    )
+    outputs: dict[str, str] = {}
+    for line in github_output.read_text().splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            outputs[key] = value
+    return outputs

@@ -180,7 +180,7 @@ Row 11 [assumption]: Notion IAC-standards page is a separate brief for a
 ## Critical files
 
 **Modify**
-- `claude/.claude/rules/github-actions-workflows.md` — header replacement; apply corrections 2, 3, 5, 6, 7. **No new prose bullet** — Mechanism 1's original bullet is deleted, not added here. Keep `paths:` frontmatter untouched.
+- `claude/.claude/rules/github-actions-workflows.md` — header replacement; apply corrections 2, 3, 4, 5, 6, 7. **No new prose bullet** — Mechanism 1's original bullet is deleted, not added here. Keep `paths:` frontmatter untouched.
 - `claude/.claude/skills/tests/test_rules_frontmatter.py:64` — extend the violation message to name both resolutions; extend `test_missing_paths_key_fails` to assert the new substring.
 - `.github/workflows/tests.yml:64-71` — replace `REGEX`/allow-list logic with `SKIP_REGEX`/deny-list.
 

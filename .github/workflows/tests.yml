@@ -64,38 +64,35 @@ jobs:
 
           CHANGED=$(git diff --name-only "$BASE" "$HEAD")
 
-          # Include any directory that contains test files or whose contents are
-          # read by tests. Update this list when a new test or test-input
-          # directory appears under claude/.claude/ or plugins/skill-management/.
-          # Also includes claude/.claude/agents/ (read by test_agent_roster.py),
-          # claude/.claude/settings.json (read by test_doc_counts.py and
-          # test_skills.py), README.md and docs/ (read by test_doc_counts.py).
-          REGEX='^(claude/\.claude/(hooks|skills|scripts|tests|agents)/|claude/\.claude/settings\.json|plugins/skill-management/|README\.md$|docs/|\.github/workflows/tests\.yml|pyproject\.toml|install-dev\.sh|requirements-dev\.txt)'
+          # Deny-list of paths confirmed unread by any test module. Everything
+          # else defaults to running the suite, so a new test-input path never
+          # needs this list updated to be covered — only a path added here
+          # needs the "confirmed unread by any test" check re-run.
+          SKIP_REGEX='^(LICENSE$|CHANGELOG\.md$|CODE_OF_CONDUCT\.md$|SECURITY\.md$|CONTRIBUTING\.md$)'
 
-          MATCHED=$(echo "$CHANGED" | grep -E "$REGEX" || true)
-          UNMATCHED=$(echo "$CHANGED" | grep -vE "$REGEX" || true)
+          SKIPPED=$(echo "$CHANGED" | grep -E "$SKIP_REGEX" || true)
+          NOT_SKIPPED=$(echo "$CHANGED" | grep -vE "$SKIP_REGEX" || true)
 
-          if [ -n "$MATCHED" ]; then
-            echo "Matched (will run tests):"; echo "$MATCHED" | sed 's/^/  /'
+          if [ -n "$SKIPPED" ]; then
+            echo "Skipped (deny-listed):"; echo "$SKIPPED" | sed 's/^/  /'
           else
-            echo "Matched (will run tests): (none)"
+            echo "Skipped (deny-listed): (none)"
           fi
-          if [ -n "$UNMATCHED" ]; then
-            echo "Unmatched (skipped):"; echo "$UNMATCHED" | sed 's/^/  /'
+          if [ -n "$NOT_SKIPPED" ]; then
+            echo "Not skipped (will run tests):"; echo "$NOT_SKIPPED" | sed 's/^/  /'
           else
-            echo "Unmatched (skipped): (none)"
+            echo "Not skipped (will run tests): (none)"
           fi
 
-          if [ -n "$MATCHED" ]; then
+          if [ -n "$NOT_SKIPPED" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-          # Independent gate for the shellcheck step. Kept separate from REGEX
-          # above, which means "directories containing test files or read by
-          # tests" — a shell edit under plugins/ needs linting but not the full
-          # pytest suite. Must cover every path shape that
+          # Independent gate for the shellcheck step. Kept separate from
+          # SKIP_REGEX above — a shell edit under plugins/ needs linting but
+          # not the full pytest suite. Must cover every path shape that
           # scripts/list-shell-files.sh can return, plus .shellcheckrc (editing
           # it changes findings without touching any .sh file) and the
           # discovery script itself.
@@ -115,7 +112,8 @@ jobs:
         run: echo "No hook-relevant files changed; skipping pytest."
 
       # Gated on either output: shellcheck ships as a pip wheel, so a PR that
-      # only touches shell files outside REGEX still needs the toolchain.
+      # touches only SKIP_REGEX-skipped (pytest-irrelevant) paths but also a
+      # shell file still needs the toolchain.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: steps.detect.outputs.changed == 'true' || steps.detect.outputs.shell_changed == 'true'
         with:
