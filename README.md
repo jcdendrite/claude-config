@@ -90,9 +90,8 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 
 **PATH setup for script wrappers:** The user-facing scripts are installed as wrappers under `~/.local/bin/`. That directory needs to be on your PATH:
 
-- **Linux / WSL2 (Ubuntu-based):** `~/.profile` auto-adds `~/.local/bin` if the directory exists. Re-login, or pick it up immediately: `source ~/.profile`
-- **macOS (stock zsh):** not auto-added. Add once: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`
-- **fish (any platform):** `fish_add_path ~/.local/bin`
+- **bash / zsh (any platform):** `install.sh` adds `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` and `~/.zshrc` itself, idempotently, on every run. If either file is a symlink (e.g. into another dotfiles-management repo), `install.sh` won't write through it — it either finds a `.local`-suffixed companion file that rc file already sources and manages the PATH block there instead, or prints a warning telling you the exact line to add and where. Restart your shell (or `source ~/.zshrc` / `source ~/.bashrc`) after the first run.
+- **fish (any platform):** not automated. Add once: `fish_add_path ~/.local/bin`
 
 Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
