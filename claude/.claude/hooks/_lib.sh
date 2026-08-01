@@ -754,6 +754,76 @@ _lib_stray_marker_hint() {
   printf '%s' " Note: .claude/worktree-required is present but untracked — an accidental stray copy activates enforcement exactly like a committed one. Commit it if intentional, or remove it if it was created by accident."
 }
 
+# Single source of truth for the byte-size threshold above which content is
+# treated as too large to scan cheaply. 5 MB, promoted from
+# deny-data-file-reads.sh's original SIZE_THRESHOLD literal (a Read target
+# over this size) so redact-credential-values.sh's own size cap (a
+# PostToolUse tool_response over this size) shares one constant with it
+# instead of carrying a second copy of the same number.
+_LIB_SIZE_THRESHOLD_BYTES=5242880
+
+# Single source of truth for credential-shaped PATH tokens. Sourced by
+# deny-credential-bash-reads.sh (grep -E over raw Bash command text) and
+# deny-credential-file-reads.sh (grep -E over a Read tool_input.file_path).
+# POSIX ERE, basename-token match: each alternative matches a bare filename
+# or directory-qualified suffix wherever it appears in the scanned text, not
+# only when the full absolute path is present — this is what closes a
+# `cd ~/.ssh && cat id_rsa` bypass (the bare token still matches once the
+# directory qualifier is gone).
+#
+# The boundary classes on both sides deliberately exclude `.`. On the right,
+# this is what keeps `id_rsa` from matching inside `id_rsa.pub` (a public
+# key, not a secret) and `.env` from matching inside `.env.foo` (an
+# unenumerated suffix left to deny-env-reads.sh's own broader .env.* gate).
+# On the left, it keeps `.env` from matching inside an unrelated
+# `package.env`. `.aws/credentials`, `.docker/config.json`, `.kube/config`,
+# and `.config/gh/hosts.yml` are matched directory-qualified rather than as
+# bare basenames — `credentials`, `config.json`, and `config` alone are
+# ordinary variable/argument/file names too generic to flag on their own.
+_LIB_CREDENTIAL_PATH_REGEX='(^|[^A-Za-z0-9_.])(id_rsa|id_dsa|id_ecdsa|id_ed25519|\.netrc|_netrc|\.git-credentials|credentials\.json|\.env|\.env\.local|\.env\.production|\.env\.development|\.env\.staging|\.env\.test|\.aws/credentials|\.docker/config\.json|\.kube/config|\.config/gh/hosts\.yml)([^A-Za-z0-9_.]|$)'
+
+# Single source of truth for credential-shaped VALUE patterns. Sourced by
+# redact-credential-values.sh (jq gsub over a PostToolUse tool_response) and
+# deny-pii-in-commits.sh's unconditional credential-value sub-check (grep
+# -E over the same scan target its SSN/credit-card checks already use).
+# Must compile under BOTH grep -E (POSIX ERE) and jq's gsub/test
+# (Oniguruma) — the alternation, character classes, and the {n,} interval
+# below are valid in both engines, so no dialect-specific regex syntax is
+# used here.
+#
+# GitHub's own docs ("About authentication to GitHub" — token formats)
+# define these as the fixed literal prefixes for personal access tokens
+# (ghp_ classic, github_pat_ fine-grained) and OAuth/App tokens (gho_/ghu_/
+# ghs_/ghr_). The {20,} trailing-length floor is NOT vendor-grounded the
+# same way — it is chosen low enough to stay well under any real token's
+# actual length so a genuine token is never missed, not a verified minimum
+# for either token type. The PEM alternative here matches only the BEGIN
+# header line, deliberately: grep -E processes multi-line input one line
+# at a time, so a header-only, single-line alternative is what lets
+# deny-pii-in-commits.sh's line-oriented `grep -qE` detect a PEM key's
+# presence at commit time at all. See _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX
+# below for the redaction-only counterpart that captures the full block.
+_LIB_CREDENTIAL_VALUE_REGEX='(gh[opsur]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN[A-Z ]*PRIVATE KEY-----)'
+
+# Redaction-only counterpart to the PEM alternative above: matches a full
+# PEM private-key block (BEGIN header through the matching END footer),
+# not just the header line. redact-credential-values.sh's job is to strip
+# the actual secret bytes from a tool result, and the header-only pattern
+# above leaves the base64 key body — the actual secret — untouched in
+# gsub output. This constant exists because the header-only and full-block
+# forms serve different consumers with incompatible needs: grep -E's
+# line-oriented matching (deny-pii-in-commits.sh) can never match a
+# pattern spanning a newline, so the shared detection constant above must
+# stay header-only; jq's gsub operates on the whole string value in one
+# pass and can match across the embedded newlines in a real key, so
+# redact-credential-values.sh alone additionally applies this constant.
+# The body character class deliberately excludes `-`, so a greedy match
+# stops at the first `-----END...` footer rather than consuming past it
+# or across multiple concatenated blocks; [:space:] (not `.`) is what lets
+# the match span the body's embedded newlines under Oniguruma without
+# relying on a dot-matches-newline flag.
+_LIB_PEM_PRIVATE_KEY_BLOCK_REGEX='-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=[:space:]]*-----END[A-Z ]*PRIVATE KEY-----'
+
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
 # security surface, so new entries are added deliberately (a subcommand

@@ -2,11 +2,17 @@
 # hook-class: gate
 # Gate: deny `git commit` when the commit's content — added lines of the
 # staged diff, the commit message, or a referenced commit-message file —
-# contains personally-identifying or protected health information (PII/PHI).
+# contains personally-identifying or protected health information (PII/PHI),
+# or a credential-shaped value (a GitHub token prefix, a PEM private-key
+# header).
 #
-# Opt-in. Dormant unless ~/.claude/pii-patterns.md exists as a readable
-# regular file. Every stow user gets this hook disabled by default; arming
-# it is a deliberate per-machine action. See docs/security-hardening.md.
+# Two independent tiers, only one of which is opt-in. The credential-value
+# sub-check (below) is always on, with no arming file — it shares this
+# hook's file and commit-detection machinery, but not its dormancy. The
+# SSN/credit-card built-ins and every user `<label>: <regex>` pattern stay
+# dormant unless ~/.claude/pii-patterns.md exists as a readable regular
+# file; arming that tier is still a deliberate per-machine action. See
+# docs/security-hardening.md.
 #
 # Fires on every repo (no origin scoping) — a PII commit gate is only
 # useful if it covers the repos that actually hold PII. This is the
@@ -20,23 +26,36 @@
 # early dispatch unscanned. The hook identifies the commit with _lib's
 # word-walking subcommand extractor (which sees through global
 # `-c`/`-C`/`--git-dir` flags and `&&`/`;`/`|` command chains), and exits
-# immediately — before any git or scan work — whenever it is unarmed.
+# immediately — before any git or scan work — whenever the command is not a
+# commit at all. Because the credential-value sub-check is unconditional,
+# commit-detection and diff extraction themselves now run for every commit
+# regardless of pii-patterns.md arming; only the SSN/credit-card/user-
+# pattern scan tier still checks arming before running, and it does so
+# after the shared extraction work, not before.
 #
 # Robust against `git commit --no-verify`: a Claude Code PreToolUse hook
 # intercepts the Bash tool call itself. --no-verify disables only git's
 # native pre-commit/commit-msg chain, not this hook.
 #
-# Pattern tiers (active once armed):
-#  - Built-in generic patterns, shipped in this file: US Social Security
+# Pattern tiers:
+#  - Credential-value patterns (always on, unarmed or not): the shared
+#    _LIB_CREDENTIAL_VALUE_REGEX (GitHub token prefixes, a PEM private-key
+#    header) also used by redact-credential-values.sh. Committing a live
+#    credential carries the same near-zero false-positive risk that
+#    justifies deny-env-reads.sh's own always-on posture, so this sub-check
+#    does not wait for pii-patterns.md.
+#  - Built-in generic PII patterns (active once armed): US Social Security
 #    number (NNN-NN-NNNN) and credit-card-shaped 13-19 digit runs that
 #    pass a Luhn checksum (the checksum cuts false positives on ordinary
 #    long digit runs).
-#  - User patterns from ~/.claude/pii-patterns.md: every `<label>: <regex>`
-#    line. Environment-specific identifier shapes (MRN, internal UUID, and
-#    similar) live only in that user-local file and never ship in this repo.
+#  - User patterns from ~/.claude/pii-patterns.md (active once armed):
+#    every `<label>: <regex>` line. Environment-specific identifier shapes
+#    (MRN, internal UUID, and similar) live only in that user-local file
+#    and never ship in this repo.
 #
 # Config-file grammar (~/.claude/pii-patterns.md), line-based, `#` comments
-# and blank lines ignored:
+# and blank lines ignored — governs the two armed-only tiers; the
+# credential-value tier takes no config of its own beyond the shared regex:
 #  - `<label>: <regex>`  — a labelled PII pattern. <regex> is POSIX ERE
 #    (grep -E). <label> is a human-readable name used in the deny message
 #    in place of the regex.
@@ -92,6 +111,17 @@
 #    subdirectory of the same repo is unaffected (the scan pathspecs are
 #    repo-root-relative).
 #
+# Population change from the credential-value hoist: the `-F`/`--file`
+# fail-closed-on-unreadable-source check and the pseudo-file
+# (`-F -`/`/dev/stdin`/`/dev/fd/*`) rejection below used to run only for
+# users who had armed pii-patterns.md, since the whole commit-detection and
+# message-source-extraction path lived behind that arming check. Both are
+# now reachable by every user on every commit, armed or not — intentional
+# (fail-closed on content this hook cannot verify is the correct posture
+# regardless of which scan tier triggered it), not a new risk, but a real
+# behavior change for previously-unarmed machines, worth naming here rather
+# than leaving implicit.
+#
 # Fail-closed on unparseable hook input.
 
 set -uo pipefail
@@ -125,18 +155,11 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Opt-in: dormant unless the user-local pattern file exists as a readable
-# regular file. Checked before any command parsing or git work so that an
-# unarmed machine — the default — pays almost nothing per Bash call.
-# `[ -f ]` follows symlinks and is true only for a regular file: a FIFO or
-# device file at that path would block the line-by-line config read below,
-# so a non-regular file is treated as not-armed.
-PII_PATTERNS_FILE="${HOME}/.claude/pii-patterns.md"
-if [ ! -f "$PII_PATTERNS_FILE" ] || [ ! -r "$PII_PATTERNS_FILE" ]; then
-  exit 0
-fi
-
 # --- Detect `git commit`; decide whether `git diff HEAD` is also needed --
+# Hoisted above the pii-patterns.md arming check (below): the credential-
+# value sub-check is unconditional, so commit-detection and diff extraction
+# must run for every commit regardless of arming. The SSN/credit-card/user-
+# pattern tier still gates on PII_ARMED before it does any work of its own.
 # `-a`/`--all`, a `--` pathspec separator, or a bare pathspec argument all
 # commit working-tree content not in the index at hook time.
 commit_fragment_has_worktree_target() {
@@ -194,18 +217,38 @@ if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
   exit 0
 fi
 
-# A `git commit` outside a work tree fails on its own; nothing to scan.
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+# A `git commit` outside a work tree fails on its own; nothing to scan. Now
+# unconditional (runs for unarmed users too), so wrapped in _lib_capped —
+# the same 5s timeout backstop _lib_jq already provides — since an
+# unwrapped hang against a locked index or an NFS-mounted repo was an
+# acceptable opt-in-only cost before and is a default-on availability risk
+# once every Bash `git commit` reaches this line.
+if ! _lib_capped git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 0
 fi
 
-# --- Parse ~/.claude/pii-patterns.md -------------------------------------
+# Opt-in: dormant unless the user-local pattern file exists as a readable
+# regular file. `[ -f ]` follows symlinks and is true only for a regular
+# file: a FIFO or device file at that path would block the line-by-line
+# config read below, so a non-regular file is treated as not-armed. Gates
+# only the SSN/credit-card/user-pattern tier below — the credential-value
+# sub-check runs regardless of PII_ARMED.
+PII_PATTERNS_FILE="${HOME}/.claude/pii-patterns.md"
+PII_ARMED=0
+if [ -f "$PII_PATTERNS_FILE" ] && [ -r "$PII_PATTERNS_FILE" ]; then
+  PII_ARMED=1
+fi
+
+# --- Parse ~/.claude/pii-patterns.md (armed users only) -------------------
 # USER_LABELS[i] / USER_REGEXES[i] are parallel arrays; EXCLUDE_GLOBS holds
-# `exclude:` paths. A malformed line denies fail-closed.
+# `exclude:` paths. A malformed line denies fail-closed. Declared
+# unconditionally (empty) so the pathspec-exclude and scan logic below can
+# reference them regardless of arming.
 USER_LABELS=()
 USER_REGEXES=()
 EXCLUDE_GLOBS=()
 config_lineno=0
+if [ "$PII_ARMED" -eq 1 ]; then
 while IFS= read -r raw_line || [ -n "$raw_line" ]; do
   config_lineno=$((config_lineno + 1))
   # Strip CR (CRLF), then leading/trailing whitespace.
@@ -248,6 +291,7 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
   USER_LABELS+=("$config_label")
   USER_REGEXES+=("$config_value")
 done < "$PII_PATTERNS_FILE"
+fi
 
 # --- Extract `-F` / `--file` commit-message-source paths -----------------
 # xargs tokenization mirrors deny-private-project-refs.sh: flag-like text
@@ -285,11 +329,16 @@ added_lines_of() {
   grep -E '^\+' | grep -vE '^\+\+\+' || true
 }
 
-STAGED_DIFF=$(git diff --cached -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
+# Both git diff calls now run unconditionally (armed or not, since the
+# credential-value scan needs their output), so each is wrapped in
+# _lib_capped's 5s timeout backstop — an unwrapped hang here was an
+# acceptable opt-in-only cost before and is a default-on availability risk
+# once every commit reaches this line.
+STAGED_DIFF=$(_lib_capped git diff --cached -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
 SCAN_TARGET+=$'\n'"$(printf '%s' "$STAGED_DIFF" | added_lines_of)"
 
-if [ "$HEAD_SCAN_NEEDED" -eq 1 ] && git rev-parse HEAD >/dev/null 2>&1; then
-  HEAD_DIFF=$(git diff HEAD -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
+if [ "$HEAD_SCAN_NEEDED" -eq 1 ] && _lib_capped git rev-parse HEAD >/dev/null 2>&1; then
+  HEAD_DIFF=$(_lib_capped git diff HEAD -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
   SCAN_TARGET+=$'\n'"$(printf '%s' "$HEAD_DIFF" | added_lines_of)"
 fi
 
@@ -336,30 +385,39 @@ luhn_valid() {
 # not a pipeline, so the test reflects only grep's own exit status.
 MATCHED_LABELS=()
 
-if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SCAN_TARGET"; then
-  MATCHED_LABELS+=("US Social Security number")
+# Unconditional, armed or not — see the "Two independent tiers" paragraph
+# in the header comment. Shares the same SCAN_TARGET and the same "never
+# echo the matched value" discipline as every other pattern below.
+if grep -qE "$_LIB_CREDENTIAL_VALUE_REGEX" <<< "$SCAN_TARGET"; then
+  MATCHED_LABELS+=("Credential value (API token or private key)")
 fi
 
-CC_CANDIDATES=$(grep -oE '\b[0-9]{13,19}\b' <<< "$SCAN_TARGET" | sort -u)
-if [ -n "$CC_CANDIDATES" ]; then
-  while IFS= read -r cc_candidate; do
-    [ -z "$cc_candidate" ] && continue
-    if luhn_valid "$cc_candidate"; then
-      MATCHED_LABELS+=("Credit card number")
-      break
-    fi
-  done <<< "$CC_CANDIDATES"
-fi
-
-for i in "${!USER_REGEXES[@]}"; do
-  if grep -qE -e "${USER_REGEXES[$i]}" <<< "$SCAN_TARGET"; then
-    MATCHED_LABELS+=("${USER_LABELS[$i]}")
+if [ "$PII_ARMED" -eq 1 ]; then
+  if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SCAN_TARGET"; then
+    MATCHED_LABELS+=("US Social Security number")
   fi
-done
+
+  CC_CANDIDATES=$(grep -oE '\b[0-9]{13,19}\b' <<< "$SCAN_TARGET" | sort -u)
+  if [ -n "$CC_CANDIDATES" ]; then
+    while IFS= read -r cc_candidate; do
+      [ -z "$cc_candidate" ] && continue
+      if luhn_valid "$cc_candidate"; then
+        MATCHED_LABELS+=("Credit card number")
+        break
+      fi
+    done <<< "$CC_CANDIDATES"
+  fi
+
+  for i in "${!USER_REGEXES[@]}"; do
+    if grep -qE -e "${USER_REGEXES[$i]}" <<< "$SCAN_TARGET"; then
+      MATCHED_LABELS+=("${USER_LABELS[$i]}")
+    fi
+  done
+fi
 
 if [ "${#MATCHED_LABELS[@]}" -gt 0 ]; then
   LABEL_LIST=$(printf '%s\n' "${MATCHED_LABELS[@]}" | sort -u | tr '\n' ',' | sed 's/,/, /g; s/, $//')
-  emit_deny "Commit blocked by PII guard: the staged diff, commit message, or a referenced commit-message file matches PII pattern(s): ${LABEL_LIST}. The matched values are not echoed here — they are PII. Remove the offending content before committing. For a legitimate synthetic-PII test fixture, add an 'exclude: <repo-relative-glob>' line to ~/.claude/pii-patterns.md rather than disarming the gate. See docs/security-hardening.md."
+  emit_deny "Commit blocked by PII/credential guard: the staged diff, commit message, or a referenced commit-message file matches: ${LABEL_LIST}. The matched values are not echoed here — they are PII or a live secret. Remove the offending content before committing. For a legitimate synthetic test fixture, add an 'exclude: <repo-relative-glob>' line to ~/.claude/pii-patterns.md rather than disarming the gate. See docs/security-hardening.md."
   exit 0
 fi
 

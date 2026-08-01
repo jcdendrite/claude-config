@@ -1,10 +1,11 @@
 """Tests for deny-pii-in-commits.sh.
 
-Synthetic PII used in these tests — all invented, none belongs to a real
-person:
+Synthetic PII/credential values used in these tests — all invented, none
+belongs to a real person or a live credential:
   SSN  123-45-6789      (the canonical example-only US SSN)
   Card 4111111111111111 (a Luhn-valid card test number; 4111111111111112
                          is the same string with a broken Luhn checksum)
+  Token ghp_abcdefghijklmnopqrstuvwx1234 (GitHub classic-PAT shape only)
 This test file lives under claude/.claude/hooks/tests/**, which the hook
 always excludes from its diff scan — so committing these fixtures into
 claude-config does not trip the hook on a developer machine that has armed
@@ -23,6 +24,7 @@ DENY_PII_IN_COMMITS_HOOK = HOOKS_DIR / "deny-pii-in-commits.sh"
 SSN = "123-45-6789"
 CARD_VALID = "4111111111111111"
 CARD_BAD_LUHN = "4111111111111112"
+GHP_TOKEN = "ghp_abcdefghijklmnopqrstuvwx1234"
 
 
 def _stage(repo, name, content):
@@ -80,6 +82,38 @@ class TestDenyPiiInCommits:
         patterns_file.symlink_to("/nonexistent/pii-patterns-target")
         _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "allow"
+
+    # ------------------------------------------------------------------ #
+    # Credential-value sub-check — unconditional, no pii-patterns.md      #
+    # ------------------------------------------------------------------ #
+    # No ~/.claude/pii-patterns.md is created for any test in this section:
+    # that is the point being pinned (the credential-value scan does not
+    # wait for arming, unlike the SSN/credit-card/user-pattern tier above).
+
+    def test_unarmed_credential_value_in_diff_denied(self, isolated_home, git_repo):
+        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "deny"
+
+    def test_unarmed_f_pseudo_file_still_denied(self, isolated_home, git_repo):
+        """The `-F`/pseudo-file fail-closed check used to run only for armed
+        users, since the whole commit-detection/extraction path lived
+        behind the arming check. Hoisting that machinery above the arming
+        check makes this reachable for unarmed users too — pinned so a
+        slip that leaves this check under the old `if` doesn't silently
+        reopen a fail-closed path with nothing catching it."""
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -F -"), cwd=git_repo) == "deny"
+
+    def test_unarmed_f_unreadable_file_still_denied(self, isolated_home, git_repo):
+        """Same hoist as above, for the unreadable-message-source-file
+        fail-closed check specifically (distinct code path from the
+        pseudo-file check)."""
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input(f"git commit -F {git_repo / 'nonexistent-msg.txt'}"),
+            cwd=git_repo,
+        ) == "deny"
 
     # ------------------------------------------------------------------ #
     # Built-in generic patterns                                           #

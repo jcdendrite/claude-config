@@ -263,6 +263,11 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/deny-credential-bash-reads.sh",
+            "statusMessage": "Checking credential-path Bash gate..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/enforce-marker-script-shape.sh",
             "statusMessage": "Checking marker.sh invocation shape..."
           },
@@ -350,6 +355,11 @@
             "type": "command",
             "command": "~/.claude/hooks/deny-data-file-reads.sh",
             "statusMessage": "Checking data-file read gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-credential-file-reads.sh",
+            "statusMessage": "Checking credential-file read gate..."
           }
         ]
       }
@@ -365,6 +375,15 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/consume-durable-continuity-file-on-read.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Read|WebFetch|Grep|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/redact-credential-values.sh"
           }
         ]
       }
