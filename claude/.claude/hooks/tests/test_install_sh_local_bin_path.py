@@ -140,6 +140,25 @@ class TestInstallShLocalBinPath:
         assert "alias ll='ls -la'" in content
         assert '.local/bin' in content
 
+    def test_second_real_run_is_a_byte_for_byte_no_op(self, tmp_path: Path) -> None:
+        """The actual production workflow: install.sh re-runs on every
+        `git pull`. A second run against the first run's own real output
+        (BEGIN/END wrapper included) must not duplicate anything."""
+        test_home = tmp_path / "home"
+        test_home.mkdir()
+        bashrc = test_home / ".bashrc"
+        bashrc.write_text("alias ll='ls -la'\n")
+
+        first = _run_local_bin_block(test_home)
+        assert first.returncode == 0, f"first run must exit 0; stderr={first.stderr!r}"
+        after_first = bashrc.read_text()
+
+        second = _run_local_bin_block(test_home)
+        assert second.returncode == 0, f"second run must exit 0; stderr={second.stderr!r}"
+        assert bashrc.read_text() == after_first, (
+            "a second run must be a byte-for-byte no-op on the first run's real output"
+        )
+
     def test_idempotent_when_path_already_referenced(self, tmp_path: Path) -> None:
         test_home = tmp_path / "home"
         test_home.mkdir()
@@ -191,6 +210,48 @@ class TestInstallShLocalBinPath:
         assert companion.exists(), "companion file must be created and managed"
         assert '.local/bin' in companion.read_text()
 
+    def test_dangling_symlinked_rc_falls_back_to_warning(self, tmp_path: Path) -> None:
+        """A symlinked rc file pointing at a nonexistent target must fall
+        back to warning (using the symlink's own path in the message), not
+        trust a partial/garbage `readlink -f` capture — locks in the BSD
+        vs. GNU dangling-symlink fallback fix."""
+        test_home = tmp_path / "home"
+        test_home.mkdir()
+        (test_home / ".bashrc").symlink_to(tmp_path / "nonexistent-target")
+
+        result = _run_local_bin_block(test_home)
+
+        assert result.returncode == 0, f"block must exit 0; stderr={result.stderr!r}"
+        assert not (test_home / ".bashrc.local").exists(), (
+            "a dangling symlink must not produce a companion write"
+        )
+        assert "symlink" in result.stderr
+
+    def test_symlinked_rc_with_direct_path_and_companion_mention_skips_companion_write(
+        self, tmp_path: Path
+    ) -> None:
+        """A resolved symlink target that already has ~/.local/bin directly
+        must win over an incidental mention of the companion's basename
+        (e.g. in a comment) — the direct match makes the companion question
+        moot, so no companion file should be created."""
+        test_home = tmp_path / "home"
+        test_home.mkdir()
+        real_dotfiles = tmp_path / "dotfiles"
+        real_dotfiles.mkdir()
+        target = real_dotfiles / "bashrc"
+        target.write_text(
+            'export PATH="$HOME/.local/bin:$PATH"\n'
+            '# see .bashrc.local for machine-specific overrides\n'
+        )
+        (test_home / ".bashrc").symlink_to(target)
+
+        result = _run_local_bin_block(test_home)
+
+        assert result.returncode == 0, f"block must exit 0; stderr={result.stderr!r}"
+        assert not (test_home / ".bashrc.local").exists(), (
+            "an already-direct PATH match must not trigger a redundant companion write"
+        )
+
     def test_symlinked_companion_itself_symlinked_is_not_written_through(
         self, tmp_path: Path
     ) -> None:
@@ -236,6 +297,76 @@ class TestInstallShLocalBinPath:
         assert bashrc.read_text() == original, (
             "a differently-formatted existing PATH reference must not be duplicated"
         )
+
+    def test_comment_only_local_bin_mention_does_not_block_setup(
+        self, tmp_path: Path
+    ) -> None:
+        """A stale comment mentioning .local/bin (not an active export) must
+        not false-positive as already-configured — PATH still needs to be
+        set up for real."""
+        test_home = tmp_path / "home"
+        test_home.mkdir()
+        bashrc = test_home / ".bashrc"
+        bashrc.write_text("# TODO: someday add ~/.local/bin to PATH\n")
+
+        result = _run_local_bin_block(test_home)
+
+        assert result.returncode == 0, f"block must exit 0; stderr={result.stderr!r}"
+        content = bashrc.read_text()
+        assert "# TODO: someday add ~/.local/bin to PATH" in content
+        assert 'export PATH="$HOME/.local/bin:$PATH"' in content, (
+            "a comment-only mention must not block the real export from being appended"
+        )
+
+    def test_append_failure_restores_from_backup_without_data_loss(
+        self, tmp_path: Path
+    ) -> None:
+        """A permission-denied append (rc file becomes unwritable) must
+        restore the original content and warn, not silently discard the
+        backup and leave PATH unconfigured with no diagnostic."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root bypasses file permission checks")
+        test_home = tmp_path / "home"
+        test_home.mkdir()
+        bashrc = test_home / ".bashrc"
+        original = "alias ll='ls -la'\n"
+        bashrc.write_text(original)
+        bashrc.chmod(0o444)
+        try:
+            result = _run_local_bin_block(test_home)
+        finally:
+            bashrc.chmod(0o644)
+
+        assert result.returncode == 0, f"block must exit 0; stderr={result.stderr!r}"
+        assert bashrc.read_text() == original, "original content must survive an append failure"
+        assert "could not append to" in result.stderr
+        leftover_backups = list(test_home.glob(".bashrc.bak.*"))
+        assert not leftover_backups, (
+            f"backup must be consumed by the restore, not left stranded; found {leftover_backups}"
+        )
+
+    def test_backup_creation_failure_skips_without_data_loss(self, tmp_path: Path) -> None:
+        """An unwritable home directory (cp cannot create the backup) must
+        leave the original rc file untouched and warn, not attempt an
+        unprotected append. The read-only directory also blocks the earlier
+        zsh iteration's new-file creation, so stderr carries that unrelated
+        warning too — this only asserts the bashrc-specific message."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root bypasses directory permission checks")
+        test_home = tmp_path / "home"
+        test_home.mkdir()
+        bashrc = test_home / ".bashrc"
+        original = "alias ll='ls -la'\n"
+        bashrc.write_text(original)
+        test_home.chmod(0o555)
+        try:
+            result = _run_local_bin_block(test_home)
+        finally:
+            test_home.chmod(0o755)
+
+        assert result.returncode == 0, f"block must exit 0; stderr={result.stderr!r}"
+        assert bashrc.read_text() == original, "original content must be untouched"
+        assert "could not back up" in result.stderr
 
     def test_no_stray_backup_file_after_successful_append(self, tmp_path: Path) -> None:
         """A successful append must clean up its own backup, not leave a

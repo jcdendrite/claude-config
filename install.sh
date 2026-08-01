@@ -166,6 +166,15 @@ check_private_projects_file() {
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: local-bin-path — start
+# Whether $1 already has a non-comment line mentioning $2 — excludes
+# comment-only lines so a stale "# TODO: add ~/.local/bin" note doesn't
+# false-positive as already-configured (matches the comment/blank exclusion
+# check_private_projects_file already uses above for the same reason).
+_file_has_active_reference() {
+  local file="$1" needle="$2"
+  [ -f "$file" ] && grep -v '^[[:space:]]*#' -- "$file" 2>/dev/null | grep -Fq -- "$needle"
+}
+
 # Shared by every failure branch below: undoes the just-written append,
 # preferring the pre-append backup over a bare rm so a first-run failure
 # (no backup exists yet) doesn't leave a half-written rc file behind either.
@@ -200,21 +209,23 @@ ensure_local_bin_on_path() {
         resolved="$rc_file"
       fi
       companion="${rc_file}.local"
-      # grep -F on the companion's basename is a heuristic: a mention inside
-      # a comment or template also matches, not just an actual source line.
-      if [ -f "$resolved" ] && [ ! -L "$companion" ] && grep -Fq "$(basename "$companion")" "$resolved" 2>/dev/null; then
-        rc_file="$companion"
-        echo "  → managing ~/.local/bin PATH setup in $companion (sourced by $HOME/.${shell_name}rc)"
-      elif [ -f "$resolved" ] && grep -Fq '.local/bin' "$resolved" 2>/dev/null; then
+      # Direct-match checked before the companion heuristic: a resolved
+      # target that already has ~/.local/bin needs nothing further,
+      # regardless of whether it also happens to mention the companion's
+      # basename (e.g. in a comment).
+      if _file_has_active_reference "$resolved" '.local/bin'; then
         echo "  ✓ $HOME/.${shell_name}rc already has ~/.local/bin on PATH (via $resolved)"
         continue
+      elif [ ! -L "$companion" ] && _file_has_active_reference "$resolved" "$(basename "$companion")"; then
+        rc_file="$companion"
+        echo "  → managing ~/.local/bin PATH setup in $companion (sourced by $HOME/.${shell_name}rc)"
       else
         echo "[install] warning: $HOME/.${shell_name}rc is a symlink to $resolved — not writing PATH setup through it. Add '$export_line' to whichever file manages your $shell_name startup, then restart your shell." >&2
         continue
       fi
     fi
 
-    if [ -e "$rc_file" ] && grep -Fq '.local/bin' "$rc_file" 2>/dev/null; then
+    if _file_has_active_reference "$rc_file" '.local/bin'; then
       echo "  ✓ $rc_file already has ~/.local/bin on PATH"
       continue
     fi
@@ -230,11 +241,18 @@ ensure_local_bin_on_path() {
       fi
     fi
 
-    if ! {
+    # Negating a redirected `{ }` group directly (`if ! { ...; } >> file`)
+    # does not propagate the group's own redirect-open failure on bash —
+    # verified on both macOS system bash 3.2 and bash 5.3. Using the
+    # un-negated group as the if-condition itself detects the failure
+    # correctly and is still exempt from `set -e` as an if-condition.
+    if {
       printf '\n# BEGIN claude-config: ensure ~/.local/bin on PATH\n'
       printf '%s\n' "$export_line"
       printf '# END claude-config: ensure ~/.local/bin on PATH\n'
     } >> "$rc_file"; then
+      :
+    else
       _undo_local_bin_append "$rc_file" "$backup" "could not append to $rc_file"
       continue
     fi
