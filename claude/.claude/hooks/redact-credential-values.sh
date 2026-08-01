@@ -11,6 +11,20 @@
 # WebFetch response body, a Grep match inside an unexpected file, or
 # subagent-returned text — and path enumeration can never be exhaustive.
 #
+# Scope is narrower than the path gates' credential-path coverage: this
+# hook only recognizes value shapes with a vendor-fixed format (a GitHub
+# token prefix, a PEM header/footer) — it does NOT recognize a .netrc
+# plaintext password, a .git-credentials URL, an AWS INI
+# aws_secret_access_key value, a Docker config.json auth blob, or a
+# Kubernetes config bearer token/cert, none of which have a fixed,
+# vendor-documented shape to match against without either an unacceptable
+# false-positive rate or unverified/invented pattern heuristics. This is
+# not a general backstop for every credential family the path gates
+# enumerate — it is the value-shape layer for the subset of credentials
+# that have one. The path gates (case-folded; see their own headers) are
+# what actually stops those other credential families from entering
+# context in the first place.
+#
 # tool_response shape: Anthropic's hooks docs confirm two of the five
 # matcher-scoped tool shapes directly — Bash emits
 # {"stdout":"...","stderr":"...","exit_code":N}; Read emits

@@ -82,8 +82,13 @@ fi
 
 # The grep -E match against _LIB_CREDENTIAL_PATH_REGEX needs no independent
 # timeout beyond _lib_jq's existing 5s backstop — it operates on an
-# in-memory string, not the filesystem.
-if printf '%s' "$COMMAND" | grep -qE "$_LIB_CREDENTIAL_PATH_REGEX"; then
+# in-memory string, not the filesystem. Case-folded (-i): on the default
+# case-insensitive-but-case-preserving filesystem this codebase already
+# treats as a primary target (macOS APFS/HFS+, Windows NTFS), `id_RSA` or
+# `.NETRC` opens the identical on-disk file as the canonical-case path, so
+# a case-sensitive match here would be a full, silent bypass of a gate
+# whose stated design is "no bypass valve."
+if printf '%s' "$COMMAND" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
   emit_deny "Blocked by credential-path Bash gate: the command references a credential-shaped path (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, or a non-template .env/credentials.json path). Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content (e.g. ssh-add, chmod, ssh -i), run it yourself via the ! shell escape instead of through Claude's Bash tool."
   exit 0
 fi
@@ -103,12 +108,21 @@ if [ -f "$CREDENTIAL_FILE_GUARD" ] && [ -r "$CREDENTIAL_FILE_GUARD" ]; then
     # mirroring deny-data-file-reads.sh's config-glob loop. Quoting it forces
     # literal matching and would silently break every wildcard rule in every
     # user's guard file — a false negative on this deny gate.
+    #
+    # Case-folded (nocasematch), same rationale as the built-in regex match
+    # above: on a case-insensitive-but-case-preserving filesystem, a
+    # case-varied command still opens the identical file the user's glob was
+    # meant to flag, and bash `case` has no per-pattern case-fold syntax —
+    # the only way to fold this match is the shopt, scoped tightly around
+    # this one case statement and restored immediately after.
+    shopt -s nocasematch
     case "$COMMAND" in
       *$line*)
         emit_deny "Blocked by credential-path Bash gate: the command matches the glob '${line}' in ~/.claude/credential-file-guard.md, a path shape you flagged as credential-bearing. (See docs/security-hardening.md.)"
         exit 0
         ;;
     esac
+    shopt -u nocasematch
   done < "$CREDENTIAL_FILE_GUARD"
 fi
 

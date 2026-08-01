@@ -74,7 +74,14 @@ CREDENTIAL_FILE_GUARD="${HOME}/.claude/credential-file-guard.md"
 # post-symlink-resolution rather than being written out twice.
 _matches_credential_path() {
   local path="$1"
-  if printf '%s' "$path" | grep -qE "$_LIB_CREDENTIAL_PATH_REGEX"; then
+  # Case-folded (-i): on the default case-insensitive-but-case-preserving
+  # filesystem this codebase already treats as a primary target (macOS
+  # APFS/HFS+, Windows NTFS), `id_RSA` or `.NETRC` opens the identical
+  # on-disk file as the canonical-case path, so a case-sensitive match
+  # here would be a full, silent bypass of a gate whose stated design is
+  # "no bypass valve." Shared by both call sites (raw path and
+  # symlink-resolved path), so this fix covers both.
+  if printf '%s' "$path" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
     return 0
   fi
   [ -f "$CREDENTIAL_FILE_GUARD" ] && [ -r "$CREDENTIAL_FILE_GUARD" ] || return 1
@@ -87,11 +94,24 @@ _matches_credential_path() {
     [ -z "$line" ] && continue
     case "$line" in '#'*) continue ;; esac
 
+    # Case-folded (nocasematch), same rationale as the built-in regex match
+    # above: on a case-insensitive-but-case-preserving filesystem, a
+    # case-varied path still opens the identical file the user's glob was
+    # meant to flag, and bash `case` has no per-pattern case-fold syntax —
+    # the only way to fold this match is the shopt, scoped tightly around
+    # this one case statement and restored immediately after (this function
+    # can be called again for the symlink-resolved path, so the shopt must
+    # not leak past this one match attempt).
+    shopt -s nocasematch
     # shellcheck disable=SC2254 # $line is an intentional user-authored glob;
     # see deny-data-file-reads.sh's identical config-glob loop for rationale.
     case "$path" in
-      $line) return 0 ;;
+      $line)
+        shopt -u nocasematch
+        return 0
+        ;;
     esac
+    shopt -u nocasematch
   done < "$CREDENTIAL_FILE_GUARD"
   return 1
 }

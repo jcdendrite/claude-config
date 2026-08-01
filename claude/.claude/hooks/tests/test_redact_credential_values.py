@@ -96,6 +96,28 @@ class TestRedactCredentialValues:
         assert REDACTED in result["stdout"]
 
     # ------------------------------------------------------------------ #
+    # Documented residual — value shapes with no vendor-fixed format      #
+    # ------------------------------------------------------------------ #
+
+    def test_netrc_password_shape_not_redacted(self):
+        """Required regression test pinning a documented residual: this
+        hook's value-shape coverage is limited to formats with a
+        vendor-fixed shape (a GitHub token prefix, a PEM block). A
+        .netrc-style plaintext password has no such fixed shape to match
+        against, so it passes through completely unredacted — the
+        credential-path gates (deny-credential-bash-reads.sh,
+        deny-credential-file-reads.sh), not this hook, are what stop a
+        .netrc file's content from entering context in the first place.
+        Pinned so this isn't mistaken for an oversight later."""
+        response = {
+            "stdout": "machine github.com login myuser password sup3rSecr3tPassw0rd123\n",
+            "stderr": "",
+            "exit_code": 0,
+        }
+        result = run_hook_updated_output(REDACT_CREDENTIAL_VALUES_HOOK, _posttooluse_input("Bash", response))
+        assert result == response
+
+    # ------------------------------------------------------------------ #
     # Read — docs-confirmed {"file_path","file_contents"} shape            #
     # ------------------------------------------------------------------ #
 

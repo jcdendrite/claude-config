@@ -755,27 +755,6 @@ def _fragment_command_word(fragment: str) -> str:
     return result.stdout
 
 
-# --- Shared credential-guard constants -------------------------------------
-#
-# Per-hook behavior against these constants is exercised end to end by
-# test_deny_credential_bash_reads.py, test_deny_credential_file_reads.py,
-# test_redact_credential_values.py, and the credential-value cases in
-# test_deny_pii_in_commits.py. The tests here pin only that the constants
-# exist, are sourceable, and hold the specific values every consuming hook
-# relies on — a single source of truth that drifted silently would still
-# pass each consumer's own tests if a hook simply hardcoded a copy instead.
-
-
-def _sourced_value(var_name: str) -> str:
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; printf "%s" "${var_name}"'],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout
-
-
 def _fragment_invokes_tool(fragment: str, tool: str) -> bool:
     result = subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_invokes_tool "$1" "$2"', "bash", fragment, tool],
@@ -1088,6 +1067,27 @@ class TestAutonomousShippingActive:
         assert "unbound variable" not in result.stderr
 
 
+# --- Shared credential-guard constants -------------------------------------
+#
+# Per-hook behavior against these constants is exercised end to end by
+# test_deny_credential_bash_reads.py, test_deny_credential_file_reads.py,
+# test_redact_credential_values.py, and the credential-value cases in
+# test_deny_pii_in_commits.py. The tests here pin only that the constants
+# exist, are sourceable, and hold the specific values every consuming hook
+# relies on — a single source of truth that drifted silently would still
+# pass each consumer's own tests if a hook simply hardcoded a copy instead.
+
+
+def _sourced_value(var_name: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; printf "%s" "${var_name}"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
 def test_lib_size_threshold_bytes_is_five_megabytes() -> None:
     """5 MB, promoted from deny-data-file-reads.sh's original literal.
     redact-credential-values.sh's size cap reuses this same value."""
@@ -1123,6 +1123,24 @@ def test_lib_credential_value_regex_compiles_under_grep_and_jq() -> None:
 
     jq_harness = (
         f'. {_LIB_SH}; jq -n --arg pattern "$_LIB_CREDENTIAL_VALUE_REGEX" --arg s "{token}" '
+        "'$s | test($pattern)'"
+    )
+    jq_result = subprocess.run(["bash", "-c", jq_harness], capture_output=True, text=True, check=True)
+    assert jq_result.stdout.strip() == "true"
+
+
+def test_lib_pem_private_key_block_regex_matches_full_block_under_jq() -> None:
+    """Redaction-only counterpart to _LIB_CREDENTIAL_VALUE_REGEX's header-only
+    PEM alternative — must compile under jq's Oniguruma engine (its only
+    consumer, redact-credential-values.sh) and match a full synthetic
+    header-through-footer block, not only the header line."""
+    pem_block = (
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEpAIBAAKCAQEAsecretkeybodyherethatisverylongandsecret\n"
+        "-----END RSA PRIVATE KEY-----"
+    )
+    jq_harness = (
+        f'. {_LIB_SH}; jq -n --arg pattern "$_LIB_PEM_PRIVATE_KEY_BLOCK_REGEX" --arg s "{pem_block}" '
         "'$s | test($pattern)'"
     )
     jq_result = subprocess.run(["bash", "-c", jq_harness], capture_output=True, text=True, check=True)

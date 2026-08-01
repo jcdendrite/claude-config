@@ -22,9 +22,9 @@ segmentation). See [Limitations](#limitations).
 
 | Hook | Gates | Optional additions file |
 |---|---|---|
-| `deny-credential-bash-reads.sh` | `Bash` — denies any command whose raw text contains a credential-shaped path token (SSH private key, `.netrc`/`_netrc`, `.git-credentials`, a cloud credential store, a non-template `.env`/`credentials.json`) | `~/.claude/credential-file-guard.md` |
-| `deny-credential-file-reads.sh` | `Read` — same built-in path shapes, resolves symlinks and fails closed on an unresolvable target | `~/.claude/credential-file-guard.md` |
-| `redact-credential-values.sh` | `Bash`/`Read`/`WebFetch`/`Grep`/`Task` (PostToolUse) — redacts a credential-*shaped value* (a GitHub token prefix, a PEM private-key header) wherever it surfaces in a tool result, regardless of path | `~/.claude/credential-value-patterns.md` |
+| `deny-credential-bash-reads.sh` | `Bash` — denies any command whose raw text contains a credential-shaped path token, matched case-insensitively (SSH private key, `.netrc`/`_netrc`, `.git-credentials`, a cloud credential store, a non-template `.env`/`credentials.json`) | `~/.claude/credential-file-guard.md` |
+| `deny-credential-file-reads.sh` | `Read` — same built-in path shapes (case-insensitive), resolves symlinks and fails closed on an unresolvable target | `~/.claude/credential-file-guard.md` |
+| `redact-credential-values.sh` | `Bash`/`Read`/`WebFetch`/`Grep`/`Task` (PostToolUse) — redacts a credential-*shaped value* with a vendor-fixed format (a GitHub token prefix, a full PEM private-key block) wherever it surfaces in a tool result, regardless of path | `~/.claude/credential-value-patterns.md` |
 
 None of these three hooks has a config file to arm — they run for every
 stow user from install. The optional additions files widen the built-in
@@ -81,8 +81,20 @@ the `!` shell escape instead. `redact-credential-values.sh` is the
 different-layer backstop for the two gate hooks: a credential can enter
 context through a path neither one anticipates (a `WebFetch` response, a
 `Grep` match, subagent-returned text), so it scans tool *results* for a
-credential's own shape rather than trying to enumerate every path a secret
-could live at.
+credential's own shape — limited to shapes with a vendor-fixed format —
+rather than trying to enumerate every path a secret could live at.
+
+Both path-based hooks match the built-in credential-path set, and the
+optional `credential-file-guard.md` additions, case-insensitively: on the
+default case-insensitive-but-case-preserving filesystem (macOS APFS/HFS+,
+Windows NTFS), `id_RSA` and `id_rsa` open the identical on-disk file, so a
+case-sensitive match anywhere in these hooks would be a silent bypass of a
+gate whose whole design point is having no bypass valve. The additions
+file's glob match is folded via a scoped `shopt -s nocasematch` around the
+match itself (bash `case` has no per-pattern case-fold syntax) — a
+personal glob line is protected by the same case-insensitive guarantee as
+the built-in set, not left as something the user has to get right
+themselves.
 
 ## The two PII guard hooks
 
@@ -316,7 +328,15 @@ to hold PII/PHI or live credentials:
   credential-value regex `redact-credential-values.sh` and
   `deny-pii-in-commits.sh`'s credential-value sub-check share: known vendor
   token-prefix shapes and a PEM header, not entropy-based generic-secret
-  detection.
+  detection. Concretely, this means `redact-credential-values.sh` does NOT
+  redact a `.netrc` plaintext password, a `.git-credentials` URL, an AWS
+  `credentials` file's secret key value, a Docker `config.json` auth blob,
+  or a Kubernetes `config` bearer token/cert if one of those enters a tool
+  result through a path the two credential-path gates don't cover (a
+  `WebFetch` response, a `Grep` match) — none of those value shapes have a
+  fixed, vendor-documented format to match against. The path gates, not
+  the value-redaction backstop, are what stop those credential families
+  from entering context via `Bash`/`Read`.
 - `redact-credential-values.sh` leaves a `tool_response` over its 5 MB size
   cap completely unscanned rather than partially redacted, to bound its own
   per-fire latency. A credential inside a truncated-past-cap output is not
