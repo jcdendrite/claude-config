@@ -79,7 +79,9 @@ cost_display=$(printf "\$%.4f" "$total_cost")
 # Undocumented/internal: if a future Claude Code version renames or drops
 # these fields, the segment just goes empty (see the `-n "$account_text"`
 # guard below) — it won't error the statusline.
-account_info_file="$HOME/.claude.json"
+# Honors CLAUDE_CONFIG_DIR (a first-party Claude Code env var) so this
+# matches whichever account the running session actually authenticated as.
+account_info_file="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
 account_email=""
 account_plan=""
 if [ -f "$account_info_file" ]; then
