@@ -909,6 +909,67 @@ class TestGlobalInstructionsDescribeMarkerGatesAsContentAddressed:
         assert "gates on their presence" not in body
 
 
+class TestGlobalInstructionsRequireMemoryBodyBeforeActing:
+    """Pin the §Safety bullet distinguishing recalling a memory from acting on
+    one (GH-429).
+
+    A `MEMORY.md` index line is always loaded; the body it links to loads only
+    on recall. Compressing an action-prescribing memory's body into an index
+    line routinely drops the body's trigger condition, leaving a bare
+    imperative that reads as a standing directive. Without this bullet, a
+    session can act on the index line alone -- the exact gap this pins shut.
+    """
+
+    def _body(self):
+        return _GLOBAL_CLAUDE_MD.read_text()
+
+    def test_requires_reading_the_body_before_acting_on_it(self):
+        """Mutation-tested: dropping this clause leaves the routing claim
+        intact but removes the obligation to read the body and the
+        prohibition on acting when its trigger isn't met -- regressing to a
+        bullet that only describes the failure mode, not one that closes it."""
+        body = self._body()
+        assert "read the body file" in body
+        assert "if its trigger condition is not met by what the user actually said this session, do not act" in body
+
+    def test_distinguishes_citation_from_execution(self):
+        """Mutation-tested independently of the assertion above -- dropping
+        only this clause leaves the read-before-act obligation in place but
+        removes the boundary that lets a session cite a memory from its
+        index line without triggering an unnecessary body read."""
+        assert "Citing a memory may rely on the index line; executing one may not" in self._body()
+
+
+class TestMemorySkillPreservesActionPrescribingTrigger:
+    """Pin the index-discipline bullet requiring an action-prescribing
+    memory's index line to carry its body's trigger condition (GH-429).
+
+    The existing compression-diff audit in this skill only fires on a diff
+    that removes or shortens lines, so it never catches a newly authored
+    index line dropping a trigger it never had a chance to preserve. This
+    bullet closes that gap at first-authoring time.
+    """
+
+    def _body(self):
+        return _skill_file("ai-instruction-and-memory-files").read_text()
+
+    def test_requires_preserving_the_trigger_condition(self):
+        """Mutation-tested: dropping this clause leaves the surrounding list
+        with a format rule (character cap) but no content rule, so a
+        newly authored index line that keeps the imperative and drops the
+        guard passes review."""
+        assert 'keep the body\'s guard: "run X when asked", never bare "run X"' in self._body()
+
+    def test_requires_a_tiebreak_when_the_guard_will_not_fit(self):
+        """Mutation-tested independently of the assertion above -- dropping
+        only this clause leaves the trigger-preservation rule in direct
+        conflict with the neighboring ≤150-character format bullet with no
+        stated resolution, and the likely resolution under that pressure is
+        silently dropping the guard -- the original defect this bullet
+        exists to close (staff-sdet finding, GH-429 code review)."""
+        assert "if the guard will not fit the character cap, the entry is not indexable as action-prescribing" in self._body()
+
+
 class TestHandoffTaskListPersistence:
     """Pin the §2.6 task-list serialization and resume directive in handoff.
 
@@ -1373,6 +1434,42 @@ def test_skill_overrides_documented_in_docs_skills_md() -> None:
             f"`{marker}` row. Every non-on skillOverride entry needs a rationale row "
             "in docs/skills.md."
         )
+
+
+# Destructive-forms-require-ask: the bare and absolute-path invocations of
+# cleanup-merged-branches.sh and cleanup-idle-open-pr-worktrees.sh, without
+# --dry-run, must live in permissions.ask rather than permissions.allow --
+# an allow entry ran the destructive form silently, with no per-run
+# confirmation at the Claude Code layer (GH-429). Pinned so a later edit
+# can't silently re-merge these back into allow (ciso-reviewer finding,
+# GH-429 code review).
+_DESTRUCTIVE_CLEANUP_FORMS = [
+    "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
+    "Bash(cleanup-merged-branches)",
+    "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
+    "Bash(cleanup-idle-open-pr-worktrees)",
+]
+_DRY_RUN_CLEANUP_FORMS = [
+    "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
+    "Bash(cleanup-merged-branches --dry-run)",
+    "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh --dry-run)",
+    "Bash(cleanup-idle-open-pr-worktrees --dry-run)",
+]
+
+
+def test_destructive_cleanup_forms_require_ask_not_allow() -> None:
+    """Destructive cleanup invocations must be in permissions.ask, absent
+    from permissions.allow. --dry-run siblings must stay in permissions.allow."""
+    repo_root = Path(__file__).resolve().parents[4]
+    settings = json.loads((repo_root / "claude/.claude/settings.json").read_text())
+    permissions = settings.get("permissions", {})
+    allow = permissions.get("allow", [])
+    ask = permissions.get("ask", [])
+    for form in _DESTRUCTIVE_CLEANUP_FORMS:
+        assert form in ask, f"{form!r} must be in permissions.ask"
+        assert form not in allow, f"{form!r} must not be in permissions.allow"
+    for form in _DRY_RUN_CLEANUP_FORMS:
+        assert form in allow, f"{form!r} must stay in permissions.allow"
 
 
 # Durable-handoff-location: /handoff and /brief write to a durable

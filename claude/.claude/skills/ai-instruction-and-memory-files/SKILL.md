@@ -151,6 +151,7 @@ working tree — never a place for team rules.
 Index discipline:
 
 - One line per entry, ≤150 characters: `- [title](file.md) — one-line hook`
+- Hooks for action-prescribing memories keep the body's guard: "run X when asked", never bare "run X" — if the guard will not fit the character cap, the entry is not indexable as action-prescribing; split the memory or drop the imperative from the hook
 - No frontmatter on `MEMORY.md` itself — it's an index, not a memory
 - Substance lives in per-topic files; the index is pure routing
 - Organize semantically, not chronologically
