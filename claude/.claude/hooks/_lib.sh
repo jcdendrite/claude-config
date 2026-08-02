@@ -34,6 +34,51 @@ _lib_capped() {
   fi
 }
 
+# Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
+# Each external realpath/grealpath call below is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly.
+_lib_realpath_m() {
+  local target="$1"
+  local resolved
+  if resolved=$(_lib_capped realpath -m -- "$target" 2>/dev/null) && [ -n "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+  if command -v grealpath >/dev/null 2>&1 \
+    && resolved=$(_lib_capped grealpath -m -- "$target" 2>/dev/null) && [ -n "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+  local suffix="" current="$target" suffix_component
+  while true; do
+    if [ -e "$current" ]; then
+      resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
+      if [ -z "$suffix" ]; then
+        printf '%s\n' "$resolved"
+      elif [ "$resolved" = "/" ]; then
+        printf '/%s\n' "$suffix"
+      else
+        printf '%s/%s\n' "$resolved" "$suffix"
+      fi
+      return 0
+    fi
+    if [ "$current" = "/" ] || [ "$current" = "." ]; then
+      return 1
+    fi
+    suffix_component=$(basename -- "$current")
+    case "$suffix_component" in
+      ..)
+        return 1  # a `..` here could defeat a caller's same-prefix boundary check, so fail closed instead of normalizing it.
+        ;;
+    esac
+    if [ -z "$suffix" ]; then
+      suffix="$suffix_component"
+    else
+      suffix="$suffix_component/$suffix"
+    fi
+    current=$(dirname -- "$current")
+  done
+}
+
 # Canonical jq-encode-or-hard-block body for a gate hook's deny path.
 # Deliberately NOT named `emit_deny`: sourcing this file must not silently
 # satisfy the "CALLER MUST define emit_deny" contract below on its own, or a

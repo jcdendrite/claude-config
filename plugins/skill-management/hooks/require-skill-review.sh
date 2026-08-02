@@ -129,15 +129,16 @@ while IFS= read -r STAGED_PATH; do
 done <<< "$SKILL_DIFF"
 
 VALIDATOR_SCRIPT="$(dirname "$0")/../scripts/validate_skill_structure.py"
-# Prefer the plugin's persistent-venv python (provisioned by the
-# SessionStart hook against ${CLAUDE_PLUGIN_DATA}/venv) so the validator
-# finds pyyaml without the consumer running a manual pip install. Fall
-# back to system python3 — covers the contributor pytest path, which
-# imports the validator directly without going through plugin hooks, and
-# the brief window before the first SessionStart provisions the venv.
+# Fallback chain so the validator finds pyyaml: the plugin's persistent venv, then claude-config's own contributor .venv, then bare system python3.
 VALIDATOR_PYTHON="python3"
+# Located via this hook's own on-disk path ($0), not $CWD -- $CWD is the repo the gated commit targets, which isn't necessarily claude-config itself.
+# --git-common-dir (not --show-toplevel) resolves correctly for a linked worktree too, where .venv lives only at the main worktree root.
+HOOK_OWN_GIT_COMMON_DIR=$(git -C "$(dirname "$0")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -x "${CLAUDE_PLUGIN_DATA}/venv/bin/python" ]; then
   VALIDATOR_PYTHON="${CLAUDE_PLUGIN_DATA}/venv/bin/python"
+elif [ -n "$HOOK_OWN_GIT_COMMON_DIR" ] \
+  && [ -x "$(dirname "$HOOK_OWN_GIT_COMMON_DIR")/.venv/bin/python3" ]; then
+  VALIDATOR_PYTHON="$(dirname "$HOOK_OWN_GIT_COMMON_DIR")/.venv/bin/python3"
 fi
 
 if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then

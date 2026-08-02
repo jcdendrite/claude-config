@@ -57,28 +57,36 @@ collect_process_cwds() {
       fi
     done
   elif command -v lsof >/dev/null 2>&1; then
-    # No procfs (e.g. macOS): `lsof -d cwd` reports each process's cwd.
-    # -F pn emits a `p<pid>` line, an `fcwd` line, then an `n<path>` line per
-    # process; the case below picks p and n lines and ignores any other.
+    # No procfs (e.g. macOS): -F pn emits a `p<pid>` line then an `n<path>` line per open-cwd-fd process.
+    local lsof_tmp lsof_pid self_cwd
+    self_cwd=$(pwd -P)
+    lsof_tmp=$(mktemp -t worktree-lib-lsof.XXXXXX) || return 0  # GNU mktemp requires the XXXXXX suffix; a bare prefix is BSD-only.
+    trap 'rm -f "$lsof_tmp"' EXIT
+    lsof -d cwd -F pn >"$lsof_tmp" 2>/dev/null &
+    lsof_pid=$!  # backgrounded via a temp file rather than process substitution, so $! reliably captures the PID.
+    wait "$lsof_pid" 2>/dev/null || true  # `|| true`: don't let a shimmed/failing lsof abort the caller under set -e.
     pid=""
     while IFS= read -r line; do
       case "$line" in
         p*) pid="${line#p}" ;;
         n*)
           [ "$pid" = "$$" ] && continue
+          [ "$pid" = "$lsof_pid" ] && continue
           cwd="${line#n}"
+          # lsof's own forked helper briefly shares its cwd and exits before `wait` returns; kill -0, scoped to self_cwd matches only, drops it without risking another user's live process.
+          if [ "$cwd" = "$self_cwd" ] && ! kill -0 "$pid" 2>/dev/null; then
+            continue
+          fi
           if [ -n "$cwd" ]; then
             PROCESS_CWDS+=("$cwd")
           fi
           ;;
       esac
-    done < <(lsof -d cwd -F pn 2>/dev/null)
+    done < "$lsof_tmp"
+    rm -f "$lsof_tmp"
+    trap - EXIT  # explicit reset: this repo composes a single EXIT trap per script, not one per library function.
   fi
-  # A scan that finds zero process working directories has not worked — at
-  # minimum the invoking shell should appear. Leave PROCESS_CWD_SCAN as
-  # "unavailable" in that case so worktree_in_use reports "could not
-  # determine" and worktrees are skipped conservatively, rather than
-  # treated as idle and deleted on the strength of an empty snapshot.
+  # Zero cwds means the scan failed (self would always appear), not that nothing's running — stays "unavailable" so worktree_in_use reports "could not determine," not false-idle.
   if [ "${#PROCESS_CWDS[@]}" -gt 0 ]; then
     PROCESS_CWD_SCAN="ok"
   fi

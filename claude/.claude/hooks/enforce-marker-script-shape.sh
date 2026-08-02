@@ -192,7 +192,7 @@ case "$TOOL_NAME" in
     # this arm now fires on every file write; a stalled $HOME mount (NFS,
     # network home) would otherwise block the tool call with no backstop.
     EXPANDED_TARGET="${TARGET_PATH/#\~/$HOME}"
-    NORMALIZED_TARGET=$(_lib_capped realpath -m "$EXPANDED_TARGET" 2>/dev/null)
+    NORMALIZED_TARGET=$(_lib_realpath_m "$EXPANDED_TARGET" 2>/dev/null)
     for candidate_path in "$EXPANDED_TARGET" "$NORMALIZED_TARGET"; do
       [ -n "$candidate_path" ] || continue
       case "$candidate_path" in

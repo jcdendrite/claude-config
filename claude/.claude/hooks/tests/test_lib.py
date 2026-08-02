@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import textwrap
 import time
 from pathlib import Path
 
@@ -835,3 +836,92 @@ class TestFragmentHasToken:
 
     def test_missing_token_does_not_match(self) -> None:
         assert not _fragment_has_token("rsync -a /a /b", "--remove-source-files")
+
+
+# --- _lib_realpath_m ---------------------------------------------------
+#
+# GNU `realpath -m` is available natively in this test environment, so a
+# bare call exercises only the fast path (native -m succeeds immediately).
+# The fallback path (walk to nearest existing ancestor + reattach) only
+# runs when BOTH native `-m` and `grealpath` are unavailable — forced here
+# via a PATH built from a fake `realpath` shim (errors on -m, delegates to
+# the real system realpath otherwise) plus /usr/bin:/bin only, deliberately
+# excluding /usr/local/bin, where this dev machine's Homebrew `grealpath`
+# actually lives. Without this, `command -v grealpath` would still find it
+# and the fallback branch under test would never run.
+
+_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    if [ "$1" = "-m" ]; then
+      echo "realpath: illegal option -- m" >&2
+      exit 1
+    fi
+    exec /bin/realpath "$@"
+""")
+
+
+def _run_realpath_m(target: str, forced_fallback: bool = False, tmp_path: Path | None = None) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    if forced_fallback:
+        assert tmp_path is not None, "forced_fallback requires tmp_path"
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir(exist_ok=True)
+        shim = shim_dir / "realpath"
+        shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        shim.chmod(0o755)
+        env["PATH"] = f"{shim_dir}:/usr/bin:/bin"
+    script = f'set -uo pipefail; . {_LIB_SH}; _lib_realpath_m "$1"'
+    return subprocess.run(
+        ["bash", "-c", script, "bash", target],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+class TestLibRealpathM:
+    def test_native_fast_path_resolves_existing_dir(self) -> None:
+        result = _run_realpath_m("/tmp")
+        assert result.returncode == 0
+        assert result.stdout.strip() in ("/tmp", "/private/tmp")
+
+    def test_forced_fallback_resolves_nonexistent_leaf(self, tmp_path: Path) -> None:
+        target = tmp_path / "does-not-exist-xyz123.txt"
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(target)
+
+    def test_forced_fallback_resolves_multi_level_nonexistent_path(self, tmp_path: Path) -> None:
+        target = tmp_path / "newdir1" / "newdir2" / "newfile.txt"
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(target)
+
+    def test_forced_fallback_rejects_dotdot_in_unresolved_suffix(self, tmp_path: Path) -> None:
+        """Required regression test for a High-severity finding: the
+        fallback's not-yet-existing suffix must not be reattached verbatim
+        when it contains a `..` component, or a boundary check comparing
+        the result against a same-prefix glob (require-plan-review.sh's
+        agent-reviews/ exemption, its repo-boundary check, and
+        require-memory-skill.sh's memory-tree classification) can be
+        satisfied by a path that is semantically outside the intended
+        boundary. Fails closed (empty output, exit 1) instead."""
+        target = tmp_path / "agent-reviews" / "newdir" / ".." / ".." / ".." / "etc" / "passwd_pwned"
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode != 0 or not result.stdout.strip(), (
+            f"expected fail-closed (empty/nonzero) for a `..`-bearing unresolved suffix, "
+            f"got stdout={result.stdout!r} rc={result.returncode}"
+        )
+
+    def test_forced_fallback_no_double_slash_when_ancestor_is_root(self, tmp_path: Path) -> None:
+        """Required regression test: when the nearest existing ancestor is
+        `/` itself, the reattached suffix must not produce a doubled
+        leading slash (`//foo` instead of `/foo`), which could desync from
+        a canonically-formed comparison path in a caller's boundary check."""
+        target = "/zzz-totally-nonexistent-root-for-test/x/y/z"
+        result = _run_realpath_m(target, forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode == 0, result.stderr
+        resolved = result.stdout.strip()
+        assert resolved == target
+        assert "//" not in resolved

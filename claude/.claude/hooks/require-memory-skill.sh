@@ -73,8 +73,8 @@ if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
 
-REAL_PATH=$(realpath -m "$FILE_PATH")
-REAL_HOME=$(realpath -m "$HOME")
+REAL_PATH=$(_lib_realpath_m "$FILE_PATH")
+REAL_HOME=$(_lib_realpath_m "$HOME")
 
 # Classify path — only proceed for memory files.
 IS_CANDIDATE=0

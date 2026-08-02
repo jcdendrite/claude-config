@@ -214,21 +214,13 @@ fi
 # ExitPlanMode carries no file_path, so TARGET_PATH is always empty for it;
 # this block is skipped and ExitPlanMode reaches emit_deny unconditionally.
 if [ -n "$TARGET_PATH" ]; then
-  REAL_REPO=$(realpath -m "$REPO_ROOT")
-  REAL_TARGET=$(realpath -m "$TARGET_PATH")
+  REAL_REPO=$(_lib_realpath_m "$REPO_ROOT")
+  REAL_TARGET=$(_lib_realpath_m "$TARGET_PATH")
   # Reviewer findings writes are exempt — they land in the gitignored
   # agent-reviews/ directory and are never staged. Blocking them forces the
   # reviewer into a full-inline fallback that loses all context savings.
   # Exact prefix match only: "foo-agent-reviews/" does not satisfy this.
-  # Note: realpath -m normalizes lexically (resolves ..) but does NOT resolve
-  # symlinks. On a repo accessed via a symlinked path, REAL_REPO and REAL_TARGET
-  # may be normalized along different chains, causing a false-deny for a
-  # legitimate agent-reviews/ write. This is a known limitation shared with
-  # the repo-boundary check below; the fix would be `realpath` (requires existence).
-  # Portability note: realpath -m is GNU coreutils. On macOS without Homebrew
-  # coreutils, realpath -m exits non-zero and (without set -e) silently sets
-  # REAL_REPO to empty string, causing both boundary checks to become no-ops.
-  # Pre-existing behavior; this exemption check inherits the same characteristic.
+  # _lib_realpath_m resolves .. lexically but not symlinks, so a symlinked repo path can normalize REAL_REPO/REAL_TARGET along different chains and false-deny a legitimate write; same limitation as the repo-boundary check below.
   if [[ "$REAL_TARGET" == "$REAL_REPO"/agent-reviews/* ]]; then
     exit 0
   fi
