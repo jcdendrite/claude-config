@@ -125,6 +125,16 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/advance-past-commit-stall.sh"
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
@@ -147,6 +157,14 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/cleanup-worktree-anchor-nudge-marker.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/cleanup-commit-stall-marker.sh"
           }
         ]
       }

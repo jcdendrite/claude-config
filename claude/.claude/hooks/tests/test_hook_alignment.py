@@ -229,17 +229,29 @@ class TestHookClassHeader:
         """Every hook must declare # hook-class: <value>."""
         value = _hook_class(hook)
         assert value is not None, (
-            f"add `# hook-class: gate` or `# hook-class: informational` "
-            f"header to {hook.name}"
+            f"add `# hook-class: gate`, `# hook-class: informational`, or "
+            f"`# hook-class: turn-gate` header to {hook.name}"
         )
 
     def test_hook_class_value_valid(self, hook: Path) -> None:
-        """hook-class value must be 'gate' or 'informational'."""
+        """hook-class value must be 'gate', 'informational', or 'turn-gate'.
+
+        'gate' fires PreToolUse and may deny a tool call. 'informational'
+        fires PostToolUse/SessionStart/SessionEnd/etc. and never denies.
+        'turn-gate' fires on Stop and may block the *turn* from ending
+        (decision: "block") rather than a tool call from running — a
+        distinct contract from 'gate', which is why it is a separate value
+        rather than a Stop hook being mislabeled 'gate' (Layer 2's
+        PreToolUse-specific behavior checks, e.g.
+        test_emit_deny_defined_before_lib_source, do not apply to it) or
+        'informational' (which would be a false label on a hook that
+        blocks).
+        """
         value = _hook_class(hook)
         if value is None:
             pytest.skip("header absent — tested by test_hook_class_header_present")
-        assert value in ("gate", "informational"), (
-            f"{hook.name}: expected one of: gate, informational; got '{value}'"
+        assert value in ("gate", "informational", "turn-gate"), (
+            f"{hook.name}: expected one of: gate, informational, turn-gate; got '{value}'"
         )
 
     def test_gate_naming_convention_enforced(self, hook: Path) -> None:
