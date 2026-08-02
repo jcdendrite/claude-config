@@ -115,6 +115,7 @@ Flag and fix:
   its final state (clean tree = HEAD) and confirm its claims about that
   content (deployment order, feature names, step numbers) still match —
   a removed guard or deleted structure must be gone from the body too.
+- **External-state claims.** **Content-claim verification** covers files in this repo; this covers state outside it — most often a follow-up ticket said to be pending, or promised as `will create`. Re-check each claim at its own source, then rewrite it to its current truth value; carry an identifier across only where the body already names that tracker — never invent a fresh reference for a claim the body didn't already make. Whether CI is *wired up* is such a claim; whether CI is *passing* is not — that is stripped under **Reviewer-action items Claude can answer itself**.
 - `TBD` / `pending` / "to be updated" markers still in the body.
 - Files in the diff absent from the body.
 
