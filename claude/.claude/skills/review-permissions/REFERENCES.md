@@ -2,36 +2,51 @@
 
 ## Decisions on global allow list entries
 
-### `cleanup-merged-branches` bare-name entries
+### `cleanup-merged-branches` — destructive form moved to `permissions.ask`
 
-`settings.json` contains both absolute-path entries
-(`Bash(~/.claude/scripts/cleanup-merged-branches.sh)`) and bare-name entries
-(`Bash(cleanup-merged-branches)`, `Bash(cleanup-merged-branches --dry-run)`).
+`settings.json` contains both absolute-path and bare-name entries for this
+script, split across `permissions.allow` and `permissions.ask`:
+`Bash(cleanup-merged-branches --dry-run)` (and its absolute-path form) are
+`allow`; `Bash(cleanup-merged-branches)` (and its absolute-path form) are
+`ask`.
 
-The bare-name entries are accepted at global scope because:
-- The script is installed to `~/.local/bin/` by this repo's `install.sh` and
-  is not a name any project is likely to shadow.
-- The script itself calls only absolute paths; it does not exec untrusted input.
-- The absolute-path fallback entries remain as the preferred form; the bare-name
-  entries exist for ergonomic invocation when `~/.local/bin` is in `$PATH`.
+The destructive form was originally `allow`, on the reasoning that the script
+calls only absolute paths and execs no untrusted input (still true, and still
+why `--dry-run` is silently auto-approved). That reasoning covered *argument
+injection*, not *invocation without confirmation* — the script's own Tier A
+branch classification deletes without an internal per-branch prompt (see
+`docs/scripts.md`), so a global silent `allow` on the destructive form meant
+nothing outside the script confirmed a delete before it ran. Moving it to
+`permissions.ask` restores that confirmation at the Claude Code layer, and
+does so in every permission mode: per the primary source
+(`code.claude.com/docs/en/permissions`), ask outranks allow, and
+`bypassPermissions` "skips permission prompts, except those forced by explicit
+`ask` rules." Bare-name entries stay accepted at global scope for the same
+reason as before — installed to `~/.local/bin/` by `install.sh`. This is a
+plausibility argument, not a guarantee of the checklist's "unshadowable" bar:
+it holds only so long as `~/.local/bin` precedes any project- or
+tool-injected PATH entry of the same name (direnv, asdf/nvm shims, a
+project's own `./bin`) at invocation time. Accepted pre-existing exposure,
+unchanged by the `ask` move — the destructive form's exposure is reduced by
+this change, not eliminated by it.
 
 Checklist item 10 (PATH-resolved commands) applies. Justification accepted.
 
-### `cleanup-idle-open-pr-worktrees` bare-name entries
+### `cleanup-idle-open-pr-worktrees` — destructive form moved to `permissions.ask`
 
-`settings.json` contains both absolute-path entries
-(`Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)`) and bare-name
-entries (`Bash(cleanup-idle-open-pr-worktrees)`,
-`Bash(cleanup-idle-open-pr-worktrees --dry-run)`), for the same reasons
-recorded in the `cleanup-merged-branches` decision above: installed to
-`~/.local/bin/` by `install.sh`, calls only absolute paths, execs no
-untrusted input.
+Same split and same rationale as `cleanup-merged-branches` above:
+`Bash(cleanup-idle-open-pr-worktrees --dry-run)` (and its absolute-path form)
+stay `allow`; `Bash(cleanup-idle-open-pr-worktrees)` (and its absolute-path
+form) moved to `ask`. This script has no internal per-worktree prompt at all
+(see `docs/scripts.md`), so the `ask` rule is the only confirmation step
+before a worktree removal.
 
-`--idle-hours=N` invocations are deliberately not pre-authorized — the
+`--idle-hours=N` invocations remain not pre-authorized in either list — the
 no-globs rule (checklist items 1–9) rules out a wildcard entry for an
 arbitrary `N`, so a non-default threshold prompts for approval on first use.
 This is an accepted ergonomic tradeoff, not a gap: the two pre-authorized
-shapes (bare invocation, `--dry-run`) cover the common case.
+shapes (bare invocation via `ask`, `--dry-run` via `allow`) cover the common
+case.
 
 Checklist item 10 (PATH-resolved commands) applies. Justification accepted.
 
