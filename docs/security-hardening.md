@@ -175,7 +175,12 @@ number. A silently-skipped pattern would be an unscanned leak vector.
 **Known gaps.** The editor-flow commit (`git commit` with no `-m`/`-F`)
 populates the message after the hook fires. A chained `git add … &&
 git commit` stages content after the hook fires; the commit message is
-still scanned. Credit-card detection matches contiguous digit runs only.
+still scanned. A `-F <path>` message-source file has the same class of gap:
+the hook reads whatever is on disk at `<path>` when it fires, so a command
+that overwrites that path with sensitive content immediately before `git
+commit -F` runs in the same chain (`generate-secret > /tmp/msg.txt &&
+git commit -F /tmp/msg.txt`) is scanned against stale, not final, content.
+Credit-card detection matches contiguous digit runs only.
 
 ## Arming the data-file read hook
 
@@ -348,6 +353,33 @@ to hold PII/PHI or live credentials:
   searching FOR the literal string `id_rsa` (e.g. `grep "id_rsa" .`), not
   opening a file by that name, is denied too. Accepted false-positive cost,
   not a gap in the credential-exposure coverage itself.
+- `_LIB_CREDENTIAL_PATH_REGEX`'s `.ssh` token only flags a bare directory
+  reference or a `*`-prefixed glob (`cat ~/.ssh/*`, `tar czf x ~/.ssh`), not
+  a specific named file underneath it — deliberately, so a safe read like
+  `cat ~/.ssh/id_rsa.pub` or `cat ~/.ssh/authorized_keys` isn't also denied.
+  A read of a specific, unenumerated file under `.ssh` (e.g.
+  `cat ~/.ssh/environment`, an OpenSSH feature that can carry env-var
+  assignments) is therefore not caught by this token — only by whichever
+  other alternative in the regex already names that basename, if any.
+- The four SSH private-key basenames (`id_rsa`, `id_dsa`, `id_ecdsa`,
+  `id_ed25519`) keep a boundary that excludes a following `.`, specifically
+  to keep matching `id_rsa.pub` safe — every other path in
+  `_LIB_CREDENTIAL_PATH_REGEX` (`.netrc`, `.git-credentials`,
+  `credentials.json`, and the three directory-qualified cloud stores) closes
+  the following-`.` boundary instead, so a backup copy under a name like
+  `credentials.json.bak` or `.netrc.bak` is still caught. A backup copy of
+  an SSH private key itself (`id_rsa.bak`, `id_rsa.old`) is not — the `.pub`
+  exclusion and a backup-suffix catch-all aren't expressible in the same
+  POSIX ERE boundary without enumerating every possible backup suffix, which
+  this repo's own verb-allowlist precedent (further up this doc) already
+  rejects as an unbounded-surface trade. Use the `!` shell escape to inspect
+  a specific SSH key backup file if one exists.
+- `redact-credential-values.sh`'s PEM redaction only replaces the BEGIN
+  header line when the matched text has no matching END footer (a
+  truncated/paginated tool result, or output cut off mid-key) — the base64
+  key body itself is not removed in that case, only the header string. Full
+  redaction (header through footer) requires the complete block to be
+  present in the same scan.
 
 The airtight control is machine segmentation: developer machines do not
 hold patient data or long-lived credentials. That is policy, not
