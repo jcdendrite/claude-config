@@ -109,3 +109,4 @@ gh api repos/owner/repo/pulls/4/comments/12345678/replies \
   ```
   (or `/issues/comments/{id}` for issue-level comments)
 - **Avoid SHA-pinned commit references.** When acknowledging a fix in a reply, prefer "addressed in the latest commit on this branch" over "fixed in commit `<sha>`". SHA references become stale if the branch is rebased or force-pushed; branch-tip language remains correct across rebases. If a prior reply in this session cited a SHA that is now stale, post a correction reply — do not leave stale SHAs uncorrected before requesting reviewer re-verification.
+- **A filed follow-up updates what already referenced it.** When you file a ticket a reply promised as `will create`, correct every place that promise was already published: post a correction reply for earlier replies, as with a stale SHA, and refresh the PR body by re-running `/pr-description`, which owns that surface. Nothing re-reads those artifacts for you.

@@ -575,6 +575,95 @@ class TestPrDescriptionTwoModeDispatch:
         assert "no PR to sync" not in _skill_file("pr-description").read_text()
 
 
+class TestPrDescriptionExternalStateCheck:
+    """Pin the Flag-and-fix bullet that catches claims about state outside
+    the repo (GH-476) -- a follow-up ticket said to be pending, a promise
+    made as `will create`.
+
+    Content-claim verification (the neighboring bullet) only re-reads files
+    in this repo at HEAD; the marker-word bullet below only pattern-matches
+    literal `TBD`/`pending` text. Neither catches "will be filed" or "not
+    yet confirmed" going stale without a marker word, which is the gap this
+    bullet closes.
+    """
+
+    def _body(self):
+        return _skill_file("pr-description").read_text()
+
+    def test_declares_source_verification_mechanism(self):
+        """Mutation-tested: dropping this sentence collapses the bullet to a
+        heading with no instruction on *how* to re-check a claim, which is
+        indistinguishable from the bullet never having been added."""
+        assert "at its own source" in self._body()
+
+    def test_bounds_identifier_carry_to_named_trackers(self):
+        """Mutation-tested independently of the mechanism assertion above --
+        dropping only this clause leaves the re-check instruction intact but
+        removes the guard against writing an internal tracker identifier
+        into a body that never named that tracker (ciso-reviewer finding,
+        GH-476 plan review)."""
+        assert "already names that tracker" in self._body()
+
+    def test_bullet_falls_between_content_claim_and_marker_checks(self):
+        """Order-sensitive: a plain `in body` substring check would stay
+        green even if the bullet were moved elsewhere in the list, silently
+        breaking its own cross-references to the neighboring bullets it
+        names by heading."""
+        body = self._body()
+        start = body.index("**Content-claim verification.**")
+        end = body.index('`TBD` / `pending` / "to be updated" markers')
+        assert end > start, "marker-bullet anchor must follow the content-claim bullet"
+        segment = body[start:end]
+        assert "External-state claims" in segment
+        assert "at its own source" in segment
+
+    def test_disambiguates_ci_wiring_from_ci_status(self):
+        """Mutation-tested independently of the other three assertions in
+        this class: dropping only this sentence leaves the re-check-and-
+        rewrite instruction intact but removes the boundary against the
+        neighboring Reviewer-action-items bullet, which strips CI-status
+        placeholders outright -- without it, an implementer has no signal
+        that this bullet and that one disagree on what to do with a CI
+        claim, and can misclassify a CI-passing claim as re-verify-and-
+        rewrite instead of strip (staff-sdet finding, GH-476 code review)."""
+        assert "whether CI is *passing* is not" in self._body()
+
+
+class TestRespondPrPromiseRedemption:
+    """Pin the Guidelines bullet requiring a filed `will create` ticket to
+    update every place that promise was already published (GH-476).
+
+    Placed beside the existing stale-SHA rule (:111), which governs the
+    identical shape -- a claim in an already-posted reply going stale
+    during the session -- and prescribes the same correction-reply remedy,
+    not respond-pr's separate in-place-PATCH path (:101), which is scoped
+    to typos and factual errors in Claude's own comments.
+    """
+
+    def _body(self):
+        return _skill_file("respond-pr").read_text()
+
+    def test_requires_sweeping_already_published_artifacts(self):
+        """Mutation-tested: dropping this clause leaves the heading with no
+        obligation to act on it -- indistinguishable from no rule at all."""
+        assert "correct every place that promise was already published" in self._body()
+
+    def test_requires_correction_reply_for_prior_replies(self):
+        """Mutation-tested independently of the other two assertions in this
+        class: dropping only this clause leaves 'correct every place' with
+        no named remedy for the already-posted-reply half of the sweep --
+        regressing to only the PR-body half via the /pr-description pointer,
+        with no test signal (staff-sdet finding, GH-476 code review)."""
+        assert "post a correction reply for earlier replies" in self._body()
+
+    def test_points_at_pr_description_for_the_body_surface(self):
+        """Mutation-tested independently of the sweep assertion above --
+        dropping only the pointer leaves 'correct every place' with no
+        named mechanism for the PR-body half of that sweep, which
+        respond-pr itself has no tool to perform."""
+        assert "re-running `/pr-description`" in self._body()
+
+
 class TestReadyForReviewBodyFileGuard:
     """Pin that step 6 rejects a whitespace-only body file, not merely an empty one.
 
