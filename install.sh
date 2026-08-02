@@ -142,76 +142,7 @@ configure_machine_level_opt_ins
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
 if [ -f "$SETTINGS_FILE" ]; then
-  echo ""
-  echo "=== Registering marketplaces ==="
-  # INSTALL_TEST_FIXTURE: repo-relocation-marketplace — start
-  marketplace_list_json="$(claude plugin marketplace list --json 2>/dev/null)"
-  existing_marketplaces="$(echo "$marketplace_list_json" | jq -r '.[].name')"
-
-  # This repo is itself a marketplace. A directory source needs an absolute
-  # path, which is machine-specific and cannot live in the stowed settings.json
-  # — so register it here from this checkout's location. Compares the
-  # recorded .path (not just the name — .repo is github-source-only and is
-  # what the extraKnownMarketplaces loop below already uses) in canonicalized
-  # form against REPO_DIR (itself already canonicalized via pwd -P above), so
-  # a stale post-move registration is re-added instead of silently reported
-  # as "already registered".
-  claude_config_recorded_path="$(echo "$marketplace_list_json" | jq -r '.[] | select(.name == "claude-config") | .path // empty')"
-  claude_config_recorded_real=""
-  if [ -n "$claude_config_recorded_path" ]; then
-    # BSD readlink -f (macOS) can print a partial path to stdout AND exit
-    # non-zero for a dangling target, unlike GNU readlink — check the exit
-    # status of the assignment itself rather than trusting `cmd1 || cmd2`,
-    # which can concatenate BSD's partial stdout with the fallback echo.
-    if ! claude_config_recorded_real="$(readlink -f -- "$claude_config_recorded_path" 2>/dev/null)"; then
-      claude_config_recorded_real="$claude_config_recorded_path"
-    fi
-  fi
-  if [ -n "$claude_config_recorded_path" ] && [ "$claude_config_recorded_real" = "$REPO_DIR" ]; then
-    echo "  ✓ claude-config (already registered)"
-  else
-    if [ -n "$claude_config_recorded_path" ]; then
-      echo "  → re-registering claude-config: $claude_config_recorded_path -> $REPO_DIR"
-      claude plugin marketplace remove claude-config
-    else
-      echo "  → adding claude-config ($REPO_DIR)"
-    fi
-    claude plugin marketplace add "$REPO_DIR" --scope user
-  fi
-  # INSTALL_TEST_FIXTURE: repo-relocation-marketplace — end
-
-  while IFS=$'\t' read -r name source_type repo; do
-    # claude-config is registered separately above as a directory source; skip
-    # any extraKnownMarketplaces entry so a stray leftover doesn't trip the
-    # non-github warning below.
-    if [ "$name" = "claude-config" ]; then
-      continue
-    fi
-    if [ "$source_type" != "github" ]; then
-      echo "  ! $name: non-github source '$source_type' — skipping (only github sources are portable)"
-      continue
-    fi
-    if echo "$existing_marketplaces" | grep -qFx "$name"; then
-      echo "  ✓ $name (already registered)"
-    else
-      echo "  → adding $name ($repo)"
-      claude plugin marketplace add "$repo" --scope user
-    fi
-  done < <(jq -r '.extraKnownMarketplaces // {} | to_entries[] |
-    "\(.key)\t\(.value.source.source)\t\(.value.source.repo // "")"
-  ' "$SETTINGS_FILE")
-
-  echo ""
-  echo "=== Installing plugins from enabledPlugins ==="
-  existing_plugins="$(claude plugin list --json 2>/dev/null | jq -r '.[] | select(.scope == "user") | .id')"
-  while read -r plugin; do
-    if echo "$existing_plugins" | grep -qFx "$plugin"; then
-      echo "  ✓ $plugin (already installed)"
-    else
-      echo "  → installing $plugin"
-      claude plugin install "$plugin" -s user
-    fi
-  done < <(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$SETTINGS_FILE")
+  "$REPO_DIR/claude/.claude/scripts/register-marketplace.sh"
 
   echo ""
   echo "=== Installing this repo's own project-scope plugins ==="
