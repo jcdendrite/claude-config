@@ -117,6 +117,7 @@ class TestDenyPrivateProjectRefs:
             "Map to NIST-800-53",
             "Per ECMA-262",
             "Per ANSI-89 spec",
+            "Uses OSC-8 escape sequences",
             "Implement JEP-394",
             "Fix JDK-12345",
             "Upstream LLVM-123",
@@ -130,7 +131,7 @@ class TestDenyPrivateProjectRefs:
         ],
         ids=[
             "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf",
-            "w3c", "nist", "ecma", "ansi", "jep", "jdk", "llvm", "gcc",
+            "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc",
             "sha", "md", "http", "tls",
             "proj_placeholder", "ticket_placeholder",
         ],

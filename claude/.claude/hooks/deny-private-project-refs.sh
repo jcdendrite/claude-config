@@ -288,7 +288,7 @@ fi
 # Extend by prefix (no digits). Organized by category so it's obvious
 # what belongs here.
 #   OSS specs / standards bodies: CVE, CWE, RFC, PEP, ISO, IETF, W3C,
-#                                 NIST, ECMA, ANSI
+#                                 NIST, ECMA, ANSI, OSC
 #   Public-project trackers:      GH (GitHub shorthand), BUG (bugzilla),
 #                                 JEP / JDK (OpenJDK), LLVM, GCC
 #   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL
