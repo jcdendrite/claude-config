@@ -1337,6 +1337,30 @@ def test_handoff_and_brief_reference_resume_context_literally(skill_name: str) -
     )
 
 
+# GH-474: consume-durable-continuity-file-on-read.sh moves a handoff/brief
+# file the moment it's Read, even from the authoring session mid-draft. Both
+# skills warn against re-Read-to-verify with the same fragment, deliberately
+# duplicated (this repo forbids shared partials across skills) — this test is
+# the only thing that can catch the two copies drifting apart, since two
+# independently-worded per-file assertions would each keep passing right up
+# to the point the wording diverges. Subject-first so a rewrite to "does not
+# consume" breaks the match; stops short of the tool list so cat/grep/sed can
+# still change; whitespace-normalized on both sides as forward-looking
+# tolerance for a reflow that moves the fragment across a line break, not
+# because it currently straddles one.
+_READ_CONSUMES_FILE_PIN = "consumes the file — verify with a Bash"
+
+
+@pytest.mark.parametrize("skill_name", sorted(_DURABLE_WRITE_TARGETS))
+def test_handoff_and_brief_warn_against_read_to_verify(skill_name: str) -> None:
+    body = " ".join(_skill_file(skill_name).read_text().split())
+    pin = " ".join(_READ_CONSUMES_FILE_PIN.split())
+    assert pin in body, (
+        f"{skill_name}/SKILL.md must warn that a Read of its continuity file "
+        f"consumes it — expected the shared fragment {_READ_CONSUMES_FILE_PIN!r}"
+    )
+
+
 # --- Citation placement: URLs live in REFERENCES.md, not in a SKILL.md body ---
 #
 # A SKILL.md body loads into the session on every skill fire; REFERENCES.md never

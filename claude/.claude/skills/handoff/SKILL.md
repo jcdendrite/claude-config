@@ -12,6 +12,19 @@ directory is not guaranteed to exist yet.
 mkdir -p ~/.claude/handoffs
 ```
 
+## Verify the handoff file with Bash, never Read
+
+A `Read` of any `~/.claude/handoffs/*-handoff.md` path consumes the file — verify with a Bash
+command (`cat`, `grep`, `sed -n`, `wc -l`) instead. The consume fires from this
+authoring session too, mid-draft, long before any resume: the `Read` returns the
+content, and the file is gone from the canonical path by the next tool call.
+
+If it already happened, that successful `Read` reports the temp path the file
+moved to. `cp` it back to `~/.claude/handoffs/<slug>-handoff.md` before any
+further `Edit`, which still targets the canonical path. A later `Read` of the
+now-empty canonical path reports only that the file does not exist — it does not
+name where the file went.
+
 ## Artifact preamble (required — open this file with this block verbatim)
 
 ```
@@ -124,3 +137,4 @@ Before writing the file, verify:
 - If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `pr-description` skill before writing this file
 - Load-bearing claims in §2/§3/§6 carry a confidence tag — `[engineer-confirmed]`, `[verified: <evidence>]` (the command run, file read, or test output that established it), or `[assumed]` — so the resuming session re-verifies only what was never verified
 - Every §3 step has been re-checked against the §3.5 categorization rule: a step matching any §3.5 anchor shape is mis-bucketed — move it to §3.5 (bulk deletes include removing many branches or worktrees in one command). A cited justification ("per repo convention", "per memory") does not downgrade a step's irreversibility; a step claiming a convention names the file that states it
+- Draft verification used Bash (`cat`/`grep`/`sed -n`/`wc -l`), not `Read` — a `Read` of the handoff path consumes the file out from under any remaining `Edit` calls

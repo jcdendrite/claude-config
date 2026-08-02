@@ -105,8 +105,9 @@ def run_hook(
     since for every hook that always emits `hookSpecificOutput` that shape
     break is itself a regression worth a hard test failure. Hooks that
     legitimately emit a decision-less advisory payload (e.g. a PostToolUse
-    `systemMessage`) should use `run_hook_advisory` instead, which treats
-    that absence as "no opinion" rather than a broken payload.
+    `systemMessage`, or a `hookSpecificOutput.additionalContext` with no
+    `permissionDecision` key at all) should use `run_hook_advisory` instead,
+    which treats that absence as "no opinion" rather than a broken payload.
 
     home: when set, overrides $HOME in the subprocess environment so the
     hook writes into an isolated temp directory rather than real ~/.claude.
