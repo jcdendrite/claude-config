@@ -98,7 +98,13 @@ if [ -f "$SETTINGS_FILE" ]; then
   claude_config_recorded_path="$(echo "$marketplace_list_json" | jq -r '.[] | select(.name == "claude-config") | .path // empty')"
   claude_config_recorded_real=""
   if [ -n "$claude_config_recorded_path" ]; then
-    claude_config_recorded_real="$(readlink -f -- "$claude_config_recorded_path" 2>/dev/null || echo "$claude_config_recorded_path")"
+    # BSD readlink -f (macOS) can print a partial path to stdout AND exit
+    # non-zero for a dangling target, unlike GNU readlink — check the exit
+    # status of the assignment itself rather than trusting `cmd1 || cmd2`,
+    # which can concatenate BSD's partial stdout with the fallback echo.
+    if ! claude_config_recorded_real="$(readlink -f -- "$claude_config_recorded_path" 2>/dev/null)"; then
+      claude_config_recorded_real="$claude_config_recorded_path"
+    fi
   fi
   if [ -n "$claude_config_recorded_path" ] && [ "$claude_config_recorded_real" = "$REPO_DIR" ]; then
     echo "  ✓ claude-config (already registered)"
@@ -145,6 +151,52 @@ if [ -f "$SETTINGS_FILE" ]; then
       claude plugin install "$plugin" -s user
     fi
   done < <(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$SETTINGS_FILE")
+
+  echo ""
+  echo "=== Installing this repo's own project-scope plugins ==="
+  PROJECT_SETTINGS_FILE="$REPO_DIR/.claude/settings.json"
+  if [ -f "$PROJECT_SETTINGS_FILE" ]; then
+    # INSTALL_TEST_FIXTURE: project-plugin-match — start
+    # Whether $1 (a "name@marketplace" plugin id) is already installed at
+    # project scope for $REPO_DIR, given $2 as a "$id\t$projectPath" TSV of
+    # existing scope=="project" entries. Canonicalizes each entry's path
+    # the same way ensure_local_bin_on_path's readlink -f fallback does, not
+    # the `cmd1 || cmd2`-inside-`$()` form used above for marketplace
+    # registration — that form can concatenate BSD readlink's partial
+    # stdout with the fallback on a dangling target.
+    _project_plugin_already_installed() {
+      local plugin_id="$1" existing_tsv="$2" entry_id entry_path entry_path_real
+      while IFS=$'\t' read -r entry_id entry_path; do
+        [ -z "$entry_id" ] && continue
+        [ "$entry_id" != "$plugin_id" ] && continue
+        if ! entry_path_real="$(readlink -f -- "$entry_path" 2>/dev/null)"; then
+          entry_path_real="$entry_path"
+        fi
+        [ "$entry_path_real" = "$REPO_DIR" ] && return 0
+      done <<< "$existing_tsv"
+      return 1
+    }
+    # INSTALL_TEST_FIXTURE: project-plugin-match — end
+
+    # INSTALL_TEST_FIXTURE: project-scope-plugin-install — start
+    if ! existing_project_plugins="$(claude plugin list --json 2>/dev/null | jq -r '.[] | select(.scope == "project") | "\(.id)\t\(.projectPath)"')"; then
+      echo "[install] warning: could not read installed project-scope plugins via 'claude plugin list --json' — proceeding as if none are installed" >&2
+      existing_project_plugins=""
+    fi
+    enabled_project_plugins="$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$PROJECT_SETTINGS_FILE")" || \
+      echo "[install] warning: could not parse enabledPlugins from $PROJECT_SETTINGS_FILE — skipping project-scope plugin install" >&2
+    while read -r plugin; do
+      [ -z "$plugin" ] && continue
+      if _project_plugin_already_installed "$plugin" "$existing_project_plugins"; then
+        echo "  ✓ $plugin (already installed)"
+      else
+        echo "  → installing $plugin"
+        claude plugin install "$plugin" -s project || \
+          echo "[install] warning: failed to install $plugin at project scope" >&2
+      fi
+    done <<< "$enabled_project_plugins"
+    # INSTALL_TEST_FIXTURE: project-scope-plugin-install — end
+  fi
 fi
 
 check_private_projects_file() {
