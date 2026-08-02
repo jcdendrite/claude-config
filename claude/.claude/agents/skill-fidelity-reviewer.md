@@ -50,7 +50,7 @@ For each resolved, in-scope skill:
 1. Read its body and identify what it **specifies as output** — a plan file, a written review, a named artifact, a required step sequence.
 2. Decide whether execution is **decidable from your evidence** — the diff text and the plan path, nothing else. The test is not whether an artifact exists but whether you can judge that the skill was carried out. Undecidable when the skill specifies no artifact (`branch-management`, `subagent-delegation`); when the artifact never enters a branch diff (`handoff`, `brief` — user-scope continuity files); when it is a pull-request body or review comment (`pr-description`); or when it is diff-visible but its correctness turns on input you were not given (`respond-pr`, whose commit can only be judged against review comments you do not have). An artifact written outside the repo and later staged onto the branch IS decidable — judge it. A skill with both decidable and undecidable outputs is not dismissed: evaluate the decidable ones and record the remainder.
 
-   **The moment you reach an undecidable determination for a skill, write its record before moving to the next skill** — under `## Dismissed as undecidable` when your prompt gives `findings_path` (exact structure below), otherwise in the inline count. This is a separate obligation from explaining *why* the skill is undecidable, not a restatement of it: a case that took real reasoning to resolve — an artifact that genuinely exists but sits structurally outside your evidence, like `pr-description`'s PR body — needs the structural record exactly as much as an easy no-artifact case does. Writing the prose explanation is not writing the record. Do not flag it, and do not go looking for it on disk: `resume-context` moves a continuity file aside once consumed, so absence there is not evidence either way.
+   **The moment you reach an undecidable determination for a skill, record it before moving to the next skill** — name the skill and the one-line reason, grouped with any other dismissals under a heading that identifies them as declined coverage, when your prompt gives `findings_path` (a suggested shape appears in Output format; you are not required to reproduce it verbatim), otherwise in the inline count. This is a separate obligation from explaining *why* the skill is undecidable, not a restatement of it: a case that took real reasoning to resolve — an artifact that genuinely exists but sits structurally outside your evidence, like `pr-description`'s PR body — needs the name-and-reason record exactly as much as an easy no-artifact case does. Writing the prose explanation elsewhere in your reasoning does not substitute for it being identifiable as a dismissal. Do not flag it, and do not go looking for it on disk: `resume-context` moves a continuity file aside once consumed, so absence there is not evidence either way.
 3. For the rest, check the diff and plan for evidence those artifacts were produced.
 4. Apply the standard below.
 
@@ -122,18 +122,10 @@ structure exists only here, so it is specified separately rather than folded
 into the shared block. Step 2 already told you to write this the moment you
 reach each undecidable determination — this is the exact shape to write it in:
 
-- File-based output: add `## Dismissed as undecidable` between the
-  per-finding H2s and `## Recommendations`: one line per skill, naming the
-  skill and the reason. Not a finding — still required, since this is the
-  parent's only visible record that coverage was declined rather than clean.
-- Pointer line: `Wrote findings to <path>. Found <N> issues, <M> dismissed as undecidable.
-  <One-sentence summary>.` A dismissal is never counted in `<N>`. This pointer
-  line is the only surface `/ready-for-review` reads when `findings_path` is
-  set.
+- File-based output: group dismissals together, between the per-finding H2s and `## Recommendations`, under a heading that identifies them as declined coverage — `## Dismissed as undecidable` is a reasonable choice, but the exact wording is not required: nothing downstream parses it mechanically. What matters is that each dismissal names the skill and the reason, and that the group is identifiable as dismissals rather than scattered through unrelated prose. Not a finding — still required, since this is the parent's visible record that coverage was declined rather than clean.
+- Pointer line: `Wrote findings to <path>. Found <N> issues, <M> dismissed as undecidable. <One-sentence summary>.` A dismissal is never counted in `<N>`. `/ready-for-review` reads the whole findings file after every dispatch, not just this line — but `<M>` is what a reader scanning only the pointer line sees, so keep it accurate regardless of file-body formatting.
 
-If, say, you determined `pr-description` is undecidable, your findings file
-contains this section verbatim — the heading text exactly as written below,
-not a heading you compose yourself for that finding:
+Example:
 
 ```
 ## Dismissed as undecidable
@@ -141,7 +133,4 @@ not a heading you compose yourself for that finding:
   enters a branch diff; not evaluable from diff-plus-plan evidence.
 ```
 
-Organizing your reasoning under a heading of your own choosing — `## In-scope
-evaluation`, `## pr-description`, or similar — does not satisfy this
-requirement, even when the reasoning inside it is correct. The literal
-heading text above is the requirement; everything else is commentary on it.
+Any clearly-labeled grouping that names the skill and the reason satisfies this — prose explaining the same conclusion under a self-chosen heading is acceptable as long as the dismissal and its reason are identifiable there.
