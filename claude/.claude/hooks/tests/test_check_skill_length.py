@@ -276,6 +276,52 @@ class TestCheckSkillLength:
             == "allow"
         )
 
+    def test_plan_review_routing_md_uses_override(self, isolated_home, tmp_path):
+        """plan-review/ROUTING.md also gets the 500-line cap: at/under it, growing → allow."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        routing_path = "claude/.claude/skills/plan-review/ROUTING.md"
+        (repo / "claude" / ".claude" / "skills" / "plan-review").mkdir(parents=True)
+        (repo / routing_path).write_text(make_skill_content(290))
+        subprocess.run(["git", "add", routing_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / routing_path).write_text(make_skill_content(300))
+        subprocess.run(["git", "add", routing_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_plan_review_routing_md_over_override_denies(self, isolated_home, tmp_path):
+        """plan-review/ROUTING.md over the 500-line override and growing → deny."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        routing_path = "claude/.claude/skills/plan-review/ROUTING.md"
+        (repo / "claude" / ".claude" / "skills" / "plan-review").mkdir(parents=True)
+        (repo / routing_path).write_text(make_skill_content(490))
+        subprocess.run(["git", "add", routing_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / routing_path).write_text(make_skill_content(501))
+        subprocess.run(["git", "add", routing_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     def test_cwd_not_repo_root_does_not_cause_false_negative(
         self, isolated_home, skill_repo
     ):

@@ -11,9 +11,10 @@
 # How it works:
 # - The /skill-review skill writes
 #   ~/.claude/skill-review-markers/<repo-hash>.<session_id> with the sha256 hash
-#   of `git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'` when the review
-#   is clean. The marker lives under $HOME (not inside the repo) so it never
-#   pollutes `git status` or risks being accidentally committed.
+#   of `git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'
+#   'claude/.claude/skills/plan-review/ROUTING.md'` when the review is clean. The
+#   marker lives under $HOME (not inside the repo) so it never pollutes
+#   `git status` or risks being accidentally committed.
 # - This hook recomputes the same path-scoped diff hash at commit time and
 #   looks for any marker under this repo-hash holding that value. Match =
 #   the staged skill changes were reviewed, allow the commit. Mismatch/missing
@@ -25,9 +26,9 @@
 #   covered this diff. Reading the session key as an authorization predicate
 #   would deny a resumed session (new session_id) a review it already
 #   completed against the identical staged state.
-# - The marker is scoped to SKILL.md diffs only (not the full staged diff),
-#   so re-staging non-SKILL.md files after a clean skill-review does not
-#   invalidate the marker.
+# - The marker is scoped to SKILL.md and plan-review/ROUTING.md diffs only
+#   (not the full staged diff), so re-staging other files after a clean
+#   skill-review does not invalidate the marker.
 set -uo pipefail
 
 emit_deny() {
@@ -98,10 +99,15 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-# Early exit: if no SKILL.md files are staged, this hook is a no-op.
-# Commits that don't touch any skill file are not gated by skill-review.
+# Early exit: if no SKILL.md files and no plan-review/ROUTING.md are staged,
+# this hook is a no-op. Commits that don't touch any gated skill file are not
+# gated by skill-review. ROUTING_DIFF is checked separately from SKILL_DIFF
+# because SKILL_DIFF also feeds STAGED_SKILL_PATHS below, which the
+# frontmatter/YAML structural validator consumes — ROUTING.md has no
+# frontmatter and must not reach that validator.
 SKILL_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md')
-if [ -z "$SKILL_DIFF" ]; then
+ROUTING_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude/.claude/skills/plan-review/ROUTING.md')
+if [ -z "$SKILL_DIFF" ] && [ -z "$ROUTING_DIFF" ]; then
   exit 0
 fi
 
@@ -212,7 +218,7 @@ if _lib_chains_marker_write_before_commit "$COMMAND" skill-review; then
 fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' | sha256sum | awk '{print $1}')
+CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
 
 # Allow when any marker under this repo-hash holds the currently staged skill
 # diff's hash. The stored hash is the authorization — it proves a review

@@ -130,6 +130,13 @@ If not all three hold, point at the canonical source.
 
 ## 7. Review checklist
 
+When the staged diff is (or includes) `plan-review/ROUTING.md`, items 1-4
+(frontmatter, description scope, trigger specificity, DO NOT TRIGGER
+coverage) do not apply — it has no frontmatter or description — but items
+5-12 (length, behavior test, voice, cross-reference correctness, duplication
+justification, redaction, behavioral-equivalence audit,
+platform-genericness) do.
+
 1. **Frontmatter** — `name` matches directory; `description` present
    and contains both `TRIGGER when:` and `DO NOT TRIGGER when:`
    blocks. `allowed-tools` and `user-invocable` only if needed. Add
@@ -190,4 +197,4 @@ blockers), record completion by running this command exactly once:
 ~/.claude/scripts/marker.sh write skill-review
 ```
 
-The pathspecs `claude/.claude/skills/**/SKILL.md` and `plugins/*/skills/**/SKILL.md` are encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks — covering both stowed skills and project-scoped plugin skills.
+The pathspecs `claude/.claude/skills/**/SKILL.md`, `plugins/*/skills/**/SKILL.md`, and `claude/.claude/skills/plan-review/ROUTING.md` are encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks — covering stowed skills, project-scoped plugin skills, and the hardcoded `ROUTING.md` exception.
