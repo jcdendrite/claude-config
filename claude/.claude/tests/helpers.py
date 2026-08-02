@@ -278,27 +278,33 @@ def bash_input(
     return payload
 
 
-def edit_input(file_path: str, agent_type: str | None = None) -> dict:
+def edit_input(file_path: str, agent_type: str | None = None, cwd: str | None = None) -> dict:
     payload: dict = {
         "tool_name": "Edit",
         "tool_input": {"file_path": file_path, "old_string": "a", "new_string": "b"},
     }
     if agent_type is not None:
         payload["agent_type"] = agent_type
+    if cwd is not None:
+        payload["cwd"] = cwd
     return payload
 
 
-def write_input(file_path: str, agent_type: str | None = None) -> dict:
+def write_input(file_path: str, agent_type: str | None = None, cwd: str | None = None) -> dict:
     payload: dict = {"tool_name": "Write", "tool_input": {"file_path": file_path, "content": "x"}}
     if agent_type is not None:
         payload["agent_type"] = agent_type
+    if cwd is not None:
+        payload["cwd"] = cwd
     return payload
 
 
-def multiedit_input(file_path: str, agent_type: str | None = None) -> dict:
+def multiedit_input(file_path: str, agent_type: str | None = None, cwd: str | None = None) -> dict:
     payload: dict = {"tool_name": "MultiEdit", "tool_input": {"file_path": file_path, "edits": []}}
     if agent_type is not None:
         payload["agent_type"] = agent_type
+    if cwd is not None:
+        payload["cwd"] = cwd
     return payload
 
 

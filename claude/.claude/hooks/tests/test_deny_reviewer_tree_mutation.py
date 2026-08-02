@@ -20,18 +20,59 @@ from test_agent_roster import CANARY_AGENTS
 HOOK = HOOKS_DIR / "deny-reviewer-tree-mutation.sh"
 
 
+@pytest.fixture
+def repo_ignoring_agent_reviews(tmp_path):
+    """Git repo with a committed .gitignore that covers agent-reviews/ —
+    the safe case an agent-reviews/* write should be exempted for."""
+    # Distinct subdirectory name from repo_not_ignoring_agent_reviews below —
+    # a test requesting both fixtures shares one tmp_path, and both used to
+    # create "repo" under it, colliding.
+    repo = tmp_path / "ignoring-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / ".gitignore").write_text("agent-reviews/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+@pytest.fixture
+def repo_not_ignoring_agent_reviews(tmp_path):
+    """Git repo with no ignore entry for agent-reviews/ reachable by
+    check-ignore at all — from check-ignore's perspective this is
+    indistinguishable from GH-512's actual failure mode (a stale
+    worktree-local info/exclude), which lives in
+    test_foreign_git_dir_env_does_not_launder_the_check instead, the one
+    test that needs the real info/exclude-resident shape rather than this
+    simpler "nothing ignores it" case."""
+    repo = tmp_path / "not-ignoring-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "README.md").write_text("x\n")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
 class TestFileWriteTools:
     def test_reviewer_write_to_tracked_path_denied(self):
         assert run_hook(HOOK, write_input("/repo/src/main.py", agent_type="staff-sdet")) == "deny"
 
-    def test_reviewer_write_to_findings_path_allowed(self):
-        """The sanctioned findings-file write must never be blocked."""
+    def test_reviewer_write_to_findings_path_allowed(self, repo_ignoring_agent_reviews):
+        """The sanctioned findings-file write must never be blocked — as long
+        as agent-reviews/ is actually ignored in the target repo (GH-512)."""
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
-        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet")) == "allow"
+        cwd = str(repo_ignoring_agent_reviews)
+        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "allow"
 
-    def test_reviewer_write_to_nested_agent_reviews_path_allowed(self):
-        path = "/repo/agent-reviews/staff-sdet-1700000000-branch.md"
-        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet")) == "allow"
+    def test_reviewer_write_to_nested_agent_reviews_path_allowed(self, repo_ignoring_agent_reviews):
+        path = str(repo_ignoring_agent_reviews / "sub" / "agent-reviews" / "staff-sdet-1700000000-branch.md")
+        cwd = str(repo_ignoring_agent_reviews)
+        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "allow"
 
     def test_reviewer_write_to_decoy_agent_reviews_filename_denied(self):
         """A file literally named agent-reviews-notes.md is a substring
@@ -67,12 +108,14 @@ class TestFileWriteTools:
         assert "/tmp" in reason
         assert "agent-reviews" in reason
 
-    def test_skill_fidelity_reviewer_write_to_findings_allowed(self):
+    def test_skill_fidelity_reviewer_write_to_findings_allowed(self, repo_ignoring_agent_reviews):
         """skill-fidelity-reviewer is a Write-only reviewer (no Bash/Edit) added
         to the roster; its findings-file Write is the pipeline-critical
-        exemption that must never be blocked."""
+        exemption that must never be blocked when agent-reviews/ is actually
+        ignored in the target repo."""
         path = "agent-reviews/skill-fidelity-reviewer-1700000000-branch.md"
-        assert run_hook(HOOK, write_input(path, agent_type="skill-fidelity-reviewer")) == "allow"
+        cwd = str(repo_ignoring_agent_reviews)
+        assert run_hook(HOOK, write_input(path, agent_type="skill-fidelity-reviewer", cwd=cwd)) == "allow"
 
     def test_skill_fidelity_reviewer_write_to_tracked_denied(self):
         assert run_hook(HOOK, write_input("/repo/src/main.py", agent_type="skill-fidelity-reviewer")) == "deny"
@@ -83,6 +126,171 @@ class TestFileWriteTools:
         deny on an empty string."""
         payload = {"tool_name": "Write", "tool_input": {}, "agent_type": "staff-sdet"}
         assert run_hook(HOOK, payload) == "allow"
+
+
+class TestAgentReviewsIgnoreVerification:
+    """The agent-reviews/* exemption is conditional on `git check-ignore`
+    confirming the path is actually ignored in the target repo (GH-512) — a
+    stale worktree-local info/exclude, or a repo with no ignore entry at all,
+    must deny rather than silently let an unignored findings file through."""
+
+    def test_not_ignored_path_denied(self, repo_not_ignoring_agent_reviews):
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+        cwd = str(repo_not_ignoring_agent_reviews)
+        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "deny"
+
+    def test_not_ignored_deny_reason_directs_to_inline_fallback(self, repo_not_ignoring_agent_reviews):
+        """The deny message must send the reviewer to its documented inline
+        fallback, and must NOT read as an invitation to fix the ignore state
+        itself (e.g. a raw `printf ... >> .git/info/exclude`) — exactly the
+        unguarded raw-Bash-redirect vector this hook's header documents as a
+        known gap. Locks the message shape, not just the decision."""
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+        cwd = str(repo_not_ignoring_agent_reviews)
+        reason = run_hook_reason(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd))
+        assert reason is not None
+        assert "not actually ignored" in reason
+        assert "fall back to inline output" in reason.lower()
+        assert "do not create or modify ignore rules yourself" in reason
+
+    def test_cwd_outside_any_git_repo_denied(self, tmp_path):
+        """A real, existing, non-repo directory makes `git check-ignore`
+        itself fail (exit 128), landing in the catch-all `*` case — distinct
+        from the cd-failure sentinel (exit 3) a nonexistent `.cwd` produces
+        (test_cwd_does_not_exist_denied_distinctly_from_not_ignored). The
+        assertion pins the catch-all's own distinguishing substring, not
+        "could not confirm" alone — that phrase is shared with the sentinel-3
+        message and wouldn't catch a regression that misclassified this case
+        as a cd failure instead."""
+        outside = tmp_path / "not-a-repo"
+        outside.mkdir()
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+        reason = run_hook_reason(HOOK, write_input(path, agent_type="staff-sdet", cwd=str(outside)))
+        assert reason is not None
+        assert "not a git repo, or the check failed" in reason
+
+    def test_missing_cwd_denied(self):
+        """No .cwd in the payload at all must deny, not silently check
+        whatever directory the hook process happens to be running in —
+        regression test for macOS system /bin/bash 3.2 treating `cd ''` as a
+        silent no-op (exit 0, stays put) rather than an error like bash 4+."""
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+        reason = run_hook_reason(HOOK, write_input(path, agent_type="staff-sdet"))
+        assert reason is not None
+        assert "carried no .cwd" in reason
+
+    def test_foreign_git_dir_env_does_not_launder_the_check(self, repo_not_ignoring_agent_reviews, tmp_path):
+        """A GIT_DIR pointed at a different repo must not make an unrelated
+        target repo's write look safe — regression test for the `unset
+        GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` fix (mirrors
+        require-worktree-for-git-writes.sh:100).
+
+        The foreign repo's ignore rule MUST live in `.git/info/exclude`, not
+        a tracked `.gitignore` — verified empirically that `git check-ignore`
+        reads `.gitignore` from the resolved working tree's filesystem
+        (`$CWD`), never from wherever `GIT_DIR` points, so a tracked
+        `.gitignore` in the foreign repo never launders the check regardless
+        of the `unset` fix and would make this test pass unchanged even with
+        that fix reverted. `info/exclude` is the one ignore source that
+        actually lives inside `GIT_DIR` and can be laundered this way — it's
+        also the exact mechanism GH-512 itself is about (a worktree-local
+        `info/exclude` file)."""
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=foreign, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=foreign, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=foreign, check=True)
+        (foreign / "README.md").write_text("x\n")
+        subprocess.run(["git", "add", "README.md"], cwd=foreign, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=foreign, check=True)
+        (foreign / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
+
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+        cwd = str(repo_not_ignoring_agent_reviews)
+        foreign_git_dir = str(foreign / ".git")
+        assert run_hook(
+            HOOK,
+            write_input(path, agent_type="staff-sdet", cwd=cwd),
+            extra_env={"GIT_DIR": foreign_git_dir},
+        ) == "deny"
+
+    def test_foreign_git_work_tree_env_does_not_launder_the_check(self, repo_not_ignoring_agent_reviews, tmp_path):
+        """GIT_WORK_TREE alone (no GIT_DIR) independently launders the check
+        if left unset: `git check-ignore` reads a tracked `.gitignore` from
+        whatever GIT_WORK_TREE points at rather than from `$CWD`, so a
+        foreign repo's tracked (not info/exclude-resident) ignore rule is
+        enough — no GIT_DIR override needed. Regression test for the same
+        `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` fix as
+        test_foreign_git_dir_env_does_not_launder_the_check, pinning the
+        GIT_WORK_TREE vector specifically so a future edit that narrows the
+        unset list to GIT_DIR alone doesn't silently reopen this bypass."""
+        foreign = tmp_path / "foreign-work-tree"
+        foreign.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=foreign, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=foreign, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=foreign, check=True)
+        (foreign / ".gitignore").write_text("agent-reviews/\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=foreign, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=foreign, check=True)
+
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+        cwd = str(repo_not_ignoring_agent_reviews)
+        assert run_hook(
+            HOOK,
+            write_input(path, agent_type="staff-sdet", cwd=cwd),
+            extra_env={"GIT_WORK_TREE": str(foreign)},
+        ) == "deny"
+
+    def test_cwd_does_not_exist_denied_distinctly_from_not_ignored(self, tmp_path):
+        """A `.cwd` naming a directory that doesn't exist must deny via the
+        cd-failure sentinel, not be misreported as 'not actually ignored' —
+        regression test for treating `cd "$CWD"` failure as a distinct
+        outcome from git check-ignore's genuine exit 1. Distinct from
+        test_cwd_outside_any_git_repo_denied, which `mkdir()`s a real
+        (non-repo) directory first — here the path itself doesn't exist, so
+        `cd` fails rather than `git check-ignore`."""
+        does_not_exist = str(tmp_path / "never-created")
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+        reason = run_hook_reason(HOOK, write_input(path, agent_type="staff-sdet", cwd=does_not_exist))
+        assert reason is not None
+        assert "could not confirm" in reason
+        assert "not actually ignored" not in reason
+        assert "does not resolve to a directory" in reason
+
+    def test_subdirectory_cwd_resolves_path_relative_to_cwd_not_repo_root(self, tmp_path):
+        """The ignore pattern here is anchored (`/agent-reviews/`, matching
+        only at the exact directory the .gitignore lives in) — so a write
+        actually landing in a subdirectory's own agent-reviews/ must NOT be
+        treated as ignored just because the same relative path string would
+        be ignored at the repo root. Regression test for `cd "$CWD"` (checks
+        the same frame the Write tool resolves file_path against) versus `-C`
+        against a separately-resolved repo root (would check the wrong
+        location and false-allow here — verified empirically before this fix
+        existed: -C repo reports the root-anchored path ignored regardless of
+        which subdirectory the write actually targets)."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / ".gitignore").write_text("/agent-reviews/\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        sub = repo / "sub"
+        sub.mkdir()
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+
+        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=str(repo))) == "allow"
+        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=str(sub))) == "deny"
+
+    def test_decoy_agent_reviews_filename_unaffected_by_ignore_check(self, repo_not_ignoring_agent_reviews):
+        """A file literally named agent-reviews-notes.md never reaches the
+        check-ignore gate at all — it fails the /-delimited-segment match
+        before the agent-reviews/* case arm, so it denies regardless of
+        whether the repo ignores agent-reviews/."""
+        path = "/repo/agent-reviews-notes.md"
+        cwd = str(repo_not_ignoring_agent_reviews)
+        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "deny"
 
 
 class TestOtherTools:
@@ -320,13 +528,15 @@ class TestExemptionPathsAllTools:
     def test_reviewer_multiedit_under_tmp_allowed(self):
         assert run_hook(HOOK, multiedit_input("/tmp/scratch/copy.py", agent_type="staff-sdet")) == "allow"
 
-    def test_reviewer_edit_findings_path_allowed(self):
+    def test_reviewer_edit_findings_path_allowed(self, repo_ignoring_agent_reviews):
         path = "agent-reviews/ciso-reviewer-1700000000-branch.md"
-        assert run_hook(HOOK, edit_input(path, agent_type="ciso-reviewer")) == "allow"
+        cwd = str(repo_ignoring_agent_reviews)
+        assert run_hook(HOOK, edit_input(path, agent_type="ciso-reviewer", cwd=cwd)) == "allow"
 
-    def test_reviewer_multiedit_findings_path_allowed(self):
+    def test_reviewer_multiedit_findings_path_allowed(self, repo_ignoring_agent_reviews):
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
-        assert run_hook(HOOK, multiedit_input(path, agent_type="staff-sdet")) == "allow"
+        cwd = str(repo_ignoring_agent_reviews)
+        assert run_hook(HOOK, multiedit_input(path, agent_type="staff-sdet", cwd=cwd)) == "allow"
 
 
 class TestCommandWordResolution:
