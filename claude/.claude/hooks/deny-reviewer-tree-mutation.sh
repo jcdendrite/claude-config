@@ -250,7 +250,7 @@ case "$TOOL_NAME" in
         (
           unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
           cd "$CWD" 2>/dev/null || exit 3
-          _lib_capped git check-ignore -q -- "$FILE_PATH"
+          _lib_capped git check-ignore -q -- "$FILE_PATH" 2>/dev/null
         )
         IGNORE_CHECK_STATUS=$?
         case "$IGNORE_CHECK_STATUS" in

@@ -326,7 +326,7 @@ if ! command -v timeout >/dev/null 2>&1; then
   # shellcheck disable=SC2016 # single-quoted for literal display text — the
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in either message.
-  printf '[install] warning: GNU coreutils `timeout` not in PATH; guard hooks will run jq without timeout protection.\n' >&2
+  printf '[install] warning: GNU coreutils `timeout` not in PATH; guard hooks will run jq and git checks (e.g. the agent-reviews/ ignore-state check) without timeout protection.\n' >&2
   # shellcheck disable=SC2016 # single-quoted for literal display text — the
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in this message.

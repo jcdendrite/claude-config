@@ -154,12 +154,20 @@ class TestAgentReviewsIgnoreVerification:
         assert "do not create or modify ignore rules yourself" in reason
 
     def test_cwd_outside_any_git_repo_denied(self, tmp_path):
+        """A real, existing, non-repo directory makes `git check-ignore`
+        itself fail (exit 128), landing in the catch-all `*` case — distinct
+        from the cd-failure sentinel (exit 3) a nonexistent `.cwd` produces
+        (test_cwd_does_not_exist_denied_distinctly_from_not_ignored). The
+        assertion pins the catch-all's own distinguishing substring, not
+        "could not confirm" alone — that phrase is shared with the sentinel-3
+        message and wouldn't catch a regression that misclassified this case
+        as a cd failure instead."""
         outside = tmp_path / "not-a-repo"
         outside.mkdir()
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
         reason = run_hook_reason(HOOK, write_input(path, agent_type="staff-sdet", cwd=str(outside)))
         assert reason is not None
-        assert "could not confirm" in reason
+        assert "not a git repo, or the check failed" in reason
 
     def test_missing_cwd_denied(self):
         """No .cwd in the payload at all must deny, not silently check
@@ -204,6 +212,33 @@ class TestAgentReviewsIgnoreVerification:
             HOOK,
             write_input(path, agent_type="staff-sdet", cwd=cwd),
             extra_env={"GIT_DIR": foreign_git_dir},
+        ) == "deny"
+
+    def test_foreign_git_work_tree_env_does_not_launder_the_check(self, repo_not_ignoring_agent_reviews, tmp_path):
+        """GIT_WORK_TREE alone (no GIT_DIR) independently launders the check
+        if left unset: `git check-ignore` reads a tracked `.gitignore` from
+        whatever GIT_WORK_TREE points at rather than from `$CWD`, so a
+        foreign repo's tracked (not info/exclude-resident) ignore rule is
+        enough — no GIT_DIR override needed. Regression test for the same
+        `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` fix as
+        test_foreign_git_dir_env_does_not_launder_the_check, pinning the
+        GIT_WORK_TREE vector specifically so a future edit that narrows the
+        unset list to GIT_DIR alone doesn't silently reopen this bypass."""
+        foreign = tmp_path / "foreign-work-tree"
+        foreign.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=foreign, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=foreign, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=foreign, check=True)
+        (foreign / ".gitignore").write_text("agent-reviews/\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=foreign, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=foreign, check=True)
+
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+        cwd = str(repo_not_ignoring_agent_reviews)
+        assert run_hook(
+            HOOK,
+            write_input(path, agent_type="staff-sdet", cwd=cwd),
+            extra_env={"GIT_WORK_TREE": str(foreign)},
         ) == "deny"
 
     def test_cwd_does_not_exist_denied_distinctly_from_not_ignored(self, tmp_path):
