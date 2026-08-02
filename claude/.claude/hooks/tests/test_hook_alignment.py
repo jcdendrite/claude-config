@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import bash_input, write_input
+from helpers import bash_input, build_path_without, write_input
 
 # ------------------------------------------------------------------ #
 # Paths                                                               #
@@ -431,14 +431,11 @@ def _path_without(tmp_path_factory: pytest.TempPathFactory):
     """Return a builder `_path_without(binary) -> str`: a PATH string built
     as a symlink farm mirroring the real PATH, with `binary` omitted.
 
-    A full mirror (not a hand-picked minimal tool subset) is deliberate:
-    under-symlinking is a silent false pass here — a hook denying because
-    some OTHER required tool is missing looks identical to the hook denying
-    correctly for the binary this test actually targets. First real PATH
-    directory wins on a duplicate basename, mirroring normal PATH shadowing
-    order; unreadable directories are skipped rather than raising. Farms are
-    memoized per binary for the whole test session, since every case that
-    asks to remove the same binary gets an identical farm.
+    Farms are memoized per binary for the whole test session, since every
+    case that asks to remove the same binary gets an identical farm. Farm
+    construction itself (full-mirror rationale, dedup, unreadable-dir
+    handling) lives in `helpers.build_path_without`, shared with
+    `test_advance_past_commit_stall.py`'s own non-memoized caller.
     """
     cache: dict[str, str] = {}
 
@@ -446,34 +443,8 @@ def _path_without(tmp_path_factory: pytest.TempPathFactory):
         if binary in cache:
             return cache[binary]
         farm_dir = tmp_path_factory.mktemp(f"path-without-{binary}")
-        seen: set[str] = set()
-        for real_dir in os.environ.get("PATH", "").split(os.pathsep):
-            if not real_dir:
-                continue
-            try:
-                entries = os.listdir(real_dir)
-            except OSError:
-                continue
-            for name in entries:
-                if name == binary or name in seen:
-                    continue
-                src = Path(real_dir) / name
-                try:
-                    if not os.access(src, os.X_OK):
-                        continue
-                except OSError:
-                    continue
-                seen.add(name)
-                try:
-                    (farm_dir / name).symlink_to(src)
-                except OSError:
-                    continue
-        path_str = str(farm_dir)
-        assert shutil.which(binary, path=path_str) is None, (
-            f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
-        )
-        cache[binary] = path_str
-        return path_str
+        cache[binary] = build_path_without(binary, farm_dir)
+        return cache[binary]
 
     return _build
 

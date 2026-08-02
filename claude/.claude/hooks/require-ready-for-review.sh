@@ -43,8 +43,8 @@
 # - gh pr view fails (network issue, gh not configured, etc.) — fail-open
 #   to keep the user unblocked; the skill's prose triggers still fire.
 #
-# Known gaps, inherited by gh pr create, not closed here (filed as a
-# follow-up): the --dry-run bypass greps the whole $COMMAND, so
+# Known gaps, inherited by gh pr create, not closed here (not yet filed as
+# a follow-up issue): the --dry-run bypass greps the whole $COMMAND, so
 # `git push --dry-run && gh pr create` exits 0 before the gh pr create arm
 # is evaluated (this shape already bypassed a second real `git push`
 # chained the same way, pre-existing and unchanged by this diff); the

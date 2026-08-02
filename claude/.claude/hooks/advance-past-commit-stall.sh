@@ -34,6 +34,9 @@
 #   coreutils, so the three git calls below are unbounded there.
 # - --dry-run/default-branch bypass residuals inherited from Part 3's gate
 #   repair are orthogonal to this hook (it does not gate a git operation).
+# - STATE_FILE's write-then-read-back race is untested: assumes Stop fires
+#   at most once per session at a time (the harness's own invocation model),
+#   not two concurrent processes racing the same session_id/prompt_id.
 
 INPUT=$(cat 2>/dev/null)
 [ -z "$INPUT" ] && exit 0
@@ -43,6 +46,15 @@ INPUT=$(cat 2>/dev/null)
 
 # 2. Always-effective kill switch, independent of sentinel state.
 [ -f "$HOME/.claude/.commit-stall-block-disabled" ] && exit 0
+
+# 3. Machine-sentinel fast path: the cheap (bare stat, no parsed input
+# needed) half of the full _lib_autonomous_shipping_active check at step 9
+# below. Absent on the vast majority of non-adopting sessions, so checking
+# it here skips sourcing _lib.sh and spawning jq for the common case. The
+# full check (this file plus the per-repo optout) still runs at step 9,
+# once REPO_ROOT is known — this is a redundant, cheaper pre-filter, not a
+# replacement for it.
+[ -f "$HOME/.claude/autonomous-shipping-required" ] || exit 0
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
@@ -72,7 +84,7 @@ LAST_ASSISTANT_MESSAGE=""
 
 LOG_FILE="$HOME/.claude/.commit-stall-block.log"
 
-# 3. Subagents are never force-continued — only the session the engineer is
+# 4. Subagents are never force-continued — only the session the engineer is
 # talking to (CLAUDE.md's Shipping section states this explicitly).
 # AGENT_TYPE-unreadable and AGENT_TYPE-absent take this same branch; that's
 # safe only because a jq/read failure also empties SESSION_ID, which gate 4
@@ -80,14 +92,14 @@ LOG_FILE="$HOME/.claude/.commit-stall-block.log"
 # explicit fail-closed check on this field itself.
 [ -z "$AGENT_TYPE" ] || exit 0
 
-# 4. session_id required and must be a safe single path component; it feeds
+# 5. session_id required and must be a safe single path component; it feeds
 # STATE_FILE below.
 [ -n "$SESSION_ID" ] && _lib_valid_session_id_component "$SESSION_ID" || exit 0
 
-# 5. Never force-continue out of plan mode.
+# 6. Never force-continue out of plan mode.
 [ "$PERMISSION_MODE" != "plan" ] || exit 0
 
-# 6. prompt_id required (guards an empty-vs-absent-state-file comparison
+# 7. prompt_id required (guards an empty-vs-absent-state-file comparison
 # ambiguity) and must differ from the last-fired prompt_id for this session
 # — at most one forced continuation per user turn, re-arming on a new turn.
 if [ -z "$PROMPT_ID" ]; then
@@ -102,7 +114,7 @@ PREVIOUSLY_FIRED_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 
 [ -n "$LAST_ASSISTANT_MESSAGE" ] || exit 0
 
-# 7. Fire predicate, final sentence only. Split on ". " / "? " / "! "
+# 8. Fire predicate, final sentence only. Split on ". " / "? " / "! "
 # followed by a capital or end-of-string, take the last segment — a quoted
 # example mid-message does not reach this slice. No length floor (unlike a
 # tail-byte-count slice, which returns empty under ~600 chars on bash 3.2 —
@@ -145,14 +157,14 @@ if ! $FIRE_MATCHED || $EXCLUDE_MATCHED; then
   exit 0
 fi
 
-# 8. Repo root + machine-anchored opt-in. One git spawn; regex already
+# 9. Repo root + machine-anchored opt-in. One git spawn; regex already
 # filtered out most non-firing turns above.
 [ -z "$CWD" ] && CWD="$PWD"
 REPO_ROOT=$(cd "$CWD" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
 [ -n "$REPO_ROOT" ] || exit 0
 _lib_autonomous_shipping_active "$REPO_ROOT" || exit 0
 
-# 9. Work pending: dirty tree, HEAD ahead of its configured upstream, or —
+# 10. Work pending: dirty tree, HEAD ahead of its configured upstream, or —
 # when no upstream is configured at all, the common state of a branch
 # before its first push — any resolvable HEAD (nothing has ever been
 # published, so a commit existing at all is unpublished work). Deliberately

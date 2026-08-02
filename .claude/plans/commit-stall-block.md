@@ -469,11 +469,11 @@ logic:
   this requires reworking the existing push-bypass checks to be
   fragment-scoped, which is a larger, separable change to
   `require-ready-for-review.sh`'s existing logic — out of scope for this
-  plan; filed as a follow-up.
+  plan; not yet filed as a follow-up issue.
 - The default-branch bypass (`:132-149`) runs unconditionally before the
   gate and would also exempt a same-command `gh pr create`. Low real-world
   exposure — `gh pr create` errors when the current branch is the PR base —
-  but not zero for a scripted or chained invocation. Same follow-up.
+  but not zero for a scripted or chained invocation. Same open item.
 - **Bare `git push` with no PR stays ungated**, unchanged from today. A
   pushed branch is not yet a review artifact; `gh pr create` is the
   publication boundary, and `/ready-for-review` pushes as part of its own

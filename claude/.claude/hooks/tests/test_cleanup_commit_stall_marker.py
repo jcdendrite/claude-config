@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -91,6 +93,46 @@ class TestCleanupCommitStallMarker:
             check=False,
         )
         assert result.returncode == 0
+
+    def test_missing_lib_sh_exits_zero_without_deleting(self, isolated_home):
+        """Fail-open inversion of GATE_HOOKS's test_missing_lib_sh_denied: this
+        informational hook must exit 0 (not error) when _lib.sh is absent, and
+        since the source happens before any state-file access, the session's
+        state file must survive untouched rather than being silently deleted
+        via some other path.
+
+        The hook is COPIED (not symlinked) into a temp directory so that
+        dirname($0) resolves to the temp dir, where _lib.sh is genuinely absent.
+
+        Same caveat test_missing_lib_sh_denied documents for itself: this cannot
+        structurally distinguish "exited silently because _lib.sh's own guard
+        fired" from "exited silently because the downstream, now-undefined
+        _lib_valid_session_id_component call failed and its own `|| exit 0`
+        caught it." This test pins the observable behavior (silent exit,
+        state file untouched, under a missing _lib.sh), not the specific
+        guard line.
+        """
+        state_dir = _state_dir(isolated_home)
+        state_dir.mkdir(parents=True)
+        (state_dir / "session-a").write_text("p1\n")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_hook = Path(tmpdir) / CLEANUP_HOOK.name
+            shutil.copy2(CLEANUP_HOOK, tmp_hook)
+            tmp_hook.chmod(0o755)
+            result = subprocess.run(
+                [str(tmp_hook)],
+                input=json.dumps({"session_id": "session-a"}),
+                env={**os.environ, "HOME": str(isolated_home)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        assert result.returncode == 0
+        assert (state_dir / "session-a").exists(), (
+            "missing _lib.sh must fail open before touching the state file"
+        )
 
     def test_traversal_session_id_does_not_delete_files_outside_state_dir(
         self, isolated_home

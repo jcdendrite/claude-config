@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from helpers import (
     CANARY_CONTENT,
     HOOKS_DIR,
     TRAVERSAL_SESSION_ID,
+    build_path_without,
     plant_traversal_canary,
     run_hook_stop,
     stop_input,
@@ -545,38 +547,12 @@ def test_traversal_session_id_denies_and_does_not_touch_marker_dir(armed_home, d
 
 def _path_without(binary: str, tmp_path: Path) -> str:
     """A PATH string mirroring the real PATH via a symlink farm, with
-    `binary` omitted. Full-mirror, not a hand-picked subset: under-
-    symlinking would silently pass a hook that's silent for the wrong
-    reason (some other missing tool) rather than the one under test."""
+    `binary` omitted. Farm construction (full-mirror rationale, dedup,
+    unreadable-dir handling) lives in `helpers.build_path_without`, shared
+    with `test_hook_alignment.py`'s own session-memoized fixture."""
     farm_dir = tmp_path / f"path-without-{binary}"
     farm_dir.mkdir()
-    seen: set[str] = set()
-    for real_dir in os.environ.get("PATH", "").split(os.pathsep):
-        if not real_dir:
-            continue
-        try:
-            entries = os.listdir(real_dir)
-        except OSError:
-            continue
-        for name in entries:
-            if name == binary or name in seen:
-                continue
-            src = Path(real_dir) / name
-            try:
-                if not os.access(src, os.X_OK):
-                    continue
-            except OSError:
-                continue
-            seen.add(name)
-            try:
-                (farm_dir / name).symlink_to(src)
-            except OSError:
-                continue
-    path_str = str(farm_dir)
-    assert shutil.which(binary, path=path_str) is None, (
-        f"{binary}: still resolvable on farm PATH — construction bug"
-    )
-    return path_str
+    return build_path_without(binary, farm_dir)
 
 
 def test_jq_absent_exits_zero_empty_stdout(armed_home, dirty_repo, tmp_path):
@@ -601,6 +577,59 @@ def test_git_absent_silent(armed_home, dirty_repo, tmp_path):
         text=True,
         cwd=dirty_repo,
         env={**os.environ, "HOME": str(armed_home), "PATH": _path_without("git", tmp_path)},
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_missing_lib_sh_silent(armed_home, dirty_repo):
+    """Turn-gate inversion of GATE_HOOKS's test_missing_lib_sh_denied: a
+    gate hook denies when _lib.sh is absent, but this fail-open hook must
+    exit 0 with no output instead — a hard failure here would turn an
+    infrastructure gap into a stuck turn.
+
+    The hook is COPIED (not symlinked) into a temp directory so that
+    dirname($0) resolves to the temp dir, where _lib.sh is genuinely absent.
+
+    Same caveat test_missing_lib_sh_denied documents for itself: this cannot
+    structurally distinguish "exited silently because _lib.sh's own guard
+    fired" from "exited silently because a downstream `_lib_*` call, now
+    undefined, failed and an unrelated `|| exit 0` caught it." Both hooks'
+    fail-open-everywhere design makes every downstream gate an equally valid
+    exit path for this input shape — this test pins the observable behavior
+    (silent exit under a missing _lib.sh), not the specific guard line.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_hook = Path(tmpdir) / ADVANCE_HOOK.name
+        shutil.copy2(ADVANCE_HOOK, tmp_hook)
+        tmp_hook.chmod(0o755)
+        result = subprocess.run(
+            [str(tmp_hook)],
+            input=stop_input_json(ISSUE_QUOTE_QUESTION, "s", "p1", str(dirty_repo)),
+            capture_output=True,
+            text=True,
+            cwd=dirty_repo,
+            env={**os.environ, "HOME": str(armed_home)},
+            check=False,
+        )
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_malformed_json_stdin_silent(armed_home, dirty_repo):
+    """Non-JSON stdin must exit 0 silently, not just a well-formed payload
+    missing one field (test_missing_session_id_silent exercises that
+    narrower case). The six-field _lib_jq read swallows a jq parse failure
+    via 2>/dev/null into empty reads — this pins that the empty-read path
+    still reaches a silent exit rather than tripping on unset variables."""
+    result = subprocess.run(
+        [str(ADVANCE_HOOK)],
+        input="not json",
+        capture_output=True,
+        text=True,
+        cwd=dirty_repo,
+        env={**os.environ, "HOME": str(armed_home)},
         check=False,
     )
     assert result.returncode == 0

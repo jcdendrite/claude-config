@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -695,3 +696,47 @@ def run_ci_detect_step(repo: Path, base_sha: str, head_sha: str) -> dict[str, st
             key, _, value = line.partition("=")
             outputs[key] = value
     return outputs
+
+
+def build_path_without(binary: str, farm_dir: Path) -> str:
+    """Build a PATH string mirroring the real PATH via a symlink farm, with
+    `binary` omitted, inside the caller-supplied (already-created) `farm_dir`.
+
+    A full mirror (not a hand-picked minimal tool subset) is deliberate:
+    under-symlinking is a silent false pass here — a hook denying because
+    some OTHER required tool is missing looks identical to the hook denying
+    correctly for the binary this test actually targets. First real PATH
+    directory wins on a duplicate basename, mirroring normal PATH shadowing
+    order; unreadable directories are skipped rather than raising.
+
+    Callers own `farm_dir`'s lifetime and any caching strategy (e.g.
+    session-scoped memoization) — this function only builds the farm once
+    per call.
+    """
+    seen: set[str] = set()
+    for real_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if not real_dir:
+            continue
+        try:
+            entries = os.listdir(real_dir)
+        except OSError:
+            continue
+        for name in entries:
+            if name == binary or name in seen:
+                continue
+            src = Path(real_dir) / name
+            try:
+                if not os.access(src, os.X_OK):
+                    continue
+            except OSError:
+                continue
+            seen.add(name)
+            try:
+                (farm_dir / name).symlink_to(src)
+            except OSError:
+                continue
+    path_str = str(farm_dir)
+    assert shutil.which(binary, path=path_str) is None, (
+        f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
+    )
+    return path_str
