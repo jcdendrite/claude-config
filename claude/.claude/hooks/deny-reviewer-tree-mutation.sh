@@ -62,7 +62,18 @@
 #     in-place-edit family below cover every mutation vector seen in the
 #     transcript scan. The residual raw-Bash copy/redirect path is covered
 #     by the reviewer-agent prose clause and the fail-closed principle that
-#     reviewers work in /tmp. A related but distinct vector: a Bash-created
+#     reviewers work in /tmp. This gap also means the `agent-reviews/*`
+#     check-ignore gate below (Write/Edit/MultiEdit only) has no Bash-arm
+#     counterpart: a reviewer can write an unignored findings file directly
+#     (`printf '...' > agent-reviews/x.md`) or rewrite the target repo's own
+#     ignore state (`printf 'agent-reviews/\n' >> .git/info/exclude`) with
+#     zero mechanical enforcement — verified live against this hook. Every
+#     reviewer agent except skill-fidelity-reviewer carries Bash. The
+#     mechanical guarantee this hook adds therefore holds only when a
+#     reviewer's findings-file write goes through Write/Edit/MultiEdit, which
+#     every reviewer agent's own Output-format instructions require — an
+#     instruction-following-dependent backstop for the Bash path, not a
+#     mechanical one. A related but distinct vector: a Bash-created
 #     symlink that launders the /tmp exemption (`ln -s src/x /tmp/link`, then a
 #     Write to `/tmp/link`) — the file-write arm matches the literal `/tmp/*`
 #     path and does not resolve symlinks, so the OS write lands on the tracked
@@ -105,6 +116,14 @@
 #     `/tmp/*` exemption and be denied (fail-closed friction, not a safety
 #     gap). Not observed on the current harness, which passes the path as
 #     written.
+#   - The `agent-reviews/*` exemption above is no longer a pure string match:
+#     it now shells out to `git check-ignore` (via `_lib_capped`, so a
+#     coreutils-less machine runs it uncapped rather than failing) to
+#     confirm the path is actually ignored before allowing the write, a
+#     capability class this hook didn't have before. Any failure of that
+#     check — git absent, the resolved cwd not a repo, the timeout firing —
+#     denies rather than allows (fail-closed friction on an unusual
+#     environment, not a missed mutation).
 
 set -uo pipefail
 
@@ -178,7 +197,78 @@ case "$TOOL_NAME" in
       # Matched as a /-delimited path component (leading "agent-reviews/"
       # or a nested "*/agent-reviews/*"), not a substring — a file literally
       # named agent-reviews-notes.md must not be exempted.
-      agent-reviews/*|*/agent-reviews/*) exit 0 ;;
+      agent-reviews/*|*/agent-reviews/*)
+        if ! CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty' 2>/dev/null); then
+          emit_deny "Blocked by reviewer-tree-mutation hook: could not read .cwd from the tool payload — refusing to evaluate whether agent-reviews/ is actually ignored under an unreadable trust-boundary field."
+          exit 0
+        fi
+        # macOS's system /bin/bash (3.2, what a bare `#!/bin/bash` shebang
+        # resolves to) treats `cd ''` as a silent no-op that stays in the
+        # current directory and returns 0 — unlike bash 4+, which errors.
+        # Relying on `cd "$CWD"` to fail on an empty CWD would silently check
+        # whatever directory the hook process happens to be running in
+        # instead of failing closed. Verified empirically on this machine's
+        # /bin/bash 3.2.57 and Homebrew bash 5.3.15. Deliberately stricter
+        # than require-worktree-for-git-writes.sh:103's `[ -z "$CWD" ] &&
+        # CWD="$PWD"` fallback: that hook's invariant is "is this a git
+        # write inside a worktree," where an unresolvable cwd can safely
+        # default to allow (nothing to enforce). This hook's invariant is
+        # "the ignore state is confirmed," where an unresolvable cwd is
+        # itself the unconfirmed case — denying is the only fail-closed
+        # answer, not an oversight.
+        if [ -z "$CWD" ]; then
+          emit_deny "Blocked by reviewer-tree-mutation hook: the tool payload carried no .cwd — refusing to check whether agent-reviews/ is ignored without knowing which repo to check."
+          exit 0
+        fi
+        # A findings-file write is only safe when agent-reviews/ is actually
+        # ignored in the target repo — a stale worktree-local info/exclude or
+        # a repo with no ignore entry at all must not silently let an
+        # unignored file through. `unset` first: an inherited GIT_DIR/
+        # GIT_WORK_TREE/GIT_INDEX_FILE would redirect the check to a
+        # different repo's ignore rules than the one actually being written
+        # to (mirrors require-worktree-for-git-writes.sh:100). `cd "$CWD"`
+        # rather than `-C` against a separately-resolved repo root puts the
+        # check in the same path-resolution frame the Write tool itself uses
+        # to resolve a relative FILE_PATH — `git -C <path>` would resolve
+        # FILE_PATH against <path>, not against $CWD, and the two diverge
+        # whenever $CWD is a subdirectory of the repo root.
+        # _lib_capped (not a bare `timeout 5`): on stock macOS without GNU
+        # coreutils, a bare `timeout 5 git ...` is "command not found" (127),
+        # which would permanently deny every agent-reviews/* write on that
+        # machine with a misleading message. _lib_capped runs uncapped
+        # instead of failing when `timeout` is absent, so the check still
+        # works correctly there — see its own comment in _lib.sh.
+        #
+        # `cd` is checked on its own line, separately from git's own exit
+        # status: `git check-ignore -q` genuinely returns 1 for "not
+        # ignored," and a failed `cd` (an unresolvable $CWD) also exits 1 —
+        # collapsing them into one exit code would report "not actually
+        # ignored" for a $CWD that was never checked at all. Sentinel exit 3
+        # marks a cd failure distinctly; git/timeout never produce 3 here
+        # (git-check-ignore(1): 0/1/128; _lib_capped's wrapped timeout: 124
+        # on expiry, or the wrapped command's own code).
+        (
+          unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+          cd "$CWD" 2>/dev/null || exit 3
+          _lib_capped git check-ignore -q -- "$FILE_PATH"
+        )
+        IGNORE_CHECK_STATUS=$?
+        case "$IGNORE_CHECK_STATUS" in
+          0) exit 0 ;;
+          1)
+            emit_deny "Blocked by reviewer-tree-mutation hook: 'agent-reviews/' is not actually ignored in this repo — findings_path dispatch is unsafe here. Fall back to inline output; do not create or modify ignore rules yourself — that is the dispatching skill's job, not the reviewer's."
+            exit 0
+            ;;
+          3)
+            emit_deny "Blocked by reviewer-tree-mutation hook: could not confirm 'agent-reviews/' is ignored — the payload's .cwd ('$CWD') does not resolve to a directory this process can enter."
+            exit 0
+            ;;
+          *)
+            emit_deny "Blocked by reviewer-tree-mutation hook: could not confirm 'agent-reviews/' is ignored (exit $IGNORE_CHECK_STATUS — not a git repo, or the check failed) — refusing to allow the write under an unconfirmed invariant."
+            exit 0
+            ;;
+        esac
+        ;;
     esac
     emit_deny "Blocked by reviewer-tree-mutation hook: $TOOL_NAME targets '$FILE_PATH', which is outside /tmp and outside an agent-reviews/ findings path. $SANCTIONED_ALTERNATIVE"
     exit 0

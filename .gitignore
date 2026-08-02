@@ -13,9 +13,13 @@ __pycache__/
 # scratch plan files written into ~/.claude/plans/ via the package symlink.
 claude/.claude/plans/
 
-# Per-session findings written by /code-review specialist subagents. The skill
-# also adds this to .git/info/exclude as a fallback for repos where this line
-# isn't committed; both rules are harmless together.
+# Per-session findings written by /code-review specialist subagents. This
+# entry is belt-and-suspenders for this repo. The general-repo mechanism is
+# code-review/SKILL.md's idempotent append to
+# $(git rev-parse --git-path info/exclude) plus deny-reviewer-tree-mutation.sh
+# confirming with `git check-ignore` at write time — a denied write falls back
+# to inline output automatically, so no repo depends on this line being
+# committed.
 agent-reviews/
 
 # Belt-and-suspenders: the user-local private-projects blocklist read by
