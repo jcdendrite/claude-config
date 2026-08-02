@@ -184,8 +184,8 @@ platform-genericness) do.
     verification command fails this audit even when the summary reads
     as equivalent.
 
-12. **Platform-genericness (enumerate-then-justify)** — before declaring the review complete, extract every diff hit in three classes; do not rely on noticing during read-through: (a) a tool-invocation verb prescribed as a mandatory review-instruction step; (b) a vendor/product name anchoring a rule's category rather than illustrating the generic capability alongside it; (c) a source-material bias anchor — a named team's or org's practice cited as the reason a rule holds, not the rule's own rationale.
-    Justify each hit inline as deliberate/illustrative, or move it to a `<skill>-<project>` layer; extraction is mandatory, the verdict per hit stays judgment. (Repo-specific; see CLAUDE.md "Global skill bodies stay platform-agnostic" and "abstract first.")
+12. **Platform-genericness (enumerate-then-justify)** — before declaring the review complete, extract every hit in four classes from the sections the diff touches, not only its changed lines; do not rely on noticing during read-through: (a) a tool-invocation verb prescribed as a mandatory review-instruction step; (b) a vendor/product name anchoring a rule's category rather than illustrating the generic capability alongside it; (c) a source-material bias anchor — a named team's or org's practice cited as the reason a rule holds, not the rule's own rationale; (d) a borrowed interface shape — a rule whose nouns presuppose one system's call chain, record layout, or addressing scheme, with no vendor token present to give it away; read the rule against a codebase with a different interface and ask whether it still parses.
+    Justify each hit inline as deliberate/illustrative, or move it to a `<skill>-<project>` layer; extraction is mandatory, the verdict per hit stays judgment. Record a hit on a line the diff did not change as a note for the PR reviewer: it is not an N row and does not hold the marker write. (Repo-specific; see CLAUDE.md "Global skill bodies stay platform-agnostic" and "abstract first.")
 
 ## Step — Record review completion
 

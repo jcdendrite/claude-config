@@ -166,13 +166,13 @@ For endpoints or functions that handle concurrent writes:
 
 ### Stub/mock fidelity
 - Test doubles should behave like the real thing for the patterns actually used
-- Document known limitations (e.g., "only supports single filter per chain")
+- Document which call forms the double supports and which it does not (e.g., matches by URL prefix only; acknowledges one message at a time)
 - Unknown methods should fail loudly (throw), not silently return wrong data
 
 ### Mutation recording (mocks)
-When mocking a client that performs writes, record the mutations for assertion:
-- Capture table name, operation type, payload, and filter values
-- Let tests assert "this function called update on table X with payload Y"
+When mocking a dependency that performs writes, record the mutations for assertion:
+- Capture the target it addresses (endpoint, topic, collection, table), the operation, the payload, and the arguments that select what it acts on
+- Let tests assert "this function issued `<operation>` against `<target>` with payload `<payload>`"
 
 ### Tautological mock test
 If an assertion checks a value that was set up directly in the test double rather than derived by the code under test, you're testing the test double, not the code. The test will always pass regardless of the production code's behavior.
