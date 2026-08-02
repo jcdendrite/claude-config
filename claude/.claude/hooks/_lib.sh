@@ -34,41 +34,8 @@ _lib_capped() {
   fi
 }
 
-# Portable equivalent of GNU `realpath -m TARGET`: lexically normalizes a
-# path without requiring TARGET or any ancestor to exist. Every caller uses
-# -m specifically because TARGET can be a file about to be created (a Write
-# on a new path), so a resolver that requires existence isn't a substitute.
-#
-# GNU coreutils' realpath supports -m natively (Linux, and macOS with
-# Homebrew coreutils installed as grealpath). BSD/macOS's own realpath has
-# never accepted -m -- confirmed against macOS 26 -- and exits non-zero
-# with "illegal option" rather than degrading, unlike readlink -f, which
-# Apple's own readlink has supported natively since macOS 12.3.
-#
-# Fallback: walk up from TARGET to the nearest existing ancestor (including
-# "/" and "."), resolve that ancestor with plain realpath (supported
-# everywhere), and reattach the nonexistent suffix components. This matches
-# every caller's actual use case -- only the leaf path segment is new; its
-# parent directory already exists -- without needing an external dependency.
-#
-# The reattached suffix is not lexically normalized the way GNU's -m
-# normalizes a full path, so a `..` component inside it is refused outright
-# (fail closed, empty output) rather than passed through unresolved: every
-# caller of this function uses the result in a same-prefix security
-# boundary check (require-plan-review.sh's repo/agent-reviews scoping,
-# require-memory-skill.sh's memory-tree classification), and an unresolved
-# `..` inside a not-yet-existing suffix can make a path that is genuinely
-# outside the intended boundary textually satisfy a prefix match against
-# it -- the opposite of failing closed. Rejecting is simpler and safer than
-# hand-rolling a `..`-climbing normalizer that must also correctly handle
-# climbing back out through the already-resolved ancestor portion.
-#
-# Internal subprocess calls are wrapped in _lib_capped for the same 5s
-# timeout backstop every other filesystem-facing helper in this file gets.
-# `timeout` needs the external `realpath`/`grealpath` binary to exec, which
-# is why this wrapping lives inside the individual calls below rather than
-# around the whole _lib_realpath_m call -- `timeout` cannot wrap a shell
-# function directly.
+# Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
+# Each external realpath/grealpath call below is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly.
 _lib_realpath_m() {
   local target="$1"
   local resolved
@@ -100,7 +67,7 @@ _lib_realpath_m() {
     suffix_component=$(basename -- "$current")
     case "$suffix_component" in
       ..)
-        return 1
+        return 1  # a `..` here could defeat a caller's same-prefix boundary check, so fail closed instead of normalizing it.
         ;;
     esac
     if [ -z "$suffix" ]; then

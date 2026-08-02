@@ -113,11 +113,7 @@ if $is_git_push; then
   if printf '%s\n' "$COMMAND" | grep -qE '(^|\s)--tags(\s|$)'; then
     # If the only non-flag args after `git push` are `--tags` (and possibly
     # a remote name), bypass. If a branch ref is also present, gate.
-    # [[:space:]], not \s: \s is a GNU sed extension. BSD/macOS sed's -E
-    # (POSIX ERE) does not support it and silently produces no match at
-    # all rather than erroring, which left push_args always empty on
-    # macOS -- collapsing every --tags push (branch ref or not) into the
-    # tag-only bypass above.
+    # [[:space:]], not \s: BSD/macOS sed -E has no \s and silently produces no match, leaving push_args empty and collapsing every --tags push into the tag-only bypass above.
     push_args=$(printf '%s\n' "$COMMAND" | sed -nE 's/.*git[[:space:]]+push[[:space:]]+(.*)/\1/p' | head -1)
     # Strip flags and known-safe positional (a remote like "origin").
     # If anything else remains, it's likely a branch ref → gate.

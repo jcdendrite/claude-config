@@ -57,32 +57,14 @@ collect_process_cwds() {
       fi
     done
   elif command -v lsof >/dev/null 2>&1; then
-    # No procfs (e.g. macOS): `lsof -d cwd` reports each process's cwd.
-    # -F pn emits a `p<pid>` line, an `fcwd` line, then an `n<path>` line per
-    # process; the case below picks p and n lines and ignores any other.
-    #
-    # lsof itself is a running process at the moment it scans, and it
-    # inherits this shell's cwd at fork time -- so it reports its own entry
-    # with the caller's cwd, under lsof's own PID, which is never equal to
-    # $$. Excluding only $$ therefore leaves this shell's own cwd wrongly
-    # marked "in use" by lsof's self-report. Run lsof in the background via
-    # a temp file (rather than process substitution) specifically so `$!`
-    # captures its PID for exclusion alongside $$ -- process substitution
-    # doesn't reliably expose the substituted command's PID.
-    # GNU mktemp requires the template to end in XXXXXX; a bare prefix
-    # (no X's) is a BSD-only tolerance and errors "too few X's in template"
-    # under GNU coreutils -- the exact CI platform (ubuntu-24.04) this fix
-    # must also work on.
-    local lsof_tmp lsof_pid
-    lsof_tmp=$(mktemp -t worktree-lib-lsof.XXXXXX) || return 0
+    # No procfs (e.g. macOS): -F pn emits a `p<pid>` line then an `n<path>` line per open-cwd-fd process.
+    local lsof_tmp lsof_pid self_cwd
+    self_cwd=$(pwd -P)
+    lsof_tmp=$(mktemp -t worktree-lib-lsof.XXXXXX) || return 0  # GNU mktemp requires the XXXXXX suffix; a bare prefix is BSD-only.
     trap 'rm -f "$lsof_tmp"' EXIT
     lsof -d cwd -F pn >"$lsof_tmp" 2>/dev/null &
-    lsof_pid=$!
-    # `|| true`: under `set -e`, `wait` reports the backgrounded job's own
-    # exit status, and a shimmed/failing lsof (as in the both-probes-
-    # unavailable test) would otherwise abort this function's caller
-    # mid-scan rather than falling through to the empty-file read below.
-    wait "$lsof_pid" 2>/dev/null || true
+    lsof_pid=$!  # backgrounded via a temp file rather than process substitution, so $! reliably captures the PID.
+    wait "$lsof_pid" 2>/dev/null || true  # `|| true`: don't let a shimmed/failing lsof abort the caller under set -e.
     pid=""
     while IFS= read -r line; do
       case "$line" in
@@ -91,6 +73,10 @@ collect_process_cwds() {
           [ "$pid" = "$$" ] && continue
           [ "$pid" = "$lsof_pid" ] && continue
           cwd="${line#n}"
+          # lsof's own forked helper briefly shares its cwd and exits before `wait` returns; kill -0, scoped to self_cwd matches only, drops it without risking another user's live process.
+          if [ "$cwd" = "$self_cwd" ] && ! kill -0 "$pid" 2>/dev/null; then
+            continue
+          fi
           if [ -n "$cwd" ]; then
             PROCESS_CWDS+=("$cwd")
           fi
@@ -98,17 +84,9 @@ collect_process_cwds() {
       esac
     done < "$lsof_tmp"
     rm -f "$lsof_tmp"
-    # Reset explicitly on the normal-completion path so this function's
-    # temp-file trap doesn't linger process-wide and collide with a trap
-    # the caller sets afterward -- this repo's convention is a single
-    # composed EXIT trap per script, not one per library function.
-    trap - EXIT
+    trap - EXIT  # explicit reset: this repo composes a single EXIT trap per script, not one per library function.
   fi
-  # A scan that finds zero process working directories has not worked — at
-  # minimum the invoking shell should appear. Leave PROCESS_CWD_SCAN as
-  # "unavailable" in that case so worktree_in_use reports "could not
-  # determine" and worktrees are skipped conservatively, rather than
-  # treated as idle and deleted on the strength of an empty snapshot.
+  # Zero cwds means the scan failed (self would always appear), not that nothing's running — stays "unavailable" so worktree_in_use reports "could not determine," not false-idle.
   if [ "${#PROCESS_CWDS[@]}" -gt 0 ]; then
     PROCESS_CWD_SCAN="ok"
   fi

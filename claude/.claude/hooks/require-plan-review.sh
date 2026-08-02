@@ -220,12 +220,7 @@ if [ -n "$TARGET_PATH" ]; then
   # agent-reviews/ directory and are never staged. Blocking them forces the
   # reviewer into a full-inline fallback that loses all context savings.
   # Exact prefix match only: "foo-agent-reviews/" does not satisfy this.
-  # Note: _lib_realpath_m normalizes lexically (resolves ..) but does NOT
-  # resolve symlinks. On a repo accessed via a symlinked path, REAL_REPO and
-  # REAL_TARGET may be normalized along different chains, causing a
-  # false-deny for a legitimate agent-reviews/ write. This is a known
-  # limitation shared with the repo-boundary check below; the fix would be
-  # `realpath` (requires existence).
+  # _lib_realpath_m resolves .. lexically but not symlinks, so a symlinked repo path can normalize REAL_REPO/REAL_TARGET along different chains and false-deny a legitimate write; same limitation as the repo-boundary check below.
   if [[ "$REAL_TARGET" == "$REAL_REPO"/agent-reviews/* ]]; then
     exit 0
   fi

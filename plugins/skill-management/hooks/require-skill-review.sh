@@ -129,32 +129,10 @@ while IFS= read -r STAGED_PATH; do
 done <<< "$SKILL_DIFF"
 
 VALIDATOR_SCRIPT="$(dirname "$0")/../scripts/validate_skill_structure.py"
-# Prefer the plugin's persistent-venv python (provisioned by the
-# SessionStart hook against ${CLAUDE_PLUGIN_DATA}/venv) so the validator
-# finds pyyaml without the consumer running a manual pip install.
-#
-# Second choice: claude-config's own contributor .venv (requirements-dev.txt
-# installs pyyaml there) — covers the contributor pytest path, which
-# imports the validator directly without going through plugin hooks, and
-# the brief window before the first SessionStart provisions the plugin
-# venv. Located relative to *this script's own path* ($0), not $CWD/
-# $REPO_ROOT: $CWD is the repo the gated commit targets, which is a
-# throwaway fixture repo in the test suite's cross-repo marker tests and
-# is never claude-config itself for a real downstream plugin consumer
-# either. $0 is always this hook's own on-disk location, which for a
-# claude-config contributor sits inside that same checkout (or one of its
-# worktrees) regardless of which repo the commit under test targets.
-# `--git-common-dir` (not --show-toplevel) resolves to the shared .git
-# dir's parent for either the main checkout or a linked worktree, matching
-# where CLAUDE.md documents .venv as living — "the main worktree root
-# only ... linked worktrees never inherit it".
-#
-# Last resort: bare system python3. Only correct if pyyaml happens to be
-# installed system-wide, which is not guaranteed on any given contributor
-# machine — kept as the final fallback rather than a hard failure so a
-# missing pyyaml surfaces as a validator traceback (denying the commit)
-# instead of this hook itself erroring out.
+# Fallback chain so the validator finds pyyaml: the plugin's persistent venv, then claude-config's own contributor .venv, then bare system python3.
 VALIDATOR_PYTHON="python3"
+# Located via this hook's own on-disk path ($0), not $CWD -- $CWD is the repo the gated commit targets, which isn't necessarily claude-config itself.
+# --git-common-dir (not --show-toplevel) resolves correctly for a linked worktree too, where .venv lives only at the main worktree root.
 HOOK_OWN_GIT_COMMON_DIR=$(git -C "$(dirname "$0")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -x "${CLAUDE_PLUGIN_DATA}/venv/bin/python" ]; then
   VALIDATOR_PYTHON="${CLAUDE_PLUGIN_DATA}/venv/bin/python"
