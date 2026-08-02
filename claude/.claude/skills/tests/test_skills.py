@@ -516,24 +516,59 @@ class TestSkillFidelityReviewerUndecidableDismissal:
         assert "plan-it" not in enumeration_clause
 
     def test_pointer_line_reports_dismissed_count(self):
-        """The pointer line -- the only surface /ready-for-review reads when
-        findings_path is set -- must report dismissals, not just carry the
+        """The pointer line must report dismissals, not just carry the
         step-2 instruction to record them. A single `in body` check on the
         bare phrase is satisfied by the step-2 occurrence alone, so this
         pins the fuller pointer-line fragment specifically."""
         assert "issues, <M> dismissed as undecidable" in self._body()
 
-    def test_file_based_output_gains_dismissed_section(self):
-        """The file-based output structure must include the dismissal H2 --
-        confirmed by mutation testing that the other four assertions stay
-        green even if this heading is deleted, silently reverting dismissals
-        to invisible in the findings file a human actually reads. A bare
-        `"## Dismissed as undecidable" in body` check would pass on the
-        unrelated backtick cross-reference in step 2's prose alone (verified
-        by mutation: deleting the addendum bullet below leaves that phrase
-        present via the step-2 occurrence), so this pins the bullet text
-        that actually mandates the heading, not just the heading string."""
-        assert "add `## Dismissed as undecidable` between the" in self._body()
+    def test_file_based_output_relaxes_heading_to_suggestion(self):
+        """The file-based output structure must still tell the model where
+        to place dismissals, but stop mandating the exact heading string --
+        this pins the placement guidance and the relaxation language
+        together, so an edit that keeps placement but re-imposes an exact
+        string (or vice versa) fails here rather than passing silently."""
+        body = self._body()
+        assert "between the per-finding H2s and" in body
+        assert (
+            "the exact wording is not required: nothing downstream parses "
+            "it mechanically" in body
+        )
+
+    def test_dismissed_section_drops_literal_heading_mandate(self):
+        """The retracted verbatim-heading mandate must be gone, and replaced
+        by explicit acceptance of a self-chosen heading -- pinning only the
+        absence would pass on an edit that dropped the mandate without ever
+        saying self-composed headings are fine, silently reintroducing the
+        original failure mode under different wording."""
+        body = self._body()
+        assert "does not satisfy this" not in body
+        assert (
+            "prose explaining the same conclusion under a self-chosen "
+            "heading" in body
+        )
+
+    def test_pointer_line_claim_is_corrected(self):
+        """The false claim that the pointer line is the only surface
+        /ready-for-review reads must be retracted and replaced with the
+        true one -- /ready-for-review reads the whole findings file."""
+        body = self._body()
+        assert "the only surface `/ready-for-review` reads" not in body
+        assert "reads the whole findings file after every dispatch" in body
+
+    def test_step_two_records_dismissal_without_exact_heading_mandate(self):
+        """Step 2's own recording instruction must drop its
+        "(exact structure below)" pointer to the now-relaxed Output-format
+        mandate and instead state the semantic requirement inline -- this
+        covers step 2 independently of the Output-format section edit, so
+        a revert of step 2 alone can't silently reintroduce a pointer to a
+        section that no longer requires exact structure."""
+        body = self._body()
+        assert (
+            "name the skill and the one-line reason, grouped with any "
+            "other dismissals" in body
+        )
+        assert "(exact structure below)" not in body
 
     def test_inline_output_lists_dismissals_before_verdict(self):
         """Inline mode must list each dismissal with a reason, not just carry
