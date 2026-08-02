@@ -925,3 +925,143 @@ class TestLibRealpathM:
         resolved = result.stdout.strip()
         assert resolved == target
         assert "//" not in resolved
+
+
+# _lib_autonomous_shipping_active — direct unit coverage.
+#
+# _lib_worktree_enforcement_active has no such coverage anywhere in this
+# suite; only its callers' integration tests guard it. This function does
+# not inherit that gap — see
+# test_inactive_when_repo_commits_required_file_but_machine_file_absent
+# below for the property that most needs pinning.
+
+
+def _autonomous_shipping_active(home: Path, repo_root: Path | None, *extra_args: str) -> bool:
+    args = [str(repo_root)] if repo_root is not None else []
+    args.extend(extra_args)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_autonomous_shipping_active "$@"',
+            "bash",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestAutonomousShippingActive:
+    def test_inactive_when_machine_file_absent(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        (home / ".claude").mkdir(parents=True)
+        repo.mkdir()
+        assert not _autonomous_shipping_active(home, repo)
+
+    def test_active_when_machine_file_present(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        repo.mkdir()
+        assert _autonomous_shipping_active(home, repo)
+
+    def test_inactive_when_machine_file_present_and_repo_optout(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        (repo / ".claude").mkdir(parents=True)
+        (repo / ".claude" / "autonomous-shipping-optout").touch()
+        assert not _autonomous_shipping_active(home, repo)
+
+    def test_inactive_when_repo_commits_required_file_but_machine_file_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """The central guarantee this function exists to provide: a repo's
+        own committed .claude/autonomous-shipping-required must never grant
+        anything by itself. Only the engineer's own machine state can."""
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        (home / ".claude").mkdir(parents=True)
+        (repo / ".claude").mkdir(parents=True)
+        (repo / ".claude" / "autonomous-shipping-required").touch()
+        assert not _autonomous_shipping_active(home, repo)
+
+    def test_inactive_when_repo_root_empty(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        assert not _autonomous_shipping_active(home, None, "")
+
+    def test_inactive_when_home_empty(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. {_LIB_SH}; _lib_autonomous_shipping_active "$1"',
+                "bash",
+                str(repo),
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": "", "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+
+    def test_inactive_when_home_is_bare_root(self, tmp_path: Path) -> None:
+        """Pins the ${HOME%/} normalization specifically: HOME=/ strips to
+        an empty home_norm, so the [ -n "$home_norm" ] guard fires before any
+        filesystem probe — deterministically, not because /.claude/
+        autonomous-shipping-required happens to be absent on this machine.
+        Losing the %/ strip would make this depend on ambient root-filesystem
+        state instead."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. {_LIB_SH}; _lib_autonomous_shipping_active "$1"',
+                "bash",
+                str(repo),
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": "/", "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+
+    def test_inactive_on_wrong_arity(self, tmp_path: Path) -> None:
+        """Extra positional (not zero args) so $1 stays bound under set -u —
+        a zero-arg call can't distinguish a controlled `return 1` from an
+        interpreter abort on the unbound $1 dereference, since both exit
+        nonzero. This call isolates the [ "$#" -eq 1 ] guard itself."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -u; . {_LIB_SH}; _lib_autonomous_shipping_active "$1" "$2"',
+                "bash",
+                str(tmp_path / "repo"),
+                "unexpected-extra-arg",
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "unbound variable" not in result.stderr
