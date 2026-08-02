@@ -9,18 +9,21 @@ used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 total_cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
 rate_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 rate_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+pr_number=$(echo "$input" | jq -r '.pr.number // empty' | tr -d '[:cntrl:]')
+pr_url=$(echo "$input" | jq -r '.pr.url // empty' | tr -d '[:cntrl:]')
+pr_review_state=$(echo "$input" | jq -r '.pr.review_state // empty' | tr -d '[:cntrl:]')
 
 # ANSI color codes (dim-friendly)
-RESET='\033[0m'
-DIM='\033[2m'
-CYAN='\033[36m'
-GREEN='\033[32m'
-YELLOW='\033[33m'
-BLUE='\033[34m'
-MAGENTA='\033[35m'
-RED='\033[31m'
-WHITE='\033[97m'
-GRAY='\033[90m'
+RESET=$'\033[0m'
+DIM=$'\033[2m'
+CYAN=$'\033[36m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+BLUE=$'\033[34m'
+MAGENTA=$'\033[35m'
+RED=$'\033[31m'
+WHITE=$'\033[97m'
+GRAY=$'\033[90m'
 
 # --- Context progress bar ---
 build_bar() {
@@ -85,9 +88,8 @@ account_info_file="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
 account_email=""
 account_plan=""
 if [ -f "$account_info_file" ]; then
-    # Strip control/escape bytes: these values flow into the final `echo -e`
-    # assembly below, which reinterprets backslash escapes in the whole
-    # string — an unstripped ESC byte here would let a crafted
+    # Strip control/escape bytes: these values are printed straight to the
+    # terminal below — an unstripped ESC byte here would let a crafted
     # emailAddress/organizationType (e.g. from a compromised SSO-managed
     # org profile) inject terminal escape sequences (OSC title-set,
     # clipboard writes, output hiding) at render time.
@@ -151,6 +153,21 @@ if [ -n "$cwd" ] && [ -d "$cwd" ]; then
     fi
 fi
 
+# --- Pull request (mirrors the built-in footer PR badge, colored by review state) ---
+pr_display=""
+if [ -n "$pr_url" ]; then
+    case "$pr_review_state" in
+        approved) pr_color="$GREEN" ;;
+        changes_requested) pr_color="$RED" ;;
+        draft) pr_color="$GRAY" ;;
+        *) pr_color="$YELLOW" ;;
+    esac
+    pr_label="PR #${pr_number}"
+    [ -n "$pr_review_state" ] && pr_label="${pr_label} ${pr_review_state}"
+    osc8_esc=$'\033'
+    pr_display=" ${osc8_esc}]8;;${pr_url}${osc8_esc}\\${pr_color}${pr_label}${RESET}${osc8_esc}]8;;${osc8_esc}\\"
+fi
+
 # --- Working directory (shorten home, truncate to fit terminal) ---
 home_dir="$HOME"
 short_cwd="${cwd/#$home_dir/~}"
@@ -159,5 +176,5 @@ if [ "${#short_cwd}" -gt "$max_path_len" ]; then
 fi
 
 # --- Assemble status line ---
-echo -e "${CYAN}${model}${RESET}  ${ctx_display}  ${rate_display}  ${YELLOW}${cost_display}${RESET}${account_display}"
-echo -e "${BLUE}${short_cwd}${RESET}${git_branch}"
+printf '%s\n' "${CYAN}${model}${RESET}  ${ctx_display}  ${rate_display}  ${YELLOW}${cost_display}${RESET}${account_display}"
+printf '%s\n' "${BLUE}${short_cwd}${RESET}${git_branch}${pr_display}"

@@ -175,7 +175,7 @@ See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one f
 Opus 4.7 [###-------] 32% • 5h:7% • 7d:24% • $1.24 • ~/MyCode/proj • (main)
 ```
 
-`statusline-command.sh` renders model, context usage percentage, 5-hour and 7-day capacity used percentages (for subscription plans), session cost (for API-based plans), working directory, and git branch in the status bar. Configured in `settings.json` via the `statusline` key.
+`statusline-command.sh` renders model, context usage percentage, 5-hour and 7-day capacity used percentages (for subscription plans), session cost (for API-based plans), working directory, git branch, and a clickable link to the current branch's open PR (colored by review state) in the status bar. Configured in `settings.json` via the `statusline` key.
 
 The account segment (email / plan) reads `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json`, so it follows whichever account the running session authenticated as. `CLAUDE_CONFIG_DIR` is a first-party Claude Code env var that relocates `~/.claude` paths (see the [`.claude` directory reference](https://code.claude.com/docs/en/claude-directory)) — any account-switching setup that sets it before launching Claude Code gets a matching statusline for free.
 
