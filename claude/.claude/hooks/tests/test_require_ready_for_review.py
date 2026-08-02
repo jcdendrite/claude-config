@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -503,6 +504,181 @@ class TestRequireReadyForReview:
             )
             == "allow"
         )
+
+    # -- gh pr create -------------------------------------------------------
+
+    def test_gh_pr_create_no_marker_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    ):
+        """Creating a PR is the publication boundary — gate it even though
+        the branch has no open PR yet (fake_gh_no_pr, not fake_gh_pr_exists:
+        a PR being created does not exist at gh-pr-view time, so a fixture
+        that reports one existing would pass regardless of whether the
+        PR-existence early-return is actually skipped for this arm)."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("gh pr create", session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_gh_pr_create_with_completion_marker_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    ):
+        sid = "s"
+        marker = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("gh pr create", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    def test_gh_pr_create_stale_marker_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    ):
+        """A completion marker present but pointing at a stale (non-current)
+        HEAD must still deny. This distinguishes 'the marker-check code path
+        was reached and correctly rejected a mismatch' from
+        test_gh_pr_create_no_marker_denies, which (using fake_gh_no_pr) would
+        also deny via the pre-existing fail-open branch even if the
+        marker-check code were unreachable for this arm — a stale marker
+        only denies if that code actually runs."""
+        sid = "s"
+        marker = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("0" * 40 + "\n")
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("gh pr create", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_gh_pr_create_with_flags_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    ):
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(
+                    'gh pr create --title "foo" --body "bar"', session_id="s"
+                ),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_gh_pr_create_chained_after_push_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    ):
+        """A chained `git push && gh pr create` must still gate on the
+        gh pr create fragment even though the push fragment (no PR yet)
+        would bypass on its own."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(
+                    "git push origin feature && gh pr create", session_id="s"
+                ),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_gh_pr_create_chained_after_dry_run_push_bypasses_known_gap(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    ):
+        """Known, documented gap (see hook header): the --dry-run bypass
+        greps the WHOLE $COMMAND string before any per-fragment check runs,
+        so a --dry-run push chained ahead of gh pr create exits the gate
+        early regardless of the gh-pr-create arm. Pre-existing in the
+        --dry-run bypass block (unchanged by this diff — the identical shape
+        already bypasses a second real `git push` chained the same way);
+        inherited, not introduced, by the new arm. Pinned here as a known-bad
+        case so a future accidental fix or accidental worsening doesn't pass
+        silently — see the hook header and the plan's Part 3 residuals."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(
+                    "git push --dry-run && gh pr create", session_id="s"
+                ),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "eval gh pr create",
+            "xargs gh pr create",
+            "gh pr create;",
+            "(cd /wt; gh pr create)",
+            "GH_TOKEN=x gh pr create",
+        ],
+    )
+    def test_gh_pr_create_wrapper_shapes_denied(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr, command
+    ):
+        """Mirrors test_command_shapes_that_escaped_old_regex_are_denied's
+        git-push coverage for the gh-pr-create detection regex."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_gh_pr_create_echo_false_positive_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    ):
+        """Known, pre-existing limitation shared with is_gh_pr_ready: the
+        detection regex scans raw fragment text rather than command
+        position, so a command that merely mentions "gh pr create" (without
+        invoking it) is denied too. Fail-closed, not a security gap — pins
+        the current behavior so a future regex change doesn't silently flip
+        it to a false negative instead."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("echo gh pr create", session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_deny_message_names_pr_create(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    ):
+        """The deny message must name gh pr create specifically, not fall
+        into the push-worded branch (the bug this arm fixes)."""
+        env = os.environ.copy()
+        env["HOME"] = str(isolated_home)
+        result = subprocess.run(
+            [str(READY_FOR_REVIEW_HOOK)],
+            input=json.dumps(bash_input("gh pr create", session_id="s")),
+            capture_output=True,
+            text=True,
+            cwd=repo_on_feature_branch,
+            env=env,
+            check=False,
+        )
+        payload = json.loads(result.stdout)
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "PR creation blocked" in reason
+        assert "Push to a branch" not in reason
 
     # -- gh failure → fail-open ------------------------------------------
 

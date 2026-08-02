@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import bash_input, write_input
+from helpers import bash_input, build_path_without, write_input
 
 # ------------------------------------------------------------------ #
 # Paths                                                               #
@@ -229,17 +229,29 @@ class TestHookClassHeader:
         """Every hook must declare # hook-class: <value>."""
         value = _hook_class(hook)
         assert value is not None, (
-            f"add `# hook-class: gate` or `# hook-class: informational` "
-            f"header to {hook.name}"
+            f"add `# hook-class: gate`, `# hook-class: informational`, or "
+            f"`# hook-class: turn-gate` header to {hook.name}"
         )
 
     def test_hook_class_value_valid(self, hook: Path) -> None:
-        """hook-class value must be 'gate' or 'informational'."""
+        """hook-class value must be 'gate', 'informational', or 'turn-gate'.
+
+        'gate' fires PreToolUse and may deny a tool call. 'informational'
+        fires PostToolUse/SessionStart/SessionEnd/etc. and never denies.
+        'turn-gate' fires on Stop and may block the *turn* from ending
+        (decision: "block") rather than a tool call from running — a
+        distinct contract from 'gate', which is why it is a separate value
+        rather than a Stop hook being mislabeled 'gate' (Layer 2's
+        PreToolUse-specific behavior checks, e.g.
+        test_emit_deny_defined_before_lib_source, do not apply to it) or
+        'informational' (which would be a false label on a hook that
+        blocks).
+        """
         value = _hook_class(hook)
         if value is None:
             pytest.skip("header absent — tested by test_hook_class_header_present")
-        assert value in ("gate", "informational"), (
-            f"{hook.name}: expected one of: gate, informational; got '{value}'"
+        assert value in ("gate", "informational", "turn-gate"), (
+            f"{hook.name}: expected one of: gate, informational, turn-gate; got '{value}'"
         )
 
     def test_gate_naming_convention_enforced(self, hook: Path) -> None:
@@ -419,14 +431,11 @@ def _path_without(tmp_path_factory: pytest.TempPathFactory):
     """Return a builder `_path_without(binary) -> str`: a PATH string built
     as a symlink farm mirroring the real PATH, with `binary` omitted.
 
-    A full mirror (not a hand-picked minimal tool subset) is deliberate:
-    under-symlinking is a silent false pass here — a hook denying because
-    some OTHER required tool is missing looks identical to the hook denying
-    correctly for the binary this test actually targets. First real PATH
-    directory wins on a duplicate basename, mirroring normal PATH shadowing
-    order; unreadable directories are skipped rather than raising. Farms are
-    memoized per binary for the whole test session, since every case that
-    asks to remove the same binary gets an identical farm.
+    Farms are memoized per binary for the whole test session, since every
+    case that asks to remove the same binary gets an identical farm. Farm
+    construction itself (full-mirror rationale, dedup, unreadable-dir
+    handling) lives in `helpers.build_path_without`, shared with
+    `test_advance_past_commit_stall.py`'s own non-memoized caller.
     """
     cache: dict[str, str] = {}
 
@@ -434,34 +443,8 @@ def _path_without(tmp_path_factory: pytest.TempPathFactory):
         if binary in cache:
             return cache[binary]
         farm_dir = tmp_path_factory.mktemp(f"path-without-{binary}")
-        seen: set[str] = set()
-        for real_dir in os.environ.get("PATH", "").split(os.pathsep):
-            if not real_dir:
-                continue
-            try:
-                entries = os.listdir(real_dir)
-            except OSError:
-                continue
-            for name in entries:
-                if name == binary or name in seen:
-                    continue
-                src = Path(real_dir) / name
-                try:
-                    if not os.access(src, os.X_OK):
-                        continue
-                except OSError:
-                    continue
-                seen.add(name)
-                try:
-                    (farm_dir / name).symlink_to(src)
-                except OSError:
-                    continue
-        path_str = str(farm_dir)
-        assert shutil.which(binary, path=path_str) is None, (
-            f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
-        )
-        cache[binary] = path_str
-        return path_str
+        cache[binary] = build_path_without(binary, farm_dir)
+        return cache[binary]
 
     return _build
 

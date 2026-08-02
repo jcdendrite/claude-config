@@ -79,6 +79,67 @@ if [ -f "$HOME/.claude.json" ]; then
 fi
 # INSTALL_TEST_FIXTURE: continuity-hardening — end
 
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: machine-level-opt-ins — start
+# Caller must check `[ -t 0 ]` before invoking this — it has no TTY guard of
+# its own and will block on `read` forever against an open, never-closed
+# stdin. configure_machine_level_opt_ins below is the only sanctioned caller.
+_prompt_sentinel_opt_in() {
+  local sentinel_path="$1" human_name="$2" description="$3"
+  # Defense-in-depth: both current call sites hardcode a safe path, but this
+  # function performs unconditional touch/rm/mkdir on its first argument —
+  # confine it to $HOME/.claude so a future call site with a
+  # non-hardcoded/repo-influenced path fails loudly instead of silently
+  # writing wherever it's pointed.
+  case "$sentinel_path" in
+    "$HOME/.claude/"*) ;;
+    *)
+      echo "[install] internal error: _prompt_sentinel_opt_in refuses a path outside \$HOME/.claude: $sentinel_path" >&2
+      return 1
+      ;;
+  esac
+  if [ -f "$sentinel_path" ]; then
+    printf '%s is currently ENABLED on this machine (%s).\n' "$human_name" "$sentinel_path"
+    printf '%s\n' "$description"
+    # `|| answer=""` treats read's EOF (e.g. Ctrl-D) the same as a bare
+    # Enter (no-op) instead of letting set -e abort the rest of install.sh
+    # — including marketplace/plugin registration below — with no diagnostic.
+    read -r -p "Keep it enabled? [Y/n] " answer || answer=""
+    case "$answer" in
+      [Nn]*) rm -f "$sentinel_path"; echo "  → disabled: removed $sentinel_path" ;;
+      *) echo "  ✓ keeping $human_name enabled" ;;
+    esac
+  else
+    printf '%s is currently disabled on this machine.\n' "$human_name"
+    printf '%s\n' "$description"
+    read -r -p "Enable it now? [y/N] " answer || answer=""
+    case "$answer" in
+      [Yy]*) mkdir -p "$(dirname "$sentinel_path")"; touch "$sentinel_path"; echo "  → enabled: created $sentinel_path" ;;
+      *) echo "  ✓ leaving $human_name disabled" ;;
+    esac
+  fi
+}
+
+configure_machine_level_opt_ins() {
+  if [ ! -t 0 ]; then
+    echo ""
+    echo "=== Machine-level opt-ins ==="
+    echo "  (skipped — not an interactive terminal; existing settings are unchanged)"
+    return 0
+  fi
+  echo ""
+  echo "=== Machine-level opt-ins ==="
+  _prompt_sentinel_opt_in "$HOME/.claude/worktree-required" "Worktree enforcement" \
+    "Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'."
+  _prompt_sentinel_opt_in "$HOME/.claude/autonomous-shipping-required" "Autonomous shipping" \
+    "Lets Claude Code commit, push, and open PRs without asking first, on every repo without a per-repo .claude/autonomous-shipping-optout. A repo cannot enable this by committing anything — only this machine-level file can. See README 'Autonomous shipping'."
+}
+# INSTALL_TEST_FIXTURE: machine-level-opt-ins — end
+
+configure_machine_level_opt_ins
+
 SETTINGS_FILE="$HOME/.claude/settings.json"
 if [ -f "$SETTINGS_FILE" ]; then
   echo ""

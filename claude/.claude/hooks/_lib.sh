@@ -585,6 +585,38 @@ _lib_worktree_enforcement_active() {
   return 1
 }
 
+# _lib_autonomous_shipping_active REPO_ROOT
+# Returns 0 (true) when this machine has opted into autonomous shipping
+# (commit/push/PR without asking) for the given repo.
+#
+# NOT a generalization of _lib_worktree_enforcement_active above: that
+# function's committed-sentinel arm is safe because worktree enforcement
+# only restricts a hostile repo, while autonomous shipping removes a human
+# checkpoint — so a repo's own committed content must never grant it. There
+# is no repo-level "required" file in this code path; committing one has no
+# effect. Two tiers only: (1) machine sentinel
+# (~/.claude/autonomous-shipping-required), required; (2) per-repo opt-out
+# (.claude/autonomous-shipping-optout), narrows the machine default off for
+# this repo only. Every error path (filesystem error, empty $HOME, empty
+# REPO_ROOT, wrong argument count) fails toward NOT shipping — the safe
+# direction for a granting mechanism.
+_lib_autonomous_shipping_active() {
+  [ "$#" -eq 1 ] || return 1
+  local repo_root="$1"
+  [ -n "$repo_root" ] || return 1
+  # Load-bearing, same reasoning as _lib_worktree_enforcement_active above:
+  # an empty/unset $HOME would probe /.claude/autonomous-shipping-required,
+  # and a stray root-owned file there would force-activate autonomous
+  # shipping — a materially worse consequence here than for worktree
+  # enforcement, since this mechanism removes a human checkpoint rather
+  # than adding one.
+  local home_norm="${HOME%/}"
+  [ -n "$home_norm" ] || return 1
+  [ -f "$home_norm/.claude/autonomous-shipping-required" ] || return 1
+  [ -f "$repo_root/.claude/autonomous-shipping-optout" ] && return 1
+  return 0
+}
+
 # _lib_valid_session_id_component SESSION_ID
 # Returns 0 (true) iff SESSION_ID is safe to use as a single filesystem path
 # component (e.g. "$STATE_DIR/$SESSION_ID"). Every call site that builds such

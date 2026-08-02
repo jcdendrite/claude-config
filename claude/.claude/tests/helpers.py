@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -198,6 +199,55 @@ def run_hook_reason(
     return payload["hookSpecificOutput"].get("permissionDecisionReason")
 
 
+def run_hook_stop(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> dict | None:
+    """Stop-specific runner. A Stop hook's block payload is a top-level
+    {"decision": "block", "reason": ...} pair — distinct from run_hook's
+    PreToolUse hookSpecificOutput.permissionDecision (KeyError on this
+    shape) and run_hook_advisory's "no opinion" default (a Stop hook has no
+    allow/deny axis at all, only "block this turn from ending" or silence,
+    so mapping silence to "allow" would misrepresent what the hook did).
+
+    Returns the parsed payload dict when the hook blocks, or None when it
+    stays silent (empty stdout). Asserts the exact {"decision", "reason"}
+    key pair on any non-empty payload — the harness routes on those literal
+    keys, so a typo in the emitting hook must fail loudly here rather than
+    silently no-op in production.
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook writes into an isolated temp directory rather than real ~/.claude.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
+    env = _build_subprocess_env(home, extra_env)
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
+    if not result.stdout.strip():
+        return None
+    payload = json.loads(result.stdout)
+    assert set(payload.keys()) == {"decision", "reason"}, (
+        f"Stop hook emitted unexpected keys {sorted(payload.keys())} — "
+        'the harness routes on the exact {"decision", "reason"} pair'
+    )
+    assert payload["decision"] == "block", (
+        f'Stop hook emitted decision={payload["decision"]!r}, expected "block" '
+        "— the harness's Stop contract only recognizes that value"
+    )
+    return payload
+
+
 def posttooluse_input(file_path: str) -> dict:
     """Build a PostToolUse Write event payload for consume-migration-token tests.
 
@@ -249,6 +299,33 @@ def multiedit_input(file_path: str, agent_type: str | None = None) -> dict:
     payload: dict = {"tool_name": "MultiEdit", "tool_input": {"file_path": file_path, "edits": []}}
     if agent_type is not None:
         payload["agent_type"] = agent_type
+    return payload
+
+
+def stop_input(
+    last_assistant_message: str,
+    session_id: str | None = None,
+    prompt_id: str | None = None,
+    agent_type: str | None = None,
+    permission_mode: str | None = None,
+    cwd: str | None = None,
+) -> dict:
+    """Build a Stop event payload matching the real harness shape for
+    advance-past-commit-stall.sh's tests."""
+    payload: dict = {
+        "hook_event_name": "Stop",
+        "last_assistant_message": last_assistant_message,
+    }
+    if session_id is not None:
+        payload["session_id"] = session_id
+    if prompt_id is not None:
+        payload["prompt_id"] = prompt_id
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    if permission_mode is not None:
+        payload["permission_mode"] = permission_mode
+    if cwd is not None:
+        payload["cwd"] = cwd
     return payload
 
 
@@ -619,3 +696,47 @@ def run_ci_detect_step(repo: Path, base_sha: str, head_sha: str) -> dict[str, st
             key, _, value = line.partition("=")
             outputs[key] = value
     return outputs
+
+
+def build_path_without(binary: str, farm_dir: Path) -> str:
+    """Build a PATH string mirroring the real PATH via a symlink farm, with
+    `binary` omitted, inside the caller-supplied (already-created) `farm_dir`.
+
+    A full mirror (not a hand-picked minimal tool subset) is deliberate:
+    under-symlinking is a silent false pass here — a hook denying because
+    some OTHER required tool is missing looks identical to the hook denying
+    correctly for the binary this test actually targets. First real PATH
+    directory wins on a duplicate basename, mirroring normal PATH shadowing
+    order; unreadable directories are skipped rather than raising.
+
+    Callers own `farm_dir`'s lifetime and any caching strategy (e.g.
+    session-scoped memoization) — this function only builds the farm once
+    per call.
+    """
+    seen: set[str] = set()
+    for real_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if not real_dir:
+            continue
+        try:
+            entries = os.listdir(real_dir)
+        except OSError:
+            continue
+        for name in entries:
+            if name == binary or name in seen:
+                continue
+            src = Path(real_dir) / name
+            try:
+                if not os.access(src, os.X_OK):
+                    continue
+            except OSError:
+                continue
+            seen.add(name)
+            try:
+                (farm_dir / name).symlink_to(src)
+            except OSError:
+                continue
+    path_str = str(farm_dir)
+    assert shutil.which(binary, path=path_str) is None, (
+        f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
+    )
+    return path_str

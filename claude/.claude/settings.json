@@ -125,6 +125,16 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/advance-past-commit-stall.sh"
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
@@ -147,6 +157,14 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/cleanup-worktree-anchor-nudge-marker.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/cleanup-commit-stall-marker.sh"
           }
         ]
       }
@@ -228,6 +246,12 @@
             "type": "command",
             "command": "~/.claude/hooks/require-ready-for-review.sh",
             "if": "Bash(gh pr ready *)",
+            "statusMessage": "Checking ready-for-review gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-ready-for-review.sh",
+            "if": "Bash(gh pr create *)",
             "statusMessage": "Checking ready-for-review gate..."
           },
           {

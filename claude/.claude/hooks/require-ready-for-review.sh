@@ -1,7 +1,8 @@
 #!/bin/bash
 # hook-class: gate
 # Gate: require /ready-for-review to have run before pushing to a branch
-# with an open PR (or marking a draft PR ready). Verified via marker file.
+# with an open PR, marking a draft PR ready, or creating a PR. Verified via
+# marker file.
 #
 # Why: pre-handoff gate (/ready-for-review) verifies tests/lint/typecheck,
 # runs cumulative /code-review, syncs PR body, and checks CI before the
@@ -32,14 +33,31 @@
 #   session_id) a gate run it already completed at the same HEAD.
 #
 # Bypass cases (allow without checking marker):
-# - Not Bash tool, or not git push / gh pr ready / gh pr review --approve etc.
+# - Not Bash tool, or not git push / gh pr ready / gh pr create.
 # - --dry-run pushes
 # - --tags-only pushes (no branch artifact change)
 # - Deletion pushes (--delete flag, or `origin :branch` source-empty form)
 # - Branch is the default branch (no PR semantics)
-# - Branch has no open PR (gh pr view returns empty)
+# - Branch has no open PR (gh pr view returns empty) — not checked for
+#   gh pr create, since a PR being created does not exist yet.
 # - gh pr view fails (network issue, gh not configured, etc.) — fail-open
 #   to keep the user unblocked; the skill's prose triggers still fire.
+#
+# Known gaps, inherited by gh pr create, not closed here (not yet filed as
+# a follow-up issue): the --dry-run bypass greps the whole $COMMAND, so
+# `git push --dry-run && gh pr create` exits 0 before the gh pr create arm
+# is evaluated (this shape already bypassed a second real `git push`
+# chained the same way, pre-existing and unchanged by this diff); the
+# default-branch bypass runs before any command-type check, so
+# `gh pr create` from the default branch is also exempted — believed inert
+# in practice, since gh errors on a same-branch PR regardless of this hook.
+# Separately, the settings.json `if`-dispatch entries are prefix globs
+# (`Bash(gh pr create *)`) while the in-script detection is fragment-based;
+# a disguised standalone invocation (`eval "gh pr create"`, an env-prefixed
+# form) not chained after a git-push/gh-pr-ready fragment may not match the
+# dispatch pattern, so the hook never runs at all for that shape — the same
+# dispatch-vs-internal-regex gap the git-push and gh-pr-ready arms already
+# have.
 
 set -uo pipefail
 
@@ -79,6 +97,7 @@ CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty')
 # (cd /wt; git push) (paren group).
 is_git_push=false
 is_gh_pr_ready=false
+is_gh_pr_create=false
 FRAGMENTS=$(_lib_split_fragments "$COMMAND")
 while IFS= read -r frag; do
   [ -z "$frag" ] && continue
@@ -89,8 +108,11 @@ while IFS= read -r frag; do
   if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+ready(\s|;|$)'; then
     is_gh_pr_ready=true
   fi
+  if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+create(\s|;|$)'; then
+    is_gh_pr_create=true
+  fi
 done <<< "$FRAGMENTS"
-if ! $is_git_push && ! $is_gh_pr_ready; then
+if ! $is_git_push && ! $is_gh_pr_ready && ! $is_gh_pr_create; then
   exit 0
 fi
 
@@ -159,12 +181,17 @@ if _lib_active_bypass_marker_live ".ready-for-review-active.d" "$SESSION_ID"; th
 fi
 
 # PR existence check: only gate when the branch actually has an open PR.
+# Skipped for gh pr create — a PR being created by definition does not
+# exist yet, so this early-return would otherwise fail-open the one
+# command it needs to gate.
 # Network call — wrap in `timeout` so a hanging gh doesn't stall the
 # tool-call. On error/timeout, fail-open: the skill's prose triggers
 # still fire, and we don't want to brick offline / flaky-network work.
-PR_NUMBER=$(cd "$CWD" 2>/dev/null && timeout 5 gh pr view --json number --jq '.number' 2>/dev/null)
-if [ -z "$PR_NUMBER" ]; then
-  exit 0
+if ! $is_gh_pr_create; then
+  PR_NUMBER=$(cd "$CWD" 2>/dev/null && timeout 5 gh pr view --json number --jq '.number' 2>/dev/null)
+  if [ -z "$PR_NUMBER" ]; then
+    exit 0
+  fi
 fi
 
 # Completion-marker check. Allow when any marker under this repo-hash holds
@@ -180,10 +207,13 @@ if _lib_marker_value_present "$HOME/.claude/ready-for-review-markers" "$CURRENT_
   exit 0
 fi
 
-# No active marker, no matching completion marker, gh pr view confirmed
-# the branch has an open PR — block.
+# No active marker, no matching completion marker, and (for git push /
+# gh pr ready) gh pr view confirmed the branch has an open PR — block,
+# naming whichever of the three commands triggered the gate.
 if $is_gh_pr_ready; then
   emit_deny "PR ready-for-review marking blocked by ready-for-review gate: no /ready-for-review gate run covering the current HEAD was found — either this PR has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
+elif $is_gh_pr_create; then
+  emit_deny "PR creation blocked by ready-for-review gate: no /ready-for-review gate run covering the current HEAD was found. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
 else
   emit_deny "Push to a branch with an open PR blocked by ready-for-review gate: no /ready-for-review gate run covering this branch's current HEAD was found — either this branch has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
 fi
