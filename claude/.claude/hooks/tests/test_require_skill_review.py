@@ -54,6 +54,20 @@ def _stage_plugin_skill_change(git_repo):
     )
 
 
+def _stage_routing_md_change(git_repo, body: str = ""):
+    """Stage a plan-review/ROUTING.md change so the hook has a non-empty
+    ROUTING.md diff to check. `body` appends extra content, so a second call
+    stages a diff with a different hash than the first."""
+    routing_file = git_repo / "claude" / ".claude" / "skills" / "plan-review" / "ROUTING.md"
+    routing_file.parent.mkdir(parents=True, exist_ok=True)
+    routing_file.write_text("## test routing\n" + body)
+    subprocess.run(
+        ["git", "add", str(routing_file.relative_to(git_repo))],
+        cwd=git_repo,
+        check=True,
+    )
+
+
 class TestRequireSkillReview:
     # The marker layout is ~/.claude/skill-review-markers/<repo-hash>.<session_id>.
     # The hook reads session_id from its JSON payload and checks the
@@ -224,6 +238,25 @@ class TestRequireSkillReview:
             == "deny"
         )
 
+    def test_routing_md_only_no_marker_denies_with_marker_gate_reason(
+        self, isolated_home, git_repo
+    ):
+        """A ROUTING.md-only staged change with no marker must deny via the
+        skill-review marker gate, not the structural validator. A bare
+        `== "deny"` assertion can't distinguish "correctly gated, no marker
+        yet" from "incorrectly fed to the frontmatter validator" — the latter
+        would make ROUTING.md (which has no frontmatter) permanently
+        uncommittable, proving STAGED_SKILL_PATHS was wrongly widened."""
+        _stage_routing_md_change(git_repo)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert "Commit blocked by skill-review gate" in reason
+        assert "structural validator" not in reason
+
     def test_marker_under_another_repo_hash_does_not_authorize(
         self, isolated_home, git_repo, tmp_path
     ):
@@ -340,6 +373,83 @@ class TestRequireSkillReview:
         ), (
             "a marker written for a plugin-located SKILL.md must satisfy the "
             "hook — write and read side disagree on the plugin pathspec"
+        )
+
+    def test_skill_marker_write_command_covers_a_routing_md_diff(
+        self, isolated_home, git_repo
+    ):
+        """The same recipe-vs-hook agreement as the two tests above, for the
+        third of the three pathspecs the write side scopes its hash to.
+
+        Staging a ROUTING.md-only diff is what makes the third pathspec
+        load-bearing for the assertion — a drift here would leave both sides
+        computing the hash from the same empty diff and agreeing on a value
+        that proves nothing."""
+        sid = "test-session-skill-cmd-routing"
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / str(os.getpid())).write_text(sid)
+
+        _stage_routing_md_change(git_repo)
+        skill_command = extract_skill_command(SKILL_REVIEW_SKILL, "skill-review-marker-write")
+        run_skill_command(skill_command, cwd=git_repo, isolated_home=isolated_home)
+
+        # Sanity check, same as the sibling tests: separates "the recipe never
+        # wrote anything" from "it wrote a value the hook rejects", so a
+        # regression here names its own cause.
+        assert skill_review_marker_path(isolated_home, git_repo, session_id=sid).exists(), (
+            "SKILL.md marker-write recipe ran but no marker landed at the "
+            "path the hook computes — the skill and hook disagree on layout."
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=sid),
+                cwd=git_repo,
+            )
+            == "allow"
+        ), (
+            "a marker written for a plan-review/ROUTING.md diff must satisfy "
+            "the hook — write and read side disagree on the ROUTING.md pathspec"
+        )
+
+    def test_mixed_skill_and_routing_stale_skill_only_marker_denies(
+        self, isolated_home, git_repo
+    ):
+        """A marker written for a SKILL.md-only diff is stale once ROUTING.md
+        is also staged — the combined hash differs from the SKILL.md-only
+        hash, so the gate must deny."""
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        _stage_routing_md_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_mixed_skill_and_routing_stale_routing_only_marker_denies(
+        self, isolated_home, git_repo
+    ):
+        """A marker written for a ROUTING.md-only diff no longer matches once
+        a SKILL.md change is also staged, so the hook denies. This direction
+        doesn't isolate the ROUTING.md pathspec specifically the way the
+        sibling test above does (the marker and current diff differ here
+        regardless of which pathspec changed) — it exists for symmetry with
+        the sibling and to pin the expected behavior in this direction too."""
+        _stage_routing_md_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
         )
 
     def test_empty_staged_diff_allows(self, isolated_home, git_repo):

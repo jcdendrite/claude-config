@@ -10,6 +10,9 @@
 # Default limit is 200 lines. Structural-dispatcher skills (code-review,
 # plan-review) carry item-ownership / routing tables that legitimately run
 # longer and are capped at Anthropic's documented 500-line ceiling instead.
+# plan-review/ROUTING.md gets the same 500-line cap: it holds the
+# item-ownership / spawn-routing table extracted from plan-review/SKILL.md,
+# the same content class the cap was written for.
 # Plugin-scoped skills (plugins/*/skills/) currently have no override path
 # and all fall to the 200-line default — extend limit_for() if a plugin
 # skill earns the same exception.
@@ -57,7 +60,7 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 # Per-skill limit override. Listed paths are repo-root-relative.
 limit_for() {
   case "$1" in
-    claude/.claude/skills/code-review/SKILL.md|claude/.claude/skills/plan-review/SKILL.md)
+    claude/.claude/skills/code-review/SKILL.md|claude/.claude/skills/plan-review/SKILL.md|claude/.claude/skills/plan-review/ROUTING.md)
       echo 500 ;;
     *)
       echo 200 ;;
@@ -75,9 +78,10 @@ while IFS= read -r f; do
     FAIL=1
   fi
 # Path prefixes are repo-root-relative for this repo's layout.
-# Covers both stowed skills (claude/.claude/skills/) and project-scoped plugins (plugins/*/skills/).
+# Covers both stowed skills (claude/.claude/skills/) and project-scoped plugins (plugins/*/skills/),
+# plus the single hardcoded plan-review/ROUTING.md exception (see limit_for() above).
 # In other repos this grep matches nothing and the hook exits 0 silently.
-done < <(git diff --cached --name-only | grep -E '(claude/.claude/skills/|plugins/[^/]+/skills/).+/SKILL\.md')
+done < <(git diff --cached --name-only | grep -E '(claude/.claude/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^claude/\.claude/skills/plan-review/ROUTING\.md$')
 
 if [ "$FAIL" -eq 1 ]; then
   REASON=$(printf 'Skill length gate: one or more SKILL.md files grew past their per-skill limit. Reduce to the limit or fewer lines before committing:\n%b' "$MESSAGES")

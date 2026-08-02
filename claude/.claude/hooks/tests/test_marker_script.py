@@ -441,6 +441,71 @@ class TestMarkerScriptEmptyStagedGuard:
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
         assert len(list(marker_dir.iterdir())) == 1
 
+    def _make_routing_md_like_file(self, repo, skill_name="other-skill"):
+        """Create a tracked ROUTING.md outside plan-review — same filename,
+        different skill directory, so it is out of scope for the hardcoded
+        `claude/.claude/skills/plan-review/ROUTING.md` pathspec."""
+        skill_dir = repo / "claude" / ".claude" / "skills" / skill_name
+        skill_dir.mkdir(parents=True)
+        routing_md = skill_dir / "ROUTING.md"
+        routing_md.write_text("# not the gated ROUTING.md\n")
+        subprocess.run(["git", "add", str(routing_md)], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add out-of-scope ROUTING.md"],
+            cwd=repo,
+            check=True,
+        )
+        return routing_md
+
+    def _make_plan_review_routing_md(self, repo):
+        """Create a tracked plan-review/ROUTING.md — the exact hardcoded pathspec."""
+        routing_dir = repo / "claude" / ".claude" / "skills" / "plan-review"
+        routing_dir.mkdir(parents=True, exist_ok=True)
+        routing_md = routing_dir / "ROUTING.md"
+        routing_md.write_text("# test routing\n")
+        subprocess.run(["git", "add", str(routing_md)], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add test routing"],
+            cwd=repo,
+            check=True,
+        )
+        return routing_md
+
+    def test_skill_review_out_of_scope_routing_md_like_file_does_not_fire(
+        self, isolated_home, git_repo
+    ):
+        """An unstaged change to a ROUTING.md-*named* file outside
+        plan-review is out of scope for the hardcoded
+        `claude/.claude/skills/plan-review/ROUTING.md` pathspec — the guard
+        must not fire, proving the pathspec is the exact path, not a
+        generic `**/ROUTING.md` glob."""
+        self._seed_session(isolated_home)
+        # file.txt is staged from the fixture; reset it so staged is empty for
+        # the whole tree, matching the sibling out-of-scope test's setup.
+        subprocess.run(["git", "reset", "HEAD", "--", "file.txt"], cwd=git_repo, check=True)
+        routing_md = self._make_routing_md_like_file(git_repo)
+        # Unstaged, out-of-scope modification.
+        routing_md.write_text("# not the gated ROUTING.md\nmodified\n")
+        result = _run(["write", "skill-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "skill-review-markers"
+        assert len(list(marker_dir.iterdir())) == 1
+
+    def test_skill_review_unstaged_routing_md_exits_2(self, isolated_home, git_repo):
+        """Guard fires when the staged plan-review/ROUTING.md diff is empty
+        but an unstaged ROUTING.md change exists."""
+        self._seed_session(isolated_home)
+        routing_md = self._make_plan_review_routing_md(git_repo)
+        # Modify ROUTING.md without staging it.
+        routing_md.write_text("# test routing\nmodified\n")
+        result = _run(["write", "skill-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert "git add" in result.stderr
+        assert "/skill-review" in result.stderr
+        marker_dir = isolated_home / ".claude" / "skill-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"guard should not write a marker: {stray}"
+
 
 class TestMarkerScriptStalePidLookup:
     """Regression guard: `activate` must stamp the live Claude PID into the

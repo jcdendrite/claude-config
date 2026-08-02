@@ -4,10 +4,13 @@ and plan-review/ROUTING.md.
 The block is intentionally duplicated (no shared partials — root CLAUDE.md;
 design-decisions.md §4): `ROUTING.md` is a co-located auxiliary file, not a
 shared include, so the two Reconciliation sections must each stand alone.
-`ROUTING.md` also sits outside every mechanical gate that would otherwise
-catch drift — `check-skill-length.sh` greps `SKILL\\.md` only, and
-`require-skill-review.sh` scopes both its early-exit and its marker hash to
-`**/SKILL.md`. This test is what watches the file nothing else does.
+`ROUTING.md` carries the same length cap (`check-skill-length.sh`) and
+review-marker requirement (`require-skill-review.sh`) as `SKILL.md` files,
+but neither mechanism diffs `ROUTING.md`'s content against
+`code-review/SKILL.md`'s — a length cap and a review marker each look at one
+file at a time, not at cross-file agreement. Semantic drift between the two
+Reconciliation blocks is still invisible to both, which is what this test
+watches for.
 
 Modeled on `TestFileBasedOutputBlockConsistency` (test_agent_roster.py), but
 differs in four ways the template does not transfer:
