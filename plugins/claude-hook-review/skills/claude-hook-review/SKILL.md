@@ -116,8 +116,9 @@ State the chosen posture in the script header. Reviewers shouldn't have to re-de
 **`# hook-class:` header** — every hook must declare its class on the second line:
 - `# hook-class: gate` — fires PreToolUse and may deny. Required on all guard hooks.
 - `# hook-class: informational` — fires PostToolUse/SessionStart/etc. and never denies. The label describes the hardening posture (cannot deny), not functional importance — an essential workflow hook (e.g., `capture-session-id.sh`) and a purely advisory one both carry this label if neither issues a PreToolUse denial.
+- `# hook-class: turn-gate` — fires on `Stop` and may block the *turn* from ending (`{"decision":"block","reason":...}`) rather than a tool call from running. A distinct contract from `gate`, not a Stop hook mislabeled `gate`: the emission shape differs (see §9), and `GATE_HOOKS` — which drives every Layer-2 auto-parametrized behavior test in `test_hook_alignment.py` — excludes it entirely, so a turn-gate hook needs hand-written equivalents for cases like jq-absent (see §9's note on the reversed fail posture there).
 
-Flipping a marker from `gate` to `informational` is a security-class change that removes a deny path; the commit message must state the rationale.
+Flipping a marker from `gate` to `informational`, or from either to `turn-gate`, is a security-class change that removes or reshapes a deny path; the commit message must state the rationale.
 
 ## 5. Dispatch design and drift risk
 
@@ -150,10 +151,10 @@ Flag these on a hook PR:
 - `if`-dispatch in `settings.json` matches the internal regex (no drift between the two).
 - `set -uo pipefail` present for gates with non-trivial parsing; if absent, justified.
 - JSON input parsed with `jq`; fail-closed on parse error.
-- `emit_deny` JSON shape: `hookSpecificOutput.permissionDecision` is exactly `"deny"` (lowercase, case-sensitive — `"Deny"` or `"block"` silently allows), `permissionDecisionReason` set.
-- Matcher (`Bash` vs `Edit|Write|MultiEdit`) matches the operation surface being gated.
+- Emitted JSON shape matches the hook's class. `gate`: `hookSpecificOutput.permissionDecision` is exactly `"deny"` (lowercase, case-sensitive — `"Deny"` or `"block"` silently allows), `permissionDecisionReason` set. `turn-gate`: a top-level `{"decision":"block","reason":...}` pair (not nested under `hookSpecificOutput`) — the harness routes on those exact literal keys, so a typo silently no-ops. These are two distinct emission contracts; do not test or review one as though it were the other.
+- Matcher (`Bash` vs `Edit|Write|MultiEdit` vs matcher-less `Stop`, which has no matcher support at all) matches the operation surface being gated.
 - Scope is narrow enough to avoid false positives: matcher + internal filter + repo-url guard exclude operations outside the stated purpose; header documents what the hook deliberately does NOT gate.
-- Tests cover new code paths; synthetic prefixes only, no real project names.
+- Tests cover new code paths; synthetic prefixes only, no real project names. For `turn-gate` hooks specifically, since `GATE_HOOKS` excludes them from `test_hook_alignment.py`'s auto-parametrization: hand-written jq-absent and required-external-tool-absent cases are present, and — the reversed posture from `gate` — both must assert **silent-allow** (exit 0, empty stdout), not a hard block. A `turn-gate` hook that hard-blocks on a missing dependency turns an infrastructure gap into a stuck turn, which is the opposite of a `gate` hook's correct fail-closed jq-absent behavior (Section 4).
 - No unbounded loops, no network calls, no unbounded file I/O.
 - Header lists known gaps the hook does not close.
 - **`command` path resolution**: every `command` starts with `"$CLAUDE_PROJECT_DIR"`, `${CLAUDE_PLUGIN_ROOT}`, or a stable user-level prefix (`~`, `$HOME`, literal `/`). Bare `./` or unprefixed names fail review — see Section 2.

@@ -21,6 +21,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
 - [What this installs](#what-this-installs)
 - [Configuration](#configuration)
   - [Worktree enforcement](#worktree-enforcement)
+  - [Autonomous shipping](#autonomous-shipping)
   - [Repo relocation](#repo-relocation)
   - [Private-project redaction](#private-project-redaction)
   - [Auto mode](#auto-mode)
@@ -153,8 +154,10 @@ flowchart LR
 | `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in) | Remove the flagged content; see [`docs/hooks.md`](docs/hooks.md) |
 | `deny-data-file-reads.sh` | `Read` of a data-shaped file (opt-in) | No clear — inspect data files outside Claude |
 | `deny-reviewer-tree-mutation.sh` | `Bash`/`Write`/`Edit`/`MultiEdit` from a review-only agent (`ciso-reviewer`, `staff-*`, `Explore`, `Plan`) that would mutate the tree under review | No clear — copy the file to `/tmp` and mutate the copy there |
-| `require-ready-for-review.sh` | `git push`, `gh pr ready` | `/ready-for-review` run since last commit |
+| `require-ready-for-review.sh` | `git push`, `gh pr ready`, `gh pr create` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
+| `advance-past-commit-stall.sh` | — (Stop, `turn-gate`, opt-in) | Forces the turn to continue past a commit/push/PR-open permission question when autonomous shipping is active; see [Autonomous shipping](#autonomous-shipping) |
+| `cleanup-commit-stall-marker.sh` | — (SessionEnd, no gate) | Removes the per-session state file its paired Stop hook wrote; also sweeps entries older than 30 days |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
 | `cleanup-session-id.sh` | — (SessionEnd, no gate) | Removes the session-id lookup file its paired SessionStart hook wrote |
 | `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
@@ -279,6 +282,8 @@ To opt out, delete `.claude/worktree-required`.
 
 #### Activate for all your repos (machine-level)
 
+`./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
+
 If you work across many repos and want enforcement everywhere without adding a marker to each:
 
 ```bash
@@ -302,6 +307,24 @@ grep -qxF '**/.claude/worktrees/' "$f" 2>/dev/null || echo '**/.claude/worktrees
 ```
 
 Without this, a `git add -A` in a repo that never got the per-repo `.gitignore` line (see above) can sweep live worktrees into a commit.
+
+### Autonomous shipping
+
+If the agent ends its turn asking whether you want to review the diff before it commits — even after finishing the work you asked for — this is the setting that removes that pause. `advance-past-commit-stall.sh` (a `Stop` hook) force-continues the turn through `/code-review` → commit → `/ready-for-review` → PR-open, stopping only before merge, whenever the machine-level sentinel below is set and the current repo carries no `.claude/autonomous-shipping-optout`. A repo cannot grant this by committing anything — only this machine-level file can; see [`claude/.claude/hooks/_lib.sh`](claude/.claude/hooks/_lib.sh)'s `_lib_autonomous_shipping_active`.
+
+`./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
+
+```bash
+touch ~/.claude/autonomous-shipping-required
+```
+
+To exempt a specific repo:
+
+```bash
+mkdir -p .claude && touch .claude/autonomous-shipping-optout
+```
+
+See [`docs/commit-stall-block.md`](docs/commit-stall-block.md) for the fire predicate, in-session recovery, log format, and known limitations.
 
 ### Repo relocation
 
