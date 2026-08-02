@@ -6,13 +6,7 @@
 # or a credential-shaped value (a GitHub token prefix, a PEM private-key
 # header).
 #
-# Two independent tiers, only one of which is opt-in. The credential-value
-# sub-check (below) is always on, with no arming file — it shares this
-# hook's file and commit-detection machinery, but not its dormancy. The
-# SSN/credit-card built-ins and every user `<label>: <regex>` pattern stay
-# dormant unless ~/.claude/pii-patterns.md exists as a readable regular
-# file; arming that tier is still a deliberate per-machine action. See
-# docs/security-hardening.md.
+# Two independent tiers: the credential-value check (below) is always on, no arming file. The SSN/credit-card built-ins and every user `<label>: <regex>` pattern stay dormant unless ~/.claude/pii-patterns.md exists as a readable regular file — arming that tier is still a deliberate per-machine action. See docs/security-hardening.md.
 #
 # Fires on every repo (no origin scoping) — a PII commit gate is only
 # useful if it covers the repos that actually hold PII. This is the
@@ -27,11 +21,7 @@
 # word-walking subcommand extractor (which sees through global
 # `-c`/`-C`/`--git-dir` flags and `&&`/`;`/`|` command chains), and exits
 # immediately — before any git or scan work — whenever the command is not a
-# commit at all. Because the credential-value sub-check is unconditional,
-# commit-detection and diff extraction themselves now run for every commit
-# regardless of pii-patterns.md arming; only the SSN/credit-card/user-
-# pattern scan tier still checks arming before running, and it does so
-# after the shared extraction work, not before.
+# commit at all.
 #
 # Robust against `git commit --no-verify`: a Claude Code PreToolUse hook
 # intercepts the Bash tool call itself. --no-verify disables only git's
@@ -40,10 +30,8 @@
 # Pattern tiers:
 #  - Credential-value patterns (always on, unarmed or not): the shared
 #    _LIB_CREDENTIAL_VALUE_REGEX (GitHub token prefixes, a PEM private-key
-#    header) also used by redact-credential-values.sh. Committing a live
-#    credential carries the same near-zero false-positive risk that
-#    justifies deny-env-reads.sh's own always-on posture, so this sub-check
-#    does not wait for pii-patterns.md.
+#    header) also used by redact-credential-values.sh — same near-zero
+#    false-positive risk that justifies deny-env-reads.sh's always-on posture.
 #  - Built-in generic PII patterns (active once armed): US Social Security
 #    number (NNN-NN-NNNN) and credit-card-shaped 13-19 digit runs that
 #    pass a Luhn checksum (the checksum cuts false positives on ordinary
@@ -54,8 +42,8 @@
 #    and never ship in this repo.
 #
 # Config-file grammar (~/.claude/pii-patterns.md), line-based, `#` comments
-# and blank lines ignored — governs the two armed-only tiers; the
-# credential-value tier takes no config of its own beyond the shared regex:
+# and blank lines ignored — governs the two armed-only tiers only; the
+# credential-value tier has no config of its own:
 #  - `<label>: <regex>`  — a labelled PII pattern. <regex> is POSIX ERE
 #    (grep -E). <label> is a human-readable name used in the deny message
 #    in place of the regex.
@@ -111,16 +99,7 @@
 #    subdirectory of the same repo is unaffected (the scan pathspecs are
 #    repo-root-relative).
 #
-# Population change from the credential-value hoist: the `-F`/`--file`
-# fail-closed-on-unreadable-source check and the pseudo-file
-# (`-F -`/`/dev/stdin`/`/dev/fd/*`) rejection below used to run only for
-# users who had armed pii-patterns.md, since the whole commit-detection and
-# message-source-extraction path lived behind that arming check. Both are
-# now reachable by every user on every commit, armed or not — intentional
-# (fail-closed on content this hook cannot verify is the correct posture
-# regardless of which scan tier triggered it), not a new risk, but a real
-# behavior change for previously-unarmed machines, worth naming here rather
-# than leaving implicit.
+# The `-F`/`--file` unreadable-source and pseudo-file checks below run for every commit, armed or not — fail-closed on content the hook cannot verify, independent of which scan tier triggered the commit-detection path.
 #
 # Fail-closed on unparseable hook input.
 
@@ -156,10 +135,7 @@ if [ "$TOOL_NAME" != "Bash" ]; then
 fi
 
 # --- Detect `git commit`; decide whether `git diff HEAD` is also needed --
-# Hoisted above the pii-patterns.md arming check (below): the credential-
-# value sub-check is unconditional, so commit-detection and diff extraction
-# must run for every commit regardless of arming. The SSN/credit-card/user-
-# pattern tier still gates on PII_ARMED before it does any work of its own.
+# Runs before the pii-patterns.md arming check below: the credential-value sub-check needs commit-detection and diff extraction regardless of arming.
 # `-a`/`--all`, a `--` pathspec separator, or a bare pathspec argument all
 # commit working-tree content not in the index at hook time.
 commit_fragment_has_worktree_target() {
@@ -217,12 +193,7 @@ if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
   exit 0
 fi
 
-# A `git commit` outside a work tree fails on its own; nothing to scan. Now
-# unconditional (runs for unarmed users too), so wrapped in _lib_capped —
-# the same 5s timeout backstop _lib_jq already provides — since an
-# unwrapped hang against a locked index or an NFS-mounted repo was an
-# acceptable opt-in-only cost before and is a default-on availability risk
-# once every Bash `git commit` reaches this line.
+# A `git commit` outside a work tree fails on its own; nothing to scan. Wrapped in _lib_capped (_lib_jq's existing 5s backstop): this runs unconditionally (armed or not), so a hang against a locked index or an NFS-mounted repo is a default-on availability risk.
 if ! _lib_capped git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 0
 fi
@@ -242,8 +213,7 @@ fi
 # --- Parse ~/.claude/pii-patterns.md (armed users only) -------------------
 # USER_LABELS[i] / USER_REGEXES[i] are parallel arrays; EXCLUDE_GLOBS holds
 # `exclude:` paths. A malformed line denies fail-closed. Declared
-# unconditionally (empty) so the pathspec-exclude and scan logic below can
-# reference them regardless of arming.
+# unconditionally (empty) so the scan logic below can reference them regardless of arming.
 USER_LABELS=()
 USER_REGEXES=()
 EXCLUDE_GLOBS=()
@@ -329,11 +299,7 @@ added_lines_of() {
   grep -E '^\+' | grep -vE '^\+\+\+' || true
 }
 
-# Both git diff calls now run unconditionally (armed or not, since the
-# credential-value scan needs their output), so each is wrapped in
-# _lib_capped's 5s timeout backstop — an unwrapped hang here was an
-# acceptable opt-in-only cost before and is a default-on availability risk
-# once every commit reaches this line.
+# Both diff calls run unconditionally (the credential-value scan needs their output regardless of arming), so each is wrapped in _lib_capped's 5s timeout backstop.
 STAGED_DIFF=$(_lib_capped git diff --cached -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
 SCAN_TARGET+=$'\n'"$(printf '%s' "$STAGED_DIFF" | added_lines_of)"
 
@@ -385,9 +351,7 @@ luhn_valid() {
 # not a pipeline, so the test reflects only grep's own exit status.
 MATCHED_LABELS=()
 
-# Unconditional, armed or not — see the "Two independent tiers" paragraph
-# in the header comment. Shares the same SCAN_TARGET and the same "never
-# echo the matched value" discipline as every other pattern below.
+# Unconditional, armed or not — see "Two independent tiers" in the header comment.
 if grep -qE "$_LIB_CREDENTIAL_VALUE_REGEX" <<< "$SCAN_TARGET"; then
   MATCHED_LABELS+=("Credential value (API token or private key)")
 fi

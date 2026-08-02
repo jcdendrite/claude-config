@@ -1,37 +1,9 @@
 #!/bin/bash
 # hook-class: gate
-# Gate: deny Claude's Read tool on credential-shaped file paths — SSH
-# private keys, .netrc/_netrc, .git-credentials, cloud credential stores,
-# and (redundantly with the native permissions.deny rules, at a different
-# enforcement layer) non-template .env variants and credentials.json.
-# Always on, no arming file, no bypass valve: unlike deny-env-reads.sh's
-# allowlist-and-symlink-defense design (built specifically for
-# .env.example-style safe templates), none of the path shapes here has a
-# legitimate secret-free variant — there is no "template" form of an SSH
-# private key.
+# Gate: deny Claude's Read tool on credential-shaped file paths (SSH private keys, .netrc/_netrc, .git-credentials, cloud credential stores, non-template .env variants, credentials.json). Always on, no arming file, no bypass valve -- unlike deny-env-reads.sh's allowlist-and-symlink-defense design (built for .env.example-style safe templates), none of these path shapes has a legitimate secret-free variant.
+# Resolves symlinks via readlink -f before allowing, same fail-closed-on-unresolvable posture as deny-env-reads.sh; since this hook carries no allowlist, every symlinked Read target is resolved and checked, not just ones whose own name looks credential-shaped. Requires GNU coreutils (greadlink on macOS pre-12.3).
 #
-# Symlink defense: resolves the target with readlink -f before allowing —
-# same fail-closed-on-unresolvable-or-missing-target posture as
-# deny-env-reads.sh's own symlink-resolution block, so a symlink named
-# innocuously but pointing at a credential path doesn't pass the raw-path
-# check and reach Read. Because this hook carries no allowlist (unlike
-# deny-env-reads.sh, which only resolves symlinks for allowlist-candidate
-# basenames), every symlinked Read target is resolved and checked here — a
-# broken symlink at any path denies fail-closed, not only one whose own
-# name already looks credential-shaped. readlink -f requires GNU
-# coreutils (standard on Linux; on macOS pre-12.3 use greadlink via
-# `brew install coreutils` if needed) — same portability requirement
-# deny-env-reads.sh already documents for the same call.
-#
-# Personal/org-specific path additions: an optional
-# ~/.claude/credential-file-guard.md, one glob per line (same grammar as
-# data-file-read-guard.md), checked against both the raw and (when
-# applicable) the resolved path, in addition to the built-in regex. See
-# docs/security-hardening.md.
-#
-# Scope: Read tool only. Bash(cat ~/.ssh/id_rsa) is out of scope for this
-# hook — deny-credential-bash-reads.sh gates that surface.
-#
+# Scope: Read tool only; deny-credential-bash-reads.sh covers Bash.
 # Fail-closed on unparseable hook input.
 
 set -uo pipefail
@@ -66,21 +38,13 @@ fi
 FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 [ -z "$FILE_PATH" ] && exit 0
 
+# Optional personal/org additions: one glob per line (same grammar as data-file-read-guard.md). See docs/security-hardening.md.
 CREDENTIAL_FILE_GUARD="${HOME}/.claude/credential-file-guard.md"
 
-# Tests $1 (a raw or symlink-resolved path) against the built-in regex, then
-# — only on a miss — the optional user glob file. Shared by both call sites
-# below so the personal-additions check runs identically pre- and
-# post-symlink-resolution rather than being written out twice.
+# Tests $1 (a raw or symlink-resolved path) against the built-in regex, then the optional user glob file. Shared by both call sites so pre- and post-symlink-resolution checks aren't written out twice.
 _matches_credential_path() {
   local path="$1"
-  # Case-folded (-i): on the default case-insensitive-but-case-preserving
-  # filesystem this codebase already treats as a primary target (macOS
-  # APFS/HFS+, Windows NTFS), `id_RSA` or `.NETRC` opens the identical
-  # on-disk file as the canonical-case path, so a case-sensitive match
-  # here would be a full, silent bypass of a gate whose stated design is
-  # "no bypass valve." Shared by both call sites (raw path and
-  # symlink-resolved path), so this fix covers both.
+  # Case-folded (-i): on a case-insensitive-but-case-preserving filesystem (macOS APFS/HFS+, Windows NTFS), `id_RSA` opens the same file as `id_rsa` -- a case-sensitive match here would silently bypass a gate with no other bypass valve.
   if printf '%s' "$path" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
     return 0
   fi
@@ -94,17 +58,9 @@ _matches_credential_path() {
     [ -z "$line" ] && continue
     case "$line" in '#'*) continue ;; esac
 
-    # Case-folded (nocasematch), same rationale as the built-in regex match
-    # above: on a case-insensitive-but-case-preserving filesystem, a
-    # case-varied path still opens the identical file the user's glob was
-    # meant to flag, and bash `case` has no per-pattern case-fold syntax —
-    # the only way to fold this match is the shopt, scoped tightly around
-    # this one case statement and restored immediately after (this function
-    # can be called again for the symlink-resolved path, so the shopt must
-    # not leak past this one match attempt).
+    # nocasematch, same rationale as the built-in regex above; bash `case` has no per-pattern case-fold syntax. Scoped tightly and restored immediately after -- this function is called again for the symlink-resolved path, so the shopt must not leak past this one match attempt.
     shopt -s nocasematch
-    # shellcheck disable=SC2254 # $line is an intentional user-authored glob;
-    # see deny-data-file-reads.sh's identical config-glob loop for rationale.
+    # shellcheck disable=SC2254 # $line is an intentional user-authored glob; see deny-data-file-reads.sh's identical config-glob loop for rationale.
     case "$path" in
       $line)
         shopt -u nocasematch
