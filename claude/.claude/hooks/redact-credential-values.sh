@@ -1,7 +1,8 @@
 #!/bin/bash
 # hook-class: informational
 # PostToolUse redactor on Bash|Read|WebFetch|Grep|Task results: replaces credential-value shapes (GitHub token prefix, full PEM private-key block) with [REDACTED-CREDENTIAL] before the model's next turn reads them -- the value-shape backstop for credentials that reach context through a path deny-credential-bash-reads.sh/deny-credential-file-reads.sh don't cover (WebFetch body, Grep match, subagent output).
-# Only recognizes vendor-fixed value shapes (GitHub token prefix, PEM header/footer); .netrc, .git-credentials, AWS/Docker/Kube credential values have no fixed shape and rely on the path gates instead. Fails open on any parse/extraction failure -- an informational hook has no deny primitive.
+# Only recognizes vendor-fixed value shapes (GitHub token prefix, AWS access key ID, PEM header/footer); .netrc, .git-credentials, Docker/Kube credential values have no fixed shape and rely on the path gates instead. Fails open on any parse/extraction failure -- an informational hook has no deny primitive.
+# Also fails open (skips redaction, returns the original content) when tool_response exceeds _LIB_SIZE_THRESHOLD_BYTES (5 MB): this is the one channel-specific residual, since WebFetch/Grep/Task -- the channels this hook exists to backstop -- have no other size cap the way Read does via deny-data-file-reads.sh.
 
 set -uo pipefail
 
@@ -58,7 +59,8 @@ if [ -f "$CREDENTIAL_VALUE_PATTERNS_FILE" ] && [ -r "$CREDENTIAL_VALUE_PATTERNS_
     [ -n "$addition_value" ] || continue
 
     # Skip (don't apply) a pattern that fails to compile under jq's regex engine -- one bad addition would otherwise break the single combined gsub call below for the whole invocation, including the built-in redaction.
-    if ! jq -n --arg pattern "$addition_value" '"" | test($pattern)' >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+    if ! _lib_jq -n --arg pattern "$addition_value" '"" | test($pattern)' >/dev/null 2>&1; then
       printf 'redact-credential-values.sh: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
         "$CREDENTIAL_VALUE_PATTERNS_FILE" "$addition_lineno" >&2
       continue

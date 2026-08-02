@@ -3,8 +3,8 @@
 # Gate: deny `git commit` when the commit's content — added lines of the
 # staged diff, the commit message, or a referenced commit-message file —
 # contains personally-identifying or protected health information (PII/PHI),
-# or a credential-shaped value (a GitHub token prefix, a PEM private-key
-# header).
+# or a credential-shaped value (a GitHub token prefix, an AWS access key ID,
+# a PEM private-key header).
 #
 # Two independent tiers: the credential-value check (below) is always on, no arming file. The SSN/credit-card built-ins and every user `<label>: <regex>` pattern stay dormant unless ~/.claude/pii-patterns.md exists as a readable regular file — arming that tier is still a deliberate per-machine action. See docs/security-hardening.md.
 #
@@ -29,9 +29,10 @@
 #
 # Pattern tiers:
 #  - Credential-value patterns (always on, unarmed or not): the shared
-#    _LIB_CREDENTIAL_VALUE_REGEX (GitHub token prefixes, a PEM private-key
-#    header) also used by redact-credential-values.sh — same near-zero
-#    false-positive risk that justifies deny-env-reads.sh's always-on posture.
+#    _LIB_CREDENTIAL_VALUE_REGEX (GitHub token prefixes, an AWS access key
+#    ID, a PEM private-key header) also used by redact-credential-values.sh
+#    — same near-zero false-positive risk that justifies deny-env-reads.sh's
+#    always-on posture.
 #  - Built-in generic PII patterns (active once armed): US Social Security
 #    number (NNN-NN-NNNN) and credit-card-shaped 13-19 digit runs that
 #    pass a Luhn checksum (the checksum cuts false positives on ordinary
@@ -193,8 +194,20 @@ if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
   exit 0
 fi
 
-# A `git commit` outside a work tree fails on its own; nothing to scan. Wrapped in _lib_capped (_lib_jq's existing 5s backstop): this runs unconditionally (armed or not), so a hang against a locked index or an NFS-mounted repo is a default-on availability risk.
-if ! _lib_capped git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+# A `git commit` outside a work tree fails on its own; nothing to scan. Wrapped
+# in _lib_capped (5s backstop), which runs unconditionally (armed or not) --
+# distinguish the two failure shapes: a genuine non-work-tree exit (git commit
+# fails on its own too, so skipping is safe) from a timeout (exit 124), which
+# tells us nothing about work-tree state and must fail closed, or exiting 0
+# here would silently skip the always-on credential-value tier along with
+# everything else.
+_lib_capped git rev-parse --is-inside-work-tree >/dev/null 2>&1
+REV_PARSE_STATUS=$?
+if [ "$REV_PARSE_STATUS" -eq 124 ]; then
+  emit_deny "Commit blocked by PII/credential guard: could not determine whether this is a git work tree within the scan timeout. Fail-closed — the guard cannot verify commit content is scannable without it."
+  exit 0
+fi
+if [ "$REV_PARSE_STATUS" -ne 0 ]; then
   exit 0
 fi
 
@@ -299,13 +312,31 @@ added_lines_of() {
   grep -E '^\+' | grep -vE '^\+\+\+' || true
 }
 
-# Both diff calls run unconditionally (the credential-value scan needs their output regardless of arming), so each is wrapped in _lib_capped's 5s timeout backstop.
-STAGED_DIFF=$(_lib_capped git diff --cached -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
+# Both diff calls run unconditionally (the credential-value scan needs their
+# output regardless of arming), so each is wrapped in _lib_capped's 5s timeout
+# backstop -- and, per _lib_capped's own calling contract, its exit status is
+# checked and failed closed on. A silent truncated/empty diff on timeout would
+# scan less than the real diff and could let credential content past the gate.
+STAGED_DIFF=$(_lib_capped git diff --cached -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null) || {
+  emit_deny "Commit blocked by PII/credential guard: could not compute the staged diff within the scan timeout. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
+  exit 0
+}
 SCAN_TARGET+=$'\n'"$(printf '%s' "$STAGED_DIFF" | added_lines_of)"
 
-if [ "$HEAD_SCAN_NEEDED" -eq 1 ] && _lib_capped git rev-parse HEAD >/dev/null 2>&1; then
-  HEAD_DIFF=$(_lib_capped git diff HEAD -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
-  SCAN_TARGET+=$'\n'"$(printf '%s' "$HEAD_DIFF" | added_lines_of)"
+if [ "$HEAD_SCAN_NEEDED" -eq 1 ]; then
+  _lib_capped git rev-parse HEAD >/dev/null 2>&1
+  HEAD_REV_STATUS=$?
+  if [ "$HEAD_REV_STATUS" -eq 124 ]; then
+    emit_deny "Commit blocked by PII/credential guard: could not resolve HEAD within the scan timeout, and this commit form needs a HEAD-relative scan. Fail-closed."
+    exit 0
+  fi
+  if [ "$HEAD_REV_STATUS" -eq 0 ]; then
+    HEAD_DIFF=$(_lib_capped git diff HEAD -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null) || {
+      emit_deny "Commit blocked by PII/credential guard: could not compute the HEAD diff within the scan timeout. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
+      exit 0
+    }
+    SCAN_TARGET+=$'\n'"$(printf '%s' "$HEAD_DIFF" | added_lines_of)"
+  fi
 fi
 
 COMMIT_MSG_SOURCES=$(extract_commit_message_source_paths "$COMMAND")

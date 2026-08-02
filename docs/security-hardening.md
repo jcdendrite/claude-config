@@ -24,7 +24,7 @@ segmentation). See [Limitations](#limitations).
 |---|---|---|
 | `deny-credential-bash-reads.sh` | `Bash` — denies any command whose raw text contains a credential-shaped path token, matched case-insensitively (SSH private key, `.netrc`/`_netrc`, `.git-credentials`, a cloud credential store, a non-template `.env`/`credentials.json`) | `~/.claude/credential-file-guard.md` |
 | `deny-credential-file-reads.sh` | `Read` — same built-in path shapes (case-insensitive), resolves symlinks and fails closed on an unresolvable target | `~/.claude/credential-file-guard.md` |
-| `redact-credential-values.sh` | `Bash`/`Read`/`WebFetch`/`Grep`/`Task` (PostToolUse) — redacts a credential-*shaped value* with a vendor-fixed format (a GitHub token prefix, a full PEM private-key block) wherever it surfaces in a tool result, regardless of path | `~/.claude/credential-value-patterns.md` |
+| `redact-credential-values.sh` | `Bash`/`Read`/`WebFetch`/`Grep`/`Task` (PostToolUse) — redacts a credential-*shaped value* with a vendor-fixed format (a GitHub token prefix, an AWS access key ID, a full PEM private-key block) wherever it surfaces in a tool result, regardless of path | `~/.claude/credential-value-patterns.md` |
 
 None of these three hooks has a config file to arm — they run for every
 stow user from install. The optional additions files widen the built-in
@@ -335,13 +335,16 @@ to hold PII/PHI or live credentials:
   token-prefix shapes and a PEM header, not entropy-based generic-secret
   detection. Concretely, this means `redact-credential-values.sh` does NOT
   redact a `.netrc` plaintext password, a `.git-credentials` URL, an AWS
-  `credentials` file's secret key value, a Docker `config.json` auth blob,
-  or a Kubernetes `config` bearer token/cert if one of those enters a tool
-  result through a path the two credential-path gates don't cover (a
-  `WebFetch` response, a `Grep` match) — none of those value shapes have a
-  fixed, vendor-documented format to match against. The path gates, not
-  the value-redaction backstop, are what stop those credential families
-  from entering context via `Bash`/`Read`.
+  `credentials` file's *secret access key* value, a Docker `config.json`
+  auth blob, or a Kubernetes `config` bearer token/cert if one of those
+  enters a tool result through a path the two credential-path gates don't
+  cover (a `WebFetch` response, a `Grep` match) — none of those value
+  shapes have a fixed, vendor-documented format to match against. (The AWS
+  *access key ID* itself — the `AKIA`/`ASIA`-prefixed identifier paired
+  with that secret — does have a fixed shape per AWS's own docs and is
+  redacted; the secret is what has none.) The path gates, not the
+  value-redaction backstop, are what stop those credential families from
+  entering context via `Bash`/`Read`.
 - `redact-credential-values.sh` leaves a `tool_response` over its 5 MB size
   cap completely unscanned rather than partially redacted, to bound its own
   per-fire latency. A credential inside a truncated-past-cap output is not
@@ -353,33 +356,43 @@ to hold PII/PHI or live credentials:
   searching FOR the literal string `id_rsa` (e.g. `grep "id_rsa" .`), not
   opening a file by that name, is denied too. Accepted false-positive cost,
   not a gap in the credential-exposure coverage itself.
-- `_LIB_CREDENTIAL_PATH_REGEX`'s `.ssh` token only flags a bare directory
-  reference or a `*`-prefixed glob (`cat ~/.ssh/*`, `tar czf x ~/.ssh`), not
-  a specific named file underneath it — deliberately, so a safe read like
-  `cat ~/.ssh/id_rsa.pub` or `cat ~/.ssh/authorized_keys` isn't also denied.
-  A read of a specific, unenumerated file under `.ssh` (e.g.
-  `cat ~/.ssh/environment`, an OpenSSH feature that can carry env-var
-  assignments) is therefore not caught by this token — only by whichever
-  other alternative in the regex already names that basename, if any.
-- The four SSH private-key basenames (`id_rsa`, `id_dsa`, `id_ecdsa`,
-  `id_ed25519`) keep a boundary that excludes a following `.`, specifically
-  to keep matching `id_rsa.pub` safe — every other path in
-  `_LIB_CREDENTIAL_PATH_REGEX` (`.netrc`, `.git-credentials`,
-  `credentials.json`, and the three directory-qualified cloud stores) closes
-  the following-`.` boundary instead, so a backup copy under a name like
-  `credentials.json.bak` or `.netrc.bak` is still caught. A backup copy of
-  an SSH private key itself (`id_rsa.bak`, `id_rsa.old`) is not — the `.pub`
-  exclusion and a backup-suffix catch-all aren't expressible in the same
-  POSIX ERE boundary without enumerating every possible backup suffix, which
-  this repo's own verb-allowlist precedent (further up this doc) already
-  rejects as an unbounded-surface trade. Use the `!` shell escape to inspect
-  a specific SSH key backup file if one exists.
+- Both credential-path gates deny-by-default under `.ssh` (and its
+  backup-suffixed siblings `.ssh.bak`/`.ssh_backup`/`.ssh.old`): any named
+  file reference is denied unless its basename is on a small safe
+  allowlist (`authorized_keys`, `known_hosts`, `known_hosts.old`, `config`,
+  anything ending `.pub`) — checked the same way whether or not the
+  reference carries a trailing slash, since a trailing slash does not
+  prove the reference is a directory rather than a file (`tar czf x
+  ~/.ssh/deploy_key/` still archives the file's full content on BSD
+  `tar` despite the slash). This closes coverage for a custom-named key
+  (`deploy_key`, `github_actions_key`) and a backup copy of a private key
+  (`id_rsa.bak`, `id_rsa.old`), neither of which has a fixed basename to
+  enumerate — `_lib_has_unsafe_ssh_dir_reference` in `_lib.sh` implements
+  the allowlist check, layered on top of `_LIB_CREDENTIAL_PATH_REGEX`'s own
+  bare-directory/glob match for whole-directory reads (`cat ~/.ssh/*`,
+  `tar czf x ~/.ssh`). Accepted false-positive cost: a legitimate
+  directory reference under `.ssh` (`ls ~/.ssh/sockets/`, a ControlMaster
+  socket dir) is also denied, since its basename isn't on the allowlist
+  either — use the `!` shell escape to inspect it.
 - `redact-credential-values.sh`'s PEM redaction only replaces the BEGIN
   header line when the matched text has no matching END footer (a
   truncated/paginated tool result, or output cut off mid-key) — the base64
   key body itself is not removed in that case, only the header string. Full
   redaction (header through footer) requires the complete block to be
   present in the same scan.
+- Every Bash-command gate in this hook family (not just the credential
+  guards — `deny-env-reads.sh`'s Bash-side gap, `deny-private-project-refs.sh`,
+  and this file's own credential-path gates alike) scans the raw command
+  *text*, not the command's evaluated form. A command that builds a path
+  through shell variable expansion so no credential-shaped substring is ever
+  contiguous in the text the hook sees (`p="$HOME/.ss"; p="${p}h/id_rsa"; cat
+  "$p"`) evades detection and, when actually run, still reads the file — a
+  structural property of static-text matching against an agent deliberately
+  constructing an obfuscated command, not a specific gap this repo has
+  chosen not to close. "No bypass valve" describes the deny path itself (no
+  config toggle, no allowlist escape) and is accurate against careless or
+  undirected agent behavior; it is not a claim of safety against an
+  adversarially-instructed one.
 
 The airtight control is machine segmentation: developer machines do not
 hold patient data or long-lived credentials. That is policy, not

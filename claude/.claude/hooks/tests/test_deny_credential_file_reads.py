@@ -41,6 +41,68 @@ class TestDenyCredentialFileReads:
     def test_credential_path_denied(self, isolated_home, path):
         assert run_hook(DENY_CREDENTIAL_FILE_READS_HOOK, read_input(path), home=isolated_home) == "deny"
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/home/user/.ssh/deploy_key",
+            "/home/user/.ssh/github_actions_key",
+            "/home/user/.ssh/id_ed25519_github",
+            "/home/user/.ssh/subdir/deploy_key",
+        ],
+    )
+    def test_custom_named_ssh_key_denied(self, isolated_home, path):
+        """Required regression test for a High-severity finding: a
+        custom-named SSH key (no fixed basename to enumerate) previously
+        bypassed both the basename blocklist and the .ssh directory-glob
+        group, since that group deliberately excluded named-file
+        references. Deny-by-default under .ssh, allowlisting only the
+        known-safe basenames, closes this without reopening the
+        id_rsa.pub/authorized_keys allowance. Every case here requires the
+        new _lib_has_unsafe_ssh_dir_reference mechanism specifically -- a
+        case satisfiable by the pre-existing basename/backup-suffix regex
+        alone belongs in test_custom_named_ssh_key_in_backup_directory_denied
+        instead."""
+        assert run_hook(DENY_CREDENTIAL_FILE_READS_HOOK, read_input(path), home=isolated_home) == "deny"
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/home/user/.ssh.bak/id_rsa",
+            "/home/user/.ssh_backup/id_rsa",
+        ],
+    )
+    def test_custom_named_ssh_key_in_backup_directory_denied(self, isolated_home, path):
+        """These already deny via the pre-existing bare-basename token
+        match -- kept as an integration-level check on the hook's
+        OR-combination, not a pin on the new mechanism specifically."""
+        assert run_hook(DENY_CREDENTIAL_FILE_READS_HOOK, read_input(path), home=isolated_home) == "deny"
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/home/user/.ssh/deploy_key/",
+            "/home/user/.ssh/id_rsa.bak",
+            "/home/user/.ssh/id_rsa.old",
+        ],
+    )
+    def test_trailing_slash_and_backup_suffix_key_denied(self, isolated_home, path):
+        """Required regression test for a Critical finding: an earlier
+        version of the deny-by-default mechanism treated any trailing-slash
+        reference as an always-safe directory listing, fully reopening the
+        custom-named-key bypass for one added character. Also pins a
+        backup copy of a standard-named key (id_rsa.bak/id_rsa.old), the
+        scenario this PR's own documentation names as newly closed."""
+        assert run_hook(DENY_CREDENTIAL_FILE_READS_HOOK, read_input(path), home=isolated_home) == "deny"
+
+    def test_ssh_directory_reference_accepted_false_positive_denied(self, isolated_home):
+        """Documented accepted false positive: a directory reference under
+        .ssh (a ControlMaster socket dir) is denied too, since its basename
+        isn't on the safe allowlist and the mechanism can no longer
+        special-case a trailing slash as proof of a safe directory listing."""
+        assert run_hook(
+            DENY_CREDENTIAL_FILE_READS_HOOK, read_input("/home/user/.ssh/sockets/"), home=isolated_home
+        ) == "deny"
+
     # ------------------------------------------------------------------ #
     # Case-insensitivity — closes a case-insensitive-filesystem bypass    #
     # ------------------------------------------------------------------ #
@@ -75,6 +137,12 @@ class TestDenyCredentialFileReads:
         [
             "/home/user/.ssh/id_rsa.pub",
             "/home/user/.ssh/authorized_keys",
+            "/home/user/.ssh/known_hosts",
+            "/home/user/.ssh/known_hosts.old",
+            "/home/user/.ssh/config",
+            "/home/user/.ssh/subdir/id_rsa.pub",
+            "/home/user/.ssh.bak/id_rsa.pub",
+            "/home/user/.ssh_backup/authorized_keys",
             "/foo/.env.example",
             "/foo/.env.template",
             "/foo/.env.sample",
@@ -162,6 +230,21 @@ class TestDenyCredentialFileReads:
             DENY_CREDENTIAL_FILE_READS_HOOK, read_input("/home/user/README.md"), home=isolated_home
         ) == "allow"
 
+    def test_symlink_to_guard_file_only_match_denied(self, isolated_home, tmp_path):
+        """Required regression test: _matches_credential_path is shared by
+        both the raw-path and symlink-resolved-path call sites specifically
+        so a personal credential-file-guard.md entry also applies after
+        symlink resolution, not just to the raw path. A symlink target that
+        matches ONLY the guard-file glob (not the built-in regex) proves
+        that composition actually fires post-resolution."""
+        guard_file = isolated_home / ".claude" / "credential-file-guard.md"
+        guard_file.write_text("**/my-org-secret-*\n")
+        target = tmp_path / "my-org-secret-token"
+        target.write_text("secret\n")
+        link = tmp_path / "notes.txt"
+        link.symlink_to(target)
+        assert run_hook(DENY_CREDENTIAL_FILE_READS_HOOK, read_input(str(link)), home=isolated_home) == "deny"
+
     # ------------------------------------------------------------------ #
     # Deny message content                                                #
     # ------------------------------------------------------------------ #
@@ -186,6 +269,17 @@ class TestDenyCredentialFileReads:
         ],
     )
     def test_non_read_tools_pass_through(self, isolated_home, payload):
+        assert run_hook(DENY_CREDENTIAL_FILE_READS_HOOK, payload, home=isolated_home) == "allow"
+
+    # ------------------------------------------------------------------ #
+    # Empty/missing file_path — intentional fail-open (nothing to check)  #
+    # ------------------------------------------------------------------ #
+
+    def test_empty_file_path_allowed(self, isolated_home):
+        assert run_hook(DENY_CREDENTIAL_FILE_READS_HOOK, read_input(""), home=isolated_home) == "allow"
+
+    def test_missing_file_path_allowed(self, isolated_home):
+        payload = {"tool_name": "Read", "tool_input": {}}
         assert run_hook(DENY_CREDENTIAL_FILE_READS_HOOK, payload, home=isolated_home) == "allow"
 
     # ------------------------------------------------------------------ #

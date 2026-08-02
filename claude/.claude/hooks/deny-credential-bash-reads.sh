@@ -41,6 +41,13 @@ if printf '%s' "$COMMAND" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
   exit 0
 fi
 
+# Custom-named SSH keys (deploy_key, github_actions_key, ...) have no fixed
+# basename to enumerate above -- deny-by-default under .ssh instead.
+if _lib_has_unsafe_ssh_dir_reference "$COMMAND"; then
+  emit_deny "Blocked by credential-path Bash gate: the command references a file under a .ssh-shaped directory that isn't on the safe-basename allowlist (authorized_keys, known_hosts, config, *.pub) -- likely a private key with a custom name. Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content, run it yourself via the ! shell escape instead of through Claude's Bash tool."
+  exit 0
+fi
+
 # --- Personal/org-specific path additions from credential-file-guard.md --
 CREDENTIAL_FILE_GUARD="${HOME}/.claude/credential-file-guard.md"
 if [ -f "$CREDENTIAL_FILE_GUARD" ] && [ -r "$CREDENTIAL_FILE_GUARD" ]; then

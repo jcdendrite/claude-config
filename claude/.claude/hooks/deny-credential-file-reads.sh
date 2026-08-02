@@ -48,6 +48,11 @@ _matches_credential_path() {
   if printf '%s' "$path" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
     return 0
   fi
+  # Custom-named SSH keys (deploy_key, github_actions_key, ...) have no
+  # fixed basename to enumerate above -- deny-by-default under .ssh instead.
+  if _lib_has_unsafe_ssh_dir_reference "$path"; then
+    return 0
+  fi
   [ -f "$CREDENTIAL_FILE_GUARD" ] && [ -r "$CREDENTIAL_FILE_GUARD" ] || return 1
   local raw_line line
   while IFS= read -r raw_line || [ -n "$raw_line" ]; do

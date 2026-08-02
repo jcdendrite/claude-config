@@ -29,6 +29,7 @@ REDACT_CREDENTIAL_VALUES_HOOK = HOOKS_DIR / "redact-credential-values.sh"
 
 GHP_TOKEN = "ghp_abcdefghijklmnopqrstuvwx1234"
 GITHUB_PAT_TOKEN = "github_pat_abcdefghijklmnopqrstuvwx1234"
+AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
 PEM_HEADER = "-----BEGIN RSA PRIVATE KEY-----"
 PEM_FOOTER = "-----END RSA PRIVATE KEY-----"
 PEM_BODY = "MIIEpAIBAAKCAQEAsecretkeybodyherethatisverylongandsecret\nmorekeybodylines"
@@ -62,6 +63,14 @@ class TestRedactCredentialValues:
         # No match: the hook still emits updatedToolOutput (a well-formed
         # structural pass-through), unmodified.
         assert result == response
+
+    def test_bash_aws_access_key_id_in_stdout_redacted(self):
+        """AKIA (long-term) prefix per AWS's IAM identifiers doc."""
+        response = {"stdout": f"key_id={AWS_ACCESS_KEY_ID}", "stderr": "", "exit_code": 0}
+        result = run_hook_updated_output(REDACT_CREDENTIAL_VALUES_HOOK, _posttooluse_input("Bash", response))
+        assert result is not None
+        assert AWS_ACCESS_KEY_ID not in result["stdout"]
+        assert result["stdout"] == f"key_id={REDACTED}"
 
     def test_bash_pem_header_in_stderr_redacted(self):
         response = {"stdout": "", "stderr": f"leaked: {PEM_HEADER}", "exit_code": 1}

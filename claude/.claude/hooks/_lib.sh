@@ -758,13 +758,54 @@ _lib_stray_marker_hint() {
 _LIB_SIZE_THRESHOLD_BYTES=5242880
 
 # Credential-shaped PATH tokens, sourced by deny-credential-bash-reads.sh and deny-credential-file-reads.sh. POSIX ERE, basename-token match (not path-qualified): matches a bare filename wherever it appears, closing a `cd ~/.ssh && cat id_rsa` bypass.
-# Three alternations with different trailing boundaries. Group 1 excludes a following `.` so `id_rsa` doesn't match inside the safe-to-read `id_rsa.pub`, and `.env` doesn't match inside `.env.foo`/`package.env`; `.env`'s own dotted variants beyond the ones enumerated here are deliberately left to deny-env-reads.sh's broader `.env.*` gate. Group 2 (`.netrc`, `.git-credentials`, `credentials.json`, and the three directory-qualified stores) has no known safe dotted-suffix variant, so it allows a following `.` too — closing a `credentials.json.bak`/`.netrc.bak`-style backup-copy bypass group 1's exclusion would otherwise leave open. Group 3 matches `.ssh` only as a directory/glob reference (`~/.ssh`, `~/.ssh/`, `~/.ssh//`, `~/.ssh/*`, `~/.ssh/.*`), not `.ssh/<filename>`, so a whole-directory read via any idiomatic form (`cat ~/.ssh/*`, `tar czf x ~/.ssh`, `rsync -a ~/.ssh/ host:`, `cp -r ~/.ssh/ dest`) is caught — the `/+` quantifier (one or more slashes) collapses every repeated-slash variant of the trailing-slash form into the same match rather than enumerating `/`, `//`, `///` separately — without also flagging a specific safe file within it (`~/.ssh/id_rsa.pub`, `~/.ssh/authorized_keys`) that a bare-basename alternative doesn't already cover.
-_LIB_CREDENTIAL_PATH_REGEX='(^|[^A-Za-z0-9_.])(id_rsa|id_dsa|id_ecdsa|id_ed25519|\.env|\.env\.local|\.env\.production|\.env\.development|\.env\.staging|\.env\.test)([^A-Za-z0-9_.]|$)|(^|[^A-Za-z0-9_.])(\.netrc|_netrc|\.git-credentials|credentials\.json|\.aws/credentials|\.docker/config\.json|\.kube/config|\.config/gh/hosts\.yml)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.])\.ssh(/+(\*|\.|[^A-Za-z0-9_./]|$)|[^A-Za-z0-9_./]|$)'
+# Three alternations with different trailing boundaries. Group 1 excludes a following `.` so `id_rsa` doesn't match inside the safe-to-read `id_rsa.pub`, and `.env` doesn't match inside `.env.foo`/`package.env`; `.env`'s own dotted variants beyond the ones enumerated here are deliberately left to deny-env-reads.sh's broader `.env.*` gate. Group 2 (`.netrc`, `.git-credentials`, `credentials.json`, and the three directory-qualified stores) has no known safe dotted-suffix variant, so it allows a following `.` too — closing a `credentials.json.bak`/`.netrc.bak`-style backup-copy bypass group 1's exclusion would otherwise leave open. Group 3 matches `.ssh` (optionally backup/rename-suffixed, e.g. `.ssh.bak`, `.ssh_backup`, `.ssh.old` — the same `.bak`-style continuation group 2 allows) only as a directory/glob reference (`~/.ssh`, `~/.ssh/`, `~/.ssh//`, `~/.ssh/*`, `~/.ssh/.*`), not `.ssh/<filename>`; a named-file reference under `.ssh` (or its backup-suffixed siblings) is instead deny-by-default via `_lib_has_unsafe_ssh_dir_reference` below, since enumerating every unsafe key basename doesn't scale the way enumerating the few safe ones does.
+_LIB_CREDENTIAL_PATH_REGEX='(^|[^A-Za-z0-9_.])(id_rsa|id_dsa|id_ecdsa|id_ed25519|\.env|\.env\.local|\.env\.production|\.env\.development|\.env\.staging|\.env\.test)([^A-Za-z0-9_.]|$)|(^|[^A-Za-z0-9_.])(\.netrc|_netrc|\.git-credentials|credentials\.json|\.aws/credentials|\.docker/config\.json|\.kube/config|\.config/gh/hosts\.yml)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.])\.ssh([._-][A-Za-z0-9_.-]*)?(/+(\*|\.|[^A-Za-z0-9_./]|$)|[^A-Za-z0-9_./]|$)'
+
+# Basenames under a `.ssh`-shaped directory that are safe to read (never
+# private-key material): the three conventional non-secret files, and
+# anything ending `.pub` (a public key). Consumed only by
+# _lib_has_unsafe_ssh_dir_reference below.
+_LIB_SSH_SAFE_BASENAME_REGEX='^(authorized_keys|known_hosts|known_hosts\.old|config)$|\.pub$'
+
+# Deny-by-default counterpart to _LIB_CREDENTIAL_PATH_REGEX's .ssh group: extracts every apparent named-file reference under a `.ssh` or `.ssh`-backup-suffixed directory (`~/.ssh/deploy_key`, `~/.ssh.bak/id_rsa`, `~/.ssh/subdir/deploy_key`, ...) from $1, and returns success (0) if ANY extracted leaf basename is not on the safe allowlist above. Mirrors deny-env-reads.sh's allowlist design (deny by default under the directory, allow only documented-safe names) rather than enumerating every unsafe key basename, which doesn't scale — a custom-named key (`deploy_key`, `github_actions_key`) has no fixed shape to enumerate.
+# Each candidate is the whole shell-word remainder after `.ssh/` (may itself
+# contain further `/`-nesting). A trailing `/` is NOT treated as proof this
+# is a directory reference rather than a named file: `tar czf x
+# ~/.ssh/deploy_key/` (BSD tar) still archives the file's full content
+# despite the trailing slash, so special-casing it as always-safe would
+# reopen the exact bypass this function exists to close. The basename is
+# checked the same way with or without a trailing slash -- a legitimate
+# directory reference (`~/.ssh/sockets/`, a ControlMaster socket dir) is an
+# accepted false positive here, same as this hook family's other documented
+# over-denial residuals (e.g. the `grep id_rsa` search-pattern residual);
+# use the `!` shell escape to inspect it.
+_lib_has_unsafe_ssh_dir_reference() {
+  local text="$1" candidate base
+  while IFS= read -r candidate; do
+    [ -z "$candidate" ] && continue
+    # A `..` path segment anywhere in the candidate is unsafe outright,
+    # without attempting to resolve it -- this function only ever inspects
+    # the trailing string segment as a basename, so `.ssh/deploy_key/../
+    # deploy_key.pub` would otherwise read as the safe basename
+    # `deploy_key.pub` while the string still names `deploy_key`. Mirrors
+    # _lib_realpath_m's own `..`-rejection precedent elsewhere in this file.
+    case "/${candidate}/" in
+      */../*) return 0 ;;
+    esac
+    base="${candidate%/}"
+    base="${base##*/}"
+    if ! printf '%s' "$base" | grep -qEi "$_LIB_SSH_SAFE_BASENAME_REGEX"; then
+      return 0
+    fi
+  done < <(printf '%s' "$text" | grep -oEi '\.ssh([._-][A-Za-z0-9_.-]*)?/[^[:space:]"'"'"']+')
+  return 1
+}
 
 # Credential-shaped VALUE patterns, sourced by redact-credential-values.sh (jq gsub) and deny-pii-in-commits.sh's credential-value sub-check (grep -E). Must compile under both POSIX ERE and jq's Oniguruma engine, so only dialect-neutral syntax is used.
 # Token prefixes (ghp_/gho_/ghu_/ghs_/ghr_ classic and github_pat_ fine-grained) per GitHub's "About authentication to GitHub" docs. The {20,} length floor is NOT vendor-grounded — chosen low enough that a genuine token is never missed, not a verified minimum.
+# AKIA (long-term access key) and ASIA (temporary/STS access key) prefixes per AWS's "IAM identifiers" doc (Understanding unique ID prefixes table). The 16-character suffix length is the widely-observed convention for these IDs, not independently vendor-confirmed for this exact length — same non-verified-minimum caveat as the GitHub {20,} floor above.
 # The PEM alternative matches only the BEGIN header line: grep -E is line-oriented and can't match across a newline, so a header-only form is what lets deny-pii-in-commits.sh detect a PEM key at commit time at all. See _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX below for the full-block counterpart.
-_LIB_CREDENTIAL_VALUE_REGEX='(gh[opsur]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN[A-Z ]*PRIVATE KEY-----)'
+_LIB_CREDENTIAL_VALUE_REGEX='(gh[opsur]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[A-Z0-9]{16}|-----BEGIN[A-Z ]*PRIVATE KEY-----)'
 
 # Redaction-only counterpart to the PEM alternative above: matches the full PEM block (BEGIN through END), not just the header line, since redact-credential-values.sh must strip the actual base64 key body via jq's whole-string gsub, which (unlike grep -E) can match across embedded newlines.
 # Body class excludes `-` so a greedy match stops at the first END footer rather than consuming past it; [:space:] (not `.`) lets the match span embedded newlines under Oniguruma without a dot-matches-newline flag.
