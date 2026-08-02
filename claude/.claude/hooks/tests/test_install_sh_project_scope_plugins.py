@@ -323,12 +323,14 @@ class TestProjectScopePluginInstallLoop:
         assert "could not parse enabledPlugins" in result.stderr
         assert _read_log(install_log) == []
 
-    def test_plugin_list_failure_warns_and_proceeds_as_if_none_installed(
+    def test_malformed_plugin_list_json_warns_and_proceeds_as_if_none_installed(
         self, tmp_path: Path
     ) -> None:
-        """`claude plugin list --json` emitting non-JSON output (a CLI
-        failure, an auth hiccup, a stale CLI version) must not abort the
-        rest of install.sh under `set -e` — it must warn and fall back to
+        """`claude plugin list --json` emitting non-JSON stdout (a CLI
+        failure, an auth hiccup, a stale CLI version) makes `jq` itself fail
+        — since install.sh has no `pipefail`, it's jq's exit status, not
+        claude's, that the `if !` guard actually catches. Must not abort the
+        rest of install.sh under `set -e` — must warn and fall back to
         attempting installs for every declared plugin."""
         repo_dir = tmp_path / "repo"
         repo_dir.mkdir()

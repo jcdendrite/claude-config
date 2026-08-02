@@ -183,8 +183,10 @@ if [ -f "$SETTINGS_FILE" ]; then
       echo "[install] warning: could not read installed project-scope plugins via 'claude plugin list --json' — proceeding as if none are installed" >&2
       existing_project_plugins=""
     fi
-    enabled_project_plugins="$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$PROJECT_SETTINGS_FILE")" || \
+    if ! enabled_project_plugins="$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$PROJECT_SETTINGS_FILE")"; then
       echo "[install] warning: could not parse enabledPlugins from $PROJECT_SETTINGS_FILE — skipping project-scope plugin install" >&2
+      enabled_project_plugins=""
+    fi
     while read -r plugin; do
       [ -z "$plugin" ] && continue
       if _project_plugin_already_installed "$plugin" "$existing_project_plugins"; then
