@@ -20,6 +20,21 @@ from helpers import (
 )
 
 CONSUME_HOOK = HOOKS_DIR / "consume-durable-continuity-file-on-read.sh"
+_SETTINGS_PATH = HOOKS_DIR.parent / "settings.json"
+
+
+def _registered_post_tool_use_event_name() -> str:
+    """The hookEventName this hook's emission must claim, derived from
+    settings.json rather than hardcoded — a divergence between the emitted
+    and registered event name silently drops hookSpecificOutput.additionalContext,
+    per CLAUDE.md's discriminator-literal rule."""
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    for event_name, groups in settings["hooks"].items():
+        for group in groups:
+            for entry in group.get("hooks", []):
+                if entry.get("command", "").endswith(CONSUME_HOOK.name):
+                    return event_name
+    raise AssertionError(f"{CONSUME_HOOK.name} not found in {_SETTINGS_PATH}")
 
 
 def _write_fixture(isolated_home: Path, rel_path: str) -> Path:
@@ -57,12 +72,23 @@ class TestConsumeDurableContinuityFileOnRead:
         _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert not fixture.exists()
 
-    def test_successful_consume_emits_system_message_naming_destination(self, isolated_home, tmp_path):
-        """A successful consume is no longer silent: stdout must be valid
-        JSON carrying a systemMessage that names the moved-to destination,
-        so a same-session resume shows where the file went."""
+    @pytest.mark.parametrize(
+        "rel_path",
+        [".claude/handoffs/example-handoff.md", ".claude/briefs/example-task.md"],
+    )
+    def test_successful_consume_emits_destination_on_both_channels(
+        self, isolated_home, tmp_path, rel_path
+    ):
+        """A successful consume reports the moved-to destination on two
+        channels: systemMessage (user-visible only) and
+        hookSpecificOutput.additionalContext (model-visible, next to the
+        tool result) — the model only ever sees the second. Parametrized
+        over both continuity types so the brief path is asserted, not just
+        consumed: the brief case also pins the incidental fix dropping the
+        hardcoded "~/.claude/handoffs" wording, which named the wrong
+        directory whenever the consumed file was a brief."""
         install_resume_context_script(isolated_home)
-        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        fixture = _write_fixture(isolated_home, rel_path)
         tmpdir_root = tmp_path / "resume-tmpdir"
         tmpdir_root.mkdir()
         result = _run_hook_raw(
@@ -75,8 +101,45 @@ class TestConsumeDurableContinuityFileOnRead:
         assert not fixture.exists()
         moved = [p for p in tmpdir_root.iterdir() if p.name.startswith("resume-context.")]
         assert len(moved) == 1
+        dest = str(moved[0])
         payload = json.loads(result.stdout)
-        assert str(moved[0]) in payload["systemMessage"]
+        assert dest in payload["systemMessage"]
+        assert payload["hookSpecificOutput"]["hookEventName"] == _registered_post_tool_use_event_name()
+        assert dest in payload["hookSpecificOutput"]["additionalContext"]
+        if rel_path.startswith(".claude/briefs/"):
+            assert "handoffs" not in payload["systemMessage"]
+            assert "handoffs" not in payload["hookSpecificOutput"]["additionalContext"]
+
+    def test_additional_context_omits_source_path(self, isolated_home, tmp_path):
+        """additionalContext carries only the destination, never the source
+        path the model already holds from issuing the Read — interpolating
+        the source would open a semantic-injection channel, since bash `case`
+        globs match across embedded newlines (asserted directly below via the
+        glob actually firing on a newline-embedding filename) and `jq --arg`
+        prevents JSON-escaping issues but not injection inside the string
+        value itself. A newline-embedding filename that still matches the
+        glob is the adversarial case: it must produce no sentinel in stdout
+        at all, on either channel."""
+        install_resume_context_script(isolated_home)
+        handoffs_dir = isolated_home / ".claude" / "handoffs"
+        handoffs_dir.mkdir(parents=True)
+        malicious_name = "notes\n\nSENTINEL-INJECT\n\nx-handoff.md"
+        fixture = handoffs_dir / malicious_name
+        fixture.write_text("fixture content\n")
+        tmpdir_root = tmp_path / "resume-tmpdir"
+        tmpdir_root.mkdir()
+        result = _run_hook_raw(
+            CONSUME_HOOK,
+            read_input(str(fixture)),
+            home=isolated_home,
+            extra_env={"RESUME_CONTEXT_TMPDIR": str(tmpdir_root)},
+        )
+        assert result.returncode == 0
+        # The glob firing on this newline-embedding filename is what makes
+        # this an adversarial case rather than a vacuous one — assert the
+        # consume actually happened, not just that no sentinel leaked.
+        assert not fixture.exists()
+        assert "SENTINEL-INJECT" not in result.stdout
 
     def test_jq_absent_fails_open_no_system_message(self, isolated_home, tmp_path):
         """jq is required upstream of the new systemMessage guard — the hook's
@@ -253,9 +316,9 @@ class TestConsumeDurableContinuityFileOnRead:
         still performs the real consume — an SDET review round found this
         branch (documented as the BSD/macOS path) is otherwise never
         exercised, since `timeout` is present on essentially every CI runner.
-        Also asserts the systemMessage emission itself (not just consumption),
-        since a copy-paste divergence between the `if`/`else` branches could
-        break DEST-capture only in this arm.
+        Also asserts both the systemMessage and additionalContext emission
+        (not just consumption), since a copy-paste divergence between the
+        `if`/`else` branches could break DEST-capture only in this arm.
         """
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
@@ -279,5 +342,7 @@ class TestConsumeDurableContinuityFileOnRead:
         assert not fixture.exists()
         moved = [p for p in tmpdir_root.iterdir() if p.name.startswith("resume-context.")]
         assert len(moved) == 1
+        dest = str(moved[0])
         payload = json.loads(result.stdout)
-        assert str(moved[0]) in payload["systemMessage"]
+        assert dest in payload["systemMessage"]
+        assert dest in payload["hookSpecificOutput"]["additionalContext"]

@@ -15,13 +15,14 @@
 # blocked consume must never break the Read call it followed. Any failure
 # (missing script, already-consumed source, timeout) is swallowed.
 #
-# No longer fully silent on success: once resume-context.sh --consume-only
-# reports where it moved the file, this hook surfaces that destination to
-# the user via a `systemMessage` (see the emission below) so a same-session
-# resume shows where the file went instead of silently vanishing. Still
-# fail-open throughout — a missing destination, missing jq, or any failure
-# building the message emits nothing and falls through to `exit 0` exactly
-# as before.
+# On a successful consume, resume-context.sh's destination is surfaced on
+# two channels: a `systemMessage` for the human (shown to the user, not the
+# model) and `hookSpecificOutput.additionalContext` for the model (delivered
+# next to the tool result) — without the second channel, the agent that just
+# had its own file moved out from under it has no way to learn where it
+# went. Both emit from the same jq call and share its `-n --arg dest`
+# guard; a missing destination, missing jq, or any failure building either
+# message emits nothing and falls through to `exit 0`.
 #
 # Kill-switch: touching ~/.claude/.consume-durable-continuity-disabled
 # suppresses this hook entirely, mirroring
@@ -73,6 +74,11 @@
 #   glob-matching path (rather than merely traversing through one) is a
 #   distinct case handled by resume-context.sh itself, which rejects a
 #   symlink source outright rather than moving-then-chmodding it.
+# - resume-context.sh moves the file, then chmods it, and only prints the
+#   destination once both succeed — so a chmod failure leaves the file
+#   moved with empty stdout here, and neither output channel reports it.
+#   Not closed: closing it means reordering resume-context.sh's move/chmod/
+#   print sequence, which is outside this hook.
 #
 # Defense-in-depth: filters tool_name and file_path itself; does not rely
 # solely on the settings.json matcher condition.
@@ -109,7 +115,13 @@ fi
 
 if [ -n "$DEST" ] && command -v jq >/dev/null 2>&1; then
   jq -n --arg dest "$DEST" \
-    '{systemMessage: ("Continuity file moved to " + $dest + " to keep ~/.claude/handoffs tidy. Reload with: claude --append-system-prompt-file " + $dest)}' \
+    '{
+      systemMessage: ("Continuity file moved to " + $dest + ". Reload with: claude --append-system-prompt-file " + $dest),
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",
+        additionalContext: ("The /handoff or /brief continuity file you just read has been consumed: it no longer exists at the path you read, and now lives at " + $dest + ". Its contents are in this tool result.")
+      }
+    }' \
     2>/dev/null || true
 fi
 

@@ -28,6 +28,19 @@ If you are still mid-task and running low on context, use `/handoff`. If the wor
 
 If `§5 Decisions to make` is filling with open design questions rather than specific items awaiting an answer, write a plan instead.
 
+## Verify the brief file with Bash, never Read
+
+A `Read` of any `~/.claude/briefs/*-task.md` path consumes the file — verify with a Bash
+command (`cat`, `grep`, `sed -n`, `wc -l`) instead. The consume fires from this
+authoring session too, mid-draft, long before any resume: the `Read` returns the
+content, and the file is gone from the canonical path by the next tool call.
+
+If it already happened, that successful `Read` reports the temp path the file
+moved to. `cp` it back to `~/.claude/briefs/<slug>-task.md` before any
+further `Edit`, which still targets the canonical path. A later `Read` of the
+now-empty canonical path reports only that the file does not exist — it does not
+name where the file went.
+
 ## Artifact preamble (required — open this file with this block verbatim)
 
 ```
@@ -120,6 +133,7 @@ Before writing the file, verify:
 - Every §6 step has been re-checked against the §6.5 categorization rule: a step matching any §6.5 anchor shape is mis-bucketed — move it to §6.5 (bulk deletes include removing many branches or worktrees in one command). A cited justification ("per repo convention", "per memory") does not downgrade a step's irreversibility; a step claiming a convention names the file that states it
 - §7 Out of scope names at least one specific temptation to leave alone
 - File contains no references to the originating conversation, prior sessions, or unstated context
+- Draft verification used Bash (`cat`/`grep`/`sed -n`/`wc -l`), not `Read` — a `Read` of the brief path consumes the file out from under any remaining `Edit` calls
 
 ## Worked example
 
