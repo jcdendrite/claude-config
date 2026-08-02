@@ -304,8 +304,14 @@ for exclude_glob in "${EXCLUDE_GLOBS[@]:-}"; do
   PATHSPEC_EXCLUDES+=(":(top,exclude)${exclude_glob}")
 done
 
-# The command string carries the commit message (`-m "..."`); scan it as-is.
-SCAN_TARGET=$COMMAND
+# The command string carries the commit message (`-m "..."`). Quote-stripped
+# so an adjacent-quote split (e.g. `git commit -m "gh""p_<token>"`, which
+# bash reassembles into one literal before executing) can't slip a
+# credential-value or user PII pattern past the scan below -- see
+# _lib_strip_shell_quotes. The staged/HEAD diff and message-file content
+# appended below are real file content, never shell-quoted, so only this
+# component needs stripping.
+SCAN_TARGET=$(_lib_strip_shell_quotes "$COMMAND")
 
 added_lines_of() {
   # Keep real `+` content lines, drop `+++` file headers.
@@ -317,10 +323,16 @@ added_lines_of() {
 # backstop -- and, per _lib_capped's own calling contract, its exit status is
 # checked and failed closed on. A silent truncated/empty diff on timeout would
 # scan less than the real diff and could let credential content past the gate.
-STAGED_DIFF=$(_lib_capped git diff --cached -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null) || {
+STAGED_DIFF=$(_lib_capped git diff --cached -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
+STAGED_DIFF_STATUS=$?
+if [ "$STAGED_DIFF_STATUS" -eq 124 ]; then
   emit_deny "Commit blocked by PII/credential guard: could not compute the staged diff within the scan timeout. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
   exit 0
-}
+fi
+if [ "$STAGED_DIFF_STATUS" -ne 0 ]; then
+  emit_deny "Commit blocked by PII/credential guard: git diff --cached failed (exit ${STAGED_DIFF_STATUS}), not a timeout. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
+  exit 0
+fi
 SCAN_TARGET+=$'\n'"$(printf '%s' "$STAGED_DIFF" | added_lines_of)"
 
 if [ "$HEAD_SCAN_NEEDED" -eq 1 ]; then
@@ -331,10 +343,16 @@ if [ "$HEAD_SCAN_NEEDED" -eq 1 ]; then
     exit 0
   fi
   if [ "$HEAD_REV_STATUS" -eq 0 ]; then
-    HEAD_DIFF=$(_lib_capped git diff HEAD -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null) || {
+    HEAD_DIFF=$(_lib_capped git diff HEAD -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
+    HEAD_DIFF_STATUS=$?
+    if [ "$HEAD_DIFF_STATUS" -eq 124 ]; then
       emit_deny "Commit blocked by PII/credential guard: could not compute the HEAD diff within the scan timeout. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
       exit 0
-    }
+    fi
+    if [ "$HEAD_DIFF_STATUS" -ne 0 ]; then
+      emit_deny "Commit blocked by PII/credential guard: git diff HEAD failed (exit ${HEAD_DIFF_STATUS}), not a timeout. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
+      exit 0
+    fi
     SCAN_TARGET+=$'\n'"$(printf '%s' "$HEAD_DIFF" | added_lines_of)"
   fi
 fi

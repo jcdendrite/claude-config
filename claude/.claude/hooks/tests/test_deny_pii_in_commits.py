@@ -97,6 +97,46 @@ class TestDenyPiiInCommits:
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "deny"
 
+    def test_quote_split_credential_value_in_commit_message_denied(self, isolated_home, git_repo):
+        """Required regression test for a Critical finding: bash reassembles
+        an adjacent-quote split like `-m "gh""p_<token>"` into the single
+        literal `-m ghp_<token>` before executing `git commit`, but a
+        raw-text `grep -E` scan of the unexpanded $COMMAND previously saw
+        the quote characters as a hard break and missed the reassembled
+        credential-value token — permanently committing a live-looking
+        secret to git history with no error surfaced. Closed by
+        quote-stripping the $COMMAND component of SCAN_TARGET
+        (_lib_strip_shell_quotes) before matching. Split the token via
+        Python string concatenation so the source itself carries no
+        contiguous credential-shaped literal."""
+        split_ghp_token = 'gh""p_abcdefghijklmnopqrstuvwx1234'
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert (
+            run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(f'git commit -m "{split_ghp_token}"'), cwd=git_repo)
+            == "deny"
+        )
+
+    def test_backslash_split_credential_value_in_commit_message_denied(self, isolated_home, git_repo):
+        """Required regression test for a Critical finding found during
+        adversarial re-verification of the quote-splitting fix above: an
+        unquoted backslash-escaped character is a second, distinct
+        character-removal-based literal-reassembly mechanism bash executes
+        identically to the unescaped form (`gh\\p_<token>` -> `ghp_<token>`,
+        confirmed via `bash -c`), which the initial quote-only strip
+        missed. _lib_strip_shell_quotes now also removes backslash-escapes.
+        The token is backslash-split via raw string concatenation so the
+        source itself carries no contiguous credential-shaped literal."""
+        backslash_split_ghp_token = "gh" + r"\p_abcdefghijklmnopqrstuvwx1234"
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert (
+            run_hook(
+                DENY_PII_IN_COMMITS_HOOK,
+                bash_input(f'git commit -m "{backslash_split_ghp_token}"'),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
     def test_unarmed_f_pseudo_file_still_denied(self, isolated_home, git_repo):
         """The `-F`/pseudo-file fail-closed check used to run only for armed
         users, since the whole commit-detection/extraction path lived
@@ -142,7 +182,7 @@ class TestDenyPiiInCommits:
         decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
         elapsed = time.monotonic() - start
         assert decision == "deny"
-        assert elapsed < 8, f"expected the 5s _lib_capped timeout to fire, took {elapsed:.1f}s"
+        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     def test_work_tree_check_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
         """Required regression test: `git rev-parse --is-inside-work-tree`'s
@@ -168,7 +208,7 @@ class TestDenyPiiInCommits:
         decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
         elapsed = time.monotonic() - start
         assert decision == "deny"
-        assert elapsed < 8, f"expected the 5s _lib_capped timeout to fire, took {elapsed:.1f}s"
+        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     def test_head_rev_parse_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
         """Required regression test: `git rev-parse HEAD`'s _lib_capped exit
@@ -194,7 +234,7 @@ class TestDenyPiiInCommits:
         decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
         elapsed = time.monotonic() - start
         assert decision == "deny"
-        assert elapsed < 8, f"expected the 5s _lib_capped timeout to fire, took {elapsed:.1f}s"
+        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     def test_head_diff_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
         """Required regression test: `git diff HEAD`'s _lib_capped exit
@@ -219,7 +259,7 @@ class TestDenyPiiInCommits:
         decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
         elapsed = time.monotonic() - start
         assert decision == "deny"
-        assert elapsed < 8, f"expected the 5s _lib_capped timeout to fire, took {elapsed:.1f}s"
+        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     # ------------------------------------------------------------------ #
     # Built-in generic patterns                                           #

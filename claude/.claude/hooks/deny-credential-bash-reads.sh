@@ -35,15 +35,20 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
+# Quote-stripped so an adjacent-quote split (e.g. `cat ~/.ssh/config"_backup"`,
+# which bash executes identically to the unquoted form) can't slip the
+# credential-path token past this scan -- see _lib_strip_shell_quotes.
+COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+
 # Case-folded (-i): on a case-insensitive-but-case-preserving filesystem (macOS APFS/HFS+, Windows NTFS), `id_RSA` opens the same file as `id_rsa` -- a case-sensitive match here would silently bypass a gate with no other bypass valve.
-if printf '%s' "$COMMAND" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
+if printf '%s' "$COMMAND_UNQUOTED" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
   emit_deny "Blocked by credential-path Bash gate: the command references a credential-shaped path (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, or a non-template .env/credentials.json path). Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content (e.g. ssh-add, chmod, ssh -i), run it yourself via the ! shell escape instead of through Claude's Bash tool."
   exit 0
 fi
 
 # Custom-named SSH keys (deploy_key, github_actions_key, ...) have no fixed
 # basename to enumerate above -- deny-by-default under .ssh instead.
-if _lib_has_unsafe_ssh_dir_reference "$COMMAND"; then
+if _lib_has_unsafe_ssh_dir_reference "$COMMAND_UNQUOTED"; then
   emit_deny "Blocked by credential-path Bash gate: the command references a file under a .ssh-shaped directory that isn't on the safe-basename allowlist (authorized_keys, known_hosts, config, *.pub) -- likely a private key with a custom name. Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content, run it yourself via the ! shell escape instead of through Claude's Bash tool."
   exit 0
 fi
@@ -62,7 +67,7 @@ if [ -f "$CREDENTIAL_FILE_GUARD" ] && [ -r "$CREDENTIAL_FILE_GUARD" ]; then
     # shellcheck disable=SC2254 # $line is an intentional user-authored glob, mirroring deny-data-file-reads.sh's config-glob loop; quoting it would force literal matching and break every wildcard rule.
     # nocasematch, same rationale as the built-in regex above; bash `case` has no per-pattern case-fold syntax, so the shopt is scoped tightly around this one statement and restored immediately after.
     shopt -s nocasematch
-    case "$COMMAND" in
+    case "$COMMAND_UNQUOTED" in
       *$line*)
         emit_deny "Blocked by credential-path Bash gate: the command matches the glob '${line}' in ~/.claude/credential-file-guard.md, a path shape you flagged as credential-bearing. (See docs/security-hardening.md.)"
         exit 0

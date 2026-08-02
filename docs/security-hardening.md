@@ -374,6 +374,34 @@ to hold PII/PHI or live credentials:
   directory reference under `.ssh` (`ls ~/.ssh/sockets/`, a ControlMaster
   socket dir) is also denied, since its basename isn't on the allowlist
   either — use the `!` shell escape to inspect it.
+- `deny-credential-bash-reads.sh`'s `.ssh` safe-basename allowlist
+  (`authorized_keys`, `known_hosts`, `known_hosts.old`, `config`, `*.pub`)
+  trusts the basename from the command text alone, with no filesystem
+  check — unlike `deny-credential-file-reads.sh`, which resolves symlinks
+  via `readlink -f` before allowing a `Read`. If one of those four
+  allowlisted names is itself a pre-existing symlink to a real private key,
+  `cat ~/.ssh/config` issued through Bash is allowed outright. A narrower
+  variant of the symlink/rename residual above, scoped specifically to the
+  four names this mechanism trusts by basename.
+- `deny-pii-in-commits.sh`'s credential-value sub-check runs `git diff
+  --cached` (and, for worktree-targeting commit forms, `git diff HEAD`)
+  unconditionally on every commit, not only when `~/.claude/pii-patterns.md`
+  is armed — the always-on tier needs the diff regardless of arming. Each
+  call is capped at 5 seconds; a legitimately large or slow-to-diff commit
+  (a vendor/dependency bump, a generated-file commit, an NFS-mounted working
+  tree) can trip that cap and deny an otherwise normal commit with a message
+  that reads as an infrastructure fault rather than "your diff is just
+  large."
+- `redact-credential-values.sh`'s effectiveness for `WebFetch`, `Grep`, and
+  `Task` `PostToolUse` events has not been confirmed against a live harness
+  invocation — only `Bash` and `Read` tool-result shapes are verified
+  against Anthropic's published hooks documentation. The hook's `jq`-based
+  walk is shape-agnostic (it doesn't require a specific field name, only a
+  plain-string leaf), which lowers the practical risk, but if the harness
+  does not honor `hookSpecificOutput.updatedToolOutput` for one of those
+  three tool types, or nests matched text somewhere the walk can't reach, a
+  secret reaching context via that channel is not actually redacted, with
+  no error surfaced.
 - `redact-credential-values.sh`'s PEM redaction only replaces the BEGIN
   header line when the matched text has no matching END footer (a
   truncated/paginated tool result, or output cut off mid-key) — the base64
@@ -385,14 +413,48 @@ to hold PII/PHI or live credentials:
   and this file's own credential-path gates alike) scans the raw command
   *text*, not the command's evaluated form. A command that builds a path
   through shell variable expansion so no credential-shaped substring is ever
-  contiguous in the text the hook sees (`p="$HOME/.ss"; p="${p}h/id_rsa"; cat
-  "$p"`) evades detection and, when actually run, still reads the file — a
-  structural property of static-text matching against an agent deliberately
-  constructing an obfuscated command, not a specific gap this repo has
-  chosen not to close. "No bypass valve" describes the deny path itself (no
-  config toggle, no allowlist escape) and is accurate against careless or
-  undirected agent behavior; it is not a claim of safety against an
-  adversarially-instructed one.
+  contiguous in the text the hook sees (`a=".s"; b="sh"; c="id_r"; d="sa";
+  cat ~/"$a$b"/"$c$d"`) evades detection and, when actually run, still reads
+  the file — a structural property of static-text matching against an agent
+  deliberately constructing an obfuscated command, not a specific gap this
+  repo has chosen not to close. "No bypass valve" describes the deny path
+  itself (no config toggle, no allowlist escape) and is accurate against
+  careless or undirected agent behavior; it is not a claim of safety against
+  an adversarially-instructed one.
+- Both credential-value/path Bash-command gates normalize `$COMMAND` before
+  matching (`_lib_strip_shell_quotes` in `_lib.sh`) to collapse the
+  character-removal-based literal-reassembly mechanisms simple enough to
+  occur without deliberate adversarial intent: adjacent quote splits
+  (`cat foo"bar"`), single-character backslash escapes (`cat fo\obar`), and
+  empty ANSI-C ($'...')/locale-translated ($"...") quoted segments used the
+  same way. It does not attempt full shell tokenization and does not close
+  every bash de-quoting mechanism — multi-character ANSI-C escapes
+  (`$'\x69\x64...'`, hex/octal/unicode) and backslash-newline line
+  continuation (`cat ~/id_r\` followed by a literal newline then `sa`) both
+  still evade it, confirmed exploitable. Closing those exhaustively would
+  require either executing the untrusted command text through real bash to
+  observe its actual tokenization (unsafe: the same string can carry
+  `$(...)`/backtick command substitution, so canonicalizing via bash would
+  execute attacker-controlled code inside a security hook) or an
+  open-ended, one-regex-per-discovered-form enumeration of bash's dequoting
+  grammar. The ANSI-C/hex/octal/unicode form has no plausible non-adversarial
+  origin; the line-continuation form is less airtight on that count (a
+  line-wrapping tool or editor inserting a trailing backslash at a fixed
+  column could in principle split a token by accident, not only
+  adversarially) but still requires the split to land mid-token inside a
+  single Bash command string, which no ordinary tool does. Both are the same
+  category as the variable-indirection and command-substitution residuals
+  above, not the "could happen by accident" case the normalization above was
+  built to close. Accepted residual, not a gap this repo is chasing
+  regex-by-regex.
+- The backslash-escape removal above strips a backslash before *any*
+  character universally, including inside what bash would treat as a
+  single-quoted region (where bash itself preserves the backslash
+  literally) — a legitimate command like `grep 'a\.b' file` is stripped to
+  `grep a.b file` for matching purposes. This can only cause an
+  over-broad, accepted-false-positive deny (never a missed detection),
+  consistent with this hook family's existing false-positive tolerance
+  (e.g. the `grep "id_rsa" .` search-pattern residual above).
 
 The airtight control is machine segmentation: developer machines do not
 hold patient data or long-lived credentials. That is policy, not

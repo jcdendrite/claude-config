@@ -757,6 +757,39 @@ _lib_stray_marker_hint() {
 # Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
 _LIB_SIZE_THRESHOLD_BYTES=5242880
 
+# Collapses bash's character-removal-based literal-reassembly mechanisms for
+# credential/PII pattern matching against raw Bash command text: bash
+# executes `cat ~/.ssh/config"_backup"`, `cat ~/id_r\sa`, and
+# `cat ~/id_r$''sa` all identically to their unquoted/unescaped form (an
+# adjacent quote split, a backslash-escaped character, and an ANSI-C/
+# locale-translated quoted segment respectively all have the delimiting
+# characters removed, then the remaining literals are joined into one
+# word), but a `grep -E` scan of the unexpanded command sees each
+# delimiter as a hard break and can miss a credential-path or
+# credential-value pattern that only completes once they're removed.
+# Deny-credential-bash-reads.sh and deny-pii-in-commits.sh's
+# credential-value sub-check must run this over $COMMAND before matching
+# against _LIB_CREDENTIAL_PATH_REGEX or _LIB_CREDENTIAL_VALUE_REGEX. Order:
+# first drop the leading `$` of a $'...'/$"..." opener so its content
+# reassembles the same way a plain "..."/'...' segment does, then remove
+# backslash-escapes (bash drops an unquoted backslash and treats the
+# following character literally, everywhere -- including inside a
+# single-quoted region, where bash itself would NOT remove it; this
+# over-strips relative to bash's real single-quote semantics, but only in
+# the safe over-matching direction for a deny gate), then remove the
+# remaining bare quote characters. Each step only ever joins
+# previously-separated literal characters -- never breaks an existing
+# contiguous match -- so the whole pipeline stays a safe superset
+# transformation for these substring regexes. Does not attempt full
+# shell-word tokenization: variable expansion and command substitution
+# remain an accepted residual, same as the documented indirection gap (see
+# docs/security-hardening.md).
+_lib_strip_shell_quotes() {
+  printf '%s' "$1" \
+    | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g' \
+    | tr -d "\"'"
+}
+
 # Credential-shaped PATH tokens, sourced by deny-credential-bash-reads.sh and deny-credential-file-reads.sh. POSIX ERE, basename-token match (not path-qualified): matches a bare filename wherever it appears, closing a `cd ~/.ssh && cat id_rsa` bypass.
 # Three alternations with different trailing boundaries. Group 1 excludes a following `.` so `id_rsa` doesn't match inside the safe-to-read `id_rsa.pub`, and `.env` doesn't match inside `.env.foo`/`package.env`; `.env`'s own dotted variants beyond the ones enumerated here are deliberately left to deny-env-reads.sh's broader `.env.*` gate. Group 2 (`.netrc`, `.git-credentials`, `credentials.json`, and the three directory-qualified stores) has no known safe dotted-suffix variant, so it allows a following `.` too — closing a `credentials.json.bak`/`.netrc.bak`-style backup-copy bypass group 1's exclusion would otherwise leave open. Group 3 matches `.ssh` (optionally backup/rename-suffixed, e.g. `.ssh.bak`, `.ssh_backup`, `.ssh.old` — the same `.bak`-style continuation group 2 allows) only as a directory/glob reference (`~/.ssh`, `~/.ssh/`, `~/.ssh//`, `~/.ssh/*`, `~/.ssh/.*`), not `.ssh/<filename>`; a named-file reference under `.ssh` (or its backup-suffixed siblings) is instead deny-by-default via `_lib_has_unsafe_ssh_dir_reference` below, since enumerating every unsafe key basename doesn't scale the way enumerating the few safe ones does.
 _LIB_CREDENTIAL_PATH_REGEX='(^|[^A-Za-z0-9_.])(id_rsa|id_dsa|id_ecdsa|id_ed25519|\.env|\.env\.local|\.env\.production|\.env\.development|\.env\.staging|\.env\.test)([^A-Za-z0-9_.]|$)|(^|[^A-Za-z0-9_.])(\.netrc|_netrc|\.git-credentials|credentials\.json|\.aws/credentials|\.docker/config\.json|\.kube/config|\.config/gh/hosts\.yml)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.])\.ssh([._-][A-Za-z0-9_.-]*)?(/+(\*|\.|[^A-Za-z0-9_./]|$)|[^A-Za-z0-9_./]|$)'
