@@ -232,6 +232,12 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/require-ready-for-review.sh",
+            "if": "Bash(gh pr create *)",
+            "statusMessage": "Checking ready-for-review gate..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/deny-pii-in-commits.sh",
             "statusMessage": "Scanning for PII/PHI..."
           },
