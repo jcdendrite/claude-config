@@ -152,6 +152,35 @@ ID, an IPv4 literal or internal hostname is network-recon-value data — so
 echoing it into the deny message would persist it into the session's
 transcript rather than merely repeating content already in the diff.
 
+## Performance
+
+Measured per-fire wall-clock cost of the full hook (tracker-ID scan, six
+structural detectors, private-projects blocklist scan) against a
+`gh api -X POST ... -F body=@<file>` call with a representative body file,
+run directly against `deny-private-project-refs.sh` with a synthetic
+`tool_input` payload on stdin, 5 runs at each size on a loaded development
+machine (other concurrent sessions were running their own test suites at
+measurement time, which the wide ranges below partly reflect):
+
+| Body size | Median | Range observed |
+|---|---|---|
+| 5 KB | 835ms | 747–1,265ms |
+| 50 KB | 908ms | 749–2,355ms |
+| 500 KB | 1,802ms | 1,594–2,517ms |
+
+This exceeds this repo's stated hook performance budget (<100ms per fire) by
+roughly one to two orders of magnitude, even accounting for machine-load
+variance. Subprocess-spawn overhead dominates over byte-scanning cost — the
+six structural detectors alone spawn one `grep` process each via a
+here-string (each of which bash materializes to a temp file before exec, not
+a true in-memory pipe), on top of the pre-existing tracker-ID and blocklist
+scans' own subprocess calls — which is why cost does not scale cleanly with
+body size. At commit/PR-authoring time (a human-interactive action, not a
+hot path), this is tolerable in absolute terms but is a real, measured
+budget overrun, not a clean pass — a future revision that needs headroom
+should look at collapsing the eight-plus separate `grep` subprocess spawns
+into fewer invocations before adding a ninth detector.
+
 ## Known gaps
 
 `gh issue create` and `gh issue comment` publish content the same way
