@@ -117,7 +117,7 @@ children reference it rather than restating numbers (CLAUDE.md DRY rule). F3
 cross-references #421 as its hook-side sibling, and the `git mkdir` misparse above is
 posted as a comment on #421 rather than duplicated into a new issue.
 
-### Disclosure control (revised — this replaced the original design)
+### Disclosure control (first revision — superseded below)
 
 The first draft routed issue bodies through `gh api` so `deny-private-project-refs.sh`
 would scan them. Empirical testing during review disproved that as a control: the hook has
@@ -134,34 +134,78 @@ published artifact, no exceptions: per-session rows, `cost`'s top-N-sessions sec
 verbatim denied-command strings (F3's misparse examples are described in prose, never
 quoted literally), and any output from a `--no-redact` run. None of the aggregate content
 needs a session ID, a project label, or a path — this dissolves the redaction burden
-rather than hardening it.
+rather than hardening it. This part stands unchanged by the second revision below.
 
-Three layers remain, in order:
-1. **Aggregate-only bodies, scope stated above** (primary — removes the identifying shape
-   at the source).
-2. **Pre-POST mechanical scan** — `claude/.claude/scripts/scan-issue-body.sh <file>`, a new
-   committed script, not an ad-hoc one-off (the plan's own Mechanism justification rejects
-   scratch scripts for the same reason F2 documents: nothing re-derives them next time).
-   Detects, from the round-1 test body that got a false rc=0: RFC1918/IPv4 literals,
-   `.ssh/`/`id_*` key paths, `/Users/<name>/`/`/home/<name>/` home-rooted paths, long hex
-   identifiers, **internal hostnames** (any label ending in a non-public-suffix internal
-   TLD/domain pattern), and **Slack-channel shape** (`#[a-z0-9_-]+`) — the hostname and
-   Slack classes were present in the disproven test body and must not be dropped from its
-   replacement. **Exits non-zero on any match; exits non-zero (fail-closed) on its own
-   error or an unreadable body file** — a match-only exit code (e.g. bare `grep`, which
-   returns 1 on *no* match) is the wrong polarity and must not be wired in directly. Ships
-   with allow/deny fixtures, one pair per detection class, under
-   `claude/.claude/scripts/tests/`. The POST is chained on this script's exit status, not
-   on operator judgment. Confirmation happens **before** publication — a GitHub issue is
-   public the instant it POSTs and its edit history is public too, so post-hoc review is
-   detection, not control.
-3. **`gh api -X POST … -F body=@<file>`** as the tracker-ID/blocklist backstop. Verified to
-   reach the hook's scan path (`-F` and `-f` behave identically to the hook; `-F` is
-   required because `gh` resolves `@file` only for magic fields). `gh issue create` and
-   `gh issue comment` are never scanned by the hook — every published artifact, including
-   the `git mkdir` misparse note filed as a comment on #421 (Step 5), goes through the same
-   on-disk-body-file → layer-2-scan → `gh api -F body=@file` path. No artifact skips layers
-   2–3 because it is "just a comment."
+The first revision then shipped `claude/.claude/scripts/scan-issue-body.sh`, a new
+committed script with six detectors, chained manually before the POST:
+`scan-issue-body.sh <file> && gh api -X POST … -F body=@<file>`. PR #552's own code review
+flagged the problem that forces the second revision below: the chain is a manual step an
+operator (human or agent) can simply forget, and the six detectors lived in a file
+`deny-private-project-refs.sh` — the hook that already fires automatically on every
+`gh api -F body=@file` POST in this repo — knew nothing about. Two definitions of "what
+counts as identifying content" in two files is exactly the drift CLAUDE.md's single-source-
+of-truth rule exists to prevent.
+
+### Disclosure control (second revision — folds into `deny-private-project-refs.sh`)
+
+**The fix:** delete `scan-issue-body.sh` and its test file entirely. Move the six detector
+regexes into `claude/.claude/hooks/_lib.sh` as named `_LIB_*_REGEX` constants — the same
+pattern `_LIB_CREDENTIAL_VALUE_REGEX` already establishes, shared today between
+`deny-pii-in-commits.sh` and `redact-credential-values.sh`. Extend
+`deny-private-project-refs.sh`'s existing scan pass — the one that already builds one
+`SCAN_TARGET` by resolving every gated surface (staged diff, commit message,
+commit-message-source file, PR title/body, PR body-source file, `gh api` inline fields,
+`--input` file, and `-f`/`-F key=@<path>` field-value files — the exact shape
+`gh api -F body=@<file>` uses) — with a second scan against the six shared regexes, run at
+the same point as the existing tracker-ID scan so a single command that fails either check
+gets one deny, not two round trips.
+
+Applied uniformly across all three surfaces the hook already gates — `git commit`,
+`gh pr create`/`edit`, and `gh api` — not scoped to `gh api` alone. `SCAN_TARGET` is one
+combined buffer across a chained command today (a `git commit && gh pr create` chain
+concatenates both surfaces' content before the one tracker-ID scan runs), so splitting it
+to scope the new detectors to a subset of surfaces would be a structural change to the
+hook's data flow for no real gain: root CLAUDE.md's "Redact private-project-identifying
+content" section already claims hostnames, Slack channels, and filesystem paths embedding
+project names are "caught by hook when `~/.claude/private-projects.md` is populated" — a
+promise the hook has never actually kept, since its only detectors are a tracker-ID regex
+and a literal blocklist substring match. This closes that gap for real, for every gated
+surface, not just issue bodies. Blast radius stays bounded to the `claude-config` repo
+specifically: the hook's existing `REMOTE_URL` scoping check short-circuits on any other
+origin, so this does not touch commits in unrelated repos.
+
+Enforcement is now automatic for every gated surface — no manual step to chain, no way to
+POST through `git commit`, `gh pr create`/`edit`, or `gh api` without going through the
+hook first, since each is a Bash tool call and the hook is wired with no `if`-condition
+narrowing. **This does not cover every way to publish GitHub content**, corrected from an
+earlier, overstated draft of this section: `gh issue create` and `gh issue comment` are a
+real, separate bypass — the hook's dispatch logic (`IS_GIT_COMMIT`/`IS_GH_PR`/`IS_GH_API`)
+has no branch for `gh issue`, confirmed by reading the code, so content posted that way is
+never scanned at all. This gap is **not currently documented anywhere** in the hook header,
+`docs/private-project-redaction.md`, or `README.md` — an earlier draft of this plan
+incorrectly asserted it already was; a grep of all three during review found zero
+mentions. Per the engineer's explicit direction, this revision (a) corrects that false
+claim, (b) documents the gap honestly in the hook's own "Known gaps" list and in
+`docs/private-project-redaction.md` (Step 3b), matching the six other bypass classes that
+hook already documents-but-accepts rather than closes (`--fill`, `$(cat file)`, `eval`,
+backslash-`\git`, cross-repo `-C`, persisted `graphql` queries), and (c) files a dedicated
+GitHub issue tracking the gap for its own follow-up triage (Step 6) rather than leaving it
+as a buried header bullet, since closing it — recognizing and scanning `gh issue`'s
+different flag surface (`--body` inline text, not `-f`/`-F` field flags) — is a real,
+separate piece of work this plan does not undertake. Every artifact *this plan itself*
+publishes still goes through `gh api -F body=@<file>`, never `gh issue create`/`comment`,
+so the gap doesn't weaken this plan's own issue-filing safety — only a future session's
+choice of command does.
+
+Blast radius: bounded to repos whose `origin` URL contains the substring `claude-config`,
+by design — matching `docs/private-project-redaction.md`'s existing "For fork
+contributors" section, which documents this as deliberate (a personal fork named e.g.
+`my-claude-config-mirror` is also covered). Not "the `claude-config` repo specifically," a
+narrower claim than what the existing scoping check actually does.
+
+This is a repo-wide, security-critical, always-on hook — the `claude-hook-review` skill
+governs its design, not `/code-review` alone (root CLAUDE.md's "Should this be a hook?"
+section). Route the hook-editing portion of this change through it before `/code-review`.
 
 ### Assumption ledger
 
@@ -185,17 +229,27 @@ re-derives, so effort concentrates on small levers and the large ones stay unmea
 | row10 | The 101 marker.sh denials are avoidable rather than correct refusals | `[unverified]` — counts are solid, per-denial root cause is not; the issue asks for a census, it does not assert the verdict |
 | row11 | Reviewer fan-out has low yield | **not claimed** — F4 asserts only that yield is *unmeasured* |
 | row12 | Scope is issues + the cost tool; all four findings filed | `[engineer-verified]` |
+| row13 | The first revision's `scan-issue-body.sh` duplicates detection logic outside `deny-private-project-refs.sh`, and an unwired, manually-chained script is bypassable — both raised as a PR #552 code-review finding (deferred, "ticket to be filed," never filed) and independently by the engineer directly, who judged PR #552 unshippable on this basis | `[engineer-verified]` |
+| row14 | `gh issue create`/`gh issue comment` are never scanned by `deny-private-project-refs.sh` (no dispatch branch for `gh issue`), and this was NOT already documented anywhere in the tree despite an earlier draft of this plan claiming it was | `[verified: hook dispatch logic read directly; grep of hook header, docs/private-project-redaction.md, README.md for "gh issue" — zero hits]` — disposition (file a tracking issue, Step 6, rather than close in-PR or leave as a silent header bullet) is `[engineer-verified]` |
+| row15 | The parent hook's two existing branches (tracker-ID, private-projects blocklist) echo matched content into their deny messages; porting that convention to the six new detectors would leak session-ID-shaped hex values, hostnames, and IPs into the model's context and the local transcript JSONL | `[verified: deny-private-project-refs.sh:569,595-608 read directly; scan-issue-body.sh and deny-pii-in-commits.sh's own label-only conventions confirmed by reading both]` |
+| row16 | Porting `scan-issue-body.sh`'s file-based `grep -Eq` to scan the `SCAN_TARGET` bash variable under this hook's active `set -o pipefail` risks a SIGPIPE-induced exit 141 being misclassified as a genuine grep error by the stated `rc>=2` fail-closed contract, if implemented as a `printf \| grep` pipe rather than a here-string | `[verified: deny-private-project-refs.sh:144 set -uo pipefail confirmed; deny-private-project-refs.sh:592-594's own comment documents the same SIGPIPE-under-pipefail interaction for an adjacent loop]` |
 
-**Mechanism justification.** One new read-only subcommand in an existing script, plus one
-small committed scan script for the disclosure control — the lightest primitives that make
-both the method and the publication safeguard repeatable. Two lighter options rejected for
-the subcommand: (a) a one-off scratch script, which leaves the next audit re-deriving
-prices by hand and is exactly how the current toolkit drifted (`anchors: root`); (b)
-documenting the method in prose without code, which cannot produce the numbers and
-restates prices where nothing re-derives them — the failure F2 documents (`anchors:
-row5`). The same reasoning applies to the scan script: an ad-hoc grep typed at filing time
-is the one-off-script failure repeated for the disclosure control (`anchors: root`). No new
-dependency, no new hook, no new permission scope.
+**Mechanism justification.** One new read-only subcommand in an existing script for the
+`cost` tool, plus committed, tested detection logic for the disclosure control — the
+lightest primitives that make both the method and the publication safeguard repeatable.
+Two lighter options rejected for the subcommand: (a) a one-off scratch script, which
+leaves the next audit re-deriving prices by hand and is exactly how the current toolkit
+drifted (`anchors: root`); (b) documenting the method in prose without code, which cannot
+produce the numbers and restates prices where nothing re-derives them — the failure F2
+documents (`anchors: row5`). The same two options are rejected for the disclosure-control
+detectors for the identical reason (`anchors: root`). The first revision's choice of
+*where* to commit that detection logic — a new standalone script rather than the existing
+`deny-private-project-refs.sh` hook — is itself superseded by the second revision above
+(`anchors: row13`): a second, unwired location for "what counts as identifying content" is
+a heavier mechanism than extending the hook that already runs automatically on every gated
+surface, and it reintroduces exactly the drift this paragraph's own reasoning warns
+against. No new dependency, no new hook, no new permission scope — the second revision
+uses *fewer* mechanisms than the first, not more.
 
 ## Critical files
 
@@ -334,15 +388,112 @@ constructs a corpus with `_priced()`'s parameters rather than inline dicts.
   (lines 1601-1792, `--redact` at 1658) must pass **unedited**. If the lift forces a test
   change, it is not behavior-preserving.
 
-### Step 3b — `claude/.claude/scripts/scan-issue-body.sh` + fixtures
+### Step 3b (revised) — fold the six detectors into `deny-private-project-refs.sh`, delete `scan-issue-body.sh`
 
-New committed script per the Disclosure control section: takes a file path, exits non-zero
-on a match for any of the six detection classes (RFC1918/IPv4, `.ssh/`/`id_*` paths,
-home-rooted paths, long hex identifiers, internal hostnames, Slack-channel shape) or on its
-own error/unreadable input, exits zero on a clean file. Allow/deny fixture pair per class
-under `claude/.claude/scripts/tests/`, following the same `test_*.py` convention as the
-other scripts in that directory (subprocess invocation + return-code assertion, matching
-`test_claude_auto.py`'s shape for a shell-script-under-test).
+- **Delete** `claude/.claude/scripts/scan-issue-body.sh` and
+  `claude/.claude/scripts/tests/test_scan_issue_body.py` entirely — superseded by the
+  hook-integrated design in Disclosure control above.
+- **`claude/.claude/hooks/_lib.sh`**: add six named regex constants, one per detector,
+  following `_LIB_CREDENTIAL_VALUE_REGEX`'s existing precedent (a single quoted POSIX-ERE
+  string per constant, documented with a one-line comment). Port the exact patterns from
+  the deleted script's `DETECTORS` array (`scan-issue-body.sh` lines 46-51 as shipped in
+  PR #552) unchanged — do not redesign the regexes themselves in this pass; the boundary-
+  safety fixes on the originals (SSH-key-path substring/hyphen-boundary, home-rooted-path
+  trailing-slash, Slack-shape vs. bare issue numbers) already went through three rounds of
+  review and have dedicated regression tests to port alongside them.
+- **`claude/.claude/hooks/deny-private-project-refs.sh`**:
+  - Add a second scan pass against `SCAN_TARGET`, immediately after the existing
+    tracker-ID `HITS` check and before the private-projects blocklist check, so a single
+    deny message covers whichever check fires first. Keep each of the six checks
+    independent (not collapsed into one alternation) so the deny message can name which
+    detector fired.
+  - **Deny message names the detector label only — never the matched substring.** This is
+    a deliberate, required departure from the two *existing* branches in this same
+    function, which both echo raw matched content (the tracker-ID `HIT_LIST`, the
+    blocklist's quoted `matched_lines`) into their deny messages. Reviewed and confirmed
+    unsafe to extend to the six new classes: a long hex identifier could *be* a live
+    session ID or token fragment, and an internal hostname or IPv4 literal is
+    network-recon-value data — echoing either into the deny message writes it into the
+    model's context for the rest of the session and persists it verbatim into the local
+    session transcript JSONL, the same corpus this plan's own `cost`/`audit-routing`
+    tooling parses. `scan-issue-body.sh`'s original design already got this right (its
+    deny output names only the label, e.g. `matched detector 'Slack-channel shape'`,
+    never the match) and `deny-pii-in-commits.sh` states the identical rule explicitly for
+    the same reason (its header: "never the matched value... echoing it re-exposes it into
+    the Claude transcript"). Port the label-only behavior, not the two existing branches'
+    echo convention — an implementer copying the adjacent `HIT_LIST` pattern for the new
+    checks is the failure mode to avoid here.
+  - **Use a here-string (`grep -Eq -- "$pattern" <<< "$SCAN_TARGET"`) for each of the six
+    checks, not a `printf '%s' "$SCAN_TARGET" | grep -Eq ...` pipe.** `scan-issue-body.sh`'s
+    original `rc=$?` capture is safe because it greps a *file* directly, no pipe involved.
+    Porting to scan the `SCAN_TARGET` *bash variable* under this hook's `set -o pipefail`
+    (already active, line 144) reintroduces a real risk if piped: for a `SCAN_TARGET` larger
+    than the pipe buffer, an early grep match can SIGPIPE the `printf` side, and pipefail
+    reports the pipeline's exit as the rightmost non-zero status (141), which the stated
+    `rc>=2` fail-closed branch cannot distinguish from a genuine grep engine error — a
+    spurious "detector failed to scan" deny on what was actually a clean match. A
+    here-string has no such pipe. (The codebase already works around this exact interaction
+    elsewhere — the private-projects blocklist loop's own comment at lines 592-594 notes
+    the same SIGPIPE risk under `pipefail` and sidesteps it by never inspecting `$?`; the
+    six new checks *do* need to inspect `$?` to distinguish match/no-match/error, so the
+    here-string form is required, not optional, here.)
+  - Fail closed on a `grep` error (`rc>=2`) for the new checks. Note this is *stricter*
+    than the adjacent tracker-ID scan, not "matching" its posture as an earlier draft of
+    this plan claimed: that scan's `HITS=$(... | grep -vE "$OSS_ALLOWLIST" || true)` (line
+    561-565) swallows any nonzero grep exit via `|| true`, making it fail-*open* on a grep
+    engine error — a real, pre-existing inconsistency between two checks on the same
+    buffer in the same function, out of scope to fix here but worth a one-line code comment
+    at the new checks noting the asymmetry so a future reader doesn't assume the two scans
+    share a failure posture.
+  - Update the header comment's "Scope and limits" list: it currently states the hook
+    "does NOT catch... absolute filesystem paths with private-project names, or
+    structural fingerprints" — false after this change for home-rooted paths and long hex
+    identifiers specifically; name the six new classes and keep the remaining true gap
+    (custom SSH key names, unlisted internal TLDs, short git SHAs, per PR #552's own
+    deferred-findings row) explicit rather than silently dropping the caveat.
+  - Add `gh issue create`/`gh issue comment` to the header's "Known gaps" list (see
+    Disclosure control above) — a documented, accepted gap like the six already there, not
+    a defect introduced by this change.
+- **`claude/.claude/hooks/tests/test_deny_private_project_refs.py`**: port the deleted
+  test file's ~20 allow/deny fixture pairs (all six detector classes plus the fail-closed
+  grep-error and unreadable-file cases) as new test methods, using this file's existing
+  `run_hook`/`bash_input`/`claude_config_repo` fixtures rather than the direct-subprocess-
+  on-a-bare-file pattern the deleted file used — these are now full hook-invocation tests
+  (a `gh api -F body=@<file>` or `git commit` Bash call through the PreToolUse hook), not
+  standalone-script tests. Also add at least one chained-command case
+  (`git commit -m "..." && gh pr create --body "..."`) proving a single detector match
+  anywhere in the combined `SCAN_TARGET` denies the whole chain — the behavior the
+  Disclosure control section's "one combined buffer" note depends on. **Add one
+  content-suppression regression test per detector class**: assert the deny message
+  contains the detector's label and does NOT contain the matched fixture value — this is
+  the test that would catch a future edit silently reintroducing the echo-the-match
+  pattern from the two adjacent existing branches (check whether `deny-pii-in-commits.sh`'s
+  own test file already has an equivalent assertion for its label-only guarantee and
+  mirror that shape if so). File is already 2,112 lines; growing it further is consistent
+  with this repo's one-test-file-per-hook convention (`test_deny_pii_in_commits.py`,
+  `test_redact_credential_values.py` are the sibling examples) — do not split into a
+  second file for this hook.
+- **`docs/private-project-redaction.md`**: add the six new detector classes to the
+  documented match semantics, plus the `gh issue create`/`gh issue comment` gap (Known
+  gaps, above). **Illustrative examples in this doc must not themselves match the pattern
+  being documented** — the doc will need to explain what each detector catches, and a
+  realistic example (e.g. `/Users/alice/...` to illustrate the home-rooted-path detector)
+  would trip that exact detector when the doc-update commit itself is scanned. This is the
+  same self-reference problem CLAUDE.md's tracker-ID rule already solved with the
+  `PROJ-`/`TICKET-` allowlisted-placeholder convention; the six new detectors have no
+  equivalent placeholder scheme, so use non-matching illustrative shapes instead (verified:
+  an angle-bracket placeholder like `/Users/<username>/` does not match the home-rooted-
+  path character class, since `<` falls outside `[A-Za-z0-9_.-]`) or describe the pattern
+  in prose without embedding a literal matching string.
+- **Root CLAUDE.md**, "Redact private-project-identifying content" section: currently
+  states hostnames, Slack channels, and filesystem paths embedding project names are
+  "caught by hook when `~/.claude/private-projects.md` is populated" — after this change,
+  three of the six new detectors (home-rooted path, internal hostname, Slack-channel
+  shape) are always-on structural checks, not gated by that file's population at all. This
+  makes the section more true (the hook now actually does most of what it already
+  claimed), but the *conditional* framing ("when populated") becomes inaccurate for those
+  three classes specifically — correct it in the same commit rather than leaving the repo's
+  own canonical redaction doc describing a weaker mechanism than what will exist.
 
 ### Step 4 — docs
 
@@ -360,12 +511,24 @@ other scripts in that directory (subprocess invocation + return-code assertion, 
 1 tracking issue + 4 children in the repo, aggregate-only bodies (per Disclosure control's
 excluded-content list — no per-session rows, no top-N-sessions output, no verbatim denied
 commands, no `--no-redact` output), each filed via
-`scan-issue-body.sh <file> && gh api -X POST … -F body=@<file>`. Labels: `methodology` on
+`gh api -X POST … -F body=@<file>` — the redesigned hook (Step 3b) scans and gates the
+POST automatically; there is no separate script to chain first. Labels: `methodology` on
 the tracking issue, `enhancement`/`bug` per child. The `git mkdir` misparse note goes
-through the identical path — on-disk body file → `scan-issue-body.sh` → `gh api -F
-body=@file` — as a comment on #421, described in prose (never quoting the denied command
-string verbatim, since that string is the one piece of content in this plan that is not
-aggregate).
+through the identical `gh api -F body=@file` path as a comment on #421, described in prose
+(never quoting the denied command string verbatim, since that string is the one piece of
+content in this plan that is not aggregate).
+
+### Step 6 — file a follow-up issue for the `gh issue create`/`gh issue comment` gap
+
+Per the engineer's explicit direction (this gap does not get silently folded into a
+"known gaps" bullet alone): file one issue tracking that `deny-private-project-refs.sh`
+never scans `gh issue create` or `gh issue comment` — a different flag surface (`--body`
+inline text, not `-f`/`-F` field-value files) than the three surfaces this hook currently
+gates, so closing it is real, separate work, not a one-line fix. Aggregate-only body (no
+identifying content is needed to describe this gap), filed via the same `gh api -F
+body=@<file>` path as Step 5, `bug` label. Cross-reference this plan's PR and the "Known
+gaps" bullet added to the hook's header (Step 3b) so a reader lands on the code location,
+not just the tracking issue.
 
 ## Verification
 
@@ -377,9 +540,9 @@ aggregate).
    (no `skipif` guard exists) — install `stow` locally first, or the local run is not
    equivalent to CI's.
 2. `../../../.venv/bin/ruff check claude/.claude/`.
-3. `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck` — this PR adds
-   `scan-issue-body.sh` (Step 3b), so shell **did** change; this is a required check here,
-   not the no-op it would be for a Python-only change.
+3. `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck` — this PR edits
+   `deny-private-project-refs.sh` and `_lib.sh` (Step 3b), so shell **did** change; this is
+   a required check here, not the no-op it would be for a Python-only change.
 4. Confirm the existing `cmd_audit_routing` tests passed **unedited** (git-diff the test
    file: only additions).
 5. Run `transcript-analysis.py cost --since 30d` and confirm it **reproduces the ledger
@@ -398,16 +561,38 @@ aggregate).
    this is beyond interactive tolerance on the reference corpus, revisit the
    Out-of-scope deferral on `iter_sessions`' redact-pass performance rather than shipping
    a default that pushes users toward `--no-redact` for speed.
-7. Run `scan-issue-body.sh` over each issue and comment body file; POST only on a clean
-   (zero) exit — the script fails closed on its own error, so a POST never proceeds on an
-   unreadable file either. Re-read each published artifact afterward as a post-condition
-   check, not the detection point: **if it fails, edit the body immediately to redact,
-   note the correction inline, and if the leaked content is a credential rather than an
-   identifier, rotate it** — GitHub retains edit history, so this catches exposure, not
-   publication.
-8. `/code-review`, then commit; `/ready-for-review`, then open the PR. Autonomous shipping
-   is active (`~/.claude/autonomous-shipping-required` present, no repo optout), so this
-   proceeds without further prompting. Merge stays human-only.
+7. **`claude-hook-review`** on the modified `deny-private-project-refs.sh` and `_lib.sh` —
+   required before `/code-review` per root CLAUDE.md's "Should this be a hook?" section;
+   this is a repo-wide, security-critical, always-on hook, not an ordinary code change.
+   Include a **wall-clock timing measurement** for the hook's per-fire cost against a
+   representative large diff/PR body (this hook fires on every gated Bash call for every
+   contributor, a materially higher call frequency than the `cost` subcommand item 6
+   already times) — record it in `docs/private-project-redaction.md` alongside the new
+   detector documentation.
+8. Prove the new detectors fire through the *actual* PreToolUse hook path, not just a
+   standalone scan: for each of the six classes, construct a `gh api -X POST … -F
+   body=@<file>` (or `git commit`) call whose body/diff contains that class's shape and
+   confirm the hook denies it with the correct label **and that the deny message does not
+   contain the matched substring itself**; one clean call and confirm it passes; one
+   chained `git commit && gh pr create` case where the leak is in the second command's
+   content and confirm the whole chain denies. This is the proof `scan-issue-body.sh`'s own
+   tests provided standalone (per the deleted PR #552 test suite) — it must now be
+   re-proven through the real enforcement point instead.
+9. Confirm `scan-issue-body.sh` has zero remaining references repo-wide:
+   `grep -rn "scan-issue-body" claude/ docs/ .claude/` after the deletion, and update
+   PR #552's own description (its "Why a separate disclosure-control script" section and
+   test-plan bullets both name the deleted script) once the implementation is ready — that
+   edit is out-of-band via `gh api -X POST repos/{owner}/{repo}/pulls/552` and itself
+   flows through the very hook being modified here. Confirm Step 6's follow-up issue was
+   actually filed (not just planned) before treating this revision as complete.
+10. Re-read each published artifact (the 5 already-filed issues plus the #421 comment)
+    against the new detector set as a post-condition sanity check, not the primary
+    detection point — they were already scanned and posted under the first-revision
+    design and passed; this just confirms the second revision doesn't newly flag content
+    that the first revision's identical regexes already cleared.
+11. `/code-review`, then commit; `/ready-for-review`, then open the PR update. Autonomous
+    shipping is active (`~/.claude/autonomous-shipping-required` present, no repo optout),
+    so this proceeds without further prompting. Merge stays human-only.
 
 ## Out of scope
 
@@ -420,5 +605,10 @@ aggregate).
   record solely to read `jsonl.parent.name` (a wasted full parse of ~785 MB). Deriving
   labels from `PROJECTS_DIR.glob()` paths is the right fix; it touches a shared function
   used by other subcommands and belongs in its own change.
-- The `deny-private-project-refs.sh` detection gap (row7). Worked around here by design,
-  not bundled — worth its own issue.
+- Widening the six detectors' precision (RFC1918-only IPv4 scoping, additional SSH key
+  name patterns, additional internal TLD suffixes) — carried forward unchanged from PR
+  #552's accepted-gaps list. This revision changes *where* the detectors live and *how*
+  they're enforced, not what they detect.
+- Extending detection to `gh issue create` / `gh issue comment` — a pre-existing gap in
+  `deny-private-project-refs.sh` unrelated to this revision; every artifact this plan
+  publishes already avoids those commands by design.

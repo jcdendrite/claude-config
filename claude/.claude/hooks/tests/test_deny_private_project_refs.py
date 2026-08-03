@@ -10,6 +10,8 @@ reference prefixes only (CVE / RFC / PEP / ISO / GH / BUG / IETF).
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from helpers import (
     HOOKS_DIR,
     bash_input,
     run_hook,
+    run_hook_reason,
 )
 
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
@@ -1638,6 +1641,451 @@ class TestDenyPrivateProjectRefs:
         assert "Acme Corp" not in reason
         assert "acme corp" not in reason.lower()
 
+    # -- Structural-shape scan (six always-on detectors) --------------------
+    # Ported from the deleted scan-issue-body.sh's test suite (see git
+    # history for claude/.claude/scripts/tests/test_scan_issue_body.py) and
+    # exercised through the real PreToolUse hook path rather than a
+    # standalone script — these are full `git commit`/`gh pr` calls, not
+    # direct-subprocess-on-a-bare-file invocations.
+
+    def test_structural_clean_aggregate_message_allowed(self, claude_config_repo):
+        """A corpus-aggregate-only message with no identifying-shape content
+        is safe to publish."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'Cost audit: 268 sessions, 56358 priced turns, 5906 dollars at list price'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    # IPv4 literal
+
+    def test_structural_ipv4_no_literal_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Cache read is 51.4 percent of spend across 268 sessions'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ipv4_near_miss_two_dot_version_string_allowed(self, claude_config_repo):
+        """A two-dot version-like string is one dot-group short of the
+        detector's four-group shape — pins the group count against a
+        regression that loosens it (e.g. `{2,}` in place of `{3}`), which
+        the single-dot allow-case above can't detect."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Already on v2.4.1 today, no upgrade needed'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ipv4_literal_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'The internal service lives at 10.20.30.40 in the VPC'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    # SSH key path reference
+
+    def test_structural_ssh_key_path_no_reference_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Denials include exact-match rules for git commit and git push'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ssh_key_dot_ssh_path_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Reproduced with the key at ~/.ssh/id_ed25519 loaded'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_ssh_key_algorithm_name_as_substring_allowed(self, claude_config_repo):
+        """A word merely containing 'id_rsa'/'id_dsa' as a substring (not a
+        boundary-delimited key filename) must not match — same
+        boundary-safety class as the internal-hostname prefix-word test
+        below."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'The config field is called invalid_rsa_token; renamed avoid_dsa_warnings too'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ssh_key_bare_key_name_denied(self, claude_config_repo):
+        """A bare key filename with no .ssh/ segment must still match via
+        the id_ boundary group on its own."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'The rotated key is id_ed25519 going forward'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_ssh_key_hyphen_suffixed_name_denied(self, claude_config_repo):
+        """A hyphen-suffixed key reference (a backup/rotation naming style)
+        must still match — the trailing boundary treats hyphen as a
+        terminator, not a word-continuation character."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'The old backup file id_rsa-old was never deleted'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    # Home-rooted path
+
+    def test_structural_home_rooted_path_no_reference_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'The tool lives at claude/.claude/scripts/transcript-analysis.py'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_home_rooted_path_near_miss_prefix_not_slash_terminated_allowed(
+        self, claude_config_repo
+    ):
+        """`/homebrew/...` and `/UsersGuide...` share the `/Users`/`/home`
+        substring but lack the trailing-slash-plus-segment shape the
+        detector requires — pins that requirement against a regression that
+        drops it, which the no-substring-at-all allow-case above can't
+        detect."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Installed via /homebrew/bin/foo, see /UsersGuide.md for setup'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_home_rooted_path_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Session data was read from /Users/alice/.claude/projects'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_home_rooted_path_without_trailing_slash_denied(self, claude_config_repo):
+        """A bare username reference with no following path segment must
+        still match."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'My home directory is /Users/jared, nothing else'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    # Long hex identifier
+
+    def test_structural_long_hex_identifier_no_reference_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m '268 sessions, 56358 priced turns, 5906 dollars at list price'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_long_hex_identifier_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Session 875cfbeb-f03e-4a12-9876-abcdef012345 drove the spike'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_long_hex_identifier_31_chars_below_threshold_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Short id abcdef0123456789abcdef012345678 stays under the fencepost'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_long_hex_identifier_32_chars_at_threshold_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Long id abcdef0123456789abcdef0123456789 hits the fencepost exactly'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    # Internal hostname
+
+    def test_structural_internal_hostname_no_reference_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'See platform.claude.com/docs/en/about-claude/pricing for rates'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_internal_hostname_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'The dashboard is hosted at metrics.eng.corp for this team'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_internal_hostname_at_end_of_message_denied(self, claude_config_repo):
+        """The trailing-boundary check must not require a POSIX \\b
+        extension (not portable across grep implementations) — a bare
+        '(...|$)' alternation covers end-of-line the same way a word
+        boundary would."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Reachable internally at db.internal'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_internal_hostname_prefix_word_not_flagged_allowed(self, claude_config_repo):
+        """A word that merely starts with a TLD-like label ('internally')
+        must not match — the regex requires a literal dot immediately
+        before the TLD word, and this fixture has no preceding dot at all,
+        so the match fails at the leading clause, not the trailing
+        boundary (see the continuation-suffix test below for that)."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'This is handled internally, not by some other mechanism'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_internal_hostname_continuation_suffix_not_flagged_allowed(self, claude_config_repo):
+        """A dot-prefixed TLD word immediately followed by more word
+        characters ('db.internaltools') reaches the TLD match but must not
+        match overall — the trailing boundary requires a non-word
+        character or end of line after the TLD, not just its presence."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Provisioned via db.internaltools, not a real hostname'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    # Slack-channel shape
+
+    def test_structural_slack_channel_no_reference_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Cost audit findings. See F1 through F4 below'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_channel_shape_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Discussed in #eng-platform-alerts before filing'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_github_issue_reference_not_flagged_allowed(self, claude_config_repo):
+        """A plain issue reference (#421) is all-digits and must not
+        collide with the Slack-channel shape."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Posting the misparse note as a comment on #421'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_markdown_anchor_link_denied(self, claude_config_repo):
+        """A markdown anchor fragment (#word-word) is indistinguishable
+        from a real Slack channel by shape alone — deliberately still
+        blocked; loosening the charset to admit hyphenated words would
+        defeat the detector's actual purpose."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'See docs/skills.md#skill-architecture-notes for the breakdown'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    # -- Structural scan: fail-closed on a grep engine error ----------------
+
+    def test_structural_grep_engine_error_fails_closed(self, claude_config_repo, tmp_path):
+        """A detector's grep call itself erroring (rc>=2) must fail closed —
+        exercises the branch distinct from the tracker-ID scan above,
+        whose `|| true` swallows the same error and fails open.
+
+        The stub shadows `grep` on PATH for the whole hook invocation, not
+        just the structural-detector call — safe today only because every
+        earlier `grep` call in the script (fragment/chain detection, the
+        tracker-ID scan) is `|| true`-guarded or used as a bare `if`
+        condition under `set -uo pipefail` (no `-e`), so the stub degrades
+        those to a harmless "no match" instead of crashing the script
+        before reaching the target branch. If an earlier, unguarded `grep`
+        call is ever added, this test's global stub would exercise that
+        branch instead — re-scope the shadow to the specific detector call
+        if that happens."""
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        stub_grep = fake_bin / "grep"
+        stub_grep.write_text("#!/usr/bin/env bash\nexit 2\n")
+        stub_grep.chmod(stub_grep.stat().st_mode | stat.S_IEXEC)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Anything at all — the stub grep errors before matching'"),
+            cwd=claude_config_repo,
+            extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert reason is not None
+        assert "failing closed" in reason
+        # Pins which detector's rc>=2 branch actually fired: with the stub
+        # erroring unconditionally, the loop's first entry ("IPv4 literal")
+        # must be the one reported — proves the loop stops at the first
+        # error rather than silently continuing past it.
+        assert "IPv4 literal" in reason
+
+    # -- Structural scan: chained-command denial -----------------------------
+
+    def test_structural_chained_command_leak_in_second_command_denied(self, claude_config_repo):
+        """A single detector match anywhere in the combined SCAN_TARGET
+        denies the whole chain, even when the leak is in the second
+        command — the behavior the hook's 'one combined buffer' design
+        depends on."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'Generic refactor' && gh pr create --body 'Reproduced at 10.20.30.40 in the VPC'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    # -- Structural scan: deny message never echoes the matched value -------
+    # Regression guard against reintroducing the adjacent tracker-ID and
+    # blocklist branches' echo convention (HIT_LIST / matched_lines) for
+    # the six new detectors.
+
+    def test_structural_ipv4_deny_message_omits_matched_value(self, claude_config_repo):
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'The internal service lives at 10.20.30.40 in the VPC'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "IPv4 literal" in reason
+        assert "10.20.30.40" not in reason
+
+    def test_structural_ssh_key_path_deny_message_omits_matched_value(self, claude_config_repo):
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'The rotated key is id_ed25519 going forward'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "SSH key path reference" in reason
+        assert "id_ed25519" not in reason
+
+    def test_structural_home_rooted_path_deny_message_omits_matched_value(self, claude_config_repo):
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Session data was read from /Users/alice/.claude/projects'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "home-rooted path" in reason
+        assert "/Users/alice" not in reason
+
+    def test_structural_long_hex_identifier_deny_message_omits_matched_value(self, claude_config_repo):
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Session 875cfbeb-f03e-4a12-9876-abcdef012345 drove the spike'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "long hex identifier" in reason
+        assert "875cfbeb-f03e-4a12-9876-abcdef012345" not in reason
+
+    def test_structural_internal_hostname_deny_message_omits_matched_value(self, claude_config_repo):
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'The dashboard is hosted at metrics.eng.corp for this team'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "internal hostname" in reason
+        assert "metrics.eng.corp" not in reason
+
+    def test_structural_slack_channel_deny_message_omits_matched_value(self, claude_config_repo):
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Discussed in #eng-platform-alerts before filing'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "Slack-channel shape" in reason
+        assert "#eng-platform-alerts" not in reason
+
     # --- Quote-aware flag extraction: false-positive locks ---
 
     def test_body_source_fp_flag_in_title_allowed(self, claude_config_repo):
@@ -1900,12 +2348,17 @@ class TestDenyPrivateProjectRefs:
         assert "Tip: this command chains" in reason
 
     def test_blocklist_chained_command_deny_includes_chain_hint(self, claude_config_repo, private_projects_file):
-        """Chained cd && gh pr create: blocklist match named, chain hint appended."""
+        """Chained cd && gh pr create: blocklist match named, chain hint appended.
+
+        The cd target deliberately avoids the /home/ or /Users/ shape — the
+        structural-shape scan (which now runs before this blocklist check)
+        would otherwise fire on the cd prefix itself and deny with the
+        structural message instead of the blocklist message this test pins."""
         private_projects_file("Acme Corp\n")
         result = subprocess.run(
             [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
             input=json.dumps(bash_input(
-                "cd /home/username/mycode && gh pr create --body 'Acme Corp integration work'"
+                "cd /opt/build/mycode && gh pr create --body 'Acme Corp integration work'"
             )),
             capture_output=True,
             text=True,
