@@ -257,7 +257,7 @@ Row 6 [finding, verified]: claude-hook-review is a marketplace plugin
 - `plugins/claude-hook-review/.claude-plugin/plugin.json` — bump `version` `2.2.0` → `2.3.0` (minor: backward-compatible checklist addition, per `plugin-semver`).
 - `claude/.claude/rules/shell-script-conventions.md` — add one bullet using the exact text quoted in Approach item 2 above, following the file's existing bullet format (no vendor citation needed since this cites an in-repo rule, not an external standard).
 
-Reuse: no new mechanism in either file — both edits point at CLAUDE.md's already-existing "one line, not a paragraph" / self-test bullets rather than restating or inventing a rule, per this repo's single-source-of-truth convention.
+Reuse: no new mechanism in either file. Edit 2 points at CLAUDE.md's already-existing "one line, not a paragraph" bullet by name, safe because `shell-script-conventions.md` ships in the same stow package as the CLAUDE.md it cites. Edit 1 is grounded in the same CLAUDE.md rule but does not name it in the shipped text — `claude-hook-review` is an independently-installable plugin with no such co-installation guarantee, so its bullet states the rule self-contained (see Approach item 1's platform-genericness note).
 
 ### Verification
 
