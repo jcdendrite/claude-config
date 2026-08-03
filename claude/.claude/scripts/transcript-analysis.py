@@ -418,14 +418,18 @@ def _longest_fail_streak(failed_flags: list[bool]) -> int:
 
 
 def cmd_buckets(args: argparse.Namespace) -> None:
-    projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
+    session_iter, scope_label = _resolve_project_scope(args, "buckets")
+    _print_resolved_scope("buckets", scope_label)
 
     branch_data: dict[str, dict] = defaultdict(
-        lambda: {"sessions": 0, "opus": 0, "sonnet": 0, "haiku": 0, "other": 0, "ts_min": float("inf"), "ts_max": float("-inf")}
+        lambda: {
+            "sessions": 0, "projects": set(), "opus": 0, "sonnet": 0, "haiku": 0, "other": 0,
+            "ts_min": float("inf"), "ts_max": float("-inf"),
+        }
     )
 
-    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for jsonl, records in session_iter:
         file_branches: dict[str, dict] = defaultdict(
             lambda: {"opus": 0, "sonnet": 0, "haiku": 0, "other": 0, "ts_min": float("inf"), "ts_max": float("-inf")}
         )
@@ -444,6 +448,7 @@ def cmd_buckets(args: argparse.Namespace) -> None:
         for branch, fb in file_branches.items():
             d = branch_data[branch]
             d["sessions"] += 1
+            d["projects"].add(jsonl.parent.name)
             for fam in ("opus", "sonnet", "haiku", "other"):
                 d[fam] += fb[fam]
             if fb["ts_min"] < float("inf"):
@@ -455,15 +460,18 @@ def cmd_buckets(args: argparse.Namespace) -> None:
         print("No data found.")
         return
 
-    print(f"{'Branch':<40} {'Sess':>5} {'Total':>7} {'Opus':>6} {'Sonnet':>7} {'Haiku':>6} {'Other':>6}  Date range")
-    print("-" * 108)
+    print(
+        f"{'Branch':<40} {'Proj':>4} {'Sess':>5} {'Total':>7} {'Opus':>6} {'Sonnet':>7} "
+        f"{'Haiku':>6} {'Other':>6}  Date range"
+    )
+    print("-" * 113)
     for branch in sorted(branch_data):
         d = branch_data[branch]
         total = d["opus"] + d["sonnet"] + d["haiku"] + d["other"]
         ts_min = _fmt_date(d["ts_min"]) if d["ts_min"] < float("inf") else "?"
         ts_max = _fmt_date(d["ts_max"]) if d["ts_max"] > float("-inf") else "?"
         print(
-            f"{branch:<40} {d['sessions']:>5} {total:>7} {d['opus']:>6} {d['sonnet']:>7} "
+            f"{branch:<40} {len(d['projects']):>4} {d['sessions']:>5} {total:>7} {d['opus']:>6} {d['sonnet']:>7} "
             f"{d['haiku']:>6} {d['other']:>6}  {ts_min}..{ts_max}"
         )
 
@@ -473,11 +481,12 @@ def cmd_fail_seq(args: argparse.Namespace) -> None:
         print("--branches is required for fail-seq", file=sys.stderr)
         sys.exit(1)
     branches: set[str] = {b for b in args.branches.split(",") if b}
-    projects_glob = _projects_glob(args)
+    session_iter, scope_label = _resolve_project_scope(args, "fail-seq")
+    _print_resolved_scope("fail-seq", scope_label)
 
     branch_runs: dict[str, list[tuple[str, int]]] = defaultdict(list)
 
-    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for _jsonl, records in session_iter:
         if not ({r.get("gitBranch", "") for r in records} & branches):
             continue
 
@@ -549,12 +558,13 @@ def cmd_fail_seq(args: argparse.Namespace) -> None:
 
 
 def cmd_struggle(args: argparse.Namespace) -> None:
-    projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
+    session_iter, scope_label = _resolve_project_scope(args, "struggle")
+    _print_resolved_scope("struggle", scope_label)
 
     branch_data: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
-    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for _jsonl, records in session_iter:
         last_fam: dict[str, str] = {}
         for rec in records:
             branch = rec.get("gitBranch") or ""
@@ -587,13 +597,14 @@ def cmd_struggle(args: argparse.Namespace) -> None:
 
 
 def cmd_duration(args: argparse.Namespace) -> None:
-    projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
     gap_secs: int = (getattr(args, "gap_minutes", None) or 30) * 60
+    session_iter, scope_label = _resolve_project_scope(args, "duration")
+    _print_resolved_scope("duration", scope_label)
 
     branch_timestamps: dict[str, list[float]] = defaultdict(list)
 
-    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for _jsonl, records in session_iter:
         for rec in records:
             branch = rec.get("gitBranch") or ""
             if not branch or (branch_filter and branch not in branch_filter):
@@ -669,8 +680,9 @@ def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int
 
 
 def cmd_subagents(args: argparse.Namespace) -> None:
-    projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
+    session_iter, scope_label = _resolve_project_scope(args, "subagents", include_subagents=True)
+    _print_resolved_scope("subagents", scope_label)
 
     branch_data: dict[str, dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
@@ -678,7 +690,7 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     corpus_spawns = 0
     corpus_sidechain_turns = 0
 
-    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob, include_subagents=True):
+    for _jsonl, records in session_iter:
         corpus_spawns += _count_subagent_spawns(records)
         for rec in records:
             if rec.get("type") != "assistant":
@@ -812,11 +824,19 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
       `tool_result` block with is_error and a hook-denial message signature.
       A denial recorded as both shapes is collapsed to one event by tool_use_id.
     - reviewer: Agent/Task spawn where subagent_type starts with 'staff-' or == 'ciso-reviewer'
+
+    Branch and model are resolved per event from the record that produced it,
+    not from the session's first record: each is the last non-empty value
+    carried forward up to that point, so a session that moves from one branch
+    (or model) to another attributes each event correctly instead of labelling
+    every event with whatever the session started on. An event whose branch or
+    model cannot be resolved renders '?'. --branches filters the emitted event
+    list by this per-event value, not by a single session-wide branch.
     """
-    projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
     deny_only: bool = bool(getattr(args, "deny_only", False))
     skill_filter: str | None = getattr(args, "skill", None) or None
+    session_iter, scope_label = _resolve_project_scope(args, "review-trace")
 
     since_str: str | None = getattr(args, "since", None) or None
     until_str: str | None = getattr(args, "until", None) or None
@@ -829,35 +849,35 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         if day_start is not None:
             until_epoch = day_start + 86400
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
-        events: list[dict] = []  # ordered, tagged with type/ts/line_no
+    # The scope header prints lazily, on the first emitted block — not
+    # unconditionally up front — so a run that matches no session still
+    # produces byte-for-byte empty output, as it always has.
+    scope_header_printed = False
+
+    for jsonl, records in session_iter:
+        events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
         # Tracks tool_use_ids already emitted as a denial. A legacy denial
         # appears as both an attachment record and an is_error tool_result
         # sharing one tool_use_id; this set collapses the pair to one event.
         seen_denial_ids: set[str] = set()
 
-        # Determine session model family from first non-empty main-thread assistant record.
-        session_model = ""
-        for rec in records:
-            if rec.get("type") == "assistant" and not bool(rec.get("isSidechain")):
-                session_model = (rec.get("message") or {}).get("model", "")
-                if session_model:
-                    break
-        fam = _fam(session_model)
+        # Carry-forward trackers, updated on every main-thread record before the
+        # date filter below — the branch/model attributed to a denial (which
+        # carries no message.model of its own) is whatever a prior main-thread
+        # record last set, including one outside the --since/--until window.
+        last_branch = ""
+        last_model = ""
 
-        # Determine primary branch from first main-thread record that has one.
-        session_branch = ""
-        for rec in records:
+        for line_no, rec in enumerate(records, start=1):
             if not bool(rec.get("isSidechain")):
                 b = rec.get("gitBranch") or ""
                 if b:
-                    session_branch = b
-                    break
+                    last_branch = b
+                if rec.get("type") == "assistant":
+                    m = (rec.get("message") or {}).get("model") or ""
+                    if m:
+                        last_model = m
 
-        if branch_filter and session_branch not in branch_filter:
-            continue
-
-        for line_no, rec in enumerate(records, start=1):
             rec_ts_str: str | None = rec.get("timestamp")
             rec_ts: float | None = _parse_ts(rec_ts_str)
 
@@ -872,6 +892,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                     continue
 
             rec_type = rec.get("type", "")
+            evt_branch = last_branch or "?"
+            evt_model = _fam(last_model) if last_model else "?"
 
             # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
             # Both are main-thread assistant tool_use blocks; a single pass over
@@ -892,6 +914,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                             "skill": skill_name,
                             "ts": rec_ts_str,
                             "line_no": line_no,
+                            "branch": evt_branch,
+                            "model": evt_model,
                         })
                     elif block_name in ("Agent", "Task"):
                         stype = (block.get("input") or {}).get("subagent_type") or ""
@@ -902,6 +926,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                             "subagent_type": stype,
                             "ts": rec_ts_str,
                             "line_no": line_no,
+                            "branch": evt_branch,
+                            "model": evt_model,
                         })
 
             # --- Signal 2a: hook denials, legacy shape (attachment record) ---
@@ -934,6 +960,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                     "message": message,
                     "ts": rec_ts_str,
                     "line_no": line_no,
+                    "branch": evt_branch,
+                    "model": evt_model,
                 })
 
             # --- Signal 2b: hook denials, current shape (is_error tool_result) ---
@@ -959,7 +987,16 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                         "message": message,
                         "ts": rec_ts_str,
                         "line_no": line_no,
+                        "branch": evt_branch,
+                        "model": evt_model,
                     })
+
+        # Branch filtering happens after dedup (seen_denial_ids was populated
+        # above over every event, unconditionally) so a duplicate-id denial on
+        # a differently-branched record is suppressed, not re-emitted as a
+        # distinct in-scope event.
+        if branch_filter:
+            events = [e for e in events if e["branch"] in branch_filter]
 
         if not events:
             continue
@@ -971,25 +1008,32 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         skill_count = sum(1 for e in events if e["kind"] == "skill")
         denial_count = sum(1 for e in events if e["kind"] == "denial")
         spawn_count = sum(1 for e in events if e["kind"] == "reviewer-spawn")
+        branches_seen = ",".join(sorted({e["branch"] for e in events}))
+        models_seen = ",".join(sorted({e["model"] for e in events}))
+
+        if not scope_header_printed:
+            _print_resolved_scope("review-trace", scope_label)
+            scope_header_printed = True
 
         print(f"\n### {jsonl}")
         print(
-            f"branch={session_branch}  model={fam}  skills={skill_count}"
+            f"branches={branches_seen}  models={models_seen}  skills={skill_count}"
             f"  denials={denial_count}  reviewer-spawns={spawn_count}"
         )
         for evt in events:
             ts_label = evt.get("ts") or "?"
             lno = evt["line_no"]
             kind = evt["kind"]
+            suffix = f"  (branch={evt['branch']} model={evt['model']})"
             if kind == "skill":
-                print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}")
+                print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}{suffix}")
             elif kind == "denial":
                 hook = evt['hook_name']
                 uid = evt['tool_use_id']
                 msg = evt['message']
-                print(f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  id={uid}  msg={msg!r}")
+                print(f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  id={uid}  msg={msg!r}{suffix}")
             elif kind == "reviewer-spawn":
-                print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}")
+                print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
 
 
 def cmd_judgment_pair(args: argparse.Namespace) -> None:
@@ -1003,9 +1047,14 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
 
     Uses _is_fresh_user_prompt() to skip tool-result turns, isMeta injections,
     and isCompactSummary injections when locating the user response.
+
+    --branches filters on the invocation record's own gitBranch, not a single
+    session-wide branch — a session whose branch changes between the
+    invocation and the user response is filtered by where the invocation
+    itself happened.
     """
-    projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
+    session_iter, scope_label = _resolve_project_scope(args, "judgment-pair")
 
     since_str: str | None = getattr(args, "since", None) or None
     until_str: str | None = getattr(args, "until", None) or None
@@ -1023,19 +1072,7 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
 
     output_blocks: list[str] = []
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
-        # Determine session branch from first main-thread record with a gitBranch.
-        session_branch = ""
-        for rec in records:
-            if not bool(rec.get("isSidechain")):
-                b = rec.get("gitBranch") or ""
-                if b:
-                    session_branch = b
-                    break
-
-        if branch_filter and session_branch not in branch_filter:
-            continue
-
+    for jsonl, records in session_iter:
         proj_label = _derive_proj_label(jsonl)
         session_id_prefix = jsonl.stem[:8]
 
@@ -1058,6 +1095,10 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
                     inv_skill = skill_name
                     break
             if inv_skill is None:
+                continue
+
+            invocation_branch = rec.get("gitBranch") or ""
+            if branch_filter and invocation_branch not in branch_filter:
                 continue
 
             inv_ts_str: str | None = rec.get("timestamp")
@@ -1129,7 +1170,7 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
 
             block = (
                 f"### {proj_label} · {session_id_prefix} · {date_label}\n"
-                f"Skill: {inv_skill}  (line {line_no})\n"
+                f"Skill: {inv_skill}  branch={invocation_branch or '?'}  (line {line_no})\n"
                 f"\n"
                 f"--- REVIEW OUTPUT (truncated to {truncate_chars} chars) ---\n"
                 f"{review_display}\n"
@@ -1141,14 +1182,21 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
             output_blocks.append(block)
 
     if not output_blocks:
+        _print_resolved_scope("judgment-pair", scope_label)
         print("No judgment pairs found.")
         return
 
     output_text = "\n\n".join(output_blocks)
 
     if out_path:
-        Path(out_path).write_text(output_text + "\n")
+        # Nothing goes to stdout in this branch — --out means the caller wants
+        # only the file written. The scope header is still prepended to the
+        # file's content so a saved/curated file stays self-documenting about
+        # its scope even if pasted elsewhere without the terminal output.
+        header = _resolved_scope_header("judgment-pair", scope_label)
+        Path(out_path).write_text(header + "\n" + output_text + "\n")
     else:
+        _print_resolved_scope("judgment-pair", scope_label)
         print(output_text)
 
 
@@ -1163,17 +1211,22 @@ def _path_to_project_slug(path: str) -> str:
     return re.sub(r"[/.]", "-", path)
 
 
-def _repo_scoped_project_slugs() -> list[str]:
+def _repo_scoped_project_slugs(command_label: str = "skill-invocation") -> list[str]:
     """Exact project-dir slugs for this repo's own worktrees (main + linked).
 
-    This is the minimization control for `skill-invocation`: its output is
-    routinely quoted into public PR descriptions, and transcripts under
+    This is the minimization control for any caller (`command_label`) that must
+    scope a transcript read to this repo: output built from it is routinely
+    quoted into public PR descriptions, and transcripts under
     ~/.claude/projects/ span every project on the machine. Scoping the read to
     this repository — by *identity*, via `git worktree list`, matched as exact dir
     names — guarantees no other project's skill names can enter the output. It is
     deliberately not a path glob: a `<slug>*`-style match scopes by where a dir
     sits in the path string, which a foreign repo cloned under this repo's
-    worktrees/, a sibling `<repo>-fork`, or a lossy-slug collision all defeat.
+    worktrees/, a sibling `<repo>-fork`, or a lossy-slug collision all defeat. A
+    session started in a repo *subdirectory* is a known exception this exactness
+    does not cover: its project dir is slugged from that subdirectory path and
+    is string-unequal to every worktree-root slug, so it is silently excluded —
+    the documented prefix-glob fallback covers that case instead.
 
     Fails closed (SystemExit) rather than returning a machine-wide scope whenever
     the environment is not a recognizable git worktree of this repo — a silent
@@ -1196,7 +1249,7 @@ def _repo_scoped_project_slugs() -> list[str]:
         OSError,
     ) as exc:
         print(
-            f"skill-invocation: cannot determine repo scope (git worktree list failed: {exc}); "
+            f"{command_label}: cannot determine repo scope (git worktree list failed: {exc}); "
             "refusing machine-wide scope",
             file=sys.stderr,
         )
@@ -1208,26 +1261,62 @@ def _repo_scoped_project_slugs() -> list[str]:
     ]
     if not worktree_paths:
         print(
-            "skill-invocation: git listed no worktrees; refusing machine-wide scope",
+            f"{command_label}: git listed no worktrees; refusing machine-wide scope",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    slugs = [_path_to_project_slug(p) for p in worktree_paths]
+    resolved_worktrees = [Path(p).resolve() for p in worktree_paths]
 
-    # Poisoned-environment guard: git can succeed yet resolve a repo unrelated to
-    # the cwd (GIT_DIR exported, submodule, bare layout). If the cwd does not map
-    # to one of the enumerated worktree slugs, the scope may not be this repo's —
-    # fail closed rather than emit a foreign project's names.
-    if _path_to_project_slug(os.getcwd()) not in slugs:
+    # Containment guard: cwd must sit at or under one of the resolved worktree
+    # roots. Path-segment based, not str.startswith — a sibling sharing a bare
+    # string prefix (<repo>-fork) must not be wrongly accepted as "within".
+    cwd = Path(os.getcwd()).resolve()
+    if not any(cwd == wt or wt in cwd.parents for wt in resolved_worktrees):
         print(
-            "skill-invocation: working directory is not within the resolved repo worktrees; "
+            f"{command_label}: working directory is not within the resolved repo worktrees; "
             "refusing to emit a scope that may not be this repo's",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    return slugs
+    # Identity guard: containment alone is not posture-neutral — it would accept
+    # a cwd whose own repo resolves elsewhere under an environment override (e.g.
+    # GIT_WORK_TREE decoupling toplevel reporting from the worktree-list
+    # enumeration) but which happens to sit under one of the paths above.
+    # Confirm cwd's own git root is genuinely one of the worktrees: containment
+    # then governs *where under the root* the caller stands, this governs
+    # *which root* was resolved.
+    try:
+        # Same local-git timeout rationale as the `worktree list` call above:
+        # no network/credential work, so 10s only bounds a wedged invocation.
+        toplevel_proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        OSError,
+    ) as exc:
+        print(
+            f"{command_label}: cannot determine repo identity (git rev-parse failed: {exc}); "
+            "refusing machine-wide scope",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    cwd_repo_root = Path(toplevel_proc.stdout.strip()).resolve()
+    if cwd_repo_root not in resolved_worktrees:
+        print(
+            f"{command_label}: working directory's repo root is not among the resolved worktrees; "
+            "refusing to emit a scope that may not be this repo's",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return [_path_to_project_slug(p) for p in worktree_paths]
 
 
 def _normalize_skill_name(raw: str) -> str:
@@ -1277,6 +1366,55 @@ def _iter_scoped_sessions(slugs: list[str], include_subagents: bool):
                 records = _read_session_file(jsonl, include_subagents)
                 if records:
                     yield jsonl, records
+
+
+def _resolve_project_scope(
+    args: argparse.Namespace, subcommand: str, include_subagents: bool = False
+) -> tuple[Iterator[tuple[Path, list[dict]]], str]:
+    """Resolve --projects/--this-repo into a fresh session iterator and a scope label.
+
+    A plain function, not a generator: a generator would defer
+    _repo_scoped_project_slugs' fail-closed sys.exit(1) to the caller's first
+    next() instead of raising at scope-resolution time, unlike every other
+    scope decision in this file. Reads args.this_repo unguarded so a subparser
+    wired without _add_project_scope_args raises AttributeError rather than
+    silently falling through to machine-wide scope. `subcommand` is the CLI
+    subcommand name (e.g. "buckets"); it labels _repo_scoped_project_slugs'
+    fail-closed messages and, uppercased, the caller's resolved-scope header.
+    The resolved slug list is cached on `args` so a caller needing two
+    independent iterators over the same scope (cmd_audit_routing) triggers one
+    `git worktree list` call, not two. This caching relies on main()'s
+    single-Namespace-per-process, single-subcommand-dispatch invariant — an
+    `args` object reused across two different subcommand invocations would
+    silently reuse the first's resolved slugs instead of re-resolving for the
+    second.
+    """
+    if args.this_repo:
+        slugs = getattr(args, "_this_repo_slugs", None)
+        if slugs is None:
+            slugs = _repo_scoped_project_slugs(subcommand)
+            args._this_repo_slugs = slugs
+        return _iter_scoped_sessions(slugs, include_subagents), f"this repo ({len(slugs)} project dirs)"
+    glob = _projects_glob(args)
+    return iter_sessions(PROJECTS_DIR, glob, include_subagents=include_subagents), glob
+
+
+def _resolved_scope_header(subcommand: str, scope_label: str) -> str:
+    """Build the one-line resolved-scope header text, shared by _print_resolved_scope
+    and any caller (e.g. judgment-pair's --out file) that needs the header written
+    somewhere other than a live print call."""
+    return f"{subcommand.upper().replace('-', ' ')} SOURCES ({scope_label})"
+
+
+def _print_resolved_scope(subcommand: str, scope_label: str, *, file=None) -> None:
+    """Print the one-line resolved-scope header cmd_skill_invocation already uses,
+    so machine-wide vs. --this-repo output is never scope-ambiguous. `file` defaults
+    to stdout (resolved at call time, not import time — a `sys.stdout` default
+    value would bind the stream object process startup captured, bypassing test
+    capture and any later reassignment); audit-routing-samples routes it to stderr
+    instead, since its stdout is a JSON (or curation-markdown) data stream a header
+    line would corrupt."""
+    print(_resolved_scope_header(subcommand, scope_label), file=file or sys.stdout)
 
 
 def cmd_skill_invocation(args: argparse.Namespace) -> None:
@@ -1467,15 +1605,16 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
 
 
 def cmd_subagent_mix(args: argparse.Namespace) -> None:
-    projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
     per_session: bool = bool(getattr(args, "per_session", False))
+    session_iter, scope_label = _resolve_project_scope(args, "subagent-mix")
+    _print_resolved_scope("subagent-mix", scope_label)
 
     data: dict[str, dict] = defaultdict(
         lambda: {"sessions": 0, "spawns": defaultdict(int), "skills": defaultdict(int)}
     )
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for jsonl, records in session_iter:
         session_data: dict[str, dict] = defaultdict(
             lambda: {"spawns": defaultdict(int), "skills": defaultdict(int)}
         )
@@ -1534,9 +1673,10 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
     """
     leader: str = args.leader
     follower: str = args.follower
-    projects_glob = _projects_glob(args)
     exclude_glob: str | None = getattr(args, "exclude_projects", None)
     branch_filter = _branch_filter(args)
+    session_iter, scope_label = _resolve_project_scope(args, "skill-pair", include_subagents=True)
+    _print_resolved_scope("skill-pair", scope_label)
 
     # bin_str -> {leader_sessions, follower_main, follower_sidechain_only}
     data: dict[str, dict[str, int]] = defaultdict(
@@ -1545,7 +1685,7 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
     corpus_spawns = 0
     corpus_sidechain_turns = 0
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob, include_subagents=True):
+    for jsonl, records in session_iter:
         # --exclude-projects: skip project dirs whose basename matches the glob
         if exclude_glob and fnmatch.fnmatchcase(jsonl.parent.name, exclude_glob):
             continue
@@ -1626,10 +1766,10 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
     branches: list[str] = [b.strip() for b in args.branches.split(",") if b.strip()]
     repo: str = args.repo
     author: str = getattr(args, "author", None) or ""
-    projects_glob = _projects_glob(args)
+    session_iter, scope_label = _resolve_project_scope(args, "pr-link")
 
     branch_models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for _jsonl, records in session_iter:
         for rec in records:
             branch = rec.get("gitBranch") or ""
             if branch not in branches or rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
@@ -1637,6 +1777,7 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
             fam = _fam((rec.get("message") or {}).get("model", ""))
             branch_models[branch][fam] += 1
 
+    _print_resolved_scope("pr-link", scope_label)
     print(f"{'Branch':<35} {'PR':>5} {'Opus':>6} {'Sonnet':>7} {'IssueCmt':>9} {'ReviewCmt':>10}")
     print("-" * 80)
 
@@ -1692,9 +1833,10 @@ _NO_VERIFY_RE = re.compile(r"\s--no-verify\b")
 def cmd_commit_gate(args: argparse.Namespace) -> None:
     skill_name: str = args.skill
     by_mode: bool = bool(getattr(args, "by_permission_mode", False))
-    projects_glob = _projects_glob(args)
     branch_filter = _branch_filter(args)
     exclude_glob: str | None = getattr(args, "exclude_projects", None) or None
+    session_iter, scope_label = _resolve_project_scope(args, "commit-gate")
+    _print_resolved_scope("commit-gate", scope_label)
 
     # bin_mode_key -> aggregated counts
     data: dict[tuple[str, str], dict] = defaultdict(lambda: {
@@ -1707,7 +1849,7 @@ def cmd_commit_gate(args: argparse.Namespace) -> None:
         "commits_no_verify": 0,
     })
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for jsonl, records in session_iter:
         # Apply --exclude-projects: skip if project dir basename matches the glob.
         proj_dir_name = jsonl.parent.name
         if exclude_glob and Path(proj_dir_name).match(exclude_glob):
@@ -1912,7 +2054,6 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     output_tokens and cache_read_input_tokens per class. Emits per-session
     rows sorted descending by total output tokens, plus a corpus aggregate.
     """
-    projects_glob = _projects_glob(args)
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = bool(getattr(args, "redact", False))
 
@@ -1931,7 +2072,8 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     # --- First pass: collect all project labels for redact mapping ---
     all_proj_labels: list[str] = []
     if redact:
-        for jsonl, _ in iter_sessions(PROJECTS_DIR, projects_glob):
+        redact_session_iter, _scope_label = _resolve_project_scope(args, "audit-routing")
+        for jsonl, _ in redact_session_iter:
             label = _derive_proj_label(jsonl)
             if label not in all_proj_labels:
                 all_proj_labels.append(label)
@@ -1953,7 +2095,14 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     # Corpus totals: class → {out, cr}
     corpus_totals: dict[str, dict[str, int]] = {cls: {"out": 0, "cr": 0} for cls in _AUDIT_CLASSES}
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    # Row 15: this is the second call to _resolve_project_scope in this function
+    # (the redact pass above is the first, when --redact is set) — the resolved
+    # slug list is cached on `args` so --this-repo triggers one `git worktree
+    # list` call for both passes, not two.
+    session_iter, scope_label = _resolve_project_scope(args, "audit-routing")
+    _print_resolved_scope("audit-routing", scope_label)
+
+    for jsonl, records in session_iter:
         proj_label = _derive_proj_label(jsonl)
         session_id = jsonl.stem[:12]
 
@@ -2111,15 +2260,16 @@ def cmd_handoff_ratio(args: argparse.Namespace) -> None:
     Also reads ~/.claude/.handoff-nudge.log if present and reports schema-drift
     count as a diagnostic footer.
     """
-    projects_glob = _projects_glob(args)
     since_str: str | None = getattr(args, "since", None) or None
     since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
     debug_detector: bool = bool(getattr(args, "debug_detector", False))
+    session_iter, scope_label = _resolve_project_scope(args, "handoff-ratio")
+    _print_resolved_scope("handoff-ratio", scope_label)
 
     # week_str -> {"handoffs": int, "compactions": int}
     data: dict[str, dict[str, int]] = defaultdict(lambda: {"handoffs": 0, "compactions": 0})
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for jsonl, records in session_iter:
         session_has_handoff = False
         session_has_compaction = False
         # Use the first timestamp from a main-thread record for week bucketing.
@@ -2275,8 +2425,6 @@ def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
     judgment-span state machine is intentionally duplicated from cmd_audit_routing —
     tests cross-validate the two copies to guard against drift.
     """
-    projects_glob = _projects_glob(args)
-
     since_ts: float | None = None
     since_label: str = ""
     since_raw: str | None = getattr(args, "since", None) or None
@@ -2288,6 +2436,8 @@ def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
         except ValueError:
             print(f"audit-routing-shape: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
             sys.exit(1)
+
+    session_iter, scope_label = _resolve_project_scope(args, "audit-routing-shape")
 
     # D1: file-count bucket → {turns, out}
     d1_turns: dict[str, int] = {b: 0 for b in _D1_BUCKETS}
@@ -2317,7 +2467,9 @@ def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
     # plus user-turn separators are recorded so D2 streaks and D3 lookahead work correctly.
     # User-turn separators break D2 streaks but are skipped in D3's 3-turn Opus window.
 
-    for _jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    _print_resolved_scope("audit-routing-shape", scope_label)
+
+    for _jsonl, records in session_iter:
         session_turns: list[dict] = []
 
         # Judgment span state machine — duplicated from cmd_audit_routing intentionally.
@@ -2536,8 +2688,6 @@ def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
     The judgment-span state machine is intentionally duplicated from cmd_audit_routing —
     tests cross-validate the two copies to guard against drift.
     """
-    projects_glob = _projects_glob(args)
-
     since_ts: float | None = None
     since_raw: str | None = getattr(args, "since", None) or None
     if since_raw:
@@ -2550,10 +2700,13 @@ def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
 
     sample_n: int = getattr(args, "sample", 30) or 30
     seed: int | None = getattr(args, "seed", None)
+    session_iter, scope_label = _resolve_project_scope(args, "audit-routing-samples")
+    # stderr, not stdout: stdout is this subcommand's JSON/markdown data stream.
+    _print_resolved_scope("audit-routing-samples", scope_label, file=sys.stderr)
 
     candidates: list[dict] = []
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for jsonl, records in session_iter:
         session_id = jsonl.stem
 
         # Build per-session records list with kind classification.
@@ -3031,34 +3184,49 @@ def cmd_friction_count(args: argparse.Namespace) -> None:
     _emit_friction_result(signals, as_json=getattr(args, "json", False))
 
 
-def main() -> None:
+def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
+    """Add the shared --projects/--this-repo scope flags to a subparser.
+
+    Mutually exclusive: --this-repo routes through _repo_scoped_project_slugs(),
+    an identity-based minimization control; --projects keeps the pre-existing
+    machine-wide glob default ("*") so no existing invocation's behavior changes.
+    """
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--projects", default="*", metavar="GLOB")
+    group.add_argument(
+        "--this-repo", action="store_true",
+        help="Scope to this repo's own worktrees only (see docs/transcript-analysis.md).",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Claude Code transcript analysis toolkit.")
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     p_buckets = sub.add_parser("buckets", help="Assistant turns bucketed by gitBranch × model family.")
-    p_buckets.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_buckets)
     p_buckets.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
     p_buckets.set_defaults(func=cmd_buckets)
 
     p_fail = sub.add_parser("fail-seq", help="Ordered test-run failed-count sequence per branch/model.")
     p_fail.add_argument("--branches", required=True, metavar="B1,B2,...")
-    p_fail.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_fail)
     p_fail.set_defaults(func=cmd_fail_seq)
 
     p_struggle = sub.add_parser("struggle", help="Correction/frustration signal phrases in user turns, split by model.")
     p_struggle.add_argument("--branches", metavar="B1,B2,...")
-    p_struggle.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_struggle)
     p_struggle.set_defaults(func=cmd_struggle)
 
     p_duration = sub.add_parser("duration", help="Active span vs idle-gap decomposition per branch.")
     p_duration.add_argument("--branches", metavar="B1,B2,...")
-    p_duration.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_duration)
     p_duration.add_argument("--gap-minutes", type=int, default=30, metavar="N")
     p_duration.set_defaults(func=cmd_duration)
 
     p_sub = sub.add_parser("subagents", help="isSidechain turn counts and model split per branch.")
     p_sub.add_argument("--branches", metavar="B1,B2,...")
-    p_sub.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_sub)
     p_sub.set_defaults(func=cmd_subagents)
 
     p_mix = sub.add_parser(
@@ -3066,7 +3234,7 @@ def main() -> None:
         help="Subagent_type spawn counts per branch, with code/plan/ready-for-review skill invocations.",
     )
     p_mix.add_argument("--branches", metavar="B1,B2,...")
-    p_mix.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_mix)
     p_mix.add_argument(
         "--per-session",
         action="store_true",
@@ -3078,7 +3246,7 @@ def main() -> None:
     p_pr.add_argument("--repo", required=True, metavar="OWNER/REPO")
     p_pr.add_argument("--branches", required=True, metavar="B1,B2,...")
     p_pr.add_argument("--author", metavar="LOGIN", help="Filter comments to this GitHub login")
-    p_pr.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_pr)
     p_pr.set_defaults(func=cmd_pr_link)
 
     p_skill_pair = sub.add_parser(
@@ -3090,7 +3258,7 @@ def main() -> None:
     )
     p_skill_pair.add_argument("leader", metavar="LEADER", help="Leading skill name (exact match on input.skill)")
     p_skill_pair.add_argument("follower", metavar="FOLLOWER", help="Following skill name (exact match on input.skill)")
-    p_skill_pair.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_skill_pair)
     p_skill_pair.add_argument(
         "--exclude-projects", default=None, metavar="GLOB",
         help="Skip project dirs whose basename matches this glob.",
@@ -3107,7 +3275,7 @@ def main() -> None:
     )
     p_gate.add_argument("skill", help="Skill name to check (byte-equal match against Skill tool_use input.skill).")
     p_gate.add_argument("--by-permission-mode", action="store_true", help="Split rows by permissionMode.")
-    p_gate.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_gate)
     p_gate.add_argument(
         "--exclude-projects", default=None, metavar="GLOB",
         help="Exclude project dirs whose basename matches this glob.",
@@ -3123,10 +3291,18 @@ def main() -> None:
             " Identifies name-only and disable-model-invocation candidates for budget relief."
         ),
     )
-    p_skill_inv.add_argument(
+    p_skill_inv_scope = p_skill_inv.add_mutually_exclusive_group()
+    p_skill_inv_scope.add_argument(
         "--projects", default=None, metavar="GLOB",
         help="Project-dir glob. Default: this repo's own worktrees only (publish-safe). "
              "Passing an explicit glob is an escape hatch — output is then not scoped to this repo.",
+    )
+    p_skill_inv_scope.add_argument(
+        "--this-repo", action="store_true",
+        help=(
+            "Explicit no-op: skill-invocation already defaults to this repo's own "
+            "worktrees. Kept for flag uniformity with every other --projects subcommand."
+        ),
     )
     p_skill_inv.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
     p_skill_inv.add_argument(
@@ -3142,7 +3318,7 @@ def main() -> None:
             " and reviewer-agent spawns."
         ),
     )
-    p_review_trace.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_review_trace)
     p_review_trace.add_argument("--branches", metavar="B1,B2,...")
     p_review_trace.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
     p_review_trace.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
@@ -3163,7 +3339,7 @@ def main() -> None:
             " where a review skill was invoked."
         ),
     )
-    p_jp.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_jp)
     p_jp.add_argument("--branches", metavar="B1,B2,...")
     p_jp.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
     p_jp.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
@@ -3196,7 +3372,7 @@ def main() -> None:
             " per class across all sessions."
         ),
     )
-    p_audit.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_audit)
     p_audit.add_argument(
         "--since", metavar="Nd",
         help="Limit to turns with timestamp in the last N days (e.g. 35d).",
@@ -3221,7 +3397,7 @@ def main() -> None:
             " versus waiting for auto-compaction."
         ),
     )
-    p_handoff_ratio.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_handoff_ratio)
     p_handoff_ratio.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
     p_handoff_ratio.add_argument(
         "--debug-detector",
@@ -3237,7 +3413,7 @@ def main() -> None:
             " code-read streak lengths (D2), and read-then-edit ratio (D3)."
         ),
     )
-    p_audit_shape.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_audit_shape)
     p_audit_shape.add_argument(
         "--since", metavar="Nd",
         help="Limit to turns with timestamp in the last N days (e.g. 35d).",
@@ -3251,7 +3427,7 @@ def main() -> None:
             " next-turn lookahead classification. JSON array output for manual curation."
         ),
     )
-    p_audit_samples.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_audit_samples)
     p_audit_samples.add_argument(
         "--since", metavar="Nd",
         help="Limit to turns with timestamp in the last N days (e.g. 35d).",
@@ -3298,6 +3474,11 @@ def main() -> None:
     )
     p_friction.set_defaults(func=cmd_friction_count)
 
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     parsed = parser.parse_args()
     parsed.func(parsed)
 
