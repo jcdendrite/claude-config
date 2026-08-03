@@ -97,6 +97,15 @@
             "command": "~/.claude/hooks/check-branch-divergence.sh"
           }
         ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/set-session-title-from-branch.sh"
+          }
+        ]
       }
     ],
     "SubagentStart": [

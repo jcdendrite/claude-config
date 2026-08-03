@@ -169,6 +169,7 @@ flowchart LR
 | `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
 | `cleanup-worktree-anchor-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session worktree-anchor marker its paired UserPromptSubmit hook wrote |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
+| `set-session-title-from-branch.sh` | — (SessionStart, advisory) | Sets the terminal tab title to `<repo>/<branch>` on feature branches; see [`docs/hooks.md`](docs/hooks.md) |
 
 See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all hooks, skills, scripts, and project-scoped plugins, see [`docs/hooks.md`](docs/hooks.md), [`docs/skills.md`](docs/skills.md), and [`docs/scripts.md`](docs/scripts.md).
 
@@ -397,7 +398,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires on session start, after `/clear`, and after compaction. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
 
-2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `~/.claude/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` at ~60% context usage because cleaner context produces a higher-quality resume file, and every turn beyond 60% is waste. Resume with `resume-context ~/.claude/handoffs/<slug>-handoff.md`, which moves the file to a temp path and launches a new session with it loaded — consumption is mechanical, not dependent on the resuming session remembering to read or delete the file.
+2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `~/.claude/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` at ~60% context usage because cleaner context produces a higher-quality resume file, and every turn beyond 60% is waste. Resume with `cd <worktree-path> && resume-context ~/.claude/handoffs/<slug>-handoff.md` when the handoff named a worktree, or `resume-context ~/.claude/handoffs/<slug>-handoff.md` alone from the main checkout — either form moves the file to a temp path and launches a new session with it loaded, consumption mechanical rather than dependent on the resuming session remembering to read or delete the file.
 
 ### When to use which
 

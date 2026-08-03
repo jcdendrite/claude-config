@@ -97,7 +97,7 @@ Committing can also disarm a gate outright rather than invalidating its marker: 
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.
 
 ## §7 Resume command
-`resume-context ~/.claude/handoffs/<slug>-handoff.md` — moves the file to a
+If §4 named a worktree, `cd <worktree path> && resume-context ~/.claude/handoffs/<slug>-handoff.md`; otherwise (work happened in the main checkout) `resume-context ~/.claude/handoffs/<slug>-handoff.md` alone. Moves the file to a
 fresh temp path and launches a new session with it loaded, so nothing
 depends on the resuming session remembering to read or delete the file.
 Can be aliased for convenience.
