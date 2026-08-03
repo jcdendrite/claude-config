@@ -221,34 +221,61 @@ The diagnosis found bullet 4 ("one line, not a paragraph") has no trigger at eit
 ```
 Root: claude-hook-review mandates hook-header content with no shape bound;
   a generic CLAUDE.md length rule cannot bind against a specific checklist
-  requiring the content it forbids. [established in the diagnosis section
-  above, re-affirmed here]
+  requiring the content it forbids.
 
-Row 1 [finding, verified]: PR #536's body documents a cumulative /code-review
-  pass that included claude-hook-review against the full branch diff (4 fixed
-  + 3 deferred findings, none about header length) [verified: `gh pr view 536
-  --json body` read this session]. Settles Row 7: the checklist fired and
-  correctly passed the header as mandated content.
-Row 2 [engineer-verified]: no numeric length threshold — engineer flagged
-  strict length bounds as an anti-pattern this session, consistent with a
-  prior /verify-sources finding (no official source recommends restricting
-  code on length alone) and with #522's own ungroundable-threshold rejection
-  already on record in this plan's diagnosis section.
-Row 3 [finding, verified]: claude-hook-review/SKILL.md:150-159 (the review
+Row 1 [mechanism]: structural one-sentence-per-fact bound added to
+  claude-hook-review's §9 checklist — anchors: root — binds the mandate at
+  its own source, reaching hook .sh through the review route that already
+  exists (code-review/SKILL.md:176). Lighter alternatives rejected: a
+  numeric line cap (no vendor/style-guide source grounds one, per Row 4 and
+  #522's own precedent) and narrowing the six mandated categories (each is
+  independently justified per the diagnosis section; a larger, separate
+  change than bounding their shape).
+Row 2 [mechanism]: comment-length bullet added to
+  shell-script-conventions.md — anchors: root — covers non-hook
+  `**/*.sh`/`**/*.bash`, the only file class with zero comment-length owner
+  today (diagnosis Row 2/2b). Lighter alternatives rejected: doing nothing
+  for that class (leaves the diagnosis's gap open with no owner at all) and
+  a numeric threshold (same ungroundable-constant rejection as Row 1).
+Row 3 [assumption]: PR #536's body documents a cumulative /code-review pass
+  that included claude-hook-review against the full branch diff (4 fixed +
+  3 deferred findings, none about header length) [verified: `gh pr view 536
+  --json body` read this session] — anchors: root. Settles issue #544's
+  Row 7: the checklist fired and correctly passed the header as mandated
+  content.
+Row 4 [assumption]: no numeric length threshold [engineer-verified] —
+  anchors: root. Engineer flagged strict length bounds as an anti-pattern
+  this session, consistent with a prior /verify-sources finding and #522's
+  own ungroundable-threshold rejection already on record in this plan's
+  diagnosis section.
+Row 5 [assumption]: claude-hook-review/SKILL.md:150-159 (the review
   checklist) has no comment-length or shape guidance of any kind
-  [verified: read the file this session; matches the diagnosis's original
-  grep-for-length-concise-verbos finding].
-Row 4 [finding, verified]: advance-past-commit-stall.sh's "Known gaps"
-  section (lines 26-39) is 14 of the header's 38 lines, the single largest
-  category [verified: read the file this session].
-Row 5 [finding, verified]: shell-script-conventions.md is silent on comments
+  [verified: read the file this session] — anchors: row1.
+Row 6 [assumption]: advance-past-commit-stall.sh's "Known gaps" section
+  (lines 26-39) is 14 of the header's 38 lines, the single largest category
+  [verified: read the file this session] — anchors: row1.
+Row 7 [assumption]: shell-script-conventions.md is silent on comments
   entirely and auto-loads on every .sh/.bash file including hooks
-  [verified: read the file this session; matches the diagnosis's finding].
-Row 6 [finding, verified]: claude-hook-review is a marketplace plugin
-  (plugins/claude-hook-review/.claude-plugin/plugin.json present) at version
-  2.2.0 [verified: read plugin.json this session] — plugin-semver requires a
-  version bump for this change; minor (2.2.0 -> 2.3.0), matching PR #536's
-  precedent for a backward-compatible checklist addition.
+  [verified: read the file this session] — anchors: row2.
+Row 8 [assumption]: claude-hook-review is a marketplace plugin
+  (plugins/claude-hook-review/.claude-plugin/plugin.json present) at
+  version 2.2.0 [verified: read plugin.json this session] — anchors: row1.
+  plugin-semver requires a version bump for this change; minor
+  (2.2.0 -> 2.3.0), matching PR #536's precedent for a backward-compatible
+  checklist addition.
+Row 9 [assumption]: deny-private-project-refs.sh's own Dispatch field — the
+  checklist's cited model at `:125` — wraps one logical clause across 7
+  physical lines for readability [verified: read `:9-17` this session] —
+  anchors: row1. Confirms the bound must be "sentence," not physical
+  "line," or it would flag its own cited model.
+Row 10 [assumption]: claude-hook-review is an independently-installable
+  marketplace plugin with no guarantee an installing repo's CLAUDE.md
+  carries an equivalent comment-length rule, unlike
+  shell-script-conventions.md, which ships in the same stow package as the
+  CLAUDE.md it cites [verified: read claude-hook-review's plugin.json
+  description and compared install paths this session] — anchors: row1.
+  Caught during /code-review's skill-review sub-pass; the shipped Row 1
+  bullet does not name CLAUDE.md as a result.
 ```
 
 ### Critical files
