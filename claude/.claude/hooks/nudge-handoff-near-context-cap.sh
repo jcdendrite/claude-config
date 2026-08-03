@@ -15,7 +15,7 @@
 # hook never blocks a user prompt.
 #
 # Log file: ~/.claude/.handoff-nudge.log records two event types:
-#   nudged  session=<id> est=<n>  — threshold crossed, nudge emitted
+#   nudged  session=<id> est=<n> model=<id> window=<n>  — threshold crossed, nudge emitted
 #   schema-drift session=<id>     — usage block present but all token fields 0/null
 #
 # strict mode omitted deliberately: this hook must never block prompts (exit 0
@@ -25,6 +25,9 @@
 # Known limitations:
 #   - claude -p one-shot runs do not fire SessionEnd, so nudge-fired markers from
 #     those sessions accumulate without being cleaned up. Files are zero-byte.
+#   - Model→window resolution below is a hardcoded, dated table — see docs/handoff-nudge.md.
+#   - An unrecognized model ID defaults to the 1M window, which can silently miss
+#     firing for a future smaller-window model with no log signal at all.
 
 INPUT=$(cat 2>/dev/null)
 
@@ -82,14 +85,24 @@ if [ -z "$USAGE_BLOCK" ]; then
   exit 0
 fi
 
-# Sum the four token fields; missing or null fields default to 0.
-ESTIMATE=$(printf '%s\n' "$USAGE_BLOCK" \
-  | jq -r '
-      (.message.usage.cache_read_input_tokens // 0)
-    + (.message.usage.cache_creation_input_tokens // 0)
-    + (.message.usage.input_tokens // 0)
-    + (.message.usage.output_tokens // 0)
-  ' 2>/dev/null)
+# Sum the four token fields (missing/null default to 0) and read the resolved
+# model ID in the same jq pass. ESTIMATE is read first: a corrupted or
+# multi-line MODEL value can only truncate MODEL, never desync ESTIMATE.
+ESTIMATE=""
+MODEL=""
+{
+  IFS= read -r ESTIMATE
+  IFS= read -r MODEL
+} < <(
+  printf '%s\n' "$USAGE_BLOCK" \
+    | jq -r '
+        ((.message.usage.cache_read_input_tokens // 0)
+       + (.message.usage.cache_creation_input_tokens // 0)
+       + (.message.usage.input_tokens // 0)
+       + (.message.usage.output_tokens // 0)),
+        (.message.model // "" | tostring | gsub("[^a-zA-Z0-9._-]"; ""))
+      ' 2>/dev/null
+) 2>/dev/null || true
 if [ -z "$ESTIMATE" ]; then
   exit 0
 fi
@@ -111,10 +124,25 @@ if [ "$ESTIMATE" -eq 0 ] 2>/dev/null; then
   exit 0
 fi
 
-# Threshold: 120000 tokens ≈ 60% of a 200k context window.
-# Source: Anthropic models documentation — claude.ai/docs/models-overview lists
-# claude-sonnet-4-x and claude-opus-4-x at 200k context; 120k = 60% of 200k.
-THRESHOLD=120000
+# Context window in tokens per model ID; THRESHOLD is 60% of it.
+# Source: https://platform.claude.com/docs/en/about-claude/models/overview,
+# fetched 2026-08-03; re-verify by 2026-11-03.
+# Verified 200k: Haiku 4.5, Sonnet 4.5, Opus 4.5, Opus 4.1. Verified 1M:
+# Fable 5, Mythos 5, Opus 5, Opus 4.8/4.7/4.6, Sonnet 5, Sonnet 4.6.
+# An unlisted ID takes the 1M default; see docs/handoff-nudge.md for why.
+# Each arm requires an exact match or a trailing "-" (dated-snapshot suffix),
+# not a bare trailing "*", so a longer numeral (claude-opus-4-10) can't
+# collide with a shorter one (claude-opus-4-1) by string prefix alone.
+case "$MODEL" in
+  claude-haiku-4-5|claude-haiku-4-5-*| \
+  claude-sonnet-4-5|claude-sonnet-4-5-*| \
+  claude-opus-4-5|claude-opus-4-5-*| \
+  claude-opus-4-1|claude-opus-4-1-*)
+    CONTEXT_WINDOW=200000 ;;
+  *)
+    CONTEXT_WINDOW=1000000 ;;
+esac
+THRESHOLD=$(( CONTEXT_WINDOW * 60 / 100 ))
 
 if [ "$ESTIMATE" -lt "$THRESHOLD" ] 2>/dev/null; then
   exit 0
@@ -130,13 +158,14 @@ fi
 mkdir -p "$MARKER_DIR" 2>/dev/null || true
 # Evict stale markers from one-shot runs that skipped SessionEnd cleanup.
 find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
-printf 'nudged session=%s est=%s\n' "$SESSION_ID" "$ESTIMATE" >> "$NUDGE_LOG" 2>/dev/null || true
+printf 'nudged session=%s est=%s model=%s window=%s\n' \
+  "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" >> "$NUDGE_LOG" 2>/dev/null || true
 touch "$FIRED_MARKER" 2>/dev/null || true
 
 jq -n '{
   hookSpecificOutput: {
     hookEventName: "UserPromptSubmit",
-    additionalContext: "Context is near 60% of the model window. If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session, which is ~25% cheaper per turn than waiting for auto-compaction. If the task is nearly complete, ignore this and finish."
+    additionalContext: "Context is past 60% of this model'\''s context window. If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish."
   }
 }' 2>/dev/null || true
 

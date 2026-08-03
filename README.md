@@ -410,7 +410,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 ### Threshold reference
 
-- ~60%: suggested threshold for `/handoff` — [Anthropic best practices](https://code.claude.com/docs/en/best-practices) cite 60% as the point where context compression produces the highest-quality summary; the same logic applies to `/handoff` (less context noise → better resume file).
+- ~60%: suggested threshold for `/handoff` — this repo's own chosen fraction, not a vendor-specified figure. `nudge-handoff-near-context-cap.sh` computes it against the resolved model's actual context window (200k or 1M, model-dependent); see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for the per-model table and known limitations.
 - ~83.5%: auto-compact trigger (community-reported; configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
 - Run `analyze-context` to inspect token usage for the current session.
 
