@@ -610,6 +610,10 @@ fi
 # tracker-ID scan above, whose `|| true` swallows any grep error and so fails
 # open on one — a pre-existing inconsistency between the two scans, not
 # resolved here.
+# Each label (left of the first `:`) must never itself contain a colon — the
+# split below keys on the first colon only, so a colon in the label would be
+# swallowed into it while the pattern (which may legitimately contain `:` via
+# POSIX bracket classes like `[:alpha:]`) stays intact either way.
 STRUCTURAL_DETECTORS=(
   "IPv4 literal:${_LIB_IPV4_LITERAL_REGEX}"
   "SSH key path reference:${_LIB_SSH_KEY_PATH_REFERENCE_REGEX}"
