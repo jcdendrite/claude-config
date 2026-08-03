@@ -40,15 +40,7 @@ CREDENTIAL_VALUE_PATTERN="${_LIB_PEM_PRIVATE_KEY_BLOCK_REGEX}|${_LIB_CREDENTIAL_
 # Optional user additions: ~/.claude/credential-value-patterns.md, one `<label>: <regex>` line per pattern (same grammar as deny-pii-in-commits.sh's pii-patterns.md, minus `exclude:`).
 CREDENTIAL_VALUE_PATTERNS_FILE="${HOME}/.claude/credential-value-patterns.md"
 if [ -f "$CREDENTIAL_VALUE_PATTERNS_FILE" ] && [ -r "$CREDENTIAL_VALUE_PATTERNS_FILE" ]; then
-  addition_lineno=0
-  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-    addition_lineno=$((addition_lineno + 1))
-    # Strip CR (CRLF), then leading/trailing whitespace.
-    line=${raw_line%$'\r'}
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -z "$line" ] && continue
-    case "$line" in '#'*) continue ;; esac
+  while IFS=$'\t' read -r addition_lineno line; do
     case "$line" in
       *:*) ;;
       *) continue ;;
@@ -66,7 +58,7 @@ if [ -f "$CREDENTIAL_VALUE_PATTERNS_FILE" ] && [ -r "$CREDENTIAL_VALUE_PATTERNS_
       continue
     fi
     CREDENTIAL_VALUE_PATTERN="${CREDENTIAL_VALUE_PATTERN}|${addition_value}"
-  done < "$CREDENTIAL_VALUE_PATTERNS_FILE"
+  done < <(_lib_config_lines "$CREDENTIAL_VALUE_PATTERNS_FILE")
 fi
 
 # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.

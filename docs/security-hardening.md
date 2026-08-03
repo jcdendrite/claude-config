@@ -76,8 +76,12 @@ specifically denies on the path token alone, with no carve-out for a
 command that references the path without exposing its content (`ssh-add`,
 `chmod`, `ssh -i`) — the set of verbs that CAN expose content is
 unbounded, so a verb allowlist would trade a bounded false-positive cost
-for an unbounded bypass. Inspect or run a specific legitimate command via
-the `!` shell escape instead. `redact-credential-values.sh` is the
+for an unbounded bypass. Run a specific legitimate non-exposing command
+via the `!` shell escape instead — its output carries no secret content,
+so it's safe there. To inspect the file's actual content, use a separate
+terminal window outside this session: `!` does not avoid this either,
+since Claude Code adds shell-mode output to the conversation transcript.
+`redact-credential-values.sh` is the
 different-layer backstop for the two gate hooks: a credential can enter
 context through a path neither one anticipates (a `WebFetch` response, a
 `Grep` match, subagent-returned text), so it scans tool *results* for a
@@ -373,7 +377,7 @@ to hold PII/PHI or live credentials:
   `tar czf x ~/.ssh`). Accepted false-positive cost: a legitimate
   directory reference under `.ssh` (`ls ~/.ssh/sockets/`, a ControlMaster
   socket dir) is also denied, since its basename isn't on the allowlist
-  either — use the `!` shell escape to inspect it.
+  either.
 - `deny-credential-bash-reads.sh`'s `.ssh` safe-basename allowlist
   (`authorized_keys`, `known_hosts`, `known_hosts.old`, `config`, `*.pub`)
   trusts the basename from the command text alone, with no filesystem

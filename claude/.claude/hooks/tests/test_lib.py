@@ -1333,8 +1333,7 @@ def test_lib_has_unsafe_ssh_dir_reference_flags_directory_reference_as_accepted_
     reference (e.g. a ControlMaster socket dir) is now ALSO denied, since
     its basename isn't on the safe allowlist either -- the function cannot
     distinguish a real directory from a file-with-appended-slash, so it no
-    longer special-cases either shape as safe. See the `!` shell-escape
-    guidance in docs/security-hardening.md for the intended workaround."""
+    longer special-cases either shape as safe."""
     result = subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_has_unsafe_ssh_dir_reference "ls ~/.ssh/sockets/"'],
         check=False,
@@ -1369,6 +1368,90 @@ def test_lib_credential_value_regex_compiles_under_grep_and_jq() -> None:
     assert jq_result.stdout.strip() == "true"
 
 
+# --- _lib_strip_shell_quotes -----------------------------------------------
+#
+# End-to-end coverage of this function's effect lives in
+# test_deny_credential_bash_reads.py and the credential-value cases in
+# test_deny_pii_in_commits.py (both callers). The tests here pin the
+# transformation itself in isolation, so a future edit to the sed pipeline
+# that mis-orders or partially breaks one of its four steps is caught here
+# even for an input shape neither caller's own fixtures happens to exercise.
+
+
+def _strip_shell_quotes(text: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_strip_shell_quotes "$1"', "bash", text],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def test_lib_strip_shell_quotes_removes_bare_single_quotes() -> None:
+    assert _strip_shell_quotes("id_r'sa'") == "id_rsa"
+
+
+def test_lib_strip_shell_quotes_removes_bare_double_quotes() -> None:
+    assert _strip_shell_quotes('id_r"sa"') == "id_rsa"
+
+
+def test_lib_strip_shell_quotes_joins_adjacent_quote_split() -> None:
+    """The bug this function was introduced to fix: bash executes
+    `~/.ssh/config"_backup"` identically to its unquoted form."""
+    assert _strip_shell_quotes('~/.ssh/config"_backup"') == "~/.ssh/config_backup"
+
+
+def test_lib_strip_shell_quotes_removes_single_char_backslash_escape() -> None:
+    assert _strip_shell_quotes(r"id_r\sa") == "id_rsa"
+
+
+def test_lib_strip_shell_quotes_leaves_multi_digit_escape_undecoded() -> None:
+    """Root cause pinned at the unit layer: the backslash-removal step
+    (`s/\\\\(.)/\\1/g`) consumes exactly one character after each `\\`, so a
+    multi-digit ANSI-C octal/hex escape survives as leftover digits instead
+    of decoding to the character bash itself would produce
+    (`$'\\x69\\x64\\x5f\\x72\\x73\\x61'` -> `id_rsa` under real bash, but
+    only the backslashes are stripped here, leaving the hex digits intact).
+    This is the actual mechanism behind
+    test_deny_credential_bash_reads.py::test_ansi_c_multichar_escape_bypass_allowed
+    and test_deny_pii_in_commits.py::test_ansi_c_octal_escape_credential_value_allowed
+    -- both pin the same root cause at their own (more expensive) hook layer;
+    this test pins the string-transformation property directly."""
+    assert _strip_shell_quotes(r"\147\150\160") == "147150160"
+
+
+def test_lib_strip_shell_quotes_strips_ansi_c_quote_opener() -> None:
+    """Drops the leading `$` of a `$'...'` opener so its content
+    reassembles the same way a plain `'...'` segment does."""
+    assert _strip_shell_quotes("id_r$'sa'") == "id_rsa"
+
+
+def test_lib_strip_shell_quotes_strips_locale_quote_opener() -> None:
+    """Drops the leading `$` of a `$"..."` opener the same way."""
+    assert _strip_shell_quotes('id_r$"sa"') == "id_rsa"
+
+
+def test_lib_strip_shell_quotes_handles_combined_forms_in_one_string() -> None:
+    """A single string mixing an ANSI-C opener and a bare double-quoted
+    segment -- exercises step ordering (the `$'`/`$"` opener strip must run
+    before the final quote-character strip, or the leading `$` would survive
+    as a stray character), not just each step in isolation."""
+    assert _strip_shell_quotes("""id_r$'s'"a\"""") == "id_rsa"
+
+
+def test_lib_strip_shell_quotes_over_strips_double_quoted_literal_apostrophe() -> None:
+    """Documented accepted false positive, same direction as the
+    single-quoted-literal-backslash case pinned in
+    test_deny_credential_bash_reads.py: real bash resolves
+    `~/.ssh/id_r"'"sa` to the literal filename `id_r'sa` (the double-quoted
+    segment's content is one literal apostrophe, never a delimiter), but
+    this function's final `tr -d` step removes quote characters
+    unconditionally regardless of whether they're delimiters or literal
+    content, joining `id_r` and `sa` across the apostrophe into `id_rsa`."""
+    assert _strip_shell_quotes("""~/.ssh/id_r"'"sa""") == "~/.ssh/id_rsa"
+
+
 def test_lib_pem_private_key_block_regex_matches_full_block_under_jq() -> None:
     """Redaction-only counterpart to _LIB_CREDENTIAL_VALUE_REGEX's header-only
     PEM alternative — must compile under jq's Oniguruma engine (its only
@@ -1385,3 +1468,54 @@ def test_lib_pem_private_key_block_regex_matches_full_block_under_jq() -> None:
     )
     jq_result = subprocess.run(["bash", "-c", jq_harness], capture_output=True, text=True, check=True)
     assert jq_result.stdout.strip() == "true"
+
+
+# --- _lib_config_lines -------------------------------------------------
+#
+# Shared by 5 hook files (deny-credential-bash-reads.sh,
+# deny-credential-file-reads.sh, deny-data-file-reads.sh,
+# deny-pii-in-commits.sh, redact-credential-values.sh) to parse their
+# per-user config files. End-to-end coverage of each caller's own grammar
+# lives in that caller's test file; the tests here pin the shared
+# normalization contract (CR-strip, trim, blank/comment skip, raw
+# line-number counting, tab-delimited output) once, independent of which
+# caller's fixtures happen to exercise it.
+
+
+def _config_lines(content: str, tmp_path: Path) -> list[tuple[str, str]]:
+    config_file = tmp_path / "config.md"
+    config_file.write_bytes(content.encode())
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_config_lines "$1"', "bash", str(config_file)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    lines = [line for line in result.stdout.split("\n") if line]
+    return [tuple(line.split("\t", 1)) for line in lines]
+
+
+def test_lib_config_lines_absent_file_yields_nothing(tmp_path: Path) -> None:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_config_lines "$1"', "bash", str(tmp_path / "nonexistent.md")],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == ""
+
+
+def test_lib_config_lines_skips_blank_and_comment_lines(tmp_path: Path) -> None:
+    assert _config_lines("# a comment\n\nreal-line\n   \n", tmp_path) == [("3", "real-line")]
+
+
+def test_lib_config_lines_strips_cr_and_surrounding_whitespace(tmp_path: Path) -> None:
+    assert _config_lines("  spaced-line  \r\n", tmp_path) == [("1", "spaced-line")]
+
+
+def test_lib_config_lines_counts_raw_line_numbers_through_skipped_lines(tmp_path: Path) -> None:
+    """The line number must reflect the file's real line count, including
+    lines this function itself skips -- callers surface it in parse-error
+    messages pointing the user at the actual line to fix."""
+    content = "# comment\nfirst\n\nsecond\n"
+    assert _config_lines(content, tmp_path) == [("2", "first"), ("4", "second")]

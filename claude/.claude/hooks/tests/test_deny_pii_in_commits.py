@@ -137,6 +137,32 @@ class TestDenyPiiInCommits:
             == "deny"
         )
 
+    def test_ansi_c_octal_escape_credential_value_allowed(self, isolated_home, git_repo):
+        """Required regression test pinning a documented residual found
+        during adversarial re-verification of the quote/backslash-escape
+        fix above -- the same root cause as
+        test_deny_credential_bash_reads.py::test_ansi_c_multichar_escape_bypass_allowed:
+        bash's ANSI-C octal escapes (`$'\\NNN...'`) reassemble into the
+        literal token when executed, but _lib_strip_shell_quotes's
+        backslash removal only ever consumes one character after each
+        `\\` -- correct for single-char escapes, wrong for multi-digit
+        octal ones. Accepted as a deliberate-obfuscation residual, same
+        category as the bash-reads gate's pinned case; this test pins the
+        credential-value sub-check's identical exposure so the documented
+        shared-residual claim in docs/security-hardening.md stays
+        test-backed for both callers, not just the bash-reads one. See
+        docs/security-hardening.md's Limitations section."""
+        octal_escaped_token = "".join(f"\\{ord(c):03o}" for c in GHP_TOKEN)
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert (
+            run_hook(
+                DENY_PII_IN_COMMITS_HOOK,
+                bash_input(f"git commit -m $'{octal_escaped_token}'"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
     def test_unarmed_f_pseudo_file_still_denied(self, isolated_home, git_repo):
         """The `-F`/pseudo-file fail-closed check used to run only for armed
         users, since the whole commit-detection/extraction path lived

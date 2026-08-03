@@ -230,17 +230,8 @@ fi
 USER_LABELS=()
 USER_REGEXES=()
 EXCLUDE_GLOBS=()
-config_lineno=0
 if [ "$PII_ARMED" -eq 1 ]; then
-while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-  config_lineno=$((config_lineno + 1))
-  # Strip CR (CRLF), then leading/trailing whitespace.
-  line=${raw_line%$'\r'}
-  line="${line#"${line%%[![:space:]]*}"}"
-  line="${line%"${line##*[![:space:]]}"}"
-  [ -z "$line" ] && continue
-  case "$line" in '#'*) continue ;; esac
-
+while IFS=$'\t' read -r config_lineno line; do
   case "$line" in
     *:*) ;;
     *)
@@ -273,7 +264,7 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
   fi
   USER_LABELS+=("$config_label")
   USER_REGEXES+=("$config_value")
-done < "$PII_PATTERNS_FILE"
+done < <(_lib_config_lines "$PII_PATTERNS_FILE")
 fi
 
 # --- Extract `-F` / `--file` commit-message-source paths -----------------

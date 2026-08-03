@@ -53,16 +53,8 @@ _matches_credential_path() {
   if _lib_has_unsafe_ssh_dir_reference "$path"; then
     return 0
   fi
-  [ -f "$CREDENTIAL_FILE_GUARD" ] && [ -r "$CREDENTIAL_FILE_GUARD" ] || return 1
-  local raw_line line
-  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-    # Strip CR (CRLF), then leading/trailing whitespace.
-    line=${raw_line%$'\r'}
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -z "$line" ] && continue
-    case "$line" in '#'*) continue ;; esac
-
+  local _lineno line
+  while IFS=$'\t' read -r _lineno line; do
     # nocasematch, same rationale as the built-in regex above; bash `case` has no per-pattern case-fold syntax. Scoped tightly and restored immediately after -- this function is called again for the symlink-resolved path, so the shopt must not leak past this one match attempt.
     shopt -s nocasematch
     # shellcheck disable=SC2254 # $line is an intentional user-authored glob; see deny-data-file-reads.sh's identical config-glob loop for rationale.
@@ -73,12 +65,12 @@ _matches_credential_path() {
         ;;
     esac
     shopt -u nocasematch
-  done < "$CREDENTIAL_FILE_GUARD"
+  done < <(_lib_config_lines "$CREDENTIAL_FILE_GUARD")
   return 1
 }
 
 if _matches_credential_path "$FILE_PATH"; then
-  emit_deny "Read of '${FILE_PATH}' denied by the credential-file read gate: the path is credential-shaped (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, a non-template .env variant, credentials.json, or a path flagged in ~/.claude/credential-file-guard.md). Reading it pulls a live secret into Claude's conversation context. No bypass valve — inspect it with a shell command (e.g. \`! cat ${FILE_PATH}\`) instead of the Read tool."
+  emit_deny "Read of '${FILE_PATH}' denied by the credential-file read gate: the path is credential-shaped (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, a non-template .env variant, credentials.json, or a path flagged in ~/.claude/credential-file-guard.md). Reading it pulls a live secret into Claude's conversation context. No bypass valve — the \`!\` shell escape does not avoid this either, since Claude Code adds shell-mode output to the conversation transcript. If the human needs to inspect this file's content, ask them to run a command against it in a separate terminal window outside this session."
   exit 0
 fi
 

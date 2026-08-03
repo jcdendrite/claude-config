@@ -123,14 +123,7 @@ if [ -f "$FILE_PATH" ]; then
 fi
 
 # --- Configured path globs from data-file-read-guard.md ------------------
-while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-  # Strip CR (CRLF), then leading/trailing whitespace.
-  line=${raw_line%$'\r'}
-  line="${line#"${line%%[![:space:]]*}"}"
-  line="${line%"${line##*[![:space:]]}"}"
-  [ -z "$line" ] && continue
-  case "$line" in '#'*) continue ;; esac
-
+while IFS=$'\t' read -r _lineno line; do
   # Each line is a path glob. `case` glob matching treats `*` as matching
   # any character including `/`, so `**` collapses to `*` and a glob like
   # `**/patient-exports/**` matches at any depth.
@@ -144,6 +137,6 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
       exit 0
       ;;
   esac
-done < "$GUARD_FILE"
+done < <(_lib_config_lines "$GUARD_FILE")
 
 exit 0

@@ -31,8 +31,8 @@ jobs:
     # _lib_capped cap fires), up to ~38s more in the worst case; the
     # shellcheck step adds ~10s; apt-get update + install stow adds another
     # ~10-20s on a typical runner, more on a stale package-index cache.
-    # Raised from 3 to 4, then 4 to 5 minutes, so a slow apt mirror or a run
-    # of near-worst-case timeout tests doesn't eat into the headroom.
+    # 5 minutes leaves headroom above the worst-case budget above so a slow
+    # apt mirror or a run of near-worst-case timeout tests doesn't eat into it.
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -757,6 +757,31 @@ _lib_stray_marker_hint() {
 # Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
 _LIB_SIZE_THRESHOLD_BYTES=5242880
 
+# _lib_config_lines FILE
+# Prints each non-blank, non-comment line of a per-user config file
+# (credential-file-guard.md, data-file-read-guard.md, pii-patterns.md,
+# credential-value-patterns.md) as "<1-based raw line number>\t<CR-stripped,
+# trimmed line>". The line number counts every raw line, including ones this
+# function skips, so a caller reporting a parse error can point the user at
+# the actual line in their file. Prints nothing (returns 0) when FILE is
+# absent or unreadable. Callers apply their own per-line grammar and match
+# semantics (substring glob, exact glob, or "<label>: <regex>") to the line
+# field -- those differ by design and are not this function's concern.
+_lib_config_lines() {
+  local file="$1"
+  [ -f "$file" ] && [ -r "$file" ] || return 0
+  local raw_line line lineno=0
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+    lineno=$((lineno + 1))
+    line=${raw_line%$'\r'}
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    case "$line" in '#'*) continue ;; esac
+    printf '%s\t%s\n' "$lineno" "$line"
+  done < "$file"
+}
+
 # Collapses bash's character-removal-based literal-reassembly mechanisms for
 # credential/PII pattern matching against raw Bash command text: bash
 # executes `cat ~/.ssh/config"_backup"`, `cat ~/id_r\sa`, and
@@ -810,8 +835,7 @@ _LIB_SSH_SAFE_BASENAME_REGEX='^(authorized_keys|known_hosts|known_hosts\.old|con
 # checked the same way with or without a trailing slash -- a legitimate
 # directory reference (`~/.ssh/sockets/`, a ControlMaster socket dir) is an
 # accepted false positive here, same as this hook family's other documented
-# over-denial residuals (e.g. the `grep id_rsa` search-pattern residual);
-# use the `!` shell escape to inspect it.
+# over-denial residuals (e.g. the `grep id_rsa` search-pattern residual).
 _lib_has_unsafe_ssh_dir_reference() {
   local text="$1" candidate base
   while IFS= read -r candidate; do

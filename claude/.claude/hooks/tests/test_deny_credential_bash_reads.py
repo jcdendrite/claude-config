@@ -142,8 +142,7 @@ class TestDenyCredentialBashReads:
         """Documented accepted false positive: a directory reference under
         .ssh (a ControlMaster socket dir) is denied too, since its basename
         isn't on the safe allowlist and the mechanism can no longer
-        special-case a trailing slash as proof of a safe directory listing.
-        Use the ! shell escape to inspect it."""
+        special-case a trailing slash as proof of a safe directory listing."""
         assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input("ls ~/.ssh/sockets/"), home=isolated_home) == "deny"
 
     def test_grep_search_pattern_residual_denied(self, isolated_home):
@@ -295,6 +294,25 @@ class TestDenyCredentialBashReads:
             run_hook(
                 DENY_CREDENTIAL_BASH_READS_HOOK,
                 bash_input("grep -rn 'id_r\\sa' /var/log/app.log"),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_double_quoted_literal_apostrophe_false_positive_denied(self, isolated_home):
+        """Companion to the single-quoted-literal-backslash case above, for
+        documentation symmetry: real bash resolves `~/.ssh/id_r"'"sa` to the
+        literal filename `id_r'sa` (the double-quoted segment's content is
+        one literal apostrophe, never a delimiter, confirmed via `bash -c`),
+        but _lib_strip_shell_quotes's final quote-character strip removes
+        the apostrophe unconditionally, joining `id_r` and `sa` into
+        `id_rsa`. Same accepted-false-positive direction as the
+        single-quoted-backslash case -- an over-broad deny, never a missed
+        detection. See docs/security-hardening.md's Limitations section."""
+        assert (
+            run_hook(
+                DENY_CREDENTIAL_BASH_READS_HOOK,
+                bash_input('cat ~/.ssh/id_r"\'"sa'),
                 home=isolated_home,
             )
             == "deny"

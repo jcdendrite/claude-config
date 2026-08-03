@@ -55,26 +55,17 @@ fi
 
 # --- Personal/org-specific path additions from credential-file-guard.md --
 CREDENTIAL_FILE_GUARD="${HOME}/.claude/credential-file-guard.md"
-if [ -f "$CREDENTIAL_FILE_GUARD" ] && [ -r "$CREDENTIAL_FILE_GUARD" ]; then
-  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-    # Strip CR (CRLF), then leading/trailing whitespace.
-    line=${raw_line%$'\r'}
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -z "$line" ] && continue
-    case "$line" in '#'*) continue ;; esac
-
-    # shellcheck disable=SC2254 # $line is an intentional user-authored glob, mirroring deny-data-file-reads.sh's config-glob loop; quoting it would force literal matching and break every wildcard rule.
-    # nocasematch, same rationale as the built-in regex above; bash `case` has no per-pattern case-fold syntax, so the shopt is scoped tightly around this one statement and restored immediately after.
-    shopt -s nocasematch
-    case "$COMMAND_UNQUOTED" in
-      *$line*)
-        emit_deny "Blocked by credential-path Bash gate: the command matches the glob '${line}' in ~/.claude/credential-file-guard.md, a path shape you flagged as credential-bearing. (See docs/security-hardening.md.)"
-        exit 0
-        ;;
-    esac
-    shopt -u nocasematch
-  done < "$CREDENTIAL_FILE_GUARD"
-fi
+while IFS=$'\t' read -r _lineno line; do
+  # shellcheck disable=SC2254 # $line is an intentional user-authored glob, mirroring deny-data-file-reads.sh's config-glob loop; quoting it would force literal matching and break every wildcard rule.
+  # nocasematch, same rationale as the built-in regex above; bash `case` has no per-pattern case-fold syntax, so the shopt is scoped tightly around this one statement and restored immediately after.
+  shopt -s nocasematch
+  case "$COMMAND_UNQUOTED" in
+    *$line*)
+      emit_deny "Blocked by credential-path Bash gate: the command matches the glob '${line}' in ~/.claude/credential-file-guard.md, a path shape you flagged as credential-bearing. (See docs/security-hardening.md.)"
+      exit 0
+      ;;
+  esac
+  shopt -u nocasematch
+done < <(_lib_config_lines "$CREDENTIAL_FILE_GUARD")
 
 exit 0
