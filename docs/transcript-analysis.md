@@ -407,6 +407,60 @@ Sonnet-tier estimate: 3,775,354 output tokens
 
 ---
 
+## cost
+
+**Purpose.** Price-weighted dollar cost by token class (cache read, cache write 5m/1h, output, input), model ID, and context-at-turn bucket, plus a top-N-sessions-by-dollars breakdown. Every other subcommand in this toolkit is denominated in raw token counts; `cost` is the one that answers "which lever actually moves the bill," since cache-read is 0.1× base input while output is 5× — a 50× spread raw token counts erase. **Context-at-turn** is defined as `input_tokens + cache_read_input_tokens + ephemeral_1h + ephemeral_5m` tokens for a turn — the sum of everything read into context for that turn, excluding output.
+
+Pricing is looked up per exact model ID (Sonnet 5 and Sonnet 4.6 price differently), derived from one base input rate per model plus the pricing page's stated multipliers (output 5×, 5m cache write 1.25×, 1h cache write 2×, cache read 0.1×). Each model ID carries a re-verify-by date; when the current date is past it, a `STALE PRICING` banner prints inside the same output block as the dollar tables — never a separate log line a copy-paste of the tables could drop. An unrecognized model ID (e.g. `<synthetic>`) is never silently priced at $0: it gets its own row and its tokens are counted in a separate "Unpriced tokens" total, excluded from every dollar figure. Sidechain (subagent-dispatched) turns are priced — `cost` reads with `include_subagents=True`, unlike `audit-routing`'s main-thread-only scope, since subagent spend is real spend.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`, all projects)
+- `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`)
+- `--top N` — maximum per-session rows in the top-N-by-dollars section (default: 20)
+- `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output.
+
+**Sample output.**
+```
+## Cost report (last 30d)
+
+## Cost by token class
+
+Class                         $   Share
+cache_read             3,037.00   51.4%
+cache_write_5m         1,533.00   26.0%
+cache_write_1h           572.00    9.7%
+output                   755.00   12.8%
+input                      8.00    0.1%
+total                  5,905.00
+
+## Cost by model ID
+
+Model                                     $   Share
+claude-sonnet-5                    4,850.00   82.1%
+claude-opus-5                        674.00   11.4%
+claude-opus-4-8                      289.00    4.9%
+claude-sonnet-4-6                     93.00    1.6%
+<synthetic>                        unpriced      1,240 tokens
+
+Unpriced tokens (unknown model IDs): 1,240
+
+## Cost by context-at-turn bucket (input_tokens + cache_read_input_tokens + ephemeral_1h + ephemeral_5m tokens, 200,000 boundary)
+
+Bucket                $   Share
+<200k          1,866.00   31.6%
+>=200k         4,039.00   68.4%
+
+## Top 20 sessions by dollars
+
+Session          Proj                                  $
+session-1        private-project-13               244.24
+session-2        private-project-2                189.07
+```
+
+**When to reach for it.** Rank workflow-efficiency levers by dollars instead of raw token counts before proposing an optimization — a metric denominated in output tokens alone (like `audit-routing`'s Sonnet-tier estimate) can headline 0.6% of spend while missing an 87%-of-spend context-cost problem entirely. Also the source of the redacted, aggregate-only tables that go into a public cost-audit issue — never publish the top-N-sessions section or any `--no-redact` output, both of which are real-project-identifying by construction. Observed wall-clock for a `--since 30d` run against this toolkit's own transcript corpus: ~10s with `--no-redact`, ~18s with the default redacted run — the redact-map first pass roughly doubles the time, since it fully parses every transcript once just to read a directory name (see `iter_sessions`' docstring; this is a known, deliberately deferred perf gap, not a `cost`-specific one).
+
+---
+
 ## handoff-ratio
 
 **Purpose.** Per-week ratio of explicit `/handoff` invocations versus auto-compaction events.
