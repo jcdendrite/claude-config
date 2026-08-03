@@ -27,6 +27,15 @@ from and where it goes.
 - **Open PR → sync mode.** Fetch the body, run every check against it, and
   apply the result with `gh pr edit <n> --body-file <path>`.
 
+## Load project-specific layer
+
+If a project-specific layer exists for this skill, load it now. Glob for
+`.claude/skills/pr-description-*/SKILL.md` from the repo root (resolved via
+`git rev-parse --show-toplevel`); if exactly one matches, read it with the
+Read tool and merge its check items into the Checks section below. If
+multiple match, list them and stop — that's a config error in the project,
+not something you can resolve. If none match, proceed without a layer.
+
 ## What the body must carry
 
 - **What and why.** What change is being made — summarized so the reviewer
