@@ -457,6 +457,49 @@ class TestSettingsFileResolution:
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert _read_log(install_log) == ["some-plugin@claude-config"]
 
+    def test_enabled_plugins_from_unregistered_marketplace_are_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """A plugin sourced from a marketplace this run just skipped as
+        non-portable (a directory source, per test_non_directory_source_entry_ignored's
+        sibling check above) must not reach `claude plugin install` at all —
+        that call is guaranteed to fail, and under set -e would abort the
+        whole loop, silently skipping every enabledPlugins entry listed after
+        it. Also proves the loop keeps going past the skip: a legitimate
+        claude-config-sourced entry listed after it still installs."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(
+            json.dumps(
+                {
+                    "extraKnownMarketplaces": {
+                        "workstation-setup": {"source": {"source": "directory"}}
+                    },
+                    "enabledPlugins": {
+                        "pat-rotation@workstation-setup": True,
+                        "some-plugin@claude-config": True,
+                    },
+                }
+            )
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        add_log = tmp_path / "add.log"
+        remove_log = tmp_path / "remove.log"
+        install_log = tmp_path / "install.log"
+        _make_claude_full_shim(bin_dir, [], remove_log, add_log, install_log)
+
+        result = _run_register_marketplace_script(
+            _REGISTER_MARKETPLACE_SH,
+            home=home,
+            extra_env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "pat-rotation@workstation-setup" not in _read_log(install_log)
+        assert _read_log(install_log) == ["some-plugin@claude-config"]
+        assert "not registered for this profile" in result.stdout
+
 
 class TestSelfLocation:
     def test_resolves_repo_dir_through_symlink_not_symlink_directory(self, tmp_path: Path) -> None:
