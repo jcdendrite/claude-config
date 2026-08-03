@@ -9,6 +9,8 @@ matching test_claude_auto.py's shape for a shell-script-under-test.
 """
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -19,6 +21,27 @@ def _run(body_text: str, tmp_path: Path) -> subprocess.CompletedProcess:
     body_file = tmp_path / "body.md"
     body_file.write_text(body_text)
     return subprocess.run([str(_SCRIPT), str(body_file)], capture_output=True, text=True, check=False)
+
+
+def _run_with_erroring_grep(body_text: str, tmp_path: Path) -> subprocess.CompletedProcess:
+    """Run scan-issue-body.sh with a stub `grep` shadowing the real one on $PATH.
+
+    The stub exits 2 unconditionally, so the very first detector's grep call
+    triggers the script's rc>=2 fail-closed branch — a dependency-injection
+    fixture, not a filesystem-permission race, so it is deterministic and
+    portable across grep implementations.
+    """
+    body_file = tmp_path / "body.md"
+    body_file.write_text(body_text)
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    stub_grep = fake_bin / "grep"
+    stub_grep.write_text("#!/usr/bin/env bash\nexit 2\n")
+    stub_grep.chmod(stub_grep.stat().st_mode | stat.S_IEXEC)
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"}
+    return subprocess.run(
+        [str(_SCRIPT), str(body_file)], capture_output=True, text=True, check=False, env=env,
+    )
 
 
 class TestScanIssueBodyCleanFile:
@@ -49,6 +72,30 @@ class TestScanIssueBodySshKeyPath:
 
     def test_deny_ssh_key_path_present(self, tmp_path):
         result = _run("Reproduced with the key at ~/.ssh/id_ed25519 loaded.\n", tmp_path)
+        assert result.returncode != 0
+
+    def test_allow_word_containing_key_algorithm_name_as_substring(self, tmp_path):
+        """A word that merely contains 'id_rsa'/'id_dsa' as a substring (not a
+        boundary-delimited key filename) must not match — same boundary-safety
+        class as the internal-hostname detector's prefix-word test."""
+        result = _run(
+            "The config field is called invalid_rsa_token; we renamed avoid_dsa_warnings too.\n",
+            tmp_path,
+        )
+        assert result.returncode == 0
+
+    def test_deny_bare_key_name_without_ssh_path_prefix(self, tmp_path):
+        """A bare key filename with no .ssh/ segment must still match via the
+        id_ boundary group on its own — locks in that branch's own positive
+        match path, independent of the separate \\.ssh/ alternative."""
+        result = _run("The rotated key is id_ed25519 going forward.\n", tmp_path)
+        assert result.returncode != 0
+
+    def test_deny_hyphen_suffixed_key_name(self, tmp_path):
+        """A hyphen-suffixed key reference (a backup/rotation naming style) must
+        still match — the trailing boundary treats hyphen as a terminator, not
+        a word-continuation character, consistent with the leading boundary."""
+        result = _run("The old backup file id_rsa-old was never deleted.\n", tmp_path)
         assert result.returncode != 0
 
 
@@ -138,11 +185,14 @@ class TestScanIssueBodySlackChannelShape:
 
 
 class TestScanIssueBodyFailsClosed:
-    """The mid-loop rc>=2 branch (a detector's grep call itself erroring, as opposed
-    to the upfront -r check below) has no direct fixture — reliably forcing a grep
-    error on a file that passes the upfront readability check requires a TOCTOU race
-    that isn't portable across filesystems/CI. Left as a known coverage gap rather
-    than a flaky test."""
+    def test_grep_error_mid_loop_fails_closed(self, tmp_path):
+        """A detector's grep call itself erroring (rc>=2, distinct from the
+        upfront -r check) must fail closed with the specific message, exercising
+        the actual branch rather than leaving it uncovered."""
+        result = _run_with_erroring_grep("Anything at all — the stub grep errors before matching.\n", tmp_path)
+        assert result.returncode != 0
+        assert "grep exit 2" in result.stderr
+        assert "failing closed" in result.stderr
 
     def test_unreadable_file_exits_nonzero(self, tmp_path):
         """A missing/unreadable body file fails closed — never treated as clean."""

@@ -7,7 +7,7 @@
 #
 # Detects six classes of content that can identify a specific machine,
 # person, or private project even without naming it directly:
-#   1. RFC1918/IPv4 literal
+#   1. IPv4 literal
 #   2. .ssh/ or id_<algorithm> SSH key path
 #   3. /Users/<name>/ or /home/<name>/ home-rooted path
 #   4. Long hex identifier (32+ contiguous hex chars, or a UUID)
@@ -43,8 +43,8 @@ fi
 # Checked independently so a match reports which class fired, rather than
 # collapsing all six into one alternation.
 DETECTORS=(
-  "RFC1918/IPv4 literal:([0-9]{1,3}\.){3}[0-9]{1,3}"
-  "SSH key path:(\.ssh/|id_(rsa|dsa|ecdsa|ed25519))"
+  "IPv4 literal:([0-9]{1,3}\.){3}[0-9]{1,3}"
+  "SSH key path:(\.ssh/|(^|[^A-Za-z0-9_])id_(rsa|dsa|ecdsa|ed25519)([^A-Za-z0-9_]|$))"
   "home-rooted path:(/Users/[A-Za-z0-9_.-]+|/home/[A-Za-z0-9_.-]+)"
   "long hex identifier:([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
   "internal hostname:[A-Za-z0-9.-]+\.(internal|corp|local|lan|intranet|private)([^A-Za-z0-9_-]|$)"
