@@ -310,6 +310,57 @@ def run_hook_updated_output(
     return payload["hookSpecificOutput"]["updatedToolOutput"]
 
 
+def run_hook_session_start(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> str | None:
+    """SessionStart-specific runner. A title-setting SessionStart hook's
+    payload is `{"hookSpecificOutput": {"hookEventName": "SessionStart",
+    "sessionTitle": ...}}` — distinct from run_hook's PreToolUse
+    permissionDecision shape and run_hook_stop's {"decision", "reason"} pair.
+
+    Returns the emitted title string, or None when the hook stays silent
+    (empty stdout). Asserts the exact {"hookEventName", "sessionTitle"} key
+    set on any non-empty payload's hookSpecificOutput and that hookEventName
+    equals "SessionStart" — a typo in the emitting hook's key name (e.g.
+    "sessionTittle") must fail loudly here rather than silently no-op in
+    production.
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook writes into an isolated temp directory rather than real ~/.claude —
+    required for kill-switch test cases, since without it a machine with the
+    real sentinel present turns the whole test file vacuously green.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
+    env = _build_subprocess_env(home, extra_env)
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
+    if not result.stdout.strip():
+        return None
+    payload = json.loads(result.stdout)
+    hook_specific_output = payload["hookSpecificOutput"]
+    assert set(hook_specific_output.keys()) == {"hookEventName", "sessionTitle"}, (
+        f"SessionStart hook emitted unexpected keys {sorted(hook_specific_output.keys())} "
+        '— the harness routes on the exact {"hookEventName", "sessionTitle"} pair'
+    )
+    assert hook_specific_output["hookEventName"] == "SessionStart", (
+        f'SessionStart hook emitted hookEventName={hook_specific_output["hookEventName"]!r}, '
+        'expected "SessionStart"'
+    )
+    return hook_specific_output["sessionTitle"]
+
+
 def posttooluse_input(file_path: str) -> dict:
     """Build a PostToolUse Write event payload for consume-migration-token tests.
 
