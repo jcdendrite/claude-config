@@ -8,23 +8,51 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 
 ---
 
+## Scoping to this repo: `--this-repo`
+
+Every subcommand below accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped, now available everywhere. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
+
+The default differs by subcommand: `skill-invocation` defaults to repo-scoped (safe-by-default) and treats `--this-repo` as a no-op; every other subcommand defaults to machine-wide (unsafe-by-default) and requires `--this-repo` to opt into repo scoping.
+
+**`review-trace` output is not publish-safe under the default machine-wide scope** — each event line's branch string can carry a ticket ID or project name. Run it with `--this-repo` before quoting output anywhere public.
+
+**What `--this-repo` does not cover, and the documented fallback:**
+
+- **Other clones of this repo.** `git worktree list` enumerates the linked worktrees of the checkout you ran it from — a second, independent clone of the same repo elsewhere on the machine is correctly outside that set. There is no fallback for this; it is not this checkout's data.
+- **A session started in a repo subdirectory.** Claude Code slugs a project directory from the session's *startup cwd*, not the repo root — replacing `/` and `.` with `-` — so a session started inside a subdirectory of a worktree has a slug that is string-unequal to that worktree's own slug — `--this-repo`'s exact-identity match excludes it. The fallback is a prefix glob derived from `--git-common-dir`, not `pwd` (`--git-common-dir` resolves to the main repo's `.git` from inside any worktree, so the prefix is stable regardless of which worktree the session started in):
+
+  ```bash
+  --projects="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)" | tr '/.' '-')*"
+  ```
+
+  The trailing `*` picks up both per-worktree project dirs and sessions started in a subdirectory. A prefix-with-separator match (`<slug>-*`) was considered and rejected as the default instead: it still collides with a sibling clone at `<repo>-fork`, which is exactly the collision `--this-repo`'s exact-identity match exists to prevent — this glob is a deliberately looser fallback for the one case exact identity can't reach, not a general replacement for it. Because it is a prefix, it also over-includes rows for any other sibling sharing that prefix; for `buckets` that shows up as extra rows in the output, visibly, rather than silently returning nothing.
+- **An orphaned project directory.** If a worktree is removed, its project directory under `~/.claude/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had.
+
+All three gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected.
+
+---
+
 ## buckets
 
 **Purpose.** Show assistant-turn counts bucketed by git branch × model family, with session count and date range.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--branches B1,B2,...` — filter to specific branches (default: all)
 
 **Sample output.**
 ```
-Branch                                    Sess   Total   Opus  Sonnet  Haiku  Other  Date range
-------------------------------------------------------------------------------------------------------------
-GH-333/audit-routing-samples-subcommand     2     237     78     159      0      0  2026-05-26..2026-05-28
-GH-315/audit-routing-shape                  5     375     45     330      0      0  2026-05-26..2026-05-26
-add-actionlint-pr-gate                      5     444      0     444      0      0  2026-05-25..2026-05-26
-HEAD                                      401    3664   1261    2278    120      5  2026-04-23..2026-05-28
+BUCKETS SOURCES (this repo (6 project dirs))
+Branch                                   Proj  Sess   Total   Opus  Sonnet  Haiku  Other  Date range
+-----------------------------------------------------------------------------------------------------------------
+GH-333/audit-routing-samples-subcommand     1     2     237     78     159      0      0  2026-05-26..2026-05-28
+GH-315/audit-routing-shape                  1     5     375     45     330      0      0  2026-05-26..2026-05-26
+add-actionlint-pr-gate                      2     5     444      0     444      0      0  2026-05-25..2026-05-26
+HEAD                                        6   401    3664   1261    2278    120      5  2026-04-23..2026-05-28
 ```
+
+`Proj` is the count of distinct project directories contributing to that row — a pooled row (several repos sharing a branch name, `main` being the usual case) shows `Proj > 1`; scope with `--this-repo` or a narrower `--projects` glob to collapse it back to `1`.
 
 **When to reach for it.** Survey all branches and spot which ones used which models. Usually the first command to run on any transcript analysis session.
 
@@ -37,6 +65,7 @@ HEAD                                      401    3664   1261    2278    120     
 **Flags.**
 - `--branches B1,B2,...` *(required)* — branches to analyze
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 
 **Sample output.**
 ```
@@ -62,6 +91,7 @@ Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
 **Flags.**
 - `--branches B1,B2,...` — filter to specific branches (default: all)
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 
 **Sample output.**
 ```
@@ -84,6 +114,7 @@ Each cell is the count of signal phrases ("no, that's wrong", "stop doing", "you
 **Flags.**
 - `--branches B1,B2,...` — filter to specific branches (default: all)
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--gap-minutes N` — threshold (in minutes) for classifying an inter-turn gap as idle (default: 30)
 
 **Sample output.**
@@ -104,6 +135,7 @@ GH-333/audit-routing-samples-subcommand        1553         112       1442      
 **Flags.**
 - `--branches B1,B2,...` — filter to specific branches (default: all)
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 
 **Sample output.**
 ```
@@ -124,6 +156,7 @@ GH-333/audit-routing-samples-subcommand  sidechain       0      78      0      0
 **Flags.**
 - `--branches B1,B2,...` — filter to specific branches (default: all)
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--per-session` — break out by individual session instead of aggregating per branch
 
 **Sample output.**
@@ -148,6 +181,7 @@ Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/re
 - `--branches B1,B2,...` *(required)* — branches to look up
 - `--author LOGIN` — filter comment counts to one GitHub login
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 
 **Sample output.**
 ```
@@ -171,6 +205,7 @@ feat-TICKET-202           #47   Refactor auth middleware                        
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--exclude-projects GLOB` — skip project dirs matching this glob
 - `--branches B1,B2,...` — filter to specific branches
 
@@ -200,6 +235,7 @@ Bin         Lead  Main  Side   Pair%
 **Flags.**
 - `--by-permission-mode` — split rows by `permissionMode`
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--exclude-projects GLOB` — exclude project dirs matching this glob
 - `--branches B1,B2,...` — branch name filter (default: all)
 
@@ -226,6 +262,7 @@ bin          sessions   turns  skill-inv  skill/1k commits  w-skill  wo-skill  n
 
 **Flags.**
 - `--projects GLOB` — project directory glob. Default: this repo's own worktrees only (publish-safe); an explicit glob is the escape hatch (not repo-scoped).
+- `--this-repo` — explicit no-op: `skill-invocation` already defaults to this repo's own worktrees. Kept so the flag is uniform across every `--projects` subcommand; mutually exclusive with `--projects` like everywhere else.
 - `--branches B1,B2,...` — restrict to named `gitBranch` values (default: all branches in scope).
 - `--include-subagents` — also count invocations inside spawned subagents, adding a `thread` column (`main` vs `sidechain`). Off by default so budget analysis stays main-thread-only; the fidelity consumer opts in.
 
@@ -266,22 +303,29 @@ CLASSIFICATION SUMMARY
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); required before quoting output publicly (see below)
 - `--branches B1,B2,...` — filter to specific branches
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
 - `--deny-only` — restrict to sessions containing at least one hook denial
 - `--skill NAME` — restrict skill-invocation matching to one skill name
 
+Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. An event whose branch or model cannot be resolved renders `?`.
+
 **Sample output.**
 ```
+REVIEW TRACE SOURCES (this repo (6 project dirs))
+
 ### ~/.claude/projects/my-project/abc123.jsonl
-branch=my-feature  model=opus  skills=3  denials=1  reviewer-spawns=4
-  [2026-05-20T10:15:00.000Z] line   45  skill        plan-review
-  [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer
-  [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet
-  [2026-05-20T10:45:00.000Z] line  120  denial       hook=  id=toolu_abc  msg='marker.sh invocation denied...'
-  [2026-05-20T11:02:00.000Z] line  145  skill        code-review
+branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=4
+  [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=main model=opus)
+  [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
+  [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
+  [2026-05-20T10:45:00.000Z] line  120  denial       hook=  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
+  [2026-05-20T11:02:00.000Z] line  145  skill        code-review  (branch=my-feature model=sonnet)
 ```
+
+The session above opened on `main`, then moved to `my-feature` partway through — the header's `branches=`/`models=` lists both, and each event line carries its own attribution rather than inheriting the session's first-record branch.
 
 **When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read.
 
@@ -293,6 +337,7 @@ branch=my-feature  model=opus  skills=3  denials=1  reviewer-spawns=4
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--branches B1,B2,...` — filter to specific branches
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
@@ -300,10 +345,12 @@ branch=my-feature  model=opus  skills=3  denials=1  reviewer-spawns=4
 - `--truncate-chars N` — maximum characters for the review output block (default: 1000)
 - `--out PATH` — write output to this file instead of stdout
 
+`--branches` filters on the invocation record's own `gitBranch`, not a session-wide branch — a session whose branch changes between the review invocation and the user's reply is selected by where the invocation itself happened.
+
 **Sample output.**
 ```
 ### my-project · abc12345 · 2026-05-20
-Skill: code-review  (line 42)
+Skill: code-review  branch=main  (line 42)
 
 --- REVIEW OUTPUT (truncated to 1000 chars) ---
 The auth middleware bypasses rate limiting when the `X-Internal` header is
@@ -326,6 +373,7 @@ Good catch. I'll add IP-range validation before trusting that header.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since Nd` — limit to the last N days (e.g. `35d`)
 - `--top N` — maximum per-session rows to emit (default: 20)
 - `--redact` — replace project dir names with anonymized labels (`private-project-1`, `private-project-2`, …); `claude-config` is preserved. Use this flag when posting output to GitHub issues.
@@ -365,6 +413,7 @@ Sonnet-tier estimate: 3,775,354 output tokens
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--debug-detector` — print candidate compaction records for schema-drift inspection
 
@@ -389,6 +438,7 @@ Total             22          141   13.5%
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since Nd` — limit to the last N days (e.g. `35d`)
 
 **Sample output.**
@@ -431,6 +481,7 @@ neither           2,167       1,762,987
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since Nd` — limit to the last N days (e.g. `35d`)
 - `--sample N` — maximum turns to emit (default: 30)
 - `--seed N` — random seed for reproducible sampling

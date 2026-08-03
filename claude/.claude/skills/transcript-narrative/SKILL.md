@@ -8,7 +8,7 @@ description: Produce a narrative case study / annotated timeline from Claude Cod
 Identify the branches, session date-range, and repos in play. Use `buckets` to enumerate branches and per-branch models:
 
 ```bash
-python3 ~/.claude/scripts/transcript-analysis.py buckets
+python3 ~/.claude/scripts/transcript-analysis.py buckets --this-repo
 ```
 
 Note the branch names — you will pass them to later subcommands via `--branches <branch>`.
@@ -59,7 +59,7 @@ python3 ~/.claude/scripts/transcript-analysis.py subagents --branches <branch>
 python3 ~/.claude/scripts/transcript-analysis.py pr-link --repo owner/repo --branches <branch>
 
 # Review-skill invocations, hook denials, reviewer-spawn timeline
-python3 ~/.claude/scripts/transcript-analysis.py review-trace
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo
 ```
 
 For `fail-seq` interpretation: a spike followed by zeros is convergent (expected); oscillation with no sustained run of zeros is thrashing (flag for the lessons step). See `transcript-analysis` for the full reading guide.

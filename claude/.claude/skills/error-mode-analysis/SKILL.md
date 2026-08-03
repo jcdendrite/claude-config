@@ -10,13 +10,12 @@ Analyzes a *delivered body of work* (many sessions and PRs, potentially spanning
 Identify the branches, PRs, sessions, and date range under analysis. Use `transcript-analysis.py buckets` to enumerate branches and models:
 
 ```bash
-python3 ~/.claude/scripts/transcript-analysis.py buckets \
-  --projects="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)" | tr '/.' '-')*"
+python3 ~/.claude/scripts/transcript-analysis.py buckets --this-repo
 ```
 
-Always scope `--projects` — an unscoped run pools every project on the machine (see `transcript-analysis`'s Caveats). Derive it from `--git-common-dir`, which resolves to the main repo's `.git` from inside any worktree, so the prefix is stable wherever the session started; the trailing `*` then also picks up per-worktree project dirs and sessions started in a repo subdirectory. Do not derive it from `pwd`: the project dir is named for the session's *startup* cwd, which need not match the shell's cwd at query time. The glob is prefix-based, so a sibling directory sharing the prefix also matches — for `buckets` that over-includes rows in a report, which is visible in the output, rather than silently returning nothing.
+Always scope `--projects`/`--this-repo` — an unscoped run pools every project on the machine. See `docs/transcript-analysis.md`'s "Scoping to this repo" section for the derivation, its gaps, and the subdirectory-session fallback.
 
-`buckets`, `review-trace`, and `fail-seq` all accept `--projects GLOB` (cross-repo), `--branches B1,B2,...` (multiple branches/PRs at once), and (on `review-trace`) `--since`/`--until DATE` — the tooling already spans repos and calendar time; scope is a choice, not a limitation.
+`buckets`, `review-trace`, and `fail-seq` all accept `--projects GLOB`/`--this-repo` (cross-repo), `--branches B1,B2,...` (multiple branches/PRs at once), and (on `review-trace`) `--since`/`--until DATE` — the tooling already spans repos and calendar time; scope is a choice, not a limitation.
 
 **Default to breadth, not the narrowest concrete option.** A single PR or session is the highest-noise, lowest-confidence sample available — one human comment or one bad turn looks identical to a systemic gap when it's the only data point. Absent an explicit request to narrow (the user names one PR/branch), default the scope to: the current project, all branches, last 6 weeks. If a scoping question to the user goes unanswered, widen the default rather than narrowing it — the cost of over-scoping is a longer report; the cost of under-scoping is a false pattern promoted to a fix. Take the analysis window from `review-trace --since/--until`, not `buckets`' Date range column (see `transcript-analysis`'s Caveats).
 

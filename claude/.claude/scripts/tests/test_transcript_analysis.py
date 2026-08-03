@@ -319,7 +319,7 @@ class TestBuckets:
             _asst("claude-sonnet-4-6", branch="feat-a"),
             _asst("claude-sonnet-4-6", branch="feat-a", sidechain=True),  # excluded
         ])
-        args = type("A", (), {"projects": "*", "branches": None})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
         _mod.cmd_buckets(args)
         out = capsys.readouterr().out
         assert "feat-a" in out
@@ -331,17 +331,52 @@ class TestBuckets:
             _asst("claude-sonnet-4-6", branch="feat-a"),
             _asst("claude-sonnet-4-6", branch="feat-b"),
         ])
-        args = type("A", (), {"projects": "*", "branches": "feat-a"})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat-a"})()
         _mod.cmd_buckets(args)
         out = capsys.readouterr().out
         assert "feat-a" in out
         assert "feat-b" not in out
 
     def test_no_data_prints_message(self, fake_projects, capsys):
-        args = type("A", (), {"projects": "*", "branches": None})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
         _mod.cmd_buckets(args)
         out = capsys.readouterr().out
         assert "No data found." in out
+
+    def test_proj_column_counts_distinct_project_dirs_not_sessions(self, tmp_path, monkeypatch, capsys):
+        """Proj tracks a set of project dirs per branch, not a session counter: the
+        same project contributing two session files on one branch reports Proj==1,
+        Sess==2 — the case that discriminates set semantics from a counter."""
+        projects = tmp_path / "projects"
+        proj_a = projects / "-home-u-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess1.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_a / "sess2.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_counts_two_project_dirs_sharing_a_branch(self, tmp_path, monkeypatch, capsys):
+        projects = tmp_path / "projects"
+        proj_a = projects / "-home-u-repo-a"
+        proj_b = projects / "-home-u-repo-b"
+        proj_a.mkdir(parents=True)
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_b / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "2"
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +508,7 @@ class TestSubagentMix:
                 _agent_use("a3", "staff-backend-engineer"),
             ]),
         ])
-        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None, "per_session": False})()
         _mod.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "feat" in out
@@ -490,7 +525,7 @@ class TestSubagentMix:
                 _skill_use("s5", "respond-pr"),  # excluded — not in REVIEW_SKILLS
             ]),
         ])
-        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None, "per_session": False})()
         _mod.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         # CR=2, PR=1, RR=1; max_labels=6 excludes the trailing multi-word "Top subagent types" column
@@ -506,7 +541,7 @@ class TestSubagentMix:
                 _agent_use("t1", "staff-frontend-engineer", tool_name="Task"),
             ]),
         ])
-        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None, "per_session": False})()
         _mod.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "staff-frontend-engineer(1)" in out
@@ -519,7 +554,7 @@ class TestSubagentMix:
                 _agent_use("a2", "ciso-reviewer"),  # excluded — sidechain
             ]),
         ])
-        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None, "per_session": False})()
         _mod.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "staff-backend-engineer(1)" in out
@@ -530,7 +565,7 @@ class TestSubagentMix:
             _asst("claude-opus-4-7", branch="feat-a", content=[_agent_use("a1", "ciso-reviewer")]),
             _asst("claude-opus-4-7", branch="feat-b", content=[_agent_use("a2", "staff-backend-engineer")]),
         ])
-        args = type("A", (), {"projects": "*", "branches": "feat-a", "per_session": False})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat-a", "per_session": False})()
         _mod.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "feat-a" in out
@@ -544,7 +579,7 @@ class TestSubagentMix:
         _write_jsonl(fake_projects / "efgh5678-bbbb.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "staff-backend-engineer")]),
         ])
-        args = type("A", (), {"projects": "*", "branches": None, "per_session": True})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None, "per_session": True})()
         _mod.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         # Both sessions should appear with stem prefixes; aggregate "feat" alone should not be present as a row.
@@ -552,7 +587,7 @@ class TestSubagentMix:
         assert "efgh5678" in out
 
     def test_no_data_prints_message(self, fake_projects, capsys):
-        args = type("A", (), {"projects": "*", "branches": None, "per_session": False})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None, "per_session": False})()
         _mod.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "No data found." in out
@@ -569,11 +604,13 @@ _TS_SUNDAY = "2026-05-17T23:59:59Z"   # ISO 2026-W20 (Sunday = last day of W20)
 _TS_MONDAY = "2026-05-18T00:00:01Z"   # ISO 2026-W21 (Monday = first day of W21)
 
 
-def _skill_pair_args(leader="plan-it", follower="plan-review", *, projects="*", exclude_projects=None, branches=None):
+def _skill_pair_args(leader="plan-it", follower="plan-review", *, projects="*", this_repo=False,
+                      exclude_projects=None, branches=None):
     return type("A", (), {
         "leader": leader,
         "follower": follower,
         "projects": projects,
+        "this_repo": this_repo,
         "exclude_projects": exclude_projects,
         "branches": branches,
     })()
@@ -786,7 +823,10 @@ class TestPrLink:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        args = type("A", (), {"repo": "owner/repo", "branches": "feat-pr", "author": "alice", "projects": "*"})()
+        args = type("A", (), {
+            "repo": "owner/repo", "branches": "feat-pr", "author": "alice",
+            "projects": "*", "this_repo": False,
+        })()
         _mod.cmd_pr_link(args)
         out = capsys.readouterr().out
         assert "77" in out
@@ -802,7 +842,7 @@ class TestPrLink:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        args = type("A", (), {"repo": "owner/repo", "branches": "feat-x", "author": "", "projects": "*"})()
+        args = type("A", (), {"repo": "owner/repo", "branches": "feat-x", "author": "", "projects": "*", "this_repo": False})()
         _mod.cmd_pr_link(args)
         out = capsys.readouterr().out
         assert "gh-err" in out or "?" in out
@@ -821,7 +861,10 @@ class TestPrLink:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        args = type("A", (), {"repo": "owner/repo", "branches": "no-pr-branch", "author": "", "projects": "*"})()
+        args = type("A", (), {
+            "repo": "owner/repo", "branches": "no-pr-branch", "author": "",
+            "projects": "*", "this_repo": False,
+        })()
         _mod.cmd_pr_link(args)
         out = capsys.readouterr().out
         assert "none" in out
@@ -832,13 +875,14 @@ class TestPrLink:
 # ---------------------------------------------------------------------------
 
 
-def _gate_args(skill: str, *, by_permission_mode: bool = False, projects: str = "*",
+def _gate_args(skill: str, *, by_permission_mode: bool = False, projects: str = "*", this_repo: bool = False,
                exclude_projects: str | None = None, branches: str | None = None):
     """Build a minimal argparse.Namespace for cmd_commit_gate."""
     return type("A", (), {
         "skill": skill,
         "by_permission_mode": by_permission_mode,
         "projects": projects,
+        "this_repo": this_repo,
         "exclude_projects": exclude_projects,
         "branches": branches,
     })()
@@ -1160,7 +1204,9 @@ class TestCommitGate:
 # ---------------------------------------------------------------------------
 
 
-def _hook_deny(hook_name: str, *, stringified: bool = False) -> dict:
+def _hook_deny(
+    hook_name: str, *, stringified: bool = False, branch: str = "main", ts: str | None = None
+) -> dict:
     """Build an attachment/hook_blocking_error record using the real transcript shape.
 
     Real transcripts nest the human-readable denial text in a "blockingError" key
@@ -1168,12 +1214,18 @@ def _hook_deny(hook_name: str, *, stringified: bool = False) -> dict:
 
     When stringified=True, the outer blockingError value is a JSON-encoded string
     of that dict rather than the dict itself (as seen in some real transcripts).
+
+    branch/ts mirror the sibling _hook_deny_current — a synthetic attachment
+    denial carries its own gitBranch/timestamp too, so tests can distinguish an
+    implementation that reads the record's own branch from one that only
+    exercises the carry-forward path.
     """
     human_message = f"Hook '{hook_name}' blocked the operation"
     error_dict = {"blockingError": human_message, "command": "git commit -m x"}
     blocking_error = json.dumps(error_dict) if stringified else error_dict
-    return {
+    rec: dict = {
         "type": "attachment",
+        "gitBranch": branch,
         "attachment": {
             "type": "hook_blocking_error",
             "hookName": hook_name,
@@ -1181,6 +1233,9 @@ def _hook_deny(hook_name: str, *, stringified: bool = False) -> dict:
             "blockingError": blocking_error,
         },
     }
+    if ts:
+        rec["timestamp"] = ts
+    return rec
 
 
 def _hook_deny_current(
@@ -1213,6 +1268,7 @@ def _hook_deny_current(
 def _review_trace_args(
     *,
     projects: str = "*",
+    this_repo: bool = False,
     branches: str | None = None,
     since: str | None = None,
     until: str | None = None,
@@ -1221,12 +1277,20 @@ def _review_trace_args(
 ) -> object:
     return type("A", (), {
         "projects": projects,
+        "this_repo": this_repo,
         "branches": branches,
         "since": since,
         "until": until,
         "deny_only": deny_only,
         "skill": skill,
     })()
+
+
+def _event_suffix_branch_model(line: str) -> tuple[str, str]:
+    """Parse the trailing '(branch=X model=Y)' suffix off a review-trace event line."""
+    m = re.search(r"\(branch=(\S+) model=(\S+)\)", line)
+    assert m, f"no branch/model suffix found in line: {line!r}"
+    return m.group(1), m.group(2)
 
 
 class TestReviewTrace:
@@ -1518,6 +1582,148 @@ class TestReviewTrace:
         assert "cur.jsonl" in out
         assert "none.jsonl" not in out
 
+    # -----------------------------------------------------------------------
+    # GH-482: per-record branch/model attribution
+    # -----------------------------------------------------------------------
+
+    def test_gh482_events_attributed_to_own_branch_not_session_first_branch(self, fake_projects, capsys):
+        """A session opening on one branch, then moving to another before any review
+        event fires, must attribute every event to its own (later) branch — and
+        --branches must select by that per-event value, not the session's first
+        record's branch (the 53-session class from row 4 of the GH-482 plan)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
+            _asst("claude-sonnet-4-6", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:05:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer")]),
+        ])
+
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
+        assert len(event_lines) == 2
+        for ln in event_lines:
+            branch, _model = _event_suffix_branch_model(ln)
+            assert branch == "feature-x", f"event must attribute to feature-x, not main: {ln!r}"
+
+        _mod.cmd_review_trace(_review_trace_args(branches="feature-x"))
+        out_feature = capsys.readouterr().out
+        assert "skill" in out_feature
+        assert "reviewer" in out_feature
+
+        _mod.cmd_review_trace(_review_trace_args(branches="main"))
+        out_main = capsys.readouterr().out
+        assert out_main.strip() == "", "the session's first-record branch must return zero events"
+
+    def test_header_branches_and_models_are_distinct_sorted_sets(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat-a", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-opus-4-7", branch="feat-b", ts="2026-05-19T10:05:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        header = next(ln for ln in out.splitlines() if ln.startswith("branches="))
+        branches = re.search(r"branches=(\S+)", header).group(1).split(",")
+        models = re.search(r"models=(\S+)", header).group(1).split(",")
+        assert set(branches) == {"feat-a", "feat-b"}
+        assert set(models) == {"sonnet", "opus"}
+
+    def test_denial_stamped_with_its_own_branch_not_carried_forward(self, fake_projects, capsys):
+        """An attachment denial record carrying its own gitBranch, differing from the
+        carried-forward branch, is stamped with the record's own value."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z"),
+            _hook_deny("require-code-review", branch="feature-y", ts="2026-05-19T10:05:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_line = next(ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln)
+        branch, _model = _event_suffix_branch_model(denial_line)
+        assert branch == "feature-y"
+
+    def test_denial_inherits_last_assistant_model_not_other(self, fake_projects, capsys):
+        """A denial carries no message.model of its own — it must inherit the last
+        main-thread assistant model family, not render 'other'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z"),
+            _hook_deny("require-code-review", branch="main", ts="2026-05-19T10:05:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_line = next(ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln)
+        _branch, model = _event_suffix_branch_model(denial_line)
+        assert model == "opus"
+
+    def test_unresolvable_branch_renders_sentinel(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        event_line = next(ln for ln in out.splitlines() if ln.startswith("  ["))
+        branch, _model = _event_suffix_branch_model(event_line)
+        assert branch == "?"
+
+    def test_branch_carry_forward_crosses_since_boundary(self, fake_projects, capsys):
+        """An in-window event with no gitBranch of its own inherits the branch of an
+        out-of-window record — carry-forward crosses the --since boundary."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="old-branch", ts="2026-05-01T10:00:00.000Z"),
+            _asst("claude-sonnet-4-6", branch="", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(since="2026-05-10"))
+        out = capsys.readouterr().out
+        event_line = next(ln for ln in out.splitlines() if ln.startswith("  ["))
+        branch, _model = _event_suffix_branch_model(event_line)
+        assert branch == "old-branch"
+
+    def test_deny_only_with_branches_filters_before_gating(self, fake_projects, capsys):
+        """The sole denial sits on a branch --branches excludes: no block is emitted
+        (filter-then-deny), not a block that still prints because the session
+        qualified for --deny-only before filtering was applied."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny("require-code-review", branch="wrong-branch"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_only=True, branches="right-branch"))
+        out = capsys.readouterr().out
+        assert out.strip() == ""
+
+    def test_dedup_before_branch_filter_pins_ordering(self, fake_projects, capsys):
+        """A duplicate-id denial recorded on two different branches must still
+        collapse to one event when --branches includes both branches — dedup (step 3)
+        is global and runs before branch filtering (step 5), not scoped per branch."""
+        attach = _hook_deny("worktree", branch="branch-a")
+        twin = _hook_deny_current(
+            "Blocked by worktree-enforcement hook: 'git add' not allowed.",
+            tool_id="toolu_worktree", branch="branch-b",
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [attach, twin])
+
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
+        assert len(denial_lines) == 1
+        assert "denials=1" in out
+
+        # attach (branch-a) is the first-occurring record, so dedup collapses the
+        # pair to a single event attributed to branch-a — filtering to branch-b
+        # alone (the second-occurring, non-surviving branch) must then drop that
+        # event entirely. A filter-before-dedup implementation would instead
+        # exclude attach before dedup ever runs, letting twin (branch-b) through
+        # undeduped and yielding one event — the regression this pins against.
+        _mod.cmd_review_trace(_review_trace_args(branches="branch-b"))
+        out_branch_b_only = capsys.readouterr().out
+        denial_lines_branch_b_only = [
+            ln for ln in out_branch_b_only.splitlines() if ln.startswith("  [") and "denial" in ln
+        ]
+        assert len(denial_lines_branch_b_only) == 0
+        assert out_branch_b_only == ""
+
 
 # ---------------------------------------------------------------------------
 # audit-routing
@@ -1552,12 +1758,14 @@ def _thinking_block() -> dict:
 def _audit_routing_args(
     *,
     projects: str = "*",
+    this_repo: bool = False,
     since: str | None = None,
     top: int = 20,
     redact: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
+        "this_repo": this_repo,
         "since": since,
         "top": top,
         "redact": redact,
@@ -1817,7 +2025,9 @@ def _compaction_record(ts: str = "2026-05-19T10:00:00.000Z") -> dict:
 
 
 def _handoff_args(since: str | None = None, projects: str = "*") -> argparse.Namespace:
-    return type("A", (), {"projects": projects, "since": since, "debug_detector": False})()
+    return type("A", (), {
+        "projects": projects, "this_repo": False, "since": since, "debug_detector": False,
+    })()
 
 
 class TestHandoffRatio:
@@ -1899,10 +2109,12 @@ def _glob_use(tool_id: str) -> dict:
 def _audit_routing_shape_args(
     *,
     projects: str = "*",
+    this_repo: bool = False,
     since: str | None = None,
 ) -> object:
     return type("A", (), {
         "projects": projects,
+        "this_repo": this_repo,
         "since": since,
     })()
 
@@ -2329,6 +2541,7 @@ def _edit_use(tool_id: str) -> dict:
 def _audit_routing_samples_args(
     *,
     projects: str = "*",
+    this_repo: bool = False,
     since: str | None = None,
     sample: int = 100,
     seed: int | None = 42,
@@ -2336,6 +2549,7 @@ def _audit_routing_samples_args(
 ) -> object:
     return type("A", (), {
         "projects": projects,
+        "this_repo": this_repo,
         "since": since,
         "sample": sample,
         "seed": seed,
@@ -2936,7 +3150,7 @@ class TestCmdStruggle:
                 branch="feat",
             ),
         ])
-        args = type("A", (), {"projects": "*", "branches": "feat"})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
         _mod.cmd_struggle(args)
         out = capsys.readouterr().out
 
@@ -2963,7 +3177,7 @@ class TestCmdStruggle:
                 branch="feat",
             ),
         ])
-        args = type("A", (), {"projects": "*", "branches": "feat"})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
         _mod.cmd_struggle(args)
         out = capsys.readouterr().out
         # "stale cache" alone should produce no struggle signals — branch absent from output.
@@ -2992,7 +3206,7 @@ class TestCmdStruggle:
             _asst("claude-sonnet-4-6", branch="feat"),
             _user_msg([{"type": "text", "text": text}], branch="feat"),
         ])
-        args = type("A", (), {"projects": "*", "branches": "feat"})()
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
         _mod.cmd_struggle(args)
         out = capsys.readouterr().out
         assert "feat" in out, (
@@ -3511,8 +3725,10 @@ class TestSkillInvocationRepoScope:
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
-            assert cmd[:3] == ["git", "worktree", "list"]
-            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo/main"), "")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo/main"), "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
@@ -3580,7 +3796,10 @@ class TestSkillInvocationRepoScope:
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/home/u/r*/main")
 
         def fake_run(cmd, *a, **k):
-            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/home/u/r*/main"), "")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/home/u/r*/main"), "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/home/u/r*/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
@@ -3609,16 +3828,208 @@ class TestSkillInvocationRepoScope:
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/.claude/worktrees/feat")
 
         def fake_run(cmd, *a, **k):
-            return subprocess.CompletedProcess(
-                cmd, 0,
-                self._worktree_porcelain("/repo", "/repo/.claude/worktrees/feat"), "",
-            )
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    self._worktree_porcelain("/repo", "/repo/.claude/worktrees/feat"), "",
+                )
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/.claude/worktrees/feat\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
         out = capsys.readouterr().out
         assert "code-review" in out, "the main worktree's skill must appear"
         assert "handoff" in out, "the linked worktree's skill must appear"
+
+
+class TestRepoScopedProjectSlugsGuard:
+    """_repo_scoped_project_slugs' three fail-closed sys.exit sites and the
+    row-20 containment-plus-identity cwd guard, exercised via a non-
+    skill-invocation caller label to cover the newly-generic path."""
+
+    def _worktree_porcelain(self, *paths):
+        return "\n".join(f"worktree {p}\nHEAD 0000\nbranch refs/heads/x\n" for p in paths)
+
+    def test_fails_closed_when_worktree_list_command_fails(self, monkeypatch, capsys):
+        def boom(cmd, *a, **k):
+            raise FileNotFoundError("git")
+        monkeypatch.setattr(subprocess, "run", boom)
+        with pytest.raises(SystemExit):
+            _mod._repo_scoped_project_slugs("buckets")
+        assert "buckets:" in capsys.readouterr().err
+
+    def test_fails_closed_when_worktree_list_returns_no_worktrees(self, monkeypatch, capsys):
+        def fake_run(cmd, *a, **k):
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit):
+            _mod._repo_scoped_project_slugs("buckets")
+        assert "buckets:" in capsys.readouterr().err
+
+    def test_fails_closed_when_cwd_outside_all_worktrees(self, monkeypatch, capsys):
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/somewhere/else")
+
+        def fake_run(cmd, *a, **k):
+            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit):
+            _mod._repo_scoped_project_slugs("duration")
+        assert "duration:" in capsys.readouterr().err
+
+    def test_cwd_inside_worktree_subdirectory_resolves_successfully(self, monkeypatch):
+        """Containment (not slug equality) lets --this-repo run from a subdirectory
+        of the worktree root."""
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/nested/dir")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        slugs = _mod._repo_scoped_project_slugs("duration")
+        assert slugs == [_mod._path_to_project_slug("/repo")]
+
+    def test_sibling_repo_sharing_string_prefix_is_rejected(self, monkeypatch, capsys):
+        """cwd inside a sibling path sharing the same string prefix (<repo>-fork)
+        must exit 1 — the case bare str.startswith containment would wrongly
+        accept."""
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo-fork/nested")
+
+        def fake_run(cmd, *a, **k):
+            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit):
+            _mod._repo_scoped_project_slugs("duration")
+        assert capsys.readouterr().out == ""
+
+    def test_fails_closed_when_cwd_repo_root_diverges_from_worktree_list(self, monkeypatch, capsys):
+        """Identity guard: cwd sits under a listed worktree (containment passes)
+        but `git rev-parse --show-toplevel` reports a different root — the case
+        an environment override like GIT_WORK_TREE could produce by decoupling
+        toplevel reporting from the worktree-list enumeration. Every other test
+        in this class returns the same path from both git calls, so this is the
+        only test that would catch a typo bug in the identity check itself."""
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/nested")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/outer\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit):
+            _mod._repo_scoped_project_slugs("duration")
+        assert "repo root is not among the resolved worktrees" in capsys.readouterr().err
+
+    def test_fails_closed_when_rev_parse_toplevel_command_fails(self, monkeypatch, capsys):
+        """The identity-check subprocess call erroring must fail closed, not
+        fall back to a machine-wide scope, even though worktree list succeeded."""
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/nested")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            raise FileNotFoundError("git")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit):
+            _mod._repo_scoped_project_slugs("duration")
+        assert "duration:" in capsys.readouterr().err
+
+
+class TestResolveProjectScope:
+    """The scope-dispatch helper behind --projects/--this-repo on the 15
+    non-skill-invocation subcommands."""
+
+    def _worktree_porcelain(self, *paths):
+        return "\n".join(f"worktree {p}\nHEAD 0000\nbranch refs/heads/x\n" for p in paths)
+
+    def test_this_repo_unset_raises_rather_than_defaulting_to_machine_wide(self, fake_projects):
+        """A subparser wired without _add_project_scope_args (missing this_repo
+        entirely) must raise, not silently fall through to '*' scope."""
+        args = type("A", (), {"projects": "*"})()  # no this_repo attribute at all
+        with pytest.raises(AttributeError):
+            _mod._resolve_project_scope(args, "buckets")
+
+    def test_called_twice_from_one_args_yields_same_session_list_both_times(self, tmp_path, monkeypatch):
+        """cmd_audit_routing's redact pass and main pass both call the scope helper
+        on the same args object — a shared/exhausted generator would make the
+        second pass silently empty."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo/main"), "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        args = argparse.Namespace(this_repo=True, projects="*")
+        iter1, label1 = _mod._resolve_project_scope(args, "audit-routing")
+        iter2, label2 = _mod._resolve_project_scope(args, "audit-routing")
+        sessions1 = list(iter1)
+        sessions2 = list(iter2)
+        assert len(sessions1) == 1
+        assert len(sessions2) == 1
+        assert label1 == label2
+
+    def test_resolved_scope_header_renders_under_this_repo_and_under_a_glob(self, tmp_path, monkeypatch, capsys):
+        """The resolved-scope header prints for a non-skill-invocation subcommand
+        both under --this-repo and under the default machine-wide glob, so no
+        output is scope-ambiguous."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo/main"), "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
+        out_repo = capsys.readouterr().out
+        assert "BUCKETS SOURCES (this repo (1 project dirs))" in out_repo
+
+        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
+        out_glob = capsys.readouterr().out
+        assert "BUCKETS SOURCES (*)" in out_glob
+
+
+class TestBuildParser:
+    """build_parser() as a testable seam — the argparse layer without executing
+    a subcommand against the real ~/.claude/projects."""
+
+    def test_this_repo_and_projects_mutually_exclusive_on_generic_subcommand(self):
+        parser = _mod.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["buckets", "--this-repo", "--projects", "x"])
+
+    def test_this_repo_and_projects_mutually_exclusive_on_skill_invocation(self):
+        parser = _mod.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["skill-invocation", "--this-repo", "--projects", "x"])
+
+    def test_this_repo_alone_parses_without_error(self):
+        parser = _mod.build_parser()
+        parsed = parser.parse_args(["buckets", "--this-repo"])
+        assert parsed.projects == "*"
+        assert parsed.this_repo is True
 
 
 class TestIterSessionsOrdering:
@@ -3763,7 +4174,7 @@ class TestIterSessionsSubagentMerge:
 
 
 def _subagents_args(*, projects: str = "*", branches: str | None = None) -> object:
-    return type("A", (), {"projects": projects, "branches": branches})()
+    return type("A", (), {"projects": projects, "this_repo": False, "branches": branches})()
 
 
 class TestSubagents:
@@ -3986,6 +4397,7 @@ class TestSubagentFormatContract:
 def _judgment_pair_args(
     *,
     projects: str = "*",
+    this_repo: bool = False,
     branches: str | None = None,
     since: str | None = None,
     until: str | None = None,
@@ -3995,6 +4407,7 @@ def _judgment_pair_args(
 ) -> object:
     return type("A", (), {
         "projects": projects,
+        "this_repo": this_repo,
         "branches": branches,
         "since": since,
         "until": until,
@@ -4258,8 +4671,28 @@ class TestJudgmentPair:
         assert "Feature branch review." in out
         assert "Main branch review." not in out
 
+    def test_branches_filter_selects_by_invocation_branch_across_a_branch_change(self, fake_projects, capsys):
+        """--branches filters on the invocation record's own gitBranch, not a single
+        session-wide branch — a session whose branch changes between the invocation
+        and the user response is selected by where the invocation itself happened."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z", branch="feat"),
+            _review_asst("Review while still on feat.", "2026-05-20T10:01:00.000Z", branch="feat"),
+            _user_reply("Reply after switching to main.", branch="main"),
+        ])
+        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feat"))
+        out_feat = capsys.readouterr().out
+        assert "Review while still on feat." in out_feat
+
+        _mod.cmd_judgment_pair(_judgment_pair_args(branches="main"))
+        out_main = capsys.readouterr().out
+        assert "No judgment pairs found." in out_main
+
     def test_out_path_writes_to_file(self, fake_projects, capsys, tmp_path):
-        """--out writes the pair block to the specified file instead of stdout."""
+        """--out writes the pair block to the specified file instead of stdout,
+        with the resolved-scope header prepended so the file stays
+        self-documenting about its scope even pasted elsewhere without the
+        original terminal output."""
         out_file = tmp_path / "output.txt"
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
@@ -4270,6 +4703,7 @@ class TestJudgmentPair:
         out_stdout = capsys.readouterr().out
         assert out_stdout == ""  # nothing printed to stdout
         file_content = out_file.read_text()
+        assert file_content.splitlines()[0] == "JUDGMENT PAIR SOURCES (*)"
         assert "Logic error in retry loop." in file_content
         assert "Will fix the retry logic." in file_content
 
@@ -4516,7 +4950,7 @@ class TestFrictionCountCrossPathEquality:
             _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t3", "pytest")]),
             _user_msg([_tool_result("t3", "1 failed, 19 passed")], branch="feat"),
         ])
-        fail_seq_args = type("A", (), {"branches": "feat", "projects": "*"})()
+        fail_seq_args = type("A", (), {"branches": "feat", "projects": "*", "this_repo": False})()
         _mod.cmd_fail_seq(fail_seq_args)
         fail_seq_out = capsys.readouterr().out
         m = re.search(r"Total runs: (\d+)\s+Failing: (\d+)", fail_seq_out)
