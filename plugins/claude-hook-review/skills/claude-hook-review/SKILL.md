@@ -157,6 +157,7 @@ Flag these on a hook PR:
 - Tests cover new code paths; synthetic prefixes only, no real project names. For `turn-gate` hooks specifically, since `GATE_HOOKS` excludes them from `test_hook_alignment.py`'s auto-parametrization: hand-written jq-absent and required-external-tool-absent cases are present, and — the reversed posture from `gate` — both must assert **silent-allow** (exit 0, empty stdout), not a hard block. A `turn-gate` hook that hard-blocks on a missing dependency turns an infrastructure gap into a stuck turn, which is the opposite of a `gate` hook's correct fail-closed jq-absent behavior (Section 4).
 - No unbounded loops, no network calls, no unbounded file I/O.
 - Header lists known gaps the hook does not close.
+- Each fact within a header category (each known gap, each scope exclusion, etc.) is one sentence — a category with multiple facts stays a multi-line bulleted list, one sentence per bullet (wrapping a long sentence across physical lines for width is fine; splicing in a second fact or its rationale is not); elaboration beyond the fact goes in docs/, cited by path, not inlined.
 - **`command` path resolution**: every `command` starts with `"$CLAUDE_PROJECT_DIR"`, `${CLAUDE_PLUGIN_ROOT}`, or a stable user-level prefix (`~`, `$HOME`, literal `/`). Bare `./` or unprefixed names fail review — see Section 2.
 
 ## 10. Operational-footprint escalation

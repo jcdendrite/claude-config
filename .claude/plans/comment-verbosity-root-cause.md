@@ -179,3 +179,97 @@ Read-only for this scope; this is the evidence base.
 - Any edit to `claude/**` or `plugins/**` — engineer chose diagnosis-first.
 - PR bodies, commit messages, diff-Markdown. #522's Row 5 deferral of PR-description verbosity stays open, untouched.
 - Reverting #522. Its provenance tripwire is not wrong; it is incomplete, and it was never the binding constraint on hook files.
+
+---
+
+## Fix implementation (issue #544, lands on PR #546)
+
+**This section supersedes the diagnosis-only scope above** — the engineer requested pulling #544's fix into this PR in the follow-up session that produced this section.
+
+### Context
+
+**Goal:** implement issue #544's root-cause fix so hook-header verbosity has a real constraint to fail against, without introducing an ungroundable numeric length cap.
+
+Settled this session (evidence, not assumption): `gh pr view 536` shows the PR that shipped the artifact file ran a cumulative `/code-review` pass explicitly including `claude-hook-review` against the full branch diff, producing 4 fixed + 3 deferred findings, none about header length. This rules out issue #544's Row 7 "never reached" branch — the checklist fired and correctly passed the header as mandated content, because the checklist carries no bound for that content to fail against. That is the gap this fix closes.
+
+**Engineer constraint (this session):** no numeric length threshold. #522's own plan already rejected one as ungroundable — no vendor or style-guide source caps comment block height — and the engineer independently flagged strict length bounds as an anti-pattern, consistent with a prior `/verify-sources` finding that no official source recommends restricting code on length alone. Both interventions below are structural (one fact per bullet, elaboration moves to `docs/`) or relative (a block longer than the code it documents) — neither asserts an arbitrary line count.
+
+### Approach
+
+Two complementary, independent edits — chosen over the diagnosis's other three candidates:
+
+**1. `plugins/claude-hook-review/skills/claude-hook-review/SKILL.md` — bound the mandate at its source.** The checklist (§9) requires headers to document purpose, scope, dispatch, known gaps, and fail posture with no shape constraint on any of them — `advance-past-commit-stall.sh`'s "Known gaps" alone runs 14 of the header's 38 lines across 5 enumerated items. Add one checklist bullet, placed after the existing `:159` "Header lists known gaps" bullet:
+
+> Each fact within a header category (each known gap, each scope exclusion, etc.) is one sentence — a category with multiple facts stays a multi-line bulleted list, one sentence per bullet (wrapping a long sentence across physical lines for width is fine; splicing in a second fact or its rationale is not); elaboration beyond the fact goes in docs/, cited by path, not inlined.
+
+"Sentence," not "line": `deny-private-project-refs.sh:9-17`'s own Dispatch field — the checklist's own cited model at `:125` — wraps a single logical clause across 7 physical lines for readability, which this rule must not flag. The design is grounded in an existing rule already in force globally in this repo (CLAUDE.md §Code Comments) — not a new invented constant — but the shipped bullet text does not name CLAUDE.md: `claude-hook-review` is an independently-installable marketplace plugin (its own description: "Install at project scope in repos that author `.claude/hooks/*.sh` scripts"), so it cannot assume every installing repo's CLAUDE.md carries an equivalent rule the way `claude/.claude/rules/shell-script-conventions.md` can (same stow package as the global CLAUDE.md it cites, so the two are always co-installed). Caught during `/code-review`'s `skill-review` sub-pass; fixed by dropping the CLAUDE.md reference and stating the rule self-contained. Rejected: a numeric line cap per the constraint above; rewriting the six mandated categories down to fewer categories (each is independently justified per the diagnosis, and narrowing categories is a different, larger change than bounding their shape).
+
+**2. `claude/.claude/rules/shell-script-conventions.md` — cover the file classes with no owner today.** This path-scoped rule (`**/*.sh`, `**/*.bash`) auto-loads on every shell file and currently says nothing about comments. Add one bullet, following the file's existing bullet format (bolded lead claim, then explanation):
+
+> **Match CLAUDE.md's comment-length convention in every `#` block.** State each non-obvious fact as one sentence, not a multi-sentence rationale — move elaboration or design rationale to `docs/`, cited by path, rather than inlining it in the comment.
+
+The diagnosis found bullet 4 ("one line, not a paragraph") has no trigger at either review pass today — this closes that gap. This is the lightest available primitive — a one-file prose addition, no new skill/route/hook — and the only one of the five candidates that reaches non-hook `scripts/**`. It remains advisory (steers without a check), same limitation #522 had; accepted because the mandate-vs-generic-rule conflict that made #522 fail on hook files specifically is what edit 1 closes, and non-hook shell scripts have no competing mandate to conflict with.
+
+**Not implementing (from the diagnosis's candidate list):**
+- **Intervention 2** (relative length trigger on `code-review` Step 1.5 / `code-writer.md` step 6) — weakened by the Row 7 finding: the generic Step 1.5 tripwire isn't what reviewed the artifact file, `claude-hook-review` was, so a Step 1.5 trigger would not have caught this case. Also flagged in the diagnosis as a 5th tripwire in a compounding-layers pattern (3 → #522's 4 → this would be 5) — the diagnosis's own recommendation was to question the enumeration before extending it again.
+- **Intervention 5** (commit-time hook) — diagnosis costs this as a new predicate, not a copy of existing precedent (`check-claude-md-length.sh`/`check-skill-length.sh` are line-count ratchets, not comment-density checks, and neither's path regex touches `.sh`/`.py`). Mechanical enforcement of a non-numeric, per-category shape rule doesn't have a clean predicate shape; out of scope for this PR.
+- **Intervention 4** (item 12's dangling citation) — filed separately as issue #545 specifically so it would not ride on #544; stays out of scope here per that issue's own stated intent.
+- **`.py` and non-hook `scripts/**` beyond edit 2's reach** — edit 2 only covers `**/*.sh`/`**/*.bash`. `.py` remains genuinely unowned after this fix; not addressed here since none of #544's five candidates proposed a `.py`-specific mechanism. Worth a future issue if `.py` verbosity recurs, not this PR's scope.
+
+#### Assumption ledger
+
+```
+Root: claude-hook-review mandates hook-header content with no shape bound;
+  a generic CLAUDE.md length rule cannot bind against a specific checklist
+  requiring the content it forbids. [established in the diagnosis section
+  above, re-affirmed here]
+
+Row 1 [finding, verified]: PR #536's body documents a cumulative /code-review
+  pass that included claude-hook-review against the full branch diff (4 fixed
+  + 3 deferred findings, none about header length) [verified: `gh pr view 536
+  --json body` read this session]. Settles Row 7: the checklist fired and
+  correctly passed the header as mandated content.
+Row 2 [engineer-verified]: no numeric length threshold — engineer flagged
+  strict length bounds as an anti-pattern this session, consistent with a
+  prior /verify-sources finding (no official source recommends restricting
+  code on length alone) and with #522's own ungroundable-threshold rejection
+  already on record in this plan's diagnosis section.
+Row 3 [finding, verified]: claude-hook-review/SKILL.md:150-159 (the review
+  checklist) has no comment-length or shape guidance of any kind
+  [verified: read the file this session; matches the diagnosis's original
+  grep-for-length-concise-verbos finding].
+Row 4 [finding, verified]: advance-past-commit-stall.sh's "Known gaps"
+  section (lines 26-39) is 14 of the header's 38 lines, the single largest
+  category [verified: read the file this session].
+Row 5 [finding, verified]: shell-script-conventions.md is silent on comments
+  entirely and auto-loads on every .sh/.bash file including hooks
+  [verified: read the file this session; matches the diagnosis's finding].
+Row 6 [finding, verified]: claude-hook-review is a marketplace plugin
+  (plugins/claude-hook-review/.claude-plugin/plugin.json present) at version
+  2.2.0 [verified: read plugin.json this session] — plugin-semver requires a
+  version bump for this change; minor (2.2.0 -> 2.3.0), matching PR #536's
+  precedent for a backward-compatible checklist addition.
+```
+
+### Critical files
+
+- `plugins/claude-hook-review/skills/claude-hook-review/SKILL.md` — add one bullet to the §9 review checklist, after the existing `:159` "Header lists known gaps" bullet, using the exact text quoted in Approach item 1 above.
+- `plugins/claude-hook-review/.claude-plugin/plugin.json` — bump `version` `2.2.0` → `2.3.0` (minor: backward-compatible checklist addition, per `plugin-semver`).
+- `claude/.claude/rules/shell-script-conventions.md` — add one bullet using the exact text quoted in Approach item 2 above, following the file's existing bullet format (no vendor citation needed since this cites an in-repo rule, not an external standard).
+
+Reuse: no new mechanism in either file — both edits point at CLAUDE.md's already-existing "one line, not a paragraph" / self-test bullets rather than restating or inventing a rule, per this repo's single-source-of-truth convention.
+
+### Verification
+
+1. `grep -n -iE "length|concise|docs/" plugins/claude-hook-review/skills/claude-hook-review/SKILL.md` shows the new bullet.
+2. `jq -r .version plugins/claude-hook-review/.claude-plugin/plugin.json` reads `2.3.0`.
+3. `grep -n -iE "comment|length" claude/.claude/rules/shell-script-conventions.md` shows the new bullet (currently returns nothing, per the diagnosis's Verification step 7).
+4. `.venv/bin/pytest claude/.claude/` and `.venv/bin/ruff check claude/.claude/` stay clean — this change touches no executable code, only skill/rule prose.
+5. `/skill-review` (hook-enforced on the `SKILL.md` edit) and `plugin-semver` (hook-enforced on the plugin-directory edit) both pass before commit, per `.claude/rules/review-pipeline-dispatch.md`.
+6. `/code-review` on the staged diff before commit, then `/ready-for-review` before push (PR #546 already exists, so its step 6 create-PR is a no-op).
+
+### Out of scope (fix phase)
+
+- Interventions 2, 4, 5 from the diagnosis — see rationale above.
+- `.py` / non-hook `scripts/**` comment-length ownership beyond what edit 2 already covers.
+- Any change to `advance-past-commit-stall.sh` itself — its header is correct under the *current* mandate; this fix changes the mandate going forward, it does not retroactively edit the artifact that surfaced the gap.
