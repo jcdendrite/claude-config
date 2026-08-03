@@ -100,6 +100,118 @@ personal glob line is protected by the same case-insensitive guarantee as
 the built-in set, not left as something the user has to get right
 themselves.
 
+## The network-install and WebFetch domain guards
+
+| Hook | Gates | Optional additions file |
+|---|---|---|
+| `deny-network-installs.sh` | `Bash` — denies a named-package install (npm/pnpm/yarn/bun/pip/pip3/uv-pip), an `npx`/`bunx`/`uvx`/`pipx run` invocation carrying an explicit `-y`/`--yes`, or curl/wget co-occurring with a shell/interpreter in the same call | none |
+| `deny-unlisted-webfetch-domains.sh` | `WebFetch` — asks (or denies, under `auto`/`bypassPermissions`/`dontAsk`) a domain not on the allowlist | `~/.claude/webfetch-allowed-domains.md` |
+
+Always on, no bypass valve, closing the gap that let one agent install the
+wrong package from a public registry and then reach for a vendor
+`curl`-piped installer on its own initiative — nothing in this hook family
+previously stopped an agent from bringing new software onto the machine or
+fetching from an arbitrary host. `permissions.deny` carries the unambiguous
+half of the same policy (`brew install`/`gem install`/`cargo install`/`go
+install`/`gh extension install`/`mas install`/`pipx install` — tools with no
+restore-command collision, so a flat literal is always safe); see
+[`docs/auto-mode.md`](auto-mode.md#hard-floor-deny-rules) for that table.
+
+`deny-network-installs.sh` matches on token *presence*
+(`_lib_fragment_has_token`), not on resolving "the" leading command through
+wrappers. Position-based resolution has three failure modes this design
+avoids entirely: `_lib_fragment_command_word`'s runner-skip list resolves
+`pnpm add lodash` to the command word `add`, not the manager name; `bash -c
+"$(curl …)"` produces a `curl` fragment with nothing after it, so any
+adjacency-based check misses it; and a hand-curated wrapper list (`sudo`,
+`env`, `timeout`, …) is easy to leave incomplete. Presence is immune to that
+whole bug class, since no wrapper removes a token from the command string.
+
+**Named residuals, accepted rather than chased with more parsing:**
+- Bare `npx`/`bunx`/`uvx`/`pipx` (no `-y`/`--yes`) — disambiguating "runs an
+  already-installed local tool, no network call" from "fetches a new one"
+  needs lockfile/`package.json` awareness this hook does not have.
+- A path-prefixed manager invocation (`/opt/homebrew/bin/npm install x`) —
+  token-presence matching never sees `npm` inside the longer token.
+- `pip install -e <VCS-URL>` — the editable-install marker's value is always
+  skipped, whether it's a local path or a fetchable URL.
+- An unrecognized value-taking flag (`--registry <url>`, `--prefix <path>`)
+  has its value misread as a leftover argument and denies — a false-deny,
+  the safe direction, not chased with a per-manager flag dictionary.
+- curl/wget co-occurring with an interpreter *anywhere* in one Bash call
+  denies, regardless of which operator actually connects them — including
+  two genuinely unrelated actions batched with `&&`. Precisely determining
+  which operator connects the two fragments is undecidable from
+  `_lib_split_fragments`'s output (it collapses `;`/`&&`/`||`/`|` to the
+  same delimiter), so this is a deliberate, named over-deny rather than
+  chased further.
+- The command is quote-stripped (`_lib_strip_shell_quotes`) before matching,
+  same helper and rationale as `deny-credential-bash-reads.sh` — this closes
+  a false-allow (`"npm" install lodash` executes identically to the
+  unquoted form) and, as a consequence, makes the over-deny above uniform: a
+  `grep` pattern or commit message merely mentioning "npm install" denies
+  the same way regardless of quote placement. Without quote-stripping, a
+  token glued directly to the opening quote (`"npm`) would not match, so
+  whether a given mention denies would depend on quote adjacency — an
+  inconsistency this closes. Workaround for all of the above: the `!` shell
+  escape.
+- Shell indirection this hook family already accepts as a known gap
+  elsewhere — `sh -c '...'` with a fully-inline payload, a temp script
+  written then executed separately, `eval $(echo … | base64 -d)`, a
+  session-defined alias (see `deny-repo-relocation.sh`'s header for the
+  precedent this mirrors).
+
+**`deny-unlisted-webfetch-domains.sh`** inverts `_lib_config_lines`'s usual
+"absent file means no restriction" contract deliberately: this file *grants*
+reach, so an absent or empty `~/.claude/webfetch-allowed-domains.md` means
+every domain is unlisted, not that none are restricted. `install.sh` seeds a
+starter file (`github.com`, `*.github.com`, `registry.npmjs.org`, `pypi.org`,
+`files.pythonhosted.org`, `api.anthropic.com`) for fresh installs only —
+existing consumers get the file on their next `git pull` with no
+retroactive seed, so their first WebFetch to an unlisted domain after this
+change prompts (or denies outright under `auto`/`bypassPermissions`) with no
+advance warning. Deliberately excludes gist/raw-paste/raw-content-style
+hosts from the seed: those are simultaneously the injection surface
+(attacker-controlled page content reaching the agent) and a potential
+low-bandwidth query-string egress channel, so they are not pre-trusted by
+default. Add entries one domain per line; `*.example.com` matches strict
+subdomains only, never the bare apex — list both if you need both.
+
+**No dedicated write-gate protects the allowlist file itself.** No hook in
+the `Edit|Write|MultiEdit` PreToolUse group matches
+`~/.claude/webfetch-allowed-domains.md` — `ask-review-permissions.sh` only
+matches `.claude/settings*.json`, and `require-worktree-for-file-writes.sh`
+explicitly exempts all of `$HOME/.claude/`. An agent with ordinary `Edit`/
+`Write` access can append a domain to the allowlist and immediately
+`WebFetch` it with no prompt, self-widening its own reach in one turn.
+Accepted, matching the equally-unprotected `pii-patterns.md`/
+`credential-file-guard.md`-style config files this repo already ships —
+named explicitly here because, unlike those deny-widening files, this one
+grants reach rather than narrowing a restriction, so the consequence of a
+successful append is more direct.
+
+A hook-returned `ask` `permissionDecision` forcing a prompt under
+`auto`/`bypassPermissions` is undocumented in Claude Code's own
+[hooks reference](https://code.claude.com/docs/en/hooks), so this hook uses
+`deny` in those modes instead of assuming a prompt appears — `deny` is the
+one decision every permission mode is documented to honor. An absent,
+empty, or unrecognized `permission_mode` also fails closed to deny, never
+falls through to ask. Host extraction shells out to Python's
+`urllib.parse.urlsplit` rather than a hand-rolled regex, closing a
+userinfo-authority bypass (`https://github.com@evil.com/x` must resolve to
+`evil.com`, not whatever precedes the `@`) that a naive regex would have
+had; `python3` absence or a hang past the 5s timeout denies naming `python3`
+explicitly rather than being misread as an unparseable-URL deny.
+
+**Out of scope for this family:** `WebSearch` returns result text rather
+than fetching a chosen host — any URL it surfaces still routes through
+`deny-unlisted-webfetch-domains.sh` on the follow-up `WebFetch`. MCP-connector
+fetches (Google Drive, Todoist, and similar) route through neither hook.
+`brew`/`gem`/`cargo`/`go`/`gh extension`/`mas` are covered only by the
+`permissions.deny` literal, not a `deny-network-installs.sh` fragment check —
+a `cd /tmp && brew install jq` bypasses the literal's prefix match; accepted,
+since the incident that motivated this family was `npm`/`curl`, not these.
+
 ## The two PII guard hooks
 
 | Hook | Gates | Armed by |

@@ -41,7 +41,16 @@
       "Read(**/.env.test)",
       "Read(**/.env.test.*)",
       "Read(**/credentials.json)",
-      "Read(**/.credentials.json)"
+      "Read(**/.credentials.json)",
+      "Bash(brew install *)",
+      "Bash(brew tap *)",
+      "Bash(brew reinstall *)",
+      "Bash(gem install *)",
+      "Bash(cargo install *)",
+      "Bash(go install *)",
+      "Bash(gh extension install *)",
+      "Bash(mas install *)",
+      "Bash(pipx install *)"
     ]
   },
   "model": "opusplan",
@@ -303,6 +312,21 @@
             "type": "command",
             "command": "~/.claude/hooks/deny-repo-relocation.sh",
             "statusMessage": "Checking repo-relocation guard..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-network-installs.sh",
+            "statusMessage": "Checking network-install guard..."
+          }
+        ]
+      },
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-unlisted-webfetch-domains.sh",
+            "statusMessage": "Checking WebFetch domain allowlist..."
           }
         ]
       },

@@ -46,6 +46,13 @@ claude/.claude/data-file-read-guard.md
 claude/.claude/credential-file-guard.md
 claude/.claude/credential-value-patterns.md
 
+# Same belt-and-suspenders for the user-local WebFetch domain allowlist read
+# by deny-unlisted-webfetch-domains.sh. Unlike the guard-config files above,
+# this one grants reach rather than widening a deny, and its content is
+# consumer-curated so it can legitimately name internal/private-project
+# domains. See docs/security-hardening.md.
+claude/.claude/webfetch-allowed-domains.md
+
 # Machine-level opt-in markers belong at ~/.claude/ directly, created by hand
 # (touch), never via the stow package. These entries stop an accidental in-tree
 # copy from being committed and shipped to every stow user. See
