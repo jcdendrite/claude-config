@@ -1801,12 +1801,14 @@ def _priced(
 def _cost_args(
     *,
     projects: str = "*",
+    this_repo: bool = False,
     since: str | None = None,
     top: int = 20,
     no_redact: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
+        "this_repo": this_repo,
         "since": since,
         "top": top,
         "no_redact": no_redact,
@@ -2361,6 +2363,32 @@ class TestCost:
         assert "10.00" in top_section
         assert "8.00" in top_section
         assert "2.00" not in top_section
+
+    def test_this_repo_scopes_via_resolve_project_scope(self, tmp_path, monkeypatch, capsys):
+        """cost wires --this-repo through the shared _resolve_project_scope helper
+        like every other subcommand — pinned here because cost predates that
+        convention and a prior rebase silently left it on a bespoke --projects-only
+        argument with no --this-repo support at all."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(this_repo=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "COST SOURCES (this repo (1 project dirs))" in out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "2.00"
 
 
 # ---------------------------------------------------------------------------
@@ -4304,7 +4332,7 @@ class TestRepoScopedProjectSlugsGuard:
 
 
 class TestResolveProjectScope:
-    """The scope-dispatch helper behind --projects/--this-repo on the 15
+    """The scope-dispatch helper behind --projects/--this-repo on the 16
     non-skill-invocation subcommands."""
 
     def _worktree_porcelain(self, *paths):

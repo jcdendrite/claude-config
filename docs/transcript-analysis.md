@@ -415,6 +415,7 @@ Pricing is looked up per exact model ID (Sonnet 5 and Sonnet 4.6 price different
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); mutually exclusive with `--projects`
 - `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`)
 - `--top N` — maximum per-session rows in the top-N-by-dollars section (default: 20)
 - `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output.

@@ -2429,7 +2429,6 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
     counted toward the total, matching real billing — cmd_audit_routing's
     Opus-only, main-thread-only scope would silently exclude most of it.
     """
-    projects_glob = _projects_glob(args)
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = not bool(getattr(args, "no_redact", False))
 
@@ -2455,7 +2454,10 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
     session_rows: list[dict] = []
     stale_models: set[str] = set()
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob, include_subagents=True):
+    session_iter, scope_label = _resolve_project_scope(args, "cost", include_subagents=True)
+    _print_resolved_scope("cost", scope_label)
+
+    for jsonl, records in session_iter:
         proj_label = _derive_proj_label(jsonl)
         session_id = jsonl.stem[:12]
         if redact:
@@ -3697,7 +3699,7 @@ def build_parser() -> argparse.ArgumentParser:
             " and context-at-turn bucket, plus top-N sessions by dollars. Redacted by default."
         ),
     )
-    p_cost.add_argument("--projects", default="*", metavar="GLOB")
+    _add_project_scope_args(p_cost)
     p_cost.add_argument(
         "--since", metavar="Nd",
         help="Limit to turns with timestamp in the last N days (e.g. 35d).",
