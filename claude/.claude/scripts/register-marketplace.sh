@@ -70,6 +70,15 @@ else
 fi
 # INSTALL_TEST_FIXTURE: repo-relocation-marketplace — end
 
+# Tracks every marketplace this run leaves actually registered — seeded from
+# what was already there plus claude-config (unconditionally registered
+# above, or the script would already have exited via set -e on a failed
+# add) — so the enabledPlugins loop below can tell a plugin's marketplace
+# apart from one skipped just above as non-portable, instead of attempting
+# an install doomed to fail.
+registered_marketplaces="$existing_marketplaces
+claude-config"
+
 while IFS=$'\t' read -r name source_type repo; do
   # claude-config is registered separately above as a directory source; skip
   # any extraKnownMarketplaces entry so a stray leftover doesn't trip the
@@ -87,6 +96,8 @@ while IFS=$'\t' read -r name source_type repo; do
     echo "  → adding $name ($repo)"
     claude plugin marketplace add "$repo" --scope user
   fi
+  registered_marketplaces="$registered_marketplaces
+$name"
 done < <(jq -r '.extraKnownMarketplaces // {} | to_entries[] |
   "\(.key)\t\(.value.source.source)\t\(.value.source.repo // "")"
 ' -- "$SETTINGS_FILE")
@@ -95,6 +106,11 @@ echo ""
 echo "=== Installing plugins from enabledPlugins ==="
 existing_plugins="$(claude plugin list --json 2>/dev/null | jq -r '.[] | select(.scope == "user") | .id')"
 while read -r plugin; do
+  marketplace_name="${plugin##*@}"
+  if ! echo "$registered_marketplaces" | grep -qFx "$marketplace_name"; then
+    echo "  ! $plugin: marketplace '$marketplace_name' is not registered for this profile — skipping (either non-portable and skipped above, or never declared in extraKnownMarketplaces)"
+    continue
+  fi
   if echo "$existing_plugins" | grep -qFx "$plugin"; then
     echo "  ✓ $plugin (already installed)"
   else
