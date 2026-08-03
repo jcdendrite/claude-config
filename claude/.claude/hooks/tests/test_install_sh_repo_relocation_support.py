@@ -382,11 +382,14 @@ class TestSettingsFileResolution:
         assert _read_log(add_log) != []
 
     def test_uses_config_dir_settings_when_set(self, tmp_path: Path) -> None:
+        """CLAUDE_CONFIG_DIR replaces the whole ~/.claude directory, not just
+        $HOME (https://code.claude.com/docs/en/claude-directory) — settings.json
+        lives directly at its root, with no nested .claude/ segment."""
         home = tmp_path / "home"
         home.mkdir()
         profile_dir = tmp_path / "profile"
-        (profile_dir / ".claude").mkdir(parents=True)
-        (profile_dir / ".claude" / "settings.json").write_text("{}\n")
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "settings.json").write_text("{}\n")
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         add_log = tmp_path / "add.log"
