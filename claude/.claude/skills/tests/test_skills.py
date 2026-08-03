@@ -1063,7 +1063,7 @@ class TestProjectLayerUsesReadNotSkill:
     incorporates the layer's content, not its invocation context.
     """
 
-    PARENT_SKILLS = ["code-review", "plan-it", "plan-review", "test-conventions"]
+    PARENT_SKILLS = ["code-review", "plan-it", "plan-review", "pr-description", "test-conventions"]
 
     def _project_layer_section(self, skill_name: str) -> str:
         """Extract the project-layer loading paragraph from a skill body."""
