@@ -103,7 +103,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 11. **Misleading names** — Do function or variable names promise more or less than they deliver? A `validateUser` that only checks one field, an `allItems` that holds a filtered subset.
 
-12. **Stripped WHY comments** — In modified files, were comments documenting a non-obvious constraint, subtle invariant, bug workaround, or surprising behavior deleted? Stripping these regresses documentation that the original author judged worth keeping. The "default to no comments" rule applies to *adding*; it does not authorize bulk removal during unrelated edits. Apply the same WHY test to existing comments: keep if it meets the standard, remove only if it restates WHAT the code does. Check `git diff` for deleted comment lines in changed hunks.
+12. **Stripped WHY comments** — In modified files, were comments documenting a non-obvious constraint, subtle invariant, bug workaround, or surprising behavior deleted? Stripping these regresses documentation that the original author judged worth keeping. A preference for minimal comments governs whether to *add* one; it does not authorize bulk removal during unrelated edits. Apply the same WHY test to existing comments: keep if it meets the standard, remove only if it restates WHAT the code does. Check `git diff` for deleted comment lines in changed hunks.
 
 ### Security
 
