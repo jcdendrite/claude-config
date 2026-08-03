@@ -50,3 +50,7 @@ matters.
   or collides with the caller's scope.
 - **`"${VAR:?message}"` for required inputs** — fails loudly at the point of
   use instead of silently expanding to empty.
+- **Match CLAUDE.md's comment-length convention in every `#` block.** State
+  each non-obvious fact as one sentence, not a multi-sentence rationale — move
+  elaboration or design rationale to `docs/`, cited by path, rather than
+  inlining it in the comment.
