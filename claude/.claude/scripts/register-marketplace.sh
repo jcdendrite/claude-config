@@ -2,13 +2,16 @@
 set -euo pipefail
 
 # Registers this repo's plugin marketplace and installs its enabledPlugins
-# for one Claude Code config profile ($CLAUDE_CONFIG_DIR, or $HOME by
+# for one Claude Code config profile ($CLAUDE_CONFIG_DIR, or $HOME/.claude by
 # default) — safe to invoke once per profile on a machine running several.
+# CLAUDE_CONFIG_DIR replaces the whole ~/.claude directory, not just $HOME
+# (https://code.claude.com/docs/en/claude-directory) — settings.json lives
+# directly at its root, with no nested .claude/ segment underneath it.
 #
-# Threat model: $CLAUDE_CONFIG_DIR/settings.json is trusted without an
-# ownership check — a session with enough local access to set that env var
-# and author that file could already run `claude plugin install` directly,
-# so this script grants no new capability over what's already reachable.
+# Threat model: the resolved settings.json is trusted without an ownership
+# check — a session with enough local access to set CLAUDE_CONFIG_DIR and
+# author that file could already run `claude plugin install` directly, so
+# this script grants no new capability over what's already reachable.
 
 # pwd -P (not pwd) canonicalizes away any symlink, matching install.sh's own
 # REPO_DIR resolution — plus a readlink -f on $0 first, since this script is
@@ -23,7 +26,7 @@ if [ ! -f "$REPO_DIR/.claude-plugin/marketplace.json" ]; then
   exit 1
 fi
 
-SETTINGS_FILE="${CLAUDE_CONFIG_DIR:-$HOME}/.claude/settings.json"
+SETTINGS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 if [ ! -f "$SETTINGS_FILE" ]; then
   echo "[register-marketplace] $SETTINGS_FILE not found — nothing to register for this profile."
   exit 0
