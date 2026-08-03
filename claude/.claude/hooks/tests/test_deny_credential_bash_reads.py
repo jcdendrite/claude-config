@@ -76,6 +76,50 @@ class TestDenyCredentialBashReads:
         case-sensitive grep doesn't reopen this silently."""
         assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "deny"
 
+    # ------------------------------------------------------------------ #
+    # Leading-dot credentials.json — closes a dotfile-boundary gap        #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat ~/.credentials.json",
+            "cat /home/user/.claude/.credentials.json",
+        ],
+    )
+    def test_leading_dot_credentials_json_denied(self, isolated_home, command):
+        """Required regression test: the credentials.json alternative's
+        boundary required a non-dot character immediately before the match,
+        so a leading-dot `.credentials.json` (Claude Code's own OAuth/API
+        credential filename under CLAUDE_CONFIG_DIR) never matched -- the
+        `.` of the dotfile prefix itself failed the boundary. Pinned so a
+        future edit collapsing the new `\\.credentials\\.json` alternative
+        back into the bare one doesn't silently reopen this."""
+        assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "deny"
+
+    def test_credentials_json_substring_in_longer_token_allowed(self, isolated_home):
+        """Required regression test proving the leading-dot fix stays
+        narrowly scoped: a filename that merely ends in `.credentials.json`
+        without being the dotfile itself (preceded by a non-boundary
+        character) must not match, the same way the pre-existing bare
+        `credentials.json` alternative never matched inside a longer
+        token."""
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK, bash_input("cat /foo/backup.credentials.json"), home=isolated_home
+        ) == "allow"
+
+    def test_leading_dot_credentials_json_backup_suffix_denied(self, isolated_home):
+        """Required regression test: the new `\\.credentials\\.json`
+        alternative inherits group 2's trailing boundary, which allows a
+        following `.` -- closing a `credentials.json.bak`-style backup-copy
+        bypass (per this constant's own header comment in _lib.sh) -- so a
+        future edit that narrows the leading-dot alternative's own trailing
+        boundary doesn't silently reopen this specifically for
+        `.credentials.json`."""
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK, bash_input("cat ~/.credentials.json.bak"), home=isolated_home
+        ) == "deny"
+
     @pytest.mark.parametrize(
         "command",
         [

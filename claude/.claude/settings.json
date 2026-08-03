@@ -40,7 +40,8 @@
       "Read(**/.env.staging.*)",
       "Read(**/.env.test)",
       "Read(**/.env.test.*)",
-      "Read(**/credentials.json)"
+      "Read(**/credentials.json)",
+      "Read(**/.credentials.json)"
     ]
   },
   "model": "opusplan",
