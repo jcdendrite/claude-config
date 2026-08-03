@@ -36,6 +36,12 @@ claude/.claude/private-projects.md
 claude/.claude/pii-patterns.md
 claude/.claude/data-file-read-guard.md
 
+# Same belt-and-suspenders for the user-local credential guard config files
+# read by deny-credential-bash-reads.sh, deny-credential-file-reads.sh, and
+# redact-credential-values.sh. See docs/security-hardening.md.
+claude/.claude/credential-file-guard.md
+claude/.claude/credential-value-patterns.md
+
 # Machine-level opt-in markers belong at ~/.claude/ directly, created by hand
 # (touch), never via the stow package. These entries stop an accidental in-tree
 # copy from being committed and shipped to every stow user. See

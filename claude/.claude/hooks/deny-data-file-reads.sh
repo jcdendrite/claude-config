@@ -46,9 +46,6 @@
 
 set -uo pipefail
 
-# 5 MB size threshold, in bytes.
-SIZE_THRESHOLD=5242880
-
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
@@ -119,21 +116,14 @@ file_size() {
 
 if [ -f "$FILE_PATH" ]; then
   FILE_SIZE=$(file_size "$FILE_PATH")
-  if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt "$SIZE_THRESHOLD" ] 2>/dev/null; then
+  if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null; then
     emit_deny "Read of '${FILE_PATH}' denied by the data-file read gate: the file is ${FILE_SIZE} bytes, over the 5 MB threshold. A large file of any extension is likely a data dump; Read truncates at 2000 lines but those lines are still PII/PHI. (Armed by ~/.claude/data-file-read-guard.md — see docs/security-hardening.md.)"
     exit 0
   fi
 fi
 
 # --- Configured path globs from data-file-read-guard.md ------------------
-while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-  # Strip CR (CRLF), then leading/trailing whitespace.
-  line=${raw_line%$'\r'}
-  line="${line#"${line%%[![:space:]]*}"}"
-  line="${line%"${line##*[![:space:]]}"}"
-  [ -z "$line" ] && continue
-  case "$line" in '#'*) continue ;; esac
-
+while IFS=$'\t' read -r _lineno line; do
   # Each line is a path glob. `case` glob matching treats `*` as matching
   # any character including `/`, so `**` collapses to `*` and a glob like
   # `**/patient-exports/**` matches at any depth.
@@ -147,6 +137,6 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
       exit 0
       ;;
   esac
-done < "$GUARD_FILE"
+done < <(_lib_config_lines "$GUARD_FILE")
 
 exit 0

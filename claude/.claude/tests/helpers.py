@@ -248,6 +248,68 @@ def run_hook_stop(
     return payload
 
 
+class _NoUpdatedOutputSentinel:
+    """Distinct from Python `None`: `run_hook_updated_output` returns this
+    when the hook produced no stdout at all (its fail-open passthrough
+    path), never for a hook that explicitly emits
+    `updatedToolOutput: null`. `json.loads` collapses "no output" and "JSON
+    null" to the same Python `None` if the helper returns `None` for both,
+    which would let a hook that switches from silent passthrough to an
+    explicit-null emission — turning "leave content untouched" into
+    "replace the tool result with null", a materially different and more
+    dangerous outcome depending on harness semantics — pass any test
+    written against `is None`."""
+
+    def __repr__(self) -> str:
+        return "NO_UPDATED_OUTPUT"
+
+
+NO_UPDATED_OUTPUT = _NoUpdatedOutputSentinel()
+
+
+def run_hook_updated_output(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+):
+    """Like `run_hook`, but for a PostToolUse hook whose only success-path
+    field is `hookSpecificOutput.updatedToolOutput` — no `permissionDecision`
+    is ever emitted for this shape, so `run_hook`/`run_hook_advisory` (which
+    key on `permissionDecision`) can't express "did it redact, and to what".
+
+    Returns the parsed `updatedToolOutput` value (any JSON type — an object,
+    a bare string, a number, `null` as Python `None`) on a non-empty stdout
+    payload, or the `NO_UPDATED_OUTPUT` sentinel when the hook produced no
+    output at all (its fail-open path: the harness reads silence as "no
+    change", i.e. the original tool_response passed through untouched).
+    Callers asserting fail-open passthrough must check `is NO_UPDATED_OUTPUT`,
+    not `is None` — the latter also matches a hook that explicitly emitted
+    `updatedToolOutput: null`, a different and non-equivalent outcome.
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook reads its optional additions file from an isolated temp directory
+    rather than real ~/.claude.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
+    env = _build_subprocess_env(home, extra_env)
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
+    if not result.stdout.strip():
+        return NO_UPDATED_OUTPUT
+    payload = json.loads(result.stdout)
+    return payload["hookSpecificOutput"]["updatedToolOutput"]
+
+
 def posttooluse_input(file_path: str) -> dict:
     """Build a PostToolUse Write event payload for consume-migration-token tests.
 

@@ -754,6 +754,120 @@ _lib_stray_marker_hint() {
   printf '%s' " Note: .claude/worktree-required is present but untracked — an accidental stray copy activates enforcement exactly like a committed one. Commit it if intentional, or remove it if it was created by accident."
 }
 
+# Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
+_LIB_SIZE_THRESHOLD_BYTES=5242880
+
+# _lib_config_lines FILE
+# Prints each non-blank, non-comment line of a per-user config file
+# (credential-file-guard.md, data-file-read-guard.md, pii-patterns.md,
+# credential-value-patterns.md) as "<1-based raw line number>\t<CR-stripped,
+# trimmed line>". The line number counts every raw line, including ones this
+# function skips, so a caller reporting a parse error can point the user at
+# the actual line in their file. Prints nothing (returns 0) when FILE is
+# absent or unreadable. Callers apply their own per-line grammar and match
+# semantics (substring glob, exact glob, or "<label>: <regex>") to the line
+# field -- those differ by design and are not this function's concern.
+_lib_config_lines() {
+  local file="$1"
+  [ -f "$file" ] && [ -r "$file" ] || return 0
+  local raw_line line lineno=0
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+    lineno=$((lineno + 1))
+    line=${raw_line%$'\r'}
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    case "$line" in '#'*) continue ;; esac
+    printf '%s\t%s\n' "$lineno" "$line"
+  done < "$file"
+}
+
+# Collapses bash's character-removal-based literal-reassembly mechanisms for
+# credential/PII pattern matching against raw Bash command text: bash
+# executes `cat ~/.ssh/config"_backup"`, `cat ~/id_r\sa`, and
+# `cat ~/id_r$''sa` all identically to their unquoted/unescaped form (an
+# adjacent quote split, a backslash-escaped character, and an ANSI-C/
+# locale-translated quoted segment respectively all have the delimiting
+# characters removed, then the remaining literals are joined into one
+# word), but a `grep -E` scan of the unexpanded command sees each
+# delimiter as a hard break and can miss a credential-path or
+# credential-value pattern that only completes once they're removed.
+# Deny-credential-bash-reads.sh and deny-pii-in-commits.sh's
+# credential-value sub-check must run this over $COMMAND before matching
+# against _LIB_CREDENTIAL_PATH_REGEX or _LIB_CREDENTIAL_VALUE_REGEX. Order:
+# first drop the leading `$` of a $'...'/$"..." opener so its content
+# reassembles the same way a plain "..."/'...' segment does, then remove
+# backslash-escapes (bash drops an unquoted backslash and treats the
+# following character literally, everywhere -- including inside a
+# single-quoted region, where bash itself would NOT remove it; this
+# over-strips relative to bash's real single-quote semantics, but only in
+# the safe over-matching direction for a deny gate), then remove the
+# remaining bare quote characters. Each step only ever joins
+# previously-separated literal characters -- never breaks an existing
+# contiguous match -- so the whole pipeline stays a safe superset
+# transformation for these substring regexes. Does not attempt full
+# shell-word tokenization: variable expansion and command substitution
+# remain an accepted residual, same as the documented indirection gap (see
+# docs/security-hardening.md).
+_lib_strip_shell_quotes() {
+  printf '%s' "$1" \
+    | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g' \
+    | tr -d "\"'"
+}
+
+# Credential-shaped PATH tokens, sourced by deny-credential-bash-reads.sh and deny-credential-file-reads.sh. POSIX ERE, basename-token match (not path-qualified): matches a bare filename wherever it appears, closing a `cd ~/.ssh && cat id_rsa` bypass.
+# Three alternations with different trailing boundaries. Group 1 excludes a following `.` so `id_rsa` doesn't match inside the safe-to-read `id_rsa.pub`, and `.env` doesn't match inside `.env.foo`/`package.env`; `.env`'s own dotted variants beyond the ones enumerated here are deliberately left to deny-env-reads.sh's broader `.env.*` gate. Group 2 (`.netrc`, `.git-credentials`, `credentials.json`, and the three directory-qualified stores) has no known safe dotted-suffix variant, so it allows a following `.` too — closing a `credentials.json.bak`/`.netrc.bak`-style backup-copy bypass group 1's exclusion would otherwise leave open. Group 3 matches `.ssh` (optionally backup/rename-suffixed, e.g. `.ssh.bak`, `.ssh_backup`, `.ssh.old` — the same `.bak`-style continuation group 2 allows) only as a directory/glob reference (`~/.ssh`, `~/.ssh/`, `~/.ssh//`, `~/.ssh/*`, `~/.ssh/.*`), not `.ssh/<filename>`; a named-file reference under `.ssh` (or its backup-suffixed siblings) is instead deny-by-default via `_lib_has_unsafe_ssh_dir_reference` below, since enumerating every unsafe key basename doesn't scale the way enumerating the few safe ones does.
+_LIB_CREDENTIAL_PATH_REGEX='(^|[^A-Za-z0-9_.])(id_rsa|id_dsa|id_ecdsa|id_ed25519|\.env|\.env\.local|\.env\.production|\.env\.development|\.env\.staging|\.env\.test)([^A-Za-z0-9_.]|$)|(^|[^A-Za-z0-9_.])(\.netrc|_netrc|\.git-credentials|credentials\.json|\.aws/credentials|\.docker/config\.json|\.kube/config|\.config/gh/hosts\.yml)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.])\.ssh([._-][A-Za-z0-9_.-]*)?(/+(\*|\.|[^A-Za-z0-9_./]|$)|[^A-Za-z0-9_./]|$)'
+
+# Basenames under a `.ssh`-shaped directory that are safe to read (never
+# private-key material): the three conventional non-secret files, and
+# anything ending `.pub` (a public key). Consumed only by
+# _lib_has_unsafe_ssh_dir_reference below.
+_LIB_SSH_SAFE_BASENAME_REGEX='^(authorized_keys|known_hosts|known_hosts\.old|config)$|\.pub$'
+
+# Deny-by-default counterpart to _LIB_CREDENTIAL_PATH_REGEX's .ssh group: extracts every apparent named-file reference under a `.ssh` or `.ssh`-backup-suffixed directory (`~/.ssh/deploy_key`, `~/.ssh.bak/id_rsa`, `~/.ssh/subdir/deploy_key`, ...) from $1, and returns success (0) if ANY extracted leaf basename is not on the safe allowlist above. Mirrors deny-env-reads.sh's allowlist design (deny by default under the directory, allow only documented-safe names) rather than enumerating every unsafe key basename, which doesn't scale — a custom-named key (`deploy_key`, `github_actions_key`) has no fixed shape to enumerate.
+# Each candidate is the whole shell-word remainder after `.ssh/` (may itself
+# contain further `/`-nesting). A trailing `/` is NOT treated as proof this
+# is a directory reference rather than a named file: `tar czf x
+# ~/.ssh/deploy_key/` (BSD tar) still archives the file's full content
+# despite the trailing slash, so special-casing it as always-safe would
+# reopen the exact bypass this function exists to close. The basename is
+# checked the same way with or without a trailing slash -- a legitimate
+# directory reference (`~/.ssh/sockets/`, a ControlMaster socket dir) is an
+# accepted false positive here, same as this hook family's other documented
+# over-denial residuals (e.g. the `grep id_rsa` search-pattern residual).
+_lib_has_unsafe_ssh_dir_reference() {
+  local text="$1" candidate base
+  while IFS= read -r candidate; do
+    [ -z "$candidate" ] && continue
+    # A `..` path segment anywhere in the candidate is unsafe outright,
+    # without attempting to resolve it -- this function only ever inspects
+    # the trailing string segment as a basename, so `.ssh/deploy_key/../
+    # deploy_key.pub` would otherwise read as the safe basename
+    # `deploy_key.pub` while the string still names `deploy_key`. Mirrors
+    # _lib_realpath_m's own `..`-rejection precedent elsewhere in this file.
+    case "/${candidate}/" in
+      */../*) return 0 ;;
+    esac
+    base="${candidate%/}"
+    base="${base##*/}"
+    if ! printf '%s' "$base" | grep -qEi "$_LIB_SSH_SAFE_BASENAME_REGEX"; then
+      return 0
+    fi
+  done < <(printf '%s' "$text" | grep -oEi '\.ssh([._-][A-Za-z0-9_.-]*)?/[^[:space:]"'"'"']+')
+  return 1
+}
+
+# Credential-shaped VALUE patterns, sourced by redact-credential-values.sh (jq gsub) and deny-pii-in-commits.sh's credential-value sub-check (grep -E). Must compile under both POSIX ERE and jq's Oniguruma engine, so only dialect-neutral syntax is used.
+# Token prefixes (ghp_/gho_/ghu_/ghs_/ghr_ classic and github_pat_ fine-grained) per GitHub's "About authentication to GitHub" docs. The {20,} length floor is NOT vendor-grounded — chosen low enough that a genuine token is never missed, not a verified minimum.
+# AKIA (long-term access key) and ASIA (temporary/STS access key) prefixes per AWS's "IAM identifiers" doc (Understanding unique ID prefixes table). The 16-character suffix length is the widely-observed convention for these IDs, not independently vendor-confirmed for this exact length — same non-verified-minimum caveat as the GitHub {20,} floor above.
+# The PEM alternative matches only the BEGIN header line: grep -E is line-oriented and can't match across a newline, so a header-only form is what lets deny-pii-in-commits.sh detect a PEM key at commit time at all. See _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX below for the full-block counterpart.
+_LIB_CREDENTIAL_VALUE_REGEX='(gh[opsur]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[A-Z0-9]{16}|-----BEGIN[A-Z ]*PRIVATE KEY-----)'
+
+# Redaction-only counterpart to the PEM alternative above: matches the full PEM block (BEGIN through END), not just the header line, since redact-credential-values.sh must strip the actual base64 key body via jq's whole-string gsub, which (unlike grep -E) can match across embedded newlines.
+# Body class excludes `-` so a greedy match stops at the first END footer rather than consuming past it; [:space:] (not `.`) lets the match span embedded newlines under Oniguruma without a dot-matches-newline flag.
+_LIB_PEM_PRIVATE_KEY_BLOCK_REGEX='-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=[:space:]]*-----END[A-Z ]*PRIVATE KEY-----'
+
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
 # security surface, so new entries are added deliberately (a subcommand

@@ -25,12 +25,15 @@ jobs:
     runs-on: ubuntu-24.04
     # pytest alone consumes 72-92s of this budget; one hung-jq test can
     # additionally take up to ~12s
-    # (claude/.claude/hooks/tests/test_hook_alignment.py, "elapsed < 12");
-    # the shellcheck step adds ~10s; apt-get update + install stow adds
-    # another ~10-20s on a typical runner, more on a stale package-index
-    # cache. Raised from 3 to 4 minutes so a slow apt mirror doesn't eat
-    # into the already-thin headroom.
-    timeout-minutes: 4
+    # (claude/.claude/hooks/tests/test_hook_alignment.py, "elapsed < 12").
+    # claude/.claude/hooks/tests/test_deny_pii_in_commits.py adds four more
+    # sleep-based git-timeout tests (each blocking up to ~9.5s while the 5s
+    # _lib_capped cap fires), up to ~38s more in the worst case; the
+    # shellcheck step adds ~10s; apt-get update + install stow adds another
+    # ~10-20s on a typical runner, more on a stale package-index cache.
+    # 5 minutes leaves headroom above the worst-case budget above so a slow
+    # apt mirror or a run of near-worst-case timeout tests doesn't eat into it.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

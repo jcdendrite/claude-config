@@ -1,10 +1,11 @@
 """Tests for deny-pii-in-commits.sh.
 
-Synthetic PII used in these tests — all invented, none belongs to a real
-person:
+Synthetic PII/credential values used in these tests — all invented, none
+belongs to a real person or a live credential:
   SSN  123-45-6789      (the canonical example-only US SSN)
   Card 4111111111111111 (a Luhn-valid card test number; 4111111111111112
                          is the same string with a broken Luhn checksum)
+  Token ghp_abcdefghijklmnopqrstuvwx1234 (GitHub classic-PAT shape only)
 This test file lives under claude/.claude/hooks/tests/**, which the hook
 always excludes from its diff scan — so committing these fixtures into
 claude-config does not trip the hook on a developer machine that has armed
@@ -13,7 +14,10 @@ it.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import time
 
 import pytest
 from helpers import HOOKS_DIR, bash_input, read_input, run_hook, run_hook_reason
@@ -23,6 +27,7 @@ DENY_PII_IN_COMMITS_HOOK = HOOKS_DIR / "deny-pii-in-commits.sh"
 SSN = "123-45-6789"
 CARD_VALID = "4111111111111111"
 CARD_BAD_LUHN = "4111111111111112"
+GHP_TOKEN = "ghp_abcdefghijklmnopqrstuvwx1234"
 
 
 def _stage(repo, name, content):
@@ -80,6 +85,207 @@ class TestDenyPiiInCommits:
         patterns_file.symlink_to("/nonexistent/pii-patterns-target")
         _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "allow"
+
+    # ------------------------------------------------------------------ #
+    # Credential-value sub-check — unconditional, no pii-patterns.md      #
+    # ------------------------------------------------------------------ #
+    # No ~/.claude/pii-patterns.md is created for any test in this section:
+    # that is the point being pinned (the credential-value scan does not
+    # wait for arming, unlike the SSN/credit-card/user-pattern tier above).
+
+    def test_unarmed_credential_value_in_diff_denied(self, isolated_home, git_repo):
+        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "deny"
+
+    def test_quote_split_credential_value_in_commit_message_denied(self, isolated_home, git_repo):
+        """Required regression test for a Critical finding: bash reassembles
+        an adjacent-quote split like `-m "gh""p_<token>"` into the single
+        literal `-m ghp_<token>` before executing `git commit`, but a
+        raw-text `grep -E` scan of the unexpanded $COMMAND previously saw
+        the quote characters as a hard break and missed the reassembled
+        credential-value token — permanently committing a live-looking
+        secret to git history with no error surfaced. Closed by
+        quote-stripping the $COMMAND component of SCAN_TARGET
+        (_lib_strip_shell_quotes) before matching. Split the token via
+        Python string concatenation so the source itself carries no
+        contiguous credential-shaped literal."""
+        split_ghp_token = 'gh""p_abcdefghijklmnopqrstuvwx1234'
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert (
+            run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(f'git commit -m "{split_ghp_token}"'), cwd=git_repo)
+            == "deny"
+        )
+
+    def test_backslash_split_credential_value_in_commit_message_denied(self, isolated_home, git_repo):
+        """Required regression test for a Critical finding found during
+        adversarial re-verification of the quote-splitting fix above: an
+        unquoted backslash-escaped character is a second, distinct
+        character-removal-based literal-reassembly mechanism bash executes
+        identically to the unescaped form (`gh\\p_<token>` -> `ghp_<token>`,
+        confirmed via `bash -c`), which the initial quote-only strip
+        missed. _lib_strip_shell_quotes now also removes backslash-escapes.
+        The token is backslash-split via raw string concatenation so the
+        source itself carries no contiguous credential-shaped literal."""
+        backslash_split_ghp_token = "gh" + r"\p_abcdefghijklmnopqrstuvwx1234"
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert (
+            run_hook(
+                DENY_PII_IN_COMMITS_HOOK,
+                bash_input(f'git commit -m "{backslash_split_ghp_token}"'),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_ansi_c_octal_escape_credential_value_allowed(self, isolated_home, git_repo):
+        """Required regression test pinning a documented residual found
+        during adversarial re-verification of the quote/backslash-escape
+        fix above -- the same root cause as
+        test_deny_credential_bash_reads.py::test_ansi_c_multichar_escape_bypass_allowed:
+        bash's ANSI-C octal escapes (`$'\\NNN...'`) reassemble into the
+        literal token when executed, but _lib_strip_shell_quotes's
+        backslash removal only ever consumes one character after each
+        `\\` -- correct for single-char escapes, wrong for multi-digit
+        octal ones. Accepted as a deliberate-obfuscation residual, same
+        category as the bash-reads gate's pinned case; this test pins the
+        credential-value sub-check's identical exposure so the documented
+        shared-residual claim in docs/security-hardening.md stays
+        test-backed for both callers, not just the bash-reads one. See
+        docs/security-hardening.md's Limitations section."""
+        octal_escaped_token = "".join(f"\\{ord(c):03o}" for c in GHP_TOKEN)
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert (
+            run_hook(
+                DENY_PII_IN_COMMITS_HOOK,
+                bash_input(f"git commit -m $'{octal_escaped_token}'"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_unarmed_f_pseudo_file_still_denied(self, isolated_home, git_repo):
+        """The `-F`/pseudo-file fail-closed check used to run only for armed
+        users, since the whole commit-detection/extraction path lived
+        behind the arming check. Hoisting that machinery above the arming
+        check makes this reachable for unarmed users too — pinned so a
+        slip that leaves this check under the old `if` doesn't silently
+        reopen a fail-closed path with nothing catching it."""
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -F -"), cwd=git_repo) == "deny"
+
+    def test_unarmed_f_unreadable_file_still_denied(self, isolated_home, git_repo):
+        """Same hoist as above, for the unreadable-message-source-file
+        fail-closed check specifically (distinct code path from the
+        pseudo-file check)."""
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input(f"git commit -F {git_repo / 'nonexistent-msg.txt'}"),
+            cwd=git_repo,
+        ) == "deny"
+
+    def test_staged_diff_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
+        """Required regression test for a High-severity finding: `git diff
+        --cached`'s _lib_capped exit status previously went unchecked, so a
+        timeout silently left STAGED_DIFF empty/truncated and the always-on
+        credential-value tier scanned nothing — the commit landed with no
+        scan, no error, no signal. Fails closed (deny) now instead. A fake
+        `git` shadows only the `diff` subcommand (sleeping past the 5s cap)
+        and passes every other subcommand through to the real binary."""
+        real_git = shutil.which("git")
+        if not real_git:
+            pytest.skip("git not found in PATH")
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        fake_git = tmp_path / "git"
+        fake_git.write_text(f'#!/bin/bash\nif [ "$1" = "diff" ]; then sleep 10; fi\nexec {real_git} "$@"\n')
+        fake_git.chmod(0o755)
+
+        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+        start = time.monotonic()
+        decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
+        elapsed = time.monotonic() - start
+        assert decision == "deny"
+        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
+
+    def test_work_tree_check_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
+        """Required regression test: `git rev-parse --is-inside-work-tree`'s
+        _lib_capped exit status must also fail closed on timeout (exit 124)
+        rather than exiting 0 and skipping every scan tier, including the
+        always-on credential-value one."""
+        real_git = shutil.which("git")
+        if not real_git:
+            pytest.skip("git not found in PATH")
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        fake_git = tmp_path / "git"
+        fake_git.write_text(
+            f'#!/bin/bash\nif [ "$1" = "rev-parse" ] && [ "$2" = "--is-inside-work-tree" ]; then sleep 10; fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        fake_git.chmod(0o755)
+
+        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+        start = time.monotonic()
+        decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
+        elapsed = time.monotonic() - start
+        assert decision == "deny"
+        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
+
+    def test_head_rev_parse_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
+        """Required regression test: `git rev-parse HEAD`'s _lib_capped exit
+        status must fail closed on timeout, distinct from the legitimate
+        no-HEAD-yet (unborn branch) skip. `git commit -a` triggers
+        HEAD_SCAN_NEEDED so this call site is reached."""
+        real_git = shutil.which("git")
+        if not real_git:
+            pytest.skip("git not found in PATH")
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        fake_git = tmp_path / "git"
+        fake_git.write_text(
+            f'#!/bin/bash\nif [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then sleep 10; fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        fake_git.chmod(0o755)
+
+        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+        start = time.monotonic()
+        decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
+        elapsed = time.monotonic() - start
+        assert decision == "deny"
+        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
+
+    def test_head_diff_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
+        """Required regression test: `git diff HEAD`'s _lib_capped exit
+        status must fail closed on timeout, mirroring the STAGED_DIFF fix
+        for the HEAD-relative diff specifically."""
+        real_git = shutil.which("git")
+        if not real_git:
+            pytest.skip("git not found in PATH")
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        fake_git = tmp_path / "git"
+        fake_git.write_text(
+            f'#!/bin/bash\nif [ "$1" = "diff" ] && [ "$2" = "HEAD" ]; then sleep 10; fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        fake_git.chmod(0o755)
+
+        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+        start = time.monotonic()
+        decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
+        elapsed = time.monotonic() - start
+        assert decision == "deny"
+        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     # ------------------------------------------------------------------ #
     # Built-in generic patterns                                           #
