@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -1698,6 +1699,111 @@ class TestDenyPrivateProjectRefs:
             == "deny"
         )
 
+    def test_structural_ipv4_public_address_allowed(self, claude_config_repo):
+        """A public IPv4 outside every RFC 1918 private range and the
+        loopback range must not match — proof of the narrowing from the
+        old any-dotted-quad regex to a range-scoped one."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Resolved against the public resolver at 8.8.8.8'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ipv4_private_10_range_upper_boundary_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Static route covers up to 10.255.255.255 in that VPC'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_ipv4_just_above_10_range_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Public allocation begins at 11.0.0.0 per the registry'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ipv4_private_172_16_range_lower_boundary_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'The bastion host answers on 172.16.0.1 today'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_ipv4_just_above_172_16_range_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Public allocation begins at 172.32.0.1 per the registry'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ipv4_private_192_168_range_upper_boundary_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Broadcast address for that subnet is 192.168.255.255'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_ipv4_just_above_192_168_range_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Public allocation begins at 192.169.0.0 per the registry'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ipv4_loopback_upper_boundary_denied(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Top of the loopback range is 127.255.255.255'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_ipv4_just_above_loopback_range_allowed(self, claude_config_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Public allocation begins at 128.0.0.0 per the registry'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ipv4_zero_padded_octets_denied(self, claude_config_repo):
+        """A zero-padded private-range literal (legacy tooling/log shape)
+        must still match — proof of the `0*` leading-zero allowance."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'The internal service lives at 010.000.000.001 in the VPC'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
     # SSH key path reference
 
     def test_structural_ssh_key_path_no_reference_allowed(self, claude_config_repo):
@@ -1731,6 +1837,50 @@ class TestDenyPrivateProjectRefs:
                 bash_input(
                     "git commit -m 'The config field is called invalid_rsa_token; renamed avoid_dsa_warnings too'"
                 ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ssh_key_ecdsa_algorithm_name_as_substring_allowed(self, claude_config_repo):
+        """Same substring-boundary safety as the rsa/dsa case above,
+        exercised for ecdsa — the detector regex already lists all four
+        algorithms, this closes a test-coverage gap only."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'The config field is called invalid_ecdsa_token'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ssh_key_ed25519_algorithm_name_as_substring_allowed(self, claude_config_repo):
+        """Same substring-boundary safety as the rsa/dsa case above,
+        exercised for ed25519 — the detector regex already lists all four
+        algorithms, this closes a test-coverage gap only."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'The config field renamed avoid_ed25519_warnings too'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_ssh_key_leading_boundary_violation_alone_allowed(self, claude_config_repo):
+        """Isolates the leading-boundary alternative from the trailing one:
+        'invalid_ecdsa' has a word char ('d') immediately before 'id_'
+        (leading boundary violated) but a comma right after 'ecdsa'
+        (trailing boundary satisfied on its own). The substring-allow
+        tests above violate both boundaries at once, so a regression that
+        silently weakens only the leading-boundary alternative would still
+        pass them — this proves the leading-boundary alternative is
+        load-bearing by itself."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Renamed the invalid_ecdsa, obsolete now'"),
                 cwd=claude_config_repo,
             )
             == "allow"
@@ -1970,20 +2120,21 @@ class TestDenyPrivateProjectRefs:
     # -- Structural scan: fail-closed on a grep engine error ----------------
 
     def test_structural_grep_engine_error_fails_closed(self, claude_config_repo, tmp_path):
-        """A detector's grep call itself erroring (rc>=2) must fail closed —
-        exercises the branch distinct from the tracker-ID scan above,
-        whose `|| true` swallows the same error and fails open.
+        """The structural-detector fast-path pre-check's own grep call
+        erroring (rc>=2) must fail closed — exercises the branch distinct
+        from the tracker-ID scan above, whose `|| true` swallows the same
+        error and fails open.
 
         The stub shadows `grep` on PATH for the whole hook invocation, not
-        just the structural-detector call — safe today only because every
-        earlier `grep` call in the script (fragment/chain detection, the
+        just the fast-path call — safe today only because every earlier
+        `grep` call in the script (fragment/chain detection, the
         tracker-ID scan) is `|| true`-guarded or used as a bare `if`
         condition under `set -uo pipefail` (no `-e`), so the stub degrades
         those to a harmless "no match" instead of crashing the script
         before reaching the target branch. If an earlier, unguarded `grep`
         call is ever added, this test's global stub would exercise that
-        branch instead — re-scope the shadow to the specific detector call
-        if that happens."""
+        branch instead — re-scope the shadow to the specific fast-path
+        call if that happens."""
         fake_bin = tmp_path / "fakebin"
         fake_bin.mkdir()
         stub_grep = fake_bin / "grep"
@@ -1997,11 +2148,74 @@ class TestDenyPrivateProjectRefs:
         )
         assert reason is not None
         assert "failing closed" in reason
-        # Pins which detector's rc>=2 branch actually fired: with the stub
-        # erroring unconditionally, the loop's first entry ("IPv4 literal")
-        # must be the one reported — proves the loop stops at the first
-        # error rather than silently continuing past it.
-        assert "IPv4 literal" in reason
+        # Pins the fast-path pre-check (not a per-detector loop entry) as
+        # the branch that fires: with the stub erroring unconditionally,
+        # the single combined-pattern grep call ahead of the per-detector
+        # loop is the first grep this script reaches after the tracker-ID
+        # scan clears, so it is the branch that must report the failure.
+        assert "fast-path pre-check" in reason
+
+    def test_structural_combined_pattern_matches_but_no_detector_confirms_fails_closed(
+        self, claude_config_repo, tmp_path
+    ):
+        """A fast-path/per-detector composition mismatch — the combined
+        pre-check matches but the follow-up per-detector loop finds
+        nothing — must fail closed rather than silently allow. Should be
+        structurally unreachable (the combined pattern is derived from the
+        same six patterns the loop iterates), but per the standing rule an
+        untested security branch is indistinguishable from an absent one.
+
+        The stub discriminates by the grep pattern's length: the combined
+        pre-check pattern (all detector patterns `|`-joined) is
+        comfortably longer than the longest individual detector pattern
+        (currently the IPv4 literal detector, since RFC 1918 range-scoping
+        expands it well past the other detectors' length) — so the stub
+        matches (`exit 0`) only when its pattern argument exceeds a
+        threshold between the two, and reports "no match" (`exit 1`) for
+        every individual detector call in the per-detector loop. The
+        threshold is derived from the real STRUCTURAL_DETECTORS patterns in
+        _lib.sh rather than a hardcoded literal, so it tracks any future
+        change to those patterns' lengths instead of silently drifting out
+        of the gap between them."""
+        detector_script = (HOOKS_DIR / "deny-private-project-refs.sh").read_text()
+        lib_script = (HOOKS_DIR / "_lib.sh").read_text()
+        detector_array_match = re.search(r"STRUCTURAL_DETECTORS=\((.*?)\n\)", detector_script, re.DOTALL)
+        assert detector_array_match, "STRUCTURAL_DETECTORS array not found in deny-private-project-refs.sh"
+        detector_var_names = re.findall(r"\$\{(_LIB_[A-Z0-9_]+)\}", detector_array_match.group(1))
+        assert detector_var_names, "no detector pattern variables referenced in STRUCTURAL_DETECTORS"
+        pattern_lengths = []
+        for var_name in detector_var_names:
+            var_match = re.search(rf"^{var_name}='(.*)'$", lib_script, re.MULTILINE)
+            assert var_match, f"{var_name} not defined in _lib.sh"
+            pattern_lengths.append(len(var_match.group(1)))
+        max_individual_length = max(pattern_lengths)
+        # Mirrors deny-private-project-refs.sh's `structural_combined_pattern`
+        # loop: each pattern wrapped "(...)" (2 chars) and "|"-joined (1 char
+        # per pattern but the first), so overhead is 3*n - 1 for n patterns.
+        combined_length = sum(pattern_lengths) + 3 * len(pattern_lengths) - 1
+        threshold = (max_individual_length + combined_length) // 2
+        assert max_individual_length < threshold < combined_length
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        stub_grep = fake_bin / "grep"
+        stub_grep.write_text(
+            "#!/usr/bin/env bash\n"
+            "for arg in \"$@\"; do\n"
+            f"  if [ ${{#arg}} -gt {threshold} ]; then\n"
+            "    exit 0\n"
+            "  fi\n"
+            "done\n"
+            "exit 1\n"
+        )
+        stub_grep.chmod(stub_grep.stat().st_mode | stat.S_IEXEC)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Anything at all — the stub grep discriminates by pattern length'"),
+            cwd=claude_config_repo,
+            extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert reason is not None
+        assert "composition mismatch" in reason
 
     # -- Structural scan: chained-command denial -----------------------------
 

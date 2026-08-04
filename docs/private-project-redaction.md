@@ -35,7 +35,7 @@ definitions.
 
 | Detector | Catches | Does NOT catch |
 |---|---|---|
-| IPv4 literal | four dot-separated numeric groups (a machine's network address) | an IPv6 address |
+| IPv4 literal | an RFC 1918 private-range (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) or RFC 1122 §3.2.1.3 loopback (`127.0.0.0/8`) address, zero-padded octets included | a public IPv4 address, or an IPv6 address |
 | SSH key path reference | a path segment naming the SSH configuration directory, or a filename following the `id_<algorithm>` convention (rsa/dsa/ecdsa/ed25519) | a custom-named key file with no `id_<algorithm>` shape |
 | Home-rooted path | a path rooted at `/Users/<username>/` or `/home/<username>/` | a relative or repo-rooted path |
 | Long hex identifier | a 32+ character contiguous hex run, or a UUID-shaped four-hyphen-group hex sequence | a shorter hex run (e.g. a short git SHA) |
@@ -159,27 +159,32 @@ structural detectors, private-projects blocklist scan) against a
 `gh api -X POST ... -F body=@<file>` call with a representative body file,
 run directly against `deny-private-project-refs.sh` with a synthetic
 `tool_input` payload on stdin, 5 runs at each size on a loaded development
-machine (other concurrent sessions were running their own test suites at
+machine (other concurrent sessions were running on the same machine at
 measurement time, which the wide ranges below partly reflect):
 
 | Body size | Median | Range observed |
 |---|---|---|
-| 5 KB | 835ms | 747–1,265ms |
-| 50 KB | 908ms | 749–2,355ms |
-| 500 KB | 1,802ms | 1,594–2,517ms |
+| 5 KB | 640ms | 563–751ms |
+| 50 KB | 697ms | 562–1,312ms |
+| 500 KB | 894ms | 837–1,017ms |
 
-This exceeds this repo's stated hook performance budget (<100ms per fire) by
-roughly one to two orders of magnitude, even accounting for machine-load
-variance. Subprocess-spawn overhead dominates over byte-scanning cost — the
-six structural detectors alone spawn one `grep` process each via a
-here-string (each of which bash materializes to a temp file before exec, not
-a true in-memory pipe), on top of the pre-existing tracker-ID and blocklist
-scans' own subprocess calls — which is why cost does not scale cleanly with
-body size. At commit/PR-authoring time (a human-interactive action, not a
-hot path), this is tolerable in absolute terms but is a real, measured
-budget overrun, not a clean pass — a future revision that needs headroom
-should look at collapsing the eight-plus separate `grep` subprocess spawns
-into fewer invocations before adding a ninth detector.
+This still exceeds this repo's stated hook performance budget (<100ms per
+fire), but is a real reduction from the six-separate-spawns baseline
+previously recorded here (835ms/908ms/1,802ms medians): collapsing the six
+structural detectors' unconditional per-fire spawns into one combined-pattern
+fast-path spawn (falling through to the original six only when it matches)
+cut the 5 KB and 50 KB medians by roughly 23%, and the 500 KB median by
+roughly 50% — the larger body size sees the bigger win because each spawn
+saved also means one fewer large here-string bash materializes to a temp
+file before exec. Subprocess-spawn overhead still dominates over
+byte-scanning cost — the fast path itself, plus the pre-existing tracker-ID
+and blocklist scans' own subprocess calls, remain unchanged — which is why
+cost still does not scale cleanly with body size. At commit/PR-authoring
+time (a human-interactive action, not a hot path), this is tolerable in
+absolute terms but is still a measured budget overrun, not a clean pass — a
+future revision that needs more headroom should look at collapsing the
+remaining tracker-ID and blocklist `grep` spawns into the same fast-path
+treatment.
 
 ## Known gaps
 

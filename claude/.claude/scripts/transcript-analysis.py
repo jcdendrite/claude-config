@@ -2071,6 +2071,10 @@ def _build_redact_map() -> dict[str, str]:
     private-project-N index. --since never reaches this map and must not: it
     would change which sessions are found on a per-run basis, with the same
     label-drift consequence.
+
+    This means --redact reads every project's transcript bytes off disk even
+    under --this-repo, a considered tradeoff in tension with that flag's
+    minimization intent elsewhere in this file, not an oversight.
     """
     labels: list[str] = []
     for jsonl, _records in iter_sessions(PROJECTS_DIR, "*"):

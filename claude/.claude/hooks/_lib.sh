@@ -874,8 +874,11 @@ _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX='-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=
 # constant per detector so a match can be reported by label rather than
 # collapsed into one alternation.
 
-# A dotted-quad IPv4 literal.
-_LIB_IPV4_LITERAL_REGEX='([0-9]{1,3}\.){3}[0-9]{1,3}'
+# An RFC 1918 private-range (10/8, 172.16/12, 192.168/16) or RFC 1122
+# §3.2.1.3 loopback (127/8) IPv4 literal; a public IPv4 no longer matches.
+# Every octet position is prefixed `0*` to also match zero-padded forms
+# (e.g. `010.000.000.001`).
+_LIB_IPV4_LITERAL_REGEX='(0*10\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|0*172\.0*(1[6-9]|2[0-9]|3[01])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|0*192\.0*168\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|0*127\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))'
 
 # A path segment naming the SSH config directory, or a bare/boundary-
 # delimited `id_<algorithm>` SSH key filename (the four OpenSSH default key

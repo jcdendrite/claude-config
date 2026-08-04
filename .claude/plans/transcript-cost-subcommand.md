@@ -612,3 +612,329 @@ not just the tracking issue.
 - Extending detection to `gh issue create` / `gh issue comment` — a pre-existing gap in
   `deny-private-project-refs.sh` unrelated to this revision; every artifact this plan
   publishes already avoids those commands by design.
+
+---
+
+# Follow-up: PR #552 deferred-findings fix-now subset
+
+## Context
+
+**Goal:** fix the four PR #552 deferred-review findings the engineer triaged as worth doing
+now, without reopening the other eight, which stay deferred for the reasons already
+recorded in the PR body's "Deferred review findings" table.
+
+PR #552 (this branch) shipped the `cost` subcommand and the disclosure-control hook
+fold-in above; it is code-reviewed, plan-reviewed, and CI-green, but still open. Its PR
+description carries an 11-row deferred-findings table. This session re-fetched that table
+fresh, independently verified the three findings a prior handoff had flagged as
+load-bearing against current code (not the handoff's snapshot — one of the three turned out
+to need a materially different fix than the handoff proposed, see item 3 below), and
+triaged with the engineer via `AskUserQuestion`. Four items were selected to fix now:
+
+1. Hook per-fire latency (measured 650ms-2.5s, ~10-25x over the repo's <100ms hook budget)
+2. IPv4 detector over-matching (any dotted-quad, not just private ranges)
+3. `_build_redact_map` / `--this-repo` docstring note (documentation only — see below for
+   why this is not a behavior fix)
+4. SSH-key-path detector test coverage gap (rsa/dsa tested, ecdsa/ed25519 not)
+
+**Branch:** continuing on `transcript-cost-subcommand` rather than branching fresh off
+`main`. PR #552 is still open and unmerged, this fix set is small (4 bounded items, no new
+subsystem), and the same reviewers already hold context on the hook and `_build_redact_map`
+from this branch's prior rounds — a second branch/PR for closely-related follow-up on an
+already-open PR would split review context for no benefit. Re-verified before planning:
+`main` is still at `ee5e2e9` (unchanged since the prior session's snapshot), and this
+branch's HEAD is still `b351907e4372bf05f9580462e8cd3ce18c147d7a`.
+
+## Approach
+
+**Root problem:** four independently-scoped defects survived PR #552's review as
+accepted-for-now, but the engineer judged them worth closing rather than leaving
+indefinitely deferred; each needs the smallest correct fix, not a redesign.
+
+### 1. Hook per-fire latency — collapse the six-detector loop into a fast/slow path
+
+The six structural detectors (`deny-private-project-refs.sh:617-637`) each spawn one
+`grep -Eq` subprocess unconditionally, every hook fire, via a `for` loop — 6 spawns even
+when nothing matches, which is the overwhelmingly common case (a clean commit/PR). Fix:
+derive one combined-alternation regex from the same `STRUCTURAL_DETECTORS` array already
+used by the per-detector loop — join each entry's pattern (stripped of its label prefix)
+with `|`, each wrapped in its own group — and run it as a single fast-path `grep -Eq`
+before the array is ever iterated. On no match (the common case), skip straight to the
+tracker-ID-clean/blocklist section below: 6 spawns collapse to 1. On a match, fall through
+to the existing per-detector loop unchanged, to identify which label fired for the deny
+message — the rare (deny) path pays the same cost as today, never more. Deriving the
+combined pattern from `STRUCTURAL_DETECTORS` at hook runtime, rather than hand-maintaining
+a second, separately-declared combined constant in `_lib.sh`, keeps the array the single
+source of truth: a future 7th detector added there is automatically covered by the fast
+path with no second list to remember to update — closing exactly the maintenance gap a
+hand-duplicated constant would create.
+
+Two correctness cases the fast path introduces, both requiring fail-closed handling —
+surfaced by plan-review's `ciso-reviewer` and `staff-platform-engineer` passes, who
+independently converged on the first:
+
+1. **The fast-path grep call itself errors (`rc>=2`)** — a real grep engine failure
+   (locale issue, malformed byte sequence in a large diff), not "no match" (`rc==1`). The
+   file runs under `set -uo pipefail` with no `-e` (`deny-private-project-refs.sh:160`), so
+   a naive `if grep ...; then <matched> else <no match> fi` around the fast-path call
+   collapses `rc==1` and `rc>=2` into the same "no match" branch — the hook would then skip
+   the entire per-detector loop and fall through to the tracker-ID-clean/blocklist section,
+   a silent fail-open on exactly the leak vector this layer exists to catch. The fast-path
+   grep call must capture its exit code with the same three-way `rc==0` / `rc==1` / `rc>=2`
+   split the per-detector loop already uses, and the `rc>=2` case must fail closed (deny)
+   immediately — not fall through to "no match."
+2. **The combined regex matches but the subsequent per-detector loop finds no individual
+   match** (only possible if the combined pattern were mis-composed — e.g. an unwrapped
+   internal alternation bleeding across a `|` join). Falling through the loop with nothing
+   to report must not silently allow content that should be denied.
+
+Both cases get their own fail-closed branch, mirroring the file's own existing `rc>=2`
+fail-closed convention (`deny-private-project-refs.sh:633-635`) rather than inventing a new
+failure discipline, and each needs its own message so a future reader (or test) can tell
+them apart: one names a grep-engine failure on the pre-check itself, the other names a
+regex-composition mismatch. `staff-platform-engineer` also flagged that the deny path now
+costs one grep call more than today (the fast-path check itself, before the loop runs) —
+correcting the earlier claim that the deny path "pays the same cost as today, never more";
+the actual delta is one extra subprocess, immaterial next to the six-iteration loop's own
+cost.
+
+Two lighter alternatives considered and rejected:
+- **No pre-check, just reorder the array** — doesn't help; all 6 still spawn every fire
+  regardless of order, since the loop must exhaust all detectors when none match.
+- **A single hand-merged mega-regex with no fast/slow split** (one grep, but the deny
+  message can't say *which* detector fired without re-deriving it some other way) —
+  rejected: the file's own header (`deny-private-project-refs.sh:592-594`) documents that
+  detectors are checked independently specifically so the deny message can name the fired
+  label; collapsing to one opaque check would regress that, and reverse-engineering the
+  label from a single match still needs a second pass, so it doesn't even save a subprocess
+  on the deny path.
+- **Switch to `rg` (ripgrep) or `perl` for combined regex + named-capture-group label
+  reporting in one call** — rejected: introduces a new tool dependency not already used
+  anywhere in this file (POSIX ERE `grep` is used throughout), a heavier primitive than the
+  fast/slow split for a win that only applies to the already-rare deny path.
+
+### 2. IPv4 detector precision — scope to RFC 1918 + loopback
+
+`_LIB_IPV4_LITERAL_REGEX` currently matches any dotted-quad shape
+(`([0-9]{1,3}\.){3}[0-9]{1,3}`), including four-part version strings and any public IP.
+Narrow to the three RFC 1918 private ranges plus loopback:
+
+> "10.0.0.0 - 10.255.255.255 (10/8 prefix); 172.16.0.0 - 172.31.255.255 (172.16/12 prefix);
+> 192.168.0.0 - 192.168.255.255 (192.168/16 prefix)" — RFC 1918 §3, verified via
+> rfc-editor.org/rfc/rfc1918 this session.
+
+> 127.0.0.0/8 listed as "Loopback" per RFC 1122 §3.2.1.3 — verified via the IANA IPv4
+> Special-Purpose Address Registry this session.
+
+Standard octet-range regex (`(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])`, matches 0-255)
+composed into each of the four ranges above, each respecting its own prefix-length boundary
+(`172\.(1[6-9]|2[0-9]|3[01])\.` for the /12).
+
+**`ciso-reviewer`'s plan-review pass flagged a real gap in the naive version of this
+narrowing:** the old broad regex (`([0-9]{1,3}\.){3}[0-9]{1,3}`) accepts zero-padded octets
+(e.g. `010.000.000.001`, `192.168.001.001` — a real shape from some legacy tooling and log
+formats), but literal range prefixes like `10\.` or alternations like `1[6-9]` do not match
+a zero-padded form of an in-range value (`016` for `16`). A strict range-scoped regex with
+no zero-padding tolerance would silently stop catching private/loopback addresses written
+this way — a false negative the old, broader detector did not have. Fix: prefix every octet
+position (both the four generic 0-255 slots and the 172-range's second-octet 16-31 slot)
+with `0*` to tolerate any number of leading zeros ahead of the numeric value — e.g. the
+generic octet becomes `0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])` and the 172 second
+octet becomes `0*(1[6-9]|2[0-9]|3[01])`. `0*` is a single-character-class repeat with no
+nested quantifier or alternation overlap, so this introduces no catastrophic-backtracking
+risk. With this fix, the claim holds precisely: every string the old regex matched that
+falls inside these four ranges (zero-padded or not) still matches; every string outside
+them (public IPs, version-number-shaped strings) now correctly does not.
+
+Two lighter alternatives considered and rejected:
+- **Leave the broad match, just document the imprecision** — this is the status quo the
+  deferred finding flagged as worth fixing now; documenting instead of fixing was exactly
+  the "gold-plating, defer" call the original review made, which the engineer is now
+  overriding.
+- **A dedicated CIDR-matching tool (`grepcidr`, a Python `ipaddress`-based pre-filter)** —
+  rejected: new dependency for a single regex-scale fix, over-powered relative to inlining
+  four already-well-known ranges in plain ERE, consistent with every other detector in this
+  same array.
+
+### 3. `_build_redact_map` / `--this-repo` — docstring only, not a behavior change
+
+`_build_redact_map` (`transcript-analysis.py:2061-2090`) always scans the full corpus via
+`iter_sessions(PROJECTS_DIR, "*")`, and its docstring already explains why: a project must
+bind to the same opaque label whether found by a narrowed `--this-repo cost` run or a full
+`audit-routing` run, or the same label would mean two different projects across two
+published outputs. That is a real, load-bearing invariant — changing it to respect
+`--this-repo` would break label stability unless the labeling scheme itself were redesigned
+(e.g. content-hash-derived labels instead of scan-order-assigned indices), which is a
+materially larger change than this deferred-findings sweep and explicitly out of scope (see
+below). Fix: add a one-line docstring note stating that `--redact` therefore reads every
+project's transcript bytes off disk even under `--this-repo`, in tension with
+`--this-repo`'s minimization intent elsewhere in this file — so a future reader sees this
+as a named, considered tradeoff rather than mistaking it for an oversight to "fix."
+
+### 4. SSH-key-path detector test coverage — add ecdsa/ed25519 cases
+
+`test_structural_ssh_key_algorithm_name_as_substring_allowed`
+(`claude/.claude/hooks/tests/test_deny_private_project_refs.py:1723`) asserts that
+`invalid_rsa_token`/`avoid_dsa_warnings`-shaped substrings are allowed (not
+boundary-delimited key filenames), but only for `rsa`/`dsa`. The detector regex itself
+already covers all four algorithms (`_LIB_SSH_KEY_PATH_REFERENCE_REGEX` lists
+`rsa|dsa|ecdsa|ed25519`) — this is a test-coverage gap, not a regex gap. Add two sibling
+assertions covering `invalid_ecdsa_token`- and `avoid_ed25519_warnings`-shaped substrings.
+
+### Assumption ledger
+
+**Root problem:** stated above — four independently-scoped PR #552 deferred findings,
+triaged by the engineer as worth fixing now rather than leaving indefinitely deferred.
+
+| # | Assumption | Tag |
+|---|---|---|
+| root | Statement above | — |
+| row1 | Six structural detectors each spawn a separate `grep -Eq` subprocess unconditionally, every hook fire | `[verified: deny-private-project-refs.sh:617-637 read directly this session]` |
+| row2 | Measured per-fire cost 650ms-2.5s (5/50/500KB body sizes), ~10-25x over the repo's stated <100ms hook budget | `[verified: docs/private-project-redaction.md "## Performance" section, lines 155-182, read directly this session]` |
+| row3 | Deriving a combined regex by wrapping and `\|`-joining the six existing pattern bodies (none contain an unbalanced paren or an unwrapped top-level alternation) is safe ERE composition | `[verified: all six constants read directly, _lib.sh:878-903]` |
+| row4 | RFC 1918 defines 10/8, 172.16/12, 192.168/16 as the three private-use ranges | `[verified: rfc-editor.org/rfc/rfc1918, fetched this session — quoted above]` |
+| row5 | 127.0.0.0/8 is IANA-registered "Loopback" per RFC 1122 §3.2.1.3 | `[verified: iana.org IPv4 Special-Purpose Address Registry, fetched this session]` |
+| row6 | `_build_redact_map` always scans the full corpus regardless of `--this-repo`, and its own docstring already states this is deliberate (label-stability across differently-scoped runs) | `[verified: transcript-analysis.py:2061-2090 read directly this session]` |
+| row7 | A real behavior fix (making the scan respect `--this-repo`) requires redesigning label assignment away from scan-order-derived indices, which is out of scope for this sweep | `[verified: same read — the docstring's own stated reason is the label-stability invariant, which scan-order-narrowing would break]` |
+| row8 | `test_structural_ssh_key_algorithm_name_as_substring_allowed` tests only rsa/dsa substrings; the detector regex itself already lists all four algorithms | `[verified: test_deny_private_project_refs.py:1723-1737 and _lib.sh:888 read directly this session]` |
+| row9 | The other 8 rows of PR #552's deferred-findings table stay deferred; engineer confirmed this exact 4-item subset via `AskUserQuestion` this session | `[engineer-verified]` |
+| row10 | The fast-path grep call's own `rc>=2` case, left unhandled, collapses into the "no match" branch under this file's `set -uo pipefail` (no `-e`) and silently skips the entire per-detector loop — a fail-open regression on the exact leak vector this layer exists to catch | `[verified: ciso-reviewer and staff-platform-engineer independently converged on this finding in plan-review; deny-private-project-refs.sh:160 (`set -uo pipefail`, no `-e`) read directly this session]` |
+| row11 | The old broad IPv4 regex accepts zero-padded octets (`010.000.000.001`); a naive range-scoped narrowing without a `0*` leading-zero allowance would silently stop catching private/loopback addresses written this way | `[verified: ciso-reviewer plan-review finding; confirmed by inspection of the old regex `([0-9]{1,3}\.){3}[0-9]{1,3}` against a zero-padded example]` |
+| row12 | The existing `test_structural_grep_engine_error_fails_closed` test (line 1972) globally shadows `grep` on `PATH` for the whole hook invocation and asserts the *first* grep call to run hits the fail-closed branch — today that's the per-detector loop's "IPv4 literal" entry; under the fast-path redesign it becomes the new fast-path pre-check instead, so this existing test's assertion must be updated, not just left passing by coincidence | `[verified: test_deny_private_project_refs.py:1972-2004 read directly this session]` |
+
+**Mechanism justification.** All four fixes are the smallest change that closes each
+finding: a fast-path regex derived from the existing detector array ahead of an unchanged
+slow path (not a rewrite of the detector mechanism), a narrower regex (not a new
+dependency), a one-line docstring (not a labeling redesign), and two test cases (not a
+broader test-harness change). `anchors: root` for all four — none introduces a new tool, a
+new hook, or a new permission scope.
+
+## Critical files
+
+Work continues on `transcript-cost-subcommand` in the existing worktree
+(`.claude/worktrees/transcript-cost-subcommand`); no new branch, no new plan file.
+
+### `claude/.claude/hooks/_lib.sh`
+- Redefine `_LIB_IPV4_LITERAL_REGEX` (~line 878) to the RFC-1918-plus-loopback-scoped
+  pattern, with every octet position prefixed `0*` to tolerate zero-padded forms (see
+  Approach item 2); update its one-line comment to state the new scope and cite RFC 1918 /
+  RFC 1122 §3.2.1.3.
+
+### `claude/.claude/hooks/deny-private-project-refs.sh`
+- Immediately after the `STRUCTURAL_DETECTORS` array declaration (~line 624), derive
+  `structural_combined_pattern` by iterating the array once, stripping each entry's label
+  prefix, wrapping the remaining pattern in `(...)`, and joining with `|`.
+- Replace the unconditional six-iteration loop (lines 625-637) with: one fast-path grep
+  call capturing its own exit code with the same three-way `rc==0` / `rc==1` / `rc>=2` split
+  the per-detector loop already uses. `rc==1` (no match): fall through to the
+  tracker-ID-clean/blocklist section below (line 639+) unchanged. `rc>=2` (grep engine
+  error on the pre-check itself): emit a new fail-closed deny naming the pre-check failure —
+  do not fall through to "no match." `rc==0` (match): run the existing per-detector loop
+  body unchanged to identify the label; if the loop completes with nothing found (the
+  composition-mismatch case), emit a second, distinct fail-closed deny naming that case, so
+  a reader (or a test) can tell the two new failure modes apart by message text.
+- Add a one-line comment above the new fast-path block per this repo's shell-script
+  comment-length convention, stating what it does and why (mirrors the loop's own header
+  comment style at lines 590-616).
+- Update the existing header comment (line 592: "Checked independently (not one
+  alternation) so the deny message can name which detector fired") — this description goes
+  stale once the fast path adds exactly one combined-alternation pre-check ahead of the
+  per-detector loop. State the two-phase shape: one alternation for the common-case
+  pre-check, the existing independent per-detector loop only for identifying the label once
+  the pre-check hits.
+- No change to `emit_deny` call sites' message text for the six detectors — only the
+  dispatch path above them changes.
+
+### `claude/.claude/hooks/tests/test_deny_private_project_refs.py`
+- IPv4: add a test proving a public (non-private) dotted-quad, e.g. `8.8.8.8`, is now
+  **allowed** — the direct proof of the narrowing fix. Existing
+  `test_structural_ipv4_literal_denied` (uses `10.20.30.40`, inside 10/8) and
+  `test_structural_ipv4_near_miss_two_dot_version_string_allowed` need no change — both
+  still pass under the narrower regex. Add one allow/deny boundary pair per range
+  (`staff-sdet` plan-review finding — the original draft covered only 172.16/12):
+  10/8 (`10.255.255.255` denied / `11.0.0.0` allowed), 172.16/12 (`172.16.0.1` denied /
+  `172.32.0.1` allowed), 192.168/16 (`192.168.255.255` denied / `192.169.0.0` allowed), and
+  loopback (`127.255.255.255` denied / `128.0.0.0` allowed). Add one zero-padded-octet test
+  (`010.000.000.001` denied) proving the `0*` leading-zero allowance works.
+- SSH key path: extend `test_structural_ssh_key_algorithm_name_as_substring_allowed` (or
+  add two sibling tests, matching this file's existing one-test-per-case granularity) with
+  `ecdsa`/`ed25519`-shaped substring-allow assertions mirroring the existing rsa/dsa ones.
+- **Fast-path grep-error case** (`ciso-reviewer` + `staff-platform-engineer` plan-review
+  finding): update the existing `test_structural_grep_engine_error_fails_closed`
+  (line 1972), which globally shadows `grep` on `PATH` so every grep call in the script
+  errors. Today its assertion pins the *first* grep call to hit the fail-closed branch as
+  the per-detector loop's "IPv4 literal" entry; under the fast-path redesign the first grep
+  call is the new pre-check, so update the assertion to match the pre-check's own
+  fail-closed message instead — this single updated test *is* the coverage for the new
+  `rc>=2` fast-path branch, no separate test needed.
+- **Composition-mismatch case** (`staff-sdet` + `ciso-reviewer` plan-review finding,
+  new — this branch has no existing test to extend): add a test with a `grep` stub on
+  `PATH` that discriminates by invocation — matches (`exit 0`) when the pattern argument is
+  the long combined pattern, does not match (`exit 1`) for every individual detector
+  pattern (distinguishable by argument length: the combined pattern is several hundred
+  characters, the longest individual detector pattern is under 100) — and asserts the hook
+  denies with the composition-mismatch message. This is new, previously-unexercised
+  security-critical logic; per the standing rule, an untested security branch is
+  indistinguishable from an absent one.
+
+### `claude/.claude/scripts/transcript-analysis.py`
+- `_build_redact_map` docstring (~line 2061-2074): append one sentence noting that this
+  full-corpus scan runs even when the caller passed `--this-repo`, which is in tension with
+  that flag's minimization intent elsewhere in this file — a named tradeoff, not an
+  oversight.
+
+### `docs/private-project-redaction.md`
+- "The six structural detectors" table (line 38): update the IPv4 row's "Catches" / "Does
+  NOT catch" cells to describe the new RFC-1918-plus-loopback scope (a public IPv4 address
+  now joins "an IPv6 address" in the does-NOT-catch column).
+- "## Performance" section (lines 155-182): re-measure the hook's per-fire cost post-fix
+  using the same method already documented there (5 runs at 5/50/500KB body sizes on this
+  machine) and replace the existing table and narrative with the new numbers — do not
+  hand-adjust the old numbers.
+
+## Verification
+
+1. `../../../.venv/bin/pytest claude/.claude/` — full suite, from the worktree.
+2. `../../../.venv/bin/ruff check claude/.claude/` and
+   `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck` — both files
+   touched here are shell + Python.
+3. `claude-hook-review` on the modified `deny-private-project-refs.sh` and `_lib.sh` —
+   required before `/code-review` per root CLAUDE.md's "Should this be a hook?" section,
+   same as the original PR #552 work on this file.
+4. Re-run the exact per-fire timing method already recorded in
+   `docs/private-project-redaction.md` (5 runs each at 5/50/500KB body sizes) against the
+   fixed hook; confirm the combined-regex fast path measurably reduces median latency
+   versus the currently-recorded 835ms/908ms/1,802ms baseline, and record the new numbers —
+   this is the fix's own success criterion, not just a regression check.
+5. Confirm automated test coverage, not a one-time manual pass, is what proves the
+   fast-path/slow-path split preserves existing guarantees (`staff-sdet` plan-review
+   finding: a manual check duplicates coverage the existing per-detector tests already give
+   via the full suite, while missing the actually-new logic). The existing six
+   per-detector deny/allow tests already re-verify — unchanged — that the slow path still
+   identifies the correct label and the deny message still omits the matched substring,
+   since they run through the same modified dispatch path in step 1's full `pytest` run. In
+   addition, confirm the three new/updated tests from `Critical files` above all pass: the
+   updated `test_structural_grep_engine_error_fails_closed` (fast-path grep-error case),
+   the new composition-mismatch stub test, and the new IPv4 boundary/zero-padding tests.
+6. `/code-review`, then commit; `/ready-for-review`, then push. Autonomous shipping is
+   active (`~/.claude/autonomous-shipping-required` present, no repo optout) — this
+   proceeds without further prompting once verification passes. Merge stays human-only.
+
+## Out of scope
+
+- The other 8 rows of PR #552's deferred-findings table — each already has a recorded,
+  sound DEFER rationale (edge case below current scale, gold-plating, contract pinned
+  elsewhere, already-ticketed, or orthogonal). Not re-litigated here.
+- Redesigning `_build_redact_map`'s label-assignment scheme (e.g. content-hash-derived
+  labels) to make it safely respect `--this-repo` — the docstring note above documents the
+  tradeoff; an actual behavior change is a separate, larger piece of work.
+- Widening the six detectors' coverage beyond IPv4 precision (custom SSH key names,
+  unlisted internal TLDs, short git SHAs) — carried forward unchanged from PR #552's own
+  accepted-gaps list; this fix touches only the IPv4 detector's precision, not the detector
+  set's completeness.
+- Extending detection to `gh issue create` / `gh issue comment` — tracked separately in
+  issue #559, unrelated to this fix set.
+- Collapsing the tracker-ID scan's two `grep` calls or the private-projects blocklist
+  loop's per-entry `grep` calls into the same fast-path treatment — the deferred finding
+  names the six *new* detectors as the fix target; the tracker-ID/blocklist scans predate
+  this PR and are unrelated to it.

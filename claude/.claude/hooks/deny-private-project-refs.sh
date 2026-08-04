@@ -589,7 +589,9 @@ fi
 
 # Six structural-shape detectors: IPv4 literal, SSH key path reference,
 # home-rooted path, long hex identifier, internal hostname, Slack-channel
-# shape. Checked independently (not one alternation) so the deny message can
+# shape. Two-phase: a single combined-alternation pre-check below finds out
+# whether any detector matches at all, then (only on a match) the per-detector
+# loop is checked independently (not one alternation) so the deny message can
 # name which detector fired. Regex constants live in _lib.sh so this scan and
 # any future consumer share one definition.
 #
@@ -622,19 +624,45 @@ STRUCTURAL_DETECTORS=(
   "internal hostname:${_LIB_INTERNAL_HOSTNAME_REGEX}"
   "Slack-channel shape:${_LIB_SLACK_CHANNEL_SHAPE_REGEX}"
 )
+
+# Combined alternation of all six patterns above, derived here (not
+# hand-maintained as a second constant) so a future 7th detector added to
+# STRUCTURAL_DETECTORS is automatically covered by the fast path below.
+structural_combined_pattern=""
 for detector_entry in "${STRUCTURAL_DETECTORS[@]}"; do
-  detector_label="${detector_entry%%:*}"
   detector_pattern="${detector_entry#*:}"
-  detector_rc=0
-  grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET" || detector_rc=$?
-  if [ "$detector_rc" -eq 0 ]; then
-    emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
-    exit 0
-  elif [ "$detector_rc" -ge 2 ]; then
-    emit_deny "Blocked by redaction gate: the '${detector_label}' detector failed to scan the gated content (grep exit ${detector_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
-    exit 0
+  if [ -z "$structural_combined_pattern" ]; then
+    structural_combined_pattern="(${detector_pattern})"
+  else
+    structural_combined_pattern="${structural_combined_pattern}|(${detector_pattern})"
   fi
 done
+
+# Single fast-path grep across the combined pattern: on the common case (no
+# detector matches), this replaces 6 subprocess spawns with 1; on a match, it
+# falls through to the per-detector loop below unchanged to name the label.
+structural_fastpath_rc=0
+grep -Eq -- "$structural_combined_pattern" <<< "$SCAN_TARGET" || structural_fastpath_rc=$?
+if [ "$structural_fastpath_rc" -eq 0 ]; then
+  for detector_entry in "${STRUCTURAL_DETECTORS[@]}"; do
+    detector_label="${detector_entry%%:*}"
+    detector_pattern="${detector_entry#*:}"
+    detector_rc=0
+    grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET" || detector_rc=$?
+    if [ "$detector_rc" -eq 0 ]; then
+      emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
+      exit 0
+    elif [ "$detector_rc" -ge 2 ]; then
+      emit_deny "Blocked by redaction gate: the '${detector_label}' detector failed to scan the gated content (grep exit ${detector_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
+      exit 0
+    fi
+  done
+  emit_deny "Blocked by redaction gate: the structural-detector fast-path pre-check matched, but no individual detector in the follow-up loop confirmed which one — failing closed on this pattern-composition mismatch between the combined and per-detector regexes."
+  exit 0
+elif [ "$structural_fastpath_rc" -ge 2 ]; then
+  emit_deny "Blocked by redaction gate: the structural-detector fast-path pre-check failed to scan the gated content (grep exit ${structural_fastpath_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
+  exit 0
+fi
 
 # Tracker-ID scan clean. Try the user-local private-projects blocklist.
 # Fail-open: a contributor without the file works normally. The
