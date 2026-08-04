@@ -6,7 +6,12 @@
 # means the same as file-empty — every domain unlisted, inverting
 # _lib_config_lines's usual contract since this file grants reach. Host
 # extraction shells to python3's urllib.parse, not a hand-rolled regex; an
-# absent or hung python3 denies naming it. Full rationale: docs/security-hardening.md.
+# absent or hung python3 denies naming it.
+#
+# Known gaps (accepted, not chased further — rationale: docs/security-hardening.md):
+#   - No dedicated write-gate protects the allowlist file itself: an agent
+#     with ordinary Edit/Write access can append a domain and immediately
+#     fetch it with no prompt.
 #
 # Fail-closed on unparseable hook input.
 

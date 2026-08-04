@@ -3,8 +3,23 @@
 # Gate: deny Bash commands that install a named package or hand downloaded
 # content to a shell/interpreter. Always on, no arming file, no bypass valve.
 # Matches on token presence, not on resolving the leading command through
-# wrappers, since position-based resolution has gaps this trade avoids. Named
-# residuals, over-denies, and full rationale: docs/security-hardening.md.
+# wrappers, since position-based resolution has gaps this trade avoids.
+#
+# Known gaps (accepted, not chased further — rationale: docs/security-hardening.md):
+#   - `pip install -e <VCS-URL>` allows: the editable-install marker's value
+#     is always skipped.
+#   - A path-prefixed manager invocation (`/opt/homebrew/bin/npm install x`)
+#     allows: token-presence matching never sees the manager name inside the
+#     longer token.
+#   - Bare `npx`/`bunx`/`uvx`/`pipx` (no `-y`/`--yes`) allows: telling an
+#     already-installed local tool from a fresh fetch needs lockfile
+#     awareness this hook doesn't have.
+#   - An unrecognized value-taking flag (e.g. `--registry <url>`) denies a
+#     legitimate restore: its value is misread as a leftover token.
+#   - A text argument merely mentioning manager+verb tokens (a grep pattern,
+#     a commit message) denies uniformly, regardless of quote placement.
+#   - curl/wget co-occurring with a shell/interpreter anywhere in one call
+#     denies, regardless of which operator actually connects them.
 #
 # Fail-closed on unparseable hook input.
 
