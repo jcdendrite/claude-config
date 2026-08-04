@@ -2,6 +2,10 @@ __pycache__/
 .pytest_cache/
 .venv/
 
+# macOS Finder metadata. Unanchored so one line covers every directory it can
+# appear in (repo root, claude/.claude/, claude/.claude/skills/, ...).
+.DS_Store
+
 # Per-machine and per-session Claude Code state at repo root.
 # .claude/plans/ is intentionally tracked — plan files ship with their PR.
 # .claude/worktree-required is tracked too (activates worktree enforcement).
@@ -58,3 +62,53 @@ claude/.claude/.error-mode-nudge-enabled
 # handing every stow user a set of pre-satisfied gates.
 claude/.claude/*-markers/
 claude/.claude/.*-active.d/
+
+# Claude Code CLI-managed runtime state. Under stow directory-fold, the CLI's
+# own writes against ~/.claude/... land physically inside this repo. None of
+# this is package content and some of it is sensitive — history.jsonl and
+# projects/ hold raw prompt history and full session transcripts across every
+# project on the machine, not just this repo; .credentials.json is the CLI's
+# OAuth/token store (same file this repo's own credential-guard hooks already
+# treat as sensitive by name).
+#
+# docs/design-decisions.md #19 names .credentials.json, projects/, sessions/,
+# ide/, and daemon/ as the CLI's own narrowed-permission paths (note: the
+# ~/.claude.json that entry discusses is a distinct $HOME-level file, not
+# claude/.claude/.claude.json below). The CLI's own changelog separately
+# confirms backups/, shell-snapshots/, and tasks/ retention behavior. The
+# remaining entries (.claude.json, history.jsonl, .last-cleanup,
+# .last-update-result.json, file-history/, paste-cache/, plugins/,
+# session-env/, telemetry/, .claude.json.lock/) are grouped in by the same
+# cache/log/per-session-directory naming convention, not a confirmed writer.
+claude/.claude/.claude.json
+claude/.claude/.claude.json.lock/
+claude/.claude/.credentials.json
+claude/.claude/.last-cleanup
+claude/.claude/.last-update-result.json
+claude/.claude/backups/
+claude/.claude/daemon/
+claude/.claude/file-history/
+claude/.claude/history.jsonl
+claude/.claude/ide/
+claude/.claude/paste-cache/
+claude/.claude/plugins/
+claude/.claude/projects/
+claude/.claude/session-env/
+claude/.claude/sessions/
+claude/.claude/shell-snapshots/
+claude/.claude/tasks/
+claude/.claude/telemetry/
+
+# This repo's own hook/skill-written per-session and per-machine state.
+# error-mode-reports/ in particular is documented elsewhere in this repo as
+# holding project-identifying content that must never reach a public repo
+# (see /error-mode-analysis). cache/ has no identified writer in this repo's
+# hooks/skills but is per-machine scratch space regardless of origin.
+claude/.claude/.handoff-nudge-fired.d/
+claude/.claude/.handoff-nudge.log
+claude/.claude/.plan-review-routing-read.d/
+claude/.claude/.worktree-anchor-nudge.d/
+claude/.claude/briefs/
+claude/.claude/cache/
+claude/.claude/error-mode-reports/
+claude/.claude/handoffs/
