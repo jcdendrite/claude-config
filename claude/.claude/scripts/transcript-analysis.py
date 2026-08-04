@@ -1385,8 +1385,9 @@ def _resolve_project_scope(
     subcommand name (e.g. "buckets"); it labels _repo_scoped_project_slugs'
     fail-closed messages and, uppercased, the caller's resolved-scope header.
     The resolved slug list is cached on `args` so a caller needing two
-    independent iterators over the same scope (cmd_audit_routing) triggers one
-    `git worktree list` call, not two. This caching relies on main()'s
+    independent iterators over the same scope triggers one `git worktree
+    list` call, not two — no current caller does this, but the cache is
+    correct if one starts to. This caching relies on main()'s
     single-Namespace-per-process, single-subcommand-dispatch invariant — an
     `args` object reused across two different subcommand invocations would
     silently reuse the first's resolved slugs instead of re-resolving for the
@@ -2075,6 +2076,15 @@ def _build_redact_map() -> dict[str, str]:
     This means --redact reads every project's transcript bytes off disk even
     under --this-repo, a considered tradeoff in tension with that flag's
     minimization intent elsewhere in this file, not an oversight.
+
+    Ordinals are assigned sequentially over the sorted full-corpus label list,
+    not the caller's --this-repo-scoped subset, so a printed private-project-N
+    number is shaped by every other private project directory that exists
+    locally and sorts before the in-scope one — a structural fingerprint of
+    the operator's other projects that a --this-repo-scoped report does not
+    otherwise disclose. Narrowing the scan to the caller's own scope would
+    close this but breaks the cross-run label-stability guarantee above, so
+    this function does not attempt it.
     """
     labels: list[str] = []
     for jsonl, _records in iter_sessions(PROJECTS_DIR, "*"):
@@ -2137,6 +2147,12 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
             print(f"audit-routing: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
             sys.exit(1)
 
+    # _resolve_project_scope's fail-closed --this-repo check runs before
+    # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
+    # exits without paying for that scan.
+    session_iter, scope_label = _resolve_project_scope(args, "audit-routing")
+    _print_resolved_scope("audit-routing", scope_label)
+
     redact_map: dict[str, str] = _build_redact_map() if redact else {}
     session_redact_map: dict[str, str] = {}
 
@@ -2144,13 +2160,6 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     session_rows: list[dict] = []
     # Corpus totals: class → {out, cr}
     corpus_totals: dict[str, dict[str, int]] = {cls: {"out": 0, "cr": 0} for cls in _AUDIT_CLASSES}
-
-    # Row 15: this is the second call to _resolve_project_scope in this function
-    # (the redact pass above is the first, when --redact is set) — the resolved
-    # slug list is cached on `args` so --this-repo triggers one `git worktree
-    # list` call for both passes, not two.
-    session_iter, scope_label = _resolve_project_scope(args, "audit-routing")
-    _print_resolved_scope("audit-routing", scope_label)
 
     for jsonl, records in session_iter:
         proj_label = _derive_proj_label(jsonl)
@@ -2448,6 +2457,12 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
             print(f"cost: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
             sys.exit(1)
 
+    # _resolve_project_scope's fail-closed --this-repo check runs before
+    # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
+    # exits without paying for that scan.
+    session_iter, scope_label = _resolve_project_scope(args, "cost", include_subagents=True)
+    _print_resolved_scope("cost", scope_label)
+
     redact_map: dict[str, str] = _build_redact_map() if redact else {}
     session_redact_map: dict[str, str] = {}
 
@@ -2457,9 +2472,6 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
     bucket_totals: dict[str, float] = defaultdict(float)
     session_rows: list[dict] = []
     stale_models: set[str] = set()
-
-    session_iter, scope_label = _resolve_project_scope(args, "cost", include_subagents=True)
-    _print_resolved_scope("cost", scope_label)
 
     for jsonl, records in session_iter:
         proj_label = _derive_proj_label(jsonl)

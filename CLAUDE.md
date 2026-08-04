@@ -112,12 +112,13 @@ engagement, or codebase. Three enforcement tiers apply:
 
 **Always caught by hook:** tracker IDs matching `[A-Z]{2,}-\d+` not on
 the OSS allowlist (`CVE-`, `RFC-`, `GH-`, and similar), plus six
-always-on structural detectors: an IPv4 literal, an SSH key path
-reference, a home-rooted filesystem path, a long hex/UUID identifier,
-an internal-TLD hostname, and a Slack-channel-shaped `#`-prefixed
-lowercase reference. For tracker-ID-shaped placeholders in examples,
-use `PROJ-<digits>` or `TICKET-<digits>` — both pass the allowlist;
-see `docs/private-project-redaction.md` for non-matching illustrative
+always-on structural detectors: a private-range or loopback IPv4
+literal, an SSH key path reference, a home-rooted filesystem path, a
+long hex/UUID identifier, an internal-TLD hostname, and a
+Slack-channel-shaped `#`-prefixed lowercase reference. For
+tracker-ID-shaped placeholders in examples, use `PROJ-<digits>` or
+`TICKET-<digits>` — both pass the allowlist; see
+`docs/private-project-redaction.md` for non-matching illustrative
 shapes for the six structural detectors.
 
 **Caught by hook when `~/.claude/private-projects.md` is populated:**

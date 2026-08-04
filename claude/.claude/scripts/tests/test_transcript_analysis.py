@@ -2390,6 +2390,82 @@ class TestCost:
         cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
         assert cols["$"] == "2.00"
 
+    def test_redact_map_ordinal_shifts_with_out_of_scope_project(self, tmp_path, monkeypatch, capsys):
+        """_build_redact_map's ordinals are assigned over the full local corpus,
+        not the caller's --this-repo scope: pins that a --this-repo report's
+        printed private-project-N number depends on other private projects that
+        never appear in the report — the ordinal side-channel documented on
+        _build_redact_map. "aardvark" sorts before "main" (this repo's derived
+        label), so its mere presence on disk — outside --this-repo scope and
+        never printed — bumps "main" from private-project-1 to private-project-2."""
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        # Run 1: only this repo's own project dir exists on disk.
+        solo_projects = tmp_path / "solo" / "projects"
+        mine_solo = solo_projects / "-repo-main"
+        mine_solo.mkdir(parents=True)
+        _write_jsonl(mine_solo / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", solo_projects)
+        _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
+        solo_out = capsys.readouterr().out
+        assert "private-project-1" in solo_out
+
+        # Run 2: an out-of-scope project ("aardvark") sorts before this repo's
+        # own label and is never surfaced by --this-repo, yet still shifts the
+        # ordinal assigned to this repo's project.
+        shared_projects = tmp_path / "shared" / "projects"
+        mine_shared = shared_projects / "-repo-main"
+        mine_shared.mkdir(parents=True)
+        other = shared_projects / "-home-user-aardvark"
+        other.mkdir(parents=True)
+        _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", shared_projects)
+        _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
+        shared_out = capsys.readouterr().out
+        assert "private-project-2" in shared_out
+        assert "private-project-1" not in shared_out
+        assert "aardvark" not in shared_out  # the out-of-scope project itself never prints
+
+    def test_redact_map_ordinal_unaffected_by_out_of_scope_project_sorting_after(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Companion to the shifts-before case: an out-of-scope project whose
+        derived label sorts *after* the in-scope one leaves the in-scope
+        project's ordinal unchanged, since _build_redact_map assigns ordinals
+        in alphabetical order. "zzz-other" sorts after "main", so it must not
+        bump "main" off private-project-1."""
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        shared_projects = tmp_path / "shared" / "projects"
+        mine_shared = shared_projects / "-repo-main"
+        mine_shared.mkdir(parents=True)
+        other = shared_projects / "-home-user-zzz-other"
+        other.mkdir(parents=True)
+        _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", shared_projects)
+        _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "private-project-1" in out
+        assert "zzz-other" not in out
+
 
 # ---------------------------------------------------------------------------
 # handoff-ratio
