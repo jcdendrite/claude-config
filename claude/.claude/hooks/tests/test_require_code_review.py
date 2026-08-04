@@ -463,3 +463,75 @@ class TestRequireCodeReview:
             == "deny"
         )
 
+
+class TestRequireCodeReviewHonorsConfigDir:
+    """CLAUDE_CONFIG_DIR relocates the code-review marker directory the same
+    way for marker.sh (write) and this hook (read) -- see marker.sh and the
+    cross-account bypass this closes (ledger row 7)."""
+
+    def test_marker_under_matching_config_dir_allows(self, isolated_home, git_repo, tmp_path):
+        """CLAUDE_CONFIG_DIR-set happy path: a marker written under the
+        resolved config dir satisfies the gate when the session runs under
+        the same value."""
+        profile = tmp_path / "profile"
+        write_marker(
+            isolated_home,
+            git_repo,
+            staged_diff_hash(git_repo),
+            session_id=DEFAULT_TEST_SESSION_ID,
+            config_dir=profile,
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(profile)},
+            )
+            == "allow"
+        )
+
+    def test_marker_under_different_config_dir_does_not_authorize(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Cross-account bypass regression: a marker written under one
+        CLAUDE_CONFIG_DIR value must not satisfy the gate when the session
+        runs under a different one."""
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        write_marker(
+            isolated_home,
+            git_repo,
+            staged_diff_hash(git_repo),
+            session_id=DEFAULT_TEST_SESSION_ID,
+            config_dir=profile_a,
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(profile_b)},
+            )
+            == "deny"
+        )
+
+    def test_unresolvable_config_dir_denies(self, isolated_home, git_repo):
+        """Fail closed: a relative CLAUDE_CONFIG_DIR (unresolvable) must deny
+        the gate outright, even with a valid marker at the default location."""
+        write_marker(
+            isolated_home,
+            git_repo,
+            staged_diff_hash(git_repo),
+            session_id=DEFAULT_TEST_SESSION_ID,
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+            )
+            == "deny"
+        )
+

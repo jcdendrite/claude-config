@@ -22,7 +22,10 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
 fi
 _lib_valid_session_id_component "$SESSION_ID" || exit 0
 
-MARKER_DIR="$HOME/.claude/.handoff-nudge-fired.d"
+# An unresolvable config dir leaves no marker location to clean up, so this
+# hook fails open the same way an unusable SESSION_ID already does.
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+MARKER_DIR="$CONFIG_DIR/.handoff-nudge-fired.d"
 
 rm -f "${MARKER_DIR}/${SESSION_ID}" 2>/dev/null || true
 rm -f "${MARKER_DIR}/${SESSION_ID}-drift" 2>/dev/null || true

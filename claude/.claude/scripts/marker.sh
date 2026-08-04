@@ -5,7 +5,7 @@
 # _marker_lib_repo_hash is defined in the sourced library so the hash recipe
 # stays in sync with the read side (require-*.sh hooks) automatically.
 # shellcheck source=../hooks/_lib.sh
-. "$HOME/.claude/hooks/_lib.sh"
+. "$(dirname "$0")/../hooks/_lib.sh"
 
 set -u
 
@@ -39,7 +39,7 @@ _walk_session() {
   # since the walk reached it as a process ancestor of this script.
   pid=$PPID
   while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
-    sid=$(cat "$HOME/.claude/sessions/$pid" 2>/dev/null)
+    sid=$(cat "$CONFIG_DIR/sessions/$pid" 2>/dev/null)
     if [ -n "$sid" ]; then
       printf '%s %s' "$sid" "$pid"
       return 0
@@ -148,6 +148,17 @@ if [ $# -lt 1 ] || [ $# -gt 2 ]; then
   exit 2
 fi
 
+# Fail closed: every marker path below is built from CONFIG_DIR, so an
+# unresolvable CLAUDE_CONFIG_DIR (relative value, or empty $HOME with no
+# override) must abort the write rather than fall through to a
+# root-anchored path.
+CONFIG_DIR=$(_lib_config_dir) || {
+  # shellcheck disable=SC2016 # single-quoted for literal display text: $HOME
+  # and $CLAUDE_CONFIG_DIR name the env vars in the message, not shell expansions.
+  printf 'marker.sh: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or $HOME is unset/empty). Abort without writing a marker.\n' >&2
+  exit 2
+}
+
 SUBCOMMAND="$1"
 ARG2="${2:-}"
 
@@ -186,9 +197,9 @@ case "$SUBCOMMAND" in
         # silently force a re-review. Same shape in every arm below.
         MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2; exit 2; }
-        mkdir -p "$HOME/.claude/code-review-markers"
+        mkdir -p "$CONFIG_DIR/code-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
-          > "$HOME/.claude/code-review-markers/$REPO_HASH.$SESSION_ID"
+          > "$CONFIG_DIR/code-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       skill-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -200,9 +211,9 @@ case "$SUBCOMMAND" in
         # require-skill-review.sh checks at commit time.
         MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
-        mkdir -p "$HOME/.claude/skill-review-markers"
+        mkdir -p "$CONFIG_DIR/skill-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
-          > "$HOME/.claude/skill-review-markers/$REPO_HASH.$SESSION_ID"
+          > "$CONFIG_DIR/skill-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       plan-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -221,9 +232,9 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: cannot read active plan file %s — cannot compute the plan-review hash. Abort without writing a marker.\n' "$PLAN_HASH" >&2
           exit 2
         fi
-        mkdir -p "$HOME/.claude/plan-review-markers"
+        mkdir -p "$CONFIG_DIR/plan-review-markers"
         printf '%s\n' "$PLAN_HASH" \
-          > "$HOME/.claude/plan-review-markers/$REPO_HASH.$SESSION_ID"
+          > "$CONFIG_DIR/plan-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -231,9 +242,9 @@ case "$SUBCOMMAND" in
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
         MARKER_VALUE=$(git -C "$REPO_ROOT" rev-parse HEAD)
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not resolve HEAD. Abort without writing a marker.\n' >&2; exit 2; }
-        mkdir -p "$HOME/.claude/ready-for-review-markers"
+        mkdir -p "$CONFIG_DIR/ready-for-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
-          > "$HOME/.claude/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
+          > "$CONFIG_DIR/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
       *)
         printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review\n" "$SKILL" >&2
@@ -246,26 +257,26 @@ case "$SUBCOMMAND" in
       plan-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         CLAUDE_PID=$(_resolve_claude_pid) || exit 2
-        mkdir -p "$HOME/.claude/.plan-review-active.d"
-        printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+        mkdir -p "$CONFIG_DIR/.plan-review-active.d"
+        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         CLAUDE_PID=$(_resolve_claude_pid) || exit 2
-        mkdir -p "$HOME/.claude/.ready-for-review-active.d"
-        printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
+        mkdir -p "$CONFIG_DIR/.ready-for-review-active.d"
+        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.ready-for-review-active.d/$SESSION_ID"
         ;;
       respond-pr)
         SESSION_ID=$(_resolve_session_id) || exit 2
         CLAUDE_PID=$(_resolve_claude_pid) || exit 2
-        mkdir -p "$HOME/.claude/.respond-pr-active.d"
-        printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
+        mkdir -p "$CONFIG_DIR/.respond-pr-active.d"
+        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.respond-pr-active.d/$SESSION_ID"
         ;;
       memory-skill)
         SESSION_ID=$(_resolve_session_id) || exit 2
         CLAUDE_PID=$(_resolve_claude_pid) || exit 2
-        mkdir -p "$HOME/.claude/.memory-skill-active.d"
-        printf '%s\n' "$CLAUDE_PID" > "$HOME/.claude/.memory-skill-active.d/$SESSION_ID"
+        mkdir -p "$CONFIG_DIR/.memory-skill-active.d"
+        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.memory-skill-active.d/$SESSION_ID"
         ;;
       *)
         printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill\n" "$SKILL" >&2
@@ -277,20 +288,20 @@ case "$SUBCOMMAND" in
     case "$SKILL" in
       plan-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        rm -f "$HOME/.claude/.plan-review-active.d/$SESSION_ID"
-        rm -f "$HOME/.claude/.plan-review-routing-read.d/$SESSION_ID"
+        rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
+        rm -f "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        rm -f "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID"
+        rm -f "$CONFIG_DIR/.ready-for-review-active.d/$SESSION_ID"
         ;;
       respond-pr)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        rm -f "$HOME/.claude/.respond-pr-active.d/$SESSION_ID"
+        rm -f "$CONFIG_DIR/.respond-pr-active.d/$SESSION_ID"
         ;;
       memory-skill)
         SESSION_ID=$(_resolve_session_id) || exit 2
-        rm -f "$HOME/.claude/.memory-skill-active.d/$SESSION_ID"
+        rm -f "$CONFIG_DIR/.memory-skill-active.d/$SESSION_ID"
         ;;
       *)
         printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr, memory-skill\n" "$SKILL" >&2
@@ -303,7 +314,7 @@ case "$SUBCOMMAND" in
     [ "$ARG2" = "--dry-run" ] && DRY_RUN=1
     EVICTED=0
     KEPT=0
-    for active_dir in "$HOME/.claude"/.*-active.d; do
+    for active_dir in "$CONFIG_DIR"/.*-active.d; do
       [ -d "$active_dir" ] || continue
       dir_name=$(basename "$active_dir")
       for entry in "$active_dir"/*; do

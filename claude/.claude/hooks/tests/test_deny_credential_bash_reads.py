@@ -464,6 +464,35 @@ class TestDenyCredentialBashReads:
         cleanly rather than erroring on a missing optional file."""
         assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input("ls -la"), home=isolated_home) == "allow"
 
+    def test_credential_file_guard_armed_at_config_dir_only_denied(self, isolated_home, tmp_path):
+        """Guard armed only at the resolved CLAUDE_CONFIG_DIR location (no
+        legacy copy) -- confirms the new path is read."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "credential-file-guard.md").write_text("my-org-token-*\n")
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK,
+            bash_input("cat ~/.config/my-org-token-prod"),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        ) == "deny"
+
+    def test_credential_file_guard_armed_at_legacy_location_falls_back_denied(self, isolated_home, tmp_path):
+        """Regression test: a guard armed only at the legacy $HOME/.claude
+        location must still fire when CLAUDE_CONFIG_DIR points at a
+        directory with no copy of the file -- proves continuity for a user
+        who armed the guard before CLAUDE_CONFIG_DIR support existed."""
+        guard_file = isolated_home / ".claude" / "credential-file-guard.md"
+        guard_file.write_text("my-org-token-*\n")
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK,
+            bash_input("cat ~/.config/my-org-token-prod"),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        ) == "deny"
+
     # ------------------------------------------------------------------ #
     # Defense-in-depth: non-Bash tool names pass through                  #
     # ------------------------------------------------------------------ #

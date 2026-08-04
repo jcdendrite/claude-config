@@ -172,6 +172,7 @@ class TestRequireWorktreeForFileWritesHomeExemption:
         subprocess.run(["git", "add", "."], cwd=home, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=home, check=True)
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         return home
 
     def test_home_claude_existing_file_allowed(self, opted_in_home):
@@ -243,6 +244,33 @@ class TestRequireWorktreeForFileWritesHomeExemption:
         # Write to ~/.claude/settings.json via the raw symlink path
         path = str(opted_in_home / ".claude" / "settings.json")
         assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
+
+
+class TestRequireWorktreeForFileWritesConfigDirExemption:
+    """CLAUDE_CONFIG_DIR relocates the harness-infrastructure exemption to
+    the resolved config dir — a union with the literal $HOME/.claude arm
+    above, not a swap (ledger row 5)."""
+
+    def test_config_dir_outside_home_claude_exempted(self, opted_in_repo, isolated_home, monkeypatch):
+        """A resolved config dir nested inside an opted-in main tree but
+        outside $HOME/.claude is exempt via the new union arm — without it
+        this write would deny like any other main-tree write (see
+        test_opted_in_main_tree_denies_write)."""
+        config_dir = opted_in_repo / "profile-config"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        path = str(config_dir / "plans" / "x.md")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
+
+    def test_non_config_dir_path_in_same_repo_still_denied(self, opted_in_repo, isolated_home, monkeypatch):
+        """The config-dir exemption is scoped to the resolved config dir
+        prefix, not the whole opted-in repo it happens to sit inside — a
+        sibling path outside that prefix still denies."""
+        config_dir = opted_in_repo / "profile-config"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        path = str(opted_in_repo / "some-project-file.txt")
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "deny"
 
 
 class TestMachineLevelMarker:

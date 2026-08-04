@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    SCRIPTS_DIR,
     agent_input,
     install_resume_context_script,
     read_input,
@@ -42,6 +43,19 @@ def _write_fixture(isolated_home: Path, rel_path: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("fixture content\n")
     return path
+
+
+def _install_resume_context_script_at(config_dir: Path) -> Path:
+    """Like helpers.install_resume_context_script, but symlinks into an
+    arbitrary CONFIG_DIR/scripts/ rather than isolated_home/.claude/scripts/
+    — needed for CLAUDE_CONFIG_DIR cases, where CONFIG_DIR is not
+    isolated_home/.claude."""
+    scripts_dir = config_dir / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    link = scripts_dir / "resume-context.sh"
+    if not link.exists():
+        link.symlink_to(SCRIPTS_DIR / "resume-context.sh")
+    return link
 
 
 def _run_hook_raw(
@@ -156,7 +170,7 @@ class TestConsumeDurableContinuityFileOnRead:
 
         shadow_bin = tmp_path / "shadow-bin"
         shadow_bin.mkdir()
-        for cmd in ["timeout", "bash", "cat", "mktemp", "mv", "chmod"]:
+        for cmd in ["timeout", "bash", "cat", "mktemp", "mv", "chmod", "dirname"]:
             cmd_path = shutil.which(cmd)
             if cmd_path:
                 (shadow_bin / cmd).symlink_to(cmd_path)
@@ -325,7 +339,7 @@ class TestConsumeDurableContinuityFileOnRead:
 
         shadow_bin = tmp_path / "shadow-bin"
         shadow_bin.mkdir()
-        for cmd in ["jq", "bash", "cat", "mktemp", "mv", "chmod"]:
+        for cmd in ["jq", "bash", "cat", "mktemp", "mv", "chmod", "dirname"]:
             cmd_path = shutil.which(cmd)
             if cmd_path:
                 (shadow_bin / cmd).symlink_to(cmd_path)
@@ -346,3 +360,70 @@ class TestConsumeDurableContinuityFileOnRead:
         payload = json.loads(result.stdout)
         assert dest in payload["systemMessage"]
         assert dest in payload["hookSpecificOutput"]["additionalContext"]
+
+    # -----------------------------------------------------------------------
+    # CLAUDE_CONFIG_DIR resolution
+    # -----------------------------------------------------------------------
+
+    def test_consumes_handoff_under_config_dir_when_set(self, isolated_home, tmp_path):
+        """CLAUDE_CONFIG_DIR relocates the handoffs-glob match and the
+        resume-context.sh invocation path: a continuity file under
+        CONFIG_DIR/handoffs/ is consumed via CONFIG_DIR/scripts/resume-context.sh,
+        not the $HOME/.claude equivalents."""
+        config_dir = tmp_path / "profile"
+        _install_resume_context_script_at(config_dir)
+        fixture = config_dir / "handoffs" / "example-handoff.md"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text("fixture content\n")
+
+        result = _run_hook_raw(
+            CONSUME_HOOK,
+            read_input(str(fixture)),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+
+        assert result.returncode == 0
+        assert not fixture.exists()
+
+    def test_legacy_home_handoff_path_not_matched_when_config_dir_set(self, isolated_home, tmp_path):
+        """Once CLAUDE_CONFIG_DIR is set, the glob match is against CONFIG_DIR
+        only — a continuity file still sitting at the legacy $HOME/.claude/
+        location is left alone (swap, not union, for this hook's own
+        directory classification)."""
+        install_resume_context_script(isolated_home)
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+
+        result = _run_hook_raw(
+            CONSUME_HOOK,
+            read_input(str(fixture)),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+
+        assert result.returncode == 0
+        assert fixture.exists()
+        assert result.stdout == ""
+
+    def test_kill_switch_at_config_dir_disables_consumption(self, isolated_home, tmp_path):
+        """The kill-switch is read from CONFIG_DIR when CLAUDE_CONFIG_DIR is
+        set, not from $HOME/.claude."""
+        config_dir = tmp_path / "profile"
+        _install_resume_context_script_at(config_dir)
+        (config_dir / ".consume-durable-continuity-disabled").touch()
+        fixture = config_dir / "handoffs" / "example-handoff.md"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text("fixture content\n")
+
+        result = _run_hook_raw(
+            CONSUME_HOOK,
+            read_input(str(fixture)),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+
+        assert result.returncode == 0
+        assert fixture.exists()
+        assert result.stdout == ""

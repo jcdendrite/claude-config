@@ -9,14 +9,17 @@
 # keys off a number computed from the current transcript, not off any
 # external "is the engagement done" judgment.
 #
+# Paths below resolve under _lib_config_dir (the active Claude Code config
+# directory: $CLAUDE_CONFIG_DIR if set, else ~/.claude).
+#
 # Nudge is one-shot per session: a marker file under
-# ~/.claude/.error-mode-nudge-fired.d/<session_id> is written on first fire
-# and prevents repeated nudges — and repeated friction-count spawns — in the
+# .error-mode-nudge-fired.d/<session_id> is written on first fire and
+# prevents repeated nudges — and repeated friction-count spawns — in the
 # same session. The marker check runs before python3 is ever invoked.
 #
 # A second per-session state file under
-# ~/.claude/.error-mode-nudge-checkpoint.d/<session_id> persists a byte
-# offset and running per-signal totals across every prompt in the session
+# .error-mode-nudge-checkpoint.d/<session_id> persists a byte offset and
+# running per-signal totals across every prompt in the session
 # (written whether or not the nudge fires), so friction-count only rescans
 # newly appended transcript lines instead of the whole file each prompt.
 # The checkpoint directory gets a 30-day eviction sweep on every qualifying
@@ -31,15 +34,16 @@
 # only inflate the composite toward the nudge threshold, never corrupt
 # state).
 #
-# Opt-in: dormant by default. Touching ~/.claude/.error-mode-nudge-enabled
-# arms the hook; without that file, every invocation exits 0 before reading
-# the transcript. See CONTRIBUTING.md for how to enable it.
+# Opt-in: dormant by default. Touching .error-mode-nudge-enabled arms the
+# hook; without that file, every invocation exits 0 before reading the
+# transcript. See CONTRIBUTING.md for how to enable it.
 #
 # Fail-open everywhere: any unexpected error (missing python3, python3 older
-# than 3.11, non-integer friction-count output, a friction-count timeout)
-# exits 0 with no stdout so the hook never blocks a user prompt.
+# than 3.11, non-integer friction-count output, a friction-count timeout, an
+# unresolvable config dir) exits 0 with no stdout so the hook never blocks a
+# user prompt.
 #
-# Log file: ~/.claude/.error-mode-nudge.log records one event type:
+# Log file: .error-mode-nudge.log records one event type:
 #   nudged session=<id> friction=<n>  — threshold crossed, nudge emitted
 #
 # strict mode omitted deliberately: this hook must never block prompts (exit 0
@@ -69,47 +73,52 @@ TRANSCRIPT_PATH=""
     2>/dev/null
 ) 2>/dev/null || true
 
-# 1. Opt-in gate: dormant unless the contributor has explicitly armed the
+# 1. Source _lib.sh and resolve the active config directory before any
+# ~/.claude-rooted path is built. Fail-open per this hook's own contract
+# (see header): an unresolvable config dir just leaves the nudge dormant.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+
+# 2. Opt-in gate: dormant unless the contributor has explicitly armed the
 # hook. Absent this file, every invocation exits here before doing any
 # transcript work.
-if [ ! -f "$HOME/.claude/.error-mode-nudge-enabled" ]; then
+if [ ! -f "$CONFIG_DIR/.error-mode-nudge-enabled" ]; then
   exit 0
 fi
 
-# 2. Subagent gate: only nudge in the main session, not in subagents.
+# 3. Subagent gate: only nudge in the main session, not in subagents.
 if [ -n "$AGENT_TYPE" ]; then
   exit 0
 fi
 
-# 3. Plan-mode gate: nudging in plan mode would interrupt planning flow.
+# 4. Plan-mode gate: nudging in plan mode would interrupt planning flow.
 if [ "$PERMISSION_MODE" = "plan" ]; then
   exit 0
 fi
 
-# 4. Require a session id and a readable transcript file. SESSION_ID feeds
+# 5. Require a session id and a readable transcript file. SESSION_ID feeds
 # FIRED_MARKER and CHECKPOINT_FILE below as a path component ("../" would
 # escape their marker directories), so an id that is not a safe single path
 # component is rejected the same way an empty one already is.
 if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
   exit 0
 fi
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
 if ! _lib_valid_session_id_component "$SESSION_ID"; then
   exit 0
 fi
 
-# 5. Already fired: suppress repeated nudges without spawning python3 at all —
+# 6. Already fired: suppress repeated nudges without spawning python3 at all —
 # this is the whole-session hot-path fix (the marker check gates the spawn,
 # not just the emitted output).
-MARKER_DIR="$HOME/.claude/.error-mode-nudge-fired.d"
+MARKER_DIR="$CONFIG_DIR/.error-mode-nudge-fired.d"
 FIRED_MARKER="${MARKER_DIR}/${SESSION_ID}"
 if [ -f "$FIRED_MARKER" ]; then
   exit 0
 fi
 
-# 6. python3 preflight (bash-side fail-open). transcript-analysis.py does
+# 7. python3 preflight (bash-side fail-open). transcript-analysis.py does
 # `from datetime import UTC` at module top, which raises ImportError on
 # python3 < 3.11 before any subcommand runs — a script-side guard is
 # impossible, so the version compare is delegated to python3 itself rather
@@ -121,7 +130,7 @@ if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 
   exit 0
 fi
 
-# 7. Run friction-count with a bounded wall-clock timeout. 10s is grounded on
+# 8. Run friction-count with a bounded wall-clock timeout. 10s is grounded on
 # measurement: the largest real transcript found under ~/.claude/projects on
 # the implementing machine (6.4 MB, 2656 lines) completed in ~0.18s; a 10x
 # synthetic (64 MB, 26560 lines) completed in ~1.3s — 10s leaves ample
@@ -136,11 +145,11 @@ fi
 # fire block below), checkpoint files are written on every call that reaches
 # this point, so gating eviction on the rare fire event would let them
 # accumulate unboundedly for sessions that never cross FRICTION_THRESHOLD.
-CHECKPOINT_DIR="$HOME/.claude/.error-mode-nudge-checkpoint.d"
+CHECKPOINT_DIR="$CONFIG_DIR/.error-mode-nudge-checkpoint.d"
 CHECKPOINT_FILE="${CHECKPOINT_DIR}/${SESSION_ID}"
 mkdir -p "$CHECKPOINT_DIR" 2>/dev/null || true
 find "$CHECKPOINT_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
-FRICTION_COUNT=$(timeout 10 python3 "$HOME/.claude/scripts/transcript-analysis.py" \
+FRICTION_COUNT=$(timeout 10 python3 "$CONFIG_DIR/scripts/transcript-analysis.py" \
   friction-count --transcript "$TRANSCRIPT_PATH" --checkpoint "$CHECKPOINT_FILE" 2>/dev/null)
 if ! [[ "$FRICTION_COUNT" =~ ^[0-9]+$ ]]; then
   exit 0
@@ -158,8 +167,8 @@ if ! [ "$FRICTION_COUNT" -ge "$FRICTION_THRESHOLD" ] 2>/dev/null; then
   exit 0
 fi
 
-# 8. Fire: emit nudge, write marker, and log the event.
-NUDGE_LOG="$HOME/.claude/.error-mode-nudge.log"
+# 9. Fire: emit nudge, write marker, and log the event.
+NUDGE_LOG="$CONFIG_DIR/.error-mode-nudge.log"
 mkdir -p "$MARKER_DIR" 2>/dev/null || true
 # Evict stale markers from one-shot runs that skipped SessionEnd cleanup.
 # Gated on fire (unlike the checkpoint dir's sweep above) because markers

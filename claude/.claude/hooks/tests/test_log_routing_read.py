@@ -70,6 +70,56 @@ class TestLogRoutingRead:
         write_plan_review_active_marker(isolated_home, sid)
         assert run_hook(LOG_ROUTING_READ_HOOK, read_input(ROUTING_MD_PATH, session_id=sid)) == "allow"
 
+    # -- CLAUDE_CONFIG_DIR ------------------------------------------------
+
+    def test_read_routing_md_with_active_marker_under_config_dir_writes_marker_there(
+        self, isolated_home, tmp_path
+    ):
+        """CLAUDE_CONFIG_DIR set: the routing-read marker is written under
+        the resolved config dir, not $HOME/.claude."""
+        sid = "session-config-dir-write"
+        config_dir = tmp_path / "profile"
+        (config_dir / ".plan-review-active.d").mkdir(parents=True)
+        (config_dir / ".plan-review-active.d" / sid).touch()
+        run_hook(
+            LOG_ROUTING_READ_HOOK,
+            read_input(ROUTING_MD_PATH, session_id=sid),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert (config_dir / ".plan-review-routing-read.d" / sid).exists()
+        assert not plan_review_routing_read_marker_path(isolated_home, sid).exists()
+
+    def test_legacy_home_active_marker_ignored_when_config_dir_set(self, isolated_home, tmp_path):
+        """Config-dir resolution is a swap, not a union: an active marker at
+        the legacy $HOME/.claude location must not authorize a write once
+        CLAUDE_CONFIG_DIR points elsewhere."""
+        sid = "session-legacy-write-ignored"
+        write_plan_review_active_marker(isolated_home, sid)
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        run_hook(
+            LOG_ROUTING_READ_HOOK,
+            read_input(ROUTING_MD_PATH, session_id=sid),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert not (config_dir / ".plan-review-routing-read.d" / sid).exists()
+
+    def test_relative_config_dir_fails_open_without_writing(self, isolated_home):
+        """CLAUDE_CONFIG_DIR set to a relative value cannot be resolved, so
+        the write is skipped rather than falling back to the legacy
+        $HOME/.claude marker directory."""
+        sid = "session-relative-config-dir"
+        write_plan_review_active_marker(isolated_home, sid)
+        run_hook(
+            LOG_ROUTING_READ_HOOK,
+            read_input(ROUTING_MD_PATH, session_id=sid),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+        )
+        assert not plan_review_routing_read_marker_path(isolated_home, sid).exists()
+
     def test_traversal_session_id_allows_and_does_not_touch_marker_dir(self, isolated_home):
         """A session_id of '../canary' must not reach this hook's write.
 

@@ -13,7 +13,8 @@
 #
 # Lookup contract on the skill side:
 #   The Bash tool's $PPID is the claude main process PID. The skill reads
-#   ~/.claude/sessions/$PPID to learn its session_id.
+#   sessions/$PPID under the resolved config directory (_lib_config_dir:
+#   $CLAUDE_CONFIG_DIR if set, else ~/.claude) to learn its session_id.
 #
 # Deriving claude_pid from inside this hook:
 #   This hook is invoked through a transient `sh` shim, so its $PPID is
@@ -41,8 +42,8 @@ if [ -z "$SESSION_ID" ]; then
 fi
 
 # SESSION_ID feeds the active.d rewrite loop below as a path component ("../"
-# would escape $HOME/.claude/.*-active.d/); fail the same way an empty id
-# already does rather than sanitizing further.
+# would escape the resolved config dir's .*-active.d/); fail the same way an
+# empty id already does rather than sanitizing further.
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   echo "[capture-session-id] could not source _lib.sh; respond-pr skill will fail at Step 0" >&2
   exit 0
@@ -52,19 +53,24 @@ if ! _lib_valid_session_id_component "$SESSION_ID"; then
   exit 0
 fi
 
+CONFIG_DIR=$(_lib_config_dir) || {
+  echo "[capture-session-id] could not resolve config dir; respond-pr skill will fail at Step 0" >&2
+  exit 0
+}
+
 CLAUDE_PID=$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
 if [ -z "$CLAUDE_PID" ]; then
   echo "[capture-session-id] could not resolve claude PID via 'ps -o ppid= -p $PPID'; respond-pr skill will fail at Step 0" >&2
   exit 0
 fi
 
-if ! mkdir -p "$HOME/.claude/sessions" 2>/dev/null; then
-  echo "[capture-session-id] could not create $HOME/.claude/sessions; respond-pr skill will fail at Step 0" >&2
+if ! mkdir -p "$CONFIG_DIR/sessions" 2>/dev/null; then
+  echo "[capture-session-id] could not create $CONFIG_DIR/sessions; respond-pr skill will fail at Step 0" >&2
   exit 0
 fi
 
-if ! printf '%s\n' "$SESSION_ID" > "$HOME/.claude/sessions/$CLAUDE_PID" 2>/dev/null; then
-  echo "[capture-session-id] could not write lookup file $HOME/.claude/sessions/$CLAUDE_PID; respond-pr skill will fail at Step 0" >&2
+if ! printf '%s\n' "$SESSION_ID" > "$CONFIG_DIR/sessions/$CLAUDE_PID" 2>/dev/null; then
+  echo "[capture-session-id] could not write lookup file $CONFIG_DIR/sessions/$CLAUDE_PID; respond-pr skill will fail at Step 0" >&2
   exit 0
 fi
 
@@ -73,7 +79,7 @@ fi
 # markers written before the restart still carry the old PID. Hooks use
 # kill -0 <stored-pid> for liveness, so stale PIDs would cause them to
 # evict live markers. Rewriting here keeps bypass working after restart.
-for _active_dir in "$HOME/.claude"/.*-active.d; do
+for _active_dir in "$CONFIG_DIR"/.*-active.d; do
   [ -d "$_active_dir" ] || continue
   _entry="$_active_dir/$SESSION_ID"
   if [ -f "$_entry" ]; then

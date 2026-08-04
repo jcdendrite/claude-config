@@ -39,7 +39,12 @@ FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/d
 [ -z "$FILE_PATH" ] && exit 0
 
 # Optional personal/org additions: one glob per line (same grammar as data-file-read-guard.md). See docs/security-hardening.md.
+# Union, not swap: $(_lib_config_dir)'s copy wins if present, else the legacy $HOME/.claude location -- keeps an already-armed CLAUDE_CONFIG_DIR user's guard live.
+# An unresolvable config dir leaves CREDENTIAL_FILE_GUARD at the legacy path; this is an opt-in guard, not a gate, so resolver failure must not disable it.
 CREDENTIAL_FILE_GUARD="${HOME}/.claude/credential-file-guard.md"
+if config_dir=$(_lib_config_dir) && [ -f "$config_dir/credential-file-guard.md" ]; then
+  CREDENTIAL_FILE_GUARD="$config_dir/credential-file-guard.md"
+fi
 
 # Tests $1 (a raw or symlink-resolved path) against the built-in regex, then the optional user glob file. Shared by both call sites so pre- and post-symlink-resolution checks aren't written out twice.
 _matches_credential_path() {

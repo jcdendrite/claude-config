@@ -148,8 +148,8 @@ def repo_with_committed_optin(tmp_path) -> Path:
     return repo
 
 
-def _fire(payload: dict, cwd, home) -> dict | None:
-    return run_hook_stop(ADVANCE_HOOK, payload, cwd=cwd, home=home)
+def _fire(payload: dict, cwd, home, extra_env: dict | None = None) -> dict | None:
+    return run_hook_stop(ADVANCE_HOOK, payload, cwd=cwd, home=home, extra_env=extra_env)
 
 
 # ------------------------------------------------------------------ #
@@ -355,6 +355,58 @@ def test_repo_committed_optin_with_machine_file_absent_stays_silent(
     assert result is None
 
 
+def test_config_dir_sentinel_fires(isolated_home, dirty_repo, tmp_path):
+    """CLAUDE_CONFIG_DIR relocates the machine sentinel, kill switch, log
+    file, and state dir together — all five hardcodes route through the
+    same resolved config dir."""
+    config_dir = tmp_path / "profile"
+    config_dir.mkdir()
+    (config_dir / "autonomous-shipping-required").write_text("# machine sentinel\n")
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=isolated_home,
+        extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+    )
+    assert result is not None
+
+
+def test_config_dir_kill_switch_disables(isolated_home, dirty_repo, tmp_path):
+    config_dir = tmp_path / "profile"
+    config_dir.mkdir()
+    (config_dir / "autonomous-shipping-required").write_text("# machine sentinel\n")
+    (config_dir / ".commit-stall-block-disabled").write_text("")
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=isolated_home,
+        extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+    )
+    assert result is None
+
+
+def test_legacy_home_claude_sentinel_inert_once_config_dir_set(armed_home, dirty_repo, tmp_path):
+    """The machine sentinel is a swap, not a union: armed_home's legacy
+    $HOME/.claude/autonomous-shipping-required does not fire once
+    CLAUDE_CONFIG_DIR points at a directory holding no copy of it —
+    matches _lib_autonomous_shipping_active's existing swap semantics."""
+    empty_config_dir = tmp_path / "empty-profile"
+    empty_config_dir.mkdir()
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+        extra_env={"CLAUDE_CONFIG_DIR": str(empty_config_dir)},
+    )
+    assert result is None
+
+
 # ------------------------------------------------------------------ #
 # Work-pending predicate                                              #
 # ------------------------------------------------------------------ #
@@ -440,7 +492,13 @@ def test_home_unset_silent(dirty_repo, monkeypatch):
     assert result.stdout.strip() == ""
 
 
-def test_home_claude_dir_absent_silent(tmp_path, dirty_repo):
+def test_home_claude_dir_absent_silent(tmp_path, dirty_repo, monkeypatch):
+    """Pins the $HOME-only resolution path — CLAUDE_CONFIG_DIR must be unset
+    here (unlike isolated_home, this fixture-less $HOME override doesn't
+    clear it), or an ambient CLAUDE_CONFIG_DIR on the test machine would
+    resolve CONFIG_DIR to a real, populated directory instead of the bare
+    sandboxed $HOME this test means to exercise."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     bare_home = tmp_path / "bare-home"
     bare_home.mkdir()
     result = _fire(

@@ -22,7 +22,10 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
 fi
 _lib_valid_session_id_component "$SESSION_ID" || exit 0
 
-STATE_DIR="$HOME/.claude/.worktree-anchor-nudge.d"
+# An unresolvable config dir leaves no state file to clean up, so this hook
+# fails open the same way an unusable SESSION_ID already does.
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+STATE_DIR="$CONFIG_DIR/.worktree-anchor-nudge.d"
 
 rm -f "${STATE_DIR}/${SESSION_ID}" 2>/dev/null || true
 

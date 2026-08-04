@@ -2,9 +2,9 @@
 # hook-class: informational
 # SessionEnd hook: delete the session_id ↔ claude-PID lookup file that
 # capture-session-id.sh wrote for this session. It is the destructor
-# capture-session-id.sh never had — without it, ~/.claude/sessions/ gains
-# one bare-PID file per session start, resume, and one-shot run and grows
-# without bound.
+# capture-session-id.sh never had — without it, the config dir's
+# sessions/ gains one bare-PID file per session start, resume, and
+# one-shot run and grows without bound.
 #
 # Content-match guard, not a blind `rm`:
 #   /clear ends one session and starts another in the *same* claude
@@ -26,10 +26,10 @@
 # the file lingers (~40 bytes) and self-heals when capture-session-id.sh
 # overwrites the PID on reuse. Every path exits 0; the normal no-match
 # path stays silent (a no-match is expected, e.g. the /clear ordering),
-# with one diagnostic only on PID-resolution failure for parity with the
-# sibling hook. `claude -p` one-shot invocations do not fire SessionEnd,
-# so each one leaks one bare-PID file at one-shot rate (self-heals on
-# PID reuse).
+# with a diagnostic only on PID- or config-dir-resolution failure, for
+# parity with the sibling hook. `claude -p` one-shot invocations do not
+# fire SessionEnd, so each one leaks one bare-PID file at one-shot rate
+# (self-heals on PID reuse).
 
 INPUT=$(cat 2>/dev/null)
 [ -z "$INPUT" ] && exit 0
@@ -43,7 +43,16 @@ if [ -z "$CLAUDE_PID" ]; then
   exit 0
 fi
 
-LOOKUP_FILE="$HOME/.claude/sessions/$CLAUDE_PID"
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  echo "[cleanup-session-id] could not source _lib.sh; lookup file not cleaned up" >&2
+  exit 0
+fi
+CONFIG_DIR=$(_lib_config_dir) || {
+  echo "[cleanup-session-id] could not resolve config dir; lookup file not cleaned up" >&2
+  exit 0
+}
+
+LOOKUP_FILE="$CONFIG_DIR/sessions/$CLAUDE_PID"
 if [ -f "$LOOKUP_FILE" ]; then
   CURRENT=$(tr -d '[:space:]' < "$LOOKUP_FILE" 2>/dev/null)
   if [ "$CURRENT" = "$SESSION_ID" ]; then

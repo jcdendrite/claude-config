@@ -927,6 +927,52 @@ class TestLibRealpathM:
         assert "//" not in resolved
 
 
+def _run_config_dir(env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_config_dir'],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+class TestLibConfigDir:
+    def test_returns_claude_config_dir_when_set_absolute(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "custom-config"
+        result = _run_config_dir(
+            {"HOME": str(tmp_path / "home"), "CLAUDE_CONFIG_DIR": str(config_dir), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(config_dir)
+
+    def test_falls_back_to_home_claude_when_config_dir_unset(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        result = _run_config_dir({"HOME": str(home), "PATH": os.environ["PATH"]})
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(home / ".claude")
+
+    def test_relative_claude_config_dir_fails_closed(self, tmp_path: Path) -> None:
+        result = _run_config_dir(
+            {"HOME": str(tmp_path / "home"), "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_empty_string_claude_config_dir_falls_back_to_home(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        result = _run_config_dir(
+            {"HOME": str(home), "CLAUDE_CONFIG_DIR": "", "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(home / ".claude")
+
+    def test_fails_closed_when_config_dir_and_home_both_unset(self) -> None:
+        result = _run_config_dir({"HOME": "", "PATH": os.environ["PATH"]})
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
 # _lib_autonomous_shipping_active — direct unit coverage.
 #
 # _lib_worktree_enforcement_active has no such coverage anywhere in this

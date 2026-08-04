@@ -842,6 +842,43 @@ class TestRequireSkillReview:
             == "deny"
         )
 
+    @pytest.mark.parametrize(
+        "env_overrides",
+        [
+            {},
+            {"CLAUDE_CONFIG_DIR": "/some/profile/dir"},
+            {"CLAUDE_CONFIG_DIR": "relative/path"},
+        ],
+    )
+    def test_plugin_lib_sh_config_dir_matches_stowed_lib_sh(self, env_overrides, tmp_path):
+        """_lib_config_dir must produce identical output (and exit status)
+        from the plugin's trimmed _lib.sh and the stowed copy for the same
+        input.
+
+        marker.sh (the write side) always sources the stowed
+        $HOME/.claude/hooks/_lib.sh directly — never a plugin-bundled copy —
+        so this hook (the read side) resolving a different config directory
+        for the same environment would break the gate: markers written by
+        one side would never land where the other looks.
+        """
+        harness = '. "{lib}"; _lib_config_dir; printf "RC:%s\\n" "$?"'
+        env = {**os.environ, "HOME": str(tmp_path), **env_overrides}
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        assert plugin_result.stdout == stowed_result.stdout, (
+            "plugins/skill-management/hooks/_lib.sh's _lib_config_dir "
+            "produces different output than the stowed "
+            "claude/.claude/hooks/_lib.sh copy for env_overrides="
+            f"{env_overrides!r} — plugin: {plugin_result.stdout!r}, "
+            f"stowed: {stowed_result.stdout!r}"
+        )
+
     def test_plugin_lib_sh_repo_hash_matches_stowed_lib_sh(self):
         """_marker_lib_repo_hash must produce identical output from the plugin's
         trimmed _lib.sh and the stowed copy for the same input.
@@ -1020,6 +1057,68 @@ class TestRequireSkillReview:
             "plugins/skill-management/hooks/_lib.sh's _lib_chains_marker_write_before_commit "
             "behaves differently than the stowed claude/.claude/hooks/_lib.sh copy for "
             f"{command!r} — plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
+        )
+
+
+class TestRequireSkillReviewHonorsConfigDir:
+    """CLAUDE_CONFIG_DIR relocates the skill-review marker directory the same
+    way for marker.sh (write) and this hook (read) -- see marker.sh and the
+    cross-account bypass this closes (ledger row 7)."""
+
+    def test_marker_under_matching_config_dir_allows(self, isolated_home, git_repo, tmp_path):
+        """CLAUDE_CONFIG_DIR-set happy path: a marker written under the
+        resolved config dir satisfies the gate when the session runs under
+        the same value."""
+        profile = tmp_path / "profile"
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(
+            isolated_home, git_repo, session_id=DEFAULT_TEST_SESSION_ID, config_dir=profile
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(profile)},
+            )
+            == "allow"
+        )
+
+    def test_marker_under_different_config_dir_does_not_authorize(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Cross-account bypass regression: a marker written under one
+        CLAUDE_CONFIG_DIR value must not satisfy the gate when the session
+        runs under a different one."""
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(
+            isolated_home, git_repo, session_id=DEFAULT_TEST_SESSION_ID, config_dir=profile_a
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(profile_b)},
+            )
+            == "deny"
+        )
+
+    def test_unresolvable_config_dir_denies(self, isolated_home, git_repo):
+        """Fail closed: a relative CLAUDE_CONFIG_DIR (unresolvable) must deny
+        the gate outright, even with a valid marker at the default location."""
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo, session_id=DEFAULT_TEST_SESSION_ID)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+            )
+            == "deny"
         )
 
 

@@ -66,11 +66,15 @@ class TestDenyPrivateProjectRefs:
         like test_clean_commit_message_allowed nondeterministically.
         Subprocess inherits this monkeypatched env (run_hook doesn't
         override it), so the hook reads the isolated $HOME at
-        runtime.
+        runtime. CLAUDE_CONFIG_DIR is also cleared -- the hook checks it
+        first, and a developer with it set would otherwise have their real
+        config dir's private-projects.md silently win over this fixture's
+        isolated one, mirroring conftest.py's isolated_home fixture.
         """
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         return home
 
     @pytest.fixture
@@ -1068,6 +1072,42 @@ class TestDenyPrivateProjectRefs:
         # containing the entry — must be at most 3.
         quoted_lines = [ln for ln in reason.split("\n") if ln.startswith("    ") and "Acme Corp" in ln]
         assert len(quoted_lines) <= 3
+
+    def test_blocklist_armed_at_config_dir_only_denied(self, claude_config_repo, tmp_path):
+        """Blocklist armed only at the resolved CLAUDE_CONFIG_DIR location
+        (no legacy copy) -- confirms the new path is read."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "private-projects.md").write_text("Acme Corp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp integration'"),
+                cwd=claude_config_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
+        )
+
+    def test_blocklist_armed_at_legacy_location_falls_back_denied(
+        self, claude_config_repo, private_projects_file, tmp_path
+    ):
+        """Regression test: a blocklist armed only at the legacy
+        $HOME/.claude location must still fire when CLAUDE_CONFIG_DIR points
+        at a directory with no copy of the file -- proves continuity for a
+        user who armed the guard before CLAUDE_CONFIG_DIR support existed."""
+        private_projects_file("Acme Corp\n")
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Working on Acme Corp integration'"),
+                cwd=claude_config_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
+        )
 
     # -- git commit -F / --file commit-message-source files ----------------
     # Parallel to gh pr's --body-file: the commit-message file's contents

@@ -105,6 +105,71 @@ class TestRequireRoutingRead:
             "deactivate-gate did not remove the routing-read marker"
         )
 
+    # -- CLAUDE_CONFIG_DIR ------------------------------------------------
+
+    def test_active_marker_under_config_dir_without_routing_read_denies(
+        self, isolated_home, tmp_path
+    ):
+        """CLAUDE_CONFIG_DIR set: the active marker is read from the
+        resolved config dir, not $HOME/.claude."""
+        sid = "session-config-dir-no-read"
+        config_dir = tmp_path / "profile"
+        active_dir = config_dir / ".plan-review-active.d"
+        active_dir.mkdir(parents=True)
+        (active_dir / sid).touch()
+        assert run_hook(
+            REQUIRE_ROUTING_READ_HOOK,
+            agent_input(session_id=sid),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        ) == "deny"
+
+    def test_active_marker_under_config_dir_with_routing_read_allows(
+        self, isolated_home, tmp_path
+    ):
+        """CLAUDE_CONFIG_DIR set: a fresh routing-read marker under the
+        resolved config dir authorizes the Agent spawn."""
+        sid = "session-config-dir-with-read"
+        config_dir = tmp_path / "profile"
+        (config_dir / ".plan-review-active.d").mkdir(parents=True)
+        (config_dir / ".plan-review-active.d" / sid).touch()
+        (config_dir / ".plan-review-routing-read.d").mkdir(parents=True)
+        (config_dir / ".plan-review-routing-read.d" / sid).touch()
+        assert run_hook(
+            REQUIRE_ROUTING_READ_HOOK,
+            agent_input(session_id=sid),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        ) == "allow"
+
+    def test_legacy_home_marker_ignored_when_config_dir_set(self, isolated_home, tmp_path):
+        """Config-dir resolution is a swap, not a union: an active marker at
+        the legacy $HOME/.claude location must not satisfy the gate once
+        CLAUDE_CONFIG_DIR points elsewhere."""
+        sid = "session-legacy-ignored"
+        write_plan_review_active_marker(isolated_home, sid)
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        assert run_hook(
+            REQUIRE_ROUTING_READ_HOOK,
+            agent_input(session_id=sid),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        ) == "allow"
+
+    def test_relative_config_dir_fails_open(self, isolated_home):
+        """CLAUDE_CONFIG_DIR set to a relative value cannot be resolved, so
+        the gate allows rather than falling back to the legacy
+        $HOME/.claude marker (which, if read, would deny here)."""
+        sid = "session-relative-config-dir"
+        write_plan_review_active_marker(isolated_home, sid)
+        assert run_hook(
+            REQUIRE_ROUTING_READ_HOOK,
+            agent_input(session_id=sid),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+        ) == "allow"
+
     # -- Hostile session_id ---------------------------------------------------
 
     def test_traversal_session_id_allows_and_does_not_touch_marker_dir(

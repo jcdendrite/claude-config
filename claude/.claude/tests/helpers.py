@@ -567,9 +567,15 @@ def git_toplevel(repo: Path) -> str:
 DEFAULT_TEST_SESSION_ID = "test-session-default"
 
 
-def marker_path(home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID) -> Path:
+def marker_path(
+    home: Path,
+    repo: Path,
+    session_id: str = DEFAULT_TEST_SESSION_ID,
+    config_dir: Path | None = None,
+) -> Path:
     repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
-    return home / ".claude" / "code-review-markers" / f"{repo_hash}.{session_id}"
+    config_dir = config_dir if config_dir is not None else home / ".claude"
+    return config_dir / "code-review-markers" / f"{repo_hash}.{session_id}"
 
 
 def staged_diff_hash(repo: Path) -> str:
@@ -584,8 +590,9 @@ def write_marker(
     repo: Path,
     diff_hash: str,
     session_id: str = DEFAULT_TEST_SESSION_ID,
+    config_dir: Path | None = None,
 ) -> Path:
-    marker = marker_path(home, repo, session_id)
+    marker = marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(diff_hash + "\n")
     return marker
@@ -610,12 +617,17 @@ def stage_settings(repo: Path, settings_file: Path, content: str) -> None:
     )
 
 
-def plan_review_marker_path(home: Path, repo: Path, session_id: str) -> Path:
+def plan_review_marker_path(
+    home: Path, repo: Path, session_id: str, config_dir: Path | None = None
+) -> Path:
     repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
-    return home / ".claude" / "plan-review-markers" / f"{repo_hash}.{session_id}"
+    config_dir = config_dir if config_dir is not None else home / ".claude"
+    return config_dir / "plan-review-markers" / f"{repo_hash}.{session_id}"
 
 
-def write_plan_review_marker(home: Path, repo: Path, session_id: str) -> Path:
+def write_plan_review_marker(
+    home: Path, repo: Path, session_id: str, config_dir: Path | None = None
+) -> Path:
     """Write a plan-review completion marker whose content is the real
     active-plan hash for `repo`, computed by shelling out to the production
     `_lib_active_plan_hash` (_lib.sh) rather than reimplementing the recipe
@@ -631,7 +643,7 @@ def write_plan_review_marker(home: Path, repo: Path, session_id: str) -> Path:
     its output is correct. Independent correctness is covered by the
     relational unit tests in `hooks/tests/test_marker_lib.py`, which do not
     route through this helper."""
-    marker = plan_review_marker_path(home, repo, session_id)
+    marker = plan_review_marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
     lib_sh = HOOKS_DIR / "_lib.sh"
     active_plan_hash = subprocess.run(
@@ -644,16 +656,27 @@ def write_plan_review_marker(home: Path, repo: Path, session_id: str) -> Path:
     return marker
 
 
-def skill_review_marker_path(home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID) -> Path:
+def skill_review_marker_path(
+    home: Path,
+    repo: Path,
+    session_id: str = DEFAULT_TEST_SESSION_ID,
+    config_dir: Path | None = None,
+) -> Path:
     repo_hash = subprocess.run(
         ["sha256sum"],
         input=git_toplevel(repo).encode(),
         capture_output=True,
     ).stdout.decode().split()[0]
-    return home / ".claude" / "skill-review-markers" / f"{repo_hash}.{session_id}"
+    config_dir = config_dir if config_dir is not None else home / ".claude"
+    return config_dir / "skill-review-markers" / f"{repo_hash}.{session_id}"
 
 
-def write_skill_review_marker(home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID) -> None:
+def write_skill_review_marker(
+    home: Path,
+    repo: Path,
+    session_id: str = DEFAULT_TEST_SESSION_ID,
+    config_dir: Path | None = None,
+) -> None:
     diff = subprocess.run(
         [
             "git",
@@ -669,7 +692,7 @@ def write_skill_review_marker(home: Path, repo: Path, session_id: str = DEFAULT_
         cwd=repo,
     ).stdout
     diff_hash = hashlib.sha256(diff).hexdigest()
-    marker = skill_review_marker_path(home, repo, session_id)
+    marker = skill_review_marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(diff_hash + "\n")
 

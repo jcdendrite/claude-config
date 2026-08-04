@@ -132,6 +132,32 @@ class TestDenyDataFileReads:
         read_guard("# a comment\n\n*.weirddata\n")
         assert run_hook(DENY_DATA_FILE_READS_HOOK, read_input("/tmp/x.weirddata")) == "deny"
 
+    def test_config_glob_armed_at_config_dir_only_denied(self, isolated_home, tmp_path):
+        """Guard armed only at the resolved CLAUDE_CONFIG_DIR location (no
+        legacy copy) -- confirms the new path is read."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "data-file-read-guard.md").write_text("**/patient-exports/**\n")
+        assert run_hook(
+            DENY_DATA_FILE_READS_HOOK,
+            read_input("/srv/patient-exports/2024/jan.txt"),
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        ) == "deny"
+
+    def test_config_glob_armed_at_legacy_location_falls_back_denied(self, isolated_home, read_guard, tmp_path):
+        """Regression test: a guard armed only at the legacy $HOME/.claude
+        location must still fire when CLAUDE_CONFIG_DIR points at a
+        directory with no copy of the file -- proves continuity for a user
+        who armed the guard before CLAUDE_CONFIG_DIR support existed."""
+        read_guard("**/patient-exports/**\n")
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        assert run_hook(
+            DENY_DATA_FILE_READS_HOOK,
+            read_input("/srv/patient-exports/2024/jan.txt"),
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        ) == "deny"
+
     # ------------------------------------------------------------------ #
     # Deny message names the path and the matched rule                    #
     # ------------------------------------------------------------------ #

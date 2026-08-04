@@ -19,11 +19,14 @@ from helpers import (
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
 
-def _run(args: list[str], cwd, home) -> subprocess.CompletedProcess:
+def _run(args: list[str], cwd, home, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    env = {**os.environ, "HOME": str(home)}
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["bash", str(MARKER_SCRIPT)] + args,
         cwd=cwd,
-        env={**os.environ, "HOME": str(home)},
+        env=env,
         capture_output=True,
         text=True,
     )
@@ -693,3 +696,52 @@ class TestMarkerWriteSatisfiesTheGate:
             )
             == "allow"
         )
+
+
+class TestMarkerScriptHonorsConfigDir:
+    """CLAUDE_CONFIG_DIR relocates every marker path marker.sh writes, not
+    just $HOME/.claude -- closes the cross-account bypass this plan targets."""
+
+    def test_write_code_review_lands_under_config_dir(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        config_dir = tmp_path / "custom-config-dir"
+        sessions_dir = config_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        sid = "test-session-config-dir"
+        (sessions_dir / str(os.getpid())).write_text(sid)
+
+        result = _run(
+            ["write", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert result.returncode == 0, result.stderr
+
+        marker_dir = config_dir / "code-review-markers"
+        files = list(marker_dir.iterdir())
+        assert len(files) == 1
+        assert files[0].name.endswith(f".{sid}")
+
+        home_marker_dir = isolated_home / ".claude" / "code-review-markers"
+        assert list(home_marker_dir.iterdir()) == [], (
+            "marker.sh must not also write under $HOME/.claude when "
+            "CLAUDE_CONFIG_DIR is set"
+        )
+
+    def test_write_aborts_when_config_dir_unresolvable(self, isolated_home, git_repo):
+        """Fail closed (ledger row 11): a relative CLAUDE_CONFIG_DIR must
+        abort the write rather than silently falling through to a
+        root-anchored path."""
+        result = _run(
+            ["write", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+        )
+        assert result.returncode == 2, result.stderr
+        assert "config directory" in result.stderr
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a resolver failure must not write a marker: {stray}"

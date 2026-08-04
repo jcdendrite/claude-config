@@ -26,11 +26,16 @@ def _state_dir(home: Path) -> Path:
     return home / ".claude" / ".worktree-anchor-nudge.d"
 
 
-def _run(payload: dict | None, home: Path) -> subprocess.CompletedProcess:
+def _run(
+    payload: dict | None, home: Path, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    env = {**os.environ, "HOME": str(home)}
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [str(CLEANUP_HOOK)],
         input=json.dumps(payload) if payload is not None else "",
-        env={**os.environ, "HOME": str(home)},
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -82,6 +87,23 @@ class TestCleanupWorktreeAnchorNudgeMarker:
             check=False,
         )
         assert result.returncode == 0
+
+    def test_deletes_the_state_file_at_config_dir_when_set(self, isolated_home, tmp_path):
+        """CLAUDE_CONFIG_DIR relocates the state directory: the per-session
+        state file is deleted from CONFIG_DIR, not from $HOME/.claude."""
+        config_dir = tmp_path / "profile"
+        state_dir = config_dir / ".worktree-anchor-nudge.d"
+        state_dir.mkdir(parents=True)
+        (state_dir / "session-a").write_text("/some/repo\n")
+
+        result = _run(
+            {"session_id": "session-a"},
+            isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+
+        assert result.returncode == 0
+        assert not (state_dir / "session-a").exists()
 
     def test_traversal_session_id_does_not_delete_files_outside_state_dir(
         self, isolated_home

@@ -54,7 +54,12 @@ if _lib_has_unsafe_ssh_dir_reference "$COMMAND_UNQUOTED"; then
 fi
 
 # --- Personal/org-specific path additions from credential-file-guard.md --
+# Union, not swap: $(_lib_config_dir)'s copy wins if present, else the legacy $HOME/.claude location -- keeps an already-armed CLAUDE_CONFIG_DIR user's guard live.
+# An unresolvable config dir leaves CREDENTIAL_FILE_GUARD at the legacy path; this is an opt-in guard, not a gate, so resolver failure must not disable it.
 CREDENTIAL_FILE_GUARD="${HOME}/.claude/credential-file-guard.md"
+if config_dir=$(_lib_config_dir) && [ -f "$config_dir/credential-file-guard.md" ]; then
+  CREDENTIAL_FILE_GUARD="$config_dir/credential-file-guard.md"
+fi
 while IFS=$'\t' read -r _lineno line; do
   # shellcheck disable=SC2254 # $line is an intentional user-authored glob, mirroring deny-data-file-reads.sh's config-glob loop; quoting it would force literal matching and break every wildcard rule.
   # nocasematch, same rationale as the built-in regex above; bash `case` has no per-pattern case-fold syntax, so the shopt is scoped tightly around this one statement and restored immediately after.

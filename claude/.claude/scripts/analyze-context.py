@@ -23,7 +23,9 @@ import json
 import sys
 from pathlib import Path
 
-CLAUDE_DIR = Path.home() / ".claude"
+from _config_dir import config_dir
+
+CLAUDE_DIR = config_dir()
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 SESSION_META_DIR = CLAUDE_DIR / "usage-data" / "session-meta"
 

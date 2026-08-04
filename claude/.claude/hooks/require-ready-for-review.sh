@@ -203,7 +203,13 @@ fi
 # failed rev-parse denies rather than releasing the gate.
 CURRENT_HEAD=$(cd "$CWD" 2>/dev/null && git rev-parse HEAD 2>/dev/null)
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-if _lib_marker_value_present "$HOME/.claude/ready-for-review-markers" "$CURRENT_HEAD" "$REPO_HASH."; then
+# Fail closed: an unresolvable config dir must deny the gate, not silently
+# skip the marker check and let the push/PR-ready command through.
+if ! CONFIG_DIR=$(_lib_config_dir); then
+  emit_deny "Blocked by ready-for-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+  exit 0
+fi
+if _lib_marker_value_present "$CONFIG_DIR/ready-for-review-markers" "$CURRENT_HEAD" "$REPO_HASH."; then
   exit 0
 fi
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -38,23 +39,36 @@ class TestCleanupSessionId:
             return []
         return list(sessions_dir.iterdir())
 
-    def _run(self, hook: Path, payload: str) -> subprocess.CompletedProcess:
+    def _run(
+        self, hook: Path, payload: str, extra_env: dict | None = None
+    ) -> subprocess.CompletedProcess:
+        env = None
+        if extra_env is not None:
+            env = dict(os.environ)
+            env.update(extra_env)
         return subprocess.run(
             [str(hook)],
             input=payload,
             capture_output=True,
             text=True,
             check=False,
+            env=env,
         )
 
-    def _capture(self, session_id: str) -> subprocess.CompletedProcess:
+    def _capture(
+        self, session_id: str, extra_env: dict | None = None
+    ) -> subprocess.CompletedProcess:
         return self._run(
-            CAPTURE_SESSION_ID_HOOK, json.dumps({"session_id": session_id})
+            CAPTURE_SESSION_ID_HOOK,
+            json.dumps({"session_id": session_id}),
+            extra_env=extra_env,
         )
 
-    def _cleanup(self, session_id: str | None) -> subprocess.CompletedProcess:
+    def _cleanup(
+        self, session_id: str | None, extra_env: dict | None = None
+    ) -> subprocess.CompletedProcess:
         payload = {} if session_id is None else {"session_id": session_id}
-        return self._run(CLEANUP_SESSION_ID_HOOK, json.dumps(payload))
+        return self._run(CLEANUP_SESSION_ID_HOOK, json.dumps(payload), extra_env=extra_env)
 
     def test_cleanup_deletes_file_when_session_id_matches(self, isolated_home):
         """capture then cleanup with the same session_id — the lookup file
@@ -66,6 +80,43 @@ class TestCleanupSessionId:
         assert result.returncode == 0
         assert self._sessions_files(isolated_home) == []
         assert result.stderr == ""
+
+    def test_cleanup_uses_config_dir_sessions_when_set(self, isolated_home, tmp_path):
+        """CLAUDE_CONFIG_DIR replaces the whole ~/.claude directory, not
+        just $HOME (https://code.claude.com/docs/en/claude-directory) --
+        capture writes and cleanup deletes the lookup file under
+        $CLAUDE_CONFIG_DIR/sessions, not $HOME/.claude/sessions."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        extra_env = {"CLAUDE_CONFIG_DIR": str(config_dir)}
+        sid = "config-dir-session"
+        self._capture(sid, extra_env=extra_env)
+        files = list((config_dir / "sessions").iterdir())
+        assert len(files) == 1, f"expected one lookup file under CLAUDE_CONFIG_DIR, got {files}"
+
+        result = self._cleanup(sid, extra_env=extra_env)
+
+        assert result.returncode == 0
+        assert list((config_dir / "sessions").iterdir()) == []
+        assert self._sessions_files(isolated_home) == []
+
+    def test_cleanup_relative_config_dir_fails_open_with_stderr_diagnostic(
+        self, isolated_home
+    ):
+        """A relative CLAUDE_CONFIG_DIR is unresolvable per _lib_config_dir's
+        call-site contract and must not collapse to a root-anchored lookup
+        path -- cleanup fails open (exit 0) and leaves the file (written
+        under $HOME/.claude/sessions) untouched."""
+        sid = "rel-config-dir-cleanup-session"
+        self._capture(sid)
+        assert len(self._sessions_files(isolated_home)) == 1
+
+        result = self._cleanup(sid, extra_env={"CLAUDE_CONFIG_DIR": "relative/path"})
+
+        assert result.returncode == 0
+        assert len(self._sessions_files(isolated_home)) == 1
+        assert "[cleanup-session-id]" in result.stderr
+        assert "could not resolve config dir" in result.stderr
 
     def test_cleanup_keeps_file_when_session_id_differs(self, isolated_home):
         """capture with id A, cleanup with id B — the content-match guard

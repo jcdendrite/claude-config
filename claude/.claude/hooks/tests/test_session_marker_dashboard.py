@@ -27,13 +27,18 @@ from helpers import (
 SESSION_MARKER_DASHBOARD_HOOK = HOOKS_DIR / "session-marker-dashboard.sh"
 
 
-def _run_dashboard(payload: dict, isolated_home: Path) -> subprocess.CompletedProcess:
+def _run_dashboard(
+    payload: dict, isolated_home: Path, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    env = {**os.environ, "HOME": str(isolated_home)}
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [str(SESSION_MARKER_DASHBOARD_HOOK)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
-        env={**os.environ, "HOME": str(isolated_home)},
+        env=env,
         check=False,
     )
 
@@ -147,6 +152,54 @@ class TestSessionMarkerDashboard:
         """Hook must always exit 0 to avoid blocking session startup."""
         result = _run_dashboard({"session_id": "sess-exit-check"}, isolated_home)
         assert result.returncode == 0
+
+    # -- CLAUDE_CONFIG_DIR ------------------------------------------------
+
+    def test_fresh_plan_review_marker_under_config_dir_emits_json(self, isolated_home, tmp_path):
+        """CLAUDE_CONFIG_DIR set: markers are read from the resolved config
+        dir, not $HOME/.claude."""
+        sid = "sess-pr-active-config-dir"
+        config_dir = tmp_path / "profile"
+        marker_dir = config_dir / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        result = _run_dashboard(
+            {"session_id": sid}, isolated_home, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)}
+        )
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "plan-review-active" in ctx
+        assert "present" in ctx
+
+    def test_legacy_home_marker_ignored_when_config_dir_set(self, isolated_home, tmp_path):
+        """Config-dir resolution is a swap, not a union: a marker at the
+        legacy $HOME/.claude location produces no output once
+        CLAUDE_CONFIG_DIR points elsewhere."""
+        sid = "sess-legacy-ignored"
+        marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        result = _run_dashboard(
+            {"session_id": sid}, isolated_home, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)}
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_relative_config_dir_produces_no_output(self, isolated_home):
+        """CLAUDE_CONFIG_DIR set to a relative value cannot be resolved, so
+        the dashboard exits with no output rather than falling back to the
+        legacy $HOME/.claude marker directory."""
+        sid = "sess-relative-config-dir"
+        marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        result = _run_dashboard(
+            {"session_id": sid}, isolated_home, extra_env={"CLAUDE_CONFIG_DIR": "relative/path"}
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
 
     def test_traversal_session_id_produces_no_output(self, isolated_home):
         """A traversal session_id must not make this read-only hook report

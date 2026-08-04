@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -18,8 +19,9 @@ CAPTURE_SESSION_ID_HOOK = HOOKS_DIR / "capture-session-id.sh"
 class TestCaptureSessionId:
     """SessionStart hook that bootstraps the session_id ↔ claude-PID
     lookup file. Skill bodies running as Bash tool calls don't see the
-    hook payload; they read ~/.claude/sessions/$PPID to learn their own
-    session_id (where $PPID is the claude main process PID).
+    hook payload; they read sessions/$PPID under the resolved config
+    directory to learn their own session_id (where $PPID is the claude
+    main process PID).
 
     The hook must never block session startup, so every error path exits 0.
     """
@@ -85,6 +87,42 @@ class TestCaptureSessionId:
         assert self._sessions_files(isolated_home) == []
         assert "[capture-session-id]" in result.stderr
         assert result.stdout == ""
+
+    def test_uses_config_dir_sessions_when_set(self, isolated_home, tmp_path):
+        """CLAUDE_CONFIG_DIR replaces the whole ~/.claude directory, not just
+        $HOME (https://code.claude.com/docs/en/claude-directory) -- the
+        lookup file lands under $CLAUDE_CONFIG_DIR/sessions, not
+        $HOME/.claude/sessions."""
+        from helpers import run_hook
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        sid = "config-dir-session"
+        run_hook(
+            CAPTURE_SESSION_ID_HOOK,
+            {"session_id": sid},
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert self._sessions_files(isolated_home) == []
+        files = list((config_dir / "sessions").iterdir())
+        assert len(files) == 1, f"expected one lookup file under CLAUDE_CONFIG_DIR, got {files}"
+        assert files[0].read_text().strip() == sid
+
+    def test_relative_config_dir_fails_open_with_stderr_diagnostic(self, isolated_home):
+        """A relative CLAUDE_CONFIG_DIR is unresolvable per _lib_config_dir's
+        call-site contract and must not silently collapse to a root-anchored
+        write -- the hook fails open, writing nothing."""
+        result = subprocess.run(
+            [str(CAPTURE_SESSION_ID_HOOK)],
+            input=json.dumps({"session_id": "rel-config-dir-session"}),
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "CLAUDE_CONFIG_DIR": "relative/path"},
+        )
+        assert result.returncode == 0
+        assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert "could not resolve config dir" in result.stderr
 
     def test_happy_path_emits_no_stderr(self, isolated_home):
         """Successful runs must be silent — stderr noise on every session

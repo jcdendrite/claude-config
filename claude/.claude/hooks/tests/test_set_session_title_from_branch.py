@@ -53,9 +53,10 @@ def _run_raw(input_bytes: bytes, home: Path, cwd: Path | None = None) -> subproc
 
 
 @pytest.fixture
-def isolated_home(tmp_path):
+def isolated_home(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     return home
 
 
@@ -468,3 +469,28 @@ class TestSetSessionTitleFromBranch:
         claude_dir.mkdir()
         (claude_dir / "session-title-disabled").touch()
         assert _title(subdir, isolated_home) is None
+
+    # ---------- CLAUDE_CONFIG_DIR resolution -----------------------------
+
+    def test_machine_global_kill_switch_at_config_dir(self, feature_clone, isolated_home, tmp_path):
+        """The machine-global kill switch is read from CLAUDE_CONFIG_DIR
+        when set, not from $HOME/.claude."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / ".session-title-disabled").touch()
+        assert _title(
+            feature_clone, isolated_home, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)}
+        ) is None
+
+    def test_machine_global_kill_switch_at_home_does_not_suppress_when_config_dir_set(
+        self, feature_clone, isolated_home, tmp_path
+    ):
+        """The legacy $HOME/.claude kill-switch location is not consulted
+        once CLAUDE_CONFIG_DIR is set — the title still fires."""
+        (isolated_home / ".claude").mkdir()
+        (isolated_home / ".claude" / ".session-title-disabled").touch()
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        assert _title(
+            feature_clone, isolated_home, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)}
+        ) == "clone/feature"

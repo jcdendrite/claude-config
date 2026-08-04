@@ -50,12 +50,17 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 # Here the marker turns enforcement ON, so an unusable id must not turn it on.
 _lib_valid_session_id_component "$SESSION_ID" || exit 0
 
+# An unresolvable config dir leaves "is plan-review active" undecidable, so
+# this exits open (0) the same as an unusable SESSION_ID above -- the marker
+# is what turns enforcement ON, not what turns it off.
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+
 # Only enforce during an active plan-review session.
-ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+ACTIVE_MARKER="$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
 [ -f "$ACTIVE_MARKER" ] || exit 0
 
 # Allow if a fresh (< 60 min) routing-read marker exists.
-ROUTING_MARKER="$HOME/.claude/.plan-review-routing-read.d/$SESSION_ID"
+ROUTING_MARKER="$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
 if [ -f "$ROUTING_MARKER" ] && [ -n "$(find "$ROUTING_MARKER" -mmin -60 2>/dev/null)" ]; then
   exit 0
 fi

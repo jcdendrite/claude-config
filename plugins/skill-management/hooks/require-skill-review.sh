@@ -220,12 +220,19 @@ fi
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
 
+# Fail closed: an unresolvable config dir must deny the gate, not silently
+# skip the marker check and let the commit through.
+if ! CONFIG_DIR=$(_lib_config_dir); then
+  emit_deny "Blocked by skill-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+  exit 0
+fi
+
 # Allow when any marker under this repo-hash holds the currently staged skill
 # diff's hash. The stored hash is the authorization — it proves a review
 # covered exactly this diff — so the question is "has this diff been
 # reviewed?", not "did this session review it?". An empty CURRENT_HASH
 # (sha256sum unavailable) never matches, so a hashing failure denies.
-if _lib_marker_value_present "$HOME/.claude/skill-review-markers" "$CURRENT_HASH" "$REPO_HASH."; then
+if _lib_marker_value_present "$CONFIG_DIR/skill-review-markers" "$CURRENT_HASH" "$REPO_HASH."; then
   exit 0
 fi
 

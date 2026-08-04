@@ -86,6 +86,36 @@ class TestDenyPiiInCommits:
         _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "allow"
 
+    def test_armed_at_config_dir_only_ssn_denied(self, isolated_home, git_repo, tmp_path):
+        """Pattern file armed only at the resolved CLAUDE_CONFIG_DIR location
+        (no legacy copy) -- confirms the new path is read."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "pii-patterns.md").write_text("# no user patterns\n")
+        _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git commit -m wip"),
+            cwd=git_repo,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        ) == "deny"
+
+    def test_armed_at_legacy_location_falls_back_ssn_denied(self, isolated_home, git_repo, pii_patterns, tmp_path):
+        """Regression test: a pattern file armed only at the legacy
+        $HOME/.claude location must still fire when CLAUDE_CONFIG_DIR points
+        at a directory with no copy of the file -- proves continuity for a
+        user who armed the guard before CLAUDE_CONFIG_DIR support existed."""
+        pii_patterns("# no user patterns\n")
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git commit -m wip"),
+            cwd=git_repo,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        ) == "deny"
+
     # ------------------------------------------------------------------ #
     # Credential-value sub-check — unconditional, no pii-patterns.md      #
     # ------------------------------------------------------------------ #

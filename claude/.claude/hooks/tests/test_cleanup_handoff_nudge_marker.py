@@ -26,11 +26,16 @@ def _marker_dir(home: Path) -> Path:
     return home / ".claude" / ".handoff-nudge-fired.d"
 
 
-def _run(payload: dict | None, home: Path) -> subprocess.CompletedProcess:
+def _run(
+    payload: dict | None, home: Path, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    env = {**os.environ, "HOME": str(home)}
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [str(CLEANUP_HOOK)],
         input=json.dumps(payload) if payload is not None else "",
-        env={**os.environ, "HOME": str(home)},
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -94,6 +99,25 @@ class TestCleanupHandoffNudgeMarker:
             check=False,
         )
         assert result.returncode == 0
+
+    def test_deletes_the_fired_marker_at_config_dir_when_set(self, isolated_home, tmp_path):
+        """CLAUDE_CONFIG_DIR relocates the marker directory: the fired and
+        drift markers are deleted from CONFIG_DIR, not from $HOME/.claude."""
+        config_dir = tmp_path / "profile"
+        marker_dir = config_dir / ".handoff-nudge-fired.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / "session-a").touch()
+        (marker_dir / "session-a-drift").touch()
+
+        result = _run(
+            {"session_id": "session-a"},
+            isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+
+        assert result.returncode == 0
+        assert not (marker_dir / "session-a").exists()
+        assert not (marker_dir / "session-a-drift").exists()
 
     def test_traversal_session_id_does_not_delete_files_outside_marker_dir(
         self, isolated_home

@@ -1,18 +1,46 @@
 #!/bin/bash
 # Trimmed shared helper library for skill-management plugin hooks.
 # Source this file (do NOT invoke it). Contains only the helpers needed by
-# require-skill-review.sh: _lib_jq, _lib_parse_tool_input_or_deny,
-# _marker_lib_repo_hash, _lib_marker_value_present, and
-# _lib_chains_marker_write_before_commit. No git helpers, no
-# worktree-enforcement helpers.
+# require-skill-review.sh: _lib_config_dir, _lib_jq,
+# _lib_parse_tool_input_or_deny, _marker_lib_repo_hash,
+# _lib_marker_value_present, and _lib_chains_marker_write_before_commit. No
+# git helpers, no worktree-enforcement helpers.
 #
-# _marker_lib_repo_hash must stay byte-identical to the same function in the
-# stowed claude/.claude/hooks/_lib.sh — marker.sh (the write side) always
-# sources the stowed copy directly ($HOME/.claude/hooks/_lib.sh), never a
-# plugin-bundled one, so a divergence here breaks the repo-hash used to key
+# _lib_config_dir and _marker_lib_repo_hash must stay byte-identical to the
+# same functions in the stowed claude/.claude/hooks/_lib.sh — marker.sh (the
+# write side) always sources the stowed copy directly
+# ($HOME/.claude/hooks/_lib.sh), never a plugin-bundled one, so a divergence
+# here breaks either the config directory or the repo-hash used to key
 # markers between the write side and this hook's read side.
 # _lib_marker_value_present is duplicated from that same file for the same
 # reason the others are: a plugin cannot source across the plugin boundary.
+
+# Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set
+# (must be absolute — a relative value resolves differently per invocation
+# cwd, the same path-mismatch bug this function exists to fix), else
+# $HOME/.claude. Returns 1 with no stdout when CLAUDE_CONFIG_DIR is relative,
+# or when CLAUDE_CONFIG_DIR is unset/empty and $HOME is also unset/empty.
+# Call-site contract (load-bearing): bare interpolation,
+# "$(_lib_config_dir)/whatever", is unsafe — under `set -e`, a failing
+# *nested* command substitution does not abort the script, so a resolver
+# failure silently collapses to "/whatever" (root-anchored) instead of being
+# caught. Every call site must capture and check the exit status first:
+#   config_dir=$(_lib_config_dir) || { <fail-open-or-deny per this caller>; }
+_lib_config_dir() {
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    case "$CLAUDE_CONFIG_DIR" in
+      /*) ;;
+      *) return 1 ;;  # relative values resolve differently per invocation
+                      # cwd — the exact read/write path-mismatch bug this
+                      # function fixes, just triggered a different way.
+    esac
+    printf '%s\n' "${CLAUDE_CONFIG_DIR%/}"
+    return 0
+  fi
+  local home_norm="${HOME%/}"
+  [ -n "$home_norm" ] || return 1
+  printf '%s\n' "$home_norm/.claude"
+}
 
 # Backstop against a hung jq (~5s, not a per-fire latency budget).
 # Cites guard-settings-session-keys.sh's git_capped 5s precedent.

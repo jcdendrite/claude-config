@@ -820,3 +820,65 @@ class TestMachineLevelMarker:
         non_repo = tmp_path / "not-a-repo"
         non_repo.mkdir()
         assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=non_repo) == "allow"
+
+
+class TestMachineMarkerUnderConfigDir:
+    """CLAUDE_CONFIG_DIR relocates the machine-level marker lookup via
+    _lib_worktree_enforcement_active, which already resolves through
+    _lib_config_dir."""
+
+    def test_machine_marker_under_config_dir_enforces(self, non_opted_repo, isolated_home, tmp_path):
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "worktree-required").write_text("# sentinel\n")
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=non_opted_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
+        )
+
+    def test_legacy_home_claude_marker_still_enforces_once_config_dir_set(
+        self, non_opted_repo, user_marker_home, tmp_path
+    ):
+        """A $HOME/.claude/worktree-required marker (user_marker_home) still
+        enforces even when CLAUDE_CONFIG_DIR points at a directory holding no
+        copy of it — union, not swap, at this call site: a machine-wide
+        sentinel armed before CLAUDE_CONFIG_DIR adoption must not silently go
+        dark under a differentiated profile, matching the guard-config hooks'
+        legacy-fallback fix for the same enforcement-invariant-regression
+        shape."""
+        empty_config_dir = tmp_path / "empty-profile"
+        empty_config_dir.mkdir()
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=non_opted_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(empty_config_dir)},
+            )
+            == "deny"
+        )
+
+    def test_config_dir_marker_takes_precedence_over_legacy(
+        self, non_opted_repo, user_marker_home, tmp_path
+    ):
+        """When the resolved config dir DOES hold its own worktree-required
+        marker, that arm short-circuits — the legacy $HOME/.claude fallback
+        is only consulted when the resolved config dir has no marker of its
+        own, not layered on top of it."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "worktree-required").write_text("# sentinel\n")
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=non_opted_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
+        )

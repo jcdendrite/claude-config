@@ -76,15 +76,36 @@ esac
 # literal string, so $HOME/.claude/../other/file would satisfy the prefix
 # pattern without actually resolving inside $HOME/.claude/. Rejecting any
 # path that contains '/..' closes that traversal vector before the match.
+# This is a union, not a swap, with the resolved-config-dir exemption below:
+# the literal $HOME/.claude match is mechanism-bound to stow-fold detection
+# (realpath can't be used — see the header comment) and stays even when
+# CLAUDE_CONFIG_DIR relocates the harness infrastructure elsewhere.
 home_norm="${HOME%/}"
-if [ -n "$home_norm" ]; then
-  case "$FILE_PATH" in
-    */../*|*/..)
-      ;; # traversal present — do not exempt; fall through to repo-walk
-    "$home_norm"/.claude/*)
-      exit 0 ;;
-  esac
-fi
+case "$FILE_PATH" in
+  */../*|*/..)
+    ;; # traversal present — do not exempt either arm; fall through to repo-walk
+  *)
+    if [ -n "$home_norm" ]; then
+      case "$FILE_PATH" in
+        "$home_norm"/.claude/*)
+          exit 0 ;;
+      esac
+    fi
+    # Harness-infrastructure exemption at the resolved config dir, which
+    # differs from $HOME/.claude only when CLAUDE_CONFIG_DIR is set — same
+    # rationale as the literal match above, true regardless of which
+    # directory currently holds that infrastructure. A failed resolution
+    # grants no exemption here, same fail-safe direction as the $HOME arm's
+    # own empty-$HOME guard above.
+    config_dir=$(_lib_config_dir) || config_dir=""
+    if [ -n "$config_dir" ]; then
+      case "$FILE_PATH" in
+        "$config_dir"/*)
+          exit 0 ;;
+      esac
+    fi
+    ;;
+esac
 
 # Walk up from the file's parent directory to find an existing ancestor.
 # Write may target a file that does not exist yet; git -C on a missing dir

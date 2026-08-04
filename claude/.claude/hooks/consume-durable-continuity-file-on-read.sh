@@ -84,7 +84,15 @@
 # solely on the settings.json matcher condition.
 set -uo pipefail
 
-if [ -f "$HOME/.claude/.consume-durable-continuity-disabled" ]; then
+# An unresolvable config dir leaves no kill-switch/continuity-directory/
+# script location to check, so this hook fails open (Read proceeds
+# unconsumed) rather than guess.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+
+if [ -f "$CONFIG_DIR/.consume-durable-continuity-disabled" ]; then
   exit 0
 fi
 
@@ -100,11 +108,11 @@ FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/d
 [ -n "$FILE_PATH" ] || exit 0
 
 case "$FILE_PATH" in
-  "$HOME"/.claude/handoffs/*-handoff.md | "$HOME"/.claude/briefs/*-task.md) ;;
+  "$CONFIG_DIR"/handoffs/*-handoff.md | "$CONFIG_DIR"/briefs/*-task.md) ;;
   *) exit 0 ;;
 esac
 
-RESUME_SCRIPT="$HOME/.claude/scripts/resume-context.sh"
+RESUME_SCRIPT="$CONFIG_DIR/scripts/resume-context.sh"
 TIMEOUT_SECONDS="${RESUME_CONTEXT_HOOK_TIMEOUT_SECONDS:-5}"
 
 if command -v timeout >/dev/null 2>&1; then

@@ -23,15 +23,20 @@ NUDGE_HOOK = HOOKS_DIR / "nudge-worktree-anchor.sh"
 SESSION_ID = "anchor-test-session"
 
 
-def _run(cwd, home, session_id: str | None = SESSION_ID) -> subprocess.CompletedProcess:
+def _run(
+    cwd, home, session_id: str | None = SESSION_ID, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
     payload: dict = {"cwd": str(cwd)}
     if session_id is not None:
         payload["session_id"] = session_id
+    env = {**os.environ, "HOME": str(home)}
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["bash", str(NUDGE_HOOK)],
         input=json.dumps(payload),
         cwd=str(cwd),
-        env={**os.environ, "HOME": str(home)},
+        env=env,
         capture_output=True,
         text=True,
     )
@@ -272,4 +277,37 @@ class TestReArmsOnStateChange:
         )
         assert _context(_run(repo, isolated_home)) is not None, (
             "a worktree reappearing after having none is a genuine second occurrence"
+        )
+
+
+class TestConfigDirRelocatesStateDir:
+    """CLAUDE_CONFIG_DIR relocates STATE_DIR away from $HOME/.claude — the
+    dedup mechanism must still work, and the state file must land under the
+    resolved config dir, not the legacy $HOME/.claude location."""
+
+    def test_state_file_written_under_config_dir(
+        self, isolated_home, opted_in_with_worktree, tmp_path
+    ):
+        repo, _wt = opted_in_with_worktree
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+
+        result = _run(repo, isolated_home, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)})
+
+        assert result.returncode == 0
+        assert _context(result) is not None
+        assert (config_dir / ".worktree-anchor-nudge.d" / SESSION_ID).exists()
+        assert not (isolated_home / ".claude" / ".worktree-anchor-nudge.d" / SESSION_ID).exists()
+
+    def test_dedup_still_works_under_config_dir(
+        self, isolated_home, opted_in_with_worktree, tmp_path
+    ):
+        repo, _wt = opted_in_with_worktree
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        env = {"CLAUDE_CONFIG_DIR": str(config_dir)}
+
+        assert _context(_run(repo, isolated_home, extra_env=env)) is not None
+        assert _context(_run(repo, isolated_home, extra_env=env)) is None, (
+            "the same unchanged state must not be reported every prompt"
         )

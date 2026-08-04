@@ -72,8 +72,13 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
 fi
 _lib_valid_session_id_component "$SESSION_ID" || exit 0
 
+# An unresolvable config dir leaves no kill-switch/log/marker location to
+# check or write, so this hook fails open the same way an unusable
+# SESSION_ID already does.
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+
 # Kill-switch: suppress nudge for automated pipelines or user opt-out.
-if [ -f "$HOME/.claude/.handoff-nudge-disabled" ]; then
+if [ -f "$CONFIG_DIR/.handoff-nudge-disabled" ]; then
   exit 0
 fi
 
@@ -121,9 +126,9 @@ if [ -z "$ESTIMATE" ]; then
 fi
 
 # Ensure the log parent directory exists before any log write.
-mkdir -p "$HOME/.claude" 2>/dev/null || true
-NUDGE_LOG="$HOME/.claude/.handoff-nudge.log"
-MARKER_DIR="$HOME/.claude/.handoff-nudge-fired.d"
+mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+NUDGE_LOG="$CONFIG_DIR/.handoff-nudge.log"
+MARKER_DIR="$CONFIG_DIR/.handoff-nudge-fired.d"
 
 # Schema-drift detection: usage block present but all four fields are 0 or null.
 # This indicates the transcript schema changed and the field paths are stale.

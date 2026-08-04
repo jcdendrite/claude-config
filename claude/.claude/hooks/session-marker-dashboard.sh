@@ -56,9 +56,14 @@ marker_status() {
   fi
 }
 
-PLAN_REVIEW_STATUS=$(marker_status "$HOME/.claude/.plan-review-active.d/$SESSION_ID")
-READY_FOR_REVIEW_STATUS=$(marker_status "$HOME/.claude/.ready-for-review-active.d/$SESSION_ID")
-RESPOND_PR_STATUS=$(marker_status "$HOME/.claude/.respond-pr-active.d/$SESSION_ID")
+# An unresolvable config dir leaves no marker to report on, and this hook
+# must not block session startup, so it exits the same as an unusable
+# SESSION_ID above.
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+
+PLAN_REVIEW_STATUS=$(marker_status "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID")
+READY_FOR_REVIEW_STATUS=$(marker_status "$CONFIG_DIR/.ready-for-review-active.d/$SESSION_ID")
+RESPOND_PR_STATUS=$(marker_status "$CONFIG_DIR/.respond-pr-active.d/$SESSION_ID")
 
 if [ "$PLAN_REVIEW_STATUS" = "absent" ] \
    && [ "$READY_FOR_REVIEW_STATUS" = "absent" ] \

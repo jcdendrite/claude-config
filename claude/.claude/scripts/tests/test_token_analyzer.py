@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import pytest
 _SCRIPT = Path(__file__).parent.parent / "token-analyzer.py"
 _spec = importlib.util.spec_from_file_location("token_analyzer", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
+sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
 
 
@@ -76,6 +78,17 @@ def fake_projects(tmp_path, monkeypatch):
     proj_b.mkdir(parents=True)
     monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
     return proj_a, proj_b
+
+
+def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
+    """PROJECTS_DIR is computed at import time from config_dir(); a fresh
+    import with CLAUDE_CONFIG_DIR set resolves under that directory instead
+    of ~/.claude."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    spec = importlib.util.spec_from_file_location("token_analyzer_config_dir_case", _SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert tmp_path / "projects" == mod.PROJECTS_DIR
 
 
 def test_per_model_totals(fake_projects):
