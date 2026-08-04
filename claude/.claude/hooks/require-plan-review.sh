@@ -154,7 +154,13 @@ fi
 # single hash covering the common case (a resumed session reading its own
 # still-valid review). Tier 2 hashes every worktree root and only runs after
 # tier 1 misses — i.e. only when the gate is about to deny anyway.
-PLAN_REVIEW_MARKERS_DIR="$HOME/.claude/plan-review-markers"
+# Fail closed: an unresolvable config dir must deny the gate, not silently
+# skip the marker check and let the write/ExitPlanMode through.
+if ! CONFIG_DIR=$(_lib_config_dir); then
+  emit_deny "Blocked by plan-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+  exit 0
+fi
+PLAN_REVIEW_MARKERS_DIR="$CONFIG_DIR/plan-review-markers"
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 if _lib_marker_value_present "$PLAN_REVIEW_MARKERS_DIR" "$CURRENT_HASH" "$REPO_HASH."; then
   exit 0

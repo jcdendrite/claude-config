@@ -26,7 +26,9 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
 fi
 _lib_valid_session_id_component "$SESSION_ID" || exit 0
 
-STATE_DIR="$HOME/.claude/.commit-stall-block.d"
+# Fail-open, matching this hook's "SessionEnd must never block" posture.
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+STATE_DIR="$CONFIG_DIR/.commit-stall-block.d"
 
 rm -f "${STATE_DIR}/${SESSION_ID}" 2>/dev/null || true
 

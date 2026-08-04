@@ -84,7 +84,10 @@ if [ -z "$SESSION_ID" ] || ! _lib_valid_session_id_component "$SESSION_ID"; then
   exit 0
 fi
 
-STATE_DIR="$HOME/.claude/.worktree-anchor-nudge.d"
+# Unresolvable config dir (empty/unset $HOME, no CLAUDE_CONFIG_DIR) stays
+# quiet like every other degenerate input this advisory hook tolerates.
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+STATE_DIR="$CONFIG_DIR/.worktree-anchor-nudge.d"
 STATE_FILE="${STATE_DIR}/${SESSION_ID}"
 
 # Clear the recorded report so the next occurrence is reported again.

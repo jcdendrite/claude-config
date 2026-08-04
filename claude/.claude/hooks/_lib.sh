@@ -79,6 +79,33 @@ _lib_realpath_m() {
   done
 }
 
+# Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set
+# (must be absolute — a relative value resolves differently per invocation
+# cwd, the same path-mismatch bug this function exists to fix), else
+# $HOME/.claude. Returns 1 with no stdout when CLAUDE_CONFIG_DIR is relative,
+# or when CLAUDE_CONFIG_DIR is unset/empty and $HOME is also unset/empty.
+# Call-site contract (load-bearing): bare interpolation,
+# "$(_lib_config_dir)/whatever", is unsafe — under `set -e`, a failing
+# *nested* command substitution does not abort the script, so a resolver
+# failure silently collapses to "/whatever" (root-anchored) instead of being
+# caught. Every call site must capture and check the exit status first:
+#   config_dir=$(_lib_config_dir) || { <fail-open-or-deny per this caller>; }
+_lib_config_dir() {
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    case "$CLAUDE_CONFIG_DIR" in
+      /*) ;;
+      *) return 1 ;;  # relative values resolve differently per invocation
+                      # cwd — the exact read/write path-mismatch bug this
+                      # function fixes, just triggered a different way.
+    esac
+    printf '%s\n' "${CLAUDE_CONFIG_DIR%/}"
+    return 0
+  fi
+  local home_norm="${HOME%/}"
+  [ -n "$home_norm" ] || return 1
+  printf '%s\n' "$home_norm/.claude"
+}
+
 # Canonical jq-encode-or-hard-block body for a gate hook's deny path.
 # Deliberately NOT named `emit_deny`: sourcing this file must not silently
 # satisfy the "CALLER MUST define emit_deny" contract below on its own, or a
@@ -574,12 +601,22 @@ _lib_worktree_enforcement_active() {
   [ -n "$repo_root" ] || return 1                                     # degenerate: no repo, never enforce
   [ -f "$repo_root/.claude/worktree-required" ] && return 0           # committed requirement (opt-out has no effect)
   # Machine default, minus per-repo opt-out.
-  # The [ -n "$home_norm" ] guard is load-bearing: an empty/unset $HOME would make
-  # the test below probe /.claude/worktree-required and a stray root file could
-  # force-enforce every repo. Mirrors require-worktree-for-file-writes.sh lines 73-74.
-  local home_norm="${HOME%/}"
-  [ -n "$home_norm" ] \
-    && [ -f "$home_norm/.claude/worktree-required" ] \
+  # An unresolvable config dir (empty/unset $HOME, no CLAUDE_CONFIG_DIR) skips
+  # the resolved-config-dir arm rather than probing a root-anchored path —
+  # same load-bearing guard as before, now expressed via _lib_config_dir.
+  # Union, not swap: checks the resolved config dir first, then falls back
+  # to the literal $HOME/.claude sentinel — a machine-wide `worktree-required`
+  # armed before CLAUDE_CONFIG_DIR adoption must not silently go dark under a
+  # differentiated profile, the same enforcement-invariant-regression shape
+  # the guard-config hooks (deny-credential-file-reads.sh et al.) fix for
+  # their own opt-in configs. Mirrors require-worktree-for-file-writes.sh's
+  # exemption union.
+  local config_dir
+  if config_dir=$(_lib_config_dir) && [ -f "$config_dir/worktree-required" ]; then
+    [ ! -f "$repo_root/.claude/worktree-optout" ] && return 0
+    return 1
+  fi
+  [ -f "$HOME/.claude/worktree-required" ] \
     && [ ! -f "$repo_root/.claude/worktree-optout" ] \
     && return 0
   return 1
@@ -605,14 +642,14 @@ _lib_autonomous_shipping_active() {
   local repo_root="$1"
   [ -n "$repo_root" ] || return 1
   # Load-bearing, same reasoning as _lib_worktree_enforcement_active above:
-  # an empty/unset $HOME would probe /.claude/autonomous-shipping-required,
+  # an unresolvable config dir would otherwise probe a root-anchored path,
   # and a stray root-owned file there would force-activate autonomous
   # shipping — a materially worse consequence here than for worktree
   # enforcement, since this mechanism removes a human checkpoint rather
   # than adding one.
-  local home_norm="${HOME%/}"
-  [ -n "$home_norm" ] || return 1
-  [ -f "$home_norm/.claude/autonomous-shipping-required" ] || return 1
+  local config_dir
+  config_dir=$(_lib_config_dir) || return 1
+  [ -f "$config_dir/autonomous-shipping-required" ] || return 1
   [ -f "$repo_root/.claude/autonomous-shipping-optout" ] && return 1
   return 0
 }
@@ -683,9 +720,11 @@ _lib_active_bypass_marker_live() {
   # That one probes a path whose mere presence force-enables enforcement for
   # every repo on the machine, so an empty $HOME there fails toward more
   # enforcement from a root-writable path. This function's sinks fail the other
-  # way: with an empty $HOME the marker read simply misses and the bypass is
-  # withheld, leaving the gate enforcing.
-  local marker="$HOME/.claude/$marker_dir_name/$session_id"
+  # way: an unresolvable config dir just makes the marker read miss and the
+  # bypass is withheld, leaving the gate enforcing.
+  local config_dir
+  config_dir=$(_lib_config_dir) || return 1
+  local marker="$config_dir/$marker_dir_name/$session_id"
   [ -f "$marker" ] || return 1
   local stored_pid
   # `|| true` keeps this line's status irrelevant to a caller's shell options.

@@ -31,11 +31,16 @@ def _state_dir(home: Path) -> Path:
     return home / ".claude" / ".commit-stall-block.d"
 
 
-def _run(payload: dict | None, home: Path) -> subprocess.CompletedProcess:
+def _run(
+    payload: dict | None, home: Path, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    env = {**os.environ, "HOME": str(home)}
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [str(CLEANUP_HOOK)],
         input=json.dumps(payload) if payload is not None else "",
-        env={**os.environ, "HOME": str(home)},
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -177,6 +182,23 @@ class TestCleanupCommitStallMarker:
         result = _run({"session_id": "session-a"}, isolated_home)
 
         assert result.returncode == 0
+
+    def test_config_dir_deletes_the_state_file_for_this_session(self, isolated_home, tmp_path):
+        """CLAUDE_CONFIG_DIR relocates STATE_DIR — the destructor must delete
+        the session's state file there, not at the legacy $HOME/.claude path."""
+        config_dir = tmp_path / "profile"
+        state_dir = config_dir / ".commit-stall-block.d"
+        state_dir.mkdir(parents=True)
+        (state_dir / "session-a").write_text("p1\n")
+
+        result = _run(
+            {"session_id": "session-a"},
+            isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+
+        assert result.returncode == 0
+        assert not (state_dir / "session-a").exists()
 
     def test_sweep_skipped_when_state_dir_is_a_symlink(self, isolated_home, tmp_path):
         """A symlinked state dir must not be followed by the sweep — the

@@ -78,11 +78,12 @@ def rfr_active_marker(home: Path, session_id: str) -> Path:
     return home / ".claude" / ".ready-for-review-active.d" / session_id
 
 
-def rfr_completion_marker(home: Path, repo: Path, session_id: str) -> Path:
+def rfr_completion_marker(
+    home: Path, repo: Path, session_id: str, config_dir: Path | None = None
+) -> Path:
     repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
-    return (
-        home / ".claude" / "ready-for-review-markers" / f"{repo_hash}.{session_id}"
-    )
+    config_dir = config_dir if config_dir is not None else home / ".claude"
+    return config_dir / "ready-for-review-markers" / f"{repo_hash}.{session_id}"
 
 
 class TestRequireReadyForReview:
@@ -845,4 +846,76 @@ class TestRequireReadyForReview:
         assert not marker.exists(), (
             "SKILL.md deactivate-gate recipe ran but the marker is still "
             "present — skill and hook disagree on the marker path."
+        )
+
+
+class TestRequireReadyForReviewHonorsConfigDir:
+    """CLAUDE_CONFIG_DIR relocates the ready-for-review marker directory the
+    same way for marker.sh (write) and this hook (read) -- see marker.sh and
+    the cross-account bypass this closes (ledger row 7)."""
+
+    def test_marker_under_matching_config_dir_allows(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, tmp_path
+    ):
+        """CLAUDE_CONFIG_DIR-set happy path: a marker written under the
+        resolved config dir satisfies the gate when the session runs under
+        the same value."""
+        profile = tmp_path / "profile"
+        sid = "session-config-dir-match"
+        marker = rfr_completion_marker(
+            isolated_home, repo_on_feature_branch, sid, config_dir=profile
+        )
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+                extra_env={"CLAUDE_CONFIG_DIR": str(profile)},
+            )
+            == "allow"
+        )
+
+    def test_marker_under_different_config_dir_does_not_authorize(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, tmp_path
+    ):
+        """Cross-account bypass regression: a marker written under one
+        CLAUDE_CONFIG_DIR value must not satisfy the gate when the session
+        runs under a different one."""
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        sid = "session-config-dir-mismatch"
+        marker = rfr_completion_marker(
+            isolated_home, repo_on_feature_branch, sid, config_dir=profile_a
+        )
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+                extra_env={"CLAUDE_CONFIG_DIR": str(profile_b)},
+            )
+            == "deny"
+        )
+
+    def test_unresolvable_config_dir_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """Fail closed: a relative CLAUDE_CONFIG_DIR (unresolvable) must deny
+        the gate outright, even with a valid marker at the default location."""
+        sid = "session-config-dir-unresolvable"
+        marker = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+                extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+            )
+            == "deny"
         )

@@ -29,10 +29,14 @@ _lib_valid_session_id_component "$SESSION_ID" || exit 0
 # Only write the marker when a plan-review session is active. Without this
 # guard a Read of ROUTING.md outside plan-review (e.g., an editing session)
 # would falsely authorize a later plan-review Agent spawn.
-ACTIVE_MARKER="$HOME/.claude/.plan-review-active.d/$SESSION_ID"
+# An unresolvable config dir leaves nothing to check or write, so this
+# exits the same as an unusable SESSION_ID above.
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+
+ACTIVE_MARKER="$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
 [ -f "$ACTIVE_MARKER" ] || exit 0
 
-mkdir -p "$HOME/.claude/.plan-review-routing-read.d" && \
-    touch "$HOME/.claude/.plan-review-routing-read.d/$SESSION_ID"
+mkdir -p "$CONFIG_DIR/.plan-review-routing-read.d" && \
+    touch "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
 
 exit 0

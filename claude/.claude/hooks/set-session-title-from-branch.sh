@@ -75,7 +75,13 @@ SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
 
 # --- machine-global kill switch ------------------------------------------
 
-[ -f "$HOME/.claude/.session-title-disabled" ] && exit 0
+# An unresolvable config dir leaves no kill-switch location to check, so
+# this hook fails open (today's auto-titler behavior) rather than guess.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+[ -f "$CONFIG_DIR/.session-title-disabled" ] && exit 0
 
 # --- authoritative cwd -----------------------------------------------------
 # Run git against the payload's .cwd, not process cwd: a linked-worktree

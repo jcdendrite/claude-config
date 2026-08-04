@@ -217,7 +217,12 @@ fi
 # config read below, so a non-regular file is treated as not-armed. Gates
 # only the SSN/credit-card/user-pattern tier below — the credential-value
 # sub-check runs regardless of PII_ARMED.
+# Union, not swap: $(_lib_config_dir)'s copy wins if present, else the legacy $HOME/.claude location -- keeps an already-armed CLAUDE_CONFIG_DIR user's guard live.
+# An unresolvable config dir leaves PII_PATTERNS_FILE at the legacy path; this is an opt-in guard, not a gate, so resolver failure must not disable it.
 PII_PATTERNS_FILE="${HOME}/.claude/pii-patterns.md"
+if config_dir=$(_lib_config_dir) && [ -f "$config_dir/pii-patterns.md" ]; then
+  PII_PATTERNS_FILE="$config_dir/pii-patterns.md"
+fi
 PII_ARMED=0
 if [ -f "$PII_PATTERNS_FILE" ] && [ -r "$PII_PATTERNS_FILE" ]; then
   PII_ARMED=1

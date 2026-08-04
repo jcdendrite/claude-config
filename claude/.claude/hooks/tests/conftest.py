@@ -20,6 +20,7 @@ def isolated_home(monkeypatch, tmp_path):
     hooks_dir.mkdir(parents=True, exist_ok=True)
     (hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     return home
 
 

@@ -80,7 +80,12 @@ FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/d
 # Opt-in: dormant unless the user-local config file exists as a readable
 # regular file. `[ -f ]` rejects a FIFO or device file that would block
 # the line-by-line config read below.
+# Union, not swap: $(_lib_config_dir)'s copy wins if present, else the legacy $HOME/.claude location -- keeps an already-armed CLAUDE_CONFIG_DIR user's guard live.
+# An unresolvable config dir leaves GUARD_FILE at the legacy path; this is an opt-in guard, not a gate, so resolver failure must not disable it.
 GUARD_FILE="${HOME}/.claude/data-file-read-guard.md"
+if config_dir=$(_lib_config_dir) && [ -f "$config_dir/data-file-read-guard.md" ]; then
+  GUARD_FILE="$config_dir/data-file-read-guard.md"
+fi
 if [ ! -f "$GUARD_FILE" ] || [ ! -r "$GUARD_FILE" ]; then
   exit 0
 fi

@@ -20,7 +20,9 @@ from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-PROJECTS_DIR = Path.home() / ".claude" / "projects"
+from _config_dir import config_dir
+
+PROJECTS_DIR = config_dir() / "projects"
 
 TEST_RUNNER_RE = re.compile(
     r"\b(vitest|jest|pytest|deno\s+test|npm\s+run\s+(verify|test|lint)|ruff\s+check|cargo\s+test|go\s+test)\b"
@@ -2662,7 +2664,7 @@ def cmd_handoff_ratio(args: argparse.Namespace) -> None:
 
 def _print_nudge_log_diagnostic() -> None:
     """Read ~/.claude/.handoff-nudge.log and report schema-drift count if present."""
-    log_path = Path.home() / ".claude" / ".handoff-nudge.log"
+    log_path = config_dir() / ".handoff-nudge.log"
     if not log_path.exists():
         return
     try:

@@ -667,7 +667,12 @@ fi
 # Tracker-ID scan clean. Try the user-local private-projects blocklist.
 # Fail-open: a contributor without the file works normally. The
 # readability gate ([ -r ]) covers both absent and unreadable cases.
+# Union, not swap: $(_lib_config_dir)'s copy wins if present, else the legacy $HOME/.claude location -- keeps an already-armed CLAUDE_CONFIG_DIR user's guard live.
+# An unresolvable config dir leaves PRIVATE_PROJECTS_FILE at the legacy path; this is an opt-in guard, not a gate, so resolver failure must not disable it.
 PRIVATE_PROJECTS_FILE="${HOME}/.claude/private-projects.md"
+if config_dir=$(_lib_config_dir) && [ -f "$config_dir/private-projects.md" ]; then
+  PRIVATE_PROJECTS_FILE="$config_dir/private-projects.md"
+fi
 if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
   blocklist_report=""
   while IFS= read -r raw_line || [ -n "$raw_line" ]; do

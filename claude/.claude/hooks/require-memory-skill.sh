@@ -74,23 +74,29 @@ if [ -z "$FILE_PATH" ]; then
 fi
 
 REAL_PATH=$(_lib_realpath_m "$FILE_PATH")
-REAL_HOME=$(_lib_realpath_m "$HOME")
 
 # Classify path — only proceed for memory files.
 IS_CANDIDATE=0
 
-# Class (a): MEMORY.md index — always gated regardless of tool or existence.
-if [[ "$REAL_PATH" == "$REAL_HOME/.claude/projects/"*"/memory/MEMORY.md" ]]; then
-  IS_CANDIDATE=1
-fi
+# An unresolvable config dir (empty/unset $HOME, no CLAUDE_CONFIG_DIR) fails
+# open: no candidate is classified, mirroring the fail-open precedent below
+# for an absent SESSION_ID rather than blocking every Write/Edit/MultiEdit.
+CONFIG_DIR=$(_lib_config_dir) && REAL_CONFIG_DIR=$(_lib_realpath_m "$CONFIG_DIR") || REAL_CONFIG_DIR=""
 
-# Class (b): new topic file — Write only, file must not exist yet.
-if [ "$IS_CANDIDATE" -eq 0 ] && \
-   [ "$TOOL_NAME" = "Write" ] && \
-   [[ "$REAL_PATH" == "$REAL_HOME/.claude/projects/"* ]] && \
-   [[ "$REAL_PATH" == *"/memory/"* ]] && \
-   [ ! -e "$FILE_PATH" ]; then
-  IS_CANDIDATE=1
+if [ -n "$REAL_CONFIG_DIR" ]; then
+  # Class (a): MEMORY.md index — always gated regardless of tool or existence.
+  if [[ "$REAL_PATH" == "$REAL_CONFIG_DIR/projects/"*"/memory/MEMORY.md" ]]; then
+    IS_CANDIDATE=1
+  fi
+
+  # Class (b): new topic file — Write only, file must not exist yet.
+  if [ "$IS_CANDIDATE" -eq 0 ] && \
+     [ "$TOOL_NAME" = "Write" ] && \
+     [[ "$REAL_PATH" == "$REAL_CONFIG_DIR/projects/"* ]] && \
+     [[ "$REAL_PATH" == *"/memory/"* ]] && \
+     [ ! -e "$FILE_PATH" ]; then
+    IS_CANDIDATE=1
+  fi
 fi
 
 if [ "$IS_CANDIDATE" -eq 0 ]; then

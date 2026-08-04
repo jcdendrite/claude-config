@@ -5,9 +5,10 @@ import json
 import time
 from collections import defaultdict
 from datetime import datetime
-from pathlib import Path
 
-PROJECTS_DIR = Path.home() / ".claude" / "projects"
+from _config_dir import config_dir
+
+PROJECTS_DIR = config_dir() / "projects"
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 JUDGMENT_SKILLS = frozenset({
     "code-review", "plan-review", "security-review",

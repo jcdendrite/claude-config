@@ -291,3 +291,41 @@ class TestRedactCredentialValues:
         assert updated["stdout"] == f"a={REDACTED} b={REDACTED}"
         assert "credential-value-patterns.md line 1" in result.stderr
         assert "unaffected" in result.stderr
+
+    def test_additions_file_armed_at_config_dir_only_redacted(self, isolated_home, tmp_path):
+        """Additions file armed only at the resolved CLAUDE_CONFIG_DIR
+        location (no legacy copy) -- confirms the new path is read."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "credential-value-patterns.md").write_text("Internal deploy token: dpl_[A-Za-z0-9]{10,}\n")
+        response = {"stdout": "token dpl_abcdefghijklmno here", "stderr": "", "exit_code": 0}
+        result = run_hook_updated_output(
+            REDACT_CREDENTIAL_VALUES_HOOK,
+            _posttooluse_input("Bash", response),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert result is not None
+        assert "dpl_abcdefghijklmno" not in result["stdout"]
+        assert REDACTED in result["stdout"]
+
+    def test_additions_file_armed_at_legacy_location_falls_back_redacted(self, isolated_home, tmp_path):
+        """Regression test: an additions file armed only at the legacy
+        $HOME/.claude location must still fire when CLAUDE_CONFIG_DIR points
+        at a directory with no copy of the file -- proves continuity for a
+        user who armed the additions file before CLAUDE_CONFIG_DIR support
+        existed."""
+        additions_file = isolated_home / ".claude" / "credential-value-patterns.md"
+        additions_file.write_text("Internal deploy token: dpl_[A-Za-z0-9]{10,}\n")
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        response = {"stdout": "token dpl_abcdefghijklmno here", "stderr": "", "exit_code": 0}
+        result = run_hook_updated_output(
+            REDACT_CREDENTIAL_VALUES_HOOK,
+            _posttooluse_input("Bash", response),
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert result is not None
+        assert "dpl_abcdefghijklmno" not in result["stdout"]
+        assert REDACTED in result["stdout"]

@@ -99,6 +99,49 @@ class TestRequireMemorySkill:
         payload = _memory_input(edit_input(readme), "sess-non-memory")
         assert run_hook(HOOK_PATH, payload) == "allow"
 
+    def test_memory_md_edit_blocked_under_claude_config_dir(self, isolated_home, tmp_path):
+        """CLAUDE_CONFIG_DIR-set: a MEMORY.md write under
+        $CLAUDE_CONFIG_DIR/projects/.../memory/ is classified as a candidate
+        and denied without an active-bypass marker."""
+        profile_dir = tmp_path / "profile"
+        mem_dir = profile_dir / "projects" / "abc123" / "memory"
+        mem_dir.mkdir(parents=True)
+        memory_md = mem_dir / "MEMORY.md"
+        memory_md.touch()
+        payload = _memory_input(edit_input(str(memory_md)), "sess-config-dir-edit")
+        decision = run_hook(
+            HOOK_PATH,
+            payload,
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(profile_dir)},
+        )
+        assert decision == "deny"
+
+    def test_unresolvable_config_dir_allows_through(self):
+        """Ledger row 6 fail-open regression: $HOME empty and
+        CLAUDE_CONFIG_DIR unset means _lib_config_dir cannot resolve, so no
+        path is classified as a memory-file candidate and the gate allows
+        the write through instead of blocking every Write/Edit/MultiEdit."""
+        import json
+
+        env = dict(os.environ)
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        env["HOME"] = ""
+        payload = _memory_input(
+            edit_input("/some/projects/abc123/memory/MEMORY.md"),
+            "sess-no-config-dir",
+        )
+        result = subprocess.run(
+            [str(HOOK_PATH)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert not result.stdout.strip()
+
     def test_empty_json_object_denied(self):
         """'{}' → DENY (empty TOOL_NAME; path c: no .tool_name in payload)."""
         payload = {}

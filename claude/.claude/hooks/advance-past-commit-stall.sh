@@ -41,24 +41,24 @@
 INPUT=$(cat 2>/dev/null)
 [ -z "$INPUT" ] && exit 0
 
-# 1. $HOME must be usable before anything below touches it.
-[ -n "$HOME" ] && [ -d "$HOME/.claude" ] || exit 0
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+
+# 1. The config dir must resolve and be usable before anything below touches it.
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+[ -d "$CONFIG_DIR" ] || exit 0
 
 # 2. Always-effective kill switch, independent of sentinel state.
-[ -f "$HOME/.claude/.commit-stall-block-disabled" ] && exit 0
+[ -f "$CONFIG_DIR/.commit-stall-block-disabled" ] && exit 0
 
 # 3. Machine-sentinel fast path: the cheap (bare stat, no parsed input
 # needed) half of the full _lib_autonomous_shipping_active check at step 9
 # below. Absent on the vast majority of non-adopting sessions, so checking
-# it here skips sourcing _lib.sh and spawning jq for the common case. The
-# full check (this file plus the per-repo optout) still runs at step 9,
-# once REPO_ROOT is known — this is a redundant, cheaper pre-filter, not a
-# replacement for it.
-[ -f "$HOME/.claude/autonomous-shipping-required" ] || exit 0
-
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
+# it here skips spawning jq for the common case. The full check (this file
+# plus the per-repo optout) still runs at step 9, once REPO_ROOT is known —
+# this is a redundant, cheaper pre-filter, not a replacement for it.
+[ -f "$CONFIG_DIR/autonomous-shipping-required" ] || exit 0
 
 # Six fields in a single jq pass (nudge-handoff-near-context-cap.sh:29-49
 # pattern). Pre-initialized so a failed read leaves empty strings, not
@@ -82,7 +82,7 @@ LAST_ASSISTANT_MESSAGE=""
     2>/dev/null
 ) 2>/dev/null || true
 
-LOG_FILE="$HOME/.claude/.commit-stall-block.log"
+LOG_FILE="$CONFIG_DIR/.commit-stall-block.log"
 
 # 4. Subagents are never force-continued — only the session the engineer is
 # talking to (CLAUDE.md's Shipping section states this explicitly).
@@ -107,7 +107,7 @@ if [ -z "$PROMPT_ID" ]; then
   exit 0
 fi
 
-STATE_DIR="$HOME/.claude/.commit-stall-block.d"
+STATE_DIR="$CONFIG_DIR/.commit-stall-block.d"
 STATE_FILE="${STATE_DIR}/${SESSION_ID}"
 PREVIOUSLY_FIRED_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 [ "$PREVIOUSLY_FIRED_PROMPT_ID" = "$PROMPT_ID" ] && exit 0

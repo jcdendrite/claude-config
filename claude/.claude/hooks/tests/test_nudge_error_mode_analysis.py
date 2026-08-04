@@ -85,7 +85,7 @@ def _run_hook(
     _prepare_home(tmp_path)
     if enabled:
         _enable_nudge(tmp_path)
-    env = {**os.environ, "HOME": str(tmp_path)}
+    env = _sandboxed_env(tmp_path)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -118,6 +118,26 @@ def _enable_nudge(tmp_path: Path) -> None:
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
     (claude_dir / ".error-mode-nudge-enabled").touch()
+
+
+def _prepare_config_dir(config_dir: Path) -> None:
+    """Symlink the real transcript-analysis.py into an arbitrary config dir and
+    arm the opt-in marker there, for CLAUDE_CONFIG_DIR-set cases that must not
+    touch $HOME/.claude at all."""
+    scripts_dir = config_dir / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    link = scripts_dir / "transcript-analysis.py"
+    if not link.exists():
+        link.symlink_to(SCRIPTS_DIR / "transcript-analysis.py")
+    (config_dir / ".error-mode-nudge-enabled").touch()
+
+
+def _sandboxed_env(tmp_path: Path) -> dict:
+    """$HOME sandboxed to tmp_path, with any real CLAUDE_CONFIG_DIR cleared so
+    the hook resolves paths under the sandbox rather than the real config dir."""
+    env = {**os.environ, "HOME": str(tmp_path)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    return env
 
 
 def _fake_bin_dir(tmp_path: Path, name: str) -> Path:
@@ -176,6 +196,53 @@ class TestNudgeErrorModeAnalysis:
         log = _log_path(tmp_path)
         assert "nudged" in log.read_text()
         assert f"friction={FRICTION_THRESHOLD}" in log.read_text()
+
+    def test_honors_claude_config_dir_for_markers_log_and_script_invocation(self, tmp_path):
+        """CLAUDE_CONFIG_DIR set to a directory outside $HOME/.claude: the
+        opt-in marker, fired marker, log, and the transcript-analysis.py
+        invocation itself all resolve under it instead of $HOME/.claude."""
+        config_dir = tmp_path / "alt-config"
+        _prepare_config_dir(config_dir)
+        transcript = tmp_path / "t.jsonl"
+        _write_denial_transcript(transcript, FRICTION_THRESHOLD)
+
+        result = _run_hook(
+            _base_payload(transcript),
+            tmp_path,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            enabled=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        payload = json.loads(result.stdout)
+        assert "/error-mode-analysis" in payload["hookSpecificOutput"]["additionalContext"]
+        assert (config_dir / ".error-mode-nudge-fired.d" / SESSION_ID).exists()
+        assert "nudged" in (config_dir / ".error-mode-nudge.log").read_text()
+        assert not (tmp_path / ".claude" / ".error-mode-nudge-fired.d").exists()
+
+    def test_unresolvable_config_dir_is_silent_and_python3_not_spawned(self, tmp_path):
+        """CLAUDE_CONFIG_DIR set to a relative value (unresolvable per
+        _lib_config_dir) fails open: exit 0, no stdout, and python3 is never
+        spawned — the config-dir resolution gates the spawn just like the
+        fired-marker and opt-in gates do."""
+        transcript = tmp_path / "t.jsonl"
+        _write_denial_transcript(transcript, FRICTION_THRESHOLD)
+        fake_bin = _fake_bin_dir(tmp_path, "unresolvable-config-dir")
+        spawn_counter = tmp_path / "python3-spawn-count"
+        shim_path = _fake_python3(
+            fake_bin,
+            f"#!/bin/bash\necho invoked >> {spawn_counter}\nexit 0\n",
+        )
+        result = _run_hook(
+            _base_payload(transcript),
+            tmp_path,
+            extra_env={"CLAUDE_CONFIG_DIR": "relative/path", "PATH": shim_path},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert not spawn_counter.exists(), (
+            "python3 must not be spawned when _lib_config_dir cannot resolve CLAUDE_CONFIG_DIR"
+        )
 
     def test_one_below_threshold_stays_quiet_threshold_itself_fires(self, tmp_path):
         """Exact boundary: FRICTION_THRESHOLD - 1 is silent; FRICTION_THRESHOLD fires."""
@@ -456,7 +523,7 @@ class TestNudgeErrorModeAnalysis:
             input="{}",
             capture_output=True,
             text=True,
-            env={**os.environ, "HOME": str(tmp_path)},
+            env=_sandboxed_env(tmp_path),
             check=False,
         )
         assert result.returncode == 0
@@ -471,7 +538,7 @@ class TestNudgeErrorModeAnalysis:
             input="not json at all",
             capture_output=True,
             text=True,
-            env={**os.environ, "HOME": str(tmp_path)},
+            env=_sandboxed_env(tmp_path),
             check=False,
         )
         assert result.returncode == 0

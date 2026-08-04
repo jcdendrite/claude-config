@@ -105,13 +105,19 @@ def _write_transcript(path: Path, records: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
 
-def _run_hook(payload: dict, tmp_path: Path) -> subprocess.CompletedProcess:
+def _run_hook(
+    payload: dict, tmp_path: Path, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    env = {**os.environ, "HOME": str(tmp_path)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [str(NUDGE_HOOK)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
-        env={**os.environ, "HOME": str(tmp_path)},
+        env=env,
         check=False,
     )
 
@@ -128,16 +134,23 @@ def _base_payload(
     }
 
 
-def _log_path(tmp_path: Path) -> Path:
-    return tmp_path / ".claude" / ".handoff-nudge.log"
+def _log_path(tmp_path: Path, config_dir: Path | None = None) -> Path:
+    base = config_dir if config_dir is not None else tmp_path / ".claude"
+    return base / ".handoff-nudge.log"
 
 
-def _marker_path(tmp_path: Path, session_id: str = SESSION_ID) -> Path:
-    return tmp_path / ".claude" / ".handoff-nudge-fired.d" / session_id
+def _marker_path(
+    tmp_path: Path, session_id: str = SESSION_ID, config_dir: Path | None = None
+) -> Path:
+    base = config_dir if config_dir is not None else tmp_path / ".claude"
+    return base / ".handoff-nudge-fired.d" / session_id
 
 
-def _drift_marker_path(tmp_path: Path, session_id: str = SESSION_ID) -> Path:
-    return tmp_path / ".claude" / ".handoff-nudge-fired.d" / f"{session_id}-drift"
+def _drift_marker_path(
+    tmp_path: Path, session_id: str = SESSION_ID, config_dir: Path | None = None
+) -> Path:
+    base = config_dir if config_dir is not None else tmp_path / ".claude"
+    return base / ".handoff-nudge-fired.d" / f"{session_id}-drift"
 
 
 # ---------------------------------------------------------------------------
@@ -561,3 +574,51 @@ class TestNudgeHandoffNearContextCap:
         assert result.stdout.strip() == ""
         log = _log_path(tmp_path)
         assert "schema-drift" in log.read_text()
+
+    # -----------------------------------------------------------------------
+    # CLAUDE_CONFIG_DIR resolution
+    # -----------------------------------------------------------------------
+
+    def test_uses_config_dir_when_set(self, tmp_path):
+        """CLAUDE_CONFIG_DIR relocates the marker and log locations: the
+        nudge fires under CONFIG_DIR, never under $HOME/.claude."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        assert _marker_path(tmp_path, config_dir=config_dir).exists()
+        assert not _marker_path(tmp_path).exists()
+        log_text = _log_path(tmp_path, config_dir=config_dir).read_text()
+        assert "nudged" in log_text
+        assert not _log_path(tmp_path).exists()
+
+    def test_killswitch_at_config_dir_suppresses(self, tmp_path):
+        """The kill-switch is read from CONFIG_DIR when CLAUDE_CONFIG_DIR is
+        set, not from $HOME/.claude."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / ".handoff-nudge-disabled").touch()
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_relative_config_dir_fails_open(self, tmp_path):
+        """A relative CLAUDE_CONFIG_DIR is unresolvable (_lib_config_dir
+        returns 1); this informational hook fails open rather than resolve
+        against an unstated cwd."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"CLAUDE_CONFIG_DIR": "relative/profile"}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""

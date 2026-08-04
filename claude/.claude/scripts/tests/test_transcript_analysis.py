@@ -4,6 +4,7 @@ import importlib.util
 import json
 import re
 import subprocess
+import sys
 import time
 from datetime import date
 from pathlib import Path
@@ -13,6 +14,7 @@ import pytest
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
+sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
 
 
@@ -139,6 +141,17 @@ def fake_projects(tmp_path, monkeypatch):
     proj.mkdir(parents=True)
     monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
     return proj
+
+
+def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
+    """PROJECTS_DIR is computed at import time from config_dir(); a fresh
+    import with CLAUDE_CONFIG_DIR set resolves under that directory instead
+    of ~/.claude."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    spec = importlib.util.spec_from_file_location("transcript_analysis_config_dir_case", _SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert tmp_path / "projects" == mod.PROJECTS_DIR
 
 
 # ---------------------------------------------------------------------------

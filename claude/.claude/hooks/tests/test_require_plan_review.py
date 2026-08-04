@@ -748,6 +748,66 @@ class TestRequirePlanReview:
         )
 
 
+class TestRequirePlanReviewHonorsConfigDir:
+    """CLAUDE_CONFIG_DIR relocates the plan-review marker directory the same
+    way for marker.sh (write) and this hook (read) -- see marker.sh and the
+    cross-account bypass this closes (ledger row 7)."""
+
+    def test_marker_under_matching_config_dir_allows(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """CLAUDE_CONFIG_DIR-set happy path: a marker written under the
+        resolved config dir satisfies the gate when the session runs under
+        the same value."""
+        profile = tmp_path / "profile"
+        sid = "session-config-dir-match"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid, config_dir=profile)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(profile)},
+            )
+            == "allow"
+        )
+
+    def test_marker_under_different_config_dir_does_not_authorize(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """Cross-account bypass regression: a marker written under one
+        CLAUDE_CONFIG_DIR value must not satisfy the gate when the session
+        runs under a different one."""
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        sid = "session-config-dir-mismatch"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid, config_dir=profile_a)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(profile_b)},
+            )
+            == "deny"
+        )
+
+    def test_unresolvable_config_dir_denies(self, plan_review_repo, plan_review_home):
+        """Fail closed: a relative CLAUDE_CONFIG_DIR (unresolvable) must deny
+        the gate outright, even with a valid marker at the default location."""
+        sid = "session-config-dir-unresolvable"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+            )
+            == "deny"
+        )
+
+
 class TestMarkerWriteReadAgreement:
     """The write side (marker.sh) and the read side (require-plan-review.sh)
     must agree byte-for-byte on the active-plan hash. Every other test seeds
