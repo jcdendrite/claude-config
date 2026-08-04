@@ -148,7 +148,7 @@ _install_check_pip_family() {
 }
 
 # npx/bunx/uvx with an explicit -y/--yes (the unambiguous skip-confirmation-
-# and-fetch signal), and `pipx run` with the same flag.
+# and-fetch signal), and `pipx run`/`npm exec` with the same flag.
 _install_check_npx_family() {
   local fragment="$1" tool
   local has_yes=false
@@ -162,6 +162,30 @@ _install_check_npx_family() {
   if _lib_fragment_has_token "$fragment" pipx && _lib_fragment_has_token "$fragment" run; then
     return 0
   fi
+  if _lib_fragment_has_token "$fragment" npm && _lib_fragment_has_token "$fragment" exec; then
+    return 0
+  fi
+  return 1
+}
+
+# uv add fetches a named package from PyPI, the same shape as `pip install
+# <pkg>` — distinct verb from the uv-pip family above, so it needs its own
+# leftover-token check rather than extending _install_check_pip_family.
+_install_check_uv_add() {
+  local fragment="$1"
+  _lib_fragment_has_token "$fragment" uv || return 1
+  _lib_fragment_has_token "$fragment" add || return 1
+  _install_has_leftover_token "$fragment" add uv
+}
+
+# pnpm/yarn dlx always fetch and run a package in a throwaway environment —
+# unlike npx, neither ever resolves to an already-installed local binary, so
+# this denies unconditionally rather than requiring -y/--yes.
+_install_check_dlx_family() {
+  local fragment="$1" manager
+  for manager in pnpm yarn; do
+    _lib_fragment_has_token "$fragment" "$manager" && _lib_fragment_has_token "$fragment" dlx && return 0
+  done
   return 1
 }
 
@@ -182,7 +206,17 @@ while IFS= read -r fragment; do
   fi
 
   if _install_check_npx_family "$fragment"; then
-    emit_deny "Blocked by network-install gate: this command uses npx/bunx/uvx/pipx's explicit -y/--yes flag to skip confirmation and fetch-and-run a package — the same shape as a named install. $_INSTALL_ALTERNATIVE"
+    emit_deny "Blocked by network-install gate: this command uses npx/bunx/uvx/pipx/npm-exec's explicit -y/--yes flag to skip confirmation and fetch-and-run a package — the same shape as a named install. $_INSTALL_ALTERNATIVE"
+    exit 0
+  fi
+
+  if _install_check_uv_add "$fragment"; then
+    emit_deny "Blocked by network-install gate: this command installs a named package via uv add (adds software from a registry rather than restoring already-declared dependencies). $_INSTALL_ALTERNATIVE"
+    exit 0
+  fi
+
+  if _install_check_dlx_family "$fragment"; then
+    emit_deny "Blocked by network-install gate: this command uses pnpm/yarn dlx to fetch and run a package in a throwaway environment — the same shape as a named install, with no local-resolution ambiguity to disambiguate. $_INSTALL_ALTERNATIVE"
     exit 0
   fi
 
@@ -191,7 +225,7 @@ while IFS= read -r fragment; do
       SAW_DOWNLOADER_FRAGMENT="$fragment"
     fi
   done
-  for tool in bash sh zsh python3 node ruby perl; do
+  for tool in bash sh zsh python3 python node ruby perl; do
     if _lib_fragment_has_token "$fragment" "$tool"; then
       SAW_INTERPRETER_FRAGMENT="$fragment"
     fi

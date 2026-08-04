@@ -104,7 +104,7 @@ themselves.
 
 | Hook | Gates | Optional additions file |
 |---|---|---|
-| `deny-network-installs.sh` | `Bash` — denies a named-package install (npm/pnpm/yarn/bun/pip/pip3/uv-pip), an `npx`/`bunx`/`uvx`/`pipx run` invocation carrying an explicit `-y`/`--yes`, or curl/wget co-occurring with a shell/interpreter in the same call | none |
+| `deny-network-installs.sh` | `Bash` — denies a named-package install (npm/pnpm/yarn/bun/pip/pip3/uv-pip/uv-add), an `npx`/`bunx`/`uvx`/`pipx run`/`npm exec` invocation carrying an explicit `-y`/`--yes`, `pnpm`/`yarn dlx` unconditionally, or curl/wget co-occurring with a shell/interpreter in the same call | none |
 | `deny-unlisted-webfetch-domains.sh` | `WebFetch` — asks (or denies, under `auto`/`bypassPermissions`/`dontAsk`) a domain not on the allowlist | `~/.claude/webfetch-allowed-domains.md` |
 
 Always on, no bypass valve, closing the gap that let one agent install the
@@ -113,8 +113,12 @@ wrong package from a public registry and then reach for a vendor
 previously stopped an agent from bringing new software onto the machine or
 fetching from an arbitrary host. `permissions.deny` carries the unambiguous
 half of the same policy (`brew install`/`gem install`/`cargo install`/`go
-install`/`gh extension install`/`mas install`/`pipx install` — tools with no
-restore-command collision, so a flat literal is always safe); see
+install`/`gh extension install`/`mas install`/`pipx install`/`apt(-get)
+install`/`yum install`/`dnf install`/`apk add`/`zypper install` — tools whose
+*registry-fetching* verb has no restore-command collision, so a flat literal
+is always safe; `cargo install --path .` and `go install ./...` are local,
+no-network builds that this literal still denies, an accepted over-deny, not
+a restore collision); see
 [`docs/auto-mode.md`](auto-mode.md#hard-floor-deny-rules) for that table.
 
 `deny-network-installs.sh` matches on token *presence*
@@ -200,17 +204,22 @@ falls through to ask. Host extraction shells out to Python's
 `urllib.parse.urlsplit` rather than a hand-rolled regex, closing a
 userinfo-authority bypass (`https://github.com@evil.com/x` must resolve to
 `evil.com`, not whatever precedes the `@`) that a naive regex would have
-had; `python3` absence or a hang past the 5s timeout denies naming `python3`
-explicitly rather than being misread as an unparseable-URL deny.
+had; `python3` absence denies naming `python3` explicitly rather than being
+misread as an unparseable-URL deny, and a hang past the 5s timeout does too
+**when `timeout(1)` is on PATH** — on a stock macOS install with no GNU
+coreutils, `_lib_capped` has no timeout to enforce and a hung `python3`
+blocks the `WebFetch` call indefinitely instead; `install.sh` warns about
+missing `timeout` at onboarding, but the warning is non-blocking.
 
 **Out of scope for this family:** `WebSearch` returns result text rather
 than fetching a chosen host — any URL it surfaces still routes through
 `deny-unlisted-webfetch-domains.sh` on the follow-up `WebFetch`. MCP-connector
 fetches (Google Drive, Todoist, and similar) route through neither hook.
-`brew`/`gem`/`cargo`/`go`/`gh extension`/`mas` are covered only by the
-`permissions.deny` literal, not a `deny-network-installs.sh` fragment check —
-a `cd /tmp && brew install jq` bypasses the literal's prefix match; accepted,
-since the incident that motivated this family was `npm`/`curl`, not these.
+`brew`/`gem`/`cargo`/`go`/`gh extension`/`mas`/`pipx`/`apt(-get)`/`yum`/`dnf`/
+`apk`/`zypper` are covered only by the `permissions.deny` literal, not a
+`deny-network-installs.sh` fragment check — a `cd /tmp && brew install jq`
+bypasses the literal's prefix match; accepted, since the incident that
+motivated this family was `npm`/`curl`, not these.
 
 ## The two PII guard hooks
 

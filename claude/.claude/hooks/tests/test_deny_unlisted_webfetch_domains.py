@@ -18,7 +18,16 @@ import subprocess
 import time
 
 import pytest
-from helpers import HOOKS_DIR, agent_input, bash_input, build_path_without, run_hook, run_hook_reason, webfetch_input
+from helpers import (
+    HOOKS_DIR,
+    agent_input,
+    bash_input,
+    build_path_without,
+    edit_input,
+    run_hook,
+    run_hook_reason,
+    webfetch_input,
+)
 
 DENY_UNLISTED_WEBFETCH_DOMAINS_HOOK = HOOKS_DIR / "deny-unlisted-webfetch-domains.sh"
 
@@ -265,6 +274,33 @@ class TestDenyUnlistedWebfetchDomains:
             run_hook(
                 DENY_UNLISTED_WEBFETCH_DOMAINS_HOOK,
                 webfetch_input("https://github.com/x", permission_mode="default"),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Allowlist write-gate residual — no dedicated protection, pinned      #
+    # ------------------------------------------------------------------ #
+
+    def test_edit_of_allowlist_file_itself_passes_through_unprotected(self, isolated_home):
+        """Pins the documented residual: this hook only fires on WebFetch,
+        so an Edit/Write targeting webfetch-allowed-domains.md itself is
+        not gated here (or anywhere else) — an agent with ordinary
+        Edit/Write access can widen its own allowlist unprompted."""
+        allowlist_path = str(isolated_home / ".claude" / "webfetch-allowed-domains.md")
+        assert run_hook(DENY_UNLISTED_WEBFETCH_DOMAINS_HOOK, edit_input(allowlist_path), home=isolated_home) == "allow"
+
+    def test_domain_appended_to_allowlist_fetches_immediately_with_no_prompt(self, isolated_home):
+        """Companion to the test above: once a domain lands in the file —
+        by any writer, not just a human — the very next WebFetch to it
+        allows with no ask, completing the self-widening path the residual
+        describes end to end."""
+        _write_allowlist(isolated_home, "newly-added-by-an-edit.example.com")
+        assert (
+            run_hook(
+                DENY_UNLISTED_WEBFETCH_DOMAINS_HOOK,
+                webfetch_input("https://newly-added-by-an-edit.example.com/x", permission_mode="auto"),
                 home=isolated_home,
             )
             == "allow"

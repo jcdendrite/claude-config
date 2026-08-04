@@ -50,7 +50,13 @@
       "Bash(go install *)",
       "Bash(gh extension install *)",
       "Bash(mas install *)",
-      "Bash(pipx install *)"
+      "Bash(pipx install *)",
+      "Bash(apt-get install *)",
+      "Bash(apt install *)",
+      "Bash(yum install *)",
+      "Bash(dnf install *)",
+      "Bash(apk add *)",
+      "Bash(zypper install *)"
     ]
   },
   "model": "opusplan",

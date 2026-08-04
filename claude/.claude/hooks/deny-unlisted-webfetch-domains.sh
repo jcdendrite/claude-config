@@ -12,6 +12,9 @@
 #   - No dedicated write-gate protects the allowlist file itself: an agent
 #     with ordinary Edit/Write access can append a domain and immediately
 #     fetch it with no prompt.
+#   - The fail-closed-on-hung-python3 guarantee holds only when timeout(1)
+#     is on PATH; without it (stock macOS with no GNU coreutils), a hung
+#     python3 blocks the WebFetch call indefinitely instead of denying.
 #
 # Fail-closed on unparseable hook input.
 
