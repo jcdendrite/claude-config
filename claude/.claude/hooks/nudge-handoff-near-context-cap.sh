@@ -1,8 +1,11 @@
 #!/bin/bash
 # hook-class: informational
-# UserPromptSubmit hook: injects a one-shot context-window nudge when the
-# estimated token count crosses 60% of the model's context window, prompting
-# the agent to suggest /handoff if the current task is not near completion.
+# UserPromptSubmit and Stop hook: injects a one-shot context-window nudge
+# when the estimated token count crosses 60% of the model's context window,
+# prompting the agent to suggest /handoff if the current task is not near
+# completion. Registered on both events so a session that crosses the
+# threshold on its final turn, with no further user prompt, still gets
+# warned.
 #
 # Nudge is one-shot per session: a marker file under
 # ~/.claude/.handoff-nudge-fired.d/<session_id> is written on first fire and
@@ -15,8 +18,8 @@
 # hook never blocks a user prompt.
 #
 # Log file: ~/.claude/.handoff-nudge.log records two event types:
-#   nudged  session=<id> est=<n> model=<id> window=<n>  — threshold crossed, nudge emitted
-#   schema-drift session=<id>     — usage block present but all token fields 0/null
+#   nudged  session=<id> est=<n> model=<id> window=<n> event=<UserPromptSubmit|Stop>  — threshold crossed, nudge emitted
+#   schema-drift session=<id> event=<UserPromptSubmit|Stop>     — usage block present but all token fields 0/null
 #
 # strict mode omitted deliberately: this hook must never block prompts (exit 0
 # on all paths); strict mode could cause unexpected early exits from the || true
@@ -31,7 +34,7 @@
 
 INPUT=$(cat 2>/dev/null)
 
-# Extract all four fields in a single jq pass to avoid four separate subshell spawns.
+# Extract all five fields in a single jq pass to avoid five separate subshell spawns.
 # Sequential reads from the jq output: each field on its own line handles
 # empty values and paths with spaces correctly. Pre-initialize to "" so a
 # failed read (e.g. jq unavailable or INPUT invalid) leaves empty strings
@@ -40,17 +43,27 @@ SESSION_ID=""
 AGENT_TYPE=""
 PERMISSION_MODE=""
 TRANSCRIPT_PATH=""
+HOOK_EVENT=""
 {
   IFS= read -r SESSION_ID
   IFS= read -r AGENT_TYPE
   IFS= read -r PERMISSION_MODE
   IFS= read -r TRANSCRIPT_PATH
+  IFS= read -r HOOK_EVENT
 } < <(
   printf '%s\n' "$INPUT" \
-    | jq -r '(.session_id // ""),(.agent_type // ""),(.permission_mode // ""),(.transcript_path // "")' \
+    | jq -r '(.session_id // ""),(.agent_type // ""),(.permission_mode // ""),(.transcript_path // ""),(.hook_event_name // "")' \
     2>/dev/null
 ) 2>/dev/null || true
 [ -z "$SESSION_ID" ] && exit 0
+
+# Constrain to the two registered events; default to UserPromptSubmit for an
+# empty, missing, or unrecognized value (matches SESSION_ID/MODEL's own
+# allowlist treatment of this same untrusted jq-extracted input).
+case "$HOOK_EVENT" in
+  UserPromptSubmit|Stop) ;;
+  *) HOOK_EVENT="UserPromptSubmit" ;;
+esac
 
 # SESSION_ID feeds DRIFT_MARKER and FIRED_MARKER below as a path component
 # ("../" would escape MARKER_DIR); fail the same way an empty id already does.
@@ -117,7 +130,7 @@ MARKER_DIR="$HOME/.claude/.handoff-nudge-fired.d"
 if [ "$ESTIMATE" -eq 0 ] 2>/dev/null; then
   DRIFT_MARKER="${MARKER_DIR}/${SESSION_ID}-drift"
   if [ ! -f "$DRIFT_MARKER" ]; then
-    printf 'schema-drift session=%s\n' "$SESSION_ID" >> "$NUDGE_LOG" 2>/dev/null || true
+    printf 'schema-drift session=%s event=%s\n' "$SESSION_ID" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
     mkdir -p "$MARKER_DIR" 2>/dev/null || true
     touch "$DRIFT_MARKER" 2>/dev/null || true
   fi
@@ -158,13 +171,13 @@ fi
 mkdir -p "$MARKER_DIR" 2>/dev/null || true
 # Evict stale markers from one-shot runs that skipped SessionEnd cleanup.
 find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
-printf 'nudged session=%s est=%s model=%s window=%s\n' \
-  "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" >> "$NUDGE_LOG" 2>/dev/null || true
+printf 'nudged session=%s est=%s model=%s window=%s event=%s\n' \
+  "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
 touch "$FIRED_MARKER" 2>/dev/null || true
 
-jq -n '{
+jq -n --arg hookEventName "$HOOK_EVENT" '{
   hookSpecificOutput: {
-    hookEventName: "UserPromptSubmit",
+    hookEventName: $hookEventName,
     additionalContext: "Context is past 60% of this model'\''s context window. If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish."
   }
 }' 2>/dev/null || true

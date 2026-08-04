@@ -145,6 +145,14 @@
             "command": "~/.claude/hooks/advance-past-commit-stall.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh"
+          }
+        ]
       }
     ],
     "SessionEnd": [
