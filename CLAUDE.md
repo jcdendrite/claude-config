@@ -111,16 +111,23 @@ Never commit anything that identifies a specific private project,
 engagement, or codebase. Three enforcement tiers apply:
 
 **Always caught by hook:** tracker IDs matching `[A-Z]{2,}-\d+` not on
-the OSS allowlist (`CVE-`, `RFC-`, `GH-`, and similar). For
+the OSS allowlist (`CVE-`, `RFC-`, `GH-`, and similar), plus six
+always-on structural detectors: a private-range or loopback IPv4
+literal, an SSH key path reference, a home-rooted filesystem path, a
+long hex/UUID identifier, an internal-TLD hostname, and a
+Slack-channel-shaped `#`-prefixed lowercase reference. For
 tracker-ID-shaped placeholders in examples, use `PROJ-<digits>` or
-`TICKET-<digits>` — both pass the allowlist.
+`TICKET-<digits>` — both pass the allowlist; see
+`docs/private-project-redaction.md` for non-matching illustrative
+shapes for the six structural detectors.
 
 **Caught by hook when `~/.claude/private-projects.md` is populated:**
 project/org names (including the owner's own private projects),
-codenames, internal URLs/hostnames/Slack channels/project domains,
-filesystem paths embedding project names, env var names encoding a
-project, and person names other than the repo owner's commit-author
-identity. Default: if in doubt, strip it.
+codenames, internal URLs/project domains on a TLD other than the
+always-on list above, non-home-rooted filesystem paths embedding
+project names, env var names encoding a project, and person names
+other than the repo owner's commit-author identity. Default: if in
+doubt, strip it.
 
 **Reviewer discipline only — hook doesn't catch these:** internal
 tool/product names not generally known in open source; commit SHAs or

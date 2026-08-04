@@ -7,19 +7,54 @@ defines what to keep out; `deny-private-project-refs.sh` is the mechanical
 enforcement. For the high-level three-tier overview, see the
 [README](../README.md#private-project-redaction).
 
-## The two scans
+## The three scans
 
-`deny-private-project-refs.sh` runs two scans, in order:
+`deny-private-project-refs.sh` runs three scans, in order:
 
 1. **Tracker-ID scan (always on, no setup).** Matches `[A-Z]{2,}-\d+` tokens
    not on the OSS allowlist. The allowlist also reserves two placeholder
    prefixes — `PROJ-` and `TICKET-` — so skill examples and commit messages can
    use a realistic-looking tracker shape (`PROJ-<digits>`, `TICKET-<digits>`)
    without obfuscating the digits to defeat the scan.
-2. **Private-projects blocklist (opt-in).** Reads `~/.claude/private-projects.md`
+2. **Structural-shape scan (always on, no setup).** Six independent detectors
+   for shapes that can identify a specific machine, person, or private
+   project without naming it directly — see "The six structural detectors"
+   below.
+3. **Private-projects blocklist (opt-in).** Reads `~/.claude/private-projects.md`
    at hook runtime and blocks commits/PRs whose content contains any
    non-comment, non-blank line from the file as a case-insensitive whole-word
    match.
+
+## The six structural detectors
+
+Unlike the blocklist, these run unconditionally — no `~/.claude/private-projects.md`
+setup required. Each is checked independently, so the deny message names
+which one fired. Regexes live in `_lib.sh` as `_LIB_IPV4_LITERAL_REGEX` and
+its five siblings, shared with any future consumer that needs the same
+definitions.
+
+| Detector | Catches | Does NOT catch |
+|---|---|---|
+| IPv4 literal | an RFC 1918 private-range (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) or RFC 1122 §3.2.1.3 loopback (`127.0.0.0/8`) address, zero-padded octets included | a public IPv4 address, or an IPv6 address |
+| SSH key path reference | a path segment naming the SSH configuration directory, or a filename following the `id_<algorithm>` convention (rsa/dsa/ecdsa/ed25519) | a custom-named key file with no `id_<algorithm>` shape |
+| Home-rooted path | a path rooted at `/Users/<username>/` or `/home/<username>/` | a relative or repo-rooted path |
+| Long hex identifier | a 32+ character contiguous hex run, or a UUID-shaped four-hyphen-group hex sequence | a shorter hex run (e.g. a short git SHA) |
+| Internal hostname | a hostname ending in `.internal`, `.corp`, `.local`, `.lan`, `.intranet`, or `.private` | a hostname on any other TLD |
+| Slack-channel shape | a `#`-prefixed lowercase-hyphenated word (also matches a markdown anchor link sharing the same shape, deliberately — see below) | a plain GitHub issue reference like `#421` (all-digit, excluded so this scan doesn't collide with ordinary issue cross-references) |
+
+Every illustrative shape above is written so it does not itself match the
+pattern it describes — committing this table must not trip the very
+detectors it documents. The angle-bracket placeholder in the home-rooted-path
+row (`/Users/<username>/`) is deliberate: `<` falls outside the detector's
+character class (`[A-Za-z0-9_.-]`), so the placeholder form never matches.
+
+The Slack-channel detector's markdown-anchor collision is intentional, not an
+oversight: this repo's own docs use `#`-anchor links (a heading-derived
+fragment appended to a file path, e.g. `docs/skills.md#<heading-slug>`),
+which share the identical shape as a real Slack channel name (lowercase,
+hyphenated). Loosening the charset to exclude that shape would defeat the
+detector's actual purpose — rephrase around a false positive rather than
+narrow the pattern.
 
 ## Opt-in: enable the blocklist
 
@@ -108,6 +143,57 @@ the staged content and in `~/.claude/private-projects.md`; naming it in the
 deny discloses it to no new party, while letting the agent locate and remove it
 in one pass rather than bisecting the diff. The tracker-ID scan similarly names
 matched tokens.
+
+The structural-shape scan is the deliberate exception: its deny message names
+only the detector label (e.g. "long hex identifier"), never the matched
+text. Unlike a tracker-ID token or a blocklisted project name, a structural
+match can itself be sensitive — a long hex identifier could be a live session
+ID, an IPv4 literal or internal hostname is network-recon-value data — so
+echoing it into the deny message would persist it into the session's
+transcript rather than merely repeating content already in the diff.
+
+## Performance
+
+Measured per-fire wall-clock cost of the full hook (tracker-ID scan, six
+structural detectors, private-projects blocklist scan) against a
+`gh api -X POST ... -F body=@<file>` call with a representative body file,
+run directly against `deny-private-project-refs.sh` with a synthetic
+`tool_input` payload on stdin, 5 runs at each size on a loaded development
+machine (other concurrent sessions were running on the same machine at
+measurement time, which the wide ranges below partly reflect):
+
+| Body size | Median | Range observed |
+|---|---|---|
+| 5 KB | 640ms | 563–751ms |
+| 50 KB | 697ms | 562–1,312ms |
+| 500 KB | 894ms | 837–1,017ms |
+
+This still exceeds this repo's stated hook performance budget (<100ms per
+fire), but is a real reduction from the six-separate-spawns baseline
+previously recorded here (835ms/908ms/1,802ms medians): collapsing the six
+structural detectors' unconditional per-fire spawns into one combined-pattern
+fast-path spawn (falling through to the original six only when it matches)
+cut the 5 KB and 50 KB medians by roughly 23%, and the 500 KB median by
+roughly 50% — the larger body size sees the bigger win because each spawn
+saved also means one fewer large here-string bash materializes to a temp
+file before exec. Subprocess-spawn overhead still dominates over
+byte-scanning cost — the fast path itself, plus the pre-existing tracker-ID
+and blocklist scans' own subprocess calls, remain unchanged — which is why
+cost still does not scale cleanly with body size. At commit/PR-authoring
+time (a human-interactive action, not a hot path), this is tolerable in
+absolute terms but is still a measured budget overrun, not a clean pass — a
+future revision that needs more headroom should look at collapsing the
+remaining tracker-ID and blocklist `grep` spawns into the same fast-path
+treatment.
+
+## Known gaps
+
+`gh issue create` and `gh issue comment` publish content the same way
+`gh pr create` and `gh api` do, but the hook's dispatch logic has no branch
+recognizing `gh issue` at all — content posted that way is never scanned by
+any of the three scans above. Closing this is separate work: `gh issue`
+takes its body via `--body` inline text, not the `-f`/`-F` field-value-file
+flags the `gh api` scan already resolves.
 
 ## For fork contributors
 

@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import time
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,18 @@ def _table_cols(out: str, *, header_contains: str, row_contains: str,
     values = rows[0].split()
     assert len(values) >= len(labels), f"row has fewer cells than labels: {rows[0]!r}"
     return dict(zip(labels, values, strict=False))
+
+
+def _extract_unpriced_total(out: str) -> int:
+    """Read cmd_cost's 'Unpriced tokens (unknown model IDs): N' line as an int.
+
+    A single named extractor for this one non-tabular summary line, matching
+    _table_cols' role for tabular output — one parse point to update if the
+    line's wording changes, instead of an inline regex at each call site.
+    """
+    match = re.search(r"Unpriced tokens \(unknown model IDs\): ([\d,]+)", out)
+    assert match is not None, "unpriced-tokens summary line not found in output"
+    return int(match.group(1).replace(",", ""))
 
 
 def _asst(
@@ -1747,6 +1760,61 @@ def _opus(content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T1
     return rec
 
 
+def _priced(
+    model: str,
+    *,
+    input: int = 0,
+    cache_read: int = 0,
+    ephemeral_1h: int = 0,
+    ephemeral_5m: int = 0,
+    output: int = 0,
+    flat_cache_creation: int | None = None,
+    ts: str = "2026-05-19T10:00:00.000Z",
+) -> dict:
+    """Build an assistant record with explicit priced usage fields for cost tests.
+
+    flat_cache_creation=None (the default) emits the nested cache_creation
+    block from ephemeral_1h/ephemeral_5m, with the flat cache_creation_input_tokens
+    field set to their sum — matching every real usage record sampled, where the
+    two always agree. flat_cache_creation=N omits the nested block entirely and
+    emits only the flat field (the pre-nested-block fallback shape), ignoring
+    ephemeral_1h/ephemeral_5m.
+    """
+    rec = _asst(model, ts=ts, content=[])
+    usage: dict = {
+        "input_tokens": input,
+        "output_tokens": output,
+        "cache_read_input_tokens": cache_read,
+    }
+    if flat_cache_creation is not None:
+        usage["cache_creation_input_tokens"] = flat_cache_creation
+    else:
+        usage["cache_creation_input_tokens"] = ephemeral_1h + ephemeral_5m
+        usage["cache_creation"] = {
+            "ephemeral_1h_input_tokens": ephemeral_1h,
+            "ephemeral_5m_input_tokens": ephemeral_5m,
+        }
+    rec["message"]["usage"] = usage
+    return rec
+
+
+def _cost_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    top: int = 20,
+    no_redact: bool = False,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "top": top,
+        "no_redact": no_redact,
+    })()
+
+
 def _exit_plan_mode(tool_id: str = "epm1") -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "ExitPlanMode", "input": {}}
 
@@ -2001,6 +2069,402 @@ class TestAuditRouting:
         out = capsys.readouterr().out
         # Turn with no timestamp is excluded by the --since filter
         assert _extract_corpus_class_tokens(out, "code-write") == 0
+
+
+# ---------------------------------------------------------------------------
+# cost
+# ---------------------------------------------------------------------------
+
+
+class TestCost:
+    def test_price_turn_hand_computed_dollar_total(self):
+        """_price_turn's per-class dollars match a hand-computed total, read back
+        through the named extractor (_price_turn itself) rather than a string
+        match on formatted `$`-prefixed, comma-separated table output."""
+        usage = _priced(
+            "claude-sonnet-5",
+            input=100_000, cache_read=200_000, ephemeral_1h=10_000, ephemeral_5m=20_000, output=5_000,
+        )["message"]["usage"]
+        dollars, context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        assert unpriced == 0
+        assert context_at_turn == 100_000 + 200_000 + 10_000 + 20_000
+        # Sonnet 5 base $2/MTok: output 5x=$10, cache_write_5m 1.25x=$2.5,
+        # cache_write_1h 2x=$4, cache_read 0.1x=$0.2, input=$2 (all per MTok).
+        assert dollars["input"] == pytest.approx(100_000 / 1_000_000 * 2.0)
+        assert dollars["output"] == pytest.approx(5_000 / 1_000_000 * 10.0)
+        assert dollars["cache_read"] == pytest.approx(200_000 / 1_000_000 * 0.2)
+        assert dollars["cache_write_1h"] == pytest.approx(10_000 / 1_000_000 * 4.0)
+        assert dollars["cache_write_5m"] == pytest.approx(20_000 / 1_000_000 * 2.5)
+
+    def test_raw_dollars_summed_before_rounding_not_after(self, fake_projects, capsys):
+        """Three sub-cent turns ($0.166 each) sum to $0.498, rendering '0.50' — a
+        round-then-sum bug would render each turn as $0.17 and total '0.51'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=83_000),
+            _priced("claude-sonnet-5", input=83_000),
+            _priced("claude-sonnet-5", input=83_000),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "0.50"
+
+    def test_nested_cache_creation_priced_separately_1h_and_5m(self):
+        """Nested ephemeral_1h/ephemeral_5m tokens are split and never summed together."""
+        usage = _priced("claude-sonnet-5", ephemeral_1h=10_000, ephemeral_5m=20_000)["message"]["usage"]
+        assert _mod._cache_write_split(usage) == (10_000, 20_000)
+
+    def test_flat_and_nested_both_present_not_double_counted(self):
+        """flat cache_creation_input_tokens sums the nested fields on every real
+        record (row2); the split must read only the nested block, never add
+        flat on top of it."""
+        usage = _priced("claude-sonnet-5", ephemeral_1h=10_000, ephemeral_5m=20_000)["message"]["usage"]
+        assert usage["cache_creation_input_tokens"] == 30_000  # flat present too
+        eph_1h, eph_5m = _mod._cache_write_split(usage)
+        assert eph_1h + eph_5m == 30_000  # not 60,000 (double-counted)
+
+    def test_flat_cache_creation_fallback_priced_as_5m_only(self):
+        """Nested block absent (the untested-by-real-data fallback path): the flat
+        total is priced entirely as 5m, at 1.25x — never split into 1h at 2x."""
+        usage = _priced("claude-sonnet-5", flat_cache_creation=40_000)["message"]["usage"]
+        assert "cache_creation" not in usage
+        assert _mod._cache_write_split(usage) == (0, 40_000)
+        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        assert unpriced == 0
+        assert dollars["cache_write_5m"] == pytest.approx(40_000 / 1_000_000 * 2.5)
+        assert dollars["cache_write_1h"] == 0.0
+
+    def test_empty_nested_cache_creation_block_not_treated_as_absent(self):
+        """A present-but-empty nested block ({}) means zero of both ephemeral kinds —
+        it must not fall through to the flat field as if the nested block were
+        absent, even though both {} and a missing key are falsy."""
+        usage = {
+            "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 40_000, "cache_creation": {},
+        }
+        assert _mod._cache_write_split(usage) == (0, 0)
+
+    def test_per_model_id_selection_sonnet5_vs_sonnet46(self, fake_projects, capsys):
+        """Sonnet 5 ($2 base) and Sonnet 4.6 ($3 base) price the same input tokens differently."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000),
+            _priced("claude-sonnet-4-6", input=1_000_000),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        sonnet5 = _table_cols(out, header_contains="Model", row_contains="claude-sonnet-5")
+        sonnet46 = _table_cols(out, header_contains="Model", row_contains="claude-sonnet-4-6")
+        assert sonnet5["$"] == "2.00"
+        assert sonnet46["$"] == "3.00"
+
+    def test_unknown_model_id_surfaced_and_excluded_from_total(self, fake_projects, capsys):
+        """Unknown model IDs are named in the model table and their tokens counted
+        separately, never silently folded into the priced total at $0."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("<synthetic>", input=1_000_000, output=500_000, cache_read=200_000),
+            _priced("claude-sonnet-5", input=1_000_000),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "<synthetic>" in out
+        assert "unpriced" in out
+        assert _extract_unpriced_total(out) == 1_000_000 + 500_000 + 200_000
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "2.00"  # only the priced sonnet-5 turn's $2/MTok * 1M input tokens
+
+    def test_mixed_model_ids_within_session_sums_per_turn(self, fake_projects, capsys):
+        """A session mixing Sonnet 5 and Sonnet 4.6 turns prices each against its own
+        model ID; the session total is their sum, not a dominant-family pick
+        (token-analyzer.py:16-23's per-session _fam shape, which this must not copy)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000),      # $2.00
+            _priced("claude-sonnet-4-6", input=1_000_000),    # $3.00
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Session", row_contains="private-project-1")
+        assert cols["$"] == "5.00"
+
+    def test_context_bucket_threshold_boundaries(self):
+        """199,999 is <200k; exactly 200,000 and 200,001 are >=200k (inclusive edge)."""
+        assert _mod._context_bucket(199_999) == "<200k"
+        assert _mod._context_bucket(200_000) == ">=200k"
+        assert _mod._context_bucket(200_001) == ">=200k"
+
+    def test_price_turn_rate_independent_of_context_bucket(self):
+        """The $/token rate does not change with context size — pins row4 (no
+        >200k long-context premium applies to any model in the corpus) against
+        a future regression."""
+        usage_small = _priced("claude-sonnet-5", input=199_999)["message"]["usage"]
+        usage_large = _priced("claude-sonnet-5", input=200_001)["message"]["usage"]
+        dollars_small, ctx_small, _ = _mod._price_turn("claude-sonnet-5", usage_small)
+        dollars_large, ctx_large, _ = _mod._price_turn("claude-sonnet-5", usage_large)
+        assert _mod._context_bucket(ctx_small) == "<200k"
+        assert _mod._context_bucket(ctx_large) == ">=200k"
+        assert dollars_small["input"] / 199_999 == pytest.approx(dollars_large["input"] / 200_001)
+
+    def test_cost_by_context_bucket_section_reflects_boundary(self, fake_projects, capsys):
+        """A <200k turn and a >=200k turn land in their respective bucket rows."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000),    # <200k, $0.20
+            _priced("claude-sonnet-5", input=1_000_000),  # >=200k, $2.00
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        under = _table_cols(out, header_contains="Bucket", row_contains="<200k")
+        over = _table_cols(out, header_contains="Bucket", row_contains=">=200k")
+        assert under["$"] == "0.20"
+        assert over["$"] == "2.00"
+
+    def test_empty_corpus_renders_clean_zero_state(self, fake_projects, capsys):
+        """No priced turns at all: every share renders 0.0% and there's no traceback."""
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "0.0%" in out
+        assert "(no priced turns in range)" in out
+
+    def test_staleness_banner_fires_when_today_past_expires(self, fake_projects, capsys):
+        """today past Sonnet 5's 2026-08-31 expiry: the banner fires in the same
+        output block as the dollar tables, not a separate log line."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
+        _mod._cost_report(_cost_args(), date(2026, 9, 1))
+        out = capsys.readouterr().out
+        assert "STALE PRICING" in out
+        assert "claude-sonnet-5" in out.split("## Cost by token class")[0]
+
+    def test_staleness_banner_absent_when_today_before_expires(self, fake_projects, capsys):
+        """today before expiry: no banner — a one-direction test would pass even
+        if the banner always printed."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "STALE PRICING" not in out
+
+    def test_sidechain_turns_priced_exactly_once(self, fake_projects, capsys):
+        """cost prices subagent (isSidechain) turns via include_subagents=True —
+        exactly once, not skipped and not duplicated."""
+        session_id = "sess-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000),  # main thread: $2.00
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _priced("claude-sonnet-5", input=1_000_000),  # sidechain: $2.00
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "4.00"
+
+    def test_redact_proj_label_map_miss_returns_opaque_token_not_raw_name(self):
+        """A project label absent from the map renders as the fixed opaque token,
+        never the raw project name — a map miss must fail closed. Built with
+        two real labels so the map can express "one mapped, one missing"; a
+        single-label fixture can't distinguish a miss from an empty map."""
+        redact_map = {"project-a": "private-project-1"}  # "project-b" deliberately absent
+        assert _mod._redact_proj_label("project-a", redact_map) == "private-project-1"
+        assert _mod._redact_proj_label("project-b", redact_map) == _mod._REDACT_MAP_MISS_TOKEN
+        assert _mod._REDACT_MAP_MISS_TOKEN != "project-b"
+
+    def test_redact_session_id_map_miss_returns_opaque_token_not_raw_id(self):
+        """Same fail-closed contract as the project-label map, for session IDs:
+        a session_id absent from the run-scoped map renders as the fixed
+        opaque token, never the raw session ID."""
+        session_map = {"sess-real-id": "session-1"}  # "sess-other-id" deliberately absent
+        assert _mod._redact_session_id("sess-real-id", session_map) == "session-1"
+        assert _mod._redact_session_id("sess-other-id", session_map) == _mod._REDACT_SESSION_MISS_TOKEN
+        assert _mod._REDACT_SESSION_MISS_TOKEN != "sess-other-id"
+
+    def test_redact_proj_label_claude_config_passthrough_preserved(self):
+        """claude-config still passes through unredacted after the fail-closed rewrite."""
+        assert _mod._redact_proj_label("claude-config", {}) == "claude-config"
+
+    def test_cost_redact_default_hides_project_names_and_session_ids(self, fake_projects, capsys):
+        """Default (no --no-redact): raw project labels and raw session IDs are
+        absent from stdout across every cost section — catches a partial leak,
+        not just the total no-op test_redact_flag_anonymizes_project_names checks."""
+        _write_jsonl(fake_projects / "sess-one.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        proj2 = fake_projects.parent / "-home-user-otherrepo"
+        proj2.mkdir(parents=True)
+        _write_jsonl(proj2 / "sess-two.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "testrepo" not in out
+        assert "otherrepo" not in out
+        assert "sess-one" not in out
+        assert "sess-two" not in out
+        assert "private-project-1" in out
+        assert "private-project-2" in out
+
+    def test_cost_no_redact_emits_real_label_and_session_id(self, fake_projects, capsys):
+        """--no-redact emits the real project label and real session ID — proving
+        the default redaction didn't silently become the only mode."""
+        _write_jsonl(fake_projects / "sess-plain.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(no_redact=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "testrepo" in out
+        assert "sess-plain" in out
+
+    def test_shared_redact_map_binds_same_project_across_cost_and_audit_routing(self, fake_projects, capsys):
+        """cost and audit-routing share _build_redact_map: a project binds to the
+        same private-project-N placeholder from both, even though cost's own
+        --projects filter here is narrower than the full corpus — a per-command
+        map built only from the narrowed glob would assign zzzlast
+        private-project-1 instead of -2, since it would be the only project seen."""
+        proj_b = fake_projects.parent / "-home-user-zzzlast"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(fake_projects / "sess-a.jsonl", [_opus([_agent_use("a1", "code-writer")], out=100)])
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _opus([_agent_use("a1", "code-writer")], out=100),
+            _priced("claude-sonnet-5", input=1_000_000),
+        ])
+
+        expected_map = _mod._build_redact_map()
+        assert expected_map["testrepo"] == "private-project-1"
+        assert expected_map["zzzlast"] == "private-project-2"
+
+        _mod.cmd_audit_routing(_audit_routing_args(projects="*", redact=True))
+        audit_out = capsys.readouterr().out
+        assert "private-project-2" in audit_out
+
+        _mod._cost_report(_cost_args(projects="-home-user-zzzlast", no_redact=False), date(2026, 8, 2))
+        cost_out = capsys.readouterr().out
+        assert "private-project-2" in cost_out
+        assert "private-project-1" not in cost_out  # testrepo's session wasn't in this narrowed run
+
+    def test_since_filter_excludes_out_of_window_turn(self, fake_projects, capsys):
+        """--since window: a turn timestamped outside the window is excluded from the total."""
+        old_ts = "2020-01-01T00:00:00.000Z"   # far in the past — always out-of-window
+        new_ts = "2099-12-31T00:00:00.000Z"   # far in the future — always in-window
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts=old_ts),
+            _priced("claude-sonnet-5", input=2_000_000, ts=new_ts),
+        ])
+        _mod._cost_report(_cost_args(since="1d"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "4.00"  # only the 2,000,000-input-token turn is in-window
+
+    def test_since_malformed_value_exits_nonzero(self, fake_projects, capsys):
+        """A malformed --since value (not 'Nd') fails closed with a usage message, not a traceback."""
+        with pytest.raises(SystemExit):
+            _mod._cost_report(_cost_args(since="not-a-window"), date(2026, 8, 2))
+        assert "expected Nd like '35d'" in capsys.readouterr().err
+
+    def test_top_n_truncates_session_rows(self, fake_projects, capsys):
+        """--top N keeps only the N highest-dollar sessions; excluded sessions don't appear."""
+        for i in range(5):
+            _write_jsonl(fake_projects / f"sess-{i}.jsonl", [_priced("claude-sonnet-5", input=(i + 1) * 1_000_000)])
+        _mod._cost_report(_cost_args(top=2), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        top_section = out.split("## Top 2 sessions by dollars")[1]
+        session_lines = [ln for ln in top_section.splitlines() if ln.startswith("session-")]
+        assert len(session_lines) == 2
+        # The two highest-dollar sessions (i=3,4 -> $8.00, $10.00) survive; i=0,1,2 are truncated.
+        assert "10.00" in top_section
+        assert "8.00" in top_section
+        assert "2.00" not in top_section
+
+    def test_this_repo_scopes_via_resolve_project_scope(self, tmp_path, monkeypatch, capsys):
+        """cost wires --this-repo through the shared _resolve_project_scope helper
+        like every other subcommand — pinned here because cost predates that
+        convention and a prior rebase silently left it on a bespoke --projects-only
+        argument with no --this-repo support at all."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(this_repo=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "COST SOURCES (this repo (1 project dirs))" in out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "2.00"
+
+    def test_redact_map_ordinal_shifts_with_out_of_scope_project(self, tmp_path, monkeypatch, capsys):
+        """_build_redact_map's ordinals are assigned over the full local corpus,
+        not the caller's --this-repo scope: pins that a --this-repo report's
+        printed private-project-N number depends on other private projects that
+        never appear in the report — the ordinal side-channel documented on
+        _build_redact_map. "aardvark" sorts before "main" (this repo's derived
+        label), so its mere presence on disk — outside --this-repo scope and
+        never printed — bumps "main" from private-project-1 to private-project-2."""
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        # Run 1: only this repo's own project dir exists on disk.
+        solo_projects = tmp_path / "solo" / "projects"
+        mine_solo = solo_projects / "-repo-main"
+        mine_solo.mkdir(parents=True)
+        _write_jsonl(mine_solo / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", solo_projects)
+        _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
+        solo_out = capsys.readouterr().out
+        assert "private-project-1" in solo_out
+
+        # Run 2: an out-of-scope project ("aardvark") sorts before this repo's
+        # own label and is never surfaced by --this-repo, yet still shifts the
+        # ordinal assigned to this repo's project.
+        shared_projects = tmp_path / "shared" / "projects"
+        mine_shared = shared_projects / "-repo-main"
+        mine_shared.mkdir(parents=True)
+        other = shared_projects / "-home-user-aardvark"
+        other.mkdir(parents=True)
+        _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", shared_projects)
+        _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
+        shared_out = capsys.readouterr().out
+        assert "private-project-2" in shared_out
+        assert "private-project-1" not in shared_out
+        assert "aardvark" not in shared_out  # the out-of-scope project itself never prints
+
+    def test_redact_map_ordinal_unaffected_by_out_of_scope_project_sorting_after(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Companion to the shifts-before case: an out-of-scope project whose
+        derived label sorts *after* the in-scope one leaves the in-scope
+        project's ordinal unchanged, since _build_redact_map assigns ordinals
+        in alphabetical order. "zzz-other" sorts after "main", so it must not
+        bump "main" off private-project-1."""
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        shared_projects = tmp_path / "shared" / "projects"
+        mine_shared = shared_projects / "-repo-main"
+        mine_shared.mkdir(parents=True)
+        other = shared_projects / "-home-user-zzz-other"
+        other.mkdir(parents=True)
+        _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", shared_projects)
+        _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "private-project-1" in out
+        assert "zzz-other" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -3944,7 +4408,7 @@ class TestRepoScopedProjectSlugsGuard:
 
 
 class TestResolveProjectScope:
-    """The scope-dispatch helper behind --projects/--this-repo on the 15
+    """The scope-dispatch helper behind --projects/--this-repo on the 16
     non-skill-invocation subcommands."""
 
     def _worktree_porcelain(self, *paths):

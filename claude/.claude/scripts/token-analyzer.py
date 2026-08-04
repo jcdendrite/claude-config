@@ -182,6 +182,7 @@ def main():
     else:
         print("None found.")
     print("\n(For per-turn analysis use: transcript-analysis.py audit-routing)")
+    print("(For price-weighted dollar cost by token class/model/context bucket use: transcript-analysis.py cost)")
 
 
 if __name__ == "__main__":

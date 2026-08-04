@@ -17,7 +17,7 @@ import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -392,12 +392,15 @@ def iter_sessions(
     """Yield (jsonl_path, records) for each transcript file matching the glob.
 
     Files are yielded in a single flat sort over their full paths — NOT grouped
-    by directory. This ordering is load-bearing: cmd_audit_routing's redact-label
-    first pass assigns Project-N labels by first-seen order, so grouping by
-    directory would relabel projects whenever one project-dir name is a lexical
-    prefix of a sibling's (exactly this repo's own worktree naming, e.g.
-    -home-u-repo vs -home-u-repo--claude-worktrees-b). See _read_session_file for
-    the per-file read and the include_subagents merge behavior.
+    by directory. Grouping by directory would misorder projects whenever one
+    project-dir name is a lexical prefix of a sibling's (exactly this repo's
+    own worktree naming, e.g. -home-u-repo vs -home-u-repo--claude-worktrees-b).
+    Redact-label assignment (_build_redact_map) does not depend on this order —
+    it sorts the collected labels itself before assigning placeholders — but
+    every other caller iterates these results directly, so the flat sort is
+    what keeps their output order deterministic and reproducible across runs.
+    See _read_session_file for the per-file read and the include_subagents
+    merge behavior.
     """
     for jsonl in sorted(projects_dir.glob(f"{projects_glob}/*.jsonl")):
         records = _read_session_file(jsonl, include_subagents)
@@ -1382,8 +1385,9 @@ def _resolve_project_scope(
     subcommand name (e.g. "buckets"); it labels _repo_scoped_project_slugs'
     fail-closed messages and, uppercased, the caller's resolved-scope header.
     The resolved slug list is cached on `args` so a caller needing two
-    independent iterators over the same scope (cmd_audit_routing) triggers one
-    `git worktree list` call, not two. This caching relies on main()'s
+    independent iterators over the same scope triggers one `git worktree
+    list` call, not two — no current caller does this, but the cache is
+    correct if one starts to. This caching relies on main()'s
     single-Namespace-per-process, single-subcommand-dispatch invariant — an
     `args` object reused across two different subcommand invocations would
     silently reuse the first's resolved slugs instead of re-resolving for the
@@ -2039,11 +2043,85 @@ def _derive_proj_label(jsonl: Path) -> str:
     return jsonl.parent.name.lstrip("-").replace("-", "/", 2).split("/", 2)[-1]
 
 
+_REDACT_MAP_MISS_TOKEN = "private-project-unmapped"
+
+
 def _redact_proj_label(proj_label: str, redact_map: dict[str, str]) -> str:
-    """Apply the redact map to a project label, preserving 'claude-config' as-is."""
+    """Apply the redact map to a project label, preserving 'claude-config' as-is.
+
+    A map miss returns a fixed opaque token rather than the raw label — the
+    map is only ever built from a full-corpus scan (_build_redact_map), so a
+    miss means the caller passed an incomplete map, and falling back to the
+    raw name would silently defeat --redact.
+    """
     if proj_label == "claude-config":
         return proj_label
-    return redact_map.get(proj_label, proj_label)
+    return redact_map.get(proj_label, _REDACT_MAP_MISS_TOKEN)
+
+
+def _build_redact_map() -> dict[str, str]:
+    """Build the project-label -> opaque-token map shared by every --redact caller.
+
+    Always scans the full corpus via iter_sessions(PROJECTS_DIR, "*"), ignoring
+    the caller's own --projects filter, so a project always binds to the same
+    placeholder whether it was found by a narrowed cost run or a full
+    audit-routing run — a narrower scan would let the same label mean two
+    different projects across two published outputs. iter_sessions (not a raw
+    glob) is used because it already excludes zero-record transcripts; a raw
+    glob would not, and that difference would shift every subsequent
+    private-project-N index. --since never reaches this map and must not: it
+    would change which sessions are found on a per-run basis, with the same
+    label-drift consequence.
+
+    This means --redact reads every project's transcript bytes off disk even
+    under --this-repo, a considered tradeoff in tension with that flag's
+    minimization intent elsewhere in this file, not an oversight.
+
+    Ordinals are assigned sequentially over the sorted full-corpus label list,
+    not the caller's --this-repo-scoped subset, so a printed private-project-N
+    number is shaped by every other private project directory that exists
+    locally and sorts before the in-scope one — a structural fingerprint of
+    the operator's other projects that a --this-repo-scoped report does not
+    otherwise disclose. Narrowing the scan to the caller's own scope would
+    close this but breaks the cross-run label-stability guarantee above, so
+    this function does not attempt it.
+    """
+    labels: list[str] = []
+    for jsonl, _records in iter_sessions(PROJECTS_DIR, "*"):
+        label = _derive_proj_label(jsonl)
+        if label not in labels:
+            labels.append(label)
+    labels.sort()
+
+    redact_map: dict[str, str] = {}
+    num_index = 1
+    for label in labels:
+        if label == "claude-config":
+            redact_map[label] = label
+        else:
+            redact_map[label] = f"private-project-{num_index}"
+            num_index += 1
+    return redact_map
+
+
+_REDACT_SESSION_MISS_TOKEN = "session-unmapped"
+
+
+def _assign_session_redact_label(session_id: str, session_redact_map: dict[str, str]) -> None:
+    """Assign session_id a stable opaque label the first time it's seen this run.
+
+    Unlike project labels, session-id placeholders need no cross-run or
+    cross-command stability — each command's own single pass over its corpus
+    is the map's only writer, so assignment happens inline as sessions are
+    discovered rather than needing a separate first pass.
+    """
+    if session_id not in session_redact_map:
+        session_redact_map[session_id] = f"session-{len(session_redact_map) + 1}"
+
+
+def _redact_session_id(session_id: str, session_redact_map: dict[str, str]) -> str:
+    """Apply a run-scoped session-id redact map; fails closed to a fixed token on a miss."""
+    return session_redact_map.get(session_id, _REDACT_SESSION_MISS_TOKEN)
 
 
 def cmd_audit_routing(args: argparse.Namespace) -> None:
@@ -2069,42 +2147,25 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
             print(f"audit-routing: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
             sys.exit(1)
 
-    # --- First pass: collect all project labels for redact mapping ---
-    all_proj_labels: list[str] = []
-    if redact:
-        redact_session_iter, _scope_label = _resolve_project_scope(args, "audit-routing")
-        for jsonl, _ in redact_session_iter:
-            label = _derive_proj_label(jsonl)
-            if label not in all_proj_labels:
-                all_proj_labels.append(label)
-        all_proj_labels.sort()
-        # Build stable numeric mapping; claude-config is kept as-is.
-        num_index = 1
-        redact_map: dict[str, str] = {}
-        for label in all_proj_labels:
-            if label == "claude-config":
-                redact_map[label] = label
-            else:
-                redact_map[label] = f"private-project-{num_index}"
-                num_index += 1
-    else:
-        redact_map = {}
+    # _resolve_project_scope's fail-closed --this-repo check runs before
+    # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
+    # exits without paying for that scan.
+    session_iter, scope_label = _resolve_project_scope(args, "audit-routing")
+    _print_resolved_scope("audit-routing", scope_label)
+
+    redact_map: dict[str, str] = _build_redact_map() if redact else {}
+    session_redact_map: dict[str, str] = {}
 
     # Per-session accumulators: session_key → {class → {out, cr}}
     session_rows: list[dict] = []
     # Corpus totals: class → {out, cr}
     corpus_totals: dict[str, dict[str, int]] = {cls: {"out": 0, "cr": 0} for cls in _AUDIT_CLASSES}
 
-    # Row 15: this is the second call to _resolve_project_scope in this function
-    # (the redact pass above is the first, when --redact is set) — the resolved
-    # slug list is cached on `args` so --this-repo triggers one `git worktree
-    # list` call for both passes, not two.
-    session_iter, scope_label = _resolve_project_scope(args, "audit-routing")
-    _print_resolved_scope("audit-routing", scope_label)
-
     for jsonl, records in session_iter:
         proj_label = _derive_proj_label(jsonl)
         session_id = jsonl.stem[:12]
+        if redact:
+            _assign_session_redact_label(session_id, session_redact_map)
 
         # Per-session class token accumulators
         session_class_tokens: dict[str, dict[str, int]] = {
@@ -2216,7 +2277,7 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
 
     sorted_rows = sorted(session_rows, key=lambda r: r["total_out"], reverse=True)
     for row in sorted_rows[:top_n]:
-        sid = row["session_id"]
+        sid = _redact_session_id(row["session_id"], session_redact_map) if redact else row["session_id"]
         proj = _redact_proj_label(row["proj_label"], redact_map) if redact else row["proj_label"]
         cls = row["classes"]
         total_cr = sum(v["cr"] for v in cls.values())
@@ -2246,6 +2307,263 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     sonnet_pct = f"{100 * sonnet_tier_out / total_out_all:.0f}%" if total_out_all else "—"
     print(f"\nSonnet-tier estimate: {sonnet_tier_out:,} output tokens")
     print(f"  = {sonnet_pct} of Opus output in this window")
+
+
+_TOKEN_CLASSES: tuple[str, ...] = ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input")
+
+_PRICING_SOURCE_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
+_PRICING_FETCH_DATE = date(2026, 8, 2)
+
+# Multipliers vs. a model's base input rate, per the pricing page's stated ratios.
+_OUTPUT_RATE_MULTIPLIER = 5
+_CACHE_WRITE_5M_MULTIPLIER = 1.25
+_CACHE_WRITE_1H_MULTIPLIER = 2
+_CACHE_READ_MULTIPLIER = 0.1
+
+_SONNET_5_PROMO_EXPIRES = date(2026, 8, 31)  # vendor-stated introductory-rate end
+_DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
+
+# Base input $/MTok per model ID, keyed on the exact string Claude Code writes
+# to message.model. Source: _PRICING_SOURCE_URL, fetched _PRICING_FETCH_DATE.
+# Output/cache-write/cache-read rates are derived from this one base rate per
+# model by _model_rates, so each model needs only its base rate kept current.
+_MODEL_BASE_INPUT_RATES: dict[str, float] = {
+    "claude-opus-5": 5.00,
+    "claude-opus-4-8": 5.00,
+    "claude-sonnet-5": 2.00,
+    "claude-sonnet-4-6": 3.00,
+    "claude-haiku-4-5-20251001": 1.00,
+}
+
+# Re-verify-by date per model ID: Sonnet 5's introductory rate has a
+# vendor-stated end date; every other model has none, so it gets
+# fetch-date+90d as a re-verify checkpoint instead.
+_MODEL_RATE_EXPIRES: dict[str, date] = {
+    model: (_SONNET_5_PROMO_EXPIRES if model == "claude-sonnet-5" else _DEFAULT_REVERIFY_BY)
+    for model in _MODEL_BASE_INPUT_RATES
+}
+
+_CONTEXT_BUCKET_THRESHOLD = 200_000  # inclusive edge of the "≥200k" finding
+_CONTEXT_BUCKET_UNDER = "<200k"
+_CONTEXT_BUCKET_OVER = ">=200k"
+
+
+def _model_rates(model: str) -> dict[str, float] | None:
+    """Return per-MTok dollar rates for one model ID, or None if unpriced."""
+    base = _MODEL_BASE_INPUT_RATES.get(model)
+    if base is None:
+        return None
+    return {
+        "input": base,
+        "output": base * _OUTPUT_RATE_MULTIPLIER,
+        "cache_write_5m": base * _CACHE_WRITE_5M_MULTIPLIER,
+        "cache_write_1h": base * _CACHE_WRITE_1H_MULTIPLIER,
+        "cache_read": base * _CACHE_READ_MULTIPLIER,
+    }
+
+
+def _cache_write_split(usage: dict) -> tuple[int, int]:
+    """Return (ephemeral_1h_tokens, ephemeral_5m_tokens) for one usage record.
+
+    Prices the nested cache_creation.{ephemeral_1h,ephemeral_5m}_input_tokens
+    block when present. Falls back to the flat cache_creation_input_tokens
+    field as 5m-only when the nested block is absent — never counts both,
+    since the nested block's own two fields sum exactly to the flat field on
+    every real record that carries one.
+    """
+    nested = usage.get("cache_creation")
+    if nested is not None:
+        return int(nested.get("ephemeral_1h_input_tokens", 0)), int(nested.get("ephemeral_5m_input_tokens", 0))
+    return 0, int(usage.get("cache_creation_input_tokens", 0))
+
+
+def _context_bucket(context_at_turn: int) -> str:
+    return _CONTEXT_BUCKET_OVER if context_at_turn >= _CONTEXT_BUCKET_THRESHOLD else _CONTEXT_BUCKET_UNDER
+
+
+def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, int]:
+    """Price one assistant turn's usage against _MODEL_BASE_INPUT_RATES.
+
+    Returns (dollars_by_class, context_at_turn, unpriced_tokens):
+    - dollars_by_class holds one raw (unrounded) dollar amount per
+      _TOKEN_CLASSES entry when the model has a price-table entry, else
+      None — callers must check for None rather than treating a zero total
+      as "priced at $0".
+    - context_at_turn is input_tokens + cache_read_input_tokens + ephemeral_1h
+      + ephemeral_5m tokens for this turn, computed regardless of pricing.
+    - unpriced_tokens is the turn's total token count (input + output +
+      cache_read + ephemeral_1h + ephemeral_5m) when the model is unpriced,
+      else 0.
+    """
+    input_t = int(usage.get("input_tokens", 0))
+    output_t = int(usage.get("output_tokens", 0))
+    cache_read_t = int(usage.get("cache_read_input_tokens", 0))
+    eph_1h, eph_5m = _cache_write_split(usage)
+    context_at_turn = input_t + cache_read_t + eph_1h + eph_5m
+
+    rates = _model_rates(model)
+    if rates is None:
+        return None, context_at_turn, input_t + output_t + cache_read_t + eph_1h + eph_5m
+
+    dollars = {
+        "input": input_t / 1_000_000 * rates["input"],
+        "output": output_t / 1_000_000 * rates["output"],
+        "cache_read": cache_read_t / 1_000_000 * rates["cache_read"],
+        "cache_write_1h": eph_1h / 1_000_000 * rates["cache_write_1h"],
+        "cache_write_5m": eph_5m / 1_000_000 * rates["cache_write_5m"],
+    }
+    return dollars, context_at_turn, 0
+
+
+def _pct_of(value: float, total: float) -> str:
+    """value/total as a percentage string; 0.0% (not an undefined dash) when total is zero."""
+    return f"{100 * value / total:.1f}%" if total else "0.0%"
+
+
+def cmd_cost(args: argparse.Namespace) -> None:
+    """CLI entry point for the cost subcommand.
+
+    Reads the wall-clock date exactly once, here, then delegates to
+    _cost_report, which takes `today` as an explicit parameter. The staleness
+    banner must never read the clock itself — otherwise every test asserting
+    cost's stdout would start failing the moment a rate's `expires` date passes.
+    UTC, matching _fmt_date's convention and the UTC-implicit _PRICING_FETCH_DATE
+    and _MODEL_RATE_EXPIRES dates — a local-time date.today() could shift the
+    staleness banner's boundary day by the operator's UTC offset.
+    """
+    _cost_report(args, datetime.now(UTC).date())
+
+
+def _cost_report(args: argparse.Namespace, today: date) -> None:
+    """Corpus-wide dollar-cost report by token class, model ID, and context-at-turn bucket.
+
+    Sidechain (subagent) turns are priced exactly once: iter_sessions is
+    called with include_subagents=True so subagent-dispatched spend is
+    counted toward the total, matching real billing — cmd_audit_routing's
+    Opus-only, main-thread-only scope would silently exclude most of it.
+    """
+    top_n: int = getattr(args, "top", 20) or 20
+    redact: bool = not bool(getattr(args, "no_redact", False))
+
+    since_ts: float | None = None
+    since_label: str = ""
+    since_raw: str | None = getattr(args, "since", None) or None
+    if since_raw:
+        try:
+            days = float(since_raw.rstrip("d"))
+            since_ts = time.time() - days * 86400
+            since_label = since_raw
+        except ValueError:
+            print(f"cost: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
+            sys.exit(1)
+
+    # _resolve_project_scope's fail-closed --this-repo check runs before
+    # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
+    # exits without paying for that scan.
+    session_iter, scope_label = _resolve_project_scope(args, "cost", include_subagents=True)
+    _print_resolved_scope("cost", scope_label)
+
+    redact_map: dict[str, str] = _build_redact_map() if redact else {}
+    session_redact_map: dict[str, str] = {}
+
+    class_totals: dict[str, float] = dict.fromkeys(_TOKEN_CLASSES, 0.0)
+    model_totals: dict[str, float] = defaultdict(float)
+    unpriced_tokens: dict[str, int] = defaultdict(int)
+    bucket_totals: dict[str, float] = defaultdict(float)
+    session_rows: list[dict] = []
+    stale_models: set[str] = set()
+
+    for jsonl, records in session_iter:
+        proj_label = _derive_proj_label(jsonl)
+        session_id = jsonl.stem[:12]
+        if redact:
+            _assign_session_redact_label(session_id, session_redact_map)
+        session_total = 0.0
+
+        for rec in records:
+            if rec.get("type") != "assistant":
+                continue
+            msg = rec.get("message") or {}
+            usage = msg.get("usage")
+            if not usage:
+                continue
+
+            if since_ts is not None:
+                rec_ts = _parse_ts(rec.get("timestamp"))
+                if rec_ts is None or rec_ts < since_ts:
+                    continue
+
+            model = msg.get("model", "")
+            dollars_by_class, context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
+
+            if dollars_by_class is None:
+                unpriced_tokens[model] += turn_unpriced_tokens
+                continue
+
+            if today > _MODEL_RATE_EXPIRES[model]:
+                stale_models.add(model)
+
+            turn_total = 0.0
+            for cls in _TOKEN_CLASSES:
+                class_totals[cls] += dollars_by_class[cls]
+                turn_total += dollars_by_class[cls]
+            model_totals[model] += turn_total
+            bucket_totals[_context_bucket(context_at_turn)] += turn_total
+            session_total += turn_total
+
+        if session_total:
+            session_rows.append({
+                "session_id": session_id,
+                "proj_label": proj_label,
+                "total": session_total,
+            })
+
+    grand_total = sum(class_totals.values())
+
+    title_since = f"last {since_label}" if since_label else "all time"
+    print(f"\n## Cost report ({title_since})\n")
+
+    if stale_models:
+        print(
+            "STALE PRICING — today is past the re-verify-by date for: "
+            + ", ".join(sorted(stale_models))
+            + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing the figures below.\n"
+        )
+
+    print("## Cost by token class\n")
+    print(f"{'Class':<16} {'$':>14} {'Share':>7}")
+    for cls in _TOKEN_CLASSES:
+        val = class_totals[cls]
+        print(f"{cls:<16} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+    print(f"{'total':<16} {grand_total:>14,.2f}")
+
+    print("\n## Cost by model ID\n")
+    print(f"{'Model':<28} {'$':>14} {'Share':>7}")
+    for model, val in sorted(model_totals.items(), key=lambda kv: kv[1], reverse=True):
+        print(f"{model:<28} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+    for model, tok in sorted(unpriced_tokens.items()):
+        print(f"{model:<28} {'unpriced':>14} {tok:>10,} tokens")
+    total_unpriced_tokens = sum(unpriced_tokens.values())
+    print(f"\nUnpriced tokens (unknown model IDs): {total_unpriced_tokens:,}")
+
+    print(
+        f"\n## Cost by context-at-turn bucket (input_tokens + cache_read_input_tokens"
+        f" + ephemeral_1h + ephemeral_5m tokens, {_CONTEXT_BUCKET_THRESHOLD:,} boundary)\n"
+    )
+    print(f"{'Bucket':<8} {'$':>14} {'Share':>7}")
+    for bucket in (_CONTEXT_BUCKET_UNDER, _CONTEXT_BUCKET_OVER):
+        val = bucket_totals.get(bucket, 0.0)
+        print(f"{bucket:<8} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+
+    print(f"\n## Top {top_n} sessions by dollars\n")
+    if not session_rows:
+        print("(no priced turns in range)")
+    else:
+        print(f"{'Session':<16} {'Proj':<24} {'$':>14}")
+        for row in sorted(session_rows, key=lambda r: r["total"], reverse=True)[:top_n]:
+            sid = _redact_session_id(row["session_id"], session_redact_map) if redact else row["session_id"]
+            proj = _redact_proj_label(row["proj_label"], redact_map) if redact else row["proj_label"]
+            print(f"{sid:<16} {proj:<24} {row['total']:>14,.2f}")
 
 
 def cmd_handoff_ratio(args: argparse.Namespace) -> None:
@@ -3389,6 +3707,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_audit.set_defaults(func=cmd_audit_routing)
+
+    p_cost = sub.add_parser(
+        "cost",
+        help=(
+            "Price-weighted dollar cost by token class (cache read/write/output/input), model ID,"
+            " and context-at-turn bucket, plus top-N sessions by dollars. Redacted by default."
+        ),
+    )
+    _add_project_scope_args(p_cost)
+    p_cost.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_cost.add_argument(
+        "--top", type=int, default=20, metavar="N",
+        help="Maximum number of per-session rows in the top-N-by-dollars section (default: 20).",
+    )
+    p_cost.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "Emit real project names and session IDs instead of anonymized labels."
+            " Never publish --no-redact output — see docs/transcript-analysis.md."
+        ),
+    )
+    p_cost.set_defaults(func=cmd_cost)
 
     p_handoff_ratio = sub.add_parser(
         "handoff-ratio",

@@ -868,6 +868,43 @@ _LIB_CREDENTIAL_VALUE_REGEX='(gh[opsur]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_
 # Body class excludes `-` so a greedy match stops at the first END footer rather than consuming past it; [:space:] (not `.`) lets the match span embedded newlines under Oniguruma without a dot-matches-newline flag.
 _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX='-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=[:space:]]*-----END[A-Z ]*PRIVATE KEY-----'
 
+# Six structural-shape detectors for content that can identify a specific
+# machine, person, or private project without naming it directly. Sourced by
+# deny-private-project-refs.sh's always-on structural scan. POSIX ERE, one
+# constant per detector so a match can be reported by label rather than
+# collapsed into one alternation.
+
+# An RFC 1918 private-range (10/8, 172.16/12, 192.168/16) or RFC 1122
+# §3.2.1.3 loopback (127/8) IPv4 literal; a public IPv4 no longer matches.
+# Every octet position is prefixed `0*` to also match zero-padded forms
+# (e.g. `010.000.000.001`).
+_LIB_IPV4_LITERAL_REGEX='(0*10\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|0*172\.0*(1[6-9]|2[0-9]|3[01])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|0*192\.0*168\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|0*127\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))'
+
+# A path segment naming the SSH config directory, or a bare/boundary-
+# delimited `id_<algorithm>` SSH key filename (the four OpenSSH default key
+# algorithms). The config-directory alternative is written as a bracket
+# expression (`[.]`), not `\.`, purely to keep this constant's own source
+# line from containing the literal substring this same detector matches —
+# `\.` and `[.]` are equivalent POSIX ERE for a literal dot, so this changes
+# no matching behavior; without it, committing this line would trip the
+# detector it defines.
+_LIB_SSH_KEY_PATH_REFERENCE_REGEX='([.]ssh/|(^|[^A-Za-z0-9_])id_(rsa|dsa|ecdsa|ed25519)([^A-Za-z0-9_]|$))'
+
+# A /Users/<name> or /home/<name> home-rooted filesystem path.
+_LIB_HOME_ROOTED_PATH_REGEX='(/Users/[A-Za-z0-9_.-]+|/home/[A-Za-z0-9_.-]+)'
+
+# A 32+ contiguous hex-char run, or a UUID-shaped (8-4-4-4-12) hex sequence.
+_LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'
+
+# A hostname ending in a non-public-suffix TLD.
+_LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|local|lan|intranet|private)([^A-Za-z0-9_-]|$)'
+
+# A `#`-prefixed lowercase-hyphenated Slack-channel shape. Excludes
+# all-digit runs so a plain GitHub issue reference (e.g. issue #421) doesn't
+# false-positive; a markdown anchor link fragment shares the same shape as a
+# real channel name and is deliberately still matched.
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
 # security surface, so new entries are added deliberately (a subcommand

@@ -24,9 +24,18 @@
 #   ~/.claude/private-projects.md: a literal, case-insensitive
 #   substring scan against entries in that user-local file. See the
 #   "Deliberate scope" section below for the full design.
-# - Does NOT catch internal tool names, absolute filesystem paths with
-#   private-project names, or structural fingerprints. Those require
-#   review discipline.
+# - Catches six structural shapes, always on (not gated by
+#   private-projects.md): an IPv4 literal, an SSH config-directory or
+#   id_<algorithm> key path reference, a /Users/ or /home/ home-rooted
+#   filesystem path, a 32+ hex-char or UUID-shaped identifier, an
+#   internal-TLD hostname, and a Slack-channel-shaped reference (excluding
+#   bare issue-number refs like issue #421). Regexes live in _lib.sh as
+#   _LIB_IPV4_LITERAL_REGEX and its five siblings; see that file for the
+#   exact TLD list and key-algorithm list.
+# - Does NOT catch internal tool names, a custom-named SSH key with
+#   neither shape above, an internal hostname on a TLD outside the list
+#   in _lib.sh, a short git SHA, or other structural fingerprints. Those
+#   require review discipline.
 # - Scans the full Bash command string so `git commit -m "..."`,
 #   `gh pr create --body "..."`, `gh pr edit N --title "..."`,
 #   `gh api ... -f body="..."`, and heredoc variants all get checked
@@ -92,6 +101,13 @@
 #   `-F`) populates `.git/COMMIT_EDITMSG` interactively after the
 #   PreToolUse hook has already fired. Nothing for the hook to scan
 #   at hook time.
+# - `gh issue create` and `gh issue comment` publish content the same
+#   way `gh pr create`/`gh api` do, but this hook's dispatch
+#   (IS_GIT_COMMIT / IS_GH_PR / IS_GH_API) has no branch recognizing
+#   `gh issue` at all, so content posted that way is never scanned.
+#   A different flag surface (`--body` inline text, not `-f`/`-F`
+#   field-value files) than the three surfaces above, so closing this
+#   is real, separate work, not a one-line fix.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -568,6 +584,83 @@ if [ -n "$HITS" ]; then
   # Report the first few offenders to keep the message short.
   HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
   emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body / gh api body without the tracker ID before retrying.$(chain_split_hint_if_chained "$COMMAND")"
+  exit 0
+fi
+
+# Six structural-shape detectors: IPv4 literal, SSH key path reference,
+# home-rooted path, long hex identifier, internal hostname, Slack-channel
+# shape. Two-phase: a single combined-alternation pre-check below finds out
+# whether any detector matches at all, then (only on a match) the per-detector
+# loop is checked independently (not one alternation) so the deny message can
+# name which detector fired. Regex constants live in _lib.sh so this scan and
+# any future consumer share one definition.
+#
+# Deny message names the detector label only — never the matched substring.
+# Deliberate divergence from the tracker-ID and blocklist branches above,
+# which both echo matched content: a long hex identifier could be a live
+# session ID, and an internal hostname or IPv4 literal is network-recon-value
+# data — echoing either here would persist it into this session's transcript,
+# same reasoning deny-pii-in-commits.sh states for its own label-only rule.
+#
+# Here-string (`<<<`), not `printf | grep`: under this file's `set -uo
+# pipefail`, piping a large SCAN_TARGET into `grep -Eq` risks the first match
+# SIGPIPE-ing the printf side, and pipefail would then report the pipeline's
+# rightmost exit status — misreporting a clean match as a grep error. A
+# here-string has no pipe to SIGPIPE.
+#
+# Fail closed on rc>=2 (a real grep engine error). This is stricter than the
+# tracker-ID scan above, whose `|| true` swallows any grep error and so fails
+# open on one — a pre-existing inconsistency between the two scans, not
+# resolved here.
+# Each label (left of the first `:`) must never itself contain a colon — the
+# split below keys on the first colon only, so a colon in the label would be
+# swallowed into it while the pattern (which may legitimately contain `:` via
+# POSIX bracket classes like `[:alpha:]`) stays intact either way.
+STRUCTURAL_DETECTORS=(
+  "IPv4 literal:${_LIB_IPV4_LITERAL_REGEX}"
+  "SSH key path reference:${_LIB_SSH_KEY_PATH_REFERENCE_REGEX}"
+  "home-rooted path:${_LIB_HOME_ROOTED_PATH_REGEX}"
+  "long hex identifier:${_LIB_LONG_HEX_IDENTIFIER_REGEX}"
+  "internal hostname:${_LIB_INTERNAL_HOSTNAME_REGEX}"
+  "Slack-channel shape:${_LIB_SLACK_CHANNEL_SHAPE_REGEX}"
+)
+
+# Combined alternation of all six patterns above, derived here (not
+# hand-maintained as a second constant) so a future 7th detector added to
+# STRUCTURAL_DETECTORS is automatically covered by the fast path below.
+structural_combined_pattern=""
+for detector_entry in "${STRUCTURAL_DETECTORS[@]}"; do
+  detector_pattern="${detector_entry#*:}"
+  if [ -z "$structural_combined_pattern" ]; then
+    structural_combined_pattern="(${detector_pattern})"
+  else
+    structural_combined_pattern="${structural_combined_pattern}|(${detector_pattern})"
+  fi
+done
+
+# Single fast-path grep across the combined pattern: on the common case (no
+# detector matches), this replaces 6 subprocess spawns with 1; on a match, it
+# falls through to the per-detector loop below unchanged to name the label.
+structural_fastpath_rc=0
+grep -Eq -- "$structural_combined_pattern" <<< "$SCAN_TARGET" || structural_fastpath_rc=$?
+if [ "$structural_fastpath_rc" -eq 0 ]; then
+  for detector_entry in "${STRUCTURAL_DETECTORS[@]}"; do
+    detector_label="${detector_entry%%:*}"
+    detector_pattern="${detector_entry#*:}"
+    detector_rc=0
+    grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET" || detector_rc=$?
+    if [ "$detector_rc" -eq 0 ]; then
+      emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
+      exit 0
+    elif [ "$detector_rc" -ge 2 ]; then
+      emit_deny "Blocked by redaction gate: the '${detector_label}' detector failed to scan the gated content (grep exit ${detector_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
+      exit 0
+    fi
+  done
+  emit_deny "Blocked by redaction gate: the structural-detector fast-path pre-check matched, but no individual detector in the follow-up loop confirmed which one — failing closed on this pattern-composition mismatch between the combined and per-detector regexes."
+  exit 0
+elif [ "$structural_fastpath_rc" -ge 2 ]; then
+  emit_deny "Blocked by redaction gate: the structural-detector fast-path pre-check failed to scan the gated content (grep exit ${structural_fastpath_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
   exit 0
 fi
 
