@@ -2,7 +2,7 @@
 
 ## What the hook does
 
-`nudge-handoff-near-context-cap.sh` is a `UserPromptSubmit` hook that reads the latest assistant usage block from the session transcript on every user turn, sums the four token fields (`cache_read_input_tokens`, `cache_creation_input_tokens`, `input_tokens`, `output_tokens`), resolves the record's `.message.model` field to a context window, and emits a one-shot `hookSpecificOutput.additionalContext` JSON payload when the total crosses 60% of that window:
+`nudge-handoff-near-context-cap.sh` is registered on both `UserPromptSubmit` and `Stop`. It reads the latest assistant usage block from the session transcript on every trigger, sums the four token fields (`cache_read_input_tokens`, `cache_creation_input_tokens`, `input_tokens`, `output_tokens`), resolves the record's `.message.model` field to a context window, and emits a one-shot `hookSpecificOutput.additionalContext` JSON payload when the total crosses 60% of that window. The `Stop` registration closes the gap where a session crosses the threshold on its final assistant turn, with no further user prompt to trigger the `UserPromptSubmit` check:
 
 | Window | Threshold (60%) | Models |
 |---|---|---|
@@ -33,8 +33,8 @@ The hook appends one line per significant event to `~/.claude/.handoff-nudge.log
 
 | Line prefix | Meaning |
 |---|---|
-| `nudged session=<id> est=<n> model=<id> window=<n>` | Threshold crossed for the first time this session; nudge emitted |
-| `schema-drift session=<id>` | Usage block was found but all four token fields were 0 or null, suggesting the transcript schema changed; see [Known limitations](#known-limitations) |
+| `nudged session=<id> est=<n> model=<id> window=<n> event=<UserPromptSubmit\|Stop>` | Threshold crossed for the first time this session; nudge emitted |
+| `schema-drift session=<id> event=<UserPromptSubmit\|Stop>` | Usage block was found but all four token fields were 0 or null, suggesting the transcript schema changed; see [Known limitations](#known-limitations) |
 
 The log is append-only and not rotated automatically. Trim it periodically if disk space is a concern: `> ~/.claude/.handoff-nudge.log`.
 

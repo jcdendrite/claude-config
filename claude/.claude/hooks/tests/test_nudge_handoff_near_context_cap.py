@@ -1,6 +1,6 @@
 """Tests for nudge-handoff-near-context-cap.sh.
 
-The hook is a UserPromptSubmit hook that emits a one-shot
+The hook is a UserPromptSubmit and Stop hook that emits a one-shot
 hookSpecificOutput.additionalContext JSON payload when the estimated carried
 token count crosses 60% of the resolved model's context window (200k models:
 120 000; 1M models: 600 000; unrecognized/missing model IDs default to the 1M
@@ -28,6 +28,12 @@ NUDGE_HOOK = HOOKS_DIR / "nudge-handoff-near-context-cap.sh"
 # ---------------------------------------------------------------------------
 
 SESSION_ID = "test-session-nudge-001"
+
+# Both events the hook is registered under; used only where the assertions
+# differ per event (the emitted hookEventName and event= log field) — gate
+# logic upstream of the event read (kill-switch, subagent, plan-mode,
+# already-fired) doesn't branch on it, so those tests stay unparametrized.
+HOOK_EVENT_NAMES = ["UserPromptSubmit", "Stop"]
 
 # Mirrors the hook's own window table so no test hand-computes a threshold.
 LARGE_WINDOW = 1_000_000
@@ -110,10 +116,15 @@ def _run_hook(payload: dict, tmp_path: Path) -> subprocess.CompletedProcess:
     )
 
 
-def _base_payload(transcript_path: Path, session_id: str = SESSION_ID) -> dict:
+def _base_payload(
+    transcript_path: Path,
+    session_id: str = SESSION_ID,
+    hook_event_name: str = "UserPromptSubmit",
+) -> dict:
     return {
         "session_id": session_id,
         "transcript_path": str(transcript_path),
+        "hook_event_name": hook_event_name,
     }
 
 
@@ -146,23 +157,26 @@ class TestNudgeHandoffNearContextCap:
         # Below threshold: hook exits silently with no log output.
         assert not _log_path(tmp_path).exists()
 
-    def test_above_threshold_fires_nudge(self, tmp_path):
+    @pytest.mark.parametrize("hook_event_name", HOOK_EVENT_NAMES)
+    def test_above_threshold_fires_nudge(self, tmp_path, hook_event_name):
         """Token sum >= threshold, spread across all four usage fields, fires: JSON emitted, marker created, log has 'nudged'."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(
             transcript,
             [_assistant_record(cache_read=580000, cache_create=20000, input_tok=30000, output_tok=20000)],
         )
-        result = _run_hook(_base_payload(transcript), tmp_path)
+        result = _run_hook(_base_payload(transcript, hook_event_name=hook_event_name), tmp_path)
         assert result.returncode == 0
         assert result.stdout.strip() != ""
         payload = json.loads(result.stdout)
         ctx = payload["hookSpecificOutput"]["additionalContext"]
         assert "handoff" in ctx.lower() or "/handoff" in ctx
+        assert payload["hookSpecificOutput"]["hookEventName"] == hook_event_name
         assert _marker_path(tmp_path).exists()
-        log = _log_path(tmp_path)
-        assert "nudged" in log.read_text()
-        assert f"est={ABOVE_LARGE}" in log.read_text()
+        log_text = _log_path(tmp_path).read_text()
+        assert "nudged" in log_text
+        assert f"est={ABOVE_LARGE}" in log_text
+        assert f"event={hook_event_name}" in log_text
 
     def test_already_fired_is_silent(self, tmp_path):
         """When the per-session marker already exists, subsequent calls produce no stdout."""
@@ -252,17 +266,20 @@ class TestNudgeHandoffNearContextCap:
         payload = json.loads(result.stdout)
         assert "additionalContext" in payload["hookSpecificOutput"]
 
-    def test_schema_drift_logs_and_exits(self, tmp_path):
+    @pytest.mark.parametrize("hook_event_name", HOOK_EVENT_NAMES)
+    def test_schema_drift_logs_and_exits(self, tmp_path, hook_event_name):
         """Usage block present with all token fields 0/null: log schema-drift, exit 0, no nudge marker."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_assistant_record()])  # all fields default to 0
-        result = _run_hook(_base_payload(transcript), tmp_path)
+        result = _run_hook(_base_payload(transcript, hook_event_name=hook_event_name), tmp_path)
         assert result.returncode == 0
         assert result.stdout.strip() == ""
         assert not _marker_path(tmp_path).exists()
         log = _log_path(tmp_path)
         assert log.exists()
-        assert "schema-drift" in log.read_text()
+        log_text = log.read_text()
+        assert "schema-drift" in log_text
+        assert f"event={hook_event_name}" in log_text
         assert _drift_marker_path(tmp_path).exists()
 
     def test_schema_drift_only_logs_once_per_session(self, tmp_path):
@@ -274,6 +291,22 @@ class TestNudgeHandoffNearContextCap:
         log = _log_path(tmp_path)
         drift_lines = [ln for ln in log.read_text().splitlines() if "schema-drift" in ln]
         assert len(drift_lines) == 1
+
+    def test_missing_hook_event_name_falls_back_to_user_prompt_submit(self, tmp_path):
+        """A payload with no hook_event_name key at all defaults to 'UserPromptSubmit',
+        matching the hook's pre-Stop-registration behavior every existing caller relied on."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        payload = {
+            "session_id": SESSION_ID,
+            "transcript_path": str(transcript),
+        }
+        result = _run_hook(payload, tmp_path)
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+        log_text = _log_path(tmp_path).read_text()
+        assert "event=UserPromptSubmit" in log_text
 
     def test_malformed_jsonl_is_silent(self, tmp_path):
         """Transcript file with invalid JSON lines exits silently without crashing."""

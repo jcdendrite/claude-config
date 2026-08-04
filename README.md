@@ -163,8 +163,8 @@ flowchart LR
 | `cleanup-commit-stall-marker.sh` | — (SessionEnd, no gate) | Removes the per-session state file its paired Stop hook wrote; also sweeps entries older than 30 days |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
 | `cleanup-session-id.sh` | — (SessionEnd, no gate) | Removes the session-id lookup file its paired SessionStart hook wrote |
-| `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
-| `cleanup-handoff-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session handoff-nudge marker files written by its paired UserPromptSubmit hook |
+| `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
+| `cleanup-handoff-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session handoff-nudge marker files written by its paired UserPromptSubmit/Stop hook |
 | `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
 | `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
 | `cleanup-worktree-anchor-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session worktree-anchor marker its paired UserPromptSubmit hook wrote |
