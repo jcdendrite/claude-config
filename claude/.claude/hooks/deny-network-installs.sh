@@ -1,61 +1,24 @@
 #!/bin/bash
 # hook-class: gate
-# Gate: deny Bash commands that install a named software package or hand
-# downloaded content to a shell/interpreter, so an agent cannot bring new
-# software onto the machine on its own initiative. Always on, no arming
-# file, no bypass valve.
-#
-# Matches on token PRESENCE (_lib_fragment_has_token), not on resolving
-# "the" leading command: presence is robust to any wrapper (sudo, env
-# VAR=1, timeout N, nohup) since none of those remove a token from the
-# fragment string. Position-sensitive resolution (_lib_fragment_command_word
-# and its wrapper _lib_fragment_invokes_tool) is not used here because their
-# runner-skip list treats pnpm/yarn/bun as wrappers, resolving `pnpm add
-# lodash` to the command word `add` rather than `pnpm` (see
-# docs/security-hardening.md for the accepted residuals this trade produces).
-#
-# Named false-allows (accepted, not chased further):
-#   - `pip install -e <VCS-URL>` — the editable-install marker's value is
-#     always skipped, whether it's a local path or a fetchable URL.
-#   - A path-prefixed manager invocation (`/opt/homebrew/bin/npm install x`)
-#     — token-presence matching never sees `npm` inside the longer token.
-#   - Bare `npx`/`bunx`/`uvx`/`pipx` with no `-y`/`--yes` — disambiguating
-#     "runs an already-installed local tool" from "fetches a new one" needs
-#     lockfile/package.json awareness this hook does not have.
-#
-# Named over-denies (accepted, not chased further):
-#   - An unrecognized value-taking flag not in the restore-marker set
-#     (`--registry <url>`, `--prefix <path>`) has its value misread as a
-#     leftover token.
-#   - A text argument merely containing manager+verb tokens (a grep pattern,
-#     a commit message) denies uniformly regardless of quote placement —
-#     see docs/security-hardening.md for the quote-stripping mechanism.
-#     Workaround is the `!` shell escape.
-#   - curl/wget co-occurring with a shell/interpreter anywhere in one Bash
-#     call denies, regardless of which operator actually connects them
-#     (`&&`, `;`, a pipe, or `bash -c "$(...)"`'s substitution form) — not
-#     only a literal download-then-run pipeline.
-#
-# See docs/security-hardening.md for the full rationale and residuals list.
+# Gate: deny Bash commands that install a named package or hand downloaded
+# content to a shell/interpreter. Always on, no arming file, no bypass valve.
+# Matches on token presence, not on resolving the leading command through
+# wrappers, since position-based resolution has gaps this trade avoids. Named
+# residuals, over-denies, and full rationale: docs/security-hardening.md.
 #
 # Fail-closed on unparseable hook input.
 
 set -uo pipefail
 
-# Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
-# Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
-# source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
-# for why the full jq-encode-or-hard-block body lives there, not here.
+# Bootstrap so a failed source of _lib.sh can still deny; re-pointed at
+# _lib_emit_deny once sourced — see _lib.sh for the full contract.
 emit_deny() {
   printf '%s\n' "$1" >&2
   exit 2
 }
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  # False positive: shellcheck's static pass doesn't model this stub-then-
-  # override redefinition, which resolves correctly at call time (see
-  # _lib.sh's _lib_emit_deny comment).
-  # shellcheck disable=SC2218
+  # shellcheck disable=SC2218 # false positive: this stub-then-override redefinition resolves correctly at call time.
   emit_deny "Blocked by network-install gate: could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
@@ -67,30 +30,18 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Quote-stripped before matching so an adjacent-quote split (`"npm" install
-# lodash` runs identically to `npm install lodash`) can't slip a manager or
-# verb token past has-token's space/start-boundary check — same rationale
-# and helper as deny-credential-bash-reads.sh's COMMAND_UNQUOTED.
+# Quote-stripped so an adjacent-quote split (`"npm" install x`) can't dodge
+# has-token's boundary check — same helper as deny-credential-bash-reads.sh.
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 
 _INSTALL_ALTERNATIVE="If this install is intentional, ask the user to run it themselves via the ! shell escape, which runs outside the tool-call path this hook gates."
 
-# Restore-marker flags for the npm/pnpm/yarn/bun/pip/pip3/uv-pip family.
-# Value-taking markers consume the token immediately following them;
-# flag-only markers need no special handling beyond step 4's blanket
-# "every token starting with -" removal.
 _INSTALL_VALUE_TAKING_MARKERS="-r --requirement -e --editable"
 
-# Scans $1 (a fragment already confirmed to have-token both a family's
-# manager name(s) and its install verb). $2 is the verb token to drop (its
-# first occurrence); the remaining args are manager tokens to drop (their
-# first occurrence each — one word for npm/pnpm/yarn/bun/pip/pip3, two for
-# the uv+pip family). Returns 0 (true) iff, after removing the manager
-# token(s), the verb token, every VAR=value assignment, every pure-wrapper
-# token (sudo/doas/env/command/time/nice/nohup/timeout, plus timeout's
-# numeric duration argument), every flag (any token starting with -), and a
-# value-taking restore marker's value token, at least one token survives —
-# meaning this is a named-package install, not a bare restore.
+# _install_has_leftover_token FRAGMENT VERB MANAGER... — true iff FRAGMENT,
+# minus VERB, each MANAGER, every flag, and a value-taking marker's value,
+# still has a token left (a named package, not a bare restore). See
+# docs/security-hardening.md for the rule.
 _install_has_leftover_token() {
   local fragment="$1" verb="$2"
   shift 2
@@ -161,13 +112,9 @@ _install_check_npm_family() {
   return 1
 }
 
-# pip/pip3/uv-pip: install verb only, one or two manager tokens. Manager-set
-# selection is mutually exclusive (uv present -> the uv+pip pair, else pip3,
-# else pip alone) rather than trying each variant independently — trying
-# bare "pip" against a fragment that also has-tokens "uv" previously denied
-# `uv pip install -r requirements.txt` (a legitimate restore), because "uv"
-# read as an unrecognized leftover token under a removal set that never
-# included it.
+# Manager-set selection is mutually exclusive (uv -> the uv+pip pair, else
+# pip3, else pip alone): trying bare "pip" against a fragment that also has
+# "uv" reads "uv" as a leftover token and false-denies a legitimate restore.
 _install_check_pip_family() {
   local fragment="$1"
   local -a mgr_words
@@ -241,11 +188,8 @@ if [ -n "$SAW_DOWNLOADER_FRAGMENT" ] && [ -n "$SAW_INTERPRETER_FRAGMENT" ]; then
   exit 0
 fi
 
-# Process substitution (`bash <(curl ...)`) is not decomposed by
-# _lib_split_fragments, so it needs a direct substring check against the
-# raw command text rather than the fragment loop above. Best-effort
-# heuristic, not a parser — matches how _LIB_CREDENTIAL_PATH_REGEX is
-# itself substring-based rather than a full shell grammar.
+# Process substitution isn't decomposed by _lib_split_fragments, so it needs
+# a direct substring check — a heuristic, not a parser.
 case "$COMMAND_UNQUOTED" in
   *'<(curl'*|*'<(wget'*)
     emit_deny "Blocked by network-install gate: this command feeds a curl/wget process substitution directly to a shell — the same download-and-execute pattern as a piped installer. $_INSTALL_ALTERNATIVE"

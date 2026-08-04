@@ -1,51 +1,32 @@
 #!/bin/bash
 # hook-class: gate
 # Gate: WebFetch to a domain not on ~/.claude/webfetch-allowed-domains.md
-# prompts in default/acceptEdits/plan mode and denies outright in
-# auto/bypassPermissions/dontAsk — a hook-returned "ask" forcing a prompt
-# under auto/bypass is undocumented, so this hook uses deny (guaranteed
-# everywhere) rather than assume ask holds there too. Absent, empty, or
-# unrecognized permission_mode fails closed to deny, never falls through
-# to ask. Always on, no arming file, no bypass valve.
-#
-# File-absent means the SAME policy as file-present-but-empty (every domain
-# treated as unlisted) — deliberately inverting _lib_config_lines's usual
-# "absent means no restriction" contract, since this file grants reach
-# rather than widening a deny. See docs/security-hardening.md.
-#
-# Host extraction shells out to python3's urllib.parse rather than a
-# hand-rolled regex (this repo's standard-library-first rule for non-trivial
-# domains). python3 is treated as this hook's own hard dependency: absent or
-# hung (past the 5s _lib_capped timeout) denies naming python3, rather than
-# silently degrading.
+# asks in default/acceptEdits/plan mode and denies in auto/bypassPermissions/
+# dontAsk (a hook-returned ask isn't documented to hold there). File-absent
+# means the same as file-empty — every domain unlisted, inverting
+# _lib_config_lines's usual contract since this file grants reach. Host
+# extraction shells to python3's urllib.parse, not a hand-rolled regex; an
+# absent or hung python3 denies naming it. Full rationale: docs/security-hardening.md.
 #
 # Fail-closed on unparseable hook input.
 
 set -uo pipefail
 
-# Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
-# Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
-# source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
-# for why the full jq-encode-or-hard-block body lives there, not here.
+# Bootstrap so a failed source of _lib.sh can still deny; re-pointed at
+# _lib_emit_deny once sourced — see _lib.sh for the full contract.
 emit_deny() {
   printf '%s\n' "$1" >&2
   exit 2
 }
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  # False positive: shellcheck's static pass doesn't model this stub-then-
-  # override redefinition, which resolves correctly at call time (see
-  # _lib.sh's _lib_emit_deny comment).
-  # shellcheck disable=SC2218
+  # shellcheck disable=SC2218 # false positive: this stub-then-override redefinition resolves correctly at call time.
   emit_deny "Blocked by WebFetch domain gate: could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-# Sibling to _lib_emit_deny for the "ask" permissionDecision. Kept local to
-# this hook rather than promoted into _lib.sh: this is the only consumer
-# today, and a second one is cheap to promote it for later. Same jq-encode-
-# or-hard-block shape; on jq failure this falls back to deny (not silent
-# allow), the safe direction when "ask" itself cannot be encoded.
+# Sibling to _lib_emit_deny for "ask" — kept local since this is the only
+# consumer; falls back to deny (not allow) when jq can't encode the reason.
 _webfetch_emit_ask() {
   local reason="$1"
   local reason_json
@@ -74,10 +55,8 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 0
 fi
 
-# urlsplit(...).hostname, not a hand-rolled regex, so a userinfo-prefixed
-# authority (https://github.com@evil.com/x) resolves to evil.com rather
-# than whatever substring precedes the @. Timeout-wrapped: a hung
-# interpreter must deny naming python3, not be misread as an empty host.
+# urlsplit resolves a userinfo-prefixed authority (user@evil.com) to the
+# real host, not the substring before the @.
 HOST=$(_lib_capped python3 -c '
 import sys
 import urllib.parse
