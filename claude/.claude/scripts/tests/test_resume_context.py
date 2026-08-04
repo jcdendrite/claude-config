@@ -18,6 +18,11 @@ _RECORDER_STUB = """#!/usr/bin/env bash
 printf '%s\\n' "$@" > "{recorder}"
 """
 
+_CWD_RECORDER_STUB = """#!/usr/bin/env bash
+pwd > "{cwd_recorder}"
+printf '%s\\n' "$@" > "{recorder}"
+"""
+
 
 def _install_recorder(tmp_path: Path) -> tuple[Path, Path]:
     """Write a launcher stub that records its argv, return (stub_path, recorder_path)."""
@@ -28,7 +33,22 @@ def _install_recorder(tmp_path: Path) -> tuple[Path, Path]:
     return stub, recorder
 
 
-def _run(args: list[str], env_extra: dict | None = None) -> subprocess.CompletedProcess:
+def _install_cwd_recorder(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Write a launcher stub that records both its argv and its cwd (via
+    `pwd`, read at exec time — the only way to observe where --cwd actually
+    landed the launched process). Returns (stub_path, recorder_path,
+    cwd_recorder_path)."""
+    recorder = tmp_path / "recorder.txt"
+    cwd_recorder = tmp_path / "cwd-recorder.txt"
+    stub = tmp_path / "fake-launcher"
+    stub.write_text(_CWD_RECORDER_STUB.format(recorder=recorder, cwd_recorder=cwd_recorder))
+    stub.chmod(0o755)
+    return stub, recorder, cwd_recorder
+
+
+def _run(
+    args: list[str], env_extra: dict | None = None, cwd: Path | None = None
+) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     if env_extra:
         env.update(env_extra)
@@ -37,6 +57,7 @@ def _run(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
         capture_output=True,
         text=True,
         env=env,
+        cwd=cwd,
         check=False,
     )
 
@@ -163,6 +184,164 @@ class TestLaunchMode:
         assert result.returncode != 0
         assert result.stderr.strip()
         assert src.exists(), "source must not be moved when the launcher can't be resolved"
+
+
+class TestCwdFlag:
+    def test_cwd_flag_launches_from_target_directory(self, tmp_path: Path) -> None:
+        stub, recorder, cwd_recorder = _install_cwd_recorder(tmp_path)
+        target_dir = tmp_path / "worktree"
+        target_dir.mkdir()
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--cwd", str(target_dir), str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert cwd_recorder.exists()
+        assert os.path.samefile(cwd_recorder.read_text().strip(), target_dir)
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        recorded_args = recorder.read_text().splitlines()
+        assert recorded_args[0] == "--append-system-prompt-file"
+        assert recorded_args[1] == str(moved[0]), (
+            "the launched process must still receive DEST's original absolute path — "
+            "the cd into --cwd happens after DEST is resolved and must not affect it"
+        )
+
+    def test_cwd_flag_relative_path_resolves_against_invoker_cwd(self, tmp_path: Path) -> None:
+        """`resume-context.sh:214-216` asserts DEST/SRC resolution is unaffected
+        by the --cwd `cd` because both are already resolved before it runs — a
+        relative --cwd argument, resolved against the invoker's original cwd
+        (not TMPDIR_ROOT or any other directory), is the case that would catch
+        a future reordering of that `cd` before DEST/SRC resolution."""
+        stub, recorder, cwd_recorder = _install_cwd_recorder(tmp_path)
+        target_dir = tmp_path / "worktree"
+        target_dir.mkdir()
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--cwd", "worktree", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert os.path.samefile(cwd_recorder.read_text().strip(), target_dir)
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        recorded_args = recorder.read_text().splitlines()
+        assert recorded_args[1] == str(moved[0])
+
+    def test_cwd_flag_before_consume_only_is_rejected(self, tmp_path: Path) -> None:
+        """--cwd only matters for launch mode; combined with --consume-only
+        (which never launches) it would silently do nothing, so reject the
+        combination explicitly rather than accept a flag that has no effect."""
+        stub, recorder = _install_recorder(tmp_path)
+        target_dir = tmp_path / "worktree"
+        target_dir.mkdir()
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+        result = _run(
+            ["--cwd", str(target_dir), "--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert result.stderr.strip()
+        assert src.exists(), "source must not be moved when the flag combination is rejected"
+        assert not recorder.exists()
+
+    def test_consume_only_before_cwd_is_also_rejected(self, tmp_path: Path) -> None:
+        """The flag loop must reject the combination regardless of the order
+        the two flags are given in."""
+        stub, recorder = _install_recorder(tmp_path)
+        target_dir = tmp_path / "worktree"
+        target_dir.mkdir()
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+        result = _run(
+            ["--consume-only", "--cwd", str(target_dir), str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert result.stderr.strip()
+        assert src.exists()
+        assert not recorder.exists()
+
+    def test_cwd_flag_rejects_a_file_target_before_any_move(self, tmp_path: Path) -> None:
+        """`[ ! -d "$LAUNCH_CWD" ]` rejects a plain file the same way it
+        rejects a missing path — pin this so a future validation change
+        (e.g. `-d` swapped for `-e`) can't silently start accepting file
+        targets and pass every other --cwd test."""
+        stub, recorder = _install_recorder(tmp_path)
+        file_target = tmp_path / "not-a-directory.txt"
+        file_target.write_text("i am a file\n")
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--cwd", str(file_target), str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert "not a directory" in result.stderr
+        assert src.exists(), "source must not be moved when --cwd fails validation"
+        assert not recorder.exists()
+
+    def test_cwd_flag_rejects_nonexistent_directory_before_any_move(self, tmp_path: Path) -> None:
+        stub, recorder = _install_recorder(tmp_path)
+        missing_dir = tmp_path / "does-not-exist"
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--cwd", str(missing_dir), str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert result.stderr.strip()
+        assert src.exists(), "source must not be moved when --cwd fails validation"
+        assert not recorder.exists()
+
+    def test_cwd_flag_missing_value_errors_without_side_effects(self, tmp_path: Path) -> None:
+        """`--cwd` as the last token, with no directory argument following it."""
+        stub, recorder = _install_recorder(tmp_path)
+        result = _run(
+            ["--cwd"],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert "--cwd requires a directory argument" in result.stderr
+        assert not recorder.exists()
+
+    def test_unrecognized_flag_errors_without_side_effects(self, tmp_path: Path) -> None:
+        """An unrecognized `-*` token must hit the usage error, not fall
+        through and get misparsed as SRC."""
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--bogus-flag", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert result.stderr.strip()
+        assert src.exists()
+        assert not recorder.exists()
+
+    def test_double_dash_terminator_allows_a_dash_prefixed_source_path(self, tmp_path: Path) -> None:
+        """`--` stops flag parsing so a continuity file whose name happens to
+        start with `-` is still accepted as SRC rather than rejected as an
+        unrecognized flag. Uses a relative path so the argument string
+        itself starts with `-` — an absolute path never would."""
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "-oddly-named-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--", "-oddly-named-handoff.md"],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not src.exists()
+        assert recorder.exists()
 
 
 class TestConsumeOnlyMode:

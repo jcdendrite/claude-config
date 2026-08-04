@@ -93,10 +93,13 @@ Steps from §6 that require explicit in-session confirmation from the engineer b
 Adjacent work that must NOT be bundled into this change. Name the temptation explicitly — refactors in the same area, parallel cleanups, "while we're here" additions — so the reader knows what to leave alone.
 
 ## §7.5 Resume command
-If §3 named a worktree, `cd <worktree path> && resume-context ~/.claude/briefs/<slug>-task.md`; otherwise (work happened in the main checkout) `resume-context ~/.claude/briefs/<slug>-task.md` alone. Moves the file to a fresh
-temp path and launches a new session with it loaded, so picking up the brief
-doesn't depend on the fresh session remembering to read or delete the file.
-Can be aliased for convenience.
+If §3 named a worktree, `resume-context --cwd <worktree path> ~/.claude/briefs/<slug>-task.md`; otherwise (work happened in the main checkout) `resume-context ~/.claude/briefs/<slug>-task.md` alone. `--cwd` makes the launched
+session start in that directory regardless of where the resume command is
+actually run from — do not use a `cd <path> &&` prefix instead, which only
+works if the invoker happens to already be positioned to run it. Moves the
+file to a fresh temp path and launches a new session with it loaded, so
+picking up the brief doesn't depend on the fresh session remembering to read
+or delete the file. Can be aliased for convenience.
 
 ## Cold-start readability rules
 

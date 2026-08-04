@@ -7,13 +7,25 @@
 # files; this script is the mechanical, no-model-judgment consume+load step.
 #
 # Usage:
-#   resume-context.sh <continuity-file-path>
+#   resume-context.sh [--cwd <dir>] <continuity-file-path>
 #   resume-context.sh --consume-only <continuity-file-path>
 #
 # --consume-only performs the move only, without resolving or launching a
 # launcher. Used by consume-durable-continuity-file-on-read.sh so the same
 # move logic is never duplicated between the explicit-resume path and the
 # same-session (`/clear` + manual Read) resume path.
+#
+# --cwd <dir> launches the new session with <dir> as its working directory
+# instead of inheriting the invoking shell's. handoff/SKILL.md §7 and
+# brief/SKILL.md §7.5 write this flag into the resume command when the
+# continuity file names a worktree, so the target directory travels with the
+# command itself rather than depending on the invoker also running a
+# separate `cd` first — the failure mode this closes is a resume launched
+# from the wrong directory (main checkout, `~`, a different worktree)
+# silently landing set-session-title-from-branch.sh on the wrong branch or
+# no branch at all. Rejected together with --consume-only, since that mode
+# never launches a session for a cwd to apply to. Validated as an existing
+# directory before any file is moved.
 #
 # Env overrides:
 #   RESUME_CONTEXT_LAUNCHER  command to exec instead of `claude`. Used by tests
@@ -77,7 +89,8 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: resume-context.sh [--consume-only] <continuity-file-path>
+Usage: resume-context.sh [--cwd <dir>] <continuity-file-path>
+       resume-context.sh --consume-only <continuity-file-path>
 EOF
 }
 
@@ -93,10 +106,34 @@ print_recovery_hint() {
 }
 
 CONSUME_ONLY=0
-if [ "${1:-}" = "--consume-only" ]; then
-  CONSUME_ONLY=1
-  shift
-fi
+LAUNCH_CWD=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --consume-only)
+      CONSUME_ONLY=1
+      shift
+      ;;
+    --cwd)
+      if [ "$#" -lt 2 ]; then
+        printf 'resume-context.sh: --cwd requires a directory argument\n' >&2
+        exit 1
+      fi
+      LAUNCH_CWD=$2
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      usage
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [ "$#" -ne 1 ]; then
   usage
@@ -104,6 +141,16 @@ if [ "$#" -ne 1 ]; then
 fi
 
 SRC=$1
+
+if [ -n "$LAUNCH_CWD" ] && [ "$CONSUME_ONLY" -eq 1 ]; then
+  printf 'resume-context.sh: --cwd is not valid with --consume-only (that mode never launches)\n' >&2
+  exit 1
+fi
+
+if [ -n "$LAUNCH_CWD" ] && [ ! -d "$LAUNCH_CWD" ]; then
+  printf 'resume-context.sh: --cwd target is not a directory: %s\n' "$LAUNCH_CWD" >&2
+  exit 1
+fi
 
 # mktemp's bare positional TEMPLATE form (no -p/--tmpdir flag) is the base
 # invocation documented by both GNU coreutils and BSD/macOS mktemp(1) — no
@@ -163,5 +210,15 @@ fi
 
 printf 'resume-context.sh: moved %s -> %s\n' "$SRC" "$DEST" >&2
 print_recovery_hint "$DEST"
+
+# Applied after the move, not before: SRC/DEST are already resolved (SRC may
+# have been relative to the pre-cd cwd), and DEST is always absolute (mktemp
+# against $TMPDIR_ROOT), so changing directory here cannot affect either.
+if [ -n "$LAUNCH_CWD" ]; then
+  cd -- "$LAUNCH_CWD" || {
+    printf 'resume-context.sh: failed to cd into %s\n' "$LAUNCH_CWD" >&2
+    exit 1
+  }
+fi
 
 exec "$LAUNCHER" --append-system-prompt-file "$DEST" "Continue from the handoff/brief file loaded into your system prompt. If it contains a task-list resume directive, track its pending and in-progress items from the file (not from memory) as you resume — using your session's task-list tool if one is available, otherwise inline. A missing task-list tool is not a blocker."
