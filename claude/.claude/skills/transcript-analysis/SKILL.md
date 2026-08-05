@@ -20,6 +20,8 @@ The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly
 | Where did a human push back on an AI review's output? | `judgment-pair` |
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | Which lever costs the most in actual dollars — cache read/write, output, or input? | `cost --since 30d` |
+| Are reviewer dispatches producing real findings or mostly zero-finding passes? | `reviewer-yield --since 30d --redact` |
+| Is spend climbing week over week? | `cost-trend` |
 | What fraction of Opus code-read turns are clearly dispatchable vs. read-then-edit loops? | `audit-routing-shape --since 35d` |
 | Pull a random sample of Opus code-read turns for delegation judgment curation | `audit-routing-samples --since 35d --sample 50 --seed 1` |
 
