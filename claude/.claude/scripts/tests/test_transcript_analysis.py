@@ -261,6 +261,31 @@ class TestHelpers:
             _mod._iso_date("garbage")
 
 
+class TestParseSinceNdArg:
+    """The shared --since Nd parser behind cmd_audit_routing, _cost_report,
+    cmd_audit_routing_shape, and cmd_audit_routing_samples."""
+
+    def test_valid_nd_value_returns_timestamp_and_raw_string(self):
+        since_ts, since_raw = _mod._parse_since_nd_arg(
+            argparse.Namespace(since="1d"), "cost"
+        )
+        assert since_raw == "1d"
+        assert since_ts == pytest.approx(time.time() - 86400, abs=1)
+
+    def test_absent_since_returns_none_for_both(self):
+        since_ts, since_raw = _mod._parse_since_nd_arg(
+            argparse.Namespace(since=None), "cost"
+        )
+        assert since_ts is None
+        assert since_raw is None
+
+    def test_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._parse_since_nd_arg(argparse.Namespace(since="not-a-window"), "cost")
+        assert exc_info.value.code == 1
+        assert "cost: --since: expected Nd like '35d'" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # fail-seq regexes
 # ---------------------------------------------------------------------------
@@ -2083,6 +2108,12 @@ class TestAuditRouting:
         # Turn with no timestamp is excluded by the --since filter
         assert _extract_corpus_class_tokens(out, "code-write") == 0
 
+    def test_since_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
+        """A malformed --since value fails closed with the audit-routing-specific error prefix."""
+        with pytest.raises(SystemExit):
+            _mod.cmd_audit_routing(_audit_routing_args(since="not-a-window"))
+        assert "audit-routing: --since: expected Nd like '35d'" in capsys.readouterr().err
+
 
 # ---------------------------------------------------------------------------
 # cost
@@ -2357,11 +2388,11 @@ class TestCost:
         cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
         assert cols["$"] == "4.00"  # only the 2,000,000-input-token turn is in-window
 
-    def test_since_malformed_value_exits_nonzero(self, fake_projects, capsys):
-        """A malformed --since value (not 'Nd') fails closed with a usage message, not a traceback."""
+    def test_since_malformed_value_exits_nonzero_with_subcommand_in_message(self, fake_projects, capsys):
+        """A malformed --since value fails closed with the cost-specific error prefix."""
         with pytest.raises(SystemExit):
             _mod._cost_report(_cost_args(since="not-a-window"), date(2026, 8, 2))
-        assert "expected Nd like '35d'" in capsys.readouterr().err
+        assert "cost: --since: expected Nd like '35d'" in capsys.readouterr().err
 
     def test_top_n_truncates_session_rows(self, fake_projects, capsys):
         """--top N keeps only the N highest-dollar sessions; excluded sessions don't appear."""
@@ -3005,6 +3036,12 @@ class TestAuditRoutingShape:
         out = capsys.readouterr().out
         assert "Dispatchable share: —" in out
 
+    def test_since_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
+        """A malformed --since value fails closed with the audit-routing-shape-specific error prefix."""
+        with pytest.raises(SystemExit):
+            _mod.cmd_audit_routing_shape(_audit_routing_shape_args(since="not-a-window"))
+        assert "audit-routing-shape: --since: expected Nd like '35d'" in capsys.readouterr().err
+
 
 # ---------------------------------------------------------------------------
 # audit-routing-samples
@@ -3603,6 +3640,12 @@ class TestAuditRoutingSamples:
             "assistant_tool_call", "next_assistant_action", "next_turn_excerpt",
             "recent_assistant_text", "recent_tool_trail",
         }
+
+    def test_since_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
+        """A malformed --since value fails closed with the audit-routing-samples-specific error prefix."""
+        with pytest.raises(SystemExit):
+            _mod.cmd_audit_routing_samples(_audit_routing_samples_args(since="not-a-window"))
+        assert "audit-routing-samples: --since: expected Nd like '35d'" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

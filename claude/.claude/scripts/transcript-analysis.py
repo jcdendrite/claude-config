@@ -331,6 +331,26 @@ def _parse_ts(ts_str: str | None) -> float | None:
         return None
 
 
+def _parse_since_nd_arg(args: argparse.Namespace, subcommand: str) -> tuple[float | None, str | None]:
+    """Parse the shared --since Nd flag (e.g. "35d") into (since_ts, since_raw).
+
+    since_ts is None when --since is absent; since_raw is the raw flag value
+    (or None) so callers can derive their own display label. Exits 1 on a
+    malformed value, embedding `subcommand` in the error text to match each
+    subcommand's own --since error message.
+    """
+    since_raw: str | None = getattr(args, "since", None) or None
+    since_ts: float | None = None
+    if since_raw:
+        try:
+            days = float(since_raw.rstrip("d"))
+            since_ts = time.time() - days * 86400
+        except ValueError:
+            print(f"{subcommand}: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
+            sys.exit(1)
+    return since_ts, since_raw
+
+
 def _iso_date(s: str) -> str:
     """argparse type: validate a YYYY-MM-DD date string."""
     try:
@@ -2137,17 +2157,8 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = bool(getattr(args, "redact", False))
 
-    since_ts: float | None = None
-    since_label: str = ""
-    since_raw: str | None = getattr(args, "since", None) or None
-    if since_raw:
-        try:
-            days = float(since_raw.rstrip("d"))
-            since_ts = time.time() - days * 86400
-            since_label = since_raw
-        except ValueError:
-            print(f"audit-routing: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
-            sys.exit(1)
+    since_ts, since_raw = _parse_since_nd_arg(args, "audit-routing")
+    since_label = since_raw or ""
 
     # _resolve_project_scope's fail-closed --this-repo check runs before
     # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
@@ -2447,17 +2458,8 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = not bool(getattr(args, "no_redact", False))
 
-    since_ts: float | None = None
-    since_label: str = ""
-    since_raw: str | None = getattr(args, "since", None) or None
-    if since_raw:
-        try:
-            days = float(since_raw.rstrip("d"))
-            since_ts = time.time() - days * 86400
-            since_label = since_raw
-        except ValueError:
-            print(f"cost: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
-            sys.exit(1)
+    since_ts, since_raw = _parse_since_nd_arg(args, "cost")
+    since_label = since_raw or ""
 
     # _resolve_project_scope's fail-closed --this-repo check runs before
     # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
@@ -2745,17 +2747,8 @@ def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
     judgment-span state machine is intentionally duplicated from cmd_audit_routing —
     tests cross-validate the two copies to guard against drift.
     """
-    since_ts: float | None = None
-    since_label: str = ""
-    since_raw: str | None = getattr(args, "since", None) or None
-    if since_raw:
-        try:
-            days = float(since_raw.rstrip("d"))
-            since_ts = time.time() - days * 86400
-            since_label = since_raw
-        except ValueError:
-            print(f"audit-routing-shape: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
-            sys.exit(1)
+    since_ts, since_raw = _parse_since_nd_arg(args, "audit-routing-shape")
+    since_label = since_raw or ""
 
     session_iter, scope_label = _resolve_project_scope(args, "audit-routing-shape")
 
@@ -3008,15 +3001,7 @@ def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
     The judgment-span state machine is intentionally duplicated from cmd_audit_routing —
     tests cross-validate the two copies to guard against drift.
     """
-    since_ts: float | None = None
-    since_raw: str | None = getattr(args, "since", None) or None
-    if since_raw:
-        try:
-            days = float(since_raw.rstrip("d"))
-            since_ts = time.time() - days * 86400
-        except ValueError:
-            print(f"audit-routing-samples: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
-            sys.exit(1)
+    since_ts, since_raw = _parse_since_nd_arg(args, "audit-routing-samples")
 
     sample_n: int = getattr(args, "sample", 30) or 30
     seed: int | None = getattr(args, "seed", None)
