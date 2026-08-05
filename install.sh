@@ -79,28 +79,6 @@ if [ -f "$HOME/.claude.json" ]; then
 fi
 # INSTALL_TEST_FIXTURE: continuity-hardening — end
 
-# deny-unlisted-webfetch-domains.sh treats an absent allowlist the same as
-# an empty one (every domain unlisted) — this seed is for fresh installs
-# only, so it never overwrites a consumer's already-curated file on re-run.
-#
-# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
-# markers below and runs them under an isolated $HOME. Keep both markers on
-# their own line, wrapping the whole block.
-# INSTALL_TEST_FIXTURE: webfetch-allowlist-seed — start
-if [ ! -f "$HOME/.claude/webfetch-allowed-domains.md" ]; then
-  cat > "$HOME/.claude/webfetch-allowed-domains.md" <<'EOF'
-# One domain per line. *.example.com matches subdomains only, not the apex —
-# list both if you need both. See docs/security-hardening.md.
-github.com
-*.github.com
-registry.npmjs.org
-pypi.org
-files.pythonhosted.org
-api.anthropic.com
-EOF
-fi
-# INSTALL_TEST_FIXTURE: webfetch-allowlist-seed — end
-
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.

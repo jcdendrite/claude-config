@@ -20,6 +20,9 @@
 #     a commit message) denies uniformly, regardless of quote placement.
 #   - curl/wget co-occurring with a shell/interpreter anywhere in one call
 #     denies, regardless of which operator actually connects them.
+#   - A `timeout` flag preceding its duration (e.g. `timeout --foreground
+#     30s npm install`) denies a legitimate restore: the numeric-skip guard
+#     only inspects the single token immediately after `timeout`.
 #
 # Fail-closed on unparseable hook input.
 
@@ -73,10 +76,11 @@ _install_has_leftover_token() {
     fi
     if $skip_next_if_numeric; then
       skip_next_if_numeric=false
-      case "$word" in
-        ''|*[!0-9]*) ;;  # not purely numeric — falls through to normal handling below
-        *) continue ;;
-      esac
+      # GNU timeout's DURATION grammar: a number with an optional single
+      # s/m/h/d suffix (info coreutils 'timeout invocation').
+      if [[ "$word" =~ ^[0-9]+(\.[0-9]+)?[smhd]?$ ]]; then
+        continue
+      fi
     fi
     local matched_manager=false i
     for i in "${!pending_managers[@]}"; do
@@ -130,6 +134,10 @@ _install_check_npm_family() {
 # Manager-set selection is mutually exclusive (uv -> the uv+pip pair, else
 # pip3, else pip alone): trying bare "pip" against a fragment that also has
 # "uv" reads "uv" as a leftover token and false-denies a legitimate restore.
+# Known seam: the `uv` branch checks for token `pip`, not `pip3`, so
+# `uv pip3 install <pkg>` returns 1 (allow) from inside that branch without
+# ever reaching the `pip3`/`pip`-alone branches below — not realistically
+# reachable, since `uv pip3` isn't valid `uv` CLI syntax.
 _install_check_pip_family() {
   local fragment="$1"
   local -a mgr_words

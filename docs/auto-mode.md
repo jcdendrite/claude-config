@@ -82,9 +82,9 @@ The `deny-env-reads.sh` PreToolUse hook covers `.env.*` variants not listed
 above. It allows the three conventional non-secret template suffixes
 (`.env.example`, `.env.template`, `.env.sample`) while denying everything else,
 including symlinks whose resolved target's basename matches a denied pattern.
-`deny-network-installs.sh` and `deny-unlisted-webfetch-domains.sh` cover the
-manager/verb shapes and hosts a flat literal can't express — see
-[`docs/security-hardening.md`](security-hardening.md#the-network-install-and-webfetch-domain-guards).
+`deny-network-installs.sh` covers the manager/verb shapes a flat literal
+can't express — see the "network-install guard" section in
+[`docs/security-hardening.md`](security-hardening.md).
 
 These rules apply in all permission modes, not only auto mode.
 

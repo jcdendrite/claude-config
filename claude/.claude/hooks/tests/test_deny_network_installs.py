@@ -101,6 +101,75 @@ class TestDenyNetworkInstalls:
             == "allow"
         )
 
+    def test_timeout_suffixed_duration_restore_allowed_is_a_regression_pin(self, isolated_home):
+        """`_install_has_leftover_token`'s numeric-skip guard originally
+        recognized only a bare integer duration, so `timeout 30s npm
+        install` (GNU timeout's suffixed-duration syntax — info coreutils
+        'timeout invocation') fell through to the per-word check and denied
+        a legitimate restore. Pinned here for all four documented suffixes."""
+        for command in (
+            "timeout 30s npm install",
+            "timeout 5m pip install -r requirements.txt",
+            "timeout 1h npm install",
+            "timeout 2d npm install",
+        ):
+            assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "allow", command
+
+    def test_timeout_flag_before_duration_denies_a_restore_is_a_named_residual(self, isolated_home):
+        """The numeric-skip guard only inspects the single token immediately
+        after `timeout`, so a real `timeout` flag preceding its duration
+        (`--foreground`, `-k`/`--kill-after`) leaves the duration to be
+        matched as an ordinary leftover token instead of being skipped —
+        an accepted false-deny, not a bug to chase. This test exists to pin
+        the residual as intentional, matching the header's documented gap,
+        the same convention as the path-prefix and unrecognized-flag
+        residuals elsewhere in this file."""
+        assert (
+            run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input("timeout --foreground 30s npm install"), home=isolated_home)
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "doas npm install lodash",
+            "command npm install lodash",
+            "time npm install lodash",
+            "nice npm install lodash",
+            "nohup npm install lodash",
+            "env npm install lodash",
+        ],
+    )
+    def test_remaining_wrapper_tokens_denied(self, isolated_home, command):
+        """`doas`/`command`/`time`/`nice`/`nohup`, plus bare `env` (no
+        `VAR=value`), complete the closed pure-wrapper set — `sudo`'s deny
+        direction is covered elsewhere (line ~40), but confounded by a real
+        package there, so `sudo` gets its own discriminating pin below
+        instead of joining this list. Verified correct today, but previously
+        unpinned, so a future edit dropping one from the wrapper
+        case-pattern would pass CI silently."""
+        assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "deny", command
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "doas npm ci",
+            "command npm ci",
+            "time npm ci",
+            "nice npm ci",
+            "nohup npm ci",
+            "env npm ci",
+            "sudo npm ci",
+        ],
+    )
+    def test_remaining_wrapper_tokens_restore_allowed(self, isolated_home, command):
+        """Allow-side companion to the deny rows above, plus `sudo` — the
+        existing `sudo npm install -g x` deny row (line ~40) carries a real
+        package, so it denies regardless of whether `sudo` is correctly
+        classified as a pure wrapper; this `sudo npm ci` row is the one that
+        actually discriminates `sudo`'s wrapper-skip logic."""
+        assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "allow", command
+
     # ------------------------------------------------------------------ #
     # Deny — named-package install, pip/pip3/uv-pip family                #
     # ------------------------------------------------------------------ #
@@ -192,6 +261,20 @@ class TestDenyNetworkInstalls:
             )
             == "allow"
         )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "pip install --requirement requirements.txt",
+            "pip install --editable .",
+        ],
+    )
+    def test_long_form_value_taking_flags_allowed(self, isolated_home, command):
+        """`--requirement`/`--editable` are the long forms of `-r`/`-e` in
+        `_INSTALL_VALUE_TAKING_MARKERS` — only the short forms were
+        previously exercised by a test, leaving the long forms an unpinned
+        contract."""
+        assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "allow", command
 
     # ------------------------------------------------------------------ #
     # Deny — npx/bunx/uvx/pipx explicit -y/--yes                          #

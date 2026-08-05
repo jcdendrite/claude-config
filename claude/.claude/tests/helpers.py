@@ -475,24 +475,6 @@ def read_input(file_path: str, session_id: str | None = None) -> dict:
     return payload
 
 
-def webfetch_input(
-    url: str,
-    prompt: str = "summarize",
-    permission_mode: str | None = None,
-    session_id: str | None = None,
-) -> dict:
-    """Build a WebFetch PreToolUse payload for deny-unlisted-webfetch-domains.sh
-    tests. `prompt` is a real tool_input field on every actual WebFetch call —
-    a fixture omitting it is unrealistic. `permission_mode` is a top-level
-    field, mirroring stop_input, the only other builder that threads it."""
-    payload: dict = {"tool_name": "WebFetch", "tool_input": {"url": url, "prompt": prompt}}
-    if permission_mode is not None:
-        payload["permission_mode"] = permission_mode
-    if session_id is not None:
-        payload["session_id"] = session_id
-    return payload
-
-
 def agent_input(session_id: str | None = None) -> dict:
     payload: dict = {
         "tool_name": "Agent",

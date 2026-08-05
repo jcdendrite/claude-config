@@ -100,19 +100,17 @@ personal glob line is protected by the same case-insensitive guarantee as
 the built-in set, not left as something the user has to get right
 themselves.
 
-## The network-install and WebFetch domain guards
+## The network-install guard
 
 | Hook | Gates | Optional additions file |
 |---|---|---|
 | `deny-network-installs.sh` | `Bash` — denies a named-package install (npm/pnpm/yarn/bun/pip/pip3/uv-pip/uv-add), an `npx`/`bunx`/`uvx`/`pipx run`/`npm exec` invocation carrying an explicit `-y`/`--yes`, `pnpm`/`yarn dlx` unconditionally, or curl/wget co-occurring with a shell/interpreter in the same call | none |
-| `deny-unlisted-webfetch-domains.sh` | `WebFetch` — asks (or denies, under `auto`/`bypassPermissions`/`dontAsk`) a domain not on the allowlist | `~/.claude/webfetch-allowed-domains.md` |
 
 Always on, no bypass valve, closing the gap that let one agent install the
 wrong package from a public registry and then reach for a vendor
 `curl`-piped installer on its own initiative — nothing in this hook family
-previously stopped an agent from bringing new software onto the machine or
-fetching from an arbitrary host. `permissions.deny` carries the unambiguous
-half of the same policy (`brew install`/`gem install`/`cargo install`/`go
+previously stopped an agent from bringing new software onto the machine.
+`permissions.deny` carries the unambiguous half of the same policy (`brew install`/`gem install`/`cargo install`/`go
 install`/`gh extension install`/`mas install`/`pipx install`/`apt(-get)
 install`/`yum install`/`dnf install`/`apk add`/`zypper install` — tools whose
 *registry-fetching* verb has no restore-command collision, so a flat literal
@@ -165,61 +163,69 @@ whole bug class, since no wrapper removes a token from the command string.
   session-defined alias (see `deny-repo-relocation.sh`'s header for the
   precedent this mirrors).
 
-**`deny-unlisted-webfetch-domains.sh`** inverts `_lib_config_lines`'s usual
-"absent file means no restriction" contract deliberately: this file *grants*
-reach, so an absent or empty `~/.claude/webfetch-allowed-domains.md` means
-every domain is unlisted, not that none are restricted. `install.sh` seeds a
-starter file (`github.com`, `*.github.com`, `registry.npmjs.org`, `pypi.org`,
-`files.pythonhosted.org`, `api.anthropic.com`) for fresh installs only —
-existing consumers get the file on their next `git pull` with no
-retroactive seed, so their first WebFetch to an unlisted domain after this
-change prompts (or denies outright under `auto`/`bypassPermissions`) with no
-advance warning. Deliberately excludes gist/raw-paste/raw-content-style
-hosts from the seed: those are simultaneously the injection surface
-(attacker-controlled page content reaching the agent) and a potential
-low-bandwidth query-string egress channel, so they are not pre-trusted by
-default. Add entries one domain per line; `*.example.com` matches strict
-subdomains only, never the bare apex — list both if you need both.
+**Out of scope for this hook:** `brew`/`gem`/`cargo`/`go`/`gh extension`/
+`mas`/`pipx`/`apt(-get)`/`yum`/`dnf`/`apk`/`zypper` are covered only by the
+`permissions.deny` literal, not a `deny-network-installs.sh` fragment check —
+a `cd /tmp && brew install jq` bypasses the literal's prefix match; accepted,
+since the incident that motivated this family was `npm`/`curl`, not these.
 
-**No dedicated write-gate protects the allowlist file itself.** No hook in
-the `Edit|Write|MultiEdit` PreToolUse group matches
-`~/.claude/webfetch-allowed-domains.md` — `ask-review-permissions.sh` only
-matches `.claude/settings*.json`, and `require-worktree-for-file-writes.sh`
-explicitly exempts all of `$HOME/.claude/`. An agent with ordinary `Edit`/
-`Write` access can append a domain to the allowlist and immediately
-`WebFetch` it with no prompt, self-widening its own reach in one turn.
-Accepted, matching the equally-unprotected `pii-patterns.md`/
-`credential-file-guard.md`-style config files this repo already ships —
-named explicitly here because, unlike those deny-widening files, this one
-grants reach rather than narrowing a restriction, so the consequence of a
-successful append is more direct.
+## WebFetch domain allowlisting — considered and rejected
 
-A hook-returned `ask` `permissionDecision` forcing a prompt under
-`auto`/`bypassPermissions` is undocumented in Claude Code's own
-[hooks reference](https://code.claude.com/docs/en/hooks), so this hook uses
-`deny` in those modes instead of assuming a prompt appears — `deny` is the
-one decision every permission mode is documented to honor. An absent,
-empty, or unrecognized `permission_mode` also fails closed to deny, never
-falls through to ask. Host extraction shells out to Python's
-`urllib.parse.urlsplit` rather than a hand-rolled regex, closing a
-userinfo-authority bypass (`https://github.com@evil.com/x` must resolve to
-`evil.com`, not whatever precedes the `@`) that a naive regex would have
-had; `python3` absence denies naming `python3` explicitly rather than being
-misread as an unparseable-URL deny, and a hang past the 5s timeout does too
-**when `timeout(1)` is on PATH** — on a stock macOS install with no GNU
-coreutils, `_lib_capped` has no timeout to enforce and a hung `python3`
-blocks the `WebFetch` call indefinitely instead; `install.sh` warns about
-missing `timeout` at onboarding, but the warning is non-blocking.
+A domain-scoped WebFetch gate (ask or deny an unlisted host, silently allow a
+listed one) is deliberately absent from this hook family — not because
+domain-scoping is the wrong idea, but because neither a custom hook built for
+this purpose nor Claude Code's own native equivalent (below) closes the
+self-widening gap both share.
 
-**Out of scope for this family:** `WebSearch` returns result text rather
-than fetching a chosen host — any URL it surfaces still routes through
-`deny-unlisted-webfetch-domains.sh` on the follow-up `WebFetch`. MCP-connector
-fetches (Google Drive, Todoist, and similar) route through neither hook.
-`brew`/`gem`/`cargo`/`go`/`gh extension`/`mas`/`pipx`/`apt(-get)`/`yum`/`dnf`/
-`apk`/`zypper` are covered only by the `permissions.deny` literal, not a
-`deny-network-installs.sh` fragment check — a `cd /tmp && brew install jq`
-bypasses the literal's prefix match; accepted, since the incident that
-motivated this family was `npm`/`curl`, not these.
+Anthropic's [permissions docs](https://code.claude.com/docs/en/permissions)
+document a native, lighter primitive for exactly this: `permissions.deny` on
+`Bash(curl *)`/`Bash(wget *)` paired with `WebFetch(domain:github.com)`-style
+allow rules — no hook script, no `python3` dependency, no separate additions
+file. That native rule was the right primitive to reach for first per this
+repo's own "default-suspect over-powered primitives" standard, and it avoids
+the custom hook's specific defects (a hand-rolled host parser, a `python3`
+hard dependency, an ask-under-auto-mode assumption Claude Code doesn't
+document as reliable). It does **not**, however, close the actual gap that
+makes a custom allowlist-file hook unsafe here: nothing in this repo gates
+edits to `settings.json` beyond `ask-review-permissions.sh`, which is
+`hook-class: informational` and returns only an `ask` decision — the same
+class of prompt this repo's own hooks avoid relying on in
+`auto`/`bypassPermissions` precisely because a hook-returned `ask` isn't
+documented to force a prompt there. An agent can edit `permissions.allow` to
+add a `WebFetch(domain:...)` rule for a host of its own choosing exactly as
+readily as it could have appended a line to the custom hook's additions
+file — the self-widening path is unchanged, only the location of the list
+moved. Closing that would need a genuine `deny`-class guard on
+`permissions.*` edits, which doesn't exist today for any permission family
+and is out of scope for this hook family.
+
+Separately, OWASP's [GenAI Security Project — LLM01:2025 Prompt
+Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) gives a
+scenario where a user *deliberately* fetches a legitimate webpage and
+hidden instructions in it still exfiltrate data — domain trust and content
+trust are different axes, and any platform hosting user-generated content
+remains an injection surface no matter how trusted its domain is. That
+argues against treating a domain allowlist as sufficient on its own, but the
+same OWASP page's own mitigation list ("restrict the model's access
+privileges to the minimum necessary," "segregate and identify external
+content") argues *for* access restriction as one layer among several, not
+against having one — so it does not, by itself, argue for skipping domain
+scoping entirely. The actual reason neither the custom hook nor the native
+rule ships here is the `permissions.*`-edit gap above, not that restricting
+WebFetch egress is unnecessary. Anthropic's own
+[permission-modes docs](https://code.claude.com/docs/en/permission-modes)
+add a related, narrower point: `bypassPermissions` "offers no protection
+against prompt injection" and should be used "only in isolated
+environments... without internet access" — worth naming, but a mode-usage
+caveat isn't a
+substitute for closing the edit-gap: an agent self-widening its own reach is
+exactly as reachable in that mode with internet access present.
+
+Revisit if a `permissions.*`-edit guard is ever built for this repo generally
+— at that point either the native `WebFetch(domain:...)` rule or a rebuilt
+custom hook becomes viable without the self-widening flaw, and is worth
+adding back with that guard as its prerequisite, not as an independent
+follow-up.
 
 ## The two PII guard hooks
 

@@ -327,16 +327,6 @@
         ]
       },
       {
-        "matcher": "WebFetch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/deny-unlisted-webfetch-domains.sh",
-            "statusMessage": "Checking WebFetch domain allowlist..."
-          }
-        ]
-      },
-      {
         "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
