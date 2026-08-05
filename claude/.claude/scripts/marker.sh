@@ -41,6 +41,9 @@ _walk_session() {
   # recorded start time that doesn't match — including an entry with no
   # recorded start time at all — means the PID was reused since the entry
   # was written, so it is untrusted and treated as if the file were absent.
+  # `lstart`'s one-second resolution leaves a residual false-positive window:
+  # a reused PID whose new process starts within the same wall-clock second
+  # as the stale entry's process still compares equal.
   pid=$PPID
   while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
     local sid recorded_start current_start

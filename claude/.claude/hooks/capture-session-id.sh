@@ -28,6 +28,12 @@
 # (which is stdout). When the lookup file isn't written, the /respond-pr
 # skill's Step 0 fails loudly with a clear message; the stderr trail here
 # is the upstream signal explaining why.
+#
+# No self-sweep, unlike other retired-destructor replacements: this file is
+# written once at SessionStart and never rewritten, so a session alive past
+# any time-based watermark would still need its own entry — an mtime sweep
+# can't distinguish "stale" from "long-lived but live." Growth is bounded
+# only by PID reuse, not a time watermark.
 
 INPUT=$(cat 2>/dev/null)
 if [ -z "$INPUT" ]; then
