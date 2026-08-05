@@ -629,7 +629,7 @@ def test_every_hook_that_paths_a_session_id_validates_it() -> None:
     behavior. This one exists because the failure it catches is a NEW hook
     added later that builds a marker path and forgets to validate — a file
     that has no traversal test yet by definition, so no behavioral test can
-    cover it. Ten hooks currently qualify; the guard was applied to all of
+    cover it. Eight hooks currently qualify; the guard was applied to all of
     them as a class rather than to the one where the defect first surfaced.
     """
     hooks_dir = _LIB_SH.parent

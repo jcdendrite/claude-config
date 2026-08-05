@@ -34,6 +34,11 @@
 # one-shot `<session_id>` dedup used by the other nudge hooks would
 # suppress it.
 #
+# STATE_DIR gets a 30-day eviction sweep at the point of report — reached
+# only on a transition into the drifted state, not on every prompt, since
+# the content-match dedup above re-arms and short-circuits everything else —
+# no SessionEnd hook cleans these up.
+#
 # Exit 0 on every path. A non-zero exit from a UserPromptSubmit hook risks
 # disrupting prompt submission, and every failure here (no jq, cwd outside a
 # repo, detached HEAD, bare repo, unreadable state dir) is a reason to stay
@@ -155,6 +160,12 @@ ADDITIONAL_CONTEXT=$(printf '%s\n%s\n%s' \
   "Before further work, enter the worktree the task belongs to: EnterWorktree{path: \"<worktree path>\"}. See branch-management/SKILL.md § \"Anchor the session in the worktree\".")
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
+# Evict stale entries from one-shot runs that skipped SessionEnd cleanup.
+# Reached only on a transition into the drifted state (the content-match
+# dedup above gates it), not on every prompt.
+if [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ]; then
+  find "$STATE_DIR" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
+fi
 printf '%s\n' "$REPO_ROOT" > "$STATE_FILE" 2>/dev/null || true
 
 jq -n --arg ctx "$ADDITIONAL_CONTEXT" \

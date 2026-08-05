@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
@@ -219,9 +220,7 @@ class TestRequireMemorySkill:
         """Run the SKILL.md activate-gate recipe and verify the resulting marker
         authorizes a previously-gated Edit on MEMORY.md."""
         sid = "test-session-memory-skill-activate"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         memory_md = str(memory_tree / "MEMORY.md")
         assert (
@@ -244,9 +243,7 @@ class TestRequireMemorySkill:
         """Run activate then deactivate from SKILL.md; verify deactivate removes
         the marker and the hook re-gates subsequent writes."""
         sid = "test-session-memory-skill-deactivate"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         activate_command = extract_skill_command(AI_MEMORY_SKILL, "activate-gate")
         run_skill_command(activate_command, cwd=git_repo, isolated_home=isolated_home)
