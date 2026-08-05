@@ -6,6 +6,10 @@
 # sessions/ gains one bare-PID file per session start, resume, and
 # one-shot run and grows without bound.
 #
+# sessions/<pid>.json (with the extension) is Claude Code's own session
+# registry, not this hook's, and is deliberately never swept here —
+# post-crash-sessions.py depends on it surviving.
+#
 # Content-match guard, not a blind `rm`:
 #   /clear ends one session and starts another in the *same* claude
 #   process — same claude-PID, new session_id. Both this SessionEnd hook
