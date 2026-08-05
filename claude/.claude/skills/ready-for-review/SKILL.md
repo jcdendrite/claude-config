@@ -103,12 +103,13 @@ other projects' skill names out of the output; passing one here is a bug.
   affirmative no-op, not a silent skip).
 - Otherwise, before dispatch, add `agent-reviews/` to `$(git rev-parse
   --git-path info/exclude)` idempotently (grep-check before appending). Spawn
-  `skill-fidelity-reviewer` **synchronously** with: the list; the
-  **text** of step 3's cumulative diff (`git diff $(git merge-base
-  origin/$BASE_REF HEAD)...HEAD` — text, not the range, since the agent has no
-  `Bash`); the plan path if one exists; and `findings_path:
-  agent-reviews/skill-fidelity-reviewer-<epoch>-<slug>.md` (same convention as
-  `/code-review`). `Read` the findings file after it returns.
+  `skill-fidelity-reviewer` **synchronously** with: the list; the literal diff
+  **output** step 3's `git diff` already produced (paste that output — never
+  the command that produced it, and never a range expression: the agent has
+  no `Bash` to resolve either); the plan path if one exists; and
+  `findings_path: agent-reviews/skill-fidelity-reviewer-<epoch>-<slug>.md`
+  (same convention as `/code-review`). `Read` the findings file after it
+  returns.
 
 Name the pipeline's own skills **out of scope** in the prompt (the agent body
 also excludes them) — `code-review`, `plan-review`, `ready-for-review`,
