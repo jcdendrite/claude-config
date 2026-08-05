@@ -75,12 +75,16 @@ close gaps the classifier's default block list doesn't cover:
 |---|---|
 | `Bash(sudo *)`, `Bash(sudo)` | Privilege escalation — turns the `sudo` prohibition in `CLAUDE.md` into a hard block |
 | `Read(**/.env)`, `Read(**/.env.local)`, `Read(**/.env.local.*)`, `Read(**/.env.production)`, `Read(**/.env.production.*)`, `Read(**/.env.development)`, `Read(**/.env.development.*)`, `Read(**/.env.staging)`, `Read(**/.env.staging.*)`, `Read(**/.env.test)`, `Read(**/.env.test.*)` | Local secret reads — hard floors on the well-known secret-bearing variants; the classifier won't flag in-working-directory reads as exfiltration |
-| `Read(**/credentials.json)` | Cloud provider credential files (AWS CLI, GCP service accounts, etc.) |
+| `Read(**/credentials.json)`, `Read(**/.credentials.json)` | Cloud provider credential files (AWS CLI, GCP service accounts, etc.) |
+| `Bash(brew install *)`, `Bash(brew tap *)`, `Bash(brew reinstall *)`, `Bash(gem install *)`, `Bash(cargo install *)`, `Bash(go install *)`, `Bash(gh extension install *)`, `Bash(mas install *)`, `Bash(pipx install *)`, `Bash(apt-get install *)`, `Bash(apt install *)`, `Bash(yum install *)`, `Bash(dnf install *)`, `Bash(apk add *)`, `Bash(zypper install *)` | Package installs with no restore-command collision — a bare literal is always an install, never a routine dependency restore. The `curl \| bash` classifier rule this complements is a *soft* block that user intent can clear; these rules cannot be cleared regardless of what the conversation says |
 
 The `deny-env-reads.sh` PreToolUse hook covers `.env.*` variants not listed
 above. It allows the three conventional non-secret template suffixes
 (`.env.example`, `.env.template`, `.env.sample`) while denying everything else,
 including symlinks whose resolved target's basename matches a denied pattern.
+`deny-network-installs.sh` covers the manager/verb shapes a flat literal
+can't express — see the "network-install guard" section in
+[`docs/security-hardening.md`](security-hardening.md).
 
 These rules apply in all permission modes, not only auto mode.
 
