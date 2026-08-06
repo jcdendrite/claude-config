@@ -17,9 +17,14 @@
 #   $CLAUDE_CONFIG_DIR if set, else ~/.claude) to learn its session_id.
 #
 # Deriving claude_pid from inside this hook:
-#   This hook is invoked through a transient `sh` shim, so its $PPID is
-#   that shim, not claude. claude is the shim's parent. POSIX
-#   `ps -o ppid= -p $PPID` walks up one level. Works on Linux, macOS, WSL.
+#   This hook's own $PPID is the claude process. Claude Code also exports
+#   $CLAUDE_PID into hook environments; it is accepted only when it equals
+#   $PPID or $PPID's immediate parent (a shim between claude and this hook),
+#   so an unrelated live process can't be named. An invalid or out-of-bound
+#   $CLAUDE_PID falls back to $PPID rather than aborting the write.
+#
+# This hook is also registered on SubagentStart, not just SessionStart, so
+# it runs once per subagent launch in addition to once per session.
 #
 # Failure mode: every step exits 0 (a SessionStart hook that fails-closed
 # would block session startup, which is worse than a delayed Step 0
@@ -27,13 +32,14 @@
 # stderr — visible in the user's terminal, not added to Claude's context
 # (which is stdout). When the lookup file isn't written, the /respond-pr
 # skill's Step 0 fails loudly with a clear message; the stderr trail here
-# is the upstream signal explaining why.
+# is the upstream signal explaining why. If both the $PPID and $CLAUDE_PID
+# candidates are unusable, no lookup file is written at all.
 #
 # No self-sweep, unlike other retired-destructor replacements: this file is
-# written once at SessionStart and never rewritten, so a session alive past
-# any time-based watermark would still need its own entry — an mtime sweep
-# can't distinguish "stale" from "long-lived but live." Growth is bounded
-# only by PID reuse, not a time watermark.
+# rewritten at every SessionStart and SubagentStart under the resolved PID,
+# so a session alive past any time-based watermark would still need its own
+# entry — an mtime sweep can't distinguish "stale" from "long-lived but
+# live." Growth is bounded only by PID reuse, not a time watermark.
 
 INPUT=$(cat 2>/dev/null)
 if [ -z "$INPUT" ]; then
@@ -64,9 +70,20 @@ CONFIG_DIR=$(_lib_config_dir) || {
   exit 0
 }
 
-CLAUDE_PID=$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
+# Validate-then-select: an unusable $CLAUDE_PID must fall back to $PPID, not
+# abort the write, so substitution can't happen before the checks below run.
+# Accepted only within one hop of $PPID (itself, or its immediate parent —
+# the shim case) so an unrelated live ancestor can't be named.
+resolved_claude_pid=$PPID
+if [ -n "${CLAUDE_PID:-}" ] && [[ $CLAUDE_PID =~ ^[0-9]+$ ]]; then
+  ppid_parent=$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
+  if [ "$CLAUDE_PID" = "$PPID" ] || { [ -n "$ppid_parent" ] && [ "$CLAUDE_PID" = "$ppid_parent" ]; }; then
+    resolved_claude_pid=$CLAUDE_PID
+  fi
+fi
+CLAUDE_PID=$resolved_claude_pid
 if [ -z "$CLAUDE_PID" ]; then
-  echo "[capture-session-id] could not resolve claude PID via 'ps -o ppid= -p $PPID'; respond-pr skill will fail at Step 0" >&2
+  echo "[capture-session-id] could not resolve claude PID from \$PPID ($PPID) or \$CLAUDE_PID; respond-pr skill will fail at Step 0" >&2
   exit 0
 fi
 
