@@ -1,6 +1,7 @@
 """Tests for guard-settings-session-keys.sh."""
 from __future__ import annotations
 
+import re
 import subprocess
 
 import pytest
@@ -14,6 +15,20 @@ from helpers import (
 )
 
 GUARD_SETTINGS_SESSION_KEYS_HOOK = HOOKS_DIR / "guard-settings-session-keys.sh"
+
+# The deny reason is prose, and the key list is the only structured thing in
+# it, so pull that segment out and compare as a set — asserting on the raw
+# sentence would fail on a reworded message or a reordered GUARDED_KEYS_JSON
+# without the hook's behavior having changed.
+_CHANGED_KEYS_SEGMENT = re.compile(r"differs from main on: ([^.]*)\.")
+
+
+def names_changed_keys(reason: str | None) -> set[str]:
+    """Return the guarded key names the deny reason reports as changed."""
+    assert reason is not None, "hook allowed the commit; expected a deny reason"
+    match = _CHANGED_KEYS_SEGMENT.search(reason)
+    assert match is not None, f"deny reason did not name the changed keys: {reason}"
+    return set(match.group(1).split())
 
 
 @pytest.fixture
@@ -98,17 +113,137 @@ class TestGuardSettingsSessionKeys:
             == "deny"
         )
 
-    def test_unrelated_settings_change_allows(self, settings_repo):
-        """Changing a key other than the guarded set must not block."""
+    def test_skip_workflow_usage_warning_change_denies_commit(self, settings_repo):
+        """skipWorkflowUsageWarning, a Claude-Code-persisted dismissal, must block."""
         repo, settings_file = settings_repo
-        stage_settings(repo, settings_file, '{"model": "sonnet", "effortLevel": "normal", "theme": "dark"}\n')
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "skipWorkflowUsageWarning": true}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'update settings'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_theme_change_denies_commit(self, settings_repo):
+        """theme is one machine's UI preference — committing ships it to every user."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "theme": "dark"}\n',
+        )
         assert (
             run_hook(
                 GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m 'add theme'"),
                 cwd=repo,
             )
+            == "deny"
+        )
+
+    def test_tui_change_denies_commit(self, settings_repo):
+        """tui is one machine's UI preference — committing ships it to every user."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "tui": "fullscreen"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add tui mode'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_unrelated_settings_change_allows(self, settings_repo):
+        """Changing a key outside the guarded set must not block.
+
+        Uses a name the settings schema will never claim, so the test cannot
+        be silently invalidated by that key later becoming guarded.
+        """
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "unrelatedTestKey": "value"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add unrelated key'"),
+                cwd=repo,
+            )
             == "allow"
+        )
+
+    def test_guarded_key_added_where_main_lacks_it_denies(self, settings_repo):
+        """A guarded key absent from main and present in staged must block.
+
+        This is the realistic shape: Claude Code adds a key to a settings.json
+        whose committed baseline predates it.
+        """
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "tui": "fullscreen"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'key absent from main'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_guarded_key_set_to_false_against_absent_denies(self, settings_repo):
+        """An explicit false must not read as equal to the key being absent.
+
+        `// ""` would collapse false, null, and absent to one value; the
+        comparator distinguishes presence from value so booleans stay guarded.
+        """
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "skipWorkflowUsageWarning": false}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'explicit false'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_guarded_key_set_to_null_against_absent_denies(self, settings_repo):
+        """An explicit null must not read as equal to the key being absent."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "theme": null}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'explicit null'"),
+                cwd=repo,
+            )
+            == "deny"
         )
 
     def test_settings_not_staged_allows(self, settings_repo):
@@ -164,6 +299,78 @@ class TestGuardSettingsSessionKeys:
         assert reason is not None
         assert "settings.json" in reason
         assert "model" in reason or "effortLevel" in reason
+
+    def test_deny_message_names_only_the_changed_keys(self, settings_repo):
+        """The message names which guarded keys actually differ, not the whole set."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "theme": "dark"}\n',
+        )
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'add theme'"),
+            cwd=repo,
+        )
+        assert names_changed_keys(reason) == {"theme"}
+
+    def test_deny_message_names_multiple_changed_keys(self, settings_repo):
+        """Every guarded key that differs is named, and no key that does not."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "opus", "effortLevel": "normal", "tui": "fullscreen"}\n',
+        )
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'model and tui'"),
+            cwd=repo,
+        )
+        assert names_changed_keys(reason) == {"model", "tui"}
+
+    def test_object_valued_guarded_key_ignores_key_order(self, settings_repo):
+        """Reordering an object-valued guarded key's own keys is not a change.
+
+        Comparing stringified values would report this as changed, since
+        neither jq's tostring nor tojson canonicalizes object key order.
+        """
+        repo, settings_file = settings_repo
+        settings_file.write_text('{"model": "sonnet", "tui": {"a": 1, "b": 2}}\n')
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "object-valued baseline"],
+            cwd=repo, check=True,
+        )
+        stage_settings(
+            repo, settings_file, '{"model": "sonnet", "tui": {"b": 2, "a": 1}}\n'
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'reorder object keys'"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_malformed_staged_settings_denies(self, settings_repo):
+        """Unparseable staged content degrades to {}, so main's keys read as changed.
+
+        The gate is fail-open only when jq itself cannot run — content that
+        does not parse still blocks rather than passing silently.
+        """
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "sonnet", "effortLev')
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'truncated settings'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
 
     def test_outside_git_repo_allows(self, tmp_path):
         non_repo = tmp_path / "not-a-repo"
