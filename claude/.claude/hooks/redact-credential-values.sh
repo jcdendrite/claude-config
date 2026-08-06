@@ -35,40 +35,11 @@ if [ -n "$RESPONSE_SIZE" ] && [ "$RESPONSE_SIZE" -gt "$_LIB_SIZE_THRESHOLD_BYTES
   exit 0
 fi
 
-# Full PEM block first: Oniguruma takes the first alternative that matches at each position, not the longest, so ordering it before the header-only PEM alternative is what makes gsub prefer redacting the whole key body when a complete block is present.
-CREDENTIAL_VALUE_PATTERN="${_LIB_PEM_PRIVATE_KEY_BLOCK_REGEX}|${_LIB_CREDENTIAL_VALUE_REGEX}"
-# Optional user additions: ~/.claude/credential-value-patterns.md, one `<label>: <regex>` line per pattern (same grammar as deny-pii-in-commits.sh's pii-patterns.md, minus `exclude:`).
-# Union, not swap: $(_lib_config_dir)'s copy wins if present, else the legacy $HOME/.claude location -- keeps an already-armed CLAUDE_CONFIG_DIR user's guard live.
-# An unresolvable config dir leaves CREDENTIAL_VALUE_PATTERNS_FILE at the legacy path; this is an opt-in guard, not a gate, so resolver failure must not disable it.
-CREDENTIAL_VALUE_PATTERNS_FILE="${HOME}/.claude/credential-value-patterns.md"
-if config_dir=$(_lib_config_dir) && [ -f "$config_dir/credential-value-patterns.md" ]; then
-  CREDENTIAL_VALUE_PATTERNS_FILE="$config_dir/credential-value-patterns.md"
-fi
-if [ -f "$CREDENTIAL_VALUE_PATTERNS_FILE" ] && [ -r "$CREDENTIAL_VALUE_PATTERNS_FILE" ]; then
-  while IFS=$'\t' read -r addition_lineno line; do
-    case "$line" in
-      *:*) ;;
-      *) continue ;;
-    esac
-
-    addition_value="${line#*:}"
-    addition_value="${addition_value#"${addition_value%%[![:space:]]*}"}"
-    [ -n "$addition_value" ] || continue
-
-    # Skip (don't apply) a pattern that fails to compile under jq's regex engine -- one bad addition would otherwise break the single combined gsub call below for the whole invocation, including the built-in redaction.
-    # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
-    if ! _lib_jq -n --arg pattern "$addition_value" '"" | test($pattern)' >/dev/null 2>&1; then
-      printf 'redact-credential-values.sh: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
-        "$CREDENTIAL_VALUE_PATTERNS_FILE" "$addition_lineno" >&2
-      continue
-    fi
-    CREDENTIAL_VALUE_PATTERN="${CREDENTIAL_VALUE_PATTERN}|${addition_value}"
-  done < <(_lib_config_lines "$CREDENTIAL_VALUE_PATTERNS_FILE")
-fi
-
-# shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
-REDACTED_TOOL_RESPONSE=$(printf '%s' "$TOOL_RESPONSE_RAW" | _lib_jq -c --arg pattern "$CREDENTIAL_VALUE_PATTERN" \
-  'walk(if type == "string" then gsub($pattern; "[REDACTED-CREDENTIAL]") else . end)' 2>/dev/null) || exit 0
+# Pattern assembly (built-in credential shapes + optional user additions)
+# and the redaction walk itself live in _lib_redact_credential_shaped_strings
+# (_lib.sh) — shared with track-permission-prompts.sh, the second caller
+# that crossed this repo's own DRY threshold for extracting it.
+REDACTED_TOOL_RESPONSE=$(_lib_redact_credential_shaped_strings "$TOOL_RESPONSE_RAW")
 [ -n "$REDACTED_TOOL_RESPONSE" ] || exit 0
 
 printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":%s}}\n' "$REDACTED_TOOL_RESPONSE"

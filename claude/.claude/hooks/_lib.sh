@@ -654,6 +654,26 @@ _lib_autonomous_shipping_active() {
   return 0
 }
 
+# _lib_permission_prompt_tracking_active
+# Returns 0 (true) when this machine has opted into permission-prompt
+# tracking (~/.claude/track-permission-prompts exists) — gates
+# track-permission-prompts.sh. Same sentinel-file shape as
+# _lib_autonomous_shipping_active above, minus the per-repo optout: this
+# mechanism only appends to a local log and changes no git/PR/tool
+# behavior, so there is no per-repo axis to narrow (see
+# docs/permission-prompt-tracking.md). Zero-arity by design — unlike
+# _lib_autonomous_shipping_active, which takes a repo root to check a
+# per-repo optout against, this sentinel is machine-global with nothing
+# repo-scoped to look up. Fails toward NOT tracking on an unresolvable
+# config dir, the same error direction every other opt-in gate in this
+# file takes.
+_lib_permission_prompt_tracking_active() {
+  local config_dir
+  config_dir=$(_lib_config_dir) || return 1
+  [ -f "$config_dir/track-permission-prompts" ] || return 1
+  return 0
+}
+
 # _lib_valid_session_id_component SESSION_ID
 # Returns 0 (true) iff SESSION_ID is safe to use as a single filesystem path
 # component (e.g. "$STATE_DIR/$SESSION_ID"). Every call site that builds such
@@ -906,6 +926,61 @@ _LIB_CREDENTIAL_VALUE_REGEX='(gh[opsur]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_
 # Redaction-only counterpart to the PEM alternative above: matches the full PEM block (BEGIN through END), not just the header line, since redact-credential-values.sh must strip the actual base64 key body via jq's whole-string gsub, which (unlike grep -E) can match across embedded newlines.
 # Body class excludes `-` so a greedy match stops at the first END footer rather than consuming past it; [:space:] (not `.`) lets the match span embedded newlines under Oniguruma without a dot-matches-newline flag.
 _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX='-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=[:space:]]*-----END[A-Z ]*PRIVATE KEY-----'
+
+# _lib_redact_credential_shaped_strings JSON
+# Replaces every credential-shaped string anywhere in JSON's value tree
+# (the PEM block/header, GitHub token prefixes, an AWS access key ID, plus
+# any optional additions from credential-value-patterns.md) with
+# [REDACTED-CREDENTIAL], regardless of field name -- extracted from
+# redact-credential-values.sh's original inline pattern-assembly-and-walk
+# so a second caller doesn't duplicate this security-sensitive logic.
+# Echoes redacted JSON on success; on any jq resolution/parse failure emits
+# nothing and returns non-zero, so a caller's `[ -n "$result" ]` guard
+# treats "redaction failed" the same as "nothing to act on" rather than
+# silently passing the unredacted input through.
+_lib_redact_credential_shaped_strings() {
+  local json="$1"
+
+  # Full PEM block first: Oniguruma takes the first alternative that matches at each position, not the longest, so ordering it before the header-only PEM alternative is what makes gsub prefer redacting the whole key body when a complete block is present.
+  local credential_value_pattern="${_LIB_PEM_PRIVATE_KEY_BLOCK_REGEX}|${_LIB_CREDENTIAL_VALUE_REGEX}"
+  # Optional user additions: ~/.claude/credential-value-patterns.md, one `<label>: <regex>` line per pattern (same grammar as deny-pii-in-commits.sh's pii-patterns.md, minus `exclude:`).
+  # Union, not swap: $(_lib_config_dir)'s copy wins if present, else the legacy $HOME/.claude location -- keeps an already-armed CLAUDE_CONFIG_DIR user's guard live.
+  # An unresolvable config dir leaves this at the legacy path; this is an opt-in guard, not a gate, so resolver failure must not disable it.
+  local credential_value_patterns_file="${HOME}/.claude/credential-value-patterns.md"
+  local config_dir
+  if config_dir=$(_lib_config_dir) && [ -f "$config_dir/credential-value-patterns.md" ]; then
+    credential_value_patterns_file="$config_dir/credential-value-patterns.md"
+  fi
+  if [ -f "$credential_value_patterns_file" ] && [ -r "$credential_value_patterns_file" ]; then
+    local addition_lineno line addition_value
+    while IFS=$'\t' read -r addition_lineno line; do
+      case "$line" in
+        *:*) ;;
+        *) continue ;;
+      esac
+
+      addition_value="${line#*:}"
+      addition_value="${addition_value#"${addition_value%%[![:space:]]*}"}"
+      [ -n "$addition_value" ] || continue
+
+      # Skip (don't apply) a pattern that fails to compile under jq's regex engine -- one bad addition would otherwise break the single combined gsub call below for the whole invocation, including the built-in redaction.
+      # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+      if ! _lib_jq -n --arg pattern "$addition_value" '"" | test($pattern)' >/dev/null 2>&1; then
+        printf '_lib_redact_credential_shaped_strings: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
+          "$credential_value_patterns_file" "$addition_lineno" >&2
+        continue
+      fi
+      credential_value_pattern="${credential_value_pattern}|${addition_value}"
+    done < <(_lib_config_lines "$credential_value_patterns_file")
+  fi
+
+  local redacted
+  # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+  redacted=$(printf '%s' "$json" | _lib_jq -c --arg pattern "$credential_value_pattern" \
+    'walk(if type == "string" then gsub($pattern; "[REDACTED-CREDENTIAL]") else . end)' 2>/dev/null)
+  [ -n "$redacted" ] || return 1
+  printf '%s' "$redacted"
+}
 
 # Six structural-shape detectors for content that can identify a specific
 # machine, person, or private project without naming it directly. Sourced by
