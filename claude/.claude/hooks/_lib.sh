@@ -938,11 +938,22 @@ _LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-
 # A hostname ending in a non-public-suffix TLD.
 _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|local|lan|intranet|private)([^A-Za-z0-9_-]|$)'
 
-# A `#`-prefixed lowercase-hyphenated Slack-channel shape. Excludes
-# all-digit runs so a plain GitHub issue reference (e.g. issue #421) doesn't
-# false-positive; a markdown anchor link fragment shares the same shape as a
-# real channel name and is deliberately still matched.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+# A `#`-prefixed lowercase-hyphenated Slack-channel shape.
+# - Excludes all-digit runs so a plain GitHub issue reference (e.g. issue
+#   #421) doesn't false-positive.
+# - Excludes a markdown inline-link anchor target: the second alternative
+#   requires the open-paren before the hash-prefixed run NOT be immediately
+#   preceded by a closing bracket, the exact adjacent sequence a markdown
+#   link always produces.
+# - That exclusion is independent of how the parenthetical closes — no
+#   trailing close-paren requirement — so a genuine channel mention right
+#   after a bare open-paren still matches via the same alternative.
+# - The first alternative separately catches an unparenthesized or
+#   non-adjacent mention.
+# - Residual gap: a channel reference spliced right after a fabricated
+#   closing bracket evades this detector, same class as the all-digit
+#   GitHub-issue exclusion above.
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[^(])#[a-z0-9_-]*[a-z_-][a-z0-9_-]*|(^|[^]])\(#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
