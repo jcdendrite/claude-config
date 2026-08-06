@@ -839,6 +839,69 @@ def hook_denial_key(item: dict) -> tuple[str, dict | str] | None:
     return None
 
 
+# Extracts the hook/gate name from a denial message's own "blocked by <name>
+# hook/gate" wording — every hook's emit_deny call already writes this shape
+# (e.g. "Blocked by code-review gate: ..."), so the name is read off the
+# denial text itself rather than an invented category label. The capture is
+# bounded to a name-shaped character class (word chars, spaces, '.', '-') and
+# _DENIAL_HOOK_NAME_MAX_CHARS chars, matching every hook's own static "<name>
+# hook/gate" wording — not an unbounded `.+?`, which would echo arbitrary
+# denial-message text (a dynamic file path, say) into --deny-summary's output
+# if a future hook ever interpolated one into this span.
+_DENIAL_HOOK_NAME_MAX_CHARS = 40
+_DENIAL_HOOK_NAME_RE = re.compile(
+    rf"blocked by (?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate)\b", re.IGNORECASE
+)
+
+# --deny-summary's unmatched-hook-name bucket: a denial matched by
+# _HOOK_DENIAL_SIGNATURE (e.g. via the "invocation denied" alternative, which
+# names no hook) but from which no hook/gate name can be extracted.
+_DENY_SUMMARY_UNMATCHED_HOOK = "unmatched"
+
+# --deny-summary's attempted-command-shape buckets, checked in order; a
+# command matching none of these falls into "other".
+_DENIAL_COMMAND_SHAPES: tuple[str, ...] = ("git commit", "git checkout", "git push")
+_DENY_SUMMARY_OTHER_COMMAND_SHAPE = "other"
+
+
+def _denial_hook_label(hook_name: str, message: str) -> str:
+    """Return the originating hook/gate name for one denial event.
+
+    Legacy-shape denials carry the name directly (hook_name, from the
+    attachment record's hookName field); current-shape denials carry no
+    structured hook identity, so the name is extracted from the denial
+    message text. Neither source: _DENY_SUMMARY_UNMATCHED_HOOK.
+    """
+    if hook_name:
+        return hook_name
+    m = _DENIAL_HOOK_NAME_RE.search(message)
+    return m.group("name").strip() if m else _DENY_SUMMARY_UNMATCHED_HOOK
+
+
+def _denial_command_shape(command: str) -> str:
+    """Classify a denied Bash command's git-subcommand shape for --deny-summary."""
+    for shape in _DENIAL_COMMAND_SHAPES:
+        if shape in command:
+            return shape
+    return _DENY_SUMMARY_OTHER_COMMAND_SHAPE
+
+
+def _print_deny_summary(hook_counts: dict[str, int], command_shape_counts: dict[str, int]) -> None:
+    """Print --deny-summary's two grouped denial-count tables."""
+    total = sum(hook_counts.values())
+    print(f"\n## Denials by hook/gate ({total} total)\n")
+    print(f"{'Hook/gate':<40} {'Count':>6}")
+    print("-" * 47)
+    for label, count in sorted(hook_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        print(f"{label:<40} {count:>6}")
+
+    print(f"\n## Denials by attempted command shape ({total} total)\n")
+    print(f"{'Shape':<16} {'Count':>6}")
+    print("-" * 23)
+    for label, count in sorted(command_shape_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        print(f"{label:<16} {count:>6}")
+
+
 def cmd_review_trace(args: argparse.Namespace) -> None:
     """Emit an ordered review-event timeline per session.
 
@@ -860,6 +923,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     """
     branch_filter = _branch_filter(args)
     deny_only: bool = bool(getattr(args, "deny_only", False))
+    deny_summary: bool = bool(getattr(args, "deny_summary", False))
     skill_filter: str | None = getattr(args, "skill", None) or None
     session_iter, scope_label = _resolve_project_scope(args, "review-trace")
 
@@ -879,12 +943,27 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     # produces byte-for-byte empty output, as it always has.
     scope_header_printed = False
 
+    # --deny-summary's corpus-wide accumulators: hook/gate name -> count,
+    # attempted-command shape -> count. Populated below in place of the
+    # normal per-session printing when --deny-summary is set.
+    hook_counts: dict[str, int] = defaultdict(int)
+    command_shape_counts: dict[str, int] = defaultdict(int)
+    any_session_matched = False
+
     for jsonl, records in session_iter:
         events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
         # Tracks tool_use_ids already emitted as a denial. A legacy denial
         # appears as both an attachment record and an is_error tool_result
         # sharing one tool_use_id; this set collapses the pair to one event.
         seen_denial_ids: set[str] = set()
+
+        # tool_use_id -> attempted command, for --deny-summary's by-command-shape
+        # grouping. Indexed from every assistant tool_use block on the main
+        # thread — review-trace's session_iter doesn't request subagent
+        # records, so sidechain tool_use blocks are never present to index.
+        # Independent of the --since/--until window, since a denial's own
+        # event already applies it.
+        tool_use_commands: dict[str, str] = {}
 
         # Carry-forward trackers, updated on every main-thread record before the
         # date filter below — the branch/model attributed to a denial (which
@@ -902,6 +981,14 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                     m = (rec.get("message") or {}).get("model") or ""
                     if m:
                         last_model = m
+
+            if rec.get("type") == "assistant":
+                for block in ((rec.get("message") or {}).get("content") or []):
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    tid = block.get("id")
+                    if tid:
+                        tool_use_commands[tid] = (block.get("input") or {}).get("command", "")
 
             rec_ts_str: str | None = rec.get("timestamp")
             rec_ts: float | None = _parse_ts(rec_ts_str)
@@ -1025,9 +1112,19 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
 
         if not events:
             continue
+        any_session_matched = True
 
         has_denial = any(e["kind"] == "denial" for e in events)
         if deny_only and not has_denial:
+            continue
+
+        if deny_summary:
+            for evt in events:
+                if evt["kind"] != "denial":
+                    continue
+                hook_counts[_denial_hook_label(evt["hook_name"], evt["message"])] += 1
+                command = tool_use_commands.get(evt["tool_use_id"], "")
+                command_shape_counts[_denial_command_shape(command)] += 1
             continue
 
         skill_count = sum(1 for e in events if e["kind"] == "skill")
@@ -1059,6 +1156,21 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 print(f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  id={uid}  msg={msg!r}{suffix}")
             elif kind == "reviewer-spawn":
                 print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
+
+    if deny_summary:
+        if sum(hook_counts.values()):
+            if not scope_header_printed:
+                _print_resolved_scope("review-trace", scope_label)
+                scope_header_printed = True
+            _print_deny_summary(hook_counts, command_shape_counts)
+        elif any_session_matched:
+            # Scope resolved and had matching sessions, but none carried a
+            # denial — printed explicitly so this reads distinctly from a
+            # broken --branches/scope flag matching no sessions at all.
+            if not scope_header_printed:
+                _print_resolved_scope("review-trace", scope_label)
+                scope_header_printed = True
+            print("\nNo denials found in scope.")
 
 
 def cmd_judgment_pair(args: argparse.Namespace) -> None:
@@ -1690,6 +1802,219 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         )
 
 
+# Reviewer-agent subagent_type additionally counted by reviewer-yield (not
+# review-trace's _REVIEWER_PREFIX/_REVIEWER_EXACT): skill-fidelity-reviewer
+# doesn't match either, but is one of #558's own reviewer-agent table entries.
+_REVIEWER_YIELD_EXTRA_EXACT = "skill-fidelity-reviewer"
+
+# Reviewer verdict-text patterns for reviewer-yield's dispatch-outcome join.
+# Loosened from each reviewer agent's documented `**No X concerns**` /
+# `Found <N> issues.` / `**Approve with concerns**` / `**Request changes**`
+# contract (claude/.claude/agents/*.md) to tolerate markdown-bold,
+# singular/plural, and case variance.
+_REVIEWER_NO_CONCERNS_GAP_MAX_CHARS = 40  # bounds "no <...> concerns" to one short phrase, not a whole paragraph
+_REVIEWER_NO_CONCERNS_RE = re.compile(
+    rf"\bno\b[\w\s/-]{{0,{_REVIEWER_NO_CONCERNS_GAP_MAX_CHARS}}}?\bconcerns\b", re.IGNORECASE
+)
+_REVIEWER_FOUND_ISSUES_RE = re.compile(r"found\s+(\d+)\s+issues?\b", re.IGNORECASE)
+_REVIEWER_APPROVE_WITH_CONCERNS_RE = re.compile(r"\bapprove with concerns\b", re.IGNORECASE)
+_REVIEWER_REQUEST_CHANGES_RE = re.compile(r"\brequest changes\b", re.IGNORECASE)
+
+# _classify_reviewer_verdict's bucket labels, shared with cmd_reviewer_yield's
+# aggregation branch — named so a typo in either can't silently fall through
+# to the "unclassified" bucket.
+_REVIEWER_VERDICT_FINDINGS_FOUND = "findings-found"
+_REVIEWER_VERDICT_ZERO_FINDING = "zero-finding"
+_REVIEWER_VERDICT_UNCLASSIFIED = "unclassified"
+
+
+def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, Path], int]:
+    """Map each subagent dispatch's toolUseId to its paired .jsonl path, for one session.
+
+    Reads subagents/*.meta.json directly rather than through iter_sessions'
+    include_subagents merge — that merge flattens every subagent file's
+    records into one list with no per-file boundary, which cannot answer
+    "this specific dispatch's own last assistant text."
+
+    Returns (index, meta_read_errors): meta_read_errors counts *.meta.json
+    files present but unusable — invalid JSON, or valid JSON missing
+    toolUseId — distinct from a dispatch with no meta.json at all (the
+    caller's own, separately-documented exclusion path).
+    """
+    subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
+    index: dict[str, Path] = {}
+    meta_read_errors = 0
+    if not subagent_dir.is_dir():
+        return index, meta_read_errors
+    for meta_path in sorted(subagent_dir.glob("*.meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            meta_read_errors += 1
+            continue
+        tool_use_id = meta.get("toolUseId")
+        if not tool_use_id:
+            meta_read_errors += 1
+            continue
+        agent_id = meta_path.name.removesuffix(".meta.json")
+        index[tool_use_id] = meta_path.parent / f"{agent_id}.jsonl"
+    return index, meta_read_errors
+
+
+def _last_assistant_text(jsonl_path: Path) -> str:
+    """Return the last non-empty assistant text block in one transcript file, or ''.
+
+    A trailing assistant record with no text (e.g. a final tool-only turn)
+    does not blank out an earlier one — this walks the whole file and keeps
+    the most recent non-empty text seen, matching "last assistant text
+    block" rather than "last assistant record's text, possibly empty."
+    """
+    last_text = ""
+    try:
+        with open(jsonl_path) as fh:
+            for raw in fh:
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "assistant":
+                    continue
+                text = _content_text((rec.get("message") or {}).get("content", ""))
+                if text.strip():
+                    last_text = text
+    except OSError:
+        return ""
+    return last_text
+
+
+def _classify_reviewer_verdict(text: str) -> tuple[str, int]:
+    """Classify one reviewer subagent's final verdict text.
+
+    Returns (bucket, findings): bucket is one of _REVIEWER_VERDICT_FINDINGS_FOUND,
+    _REVIEWER_VERDICT_ZERO_FINDING, or _REVIEWER_VERDICT_UNCLASSIFIED; findings
+    is the parsed N for a findings-found verdict, else 0.
+    "Found 0 issues" is a zero-finding verdict, not findings-found, despite
+    matching the found-issues pattern. "Approve with concerns"/"Request
+    changes" verdicts carry real findings but no derivable count, so they
+    land in findings-found with 0 — the caller's total-findings sum is a
+    lower bound, not every findings-found dispatch's true count.
+    """
+    m = _REVIEWER_FOUND_ISSUES_RE.search(text)
+    if m:
+        n = int(m.group(1))
+        return (_REVIEWER_VERDICT_FINDINGS_FOUND, n) if n > 0 else (_REVIEWER_VERDICT_ZERO_FINDING, 0)
+    if _REVIEWER_NO_CONCERNS_RE.search(text):
+        return (_REVIEWER_VERDICT_ZERO_FINDING, 0)
+    if _REVIEWER_APPROVE_WITH_CONCERNS_RE.search(text) or _REVIEWER_REQUEST_CHANGES_RE.search(text):
+        return (_REVIEWER_VERDICT_FINDINGS_FOUND, 0)
+    return (_REVIEWER_VERDICT_UNCLASSIFIED, 0)
+
+
+def cmd_reviewer_yield(args: argparse.Namespace) -> None:
+    """Per-reviewer-agent-type dispatch-to-verdict yield.
+
+    Joins each main-thread reviewer-agent dispatch (Agent/Task tool_use with
+    subagent_type in the reviewer set — review-trace's _REVIEWER_PREFIX/
+    _REVIEWER_EXACT plus skill-fidelity-reviewer) to its own subagent
+    transcript via subagents/<id>.meta.json's toolUseId field, then
+    classifies that transcript's last assistant text block as findings-found,
+    zero-finding, or unclassified. A dispatch with no matching meta.json is
+    excluded entirely (not counted as unclassified) — meta.json is the only
+    signal that a subagent transcript for this dispatch exists at all. A
+    second, distinct exclusion path is a meta.json file that exists but is
+    unreadable (invalid JSON) or missing toolUseId — also excluded entirely,
+    and corpus-wide counted in the printed meta-read-errors line.
+
+    A "findings-found" verdict comes from either a numeric "Found <N>
+    issues" verdict (contributes N to the Findings column) or a bulleted
+    "Approve with concerns"/"Request changes" verdict with no derivable
+    count (contributes 0) — the printed Findings total is therefore a lower
+    bound on actual findings, not an exact count.
+
+    --redact is accepted for CLI parity with cost/audit-routing; this
+    subcommand's output is aggregate-only (per-agent-type rows), so there is
+    currently no project-label or session-id field to redact.
+    """
+    since_ts: float | None = None
+    since_label: str = ""
+    since_raw: str | None = getattr(args, "since", None) or None
+    if since_raw:
+        try:
+            days = float(since_raw.rstrip("d"))
+            since_ts = time.time() - days * 86400
+            since_label = since_raw
+        except ValueError:
+            print(f"reviewer-yield: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
+            sys.exit(1)
+
+    session_iter, scope_label = _resolve_project_scope(args, "reviewer-yield")
+    _print_resolved_scope("reviewer-yield", scope_label)
+
+    # agent_type -> {dispatches, findings_found, zero_finding, unclassified, total_findings}
+    agg: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"dispatches": 0, "findings_found": 0, "zero_finding": 0, "unclassified": 0, "total_findings": 0}
+    )
+    meta_read_errors = 0
+
+    for jsonl, records in session_iter:
+        dispatch_index, session_meta_read_errors = _index_subagent_dispatches(jsonl)
+        meta_read_errors += session_meta_read_errors
+        for rec in records:
+            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+                continue
+            if since_ts is not None:
+                rec_ts = _parse_ts(rec.get("timestamp"))
+                if rec_ts is None or rec_ts < since_ts:
+                    continue
+            for block in ((rec.get("message") or {}).get("content") or []):
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") not in _SPAWN_TOOL_NAMES:
+                    continue
+                stype = (block.get("input") or {}).get("subagent_type") or ""
+                if not (
+                    stype.startswith(_REVIEWER_PREFIX)
+                    or stype in (_REVIEWER_EXACT, _REVIEWER_YIELD_EXTRA_EXACT)
+                ):
+                    continue
+                paired_jsonl = dispatch_index.get(block.get("id") or "")
+                if paired_jsonl is None:
+                    continue  # no matching meta.json — excluded entirely, not "unclassified"
+                bucket, n = _classify_reviewer_verdict(_last_assistant_text(paired_jsonl))
+                row = agg[stype]
+                row["dispatches"] += 1
+                if bucket == _REVIEWER_VERDICT_FINDINGS_FOUND:
+                    row["findings_found"] += 1
+                    row["total_findings"] += n
+                elif bucket == _REVIEWER_VERDICT_ZERO_FINDING:
+                    row["zero_finding"] += 1
+                else:
+                    row["unclassified"] += 1
+
+    title_since = f"last {since_label}" if since_label else "all time"
+    print(f"\n## Reviewer-agent yield ({title_since})\n")
+
+    if not agg:
+        print("No reviewer-agent dispatches found.")
+        if meta_read_errors:
+            print(f"  ({meta_read_errors:,} meta.json files failed to parse, excluded)")
+        return
+
+    # Findings is a lower bound: it sums parsed "Found <N> issues" counts plus
+    # 0 for each uncounted "Approve with concerns"/"Request changes" verdict.
+    header = f"{'AgentType':<28} {'Dispatches':>10} {'Found':>7} {'Zero':>6} {'Unclass':>8} {'Findings':>9}"
+    print(header)
+    print("-" * len(header))
+    for stype in sorted(agg):
+        row = agg[stype]
+        print(
+            f"{stype:<28} {row['dispatches']:>10} {row['findings_found']:>7} "
+            f"{row['zero_finding']:>6} {row['unclassified']:>8} {row['total_findings']:>9}"
+        )
+    if meta_read_errors:
+        print(f"\n  ({meta_read_errors:,} meta.json files failed to parse, excluded)")
+
+
 def cmd_skill_pair(args: argparse.Namespace) -> None:
     """Pairing rate between two skills, bucketed by ISO week.
 
@@ -2169,10 +2494,15 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     redact_map: dict[str, str] = _build_redact_map() if redact else {}
     session_redact_map: dict[str, str] = {}
 
-    # Per-session accumulators: session_key → {class → {out, cr}}
+    # Per-session accumulators: session_key → {class → {out, cr, dollars}}
     session_rows: list[dict] = []
-    # Corpus totals: class → {out, cr}
-    corpus_totals: dict[str, dict[str, int]] = {cls: {"out": 0, "cr": 0} for cls in _AUDIT_CLASSES}
+    # Corpus totals: class → {out, cr, dollars}
+    corpus_totals: dict[str, dict[str, float]] = {cls: {"out": 0, "cr": 0, "dollars": 0.0} for cls in _AUDIT_CLASSES}
+    # Opus turns whose model ID has no _MODEL_BASE_INPUT_RATES entry — excluded from
+    # the dollar headline, counted here so a corpus with unpriced turns doesn't
+    # silently under-report (mirrors _cost_report's unpriced-tokens convention).
+    unpriced_turns = 0
+    unpriced_tokens = 0
 
     for jsonl, records in session_iter:
         proj_label = _derive_proj_label(jsonl)
@@ -2181,8 +2511,8 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
             _assign_session_redact_label(session_id, session_redact_map)
 
         # Per-session class token accumulators
-        session_class_tokens: dict[str, dict[str, int]] = {
-            cls: {"out": 0, "cr": 0} for cls in _AUDIT_CLASSES
+        session_class_tokens: dict[str, dict[str, float]] = {
+            cls: {"out": 0, "cr": 0, "dollars": 0.0} for cls in _AUDIT_CLASSES
         }
 
         # Judgment span state machine (reset per session)
@@ -2233,6 +2563,13 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
             content = msg.get("content") or []
             out_tokens: int = usage.get("output_tokens", 0)
             cr_tokens: int = usage.get("cache_read_input_tokens", 0)
+            dollars_by_class, _context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
+            if dollars_by_class is None:
+                unpriced_turns += 1
+                unpriced_tokens += turn_unpriced_tokens
+                turn_dollars = 0.0
+            else:
+                turn_dollars = sum(dollars_by_class.values())
 
             # Open a judgment span if this turn invokes a judgment skill — evaluated
             # before classification so the invoking turn itself counts as judgment.
@@ -2260,6 +2597,7 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
 
             session_class_tokens[turn_class]["out"] += out_tokens
             session_class_tokens[turn_class]["cr"] += cr_tokens
+            session_class_tokens[turn_class]["dollars"] += turn_dollars
 
         session_total_out = sum(v["out"] for v in session_class_tokens.values())
         if not session_total_out:
@@ -2275,6 +2613,7 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
         for cls in _AUDIT_CLASSES:
             corpus_totals[cls]["out"] += session_class_tokens[cls]["out"]
             corpus_totals[cls]["cr"] += session_class_tokens[cls]["cr"]
+            corpus_totals[cls]["dollars"] += session_class_tokens[cls]["dollars"]
 
     # --- Emit per-session table ---
     title_since = f"last {since_label}" if since_label else "all time"
@@ -2316,9 +2655,17 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     print("─" * 51)
     print(f"{'total':<16} {total_out_all:>15,} {total_cr_all:>18,}")
 
+    sonnet_tier_dollars = corpus_totals["code-write"]["dollars"] + corpus_totals["code-read"]["dollars"]
+    priced_total_dollars = sum(corpus_totals[cls]["dollars"] for cls in _AUDIT_CLASSES)
+    dollar_pct = f"{100 * sonnet_tier_dollars / priced_total_dollars:.0f}%" if priced_total_dollars else "—"
+    print(f"\nSonnet-tier estimate: ${sonnet_tier_dollars:,.2f}")
+    print(f"  = {dollar_pct} of priced Opus spend in this window")
+    if unpriced_turns:
+        print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
+
     sonnet_tier_out = corpus_totals["code-write"]["out"] + corpus_totals["code-read"]["out"]
     sonnet_pct = f"{100 * sonnet_tier_out / total_out_all:.0f}%" if total_out_all else "—"
-    print(f"\nSonnet-tier estimate: {sonnet_tier_out:,} output tokens")
+    print(f"\nSonnet-tier estimate: {sonnet_tier_out:,} output tokens (secondary diagnostic)")
     print(f"  = {sonnet_pct} of Opus output in this window")
 
 
@@ -2568,6 +2915,90 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
             sid = _redact_session_id(row["session_id"], session_redact_map) if redact else row["session_id"]
             proj = _redact_proj_label(row["proj_label"], redact_map) if redact else row["proj_label"]
             print(f"{sid:<16} {proj:<24} {row['total']:>14,.2f}")
+
+
+def cmd_cost_trend(args: argparse.Namespace) -> None:
+    """CLI entry point for the cost-trend subcommand.
+
+    Reads the wall-clock date exactly once, here, then delegates to
+    _cost_trend_report, which takes `today` as an explicit parameter — the
+    same split _cost_report uses so the trailing week's "(partial)" label
+    doesn't depend on a live clock read inside a function under test.
+    """
+    _cost_trend_report(args, datetime.now(UTC).date())
+
+
+def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
+    """Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.
+
+    Reuses _price_turn's per-turn pricing (same as cost) and cmd_handoff_ratio's
+    ISO-week bucketing. Sidechain turns are included (include_subagents=True)
+    for the same reason _cost_report includes them — most dispatched spend
+    would otherwise be silently excluded. The most recent bucket is very
+    likely a partial week; it is labeled "(partial)" rather than presented as
+    a complete week's total, since a corpus only a few weeks deep would
+    otherwise misread a partial trailing week as a real week-over-week drop.
+    Turns whose model ID has no _MODEL_BASE_INPUT_RATES entry are excluded
+    from every week's totals and counted corpus-wide (mirrors
+    cmd_audit_routing's unpriced-turns convention) so they don't silently
+    vanish from the reported spend.
+    """
+    session_iter, scope_label = _resolve_project_scope(args, "cost-trend", include_subagents=True)
+    _print_resolved_scope("cost-trend", scope_label)
+
+    # week_str -> {"total": $, "opus": $, "context_over": $}
+    data: dict[str, dict[str, float]] = defaultdict(lambda: {"total": 0.0, "opus": 0.0, "context_over": 0.0})
+    unpriced_turns = 0
+    unpriced_tokens = 0
+
+    for _jsonl, records in session_iter:
+        for rec in records:
+            if rec.get("type") != "assistant":
+                continue
+            msg = rec.get("message") or {}
+            usage = msg.get("usage")
+            if not usage:
+                continue
+            rec_ts = _parse_ts(rec.get("timestamp"))
+            if rec_ts is None:
+                continue
+            model = msg.get("model", "")
+            dollars_by_class, context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
+            if dollars_by_class is None:
+                unpriced_turns += 1
+                unpriced_tokens += turn_unpriced_tokens
+                continue
+            turn_total = sum(dollars_by_class.values())
+            iso = datetime.fromtimestamp(rec_ts, tz=UTC).isocalendar()
+            week_str = f"{iso.year}-W{iso.week:02d}"
+            d = data[week_str]
+            d["total"] += turn_total
+            if _fam(model) == "opus":
+                d["opus"] += turn_total
+            if _context_bucket(context_at_turn) == _CONTEXT_BUCKET_OVER:
+                d["context_over"] += turn_total
+
+    if not data:
+        print("No priced turns found.")
+        if unpriced_turns:
+            print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
+        return
+
+    current_iso = today.isocalendar()
+    current_week_str = f"{current_iso.year}-W{current_iso.week:02d}"
+
+    header = f"{'Week':<20} {'$':>14} {'Context%':>9} {'Opus%':>7}"
+    print(header)
+    print("-" * len(header))
+    for week_str in sorted(data):
+        d = data[week_str]
+        label = f"{week_str} (partial)" if week_str == current_week_str else week_str
+        print(
+            f"{label:<20} {d['total']:>14,.2f} "
+            f"{_pct_of(d['context_over'], d['total']):>9} {_pct_of(d['opus'], d['total']):>7}"
+        )
+    if unpriced_turns:
+        print(f"\n  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
 
 
 def cmd_handoff_ratio(args: argparse.Namespace) -> None:
@@ -3547,6 +3978,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_mix.set_defaults(func=cmd_subagent_mix)
 
+    p_reviewer_yield = sub.add_parser(
+        "reviewer-yield",
+        help=(
+            "Per-reviewer-agent-type dispatch-to-verdict yield: findings-found vs."
+            " zero-finding vs. unclassified, joined via each dispatch's subagents/*.meta.json."
+        ),
+    )
+    _add_project_scope_args(p_reviewer_yield)
+    p_reviewer_yield.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to dispatches with timestamp in the last N days (e.g. 35d).",
+    )
+    p_reviewer_yield.add_argument(
+        "--redact", action="store_true",
+        help=(
+            "No-op: reviewer-yield's output is aggregate-only per agent type and"
+            " carries no project-label or session-id field to redact. Kept for CLI"
+            " parity with cost/audit-routing."
+        ),
+    )
+    p_reviewer_yield.set_defaults(func=cmd_reviewer_yield)
+
     p_pr = sub.add_parser("pr-link", help="Map branches to GitHub PRs and pull per-PR comment counts. Requires gh.")
     p_pr.add_argument("--repo", required=True, metavar="OWNER/REPO")
     p_pr.add_argument("--branches", required=True, metavar="B1,B2,...")
@@ -3630,6 +4083,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_trace.add_argument(
         "--deny-only", action="store_true",
         help="Restrict output to sessions that contain at least one hook denial.",
+    )
+    p_review_trace.add_argument(
+        "--deny-summary", action="store_true",
+        help=(
+            "Replace the per-session event listing with two grouped denial-count"
+            " tables: by originating hook/gate, and by attempted command shape"
+            " (git commit / git checkout / git push / other)."
+        ),
     )
     p_review_trace.add_argument(
         "--skill", metavar="NAME", choices=sorted(REVIEW_TRACE_SKILLS),
@@ -3719,6 +4180,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_cost.set_defaults(func=cmd_cost)
+
+    p_cost_trend = sub.add_parser(
+        "cost-trend",
+        help="Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.",
+    )
+    _add_project_scope_args(p_cost_trend)
+    p_cost_trend.set_defaults(func=cmd_cost_trend)
 
     p_handoff_ratio = sub.add_parser(
         "handoff-ratio",

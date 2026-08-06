@@ -31,6 +31,20 @@ def _write_subagent_jsonl(
     _write_jsonl(subdir / f"{agent_id}.jsonl", records)
 
 
+def _write_subagent_dispatch(
+    proj: Path, session_id: str, agent_id: str, tool_use_id: str, records: list[dict],
+    *, agent_type: str = "staff-backend-engineer", description: str = "review",
+) -> None:
+    """Write both the .jsonl and its paired .meta.json for a synthetic subagent
+    dispatch — _write_subagent_jsonl (above) writes only the .jsonl, never the
+    meta.json sidecar reviewer-yield's dispatch join reads. Matches the real
+    on-disk shape: {"agentType", "description", "toolUseId", "spawnDepth"}."""
+    _write_subagent_jsonl(proj, session_id, agent_id, records)
+    subdir = proj / session_id / _mod.SUBAGENT_SUBDIR
+    meta = {"agentType": agent_type, "description": description, "toolUseId": tool_use_id, "spawnDepth": 1}
+    (subdir / f"{agent_id}.meta.json").write_text(json.dumps(meta))
+
+
 def _table_cols(out: str, *, header_contains: str, row_contains: str,
                 drop_leading_labels: int = 0,
                 max_labels: int | None = None,
@@ -642,6 +656,322 @@ class TestSubagentMix:
         _mod.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "No data found." in out
+
+
+# ---------------------------------------------------------------------------
+# reviewer-yield
+# ---------------------------------------------------------------------------
+
+
+def _reviewer_yield_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    redact: bool = False,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "redact": redact,
+    })()
+
+
+class TestReviewerYield:
+    def test_no_concerns_verdict_adjacent_to_bold_markers_classified_zero_finding(self, fake_projects, capsys):
+        """`\\b` word-boundary anchors match identically next to whitespace or
+        markdown punctuation (`**`), so a verdict wrapped in bold markers
+        classifies the same as unadorned text — this guards that punctuation
+        adjacency, not a "bold" feature of the regex."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "ciso-reviewer")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No CISO concerns**"}])],
+            agent_type="ciso-reviewer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="ciso-reviewer", row_startswith=True)
+        assert cols["Dispatches"] == "1"
+        assert cols["Zero"] == "1"
+
+    def test_request_changes_verdict_classified_findings_found(self, fake_projects, capsys):
+        """A 'Request changes' verdict classifies as findings-found, not
+        unclassified — the only coverage of `_REVIEWER_REQUEST_CHANGES_RE`."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[
+                {"type": "text", "text": "Request changes\n- No test covers the retry path."},
+            ])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True)
+        assert cols["Found"] == "1"
+        assert cols["Unclass"] == "0"
+
+    def test_approve_with_concerns_verdict_contributes_zero_to_findings_total(self, fake_projects, capsys):
+        """An 'Approve with concerns' verdict carries no derivable count, so it
+        lands in findings-found but contributes 0 to the total-findings sum —
+        distinct from a numeric 'Found <N> issues' verdict."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "ciso-reviewer")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[
+                {"type": "text", "text": "**Approve with concerns**\n- Rotate the leaked token."},
+            ])],
+            agent_type="ciso-reviewer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="ciso-reviewer", row_startswith=True)
+        assert cols["Found"] == "1"
+        assert cols["Findings"] == "0"
+
+    def test_singular_issue_verdict_classified_findings_found(self, fake_projects, capsys):
+        """'Found 1 issue' (singular) — the loosened regex's singular/plural
+        relaxation — classifies as findings-found with 1 total finding."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(
+                "claude-opus-4-7", ts="2026-05-19T10:00:00.000Z",
+                content=[_agent_use("a1", "staff-backend-engineer")],
+            ),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[
+                {"type": "text", "text": "Wrote findings to /tmp/x.md. Found 1 issue. Missing null check."},
+            ])],
+            agent_type="staff-backend-engineer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(
+            out, header_contains="AgentType", row_contains="staff-backend-engineer", row_startswith=True
+        )
+        assert cols["Found"] == "1"
+        assert cols["Findings"] == "1"
+
+    def test_plural_issues_verdict_classified_findings_found(self, fake_projects, capsys):
+        """'Found 3 issues' (plural) classifies as findings-found with 3 total findings."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[
+                {"type": "text", "text": "Wrote findings to /tmp/x.md. Found 3 issues. Coverage gaps."},
+            ])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True)
+        assert cols["Found"] == "1"
+        assert cols["Findings"] == "3"
+
+    def test_case_insensitive_verdict_matching(self, fake_projects, capsys):
+        """An all-caps 'FOUND 2 ISSUES' verdict — the loosened regex's
+        case-insensitivity relaxation — still classifies as findings-found."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(
+                "claude-opus-4-7", ts="2026-05-19T10:00:00.000Z",
+                content=[_agent_use("a1", "staff-platform-engineer")],
+            ),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[
+                {"type": "text", "text": "FOUND 2 ISSUES IN THE PIPELINE CONFIG."},
+            ])],
+            agent_type="staff-platform-engineer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(
+            out, header_contains="AgentType", row_contains="staff-platform-engineer", row_startswith=True
+        )
+        assert cols["Found"] == "1"
+        assert cols["Findings"] == "2"
+
+    def test_non_reviewer_subagent_type_excluded_entirely(self, fake_projects, capsys):
+        """A general-purpose dispatch (not in the reviewer set) is excluded from
+        aggregation entirely, even though its subagent transcript resolves fine."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "general-purpose")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 5 issues."}])],
+            agent_type="general-purpose",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        assert "general-purpose" not in out
+        assert "No reviewer-agent dispatches found." in out
+
+    def test_dispatch_with_no_matching_meta_json_excluded_not_unclassified(self, fake_projects, capsys):
+        """A reviewer-type dispatch with no subagents/*.meta.json at all must not
+        crash, and is excluded entirely (not counted as unclassified) — meta.json
+        is the only signal that a subagent transcript for the dispatch exists."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        assert "No reviewer-agent dispatches found." in out
+        assert "staff-sdet" not in out
+
+    def test_empty_subagent_transcript_classified_unclassified(self, fake_projects, capsys):
+        """A resolved subagent .jsonl with zero assistant text blocks (only
+        tool_use content, no text) — distinct from the missing-meta.json case
+        above — must not crash, and classifies as unclassified."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True)
+        assert cols["Dispatches"] == "1"
+        assert cols["Unclass"] == "1"
+
+    def test_default_run_has_no_project_or_session_fields(self, fake_projects, capsys):
+        """Default (no --redact) run: output is aggregate-only per agent type and
+        carries no raw project label or session id — proving the schema's
+        aggregate-only claim rather than leaving it unverified."""
+        _write_jsonl(fake_projects / "distinctive-session-id.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "ciso-reviewer")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "distinctive-session-id", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No CISO concerns**"}])],
+            agent_type="ciso-reviewer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        assert "distinctive-session-id" not in out
+        assert "testrepo" not in out
+
+    def test_redact_flag_is_true_no_op(self, fake_projects, capsys):
+        """--redact produces byte-identical output to the default run, proving
+        the flag is genuinely inert given the aggregate-only schema — not just
+        documented as such."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "ciso-reviewer")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No CISO concerns**"}])],
+            agent_type="ciso-reviewer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(redact=False))
+        default_out = capsys.readouterr().out
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(redact=True))
+        redacted_out = capsys.readouterr().out
+        assert default_out == redacted_out
+
+    def test_since_filter_excludes_out_of_window_dispatch(self, fake_projects, capsys):
+        """A dispatch outside the --since window is excluded from the aggregate;
+        one inside it is still counted."""
+        old_ts = "2020-01-01T00:00:00.000Z"
+        new_ts = "2099-12-31T00:00:00.000Z"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts=old_ts, content=[_agent_use("a1", "ciso-reviewer")]),
+            _asst("claude-opus-4-7", ts=new_ts, content=[_agent_use("a2", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No CISO concerns**"}])],
+            agent_type="ciso-reviewer",
+        )
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a2", "a2",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(since="1d"))
+        out = capsys.readouterr().out
+        assert "ciso-reviewer" not in out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True)
+        assert cols["Dispatches"] == "1"
+
+    def test_same_agent_type_dispatched_twice_accumulates_not_overwrites(self, fake_projects, capsys):
+        """Two dispatches of the same subagent_type within one aggregation run
+        sum into the same row instead of the second overwriting the first."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "ciso-reviewer")]),
+            _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[_agent_use("a2", "ciso-reviewer")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 2 issues. Missing checks."}])],
+            agent_type="ciso-reviewer",
+        )
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a2", "a2",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 3 issues. Leaked token."}])],
+            agent_type="ciso-reviewer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="ciso-reviewer", row_startswith=True)
+        assert cols["Dispatches"] == "2"
+        assert cols["Findings"] == "5"
+
+    def test_unreadable_meta_json_files_excluded_and_counted(self, fake_projects, capsys):
+        """An invalid-JSON meta.json and a valid-JSON meta.json missing
+        toolUseId are both excluded from aggregation (not crashed) and both
+        counted in the printed meta-read-errors line — distinct from the
+        no-meta.json-at-all exclusion, which is not counted."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+            _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[_agent_use("a2", "staff-sdet")]),
+        ])
+        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        (subdir / "agent-a1.meta.json").write_text("{not valid json")
+        (subdir / "agent-a2.meta.json").write_text(
+            json.dumps({"agentType": "staff-sdet", "description": "review", "spawnDepth": 1})
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        assert "No reviewer-agent dispatches found." in out
+        assert "(2 meta.json files failed to parse, excluded)" in out
+
+    def test_unreadable_meta_json_counted_alongside_a_resolved_table_row(self, fake_projects, capsys):
+        """The meta-read-errors count is also reported when other dispatches in
+        the same run resolve fine and produce a normal agent-type table — the
+        counter line isn't only reachable from the all-excluded empty-table path."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+            _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[_agent_use("a2", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+            agent_type="staff-sdet",
+        )
+        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        (subdir / "agent-a2.meta.json").write_text("{not valid json")
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True)
+        assert cols["Dispatches"] == "1"
+        assert "(1 meta.json files failed to parse, excluded)" in out
 
 
 # ---------------------------------------------------------------------------
@@ -1324,6 +1654,7 @@ def _review_trace_args(
     since: str | None = None,
     until: str | None = None,
     deny_only: bool = False,
+    deny_summary: bool = False,
     skill: str | None = None,
 ) -> object:
     return type("A", (), {
@@ -1333,6 +1664,7 @@ def _review_trace_args(
         "since": since,
         "until": until,
         "deny_only": deny_only,
+        "deny_summary": deny_summary,
         "skill": skill,
     })()
 
@@ -1342,6 +1674,21 @@ def _event_suffix_branch_model(line: str) -> tuple[str, str]:
     m = re.search(r"\(branch=(\S+) model=(\S+)\)", line)
     assert m, f"no branch/model suffix found in line: {line!r}"
     return m.group(1), m.group(2)
+
+
+def _extract_deny_summary_count(out: str, label: str) -> int:
+    """Parse one label's count from a --deny-summary grouped-count table.
+
+    Row labels may be multi-word (e.g. 'git commit'), so _table_cols' one-
+    token-per-column assumption doesn't apply here — this matches the label
+    as a literal line prefix and reads the trailing count.
+    """
+    for line in out.splitlines():
+        if line.startswith(label):
+            rest = line[len(label):].strip()
+            if rest.isdigit():
+                return int(rest)
+    return 0
 
 
 class TestReviewTrace:
@@ -1775,6 +2122,72 @@ class TestReviewTrace:
         assert len(denial_lines_branch_b_only) == 0
         assert out_branch_b_only == ""
 
+    def test_deny_summary_groups_by_hook_and_command_shape(self, fake_projects, capsys):
+        """--deny-summary groups denials by hook/gate name and by attempted command
+        shape, mixing multiple hook names (code-review x2, ready-for-review x1) and
+        multiple git-command shapes (git commit x2, git push x1)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:01:00.000Z",
+                  content=[_bash_use("b2", "git push origin main")]),
+            _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="b2"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:02:00.000Z",
+                  content=[_bash_use("b3", "git commit -m y")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b3"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        hook_cr = _table_cols(out, header_contains="Hook/gate", row_contains="code-review", row_startswith=True)
+        assert hook_cr["Count"] == "2"
+        hook_rfr = _table_cols(out, header_contains="Hook/gate", row_contains="ready-for-review", row_startswith=True)
+        assert hook_rfr["Count"] == "1"
+        assert _extract_deny_summary_count(out, "git commit") == 2
+        assert _extract_deny_summary_count(out, "git push") == 1
+
+    def test_deny_summary_unmatched_hook_name_bucketed_not_dropped(self, fake_projects, capsys):
+        """A denial matched via _HOOK_DENIAL_SIGNATURE's 'invocation denied' alternative,
+        which names no hook, lands in the 'unmatched' bucket rather than being silently
+        dropped from --deny-summary's total. Its unresolvable tool_use_id also lands in
+        the command-shape grouping's 'other' bucket."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Skill invocation denied."),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
+        assert hook_cols["Count"] == "1"
+        assert _extract_deny_summary_count(out, "other") == 1
+
+    def test_deny_summary_replaces_per_session_listing(self, fake_projects, capsys):
+        """--deny-summary suppresses the normal per-session event listing entirely —
+        no '### <file>' block appears, only the two grouped-count tables."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate."),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert "### " not in out
+        assert "Denials by hook/gate" in out
+        assert "Denials by attempted command shape" in out
+
+    def test_deny_summary_with_matching_session_but_zero_denials_prints_explicit_message(
+        self, fake_projects, capsys
+    ):
+        """A scope with a matching session (a skill event, no denial) under
+        --deny-summary prints an explicit 'no denials found' message with the
+        scope header — not byte-for-byte empty output, which would be
+        indistinguishable from a broken --branches/scope flag matching nothing."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert "No denials found in scope." in out
+        assert "Denials by hook/gate" not in out
+
 
 # ---------------------------------------------------------------------------
 # audit-routing
@@ -1789,6 +2202,23 @@ def _opus(content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T1
         ts=ts,
         content=content,
     )
+    rec["message"]["usage"] = {
+        "input_tokens": 50,
+        "output_tokens": out,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cr,
+    }
+    return rec
+
+
+def _priced_opus(
+    content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T10:00:00.000Z",
+    model: str = "claude-opus-5",
+) -> dict:
+    """Build a priced-Opus assistant record (default claude-opus-5, in
+    _MODEL_BASE_INPUT_RATES) for audit-routing's dollar-headline tests —
+    _opus()'s claude-opus-4-7 is deliberately unpriced."""
+    rec = _asst(model, branch="main", ts=ts, content=content)
     rec["message"]["usage"] = {
         "input_tokens": 50,
         "output_tokens": out,
@@ -1891,6 +2321,19 @@ def _extract_corpus_class_tokens(out: str, cls: str) -> int:
             if len(parts) > out_idx:
                 return int(parts[out_idx].replace(",", ""))
     return 0
+
+
+def _extract_sonnet_tier_dollar_estimate(out: str) -> float:
+    """Parse the dollar-weighted 'Sonnet-tier estimate: $N' headline.
+
+    The dollar headline prints first, ahead of the token-based secondary
+    diagnostic line that reuses the same 'Sonnet-tier estimate:' label — this
+    regex only matches the '$'-prefixed form, so it can't accidentally read
+    the token line.
+    """
+    match = re.search(r"Sonnet-tier estimate: \$([\d,]+\.\d{2})", out)
+    assert match is not None, "dollar Sonnet-tier estimate line not found in output"
+    return float(match.group(1).replace(",", ""))
 
 
 class TestAuditRouting:
@@ -2028,6 +2471,42 @@ class TestAuditRouting:
         _mod.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         assert "Sonnet-tier estimate: 700" in out
+
+    def test_sonnet_tier_estimate_dollar_headline_printed(self, fake_projects, capsys):
+        """Dollar-weighted Sonnet-tier headline reflects code-write + code-read priced spend,
+        hand-computed against claude-opus-5's base $5/MTok rate (output at its 5x multiplier)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced_opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=300),
+            _priced_opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        # Two turns, each input=50 (100 total); output 300+400=700; both code-write/code-read
+        # so this is 100% of priced spend in the window.
+        expected_dollars = (100 / 1_000_000 * 5.00) + (700 / 1_000_000 * 25.00)
+        # abs tolerance matches the headline's own 2-decimal-place ($.NN) display rounding.
+        assert _extract_sonnet_tier_dollar_estimate(out) == pytest.approx(expected_dollars, abs=0.005)
+        assert "= 100% of priced Opus spend in this window" in out
+
+    def test_dollar_headline_mixed_priced_and_unpriced_turns_not_double_counted(self, fake_projects, capsys):
+        """A priced turn and an unpriced turn in the same corpus: the dollar headline
+        reflects only the priced turn, and the unpriced turn is surfaced via its own
+        counter rather than silently dropped or folded into the dollar figure at $0."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced_opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=300),
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400),  # unpriced
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        expected_dollars = (50 / 1_000_000 * 5.00) + (300 / 1_000_000 * 25.00)
+        # abs tolerance matches the headline's own 2-decimal-place ($.NN) display rounding.
+        assert _extract_sonnet_tier_dollar_estimate(out) == pytest.approx(expected_dollars, abs=0.005)
+        # _opus()'s turn: input 50 + output 400 + cache_read 0 = 450 unpriced tokens.
+        assert "1 unpriced turns / 450 tokens excluded from priced spend" in out
+        # Token-based secondary line still reflects BOTH turns' output tokens, unaffected
+        # by pricing — proves the token and dollar accumulators are independent.
+        assert _extract_corpus_class_tokens(out, "code-write") == 300
+        assert _extract_corpus_class_tokens(out, "code-read") == 400
 
     def test_orchestration_takes_priority_over_active_judgment_span(self):
         """orchestration is first-match: Agent turn inside an open span → orchestration, not judgment."""
@@ -2509,6 +2988,105 @@ class TestCost:
         out = capsys.readouterr().out
         assert "private-project-1" in out
         assert "zzz-other" not in out
+
+
+# ---------------------------------------------------------------------------
+# cost-trend
+# ---------------------------------------------------------------------------
+
+
+def _cost_trend_args(*, projects: str = "*", this_repo: bool = False) -> object:
+    return type("A", (), {"projects": projects, "this_repo": this_repo})()
+
+
+def _extract_cost_trend_row(out: str, week_label: str) -> dict[str, str] | None:
+    """Parse one cost-trend row. week_label may include the trailing ' (partial)'
+    suffix — the label itself can be multi-word, so this matches as a literal
+    line prefix rather than reusing _table_cols' one-token-per-column model."""
+    for line in out.splitlines():
+        if line.startswith(week_label):
+            rest = line[len(week_label):].split()
+            if len(rest) == 3:
+                return {"total": rest[0], "context_pct": rest[1], "opus_pct": rest[2]}
+    return None
+
+
+class TestCostTrend:
+    def test_week_bucket_boundary_and_per_model_pricing(self, fake_projects, capsys):
+        """Turns in two different ISO weeks land in separate rows, each priced
+        against its own model's rate via _price_turn (Sonnet 5's $2/MTok base)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),  # ISO 2026-W23
+            _priced("claude-sonnet-5", input=2_000_000, ts="2026-06-08T10:00:00.000Z"),  # ISO 2026-W24
+        ])
+        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        out = capsys.readouterr().out
+        w23 = _extract_cost_trend_row(out, "2026-W23")
+        w24 = _extract_cost_trend_row(out, "2026-W24")
+        assert w23 is not None and w23["total"] == "2.00"
+        assert w24 is not None and w24["total"] == "4.00"
+
+    def test_opus_share_and_context_share_computed_per_week(self, fake_projects, capsys):
+        """A week mixing an Opus-family turn with a Sonnet turn, and a >=200k
+        context turn with a <200k turn, reports both shares correctly."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-opus-5", input=100_000, ts="2026-06-01T10:00:00.000Z"),          # $0.50, <200k
+            _priced("claude-sonnet-5", input=100_000, ts="2026-06-01T11:00:00.000Z"),        # $0.20, <200k
+            _priced("claude-sonnet-5", input=100_000, cache_read=100_000,
+                    ts="2026-06-01T12:00:00.000Z"),  # $0.22 total, context 200,000 >=200k (inclusive edge)
+        ])
+        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        out = capsys.readouterr().out
+        row = _extract_cost_trend_row(out, "2026-W23")
+        assert row is not None
+        assert row["total"] == "0.92"
+        assert row["opus_pct"] == "54.3%"
+        assert row["context_pct"] == "23.9%"
+
+    def test_current_week_labeled_partial_other_weeks_not(self, fake_projects, capsys):
+        """The trailing bucket matching `today`'s ISO week is labeled '(partial)';
+        an earlier, complete week is not."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),  # 2026-W23, complete
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-08T10:00:00.000Z"),  # 2026-W24, "today"'s week
+        ])
+        _mod._cost_trend_report(_cost_trend_args(), date(2026, 6, 8))  # today falls in 2026-W24
+        out = capsys.readouterr().out
+        assert "2026-W24 (partial)" in out
+        assert "2026-W23 (partial)" not in out
+        # The complete week's own row is unlabeled — its line starts with the bare week string.
+        assert any(ln.startswith("2026-W23 ") and "(partial)" not in ln for ln in out.splitlines())
+
+    def test_iso_year_boundary_dec31_and_jan1_share_correct_iso_week(self, fake_projects, capsys):
+        """Dec 31 2025 falls in ISO week 2026-W01 — isocalendar() assigns
+        year-end dates to the following calendar year's week numbering, which
+        a bucket keyed on the datetime's plain `.year` would get wrong. `today`
+        Jan 1 2026 is in the same ISO week, so the row is labeled '(partial)'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2025-12-31T10:00:00.000Z"),
+        ])
+        _mod._cost_trend_report(_cost_trend_args(), date(2026, 1, 1))
+        out = capsys.readouterr().out
+        row = _extract_cost_trend_row(out, "2026-W01 (partial)")
+        assert row is not None
+        assert row["total"] == "2.00"
+        assert "2025-W53" not in out
+
+    def test_unpriced_model_turn_excluded_from_total_and_counted(self, fake_projects, capsys):
+        """A turn from a model with no _MODEL_BASE_INPUT_RATES entry is
+        excluded from every week's dollar total and reported via its own
+        unpriced-turns counter, rather than silently dropped from the total."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400,
+                  ts="2026-06-01T11:00:00.000Z"),  # claude-opus-4-7 is deliberately unpriced
+        ])
+        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        out = capsys.readouterr().out
+        row = _extract_cost_trend_row(out, "2026-W23")
+        assert row is not None and row["total"] == "2.00"
+        # _opus()'s turn: input 50 + output 400 + cache_read 0 = 450 unpriced tokens.
+        assert "1 unpriced turns / 450 tokens excluded from priced spend" in out
 
 
 # ---------------------------------------------------------------------------
