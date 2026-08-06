@@ -27,8 +27,9 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
 
   The trailing `*` picks up both per-worktree project dirs and sessions started in a subdirectory. A prefix-with-separator match (`<slug>-*`) was considered and rejected as the default instead: it still collides with a sibling clone at `<repo>-fork`, which is exactly the collision `--this-repo`'s exact-identity match exists to prevent — this glob is a deliberately looser fallback for the one case exact identity can't reach, not a general replacement for it. Because it is a prefix, it also over-includes rows for any other sibling sharing that prefix; for `buckets` that shows up as extra rows in the output, visibly, rather than silently returning nothing.
 - **An orphaned project directory.** If a worktree is removed, its project directory under `~/.claude/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had.
+- **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)).
 
-All three gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected.
+All four gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected.
 
 ---
 
@@ -169,6 +170,30 @@ GH-333/audit-routing-samples-subcommand           2      11   2   1   2  staff-s
 Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/ready-for-review` spawns.
 
 **When to reach for it.** Audit which reviewer agents fired on a branch, or compare how delegation patterns differ across branches. The tool recognizes `check-runner` in historical session data — the agent is retired (2026-06-23) but historical transcript entries remain valid corpus inputs.
+
+---
+
+## reviewer-yield
+
+**Purpose.** Per-reviewer-agent-type dispatch-to-verdict yield: for each main-thread reviewer-agent dispatch (`staff-*`, `ciso-reviewer`, `skill-fidelity-reviewer`), joins it to its own subagent transcript via `subagents/<id>.meta.json`'s `toolUseId` field, then classifies the transcript's last assistant text block as findings-found, zero-finding, or unclassified — answering "are reviewer-agent dispatches producing real findings, or mostly zero-finding passes" (the efficiency-audit tracking issue's F4).
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
+- `--since Nd` — limit to dispatches with timestamp in the last N days (e.g. `30d`)
+- `--redact` — accepted for CLI parity with `cost`/`audit-routing`; currently a no-op, since this subcommand's output is aggregate-only per agent type and carries no project-label or session-id field to redact.
+
+**Sample output.**
+```
+## Reviewer-agent yield (last 30d)
+
+AgentType                    Dispatches   Found   Zero  Unclass  Findings
+-------------------------------------------------------------------------
+ciso-reviewer                       230      87     32      111       265
+staff-sdet                          283     130     23      130       449
+```
+
+**When to reach for it.** Judge whether a reviewer agent's dispatch volume is worth its cost. Verdict classification is best-effort: it recognizes the `**No X concerns**`, `Wrote findings to <path>. Found <N> issues.`, `**Approve with concerns**`, and `**Request changes**` contract shapes (case-insensitive, bold-optional, singular/plural-tolerant) documented in `claude/.claude/agents/*.md`. The bulleted `**Approve with concerns**`/`**Request changes**` verdicts land in `Found` alongside the numeric-count verdicts, but carry no derivable count of their own — `Findings` is therefore a lower bound on actual findings, not an exact total. A dispatch whose `subagents/*.meta.json` sidecar can't be resolved at all is excluded entirely, not counted as `Unclass`. A `subagents/*.meta.json` sidecar that exists but is unreadable (invalid JSON) or is missing `toolUseId` is a second, distinct exclusion path — also excluded entirely, and corpus-wide counted in a `(N meta.json files failed to parse, excluded)` line printed under the table.
 
 ---
 
@@ -369,7 +394,7 @@ Good catch. I'll add IP-range validation before trusting that header.
 
 ## audit-routing
 
-**Purpose.** Per-turn Opus token breakdown by routing class (`orchestration`, `judgment`, `code-write`, `code-read`, `pure-thinking`, `other`), aggregated across sessions with a Sonnet-tier estimate.
+**Purpose.** Per-turn Opus token breakdown by routing class (`orchestration`, `judgment`, `code-write`, `code-read`, `pure-thinking`, `other`), aggregated across sessions with a price-weighted Sonnet-tier estimate — the dollar-weighted headline, priced via the same `_price_turn` primitive `cost` uses, prints first; the original output-token estimate prints below it as a secondary diagnostic.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
@@ -380,30 +405,35 @@ Good catch. I'll add IP-range validation before trusting that header.
 
 **Sample output.**
 ```
-## Opus turn-class breakdown (last 7d)
+## Opus turn-class breakdown (last 30d)
 
 Session          Proj                     orch  judgment  code-write  code-read  thinking   other   total_out   cache_rd
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-875cfbeb-f03     private-project-13     24,755       810     145,450    120,194   231,809 231,860     754,878 38,243,901
-2a0ff669-a0d     private-project-2     149,000     2,495      54,070      6,071   125,343 147,887     484,866 10,169,069
+session-119      private-project-15     23,054       107      31,598     39,045    65,658  60,805     220,267 15,789,467
+session-223      private-project-20     23,059         0      36,663     34,271    60,155  62,058     216,206 11,555,870
 
 ## Corpus aggregate
 
 Class              Output tokens  Cache read tokens
-code-read              2,118,996        253,033,256
-code-write             1,656,358         76,694,724
-pure-thinking          3,863,382        220,641,203
-other                  3,923,547        220,513,484
-orchestration            792,294         15,917,519
-judgment                  65,038         13,974,791
+orchestration          1,935,893         48,688,324
+judgment                  10,499          6,247,896
+code-write             1,214,689         59,676,399
+code-read              1,531,175        165,397,638
+pure-thinking          3,226,641        196,674,409
+other                  3,505,919        206,850,948
 ───────────────────────────────────────────────────
-total                 12,419,615        800,774,977
+total                 11,424,816        683,535,614
 
-Sonnet-tier estimate: 3,775,354 output tokens
-  = 30% of Opus output in this window
+Sonnet-tier estimate: $323.63
+  = 30% of priced Opus spend in this window
+
+Sonnet-tier estimate: 2,745,864 output tokens (secondary diagnostic)
+  = 24% of Opus output in this window
 ```
 
-**When to reach for it.** Answer "is Opus spend doing Sonnet-tier code-read/write in parent sessions?" — the `Sonnet-tier estimate` row summarizes the delegation opportunity. Always use `--redact` before posting output publicly.
+An Opus turn whose model ID has no pricing-table entry is excluded from the dollar figure and counted separately — a `(N unpriced turns / M tokens excluded from priced spend)` line appears under the dollar headline whenever the window contains one, so a corpus with unpriced Opus turns doesn't silently under-report.
+
+**When to reach for it.** Answer "is Opus spend doing Sonnet-tier code-read/write in parent sessions?" — the dollar-weighted `Sonnet-tier estimate` headline is the number to cite; the token-based line below it is a secondary diagnostic only, since output tokens alone can understate a routing class's true spend share by tens of percentage points relative to its dollar share (cache-read and cache-write dominate real billing). Always use `--redact` before posting output publicly.
 
 ---
 
@@ -459,6 +489,33 @@ session-2        private-project-2                189.07
 ```
 
 **When to reach for it.** Rank workflow-efficiency levers by dollars instead of raw token counts before proposing an optimization — a metric denominated in output tokens alone (like `audit-routing`'s Sonnet-tier estimate) can headline 0.6% of spend while missing an 87%-of-spend context-cost problem entirely. Also the source of the redacted, aggregate-only tables that go into a public cost-audit issue — never publish the top-N-sessions section or any `--no-redact` output, both of which are real-project-identifying by construction. If that issue is filed via `gh issue create`, note that `deny-private-project-refs.sh` does not scan `gh issue create`/`gh issue comment` bodies at all — see `docs/private-project-redaction.md`'s "Known gaps" section — so this redaction is not backstopped by the hook on that publish path. Even a `--this-repo`-scoped, redacted table's `private-project-N` numbering is shaped by the operator's full local project corpus, not just this repo — see `_build_redact_map`'s docstring for the ordinal side-channel this implies. Observed wall-clock for a `--since 30d` run against this toolkit's own transcript corpus: ~10s with `--no-redact`, ~18s with the default redacted run — the redact-map first pass roughly doubles the time, since it fully parses every transcript once just to read a directory name (see `iter_sessions`' docstring; this is a known, deliberately deferred perf gap, not a `cost`-specific one).
+
+---
+
+## cost-trend
+
+**Purpose.** Per-ISO-week dollar spend, Opus-family share, and `>=200k` context-bucket share — the standing week-over-week view neither `cost` (a single-window snapshot) nor `audit-routing` provides on its own. Reuses `cost`'s `_price_turn` pricing and `handoff-ratio`'s ISO-week bucketing rather than introducing a second date-bucketing convention.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
+
+No `--redact` flag: like `handoff-ratio`, this subcommand's output (week / $ / context-share % / Opus-share %) is aggregate-only and names no per-session or per-project field.
+
+**Sample output.**
+```
+Week                              $  Context%   Opus%
+-----------------------------------------------------
+2026-W30                   1,695.42     49.0%   23.0%
+2026-W31                   5,419.44     62.0%   14.7%
+2026-W32 (partial)         2,385.73     61.0%   13.6%
+```
+
+The most recent bucket is very likely a partial week — it is labeled `(partial)` explicitly rather than presented as a complete week's total, so it doesn't misread as a real week-over-week drop once history is only a few weeks deep.
+
+A turn whose model ID has no pricing-table entry is excluded from every week's totals and counted separately — a `(N unpriced turns / M tokens excluded from priced spend)` line appears under the table whenever the window contains one, mirroring `audit-routing`'s unpriced-turns convention.
+
+**When to reach for it.** Answer "is spend climbing week over week, and is the composition (Opus share, long-context share) shifting" as a standing instrument, rather than re-running `cost --since 30d` by hand and eyeballing the delta against a stale snapshot.
 
 ---
 

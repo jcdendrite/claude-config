@@ -41,7 +41,22 @@
       "Read(**/.env.test)",
       "Read(**/.env.test.*)",
       "Read(**/credentials.json)",
-      "Read(**/.credentials.json)"
+      "Read(**/.credentials.json)",
+      "Bash(brew install *)",
+      "Bash(brew tap *)",
+      "Bash(brew reinstall *)",
+      "Bash(gem install *)",
+      "Bash(cargo install *)",
+      "Bash(go install *)",
+      "Bash(gh extension install *)",
+      "Bash(mas install *)",
+      "Bash(pipx install *)",
+      "Bash(apt-get install *)",
+      "Bash(apt install *)",
+      "Bash(yum install *)",
+      "Bash(dnf install *)",
+      "Bash(apk add *)",
+      "Bash(zypper install *)"
     ]
   },
   "model": "opusplan",
@@ -151,40 +166,6 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh"
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/cleanup-session-id.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/cleanup-handoff-nudge-marker.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/cleanup-worktree-anchor-nudge-marker.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/cleanup-commit-stall-marker.sh"
           }
         ]
       }
@@ -303,6 +284,11 @@
             "type": "command",
             "command": "~/.claude/hooks/deny-repo-relocation.sh",
             "statusMessage": "Checking repo-relocation guard..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-network-installs.sh",
+            "statusMessage": "Checking network-install guard..."
           }
         ]
       },

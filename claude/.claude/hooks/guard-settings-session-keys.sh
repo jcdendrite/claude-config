@@ -1,15 +1,15 @@
 #!/bin/bash
 # hook-class: gate
 # PreToolUse hook: block git commit when claude/.claude/settings.json has
-# session-scoped keys (model, effortLevel, skipAutoPermissionPrompt) staged
-# relative to main.
+# machine-local or session-scoped keys staged relative to main — see
+# GUARDED_KEYS_JSON below for the guarded set.
 #
-# Purpose: these keys are typically session-scoped ephemeral changes —
-# model/effortLevel from /config, and skipAutoPermissionPrompt written
-# automatically by Claude Code when it persists the permission-prompt
-# preference into the user settings file. Accidentally committing them
-# modifies the shipped config for all users. This hook catches that class
-# of accidental commit and surfaces it before git runs.
+# Purpose: every guarded key holds one machine's own state, and several are
+# written into the user settings file by Claude Code rather than by hand —
+# model and effortLevel from /config, skipAutoPermissionPrompt when it
+# records the permission-prompt preference. Committing any of them ships one
+# engineer's local state as the shipped config for every user. This hook
+# catches that class of accidental commit and surfaces it before git runs.
 #
 # Defense-in-depth: the hook filters its own input by tool name AND checks
 # whether settings.json is actually staged — do not rely solely on the
@@ -84,30 +84,52 @@ else
   MAIN_CONTENT=$(git_capped show "main:$SETTINGS_REPO_PATH" 2>/dev/null)
 fi
 
-# Extract the guarded keys from both versions using jq.
-# These 6 jq calls parse settings.json content, not hook input — they are
-# fail-open by design (a settings.json that can't be parsed doesn't block
-# the commit; the commit's own schema validation handles that).
-STAGED_MODEL=$(printf '%s\n' "$STAGED_CONTENT" | jq -r '.model // ""' 2>/dev/null)
-STAGED_EFFORT=$(printf '%s\n' "$STAGED_CONTENT" | jq -r '.effortLevel // ""' 2>/dev/null)
-STAGED_SKIP_AUTO_PROMPT=$(printf '%s\n' "$STAGED_CONTENT" | jq -r '.skipAutoPermissionPrompt // ""' 2>/dev/null)
-MAIN_MODEL=$(printf '%s\n' "$MAIN_CONTENT" | jq -r '.model // ""' 2>/dev/null)
-MAIN_EFFORT=$(printf '%s\n' "$MAIN_CONTENT" | jq -r '.effortLevel // ""' 2>/dev/null)
-MAIN_SKIP_AUTO_PROMPT=$(printf '%s\n' "$MAIN_CONTENT" | jq -r '.skipAutoPermissionPrompt // ""' 2>/dev/null)
+# The keys holding one machine's own state, which must never ship as the
+# config every stow user receives.
+GUARDED_KEYS_JSON='[
+  "model",
+  "effortLevel",
+  "skipAutoPermissionPrompt",
+  "skipWorkflowUsageWarning",
+  "theme",
+  "tui"
+]'
 
-CHANGED=0
-if [ "$STAGED_MODEL" != "$MAIN_MODEL" ]; then
-  CHANGED=1
-fi
-if [ "$STAGED_EFFORT" != "$MAIN_EFFORT" ]; then
-  CHANGED=1
-fi
-if [ "$STAGED_SKIP_AUTO_PROMPT" != "$MAIN_SKIP_AUTO_PROMPT" ]; then
-  CHANGED=1
-fi
-
-if [ "$CHANGED" -eq 0 ]; then
+# Name the guarded keys whose staged value differs from main. Notes:
+# - One jq call, not one per key: hooks fire on every matching tool call, so a
+#   spawn-per-key loop would not hold the per-fire latency budget.
+# - _lib_jq, not bare jq: a wedged jq would otherwise hang the gated commit
+#   indefinitely, the same risk git_capped covers for git above.
+# - Each value is wrapped as [value] when the key is present and [] when it is
+#   absent, so an explicit false or null stays distinguishable from no key at
+#   all; jq's own != then compares structurally, which is type-strict on
+#   scalars and key-order-independent on objects.
+# - Content that does not parse degrades to {}, so keys the other side does
+#   have still register as changed. Only a jq that cannot run at all yields no
+#   names, and that path warns below rather than passing silently.
+# shellcheck disable=SC2016 # single-quoted on purpose: $guarded/$staged/$main are jq --arg bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_jq wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
+if ! CHANGED_KEYS=$(_lib_jq -rn \
+  --argjson guarded "$GUARDED_KEYS_JSON" \
+  --arg staged "$STAGED_CONTENT" \
+  --arg main "$MAIN_CONTENT" \
+  'def guarded_value($settings; $key):
+     if $settings | has($key) then [$settings[$key]] else [] end;
+   (($staged | fromjson?) // {}) as $staged_settings
+   | (($main | fromjson?) // {}) as $main_settings
+   | [ $guarded[]
+       | . as $key
+       | select(guarded_value($staged_settings; $key)
+                != guarded_value($main_settings; $key)) ]
+   | join(" ")' 2>/dev/null); then
+  # Allow, matching this gate's fail-open posture, but say so — a silent
+  # allow here is indistinguishable from a clean one, and leaves the engineer
+  # believing a guard ran that did not.
+  printf '%s\n' "guard-settings-session-keys: jq could not run (missing or timed out) — the settings-key guard did not evaluate this commit." >&2
   exit 0
 fi
 
-emit_deny "settings.json has session-scoped keys changed — commit these only if intentional. The staged settings.json differs from main on model, effortLevel, or skipAutoPermissionPrompt. These keys are typically ephemeral session state — model/effortLevel set via /config, and skipAutoPermissionPrompt written automatically by Claude Code — and should not be committed unless you are intentionally shipping a config change. Unstage the file (git restore --staged claude/.claude/settings.json) to allow the commit, or proceed only if this is a deliberate update."
+if [ -z "$CHANGED_KEYS" ]; then
+  exit 0
+fi
+
+emit_deny "settings.json has machine-local or session-scoped keys changed — commit these only if intentional. The staged settings.json differs from main on: ${CHANGED_KEYS}. These keys hold one machine's own state, and several are written by Claude Code rather than by hand (model and effortLevel from /config, skipAutoPermissionPrompt when it records the permission-prompt preference), so committing them ships your local state as the shipped config for every user. Unstage the file (git restore --staged claude/.claude/settings.json) to allow the commit, or proceed only if this is a deliberate update."

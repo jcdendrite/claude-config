@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
+from pathlib import Path
 
 from helpers import (
     CANARY_CONTENT,
@@ -310,4 +312,71 @@ class TestConfigDirRelocatesStateDir:
         assert _context(_run(repo, isolated_home, extra_env=env)) is not None
         assert _context(_run(repo, isolated_home, extra_env=env)) is None, (
             "the same unchanged state must not be reported every prompt"
+        )
+
+
+def _touch_with_age(path: Path, days_old: int) -> None:
+    path.write_text("/some/repo\n")
+    stamp = time.time() - (days_old * 86400)
+    os.utime(path, (stamp, stamp))
+
+
+class TestStateDirSweep:
+    """30-day eviction sweep, run on every transition into the drifted
+    state — no SessionEnd hook cleans up this directory."""
+
+    def test_sweep_deletes_entries_older_than_30_days(
+        self, isolated_home, opted_in_with_worktree
+    ):
+        repo, _wt = opted_in_with_worktree
+        state_dir = isolated_home / ".claude" / ".worktree-anchor-nudge.d"
+        state_dir.mkdir(parents=True)
+        stale = state_dir / "old-session"
+        _touch_with_age(stale, days_old=31)
+
+        result = _run(repo, isolated_home)
+
+        assert result.returncode == 0
+        assert not stale.exists(), "entries older than 30 days must be swept"
+
+    def test_sweep_preserves_entries_within_30_days(
+        self, isolated_home, opted_in_with_worktree
+    ):
+        repo, _wt = opted_in_with_worktree
+        state_dir = isolated_home / ".claude" / ".worktree-anchor-nudge.d"
+        state_dir.mkdir(parents=True)
+        fresh = state_dir / "recent-session"
+        _touch_with_age(fresh, days_old=1)
+
+        context = _context(_run(repo, isolated_home))
+
+        assert context is not None, (
+            "the sweep only runs on a transition into the drifted state — "
+            "without this assertion the test stays green even if the hook "
+            "stopped reporting altogether"
+        )
+        assert fresh.exists(), "entries within 30 days must survive the sweep"
+
+    def test_sweep_skipped_when_state_dir_is_a_symlink(
+        self, isolated_home, opted_in_with_worktree, tmp_path
+    ):
+        """A symlinked state dir must not be followed by the sweep — the
+        `[ ! -L ]` guard skips the sweep entirely rather than deleting the
+        symlink itself once its own mtime ages past 30 days."""
+        repo, _wt = opted_in_with_worktree
+        real_target = tmp_path / "elsewhere"
+        real_target.mkdir()
+
+        state_dir = isolated_home / ".claude" / ".worktree-anchor-nudge.d"
+        state_dir.parent.mkdir(parents=True, exist_ok=True)
+        state_dir.symlink_to(real_target)
+        stale_mtime = time.time() - (31 * 86400)
+        os.utime(state_dir, (stale_mtime, stale_mtime), follow_symlinks=False)
+
+        result = _run(repo, isolated_home)
+
+        assert result.returncode == 0
+        assert state_dir.is_symlink(), (
+            "the [ ! -L ] guard must skip a symlinked state dir with an "
+            "aged mtime, not delete the symlink itself"
         )

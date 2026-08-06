@@ -29,17 +29,37 @@ EOF
 }
 
 _walk_session() {
-  local sid pid
+  local pid
   # Walk up the process ancestor chain looking for a session file. Direct
   # invocation resolves in one step ($PPID = Claude Code PID). Script
   # invocation from the Bash tool resolves in two steps ($PPID = Bash tool
   # shell, grandparent = Claude Code PID). The loop handles any depth.
-  # On the first ancestor with a readable session file, print
+  # On the first ancestor with a readable session file whose recorded start
+  # time matches the live process's current start time, print
   # "<session_id> <pid>": that $pid is the live Claude main-process PID,
-  # since the walk reached it as a process ancestor of this script.
+  # since the walk reached it as a process ancestor of this script. A
+  # recorded start time that doesn't match — including an entry with no
+  # recorded start time at all — means the PID was reused since the entry
+  # was written, so it is untrusted and treated as if the file were absent.
+  # `lstart`'s one-second resolution leaves a residual false-positive window:
+  # a reused PID whose new process starts within the same wall-clock second
+  # as the stale entry's process still compares equal.
   pid=$PPID
   while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
-    sid=$(cat "$CONFIG_DIR/sessions/$pid" 2>/dev/null)
+    local sid recorded_start current_start
+    sid=""
+    if [ -r "$CONFIG_DIR/sessions/$pid" ]; then
+      {
+        IFS= read -r sid
+        IFS= read -r recorded_start
+      } < "$CONFIG_DIR/sessions/$pid" 2>/dev/null
+      if [ -n "$sid" ] && [ -n "$recorded_start" ]; then
+        current_start=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null)
+        [ "$current_start" = "$recorded_start" ] || sid=""
+      else
+        sid=""
+      fi
+    fi
     if [ -n "$sid" ]; then
       printf '%s %s' "$sid" "$pid"
       return 0

@@ -40,7 +40,7 @@ When you spawn: pick the specialist that serves the question (table below is ref
 | Analytics modeling | `staff-analytics-engineer` | Warehouse-side modeling (fact/dim, SCD, partitioning, materialization), transformation correctness, source-schema review for ELT-readiness |
 | Infrastructure | `staff-platform-engineer` | CI/CD, IaC, shell, deployment ordering, secret provisioning, observability/alerting/SLO, runbook linkage, load characteristics, cost / operational footprint, deploy-window and lock-budget for migrations |
 | Testing | `staff-sdet` | Testability of the design, edge cases the plan omits, test strategy coverage vs risk areas, test data; production code with non-trivial logic that lacks tests |
-| Product | `staff-product-engineer` | Whether the plan solves the user problem, UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing, telemetry semantics |
+| Product | `staff-product-engineer` | Whether the plan solves the user-facing problem it claims to (Step 4's ledger-gated "Unjustified given" tripwire, pre-spawn, catches accepted-but-changeable design conditions on plans this row never reaches), UX impact during migrations, feature interactions, user-facing regressions hidden behind technical framing, telemetry semantics |
 
 Project-level plan-review skills may extend this table with project-specific reviewer roles, but must not remove or narrow the `ciso-reviewer` trigger conditions.
 

@@ -23,6 +23,9 @@
 # regardless of sentinel state) and <repo>/.claude/autonomous-shipping-optout
 # (repo-scoped, read via _lib_autonomous_shipping_active).
 #
+# STATE_DIR gets a 30-day eviction sweep on every fire, since state files are
+# themselves only ever written here — no SessionEnd hook cleans them up.
+#
 # Known gaps (see docs/commit-stall-block.md for the full design record):
 # - Exclusion-window is scoped to the final sentence, same as the fire
 #   window, not the whole message: a failure signal in an earlier sentence
@@ -196,6 +199,10 @@ _commit_stall_work_pending "$REPO_ROOT" || exit 0
 # current prompt_id — a write failure (read-only $HOME, full disk) must not
 # block, so the read-back is the actual gate on emitting.
 mkdir -p "$STATE_DIR" 2>/dev/null || true
+# Evict stale entries from one-shot runs that skipped SessionEnd cleanup.
+if [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ]; then
+  find "$STATE_DIR" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
+fi
 printf '%s' "$PROMPT_ID" > "$STATE_FILE" 2>/dev/null || true
 WRITTEN_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 [ "$WRITTEN_PROMPT_ID" = "$PROMPT_ID" ] || exit 0

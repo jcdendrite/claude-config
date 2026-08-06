@@ -1,10 +1,10 @@
 """Tests for require-code-review.sh."""
 from __future__ import annotations
 
-import os
 import subprocess
 
 import pytest
+from conftest import _seed_session
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
@@ -215,9 +215,7 @@ class TestRequireCodeReview:
         # The skill computes its filename from $PPID inside the bash
         # subshell; subprocess.run spawns bash as a child of this pytest
         # process, so $PPID resolves to os.getpid().
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         markers_dir = isolated_home / ".claude" / "code-review-markers"
         if markers_dir.exists():

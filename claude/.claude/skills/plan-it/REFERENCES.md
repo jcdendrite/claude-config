@@ -101,6 +101,7 @@ ledger gives that fresh-context check something concrete to diff against.
 
 ```
 Root: <one-line problem/threat statement>
+Givens: <condition treated as fixed> — beyond reach: <one-line reason>
 
 Row 1 [mechanism]: <name> — anchors: root — <one-line justification>
 Row 2 [assumption]: <claim> [verified: <source>] — anchors: row1
@@ -118,6 +119,9 @@ root) rather than another judgment call.
 Root: a plan revision can silently contradict a fact the same session
 already verified, because attention is captured by whatever finding is
 currently active.
+Givens: plan-review markers live under ~/.claude/plan-review-markers/ —
+beyond reach: the marker directory is a fixed harness convention this
+plan does not touch.
 
 Row 1 [mechanism]: content-addressed plan-review marker — anchors: root —
 forces re-review on any plan edit; an existence-only marker does not.

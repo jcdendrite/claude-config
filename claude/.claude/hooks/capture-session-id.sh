@@ -28,6 +28,12 @@
 # (which is stdout). When the lookup file isn't written, the /respond-pr
 # skill's Step 0 fails loudly with a clear message; the stderr trail here
 # is the upstream signal explaining why.
+#
+# No self-sweep, unlike other retired-destructor replacements: this file is
+# written once at SessionStart and never rewritten, so a session alive past
+# any time-based watermark would still need its own entry — an mtime sweep
+# can't distinguish "stale" from "long-lived but live." Growth is bounded
+# only by PID reuse, not a time watermark.
 
 INPUT=$(cat 2>/dev/null)
 if [ -z "$INPUT" ]; then
@@ -64,12 +70,23 @@ if [ -z "$CLAUDE_PID" ]; then
   exit 0
 fi
 
+# Pinned TZ/locale: lstart's rendering is ambient-locale-sensitive, and the
+# writer (this sh shim) and reader (marker.sh, run from the user's profile
+# shell) can differ; pinning both to the same values makes them comparable.
+# Correctness never depends on BSD/GNU rendering the same bytes — writer and
+# reader always run on the same host, each comparing against its own output.
+CLAUDE_PID_START=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$CLAUDE_PID" 2>/dev/null)
+if [ -z "$CLAUDE_PID_START" ]; then
+  echo "[capture-session-id] could not resolve start time for claude PID $CLAUDE_PID; respond-pr skill will fail at Step 0" >&2
+  exit 0
+fi
+
 if ! mkdir -p "$CONFIG_DIR/sessions" 2>/dev/null; then
   echo "[capture-session-id] could not create $CONFIG_DIR/sessions; respond-pr skill will fail at Step 0" >&2
   exit 0
 fi
 
-if ! printf '%s\n' "$SESSION_ID" > "$CONFIG_DIR/sessions/$CLAUDE_PID" 2>/dev/null; then
+if ! printf '%s\n%s\n' "$SESSION_ID" "$CLAUDE_PID_START" > "$CONFIG_DIR/sessions/$CLAUDE_PID" 2>/dev/null; then
   echo "[capture-session-id] could not write lookup file $CONFIG_DIR/sessions/$CLAUDE_PID; respond-pr skill will fail at Step 0" >&2
   exit 0
 fi

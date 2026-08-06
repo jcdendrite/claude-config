@@ -21,6 +21,7 @@ import os
 import subprocess
 
 import pytest
+from conftest import _seed_session as _seed_session_at
 from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
@@ -56,10 +57,8 @@ def _run_marker(args: list[str], cwd, home) -> subprocess.CompletedProcess:
 def _seed_session(home) -> str:
     """marker.sh resolves its session id by walking process ancestors, so the
     session file must be keyed to this pytest process's pid."""
-    sessions_dir = home / ".claude" / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
     sid = "test-session-keying"
-    (sessions_dir / str(os.getpid())).write_text(sid)
+    _seed_session_at(home, sid)
     return sid
 
 

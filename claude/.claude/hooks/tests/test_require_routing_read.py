@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import time
 
+from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
@@ -85,9 +86,7 @@ class TestRequireRoutingRead:
         repo = tmp_path / "repo"
         repo.mkdir()
 
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         active_marker = write_plan_review_active_marker(isolated_home, sid)
         routing_marker = write_plan_review_routing_read_marker(isolated_home, sid)

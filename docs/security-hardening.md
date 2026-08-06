@@ -100,6 +100,133 @@ personal glob line is protected by the same case-insensitive guarantee as
 the built-in set, not left as something the user has to get right
 themselves.
 
+## The network-install guard
+
+| Hook | Gates | Optional additions file |
+|---|---|---|
+| `deny-network-installs.sh` | `Bash` — denies a named-package install (npm/pnpm/yarn/bun/pip/pip3/uv-pip/uv-add), an `npx`/`bunx`/`uvx`/`pipx run`/`npm exec` invocation carrying an explicit `-y`/`--yes`, `pnpm`/`yarn dlx` unconditionally, or curl/wget co-occurring with a shell/interpreter in the same call | none |
+
+Always on, no bypass valve, closing the gap that let one agent install the
+wrong package from a public registry and then reach for a vendor
+`curl`-piped installer on its own initiative — nothing in this hook family
+previously stopped an agent from bringing new software onto the machine.
+`permissions.deny` carries the unambiguous half of the same policy (`brew install`/`gem install`/`cargo install`/`go
+install`/`gh extension install`/`mas install`/`pipx install`/`apt(-get)
+install`/`yum install`/`dnf install`/`apk add`/`zypper install` — tools whose
+*registry-fetching* verb has no restore-command collision, so a flat literal
+is always safe; `cargo install --path .` and `go install ./...` are local,
+no-network builds that this literal still denies, an accepted over-deny, not
+a restore collision); see
+[`docs/auto-mode.md`](auto-mode.md#hard-floor-deny-rules) for that table.
+
+`deny-network-installs.sh` matches on token *presence*
+(`_lib_fragment_has_token`), not on resolving "the" leading command through
+wrappers. Position-based resolution has three failure modes this design
+avoids entirely: `_lib_fragment_command_word`'s runner-skip list resolves
+`pnpm add lodash` to the command word `add`, not the manager name; `bash -c
+"$(curl …)"` produces a `curl` fragment with nothing after it, so any
+adjacency-based check misses it; and a hand-curated wrapper list (`sudo`,
+`env`, `timeout`, …) is easy to leave incomplete. Presence is immune to that
+whole bug class, since no wrapper removes a token from the command string.
+
+**Named residuals, accepted rather than chased with more parsing:**
+- Bare `npx`/`bunx`/`uvx`/`pipx` (no `-y`/`--yes`) — disambiguating "runs an
+  already-installed local tool, no network call" from "fetches a new one"
+  needs lockfile/`package.json` awareness this hook does not have.
+- A path-prefixed manager invocation (`/opt/homebrew/bin/npm install x`) —
+  token-presence matching never sees `npm` inside the longer token.
+- `pip install -e <VCS-URL>` — the editable-install marker's value is always
+  skipped, whether it's a local path or a fetchable URL.
+- An unrecognized value-taking flag (`--registry <url>`, `--prefix <path>`)
+  has its value misread as a leftover argument and denies — a false-deny,
+  the safe direction, not chased with a per-manager flag dictionary.
+- curl/wget co-occurring with an interpreter *anywhere* in one Bash call
+  denies, regardless of which operator actually connects them — including
+  two genuinely unrelated actions batched with `&&`. Precisely determining
+  which operator connects the two fragments is undecidable from
+  `_lib_split_fragments`'s output (it collapses `;`/`&&`/`||`/`|` to the
+  same delimiter), so this is a deliberate, named over-deny rather than
+  chased further.
+- The command is quote-stripped (`_lib_strip_shell_quotes`) before matching,
+  same helper and rationale as `deny-credential-bash-reads.sh` — this closes
+  a false-allow (`"npm" install lodash` executes identically to the
+  unquoted form) and, as a consequence, makes the over-deny above uniform: a
+  `grep` pattern or commit message merely mentioning "npm install" denies
+  the same way regardless of quote placement. Without quote-stripping, a
+  token glued directly to the opening quote (`"npm`) would not match, so
+  whether a given mention denies would depend on quote adjacency — an
+  inconsistency this closes. Workaround for all of the above: the `!` shell
+  escape.
+- Shell indirection this hook family already accepts as a known gap
+  elsewhere — `sh -c '...'` with a fully-inline payload, a temp script
+  written then executed separately, `eval $(echo … | base64 -d)`, a
+  session-defined alias (see `deny-repo-relocation.sh`'s header for the
+  precedent this mirrors).
+
+**Out of scope for this hook:** `brew`/`gem`/`cargo`/`go`/`gh extension`/
+`mas`/`pipx`/`apt(-get)`/`yum`/`dnf`/`apk`/`zypper` are covered only by the
+`permissions.deny` literal, not a `deny-network-installs.sh` fragment check —
+a `cd /tmp && brew install jq` bypasses the literal's prefix match; accepted,
+since the incident that motivated this family was `npm`/`curl`, not these.
+
+## WebFetch domain allowlisting — considered and rejected
+
+A domain-scoped WebFetch gate (ask or deny an unlisted host, silently allow a
+listed one) is deliberately absent from this hook family — not because
+domain-scoping is the wrong idea, but because neither a custom hook built for
+this purpose nor Claude Code's own native equivalent (below) closes the
+self-widening gap both share.
+
+Anthropic's [permissions docs](https://code.claude.com/docs/en/permissions)
+document a native, lighter primitive for exactly this: `permissions.deny` on
+`Bash(curl *)`/`Bash(wget *)` paired with `WebFetch(domain:github.com)`-style
+allow rules — no hook script, no `python3` dependency, no separate additions
+file. That native rule was the right primitive to reach for first per this
+repo's own "default-suspect over-powered primitives" standard, and it avoids
+the custom hook's specific defects (a hand-rolled host parser, a `python3`
+hard dependency, an ask-under-auto-mode assumption Claude Code doesn't
+document as reliable). It does **not**, however, close the actual gap that
+makes a custom allowlist-file hook unsafe here: nothing in this repo gates
+edits to `settings.json` beyond `ask-review-permissions.sh`, which is
+`hook-class: informational` and returns only an `ask` decision — the same
+class of prompt this repo's own hooks avoid relying on in
+`auto`/`bypassPermissions` precisely because a hook-returned `ask` isn't
+documented to force a prompt there. An agent can edit `permissions.allow` to
+add a `WebFetch(domain:...)` rule for a host of its own choosing exactly as
+readily as it could have appended a line to the custom hook's additions
+file — the self-widening path is unchanged, only the location of the list
+moved. Closing that would need a genuine `deny`-class guard on
+`permissions.*` edits, which doesn't exist today for any permission family
+and is out of scope for this hook family.
+
+Separately, OWASP's [GenAI Security Project — LLM01:2025 Prompt
+Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) gives a
+scenario where a user *deliberately* fetches a legitimate webpage and
+hidden instructions in it still exfiltrate data — domain trust and content
+trust are different axes, and any platform hosting user-generated content
+remains an injection surface no matter how trusted its domain is. That
+argues against treating a domain allowlist as sufficient on its own, but the
+same OWASP page's own mitigation list ("restrict the model's access
+privileges to the minimum necessary," "segregate and identify external
+content") argues *for* access restriction as one layer among several, not
+against having one — so it does not, by itself, argue for skipping domain
+scoping entirely. The actual reason neither the custom hook nor the native
+rule ships here is the `permissions.*`-edit gap above, not that restricting
+WebFetch egress is unnecessary. Anthropic's own
+[permission-modes docs](https://code.claude.com/docs/en/permission-modes)
+add a related, narrower point: `bypassPermissions` "offers no protection
+against prompt injection" and should be used "only in isolated
+environments... without internet access" — worth naming, but a mode-usage
+caveat isn't a
+substitute for closing the edit-gap: an agent self-widening its own reach is
+exactly as reachable in that mode with internet access present.
+
+Revisit if a `permissions.*`-edit guard is ever built for this repo generally
+— at that point either the native `WebFetch(domain:...)` rule or a rebuilt
+custom hook becomes viable without the self-widening flaw, and is worth
+adding back with that guard as its prerequisite, not as an independent
+follow-up.
+
 ## The two PII guard hooks
 
 | Hook | Gates | Armed by |
