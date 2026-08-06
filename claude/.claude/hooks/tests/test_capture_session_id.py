@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -38,19 +39,27 @@ class TestCaptureSessionId:
         run_hook(CAPTURE_SESSION_ID_HOOK, {"session_id": sid})
         files = self._sessions_files(isolated_home)
         assert len(files) == 1, f"expected one lookup file, got {files}"
-        assert files[0].read_text().strip() == sid
+        # Two-line format: session id, then the resolved claude PID's
+        # `ps -o lstart=` start time -- not just the bare session id.
+        lines = files[0].read_text().split("\n")
+        assert lines[0] == sid
+        assert lines[1] != "", "second line must hold the resolved process start time"
         # Filename is the claude_pid the hook resolved via `ps -o ppid=`.
         # We don't pin the exact value (depends on test runner topology),
         # but it must be a positive integer.
         assert files[0].name.isdigit() and int(files[0].name) > 0
 
-    def _run_capturing_stderr(self, payload: str) -> subprocess.CompletedProcess:
+    def _run_capturing_stderr(
+        self, payload: str, extra_env: dict | None = None
+    ) -> subprocess.CompletedProcess:
+        env = {**os.environ, **extra_env} if extra_env else None
         return subprocess.run(
             [str(CAPTURE_SESSION_ID_HOOK)],
             input=payload,
             capture_output=True,
             text=True,
             check=False,
+            env=env,
         )
 
     def test_empty_session_id_writes_nothing_with_stderr_diagnostic(self, isolated_home):
@@ -105,7 +114,8 @@ class TestCaptureSessionId:
         assert self._sessions_files(isolated_home) == []
         files = list((config_dir / "sessions").iterdir())
         assert len(files) == 1, f"expected one lookup file under CLAUDE_CONFIG_DIR, got {files}"
-        assert files[0].read_text().strip() == sid
+        lines = files[0].read_text().split("\n")
+        assert lines[0] == sid
 
     def test_relative_config_dir_fails_open_with_stderr_diagnostic(self, isolated_home):
         """A relative CLAUDE_CONFIG_DIR is unresolvable per _lib_config_dir's
@@ -132,6 +142,24 @@ class TestCaptureSessionId:
         assert len(self._sessions_files(isolated_home)) == 1
         assert result.stderr == ""
 
+    def test_pid_json_sidecar_survives_repeated_capture(self, isolated_home):
+        """~/.claude/sessions is co-owned with Claude Code, which writes
+        <pid>.json sidecars there. This hook writes only its own exact
+        <pid> lookup path (never a glob), so a sidecar for that same pid
+        must survive a second SessionStart in the same process tree."""
+        from helpers import run_hook
+
+        run_hook(CAPTURE_SESSION_ID_HOOK, {"session_id": "sidecar-session-1"})
+        files = self._sessions_files(isolated_home)
+        assert len(files) == 1
+        pid = files[0].name
+        sidecar = isolated_home / ".claude" / "sessions" / f"{pid}.json"
+        sidecar.write_text('{"pid": 1, "sessionId": "x"}\n')
+
+        run_hook(CAPTURE_SESSION_ID_HOOK, {"session_id": "sidecar-session-2"})
+
+        assert sidecar.read_text() == '{"pid": 1, "sessionId": "x"}\n'
+
     def test_traversal_session_id_does_not_overwrite_active_marker_canary(
         self, isolated_home
     ):
@@ -156,3 +184,37 @@ class TestCaptureSessionId:
         assert self._sessions_files(isolated_home) == []
         assert "[capture-session-id]" in result.stderr
         assert "not a valid path component" in result.stderr
+
+    def test_unresolvable_start_time_does_not_block_and_emits_stderr(
+        self, isolated_home, tmp_path
+    ):
+        """CLAUDE_PID_START's resolution failure must fail open like every
+        other step in this hook: no lookup file written, session startup not
+        blocked, and a stderr diagnostic naming the branch. Forced by
+        shadowing `ps` on PATH with a stub that fails only the
+        `-o lstart=` invocation, so the earlier `-o ppid=` CLAUDE_PID
+        resolution still succeeds and this failure is isolated to the new
+        branch."""
+        real_ps = shutil.which("ps")
+        assert real_ps, "ps must be resolvable to build a stub that shadows it"
+        stub_dir = tmp_path / "ps-stub"
+        stub_dir.mkdir()
+        stub_ps = stub_dir / "ps"
+        stub_ps.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '  [ "$arg" = "lstart=" ] && exit 1\n'
+            "done\n"
+            f'exec "{real_ps}" "$@"\n'
+        )
+        stub_ps.chmod(0o755)
+
+        result = self._run_capturing_stderr(
+            json.dumps({"session_id": "start-time-failure-session"}),
+            extra_env={"PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0
+        assert self._sessions_files(isolated_home) == []
+        assert "[capture-session-id]" in result.stderr
+        assert "could not resolve start time" in result.stderr

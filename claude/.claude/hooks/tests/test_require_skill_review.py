@@ -6,6 +6,7 @@ import os
 import subprocess
 
 import pytest
+from conftest import _seed_session
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
@@ -308,9 +309,7 @@ class TestRequireSkillReview:
         # The skill computes its filename from $PPID inside the bash
         # subshell; subprocess.run spawns bash as a child of this pytest
         # process, so $PPID resolves to os.getpid().
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         markers_dir = isolated_home / ".claude" / "skill-review-markers"
         if markers_dir.exists():
@@ -348,9 +347,7 @@ class TestRequireSkillReview:
         nothing. Staging a plugin-located SKILL.md is what makes the second
         pathspec load-bearing for the assertion."""
         sid = "test-session-skill-cmd-plugin"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         _stage_plugin_skill_change(git_repo)
         skill_command = extract_skill_command(SKILL_REVIEW_SKILL, "skill-review-marker-write")
@@ -386,9 +383,7 @@ class TestRequireSkillReview:
         computing the hash from the same empty diff and agreeing on a value
         that proves nothing."""
         sid = "test-session-skill-cmd-routing"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         _stage_routing_md_change(git_repo)
         skill_command = extract_skill_command(SKILL_REVIEW_SKILL, "skill-review-marker-write")

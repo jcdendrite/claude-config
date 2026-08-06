@@ -1,14 +1,46 @@
 """Shared pytest fixtures auto-discovered across the hook test suite.
 
 Only fixtures used by two or more test files live here. Class-local
-fixtures stay with their class in the per-hook test file.
+fixtures stay with their class in the per-hook test file. `_seed_session`
+is a plain helper function rather than a fixture (matching
+scripts/tests/conftest.py's convention) since callers need to pass a
+per-test session id, not a fixed injected value; import it directly with
+`from conftest import _seed_session`.
 """
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 from helpers import HOOKS_DIR
+
+
+def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
+    """Write $HOME/.claude/sessions/<pid> in the two-line format
+    capture-session-id.sh writes: the session id, then that pid's
+    `TZ=UTC LC_ALL=C ps -o lstart=` start time. The start time is captured
+    the same way the writer's `$(...)` does — trailing newline stripped,
+    other trailing whitespace preserved — so a seeded entry round-trips
+    through marker.sh's _walk_session comparison exactly like a real
+    capture-session-id.sh write would.
+
+    pid defaults to this test process's own pid: marker.sh resolves its
+    session id by walking process ancestors, and when it runs as a
+    subprocess of pytest, that walk reaches the pytest process itself.
+    """
+    target_pid = os.getpid() if pid is None else pid
+    sessions_dir = home / ".claude" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    start_time = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(target_pid)],
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.rstrip("\n")
+    (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 
 
 @pytest.fixture

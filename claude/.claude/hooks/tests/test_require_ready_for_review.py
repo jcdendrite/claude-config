@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
@@ -706,9 +707,7 @@ class TestRequireReadyForReview:
         """SKILL.md activate-gate fixture must produce a marker the hook
         recognizes as a fresh active-session bypass."""
         sid = "test-session-rfr-activate"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         assert (
             run_hook(
@@ -747,9 +746,7 @@ class TestRequireReadyForReview:
         repo-hash + session-id with HEAD SHA as content, recognized by the
         hook for HEAD-matching pushes."""
         sid = "test-session-rfr-complete"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         cmd = extract_skill_command(READY_FOR_REVIEW_SKILL, "record-completion")
         run_skill_command(cmd, cwd=repo_on_feature_branch, isolated_home=isolated_home)
@@ -830,9 +827,7 @@ class TestRequireReadyForReview:
         """SKILL.md deactivate-gate fixture must remove this session's active
         marker so a subsequent push (without completion marker) is re-gated."""
         sid = "test-session-rfr-deactivate"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         activate_cmd = extract_skill_command(READY_FOR_REVIEW_SKILL, "activate-gate")
         run_skill_command(activate_cmd, cwd=repo_on_feature_branch, isolated_home=isolated_home)

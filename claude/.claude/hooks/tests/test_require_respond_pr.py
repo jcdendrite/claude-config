@@ -5,6 +5,7 @@ import os
 import subprocess
 
 import pytest
+from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
@@ -686,9 +687,7 @@ class TestRequireRespondPr:
         """Run the SKILL.md enable-bypass recipe and verify the resulting
         marker authorizes a previously-gated gh command."""
         sid = "test-session-respond-pr-enable"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         gated_command = "gh api repos/foo/bar/pulls/5/comments"
         assert (
@@ -917,9 +916,7 @@ class TestRequireRespondPr:
         """Run enable then disable from SKILL.md; verify the disable recipe
         removes the marker and the hook re-gates."""
         sid = "test-session-respond-pr-disable"
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         enable_command = extract_skill_command(RESPOND_PR_SKILL, "enable-bypass")
         run_skill_command(enable_command, cwd=current_repo_foo_bar, isolated_home=isolated_home)

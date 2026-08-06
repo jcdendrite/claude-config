@@ -6,6 +6,7 @@ import re
 import subprocess
 
 import pytest
+from conftest import _seed_session
 from helpers import (
     CANARY_CONTENT,
     HOOKS_DIR,
@@ -19,7 +20,9 @@ from helpers import (
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
 
-def _run(args: list[str], cwd, home, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+def _run(
+    args: list[str], cwd, home, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
     env = {**os.environ, "HOME": str(home)}
     if extra_env:
         env.update(extra_env)
@@ -83,11 +86,6 @@ class TestMarkerScriptSessionIdValidation:
     session file, rather than flowing into `rm -f`/`>` against a path outside
     the marker/active directories."""
 
-    def _seed_session(self, home, sid: str):
-        sessions_dir = home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
-
     @pytest.mark.parametrize(
         "args",
         [
@@ -106,7 +104,7 @@ class TestMarkerScriptSessionIdValidation:
         ],
     )
     def test_exits_2_when_session_id_is_path_escaping(self, isolated_home, git_repo, args):
-        self._seed_session(isolated_home, TRAVERSAL_SESSION_ID)
+        _seed_session(isolated_home, TRAVERSAL_SESSION_ID)
         result = _run(args, cwd=git_repo, home=isolated_home)
         assert result.returncode == 2, (
             f"marker.sh {' '.join(args)} should exit 2 for a path-escaping "
@@ -114,7 +112,7 @@ class TestMarkerScriptSessionIdValidation:
         )
 
     def test_no_marker_written_for_path_escaping_session_id(self, isolated_home, git_repo):
-        self._seed_session(isolated_home, TRAVERSAL_SESSION_ID)
+        _seed_session(isolated_home, TRAVERSAL_SESSION_ID)
         canary = plant_traversal_canary(isolated_home)
 
         _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
@@ -132,7 +130,7 @@ class TestMarkerScriptSessionIdValidation:
     def test_no_active_marker_written_for_path_escaping_session_id(
         self, isolated_home, git_repo
     ):
-        self._seed_session(isolated_home, TRAVERSAL_SESSION_ID)
+        _seed_session(isolated_home, TRAVERSAL_SESSION_ID)
         canary = plant_traversal_canary(isolated_home)
 
         _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
@@ -149,15 +147,11 @@ class TestMarkerScriptHappyPath:
     """Smoke-test that each subcommand writes/removes the expected file when
     the session file is present."""
 
-    def _seed_session(self, home):
-        sessions_dir = home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        sid = "test-session-abc"
-        (sessions_dir / str(os.getpid())).write_text(sid)
-        return sid
+    SID = "test-session-abc"
 
     def test_write_code_review_creates_marker(self, isolated_home, git_repo):
-        sid = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
         result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         marker_dir = isolated_home / ".claude" / "code-review-markers"
@@ -169,7 +163,7 @@ class TestMarkerScriptHappyPath:
         """write plan-review must store _lib_active_plan_hash's output (a
         sha256 hex digest of the active plan set), not the legacy literal
         'reviewed' existence-only sentinel."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         plans_dir = git_repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "p.md").write_text("# plan\n")
@@ -191,7 +185,8 @@ class TestMarkerScriptHappyPath:
         byte-identical. Redirecting the helper's output straight into the
         marker path would truncate it before the failure surfaced, so a
         failed attempt would destroy a good marker as a side effect."""
-        sid = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
         plans_dir = git_repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         plan = plans_dir / "p.md"
@@ -221,7 +216,8 @@ class TestMarkerScriptHappyPath:
     def test_activate_creates_active_marker_with_pid(self, isolated_home, git_repo):
         """activate must write the Claude session PID to the active.d file body
         so hooks can check liveness with kill -0."""
-        sid = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
         result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         active_file = isolated_home / ".claude" / ".plan-review-active.d" / sid
@@ -236,7 +232,8 @@ class TestMarkerScriptHappyPath:
     def test_activate_ready_for_review_writes_pid(self, isolated_home, git_repo):
         """activate ready-for-review writes the Claude session PID (same as
         other skills) — hook now uses PID liveness, not epoch timestamp."""
-        sid = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
         result = _run(["activate", "ready-for-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         active_file = isolated_home / ".claude" / ".ready-for-review-active.d" / sid
@@ -247,7 +244,8 @@ class TestMarkerScriptHappyPath:
         )
 
     def test_deactivate_removes_active_marker(self, isolated_home, git_repo):
-        sid = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
         active_dir = isolated_home / ".claude" / ".plan-review-active.d"
         active_dir.mkdir(parents=True)
         (active_dir / sid).touch()
@@ -256,14 +254,16 @@ class TestMarkerScriptHappyPath:
         assert not (active_dir / sid).exists()
 
     def test_activate_memory_skill_creates_active_marker(self, isolated_home, git_repo):
-        sid = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
         result = _run(["activate", "memory-skill"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         active_file = isolated_home / ".claude" / ".memory-skill-active.d" / sid
         assert active_file.exists()
 
     def test_deactivate_memory_skill_removes_active_marker(self, isolated_home, git_repo):
-        sid = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
         active_dir = isolated_home / ".claude" / ".memory-skill-active.d"
         active_dir.mkdir(parents=True)
         (active_dir / sid).touch()
@@ -331,12 +331,7 @@ class TestMarkerScriptEmptyStagedGuard:
     before `git add` is run, which would cause a require-* hook mismatch at
     commit time."""
 
-    def _seed_session(self, home):
-        sessions_dir = home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        sid = "test-session-guard"
-        (sessions_dir / str(os.getpid())).write_text(sid)
-        return sid
+    SID = "test-session-guard"
 
     # ── code-review (whole-tree pathspec) ─────────────────────────────────
 
@@ -345,7 +340,7 @@ class TestMarkerScriptEmptyStagedGuard:
     ):
         """Guard must NOT fire when something is staged — even with unstaged
         changes alongside it."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         # Fixture has file.txt staged with "first\nsecond\n". Write an
         # additional working-tree change without staging it — index has a
         # staged change, working tree has a further unstaged change.
@@ -359,7 +354,7 @@ class TestMarkerScriptEmptyStagedGuard:
         self, isolated_home, git_repo
     ):
         """Guard fires: staged diff is empty, unstaged tracked changes exist."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         # Unstage the fixture's pre-staged change, leaving it as an unstaged
         # tracked modification.
         subprocess.run(["git", "reset", "HEAD", "--", "file.txt"], cwd=git_repo, check=True)
@@ -376,7 +371,7 @@ class TestMarkerScriptEmptyStagedGuard:
     ):
         """Guard must NOT fire when staged is empty AND there are no unstaged
         changes — the review-of-nothing escape hatch must stay open."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         # Unstage then discard the fixture's change so both index and working
         # tree are clean. Order matters: reset the index first (HEAD → index),
         # then checkout to align the working tree with the now-clean index.
@@ -408,7 +403,7 @@ class TestMarkerScriptEmptyStagedGuard:
     ):
         """Unstaged change outside the SKILL.md pathspec with nothing staged
         must NOT trigger the guard — the guard is pathspec-scoped."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         # file.txt is staged from the fixture; reset it so staged is empty for
         # the whole tree. The unstaged file.txt change is outside the SKILL.md
         # pathspec — guard must pass through.
@@ -421,7 +416,7 @@ class TestMarkerScriptEmptyStagedGuard:
     def test_skill_review_unstaged_skill_md_exits_2(self, isolated_home, git_repo):
         """Guard fires when staged SKILL.md diff is empty but an unstaged
         SKILL.md change exists."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         skill_md = self._make_skill_md(git_repo)
         # Modify SKILL.md without staging it.
         skill_md.write_text("# test skill\nmodified\n")
@@ -435,7 +430,7 @@ class TestMarkerScriptEmptyStagedGuard:
 
     def test_skill_review_staged_skill_md_writes_marker(self, isolated_home, git_repo):
         """Guard must NOT fire when SKILL.md change is staged."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         skill_md = self._make_skill_md(git_repo)
         skill_md.write_text("# test skill\nupdated\n")
         subprocess.run(["git", "add", str(skill_md)], cwd=git_repo, check=True)
@@ -482,7 +477,7 @@ class TestMarkerScriptEmptyStagedGuard:
         `claude/.claude/skills/plan-review/ROUTING.md` pathspec — the guard
         must not fire, proving the pathspec is the exact path, not a
         generic `**/ROUTING.md` glob."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         # file.txt is staged from the fixture; reset it so staged is empty for
         # the whole tree, matching the sibling out-of-scope test's setup.
         subprocess.run(["git", "reset", "HEAD", "--", "file.txt"], cwd=git_repo, check=True)
@@ -497,7 +492,7 @@ class TestMarkerScriptEmptyStagedGuard:
     def test_skill_review_unstaged_routing_md_exits_2(self, isolated_home, git_repo):
         """Guard fires when the staged plan-review/ROUTING.md diff is empty
         but an unstaged ROUTING.md change exists."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         routing_md = self._make_plan_review_routing_md(git_repo)
         # Modify ROUTING.md without staging it.
         routing_md.write_text("# test routing\nmodified\n")
@@ -517,17 +512,15 @@ class TestMarkerScriptStalePidLookup:
     ancestor walk, not by content-scanning the sessions directory, so stale
     files cannot mislead it."""
 
-    def _seed_session(self, home, sid="test-session-stale"):
-        sessions_dir = home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
-        return sid, sessions_dir
+    SID = "test-session-stale"
 
     def test_activate_ignores_stale_session_entry(self, isolated_home, git_repo):
         """A stale sessions/ entry whose filename sorts lexically before the
         live PID — what the old reverse-lookup directory scan would have
         picked first — must not end up in the active marker."""
-        sid, sessions_dir = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        sessions_dir = isolated_home / ".claude" / "sessions"
         # Leading-zero filename: capture-session-id.sh only ever writes bare
         # PIDs, so a "0"-prefixed name is never a real entry, and it sorts
         # lexically before every str(os.getpid()) (which never starts with
@@ -549,7 +542,8 @@ class TestMarkerScriptStalePidLookup:
         """The refactored _resolve_session_id keeps its signature: a `write`
         arm (which needs only the session id) resolves and writes its
         marker with the correct session-id suffix."""
-        sid, _ = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
         result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         marker_dir = isolated_home / ".claude" / "code-review-markers"
@@ -576,18 +570,14 @@ class TestMarkerDirectoryNamingConvention:
 
     WRITE_SKILLS = ("code-review", "skill-review", "plan-review", "ready-for-review")
 
-    def _seed_session(self, home):
-        sessions_dir = home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        sid = "test-session-naming"
-        (sessions_dir / str(os.getpid())).write_text(sid)
-        return sid
+    SID = "test-session-naming"
 
     @pytest.mark.parametrize("skill", WRITE_SKILLS)
     def test_write_lands_in_skill_derived_directory(
         self, skill, isolated_home, git_repo
     ):
-        sid = self._seed_session(isolated_home)
+        sid = self.SID
+        _seed_session(isolated_home, sid)
         # plan-review hashes the active plan set; seeding one unconditionally
         # gives every arm the same preconditions so the loop stays uniform.
         plans_dir = git_repo / ".claude" / "plans"
@@ -615,7 +605,7 @@ class TestMarkerDirectoryNamingConvention:
         """The inverse guard: an arm that writes some other skill's directory
         (a copy-paste slip between adjacent `case` arms) would leave the
         assertion above green, since that arm's own directory is created too."""
-        self._seed_session(isolated_home)
+        _seed_session(isolated_home, self.SID)
         plans_dir = git_repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
         (plans_dir / "p.md").write_text("# plan\n")
@@ -680,10 +670,8 @@ class TestMarkerWriteSatisfiesTheGate:
     def test_write_code_review_marker_opens_the_commit_gate(
         self, isolated_home, git_repo
     ):
-        sessions_dir = isolated_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
         sid = "test-session-roundtrip"
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(isolated_home, sid)
 
         result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
@@ -709,7 +697,18 @@ class TestMarkerScriptHonorsConfigDir:
         sessions_dir = config_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         sid = "test-session-config-dir"
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        # Two-line format capture-session-id.sh writes: session id, then this
+        # PID's TZ=UTC LC_ALL=C ps -o lstart= start time (see conftest.py's
+        # _seed_session, which can't be reused here -- it targets the
+        # standard $HOME/.claude/sessions path, not an arbitrary CONFIG_DIR).
+        start_time = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(os.getpid())],
+            env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.rstrip("\n")
+        (sessions_dir / str(os.getpid())).write_text(f"{sid}\n{start_time}\n")
 
         result = _run(
             ["write", "code-review"],
@@ -745,3 +744,140 @@ class TestMarkerScriptHonorsConfigDir:
         marker_dir = isolated_home / ".claude" / "code-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a resolver failure must not write a marker: {stray}"
+
+
+class TestSessionStartTimeResolution:
+    """_walk_session's PID-reuse guard: a sessions/<pid> entry is trusted
+    only when its recorded start time matches the live process's current
+    `ps -o lstart=` start time. Named invariant (see
+    .claude/plans/retire-sessionend-destructors.md): any entry that doesn't
+    satisfy this — mismatched, missing the second line, or empty — is
+    untrusted and must fall through to the next ancestor exactly as if the
+    file were absent, never resolve to a session id."""
+
+    def _write_raw_session_file(self, home, content: str) -> None:
+        sessions_dir = home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / str(os.getpid())).write_text(content)
+
+    def test_mismatched_start_time_does_not_resolve(self, isolated_home, git_repo):
+        """A start time that doesn't match the live PID's actual lstart --
+        what a reused PID's stale entry looks like -- must not authorize an
+        activate."""
+        self._write_raw_session_file(
+            isolated_home, "test-session-mismatch\nMon Jan  1 00:00:00 1970\n"
+        )
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, (
+            f"a mismatched start time must not resolve a session id, got "
+            f"{result.returncode}. stderr: {result.stderr!r}"
+        )
+        active_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        stray = list(active_dir.iterdir()) if active_dir.exists() else []
+        assert stray == [], f"a mismatched-start-time entry must not write a marker: {stray}"
+
+    def test_old_format_single_line_leftover_resolves_as_absent(
+        self, isolated_home, git_repo
+    ):
+        """Every sessions/<pid> entry on disk at merge time is this shape:
+        written by the pre-fix capture-session-id.sh, one line, no recorded
+        start time. It must resolve exactly as if the file were absent, not
+        crash and not false-match."""
+        self._write_raw_session_file(isolated_home, "test-session-old-format\n")
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, (
+            f"an old-format single-line entry must resolve as absent, got "
+            f"{result.returncode}. stderr: {result.stderr!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("", id="empty_file"),
+            pytest.param("\nMon Jan  1 00:00:00 1970\n", id="empty_first_line"),
+        ],
+    )
+    def test_empty_session_or_empty_first_line_resolves_as_absent(
+        self, isolated_home, git_repo, content
+    ):
+        self._write_raw_session_file(isolated_home, content)
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, (
+            f"content {content!r} must resolve as absent, got "
+            f"{result.returncode}. stderr: {result.stderr!r}"
+        )
+
+    def test_writer_reader_round_trip(self, isolated_home, git_repo):
+        """Run capture-session-id.sh for real, then marker.sh activate --
+        pins the two-script format as a tested contract instead of two
+        independent implementations that happen to agree today."""
+        sid = "roundtrip-session"
+        run_hook(
+            HOOKS_DIR / "capture-session-id.sh",
+            {"session_id": sid},
+            home=isolated_home,
+        )
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        active_file = isolated_home / ".claude" / ".plan-review-active.d" / sid
+        assert active_file.exists()
+
+    @pytest.mark.parametrize(
+        "invalid_content",
+        [
+            pytest.param("skipped-mismatch\nMon Jan  1 00:00:00 1970\n", id="mismatch"),
+            pytest.param("skipped-old-format\n", id="old_format"),
+            pytest.param("", id="empty"),
+        ],
+    )
+    def test_skips_invalid_immediate_ancestor_and_resolves_deeper_one(
+        self, isolated_home, git_repo, invalid_content
+    ):
+        """The walk's fall-through must not just reject a bad entry — it
+        must keep walking and resolve a valid entry at a deeper ancestor.
+        Every existing deny-path test seeds exactly one entry (at the
+        process marker.sh sees as its immediate ancestor) and asserts
+        returncode == 2, which can't distinguish 'correctly skipped and
+        kept walking, found nothing further up' from a regression that
+        aborts the walk on the first bad entry. This test seeds an invalid
+        entry at the immediate ancestor AND a valid one at a real deeper
+        ancestor (this test process's own parent), so only the
+        skip-and-continue behavior can pass it."""
+        self._write_raw_session_file(isolated_home, invalid_content)
+        sid = "deeper-ancestor-session"
+        _seed_session(isolated_home, sid, pid=os.getppid())
+
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, (
+            f"must skip the invalid immediate-ancestor entry and resolve the "
+            f"valid deeper one, got {result.returncode}. stderr: {result.stderr!r}"
+        )
+        active_file = isolated_home / ".claude" / ".plan-review-active.d" / sid
+        assert active_file.exists(), (
+            "the active marker must be written under the deeper ancestor's "
+            "session id, proving the walk actually reached it"
+        )
+
+    def test_differing_writer_reader_locale_still_resolves(self, isolated_home, git_repo):
+        """Regression guard for the TZ=UTC LC_ALL=C pin itself: run the
+        writer under one ambient TZ/LC_ALL and the reader under another,
+        assert resolution still succeeds. Without the pin, an ambient
+        divergence between the SessionStart hook's shell and the Bash
+        tool's shell would make every entry mismatch forever."""
+        sid = "locale-mismatch-session"
+        run_hook(
+            HOOKS_DIR / "capture-session-id.sh",
+            {"session_id": sid},
+            home=isolated_home,
+            extra_env={"TZ": "America/New_York", "LC_ALL": "fr_FR.UTF-8"},
+        )
+        result = _run(
+            ["activate", "plan-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"TZ": "UTC", "LC_ALL": "C"},
+        )
+        assert result.returncode == 0, result.stderr
+        active_file = isolated_home / ".claude" / ".plan-review-active.d" / sid
+        assert active_file.exists()

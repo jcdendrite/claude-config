@@ -162,14 +162,10 @@ flowchart LR
 | `require-ready-for-review.sh` | `git push`, `gh pr ready`, `gh pr create` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `advance-past-commit-stall.sh` | — (Stop, `turn-gate`, opt-in) | Forces the turn to continue past a commit/push/PR-open permission question when autonomous shipping is active; see [Autonomous shipping](#autonomous-shipping) |
-| `cleanup-commit-stall-marker.sh` | — (SessionEnd, no gate) | Removes the per-session state file its paired Stop hook wrote; also sweeps entries older than 30 days |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
-| `cleanup-session-id.sh` | — (SessionEnd, no gate) | Removes the session-id lookup file its paired SessionStart hook wrote |
 | `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
-| `cleanup-handoff-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session handoff-nudge marker files written by its paired UserPromptSubmit/Stop hook |
 | `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
 | `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
-| `cleanup-worktree-anchor-nudge-marker.sh` | — (SessionEnd, no gate) | Removes the per-session worktree-anchor marker its paired UserPromptSubmit hook wrote |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
 | `set-session-title-from-branch.sh` | — (SessionStart, advisory) | Sets the terminal tab title to `<repo>/<branch>` on feature branches; see [`docs/hooks.md`](docs/hooks.md) |
 

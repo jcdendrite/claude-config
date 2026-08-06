@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -719,3 +720,81 @@ def test_emitted_payload_is_exactly_decision_and_reason(armed_home, dirty_repo):
     assert isinstance(result["reason"], str)
     assert "/code-review" in result["reason"]
     assert "/ready-for-review" in result["reason"]
+
+
+# ------------------------------------------------------------------ #
+# State-dir sweep (30-day eviction, run on every fire)                #
+# ------------------------------------------------------------------ #
+
+
+def _touch_with_age(path: Path, days_old: int) -> None:
+    path.write_text("p1\n")
+    stamp = time.time() - (days_old * 86400)
+    os.utime(path, (stamp, stamp))
+
+
+def test_sweep_deletes_entries_older_than_30_days(armed_home, dirty_repo):
+    state_dir = armed_home / ".claude" / ".commit-stall-block.d"
+    state_dir.mkdir(parents=True)
+    stale = state_dir / "old-session"
+    _touch_with_age(stale, days_old=31)
+
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+
+    assert result is not None
+    assert not stale.exists(), "entries older than 30 days must be swept"
+
+
+def test_sweep_preserves_entries_within_30_days(armed_home, dirty_repo):
+    state_dir = armed_home / ".claude" / ".commit-stall-block.d"
+    state_dir.mkdir(parents=True)
+    fresh = state_dir / "recent-session"
+    _touch_with_age(fresh, days_old=1)
+
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+
+    assert result is not None, (
+        "the sweep only runs on an actual fire — without this assertion the "
+        "test stays green even if the hook stopped firing altogether"
+    )
+    assert fresh.exists(), "entries within 30 days must survive the sweep"
+
+
+def test_sweep_skipped_when_state_dir_is_a_symlink(armed_home, dirty_repo, tmp_path):
+    """A symlinked state dir must not be followed by the sweep — the
+    `[ ! -L ]` guard skips the sweep entirely rather than deleting the
+    symlink itself once its own mtime ages past 30 days."""
+    real_target = tmp_path / "elsewhere"
+    real_target.mkdir()
+
+    state_dir = armed_home / ".claude" / ".commit-stall-block.d"
+    state_dir.parent.mkdir(parents=True, exist_ok=True)
+    state_dir.symlink_to(real_target)
+    stale_mtime = time.time() - (31 * 86400)
+    os.utime(state_dir, (stale_mtime, stale_mtime), follow_symlinks=False)
+
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+
+    assert result is not None
+    assert state_dir.is_symlink(), (
+        "the [ ! -L ] guard must skip a symlinked state dir with an aged "
+        "mtime, not delete the symlink itself"
+    )

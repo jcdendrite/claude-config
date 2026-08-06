@@ -9,6 +9,7 @@ import subprocess
 import time
 
 import pytest
+from conftest import _seed_session
 from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
@@ -578,9 +579,7 @@ class TestRequirePlanReview:
         """Run the SKILL.md activate-gate recipe; verify the resulting marker
         authorizes a previously-gated Write."""
         sid = "session-skill-activate"
-        sessions_dir = plan_review_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(plan_review_home, sid)
 
         assert (
             run_hook(
@@ -617,9 +616,7 @@ class TestRequirePlanReview:
         """Run activate then deactivate from SKILL.md; verify deactivate removes
         the marker and the hook re-gates."""
         sid = "session-skill-deactivate"
-        sessions_dir = plan_review_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(plan_review_home, sid)
 
         run_skill_command(
             extract_skill_command(PLAN_REVIEW_SKILL, "activate-gate"),
@@ -653,9 +650,7 @@ class TestRequirePlanReview:
         """Run the SKILL.md record-completion recipe; verify the resulting marker
         authorizes a previously-gated Write via the completion path."""
         sid = "session-skill-completion"
-        sessions_dir = plan_review_home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
+        _seed_session(plan_review_home, sid)
 
         assert (
             run_hook(
@@ -815,11 +810,6 @@ class TestMarkerWriteReadAgreement:
     against a stand-in for the other -- a divergence in how marker.sh
     resolves the repo root or writes the value would be invisible."""
 
-    def _seed_session(self, home, sid):
-        sessions_dir = home / ".claude" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        (sessions_dir / str(os.getpid())).write_text(sid)
-
     def _write_marker_via_script(self, repo, home):
         return subprocess.run(
             ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "plan-review"],
@@ -833,7 +823,7 @@ class TestMarkerWriteReadAgreement:
         self, plan_review_repo, plan_review_home
     ):
         sid = "session-e2e-write-read"
-        self._seed_session(plan_review_home, sid)
+        _seed_session(plan_review_home, sid)
 
         result = self._write_marker_via_script(plan_review_repo, plan_review_home)
         assert result.returncode == 0, result.stderr
