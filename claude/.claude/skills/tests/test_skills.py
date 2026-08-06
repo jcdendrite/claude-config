@@ -1883,3 +1883,154 @@ def test_invalid_skip_rationale_labels_match_across_review_skills() -> None:
         f"  only in code-review/SKILL.md:    {sorted(code_review_labels - routing_labels)}\n"
         f"  only in plan-review/ROUTING.md:  {sorted(routing_labels - code_review_labels)}"
     )
+
+
+_PLAN_REVIEW_REFERENCES_MD = _skill_file("plan-review").parent / "REFERENCES.md"
+
+_STEP4_HEADING = "## Step 4 — Design-fitness gate"
+_MAPPING_TABLE_HEADING = "## Tripwire → CLAUDE.md principle mapping"
+_FOUNDATION_RULES_HEADING = "## Foundation-tripwire rules — surfacing incident"
+
+_TRIPWIRE_BULLET_RE = re.compile(r"^\s{2,}-\s+\*\*(?P<name>[^*]+)\.\*\*")
+_MAPPING_ROW_RE = re.compile(r"^\|\s*(?P<name>[^|]+?)\s*\|")
+
+# Bumping this is the point of the ratchet: a seventh tripwire must also
+# gain a mapping-table row and a provenance paragraph, or this constant
+# stays stale and the count assertion below catches the omission.
+_EXPECTED_TRIPWIRE_COUNT = 6
+
+
+def _section_between(
+    lines: list[str], start_heading: str, path: Path
+) -> tuple[int, int]:
+    """Return (start_idx, end_idx) bounding the section under `start_heading`.
+
+    end_idx is exclusive, at the next line starting with '## ' (or len(lines)
+    if the section runs to EOF — unlike test_reconciliation_block_consistency.py's
+    extractor, EOF is not itself a failure here, since none of the three
+    headings this module bounds is currently last in its file). The start
+    heading is asserted found, not inferred — a renamed or deleted heading
+    would otherwise extract as empty and compare equal to another empty
+    extraction.
+    """
+    start_idx = next(
+        (i for i, line in enumerate(lines) if line.rstrip("\n") == start_heading),
+        None,
+    )
+    assert start_idx is not None, f"{path}: {start_heading!r} heading not found."
+
+    end_idx = len(lines)
+    for j in range(start_idx + 1, len(lines)):
+        if lines[j].startswith("## "):
+            end_idx = j
+            break
+    return start_idx, end_idx
+
+
+def _step4_tripwire_names() -> set[str]:
+    """Bolded tripwire names from plan-review/SKILL.md's Step 4 bullet list.
+
+    `_TRIPWIRE_BULLET_RE` requires 2+ leading spaces, which the tripwire
+    bullets carry (nested under item 3's "Are foundation-correctness
+    tripwires clean?") and Step 4's other bulleted list ("Markers of
+    over-elaboration") does not — that list is flush-left today, but the
+    indentation requirement holds even if a future bold bullet is added to
+    it, unlike a check that merely assumes today's bullets stay non-bold.
+    """
+    path = _skill_file("plan-review")
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _STEP4_HEADING, path)
+    names = {
+        match.group("name")
+        for line in lines[start_idx:end_idx]
+        if (match := _TRIPWIRE_BULLET_RE.match(line))
+    }
+    assert names, f"{path}: no bolded tripwire bullets found under {_STEP4_HEADING!r}."
+    return names
+
+
+def _mapping_table_names() -> set[str]:
+    """First-column names from REFERENCES.md's tripwire → principle table."""
+    path = _PLAN_REVIEW_REFERENCES_MD
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _MAPPING_TABLE_HEADING, path)
+    names = set()
+    for line in lines[start_idx:end_idx]:
+        match = _MAPPING_ROW_RE.match(line)
+        if not match:
+            continue
+        name = match.group("name")
+        if name in ("SKILL.md Step 4 tripwire", "---"):
+            continue
+        names.add(name)
+    assert names, f"{path}: no rows found in the table under {_MAPPING_TABLE_HEADING!r}."
+    return names
+
+
+def _foundation_rules_section_text() -> str:
+    """Raw text of REFERENCES.md's 'Foundation-tripwire rules' section."""
+    path = _PLAN_REVIEW_REFERENCES_MD
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _FOUNDATION_RULES_HEADING, path)
+    return "".join(lines[start_idx:end_idx])
+
+
+def _has_provenance_citation(name: str, section_text: str) -> bool:
+    """True if `name` appears inside a "tripwire(s) (...)" citation.
+
+    Every existing tripwire mention in this section follows one shape —
+    "the sixth tripwire (unjustified given)", "foundation tripwires
+    (over-powered primitive, compounding layers, self-referential
+    findings)" — so matching that shape specifically (name inside
+    parentheses immediately preceded by "tripwire"/"tripwires") rejects a
+    stray mention of the name elsewhere in the section that isn't a real
+    citation, which a bare substring search would accept.
+    """
+    pattern = re.compile(
+        r"\btripwires?\s*\([^)]*\b" + re.escape(name.lower()) + r"\b[^)]*\)",
+        re.IGNORECASE,
+    )
+    return bool(pattern.search(section_text))
+
+
+class TestStep4TripwireProvenanceParity:
+    """Every Step 4 foundation tripwire in plan-review/SKILL.md must have a
+    matching row in REFERENCES.md's mapping table and a provenance paragraph
+    naming it. REFERENCES.md states both requirements in prose, but nothing
+    previously enforced them — a tripwire added to SKILL.md without the
+    paired REFERENCES.md updates reads as "this rule has no recorded origin,"
+    and the resulting drift across three sites is invisible until someone
+    compares the files line by line.
+    """
+
+    def test_tripwire_count_matches_expected(self):
+        names = _step4_tripwire_names()
+        assert len(names) == _EXPECTED_TRIPWIRE_COUNT, (
+            f"Expected {_EXPECTED_TRIPWIRE_COUNT} Step 4 tripwires, found "
+            f"{len(names)}: {sorted(names)}. If a tripwire was intentionally "
+            "added or removed, update _EXPECTED_TRIPWIRE_COUNT alongside the "
+            "mapping-table row and provenance paragraph this test also checks."
+        )
+
+    def test_tripwire_names_match_mapping_table(self):
+        step4_names = _step4_tripwire_names()
+        table_names = _mapping_table_names()
+        assert step4_names == table_names, (
+            "plan-review/SKILL.md's Step 4 tripwires and REFERENCES.md's "
+            "mapping table have diverged.\n"
+            f"  only in SKILL.md:      {sorted(step4_names - table_names)}\n"
+            f"  only in REFERENCES.md: {sorted(table_names - step4_names)}"
+        )
+
+    def test_every_tripwire_has_a_provenance_paragraph(self):
+        step4_names = _step4_tripwire_names()
+        section_text = _foundation_rules_section_text()
+        missing = [
+            name
+            for name in sorted(step4_names)
+            if not _has_provenance_citation(name, section_text)
+        ]
+        assert not missing, (
+            "Step 4 tripwire(s) with no 'tripwire (name)' citation under "
+            f"{_FOUNDATION_RULES_HEADING!r} in REFERENCES.md: {missing}"
+        )

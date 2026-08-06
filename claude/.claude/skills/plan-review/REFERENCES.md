@@ -20,6 +20,7 @@ as "has no canonical principle behind it," which is a different claim from
 | Self-referential findings | §Working Style — same bullet as Compounding layers, which covers a design that "starts citing its own prior findings" |
 | Misordered observe-then-mutate steps | None — skill-local. CLAUDE.md has no ordering/self-inflicted-staleness principle to operationalize; this tripwire generalizes a single observed planning failure (see the surfacing incident below) rather than a stated global rule. |
 | Overcorrection that negates a named allowance | §Working Style — Scope discipline, Axis 2 (the in-file opportunistic-refactoring license is the allowance most often negated) |
+| Unjustified given | §Engineering Judgment — A locally-valid patch can signal a wrong foundation (the "check whether a change one level up … dissolves the need for it" test, applied to an accepted design constraint rather than a code patch) |
 
 ## Load-on-demand routing architecture
 
@@ -68,13 +69,20 @@ Post-extraction smoke test to verify ROUTING.md is reachable and substantively c
 
 ## Foundation-tripwire rules — surfacing incident
 
-Step 4's foundation tripwires (over-powered primitive, compounding layers, self-referential finding) were added after a session built elaborate scaffolding (PreToolUse validator + Write hook with `lstat` symlink-race checks + mktemp anchoring + cross-platform fixtures + staggered two-PR rollout) to harden a `bypassPermissions: true` foundation that was itself unnecessary — the source doc had a lower-privilege pre-approval primitive sitting in plain sight. A specialist `ciso-reviewer` pass surfaced three Critical findings, all real, all only present *because* the bypass design existed.
+Step 4's foundation tripwires (over-powered primitive, compounding layers, self-referential findings) were added after a session built elaborate scaffolding (PreToolUse validator + Write hook with `lstat` symlink-race checks + mktemp anchoring + cross-platform fixtures + staggered two-PR rollout) to harden a `bypassPermissions: true` foundation that was itself unnecessary — the source doc had a lower-privilege pre-approval primitive sitting in plain sight. A specialist `ciso-reviewer` pass surfaced three Critical findings, all real, all only present *because* the bypass design existed.
 
 The lesson the rules encode: gap-finding on a wrong foundation elaborates the wrong foundation. The tripwires anchor Step 4 to observable surface features (layer counts, self-references, heavier-than-needed mechanism) so they fire even when the AI's internal reasoning is coherent. See also `claude/.claude/CLAUDE.md` Engineering Judgment and Working Style for the global-level statement of the same heuristics.
 
 The fourth tripwire (misordered observe-then-mutate steps) was added after a planning session repeatedly proposed annotating a CI-status check as possibly-stale rather than relocating it after the push that invalidated its result — an ordering bug papered over with a compensating caveat.
 
 The fifth tripwire (overcorrection that negates a named allowance) has a different provenance from the first four: no single plan surfaced it. It came from a judgment-activation pass closing the gap where CLAUDE.md's principles were loaded in every session but did not fire at the moment a judgment-class error was being made — so the rule is anchored to observable plan text (a blanket rule whose wording contradicts an allowance CLAUDE.md names) rather than to a remembered incident.
+
+The sixth tripwire (unjustified given) was added after a plan verified a hook's filter logic and test coverage without asking whether the file under the gate needed to carry machine-generated content at all — an accepted-as-fixed condition that a `git grep` inside the plan's own repository could have dissolved. The rule closes a gap Step 4's other five tripwires cannot reach: a design that only holds because of a given the plan could have dissolved solves the problem that given created, not the one stated.
+
+Two worked fixtures fix the fire condition to reach, not to sincerity or to the presence of a `Givens:` line — both name an equally concrete owner and carry the same Critical-files list, so dissolvability is the only variable. The pair only discriminates because the bullet draws an explicit line between two shapes of "a third party owns it": a peer repository's own artifact (still in reach — a coordinated change could edit it) versus the platform or protocol a mechanism runs on top of (out of reach — no plan can change what that platform provides from within it). Without that line, both fixtures read as the same shape and the pair proves nothing.
+
+- **Expect fire.** Root: "a length gate denies commits on a file carrying machine-generated content." Given: "the file carries a generated block — beyond reach: the downstream repo's index generator owns it." Critical files: the gate script and its test. Fires on the first prong — the generator is a peer repository's own script, editable by a coordinated change even though this plan's Critical files don't include it, so ownership alone does not put it out of reach.
+- **Expect no fire.** Same root and Critical files. Given: "the gate receives only the staged blob — beyond reach: the Claude Code harness defines the `PreToolUse` hook payload." Neither prong reaches: the harness's hook contract is the platform the gate script runs on top of, not an editable peer artifact — no plan can change what capabilities that contract provides from within it.
 
 Keep a paragraph here per tripwire. When Step 4 gains a rule and this section does not, the omission reads as "that rule has no recorded origin" — and the count drift is invisible until someone compares the two files line by line.
 
