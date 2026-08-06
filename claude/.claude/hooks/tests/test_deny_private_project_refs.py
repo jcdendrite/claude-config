@@ -2144,14 +2144,74 @@ class TestDenyPrivateProjectRefs:
         )
 
     def test_structural_slack_markdown_anchor_link_denied(self, claude_config_repo):
-        """A markdown anchor fragment (#word-word) is indistinguishable
-        from a real Slack channel by shape alone — deliberately still
-        blocked; loosening the charset to admit hyphenated words would
-        defeat the detector's actual purpose."""
+        """A cross-reference anchor fragment (#word-word) written outside
+        markdown inline-link syntax is indistinguishable from a real Slack
+        channel by shape alone — deliberately still blocked; loosening the
+        charset to admit hyphenated words would defeat the detector's
+        actual purpose."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("git commit -m 'See docs/skills.md#skill-architecture-notes for the breakdown'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_markdown_inline_link_anchor_allowed(self, claude_config_repo):
+        """A markdown inline-link anchor target, `[text](#slug)`, is
+        excluded: this exact shape is common in README/skill TOC entries
+        and cross-reference links, and a functional anchor link can't be
+        reworded without breaking navigation. The `]` immediately before
+        `(` is what distinguishes this from a real channel mention."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'Add [Permission-prompt tracking](#permission-prompt-tracking) to the TOC'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_parenthetical_mention_not_adjacent_denied(self, claude_config_repo):
+        """A real Slack-channel mention written inside prose parentheses,
+        separated from `(` by other words, must still be caught — caught
+        by the first alternative (the `#` itself isn't preceded by `(`),
+        independent of the markdown-inline-link exclusion."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Flagged in review (see #eng-platform-alerts for context)'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_bare_parenthetical_mention_denied(self, claude_config_repo):
+        """A Slack-channel mention immediately wrapped in parens with no
+        link text before it, e.g. "(#eng-alerts)", must still be caught —
+        the markdown-inline-link exclusion requires a `]` immediately
+        before the `(`, not just that the slug is enclosed in parens."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Ping (#eng-alerts) about this'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_paren_adjacent_mention_with_trailing_prose_denied(self, claude_config_repo):
+        """A Slack-channel mention immediately after a bare `(`, with more
+        prose before the closing `)`, must still be caught — the
+        markdown-inline-link exclusion does not depend on how (or whether)
+        the parenthetical closes, only on the `]` precedence check."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'See (#eng-alerts is being discussed) for background'"),
                 cwd=claude_config_repo,
             )
             == "deny"
