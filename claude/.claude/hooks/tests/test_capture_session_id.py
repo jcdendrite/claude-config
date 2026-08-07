@@ -44,10 +44,112 @@ class TestCaptureSessionId:
         lines = files[0].read_text().split("\n")
         assert lines[0] == sid
         assert lines[1] != "", "second line must hold the resolved process start time"
-        # Filename is the claude_pid the hook resolved via `ps -o ppid=`.
-        # We don't pin the exact value (depends on test runner topology),
-        # but it must be a positive integer.
-        assert files[0].name.isdigit() and int(files[0].name) > 0
+        # The hook is invoked with no shell (subprocess.run([str(hook)])), so
+        # its own $PPID is this pytest process -- pin the exact value rather
+        # than only checking it's a positive integer, or a hop-count error in
+        # the derivation passes silently.
+        assert files[0].name == str(os.getpid())
+
+    def test_claude_pid_env_equal_to_ppid_is_accepted(self, isolated_home):
+        """The one-hop bound has two accept disjuncts: $CLAUDE_PID equals
+        $PPID exactly (no shim), or equals $PPID's immediate parent (shim
+        case, covered by test_claude_pid_env_takes_precedence_over_ppid
+        below). This is the no-shim disjunct's only dedicated coverage --
+        without it, test_valid_input_writes_lookup_file only ever exercises
+        the unset-$CLAUDE_PID default path, never this explicit-match branch,
+        and a broken comparison here (wrong operator, wrong variable) would
+        pass the full suite silently. This is plausibly the dominant real
+        invocation shape: Claude Code exports $CLAUDE_PID unconditionally per
+        this hook's own header comment, and settings.json registers this hook
+        with no intervening shim."""
+        from helpers import run_hook
+
+        sid = "self-equal-claude-pid-session"
+        run_hook(
+            CAPTURE_SESSION_ID_HOOK,
+            {"session_id": sid},
+            extra_env={"CLAUDE_PID": str(os.getpid())},
+        )
+        files = self._sessions_files(isolated_home)
+        assert len(files) == 1, f"expected one lookup file, got {files}"
+        assert files[0].name == str(os.getpid())
+
+    def test_claude_pid_env_takes_precedence_over_ppid(self, isolated_home, tmp_path):
+        """$CLAUDE_PID is accepted when it differs from the hook's own $PPID,
+        as long as it's $PPID's immediate parent -- the shim case the
+        derivation exists for. Running the hook as a genuine child of `sh`
+        (not `exec`, which would collapse the hop and make $PPID equal
+        $CLAUDE_PID trivially) makes the hook's $PPID the shim's pid and
+        $CLAUDE_PID (pytest's own pid) the shim's parent. This is the only
+        way to observe the two candidates actually differing;
+        test_valid_input_writes_lookup_file alone would pass even if the
+        $CLAUDE_PID read were deleted outright, since under the autouse
+        fixture the two candidates are identical there."""
+        sid = "shim-session"
+        payload = json.dumps({"session_id": sid})
+        env = {**os.environ, "HOME": str(isolated_home), "CLAUDE_PID": str(os.getpid())}
+        result = subprocess.run(
+            ["sh", "-c", f'"{CAPTURE_SESSION_ID_HOOK}"; true'],
+            input=payload,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode == 0
+        files = self._sessions_files(isolated_home)
+        assert len(files) == 1, f"expected one lookup file, got {files}"
+        assert files[0].name == str(os.getpid()), (
+            "must land at the $CLAUDE_PID candidate (pytest's own pid), not the shim's $PPID"
+        )
+
+    def test_non_numeric_claude_pid_falls_back_to_ppid(self, isolated_home):
+        """A non-numeric $CLAUDE_PID must fall back to $PPID and still write
+        a file -- not become a path component, and not abort the write."""
+        from helpers import run_hook
+
+        sid = "non-numeric-claude-pid-session"
+        run_hook(CAPTURE_SESSION_ID_HOOK, {"session_id": sid}, extra_env={"CLAUDE_PID": "abc"})
+        files = self._sessions_files(isolated_home)
+        assert len(files) == 1, f"expected one lookup file, got {files}"
+        assert files[0].name == str(os.getpid())
+
+    def test_whitespace_claude_pid_falls_back_to_ppid(self, isolated_home):
+        """Validate-then-select: ${CLAUDE_PID:-$PPID}-style substitution would
+        select a whitespace-only value before any check runs, since :- only
+        fires on unset-or-empty. That must not happen here -- whitespace
+        must fail the numeric check and fall back to $PPID."""
+        from helpers import run_hook
+
+        sid = "whitespace-claude-pid-session"
+        run_hook(CAPTURE_SESSION_ID_HOOK, {"session_id": sid}, extra_env={"CLAUDE_PID": "   "})
+        files = self._sessions_files(isolated_home)
+        assert len(files) == 1, f"expected one lookup file, got {files}"
+        assert files[0].name == str(os.getpid())
+
+    def test_live_non_ancestor_claude_pid_is_rejected(self, isolated_home):
+        """A numeric, live $CLAUDE_PID outside the one-hop bound (not $PPID,
+        not $PPID's immediate parent) must be rejected -- the sole invariant
+        the one-hop design exists to enforce. A `sleep` child of pytest is
+        live but not an ancestor of the hook process at all."""
+        from helpers import run_hook
+
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            sid = "non-ancestor-claude-pid-session"
+            run_hook(
+                CAPTURE_SESSION_ID_HOOK,
+                {"session_id": sid},
+                extra_env={"CLAUDE_PID": str(sleeper.pid)},
+            )
+            files = self._sessions_files(isolated_home)
+            assert len(files) == 1, f"expected one lookup file, got {files}"
+            assert files[0].name == str(os.getpid()), (
+                "a live non-ancestor CLAUDE_PID must be rejected, falling back to $PPID"
+            )
+        finally:
+            sleeper.terminate()
+            sleeper.wait()
 
     def _run_capturing_stderr(
         self, payload: str, extra_env: dict | None = None
@@ -191,10 +293,10 @@ class TestCaptureSessionId:
         """CLAUDE_PID_START's resolution failure must fail open like every
         other step in this hook: no lookup file written, session startup not
         blocked, and a stderr diagnostic naming the branch. Forced by
-        shadowing `ps` on PATH with a stub that fails only the
-        `-o lstart=` invocation, so the earlier `-o ppid=` CLAUDE_PID
-        resolution still succeeds and this failure is isolated to the new
-        branch."""
+        shadowing `ps` on PATH with a stub that fails only the `-o lstart=`
+        invocation; $CLAUDE_PID is unset here (autouse fixture), so the
+        derivation makes no `-o ppid=` call at all and resolves $PPID
+        directly, isolating this failure to the new branch."""
         real_ps = shutil.which("ps")
         assert real_ps, "ps must be resolvable to build a stub that shadows it"
         stub_dir = tmp_path / "ps-stub"

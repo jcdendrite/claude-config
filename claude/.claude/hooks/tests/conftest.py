@@ -43,6 +43,18 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 
 
+@pytest.fixture(autouse=True)
+def _clear_claude_pid_env(monkeypatch):
+    """capture-session-id.sh accepts $CLAUDE_PID from its own environment. A
+    real Claude Code session running this suite exports it, and the test
+    runners below inherit the parent environment wholesale — without this,
+    that real value would silently satisfy every test exercising the $PPID
+    fallback, masking it. Absent on CI; raising=False matches the
+    isolated_home precedent below for a var that may not be set.
+    """
+    monkeypatch.delenv("CLAUDE_PID", raising=False)
+
+
 @pytest.fixture
 def isolated_home(monkeypatch, tmp_path):
     """Sandbox $HOME so the hooks' marker files don't collide with real state."""

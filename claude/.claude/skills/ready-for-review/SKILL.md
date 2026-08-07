@@ -28,7 +28,7 @@ the `require-ready-for-review.sh` hook:
 ~/.claude/scripts/marker.sh activate ready-for-review
 ```
 
-If the chain fails (empty `SESSION_ID`), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; the gate will block iteration pushes without this marker.
+If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this session's id — abort and report; the gate will block iteration pushes without this marker.
 
 ## 1. Preconditions (halt on fail)
 

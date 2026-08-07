@@ -13,7 +13,7 @@ Fetch all review comments on the current branch's open pull request and address 
    ```
    ~/.claude/scripts/marker.sh activate respond-pr
    ```
-   The `require-respond-pr.sh` PreToolUse hook bypasses while THIS session's marker exists and its stored PID is alive (PID liveness check via `kill -0`). Per-session keying prevents parallel respond-pr sessions from thrashing on cleanup or leaking bypass to unrelated sessions. If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; do not proceed without the marker, since every gated `gh` call below will be blocked.
+   The `require-respond-pr.sh` PreToolUse hook bypasses while THIS session's marker exists and its stored PID is alive (PID liveness check via `kill -0`). Per-session keying prevents parallel respond-pr sessions from thrashing on cleanup or leaking bypass to unrelated sessions. If the chain fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since every gated `gh` call below will be blocked.
 
    **Marker lifecycle:** this marker must stay active for the entire skill session — step 9 is the only step that removes it. If you run other skills as intermediate steps (e.g., `/ready-for-review` before pushing in step 8), their cleanup must not touch this marker. If the marker is accidentally removed mid-session, restore it in a standalone Bash call before any subsequent `gh` command — the hook fires before the shell executes, so you cannot create the marker and use it atomically in the same call.
 1. Identify the PR number for the current branch: `gh pr view --json number -q '.number'`

@@ -19,7 +19,7 @@ Write the active-session marker so this skill's own Write/Edit operations are no
 ~/.claude/scripts/marker.sh activate plan-review
 ```
 
-If the chain fails (empty `SESSION_ID`, etc.), the `capture-session-id.sh` SessionStart hook didn't run — abort and report; do not proceed without the marker, since the hook would block any Write/Edit during the review.
+If the chain fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since the hook would block any Write/Edit during the review.
 
 ## Step 1 — Identify the plan
 
