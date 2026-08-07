@@ -16,7 +16,7 @@ user-invocable: false
 ~/.claude/scripts/marker.sh activate memory-skill
 ```
 
-While active, `require-memory-skill.sh` bypasses for this session (<60 min freshness; mtime refreshed on each pass). If the command fails (empty `SESSION_ID`), abort — `capture-session-id.sh` SessionStart hook did not run, and every gated memory write below will be blocked.
+While active, `require-memory-skill.sh` bypasses for this session (<60 min freshness; mtime refreshed on each pass). If the command fails (empty `SESSION_ID`), abort — `marker.sh` could not resolve this session's id, and every gated memory write below will be blocked.
 
 ## Step 1 — Decide where this rule belongs before writing
 
