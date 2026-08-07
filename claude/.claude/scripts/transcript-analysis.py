@@ -6,7 +6,9 @@ judgment-pair --out writes a file; all other subcommands are read-only.
 
 import argparse
 import contextlib
+import errno
 import fnmatch
+import hashlib
 import json
 import os
 import random
@@ -16,7 +18,7 @@ import sys
 import tempfile
 import time
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -1483,22 +1485,77 @@ def _normalize_skill_name(raw: str) -> str:
     return raw.rsplit("/", 1)[-1]
 
 
-def _iter_scoped_sessions(slugs: list[str], include_subagents: bool):
+def _dedup_new_project_dirs(candidates: Iterable[Path], visited_dirs: set[Path]) -> Iterator[Path]:
+    """Yield each directory in `candidates` at most once, keyed on resolved
+    real path, recording it into `visited_dirs` (mutated in place) as it's
+    yielded.
+
+    Shared across every multi-root project-dir scan in this file
+    (`_iter_scoped_sessions`, `_iter_glob_scoped_sessions`,
+    `_scan_root_transcripts`) — extracted after a cumulative review found
+    three near-identical copies of this same five-line pattern. Pass one
+    `visited_dirs` set across an entire multi-root loop (not a fresh one per
+    root) so a project dir aliased, by symlink, to one already yielded from a
+    prior root is caught too — not just two roots resolving to the same
+    directory.
+    """
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        resolved_dir = candidate.resolve()
+        if resolved_dir in visited_dirs:
+            continue
+        visited_dirs.add(resolved_dir)
+        yield candidate
+
+
+def _iter_scoped_sessions(
+    slugs: list[str], include_subagents: bool, roots: Sequence[Path] | None = None
+):
     """Yield sessions from an explicit set of exact project-dir slugs.
 
     Matching is by identity, not location: enumerate the directory names under
-    PROJECTS_DIR and keep only those whose name is string-equal to one of the
-    scoped slugs. This deliberately does NOT route the slug through Path.glob —
-    a slug containing a glob metacharacter (a `*`/`?`/`[` in the machine's home
-    or username path) would otherwise be interpreted as a wildcard and could
-    widen the match beyond this repo's own worktrees. Visiting each directory at
-    most once also makes double-counting impossible.
+    each root in `roots` (default: PROJECTS_DIR alone, so every caller other
+    than cost's --config-dir is unaffected) and keep only those whose name is
+    string-equal to one of the scoped slugs. This deliberately does NOT route
+    the slug through Path.glob — a slug containing a glob metacharacter (a
+    `*`/`?`/`[` in the machine's home or username path) would otherwise be
+    interpreted as a wildcard and could widen the match beyond this repo's own
+    worktrees. Visiting each directory at most once (by resolved real path,
+    spanning every root — covers a root nested inside another, not just two
+    identical roots) also makes double-counting impossible.
     """
+    if roots is None:
+        roots = (PROJECTS_DIR,)
     wanted = set(slugs)
-    if not PROJECTS_DIR.is_dir():
-        return
-    for project_dir in sorted(PROJECTS_DIR.iterdir()):
-        if project_dir.name in wanted and project_dir.is_dir():
+    visited_dirs: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        candidates = (p for p in sorted(root.iterdir()) if p.name in wanted)
+        for project_dir in _dedup_new_project_dirs(candidates, visited_dirs):
+            for jsonl in sorted(project_dir.glob("*.jsonl")):
+                records = _read_session_file(jsonl, include_subagents)
+                if records:
+                    yield jsonl, records
+
+
+def _iter_glob_scoped_sessions(
+    roots: Sequence[Path], projects_glob: str, include_subagents: bool
+) -> Iterator[tuple[Path, list[dict]]]:
+    """Chain iter_sessions' glob match across more than one root.
+
+    Only used when len(roots) > 1 (cost's --config-dir); the single-root case
+    keeps calling iter_sessions directly so its documented flat-sort-over-
+    full-paths ordering guarantee is untouched for every other caller. Dedups
+    matched project directories by resolved real path, spanning all roots —
+    covers a --config-dir root nested inside another root's tree, not just
+    two roots that resolve to the same directory (already deduped earlier at
+    the CLI boundary).
+    """
+    visited_dirs: set[Path] = set()
+    for root in roots:
+        for project_dir in _dedup_new_project_dirs(sorted(root.glob(projects_glob)), visited_dirs):
             for jsonl in sorted(project_dir.glob("*.jsonl")):
                 records = _read_session_file(jsonl, include_subagents)
                 if records:
@@ -1506,7 +1563,10 @@ def _iter_scoped_sessions(slugs: list[str], include_subagents: bool):
 
 
 def _resolve_project_scope(
-    args: argparse.Namespace, subcommand: str, include_subagents: bool = False
+    args: argparse.Namespace,
+    subcommand: str,
+    include_subagents: bool = False,
+    roots: Sequence[Path] | None = None,
 ) -> tuple[Iterator[tuple[Path, list[dict]]], str]:
     """Resolve --projects/--this-repo into a fresh session iterator and a scope label.
 
@@ -1526,15 +1586,28 @@ def _resolve_project_scope(
     `args` object reused across two different subcommand invocations would
     silently reuse the first's resolved slugs instead of re-resolving for the
     second.
+
+    `roots` defaults to (PROJECTS_DIR,), so every caller but cost — the only
+    subcommand that can pass more than one root, via --config-dir — is
+    unaffected. --this-repo and multi-root are mutually exclusive (enforced
+    at cost's CLI boundary), so the this_repo branch always has a single root
+    in practice; it still threads `roots` through for signature parity.
     """
     if args.this_repo:
         slugs = getattr(args, "_this_repo_slugs", None)
         if slugs is None:
             slugs = _repo_scoped_project_slugs(subcommand)
             args._this_repo_slugs = slugs
-        return _iter_scoped_sessions(slugs, include_subagents), f"this repo ({len(slugs)} project dirs)"
+        return (
+            _iter_scoped_sessions(slugs, include_subagents, roots=roots),
+            f"this repo ({len(slugs)} project dirs)",
+        )
     glob = _projects_glob(args)
-    return iter_sessions(PROJECTS_DIR, glob, include_subagents=include_subagents), glob
+    if roots is None:
+        roots = (PROJECTS_DIR,)
+    if len(roots) == 1:
+        return iter_sessions(roots[0], glob, include_subagents=include_subagents), glob
+    return _iter_glob_scoped_sessions(roots, glob, include_subagents), glob
 
 
 def _resolved_scope_header(subcommand: str, scope_label: str) -> str:
@@ -2390,35 +2463,82 @@ def _derive_proj_label(jsonl: Path) -> str:
     return jsonl.parent.name.lstrip("-").replace("-", "/", 2).split("/", 2)[-1]
 
 
+# iter_sessions documents this repo's own worktree naming: a linked worktree's
+# project-dir slug is the main dir's slug with --claude-worktrees-<branch>
+# appended, which _derive_proj_label carries through unchanged onto its output.
+_WORKTREE_SUFFIX_RE = re.compile(r"--claude-worktrees-.+$")
+
+
+def _project_family(raw_proj_label: str) -> str:
+    """Collapse a _derive_proj_label output to its base-repo "family" key.
+
+    One repo's main checkout and every linked worktree derive to distinct
+    labels (repo, repo--claude-worktrees-branch-a, ...) that would otherwise
+    fragment --by-project's per-project rows across branches of the same repo.
+
+    Matches on the literal substring alone — a project whose own name happens
+    to contain "--claude-worktrees-" would have that trailing portion
+    stripped and merged into a false family. Below current scale to guard
+    against; re-evaluate if --by-project output ever shows an unexpected
+    merge.
+    """
+    return _WORKTREE_SUFFIX_RE.sub("", raw_proj_label)
+
+
 _REDACT_MAP_MISS_TOKEN = "private-project-unmapped"
 
+# A cost redact-map key is either a plain raw label (single-root reports,
+# audit-routing) or a (root_index, raw_label) pair (cost's multi-root
+# --config-dir reports) — see _build_redact_map.
+_RedactMapKey = str | tuple[int, str]
 
-def _redact_proj_label(proj_label: str, redact_map: dict[str, str]) -> str:
+
+def _redact_proj_label(proj_label: _RedactMapKey, redact_map: dict[_RedactMapKey, str]) -> str:
     """Apply the redact map to a project label, preserving 'claude-config' as-is.
+
+    proj_label may be a (root_index, raw_label) pair for a multi-root cost
+    report (see _build_redact_map); claude-config still passes through
+    unredacted regardless of which root it was found under.
 
     A map miss returns a fixed opaque token rather than the raw label — the
     map is only ever built from a full-corpus scan (_build_redact_map), so a
     miss means the caller passed an incomplete map, and falling back to the
     raw name would silently defeat --redact.
     """
-    if proj_label == "claude-config":
-        return proj_label
+    raw_label = proj_label[1] if isinstance(proj_label, tuple) else proj_label
+    if raw_label == "claude-config":
+        return raw_label
     return redact_map.get(proj_label, _REDACT_MAP_MISS_TOKEN)
 
 
-def _build_redact_map() -> dict[str, str]:
+def _sorted_distinct_proj_labels(root: Path) -> list[str]:
+    """Distinct project labels found under one root, sorted for deterministic
+    ordinal assignment — the per-root scan _build_redact_map shares across its
+    single- and multi-root branches.
+
+    Scans via iter_sessions(root, "*"), ignoring any caller's own --projects
+    filter, so a project always binds to the same placeholder whether it was
+    found by a narrowed cost run or a full audit-routing run — a narrower scan
+    would let the same label mean two different projects across two published
+    outputs. iter_sessions (not a raw glob) is used because it already
+    excludes zero-record transcripts; a raw glob would not, and that
+    difference would shift every subsequent private-project-N index.
+    """
+    labels: list[str] = []
+    for jsonl, _records in iter_sessions(root, "*"):
+        label = _derive_proj_label(jsonl)
+        if label not in labels:
+            labels.append(label)
+    labels.sort()
+    return labels
+
+
+def _build_redact_map(roots: Sequence[Path] | None = None) -> dict[_RedactMapKey, str]:
     """Build the project-label -> opaque-token map shared by every --redact caller.
 
-    Always scans the full corpus via iter_sessions(PROJECTS_DIR, "*"), ignoring
-    the caller's own --projects filter, so a project always binds to the same
-    placeholder whether it was found by a narrowed cost run or a full
-    audit-routing run — a narrower scan would let the same label mean two
-    different projects across two published outputs. iter_sessions (not a raw
-    glob) is used because it already excludes zero-record transcripts; a raw
-    glob would not, and that difference would shift every subsequent
-    private-project-N index. --since never reaches this map and must not: it
-    would change which sessions are found on a per-run basis, with the same
-    label-drift consequence.
+    --since never reaches this map and must not: it would change which
+    sessions are found on a per-run basis, shifting every subsequent
+    private-project-N index between two runs of the same corpus.
 
     This means --redact reads every project's transcript bytes off disk even
     under --this-repo, a considered tradeoff in tension with that flag's
@@ -2432,23 +2552,56 @@ def _build_redact_map() -> dict[str, str]:
     otherwise disclose. Narrowing the scan to the caller's own scope would
     close this but breaks the cross-run label-stability guarantee above, so
     this function does not attempt it.
-    """
-    labels: list[str] = []
-    for jsonl, _records in iter_sessions(PROJECTS_DIR, "*"):
-        label = _derive_proj_label(jsonl)
-        if label not in labels:
-            labels.append(label)
-    labels.sort()
 
-    redact_map: dict[str, str] = {}
-    num_index = 1
-    for label in labels:
-        if label == "claude-config":
-            redact_map[label] = label
-        else:
-            redact_map[label] = f"private-project-{num_index}"
-            num_index += 1
+    roots defaults to (PROJECTS_DIR,) — a single root (the default, or any
+    caller passing exactly one, e.g. cmd_audit_routing) gets the original flat
+    private-project-N map, unnamespaced by account. More than one root (cost's
+    --config-dir) namespaces every label account-<K>/private-project-N, where
+    <K> is the root's 1-based position in `roots` (scan order) — never the
+    config-dir path or its basename, which would leak the account/client
+    identifier the directory name encodes. <N> restarts at 1 within each
+    account's own scan. Labels (and the corpus fingerprint derived from this
+    map) are not comparable across two separate report runs, single- or
+    multi-root: a changed corpus can renumber every ordinal.
+    """
+    if roots is None:
+        roots = (PROJECTS_DIR,)
+
+    redact_map: dict[_RedactMapKey, str] = {}
+
+    if len(roots) <= 1:
+        root = roots[0] if roots else PROJECTS_DIR
+        num_index = 1
+        for label in _sorted_distinct_proj_labels(root):
+            if label == "claude-config":
+                redact_map[label] = label
+            else:
+                redact_map[label] = f"private-project-{num_index}"
+                num_index += 1
+        return redact_map
+
+    for root_idx, root in enumerate(roots):
+        account_label = f"account-{root_idx + 1}"
+        num_index = 1
+        for label in _sorted_distinct_proj_labels(root):
+            key = (root_idx, label)
+            if label == "claude-config":
+                redact_map[key] = label
+            else:
+                redact_map[key] = f"{account_label}/private-project-{num_index}"
+                num_index += 1
     return redact_map
+
+
+def _corpus_fingerprint(redact_map: dict[_RedactMapKey, str]) -> str:
+    """Short sha256 prefix of the sorted raw project-label set a redact map was
+    built from — a same-corpus indicator only, not a security boundary (see
+    _build_redact_map). Two report runs share a fingerprint only when their
+    underlying project-label sets are identical; a differing fingerprint means
+    ordinals are not comparable between them.
+    """
+    raw_labels = {key[1] if isinstance(key, tuple) else key for key in redact_map}
+    return hashlib.sha256("\n".join(sorted(raw_labels)).encode()).hexdigest()[:12]
 
 
 _REDACT_SESSION_MISS_TOKEN = "session-unmapped"
@@ -2681,6 +2834,11 @@ _CACHE_WRITE_1H_MULTIPLIER = 2
 _CACHE_READ_MULTIPLIER = 0.1
 
 _SONNET_5_PROMO_EXPIRES = date(2026, 8, 31)  # vendor-stated introductory-rate end
+# Published standard rate taking effect the day after _SONNET_5_PROMO_EXPIRES
+# ($3.00/MTok input, up from the $2.00 introductory rate); see
+# _PRICING_SOURCE_URL. Recorded here so updating _MODEL_BASE_INPUT_RATES once
+# the STALE PRICING banner fires doesn't need a fresh vendor-page lookup.
+_SONNET_5_SUCCESSOR_BASE_RATE = 3.00
 _DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
 
 # Base input $/MTok per model ID, keyed on the exact string Claude Code writes
@@ -2780,6 +2938,152 @@ def _pct_of(value: float, total: float) -> str:
     return f"{100 * value / total:.1f}%" if total else "0.0%"
 
 
+_DO_NOT_PUBLISH_BANNER = (
+    "DO NOT PUBLISH — this output contains real project names and session IDs."
+)
+
+
+def _resolve_cost_roots(args: argparse.Namespace) -> list[Path]:
+    """Assemble cost's scan roots from the default config dir plus any
+    --config-dir extras, in argument order, deduped by resolved path.
+
+    Mirrors post-crash-sessions.py:1067-1111's --config-dir contract: exit 2
+    on a root that is not a directory or lacks a projects/ subdirectory.
+    --this-repo cannot filter a foreign config dir's worktrees, and
+    --no-redact on more than one root would put one client's real project
+    names into a report meant for another — both are refused here, exit 2,
+    rather than silently scoping to the wrong thing. Returns each root's
+    projects/ subdirectory, ready for _resolve_project_scope's roots
+    parameter.
+    """
+    extra_config_dirs: list[str] = getattr(args, "extra_config_dirs", None) or []
+
+    if args.this_repo and extra_config_dirs:
+        print(
+            "cost: --this-repo and --config-dir are mutually exclusive"
+            " (--this-repo cannot filter a foreign config dir's worktrees)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    default_dir = config_dir()
+    config_dirs = [default_dir]
+    seen_resolved = {default_dir.resolve()}
+    for raw in extra_config_dirs:
+        candidate = Path(raw)
+        if not candidate.is_dir():
+            print(f"cost: --config-dir {raw!r} is not a directory", file=sys.stderr)
+            sys.exit(2)
+        if not (candidate / "projects").is_dir():
+            print(
+                f"cost: --config-dir {raw!r} rejected: no projects/ subdirectory found",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        resolved = candidate.resolve()
+        if resolved in seen_resolved:
+            continue
+        seen_resolved.add(resolved)
+        config_dirs.append(candidate)
+
+    if len(config_dirs) > 1 and getattr(args, "no_redact", False):
+        print(
+            "cost: --no-redact is refused when more than one root is in scope"
+            " (--config-dir was given); drop --no-redact or scope to a single profile",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    return [d / "projects" for d in config_dirs]
+
+
+def _scan_root_transcripts(root: Path, projects_glob: str, slugs: Sequence[str] | None = None) -> tuple[int, int]:
+    """Count transcripts found vs. unreadable directly under one cost scan root.
+
+    A dedicated readability probe (open, discard) rather than routing through
+    _read_session_file, which swallows OSError into an empty record list
+    indistinguishable from a genuinely empty transcript — cmd_cost's per-root
+    summary line needs the two counted separately.
+
+    Raises PermissionError when `root` itself is not readable/searchable.
+    This is an explicit os.access probe, not reliance on Path.glob to raise —
+    verified empirically that glob silently swallows OSError while walking an
+    unreadable directory and returns no matches rather than propagating, so a
+    permission-restricted root would otherwise misreport as "0 transcripts
+    found," the same shape as a genuinely empty scope. An unreadable project
+    subdirectory nested under an otherwise-readable root is still silently
+    absorbed into the transcript count (glob's real behavior) — this probe
+    only covers the root itself, the realistic misconfigured-`--config-dir`
+    case. Callers scanning multiple untrusted roots catch this per root so
+    one bad root doesn't abort the whole report.
+
+    `slugs`, when given, restricts the scan to those exact project-dir names
+    (mirroring _iter_scoped_sessions' identity match, not a glob) instead of
+    `projects_glob` — required for --this-repo, whose _projects_glob(args) is
+    always "*" regardless of scope. Without this, the diagnostic line would
+    report the whole config dir's transcript count under --this-repo, masking
+    a genuinely-empty repo-scoped result behind an unrelated nonzero total —
+    the exact silent-zero failure Step 8 exists to surface. Both branches dedup
+    matched project dirs by resolved real path via _dedup_new_project_dirs, so
+    a project dir aliased to another (by symlink, whether reached by slug or
+    by glob) doesn't double-count in this diagnostic either.
+    """
+    if not os.access(root, os.R_OK | os.X_OK):
+        raise PermissionError(errno.EACCES, "Permission denied", str(root))
+    visited_dirs: set[Path] = set()
+    candidates = (root / slug for slug in slugs) if slugs is not None else sorted(root.glob(projects_glob))
+    jsonl_paths = [
+        jsonl
+        for proj_dir in _dedup_new_project_dirs(candidates, visited_dirs)
+        for jsonl in proj_dir.glob("*.jsonl")
+    ]
+    skipped = 0
+    for jsonl in jsonl_paths:
+        try:
+            with open(jsonl):
+                pass
+        except OSError:
+            skipped += 1
+    return len(jsonl_paths), skipped
+
+
+def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
+    """Return the 0-based index of the root under which jsonl was found.
+
+    `resolved_roots` must already be resolved (real, symlink-free) paths —
+    callers resolve the roots list once, outside cost's per-session loop,
+    since this runs once per priced session and re-resolving every root on
+    every call would be a per-element filesystem stat inside that loop.
+    `jsonl` is always a file path, so a root can only ever be one of its
+    ancestors, never equal to it — `resolved.parents` alone covers every case.
+
+    Returns the FIRST matching root by list order when one declared root is a
+    genuine filesystem descendant of another (not just a symlink alias back
+    to it, which the dedup guards upstream already collapse to one root's
+    worth of sessions) — attributing every session under the nested root to
+    whichever sorts earlier, always the default config dir. Untested and
+    low-realism given this repo's own per-account layout (sibling
+    directories under `~/.config/claude-accounts/`, never nested); revisit if
+    `--config-dir` is ever pointed at a directory nested inside another
+    declared root.
+    """
+    resolved = jsonl.resolve()
+    for idx, resolved_root in enumerate(resolved_roots):
+        if resolved_root in resolved.parents:
+            return idx
+    # Deliberately omits the raw jsonl path: main() has no top-level exception
+    # handler, so this message would otherwise reach stderr uncaught — the
+    # same reasoning and fix already applied to the redact-map-miss assertion
+    # a few lines below in the same loop (structural sibling, audited after a
+    # cumulative-diff review caught the fix hadn't been applied here too).
+    path_hash = hashlib.sha256(str(jsonl).encode()).hexdigest()[:12]
+    raise AssertionError(
+        f"cost: a session path (hash {path_hash}) matched no known scan root — roots list is"
+        " out of sync with the session iterator (a symlinked project dir resolving outside"
+        " every declared root is one way this can happen)"
+    )
+
+
 def cmd_cost(args: argparse.Namespace) -> None:
     """CLI entry point for the cost subcommand.
 
@@ -2789,21 +3093,50 @@ def cmd_cost(args: argparse.Namespace) -> None:
     cost's stdout would start failing the moment a rate's `expires` date passes.
     UTC, matching _fmt_date's convention and the UTC-implicit _PRICING_FETCH_DATE
     and _MODEL_RATE_EXPIRES dates — a local-time date.today() could shift the
-    staleness banner's boundary day by the operator's UTC offset.
+    staleness banner's boundary day by the operator's UTC offset. Root
+    resolution happens here, at the CLI boundary, rather than inside
+    _cost_report, so --config-dir validation exits before any scan work.
     """
-    _cost_report(args, datetime.now(UTC).date())
+    roots = _resolve_cost_roots(args)
+    _cost_report(args, datetime.now(UTC).date(), roots)
 
 
-def _cost_report(args: argparse.Namespace, today: date) -> None:
+def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | None = None) -> None:
     """Corpus-wide dollar-cost report by token class, model ID, and context-at-turn bucket.
 
     Sidechain (subagent) turns are priced exactly once: iter_sessions is
     called with include_subagents=True so subagent-dispatched spend is
     counted toward the total, matching real billing — cmd_audit_routing's
     Opus-only, main-thread-only scope would silently exclude most of it.
+
+    roots is None for every direct caller other than cmd_cost (this module's
+    own tests included) — that keeps the single-root report byte-for-byte
+    unchanged, including the absence of the per-root scan-summary lines below,
+    which only cmd_cost's CLI path (always passing an explicit roots list)
+    emits.
     """
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = not bool(getattr(args, "no_redact", False))
+
+    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    multi_root = len(scan_roots) > 1
+
+    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement point
+    # for this refusal, but every direct caller of _cost_report (including
+    # this module's own tests) bypasses that boundary — this function is the
+    # one that actually prints raw labels when redact is False, so it must
+    # not trust an already-validated `roots`/`no_redact` combination.
+    if not redact and multi_root:
+        print(
+            "cost: --no-redact is refused when more than one root is in scope"
+            " (--config-dir was given); drop --no-redact or scope to a single profile",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if not redact:
+        print(_DO_NOT_PUBLISH_BANNER)
+        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
 
     since_ts, since_raw = _parse_since_nd_arg(args, "cost")
     since_label = since_raw or ""
@@ -2811,11 +3144,47 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
     # _resolve_project_scope's fail-closed --this-repo check runs before
     # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
     # exits without paying for that scan.
-    session_iter, scope_label = _resolve_project_scope(args, "cost", include_subagents=True)
+    session_iter, scope_label = _resolve_project_scope(args, "cost", include_subagents=True, roots=roots)
+
+    # Resolved once, outside the per-session loop below — _root_index_for_path
+    # runs once per priced session, and re-resolving every root on every call
+    # would be a per-element filesystem stat inside that loop.
+    resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
+
+    if roots is not None:
+        glob = _projects_glob(args)
+        # --this-repo's slugs were already resolved (and cached on args) by
+        # _resolve_project_scope above; passing them keeps this diagnostic
+        # scan repo-scoped instead of falling back to _projects_glob's "*".
+        this_repo_slugs = getattr(args, "_this_repo_slugs", None) if args.this_repo else None
+        for idx, root in enumerate(scan_roots):
+            root_label = f"account-{idx + 1}" if redact else str(root.parent)
+            try:
+                scanned, skipped = _scan_root_transcripts(root, glob, slugs=this_repo_slugs)
+            except PermissionError as exc:
+                # str(exc) on a PermissionError typically embeds the offending
+                # path — suppressed under default redaction so a permission
+                # failure can't leak the raw config-dir path it's reporting on.
+                detail = str(exc) if not redact else "permission denied"
+                print(f"cost: {root_label}: cannot scan ({detail}) — treating as 0 transcripts", file=sys.stderr)
+                scanned, skipped = 0, 0
+            print(f"cost: {root_label}: scanned {scanned:,} transcripts, {skipped:,} skipped (unreadable)")
+            if scanned == 0:
+                print(
+                    f"WARNING: cost: {root_label}: no transcripts found for this scope"
+                    " — check the config dir and --projects/--this-repo filter."
+                )
+
+    redact_map: dict[_RedactMapKey, str] = _build_redact_map(roots) if redact else {}
+    if redact:
+        print(
+            f"Corpus fingerprint: {_corpus_fingerprint(redact_map)}"
+            "  (private-project labels are not comparable across a different fingerprint)"
+        )
     _print_resolved_scope("cost", scope_label)
 
-    redact_map: dict[str, str] = _build_redact_map() if redact else {}
     session_redact_map: dict[str, str] = {}
+    by_project: bool = bool(getattr(args, "by_project", False))
 
     class_totals: dict[str, float] = dict.fromkeys(_TOKEN_CLASSES, 0.0)
     model_totals: dict[str, float] = defaultdict(float)
@@ -2823,9 +3192,18 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
     bucket_totals: dict[str, float] = defaultdict(float)
     session_rows: list[dict] = []
     stale_models: set[str] = set()
+    main_total = 0.0
+    subagent_total = 0.0
+    # Keyed on (root_index_or_None, project_family) — see _project_family.
+    project_totals: dict[tuple[int | None, str], float] = defaultdict(float)
+    # One representative raw scoped_label per project_totals key, for redact
+    # lookup (_redact_proj_label) — several worktree-suffixed raw labels can
+    # collapse to one family, so the smallest raw label is picked for a
+    # deterministic (not iteration-order-dependent) display choice.
+    project_repr_label: dict[tuple[int | None, str], _RedactMapKey] = {}
 
     for jsonl, records in session_iter:
-        proj_label = _derive_proj_label(jsonl)
+        raw_proj_label = _derive_proj_label(jsonl)
         session_id = jsonl.stem[:12]
         if redact:
             _assign_session_redact_label(session_id, session_redact_map)
@@ -2861,24 +3239,100 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
             model_totals[model] += turn_total
             bucket_totals[_context_bucket(context_at_turn)] += turn_total
             session_total += turn_total
+            if bool(rec.get("isSidechain")):
+                subagent_total += turn_total
+            else:
+                main_total += turn_total
 
         if session_total:
+            if multi_root:
+                scoped_label: _RedactMapKey = (_root_index_for_path(jsonl, resolved_scan_roots), raw_proj_label)
+            else:
+                scoped_label = raw_proj_label
+            if redact:
+                proj_display = _redact_proj_label(scoped_label, redact_map)
+                if proj_display == _REDACT_MAP_MISS_TOKEN:
+                    # Deliberately omits raw_proj_label: main() has no top-level
+                    # exception handler, so this message would otherwise reach
+                    # stderr uncaught — re-leaking the exact client-identifying
+                    # string --redact exists to hide. A short hash (like
+                    # _corpus_fingerprint's) and the root index are enough to
+                    # debug a desync without exposing the plaintext label.
+                    root_idx = scoped_label[0] if isinstance(scoped_label, tuple) else None
+                    label_hash = hashlib.sha256(raw_proj_label.encode()).hexdigest()[:12]
+                    root_desc = f"root {root_idx}" if root_idx is not None else "the single scan root"
+                    raise AssertionError(
+                        f"cost: redact map has no entry for a project label under {root_desc}"
+                        f" (label hash {label_hash}) — the redact map's roots are out of sync"
+                        " with the session iterator's roots"
+                    )
+            else:
+                proj_display = raw_proj_label
             session_rows.append({
                 "session_id": session_id,
-                "proj_label": proj_label,
+                "proj_label": proj_display,
                 "total": session_total,
             })
 
+            if by_project:
+                root_component = scoped_label[0] if multi_root else None
+                project_key = (root_component, _project_family(raw_proj_label))
+                project_totals[project_key] += session_total
+                raw_part = scoped_label[1] if isinstance(scoped_label, tuple) else scoped_label
+                current_repr = project_repr_label.get(project_key)
+                current_raw_part = current_repr[1] if isinstance(current_repr, tuple) else current_repr
+                if current_repr is None or raw_part < current_raw_part:
+                    project_repr_label[project_key] = scoped_label
+
     grand_total = sum(class_totals.values())
+
+    # Both invariants below sum the same per-turn dollar increments (the same
+    # dollars_by_class value feeds class_totals, main/subagent, and
+    # project_totals in the same loop iteration) through a different
+    # accumulator split — they guard the partition/bucketing logic (a branch
+    # that double-counts, drops, or misroutes a turn), not _price_turn's
+    # dollar math itself, since a wrong per-turn price would move both sides
+    # of either comparison together. Any gap beyond float64 summation noise
+    # (well under a millionth of a dollar here) still means a real bucketing
+    # bug, not rounding.
+    if abs(main_total + subagent_total - grand_total) > 1e-6:
+        raise AssertionError(
+            f"cost: main ({main_total:.6f}) + subagent ({subagent_total:.6f}) spend"
+            f" does not equal the grand total ({grand_total:.6f}) — the isSidechain"
+            " split is out of sync with the token-class totals"
+        )
+
+    if by_project:
+        project_grand_total = sum(project_totals.values())
+        if abs(project_grand_total - grand_total) > 1e-6:
+            raise AssertionError(
+                f"cost: --by-project rows sum to {project_grand_total:.6f} but the grand"
+                f" total is {grand_total:.6f} — per-project aggregation is out of sync"
+                " with the token-class totals"
+            )
 
     title_since = f"last {since_label}" if since_label else "all time"
     print(f"\n## Cost report ({title_since})\n")
 
     if stale_models:
+        # claude-sonnet-5's specific successor rate is recorded so this banner
+        # is actionable on sight — without it, an operator seeing the warning
+        # still has to re-fetch the vendor page to learn what to update
+        # _MODEL_BASE_INPUT_RATES to, which is the exact re-lookup this
+        # constant exists to save.
+        successor_hint = (
+            f" claude-sonnet-5's recorded successor base rate is"
+            f" ${_SONNET_5_SUCCESSOR_BASE_RATE:.2f}/MTok input — confirm against"
+            f" {_PRICING_SOURCE_URL} before updating _MODEL_BASE_INPUT_RATES."
+            if "claude-sonnet-5" in stale_models
+            else ""
+        )
         print(
             "STALE PRICING — today is past the re-verify-by date for: "
             + ", ".join(sorted(stale_models))
-            + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing the figures below.\n"
+            + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing the figures below."
+            + successor_hint
+            + "\n"
         )
 
     print("## Cost by token class\n")
@@ -2906,6 +3360,36 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
         val = bucket_totals.get(bucket, 0.0)
         print(f"{bucket:<8} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
 
+    print("\n## Cost by thread\n")
+    print(f"{'Thread':<10} {'$':>14} {'Share':>7}")
+    print(f"{'main':<10} {main_total:>14,.2f} {_pct_of(main_total, grand_total):>7}")
+    print(f"{'subagent':<10} {subagent_total:>14,.2f} {_pct_of(subagent_total, grand_total):>7}")
+
+    if by_project:
+        print("\n## Cost by project\n")
+        if not project_totals:
+            print("(no priced turns in range)")
+        elif multi_root:
+            print(f"{'Account':<12} {'Project':<24} {'$':>14} {'Share':>7}")
+            for (root_idx, family), val in sorted(project_totals.items(), key=lambda kv: kv[1], reverse=True):
+                account_col = f"account-{root_idx + 1}" if redact else str(scan_roots[root_idx].parent)
+                repr_label = project_repr_label[(root_idx, family)]
+                # The redact map's multi-root value is "account-K/private-
+                # project-N" (see _build_redact_map) — strip the account
+                # prefix here since it's already the Account column above;
+                # printing both is redundant. "claude-config" carries no "/"
+                # and passes through unchanged.
+                proj_col = (
+                    _redact_proj_label(repr_label, redact_map).split("/", 1)[-1] if redact else family
+                )
+                print(f"{account_col:<12} {proj_col:<24} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+        else:
+            print(f"{'Project':<24} {'$':>14} {'Share':>7}")
+            for (root_idx, family), val in sorted(project_totals.items(), key=lambda kv: kv[1], reverse=True):
+                repr_label = project_repr_label[(root_idx, family)]
+                proj_col = _redact_proj_label(repr_label, redact_map) if redact else family
+                print(f"{proj_col:<24} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+
     print(f"\n## Top {top_n} sessions by dollars\n")
     if not session_rows:
         print("(no priced turns in range)")
@@ -2913,8 +3397,7 @@ def _cost_report(args: argparse.Namespace, today: date) -> None:
         print(f"{'Session':<16} {'Proj':<24} {'$':>14}")
         for row in sorted(session_rows, key=lambda r: r["total"], reverse=True)[:top_n]:
             sid = _redact_session_id(row["session_id"], session_redact_map) if redact else row["session_id"]
-            proj = _redact_proj_label(row["proj_label"], redact_map) if redact else row["proj_label"]
-            print(f"{sid:<16} {proj:<24} {row['total']:>14,.2f}")
+            print(f"{sid:<16} {row['proj_label']:<24} {row['total']:>14,.2f}")
 
 
 def cmd_cost_trend(args: argparse.Namespace) -> None:
@@ -4165,6 +4648,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_project_scope_args(p_cost)
     p_cost.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Refused together with --this-repo or --no-redact."
+        ),
+    )
+    p_cost.add_argument(
         "--since", metavar="Nd",
         help="Limit to turns with timestamp in the last N days (e.g. 35d).",
     )
@@ -4173,10 +4664,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of per-session rows in the top-N-by-dollars section (default: 20).",
     )
     p_cost.add_argument(
+        "--by-project", action="store_true",
+        help=(
+            "Add a per-project cost breakdown, keyed on (account root, project family)."
+            " Composes with --projects and --this-repo; one repo's own worktrees"
+            " collapse into a single row instead of fragmenting per branch."
+        ),
+    )
+    p_cost.add_argument(
         "--no-redact", action="store_true",
         help=(
             "Emit real project names and session IDs instead of anonymized labels."
             " Never publish --no-redact output — see docs/transcript-analysis.md."
+            " Refused when --config-dir puts more than one root in scope."
         ),
     )
     p_cost.set_defaults(func=cmd_cost)

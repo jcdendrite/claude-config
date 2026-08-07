@@ -31,6 +31,8 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
 
 All four gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected.
 
+`cost --config-dir` sidesteps all four gaps a different way: it refuses `--this-repo` outright rather than silently mis-scoping, since `--this-repo`'s identity match can only resolve one config dir's worktrees. See the `cost` section below for the full `--config-dir` contract.
+
 ---
 
 ## buckets
@@ -439,16 +441,20 @@ An Opus turn whose model ID has no pricing-table entry is excluded from the doll
 
 ## cost
 
-**Purpose.** Price-weighted dollar cost by token class (cache read, cache write 5m/1h, output, input), model ID, and context-at-turn bucket, plus a top-N-sessions-by-dollars breakdown. Every other subcommand in this toolkit is denominated in raw token counts; `cost` is the one that answers "which lever actually moves the bill," since cache-read is 0.1× base input while output is 5× — a 50× spread raw token counts erase. **Context-at-turn** is defined as `input_tokens + cache_read_input_tokens + ephemeral_1h + ephemeral_5m` tokens for a turn — the sum of everything read into context for that turn, excluding output.
+**Purpose.** Price-weighted dollar cost by token class (cache read, cache write 5m/1h, output, input), model ID, context-at-turn bucket, and main-thread-vs-subagent thread, plus a top-N-sessions-by-dollars breakdown and an optional `--by-project` per-project breakdown. Every other subcommand in this toolkit is denominated in raw token counts; `cost` is the one that answers "which lever actually moves the bill," since cache-read is 0.1× base input while output is 5× — a 50× spread raw token counts erase. **Context-at-turn** is defined as `input_tokens + cache_read_input_tokens + ephemeral_1h + ephemeral_5m` tokens for a turn — the sum of everything read into context for that turn, excluding output.
 
 Pricing is looked up per exact model ID (Sonnet 5 and Sonnet 4.6 price differently), derived from one base input rate per model plus the pricing page's stated multipliers (output 5×, 5m cache write 1.25×, 1h cache write 2×, cache read 0.1×). Each model ID carries a re-verify-by date; when the current date is past it, a `STALE PRICING` banner prints inside the same output block as the dollar tables — never a separate log line a copy-paste of the tables could drop. An unrecognized model ID (e.g. `<synthetic>`) is never silently priced at $0: it gets its own row and its tokens are counted in a separate "Unpriced tokens" total, excluded from every dollar figure. Sidechain (subagent-dispatched) turns are priced — `cost` reads with `include_subagents=True`, unlike `audit-routing`'s main-thread-only scope, since subagent spend is real spend.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); mutually exclusive with `--projects`
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). The default resolved config dir (`$CLAUDE_CONFIG_DIR`, or `~/.claude`) is always scanned first; each extra directory must contain its own `projects/` subdirectory or the run is rejected. Use this to union spend across account profiles (e.g. a machine running several `~/.config/claude-accounts/<account>/` profiles) into one report. Refused together with `--this-repo` (it cannot filter a foreign config dir's worktrees) and with `--no-redact` (more than one root in scope would put one profile's real project names into a report meant to also cover another).
+- `--by-project` — add a per-project cost breakdown, keyed on (account root, project family); composes with both `--projects` and `--this-repo`. One repo's own worktrees collapse into a single family row instead of fragmenting per branch. When `--config-dir` puts more than one root in scope, each row also carries an `Account` column using the same `account-N` labeling the per-root scan-summary lines use. Under `--no-redact` (single-root only — see below), the Project column shows the raw, suffix-collapsed directory name instead of a `private-project-N` placeholder, same as every other section of this report.
 - `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`)
 - `--top N` — maximum per-session rows in the top-N-by-dollars section (default: 20)
-- `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output.
+- `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output. Refused when `--config-dir` puts more than one root in scope.
+
+Redacted project labels (`private-project-N`) and the printed corpus fingerprint are **not comparable across two separate report runs** — a changed corpus (a new session, a removed project dir, a different `--config-dir` set) can renumber every ordinal, single- or multi-root. Treat each run's redacted output as self-contained; never diff `private-project-3` between two runs and assume it names the same project.
 
 **Sample output.**
 ```
@@ -480,6 +486,18 @@ Unpriced tokens (unknown model IDs): 1,240
 Bucket                $   Share
 <200k          1,866.00   31.6%
 >=200k         4,039.00   68.4%
+
+## Cost by thread
+
+Thread          $   Share
+main       4,612.00   78.1%
+subagent   1,293.00   21.9%
+
+## Cost by project  (only with --by-project)
+
+Project                       $   Share
+private-project-13        612.00   10.4%
+private-project-2         458.00    7.8%
 
 ## Top 20 sessions by dollars
 

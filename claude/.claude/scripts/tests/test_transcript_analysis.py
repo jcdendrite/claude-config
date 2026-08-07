@@ -2,6 +2,7 @@
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -104,6 +105,13 @@ def _extract_unpriced_total(out: str) -> int:
     return int(match.group(1).replace(",", ""))
 
 
+def _extract_grand_total(out: str) -> float:
+    """Read cost's grand-total row ('total  $X.XX') from the token-class table."""
+    match = re.search(r"^total\s+([\d,]+\.\d\d)\s*$", out, re.MULTILINE)
+    assert match is not None, "grand total row not found in output"
+    return float(match.group(1).replace(",", ""))
+
+
 def _asst(
     model: str,
     *,
@@ -155,6 +163,19 @@ def fake_projects(tmp_path, monkeypatch):
     proj.mkdir(parents=True)
     monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
     return proj
+
+
+@pytest.fixture()
+def fake_config_dir_factory(tmp_path):
+    """Factory for extra --config-dir roots: each call builds a fresh config
+    dir (with its own projects/ subdirectory) under tmp_path, independent of
+    fake_projects' own PROJECTS_DIR — cost's multi-root tests use this to
+    build a second (and third) account profile."""
+    def _make(name: str) -> Path:
+        config_dir_path = tmp_path / name
+        (config_dir_path / "projects").mkdir(parents=True)
+        return config_dir_path
+    return _make
 
 
 def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
@@ -2273,6 +2294,8 @@ def _cost_args(
     since: str | None = None,
     top: int = 20,
     no_redact: bool = False,
+    extra_config_dirs: list[str] | None = None,
+    by_project: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -2280,6 +2303,8 @@ def _cost_args(
         "since": since,
         "top": top,
         "no_redact": no_redact,
+        "extra_config_dirs": extra_config_dirs,
+        "by_project": by_project,
     })()
 
 
@@ -2988,6 +3013,719 @@ class TestCost:
         out = capsys.readouterr().out
         assert "private-project-1" in out
         assert "zzz-other" not in out
+
+
+def _write_cost_root(base: Path, name: str, proj_slug: str, session_id: str, records: list[dict]) -> Path:
+    """Build one --config-dir root's project-dir tree — same shape as
+    fake_projects' own PROJECTS_DIR (the root directly contains project-slug
+    subdirectories, no extra projects/ layer), parameterized so multi-root
+    tests can build more than one root under the same tmp_path."""
+    root = base / name
+    proj = root / proj_slug
+    proj.mkdir(parents=True)
+    _write_jsonl(proj / f"{session_id}.jsonl", records)
+    return root
+
+
+# ---------------------------------------------------------------------------
+# cost — multi-root (--config-dir)
+# ---------------------------------------------------------------------------
+
+
+class TestCostResolveRoots:
+    """_resolve_cost_roots: the --config-dir CLI-boundary contract, mirroring
+    post-crash-sessions.py:1067-1111's --config-dir (transcript-analysis.py's
+    own sibling implementation of the same contract)."""
+
+    def test_default_root_alone_when_no_extra_config_dirs(self, tmp_path, monkeypatch):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        roots = _mod._resolve_cost_roots(_cost_args())
+        assert roots == [default_dir / "projects"]
+
+    def test_single_extra_config_dir_allowed(self, tmp_path, monkeypatch, fake_config_dir_factory):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        roots = _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b)]))
+        assert roots == [default_dir / "projects", acct_b / "projects"]
+
+    def test_extra_roots_appended_in_argument_order(self, tmp_path, monkeypatch, fake_config_dir_factory):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        acct_c = fake_config_dir_factory("acct-c")
+        roots = _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b), str(acct_c)]))
+        assert roots == [default_dir / "projects", acct_b / "projects", acct_c / "projects"]
+
+    def test_duplicate_root_deduped_by_resolve_not_string_equality(self, tmp_path, monkeypatch, fake_config_dir_factory):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        # Same directory, supplied twice under different (but equal-once-
+        # resolved) spellings — the dedup guard is by .resolve(), not string
+        # equality.
+        roots = _mod._resolve_cost_roots(
+            _cost_args(extra_config_dirs=[str(acct_b), str(acct_b) + "/."])
+        )
+        assert roots == [default_dir / "projects", acct_b / "projects"]
+
+    def test_nonexistent_root_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        missing = tmp_path / "does-not-exist"
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(missing)]))
+        assert exc_info.value.code == 2
+        assert str(missing) in capsys.readouterr().err
+
+    def test_root_without_projects_subdir_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        bogus = tmp_path / "bogus"
+        bogus.mkdir()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(bogus)]))
+        assert exc_info.value.code == 2
+        assert str(bogus) in capsys.readouterr().err
+
+    def test_this_repo_and_config_dir_mutually_exclusive(
+        self, tmp_path, monkeypatch, capsys, fake_config_dir_factory
+    ):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_cost_roots(_cost_args(this_repo=True, extra_config_dirs=[str(acct_b)]))
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--this-repo" in err
+        assert "--config-dir" in err
+
+    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_cost_roots(_cost_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
+        assert exc_info.value.code == 2
+        assert "--no-redact" in capsys.readouterr().err
+
+    def test_no_redact_allowed_alone_with_single_root(self, tmp_path, monkeypatch):
+        """--no-redact with no --config-dir (single root) is unaffected."""
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        roots = _mod._resolve_cost_roots(_cost_args(no_redact=True))
+        assert roots == [default_dir / "projects"]
+
+
+class TestCostMultiRootReport:
+    """_cost_report's roots parameter: per-root scan diagnostics, the three
+    distinct empty states, and the overlapping-root double-count guard."""
+
+    def test_scan_summary_line_printed_per_root(self, tmp_path, capsys):
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert "cost: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
+        assert "cost: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
+
+    def test_this_repo_scan_count_reflects_repo_scope_not_whole_root(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--this-repo's diagnostic scan must count only the repo-scoped slug's
+        transcripts, not _projects_glob's "*" fallback (always "*" under
+        --this-repo) — otherwise a genuinely-empty repo-scoped result hides
+        behind an unrelated project's nonzero count under the same root,
+        reintroducing the silent-zero failure Step 8 exists to surface."""
+        root = _write_cost_root(tmp_path, "acct-a", "-other-unrelated-project", "sess-a",
+                                 [_priced("claude-sonnet-5", input=1_000_000)])
+        # This repo's own slug dir exists but has zero transcripts — the
+        # genuinely-empty case this diagnostic must not mask.
+        (root / "-home-user-this-repo").mkdir()
+        args = _cost_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-this-repo"]
+        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
+
+        _mod._cost_report(args, date(2026, 8, 2), roots=[root])
+        out = capsys.readouterr().out
+        assert "cost: account-1: scanned 0 transcripts, 0 skipped (unreadable)" in out
+        assert "WARNING: cost: account-1: no transcripts found for this scope" in out
+
+    def test_permission_error_while_scanning_root_caught_and_reported_per_root(
+        self, tmp_path, capsys
+    ):
+        """A real unreadable root must not propagate and abort the whole
+        report — it's caught, reported for that root only (root_b's own scan
+        and priced spend are unaffected), and the raw path embedded in
+        str(exc) is suppressed under default redaction. Uses a genuine
+        os.chmod'd directory rather than mocking _scan_root_transcripts —
+        review found that pathlib.Path.glob silently swallows OSError while
+        walking an unreadable directory rather than propagating it, so a
+        mock-based test would pass even if the real permission-check path
+        (os.access, in _scan_root_transcripts) were removed entirely."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        os.chmod(root_a, 0o000)
+        try:
+            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        finally:
+            os.chmod(root_a, 0o755)  # restore before tmp_path teardown
+
+        captured = capsys.readouterr()
+        out, err = captured.out, captured.err
+
+        assert "cannot scan" in err
+        assert str(root_a) not in err
+        assert "cost: account-1: scanned 0 transcripts, 0 skipped (unreadable)" in out
+        assert "WARNING: cost: account-1: no transcripts found for this scope" in out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "2.00"
+
+    def test_empty_state_zero_transcripts_opened_warns_per_root_not_masked(self, tmp_path, capsys):
+        """State (a)/(b): a root with no *.jsonl at all fires its own warning,
+        not masked by a sibling root's non-zero scan — the original silent-
+        zero bug wearing a per-root hat."""
+        empty_root = tmp_path / "acct-empty"
+        empty_root.mkdir(parents=True)  # exists, but holds no project dirs at all
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[empty_root, root_b])
+        out = capsys.readouterr().out
+        assert "WARNING: cost: account-1: no transcripts found for this scope" in out
+        assert "WARNING: cost: account-2" not in out
+
+    def test_empty_state_project_dir_with_no_jsonl_also_warns(self, tmp_path, capsys):
+        """State (b) specifically: a root whose project dir exists but holds
+        no *.jsonl files at all — same warning predicate as an empty root."""
+        root = tmp_path / "acct-a"
+        (root / "-home-user-repo").mkdir(parents=True)
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
+        out = capsys.readouterr().out
+        assert "WARNING: cost: account-1: no transcripts found for this scope" in out
+
+    def test_empty_state_transcripts_present_zero_priced_turns(self, fake_projects, capsys):
+        """State (c): a transcript exists but carries no priced usage — the
+        existing zero-state line, unchanged, and no scan warning (a
+        transcript was found)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "(no priced turns in range)" in out
+        assert "WARNING: cost:" not in out
+
+    def test_empty_state_priced_spend_is_normal_report(self, fake_projects, capsys):
+        """Priced spend: neither the scan warning nor the zero-state line appears."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost:" not in out
+        assert "(no priced turns in range)" not in out
+
+    def test_three_empty_state_messages_are_textually_distinct(self, tmp_path, fake_projects, capsys):
+        """Pins that Step 8's three states render different text — a single
+        collapsed message would pass every test above individually but fail
+        this one."""
+        empty_root = tmp_path / "acct-empty"
+        empty_root.mkdir(parents=True)
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[empty_root])
+        zero_transcripts_out = capsys.readouterr().out
+
+        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        zero_priced_out = capsys.readouterr().out
+
+        _write_jsonl(fake_projects / "sess2.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        priced_out = capsys.readouterr().out
+
+        assert "WARNING: cost:" in zero_transcripts_out
+        assert "WARNING: cost:" not in zero_priced_out
+        assert "WARNING: cost:" not in priced_out
+        assert "(no priced turns in range)" in zero_priced_out
+        assert "(no priced turns in range)" not in priced_out
+        assert zero_transcripts_out != zero_priced_out != priced_out
+
+    def test_same_project_slug_under_two_roots_sums_not_doubles(self, tmp_path, capsys):
+        """Two distinct roots each hold a project dir with the identical slug
+        name — genuinely different directories (different accounts), so both
+        sessions count once each; the grand total is their sum, never
+        doubled nor collapsed to just one."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])   # $2.00
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo", "sess-b",
+                                   [_priced("claude-sonnet-5", input=2_000_000)])   # $4.00
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "6.00"
+
+    def test_nested_root_alias_does_not_double_count(self, tmp_path, capsys):
+        """One supplied root is a symlink, placed inside another root's own
+        directory tree, that resolves back to that same root — nested inside
+        another root as well as identical once resolved. The multi-root scan
+        must dedupe by resolved real path so the grand total isn't doubled."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
+        nested_alias = root_a / "-home-user-repo" / "nested-alias-back-to-root-a"
+        nested_alias.symlink_to(root_a)
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, nested_alias])
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "2.00"
+
+
+class TestScanRootTranscripts:
+    """Direct unit tests for _scan_root_transcripts — neither its glob-count
+    behavior nor its per-file skipped-counting was exercised at this layer
+    before review; every prior assertion on 'skipped' asserted 0."""
+
+    def test_unreadable_root_raises_permission_error(self, tmp_path):
+        """os.access is an explicit probe, not reliance on Path.glob to raise
+        — glob silently swallows OSError while walking an unreadable
+        directory rather than propagating it (verified empirically during
+        review), so this pins the probe itself, not glob's behavior."""
+        root = tmp_path / "locked"
+        root.mkdir()
+        os.chmod(root, 0o000)
+        try:
+            with pytest.raises(PermissionError):
+                _mod._scan_root_transcripts(root, "*")
+        finally:
+            os.chmod(root, 0o755)
+
+    def test_readable_root_with_no_matches_returns_zero_zero(self, tmp_path):
+        root = tmp_path / "empty"
+        root.mkdir()
+        assert _mod._scan_root_transcripts(root, "*") == (0, 0)
+
+    def test_skipped_counts_unreadable_file_separately_from_scanned(self, tmp_path):
+        proj = tmp_path / "-home-user-repo"
+        proj.mkdir()
+        readable = proj / "readable.jsonl"
+        readable.write_text("{}\n")
+        locked = proj / "locked.jsonl"
+        locked.write_text("{}\n")
+        os.chmod(locked, 0o000)
+        try:
+            scanned, skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        finally:
+            os.chmod(locked, 0o644)
+        assert (scanned, skipped) == (2, 1)
+
+    def test_slugs_mode_dedupes_symlinked_alias_by_resolved_path(self, tmp_path):
+        """The slugs branch (--this-repo's path) must dedupe the same way the
+        glob branch does via _iter_scoped_sessions — a symlinked slug aliasing
+        another slug's directory must not double the transcript count."""
+        real_proj = tmp_path / "-home-user-repo"
+        real_proj.mkdir()
+        (real_proj / "sess.jsonl").write_text("{}\n")
+        alias = tmp_path / "-home-user-repo-alias"
+        alias.symlink_to(real_proj)
+        scanned, _skipped = _mod._scan_root_transcripts(
+            tmp_path, "*", slugs=["-home-user-repo", "-home-user-repo-alias"]
+        )
+        assert scanned == 1
+
+    def test_glob_mode_dedupes_symlinked_alias_by_resolved_path(self, tmp_path):
+        """The glob branch (--projects' default path) must dedupe the same
+        way the slugs branch does — review found this branch's own dedup was
+        missing, an asymmetry between the two branches of one function
+        introduced when the slugs branch was added later for --this-repo."""
+        real_proj = tmp_path / "-home-user-repo"
+        real_proj.mkdir()
+        (real_proj / "sess.jsonl").write_text("{}\n")
+        alias = tmp_path / "-home-user-repo-alias"
+        alias.symlink_to(real_proj)
+        scanned, _skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        assert scanned == 1
+
+
+class TestCostMultiRootRedaction:
+    """Deny-case tests for cost's --config-dir redaction surface: no raw
+    project label, config-dir path, or account-identifying directory name may
+    appear anywhere in default-redacted multi-root stdout."""
+
+    def test_default_redaction_hides_raw_labels_and_root_paths(self, tmp_path, capsys):
+        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert "repo-a" not in out
+        assert "repo-b" not in out
+        assert str(root_a) not in out
+        assert str(root_b) not in out
+        assert "acct-alice-clientwork" not in out
+        assert "acct-bob-clientwork" not in out
+        assert "account-1/private-project-1" in out
+        assert "account-2/private-project-1" in out
+
+    def test_corpus_fingerprint_line_present_under_default_redaction(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "Corpus fingerprint:" in out
+
+    def test_corpus_fingerprint_deterministic_for_same_label_set(self):
+        """Same raw-label set, different key shapes (plain str vs. (root_idx,
+        label) tuple) — the fingerprint hashes raw labels only, so the two
+        must be equal."""
+        flat_map = {"proj-a": "private-project-1", "proj-b": "private-project-2"}
+        namespaced_map = {(0, "proj-a"): "account-1/private-project-1", (1, "proj-b"): "account-2/private-project-1"}
+        assert _mod._corpus_fingerprint(flat_map) == _mod._corpus_fingerprint(namespaced_map)
+
+    def test_corpus_fingerprint_differs_for_different_label_set(self):
+        map_a = {"proj-a": "private-project-1"}
+        map_b = {"proj-a": "private-project-1", "proj-b": "private-project-2"}
+        assert _mod._corpus_fingerprint(map_a) != _mod._corpus_fingerprint(map_b)
+
+    def test_no_redact_stamps_do_not_publish_banner_on_stdout_and_stderr(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(no_redact=True), date(2026, 8, 2))
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_default_redact_omits_do_not_publish_banner(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
+
+    def test_redact_map_miss_raises_instead_of_printing_unmapped_row(self, tmp_path, monkeypatch):
+        """A project label absent from the redact map (e.g. built over a
+        stale roots list) is a hard error, never a printed 'unmapped' row —
+        pins the fail-closed rewrite from _REDACT_MAP_MISS_TOKEN into an
+        AssertionError for cost specifically."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "_build_redact_map", lambda roots=None: {})
+        with pytest.raises(AssertionError, match="redact map has no entry"):
+            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
+
+    def test_redact_map_miss_assertion_omits_raw_label(self, tmp_path, monkeypatch):
+        """The redact-map-miss hard-fail's own message must not embed the raw
+        project label — main() has no top-level exception handler, so an
+        uncaught AssertionError reaches stderr, and a raw label there would
+        re-leak exactly what --redact exists to hide (a real gap found by
+        review: the original message used {scoped_label!r})."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-secret-clientname", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "_build_redact_map", lambda roots=None: {})
+        with pytest.raises(AssertionError) as exc_info:
+            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
+        assert "-home-user-secret-clientname" not in str(exc_info.value)
+
+    def test_root_index_lookup_failure_omits_raw_path(self, tmp_path):
+        """_root_index_for_path's own 'no known scan root' AssertionError is a
+        structural sibling of the redact-map-miss assertion above — found by
+        cumulative-diff review to still embed the raw jsonl path (f"cost:
+        {jsonl} matched...") after the redact-map-miss sibling was fixed.
+        Reproduces the real trigger: a project dir under a declared
+        --config-dir root that is a symlink resolving OUTSIDE every declared
+        root (not just aliasing another declared root, which is the already-
+        covered, already-deduped case)."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        external = tmp_path / "external-unrelated-secret-clientname"
+        external.mkdir()
+        _write_jsonl(external / "sess-escaped.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        (root_b / "-home-user-escaped").symlink_to(external)
+
+        with pytest.raises(AssertionError) as exc_info:
+            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        assert "external-unrelated-secret-clientname" not in str(exc_info.value)
+        assert "-home-user-escaped" not in str(exc_info.value)
+
+    def test_no_redact_refused_by_cost_report_itself_even_when_called_directly(self, tmp_path):
+        """Defense-in-depth: _cost_report is the function that actually prints
+        raw labels when redact is False, so it must refuse the multi-root +
+        --no-redact combination itself rather than trusting that
+        _resolve_cost_roots already validated it — every test in this class
+        calls _cost_report directly, bypassing that CLI-level boundary."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_report(_cost_args(no_redact=True), date(2026, 8, 2), roots=[root_a, root_b])
+        assert exc_info.value.code == 2
+
+    def test_no_redact_refused_at_cmd_cost_when_config_dir_given(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _cost_args(no_redact=True, extra_config_dirs=[str(acct_b)])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cost(args)
+        assert exc_info.value.code == 2
+        assert "--no-redact" in capsys.readouterr().err
+
+    def test_this_repo_refused_at_cmd_cost_when_config_dir_given(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _cost_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cost(args)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--this-repo" in err
+        assert "--config-dir" in err
+
+
+class TestCostByProject:
+    """--by-project: per-(account root, project family) aggregation."""
+
+    def test_by_project_flag_composes_with_this_repo_at_argparse_level(self):
+        """--by-project is not in --this-repo/--projects' mutually exclusive
+        group — both flags parse together instead of argparse rejecting the
+        combination."""
+        args = _mod.build_parser().parse_args(["cost", "--this-repo", "--by-project"])
+        assert args.this_repo is True
+        assert args.by_project is True
+
+    def test_by_project_flag_composes_with_projects_at_argparse_level(self):
+        args = _mod.build_parser().parse_args(["cost", "--projects", "foo", "--by-project"])
+        assert args.projects == "foo"
+        assert args.by_project is True
+
+    def test_by_project_composes_with_this_repo_execution(self, tmp_path, monkeypatch, capsys):
+        """End-to-end (not just argparse): --by-project + --this-repo runs
+        _resolve_project_scope's repo-scoped iterator and still emits a
+        per-project section for it."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(this_repo=True, by_project=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        section = out.split("## Cost by project")[1].split("## Top")[0]
+        data_rows = [ln for ln in section.splitlines() if ln.strip() and not ln.strip().startswith("Project")]
+        assert len(data_rows) == 1
+        assert float(data_rows[0].split()[-2].replace(",", "")) == pytest.approx(2.00)
+
+    def test_per_project_rows_sum_to_grand_total_across_multi_root_fixture(self, tmp_path, capsys):
+        """Three sessions across two --config-dir roots: per-project rows'
+        dollars sum to the report's own grand total, hand-computed."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a1",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
+        _write_jsonl(root_a / "-home-user-repo-a" / "sess-a2.jsonl", [
+            _priced("claude-sonnet-5", input=1_500_000),  # $3.00
+        ])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b1",
+                                   [_priced("claude-sonnet-5", input=2_000_000)])  # $4.00
+        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        grand_total = _extract_grand_total(out)
+        assert grand_total == pytest.approx(9.00)  # 2.00 + 3.00 + 4.00, hand-computed
+
+        section = out.split("## Cost by project")[1].split("## Top")[0]
+        row_dollars = [
+            float(ln.split()[-2].replace(",", ""))
+            for ln in section.splitlines() if ln.strip().startswith("account-")
+        ]
+        assert len(row_dollars) == 2  # one row per (root, family)
+        assert sum(row_dollars) == pytest.approx(grand_total)
+
+    def test_multi_root_project_column_omits_redundant_account_prefix(self, tmp_path, capsys):
+        """The Project column must not repeat the 'account-K/' prefix the
+        adjacent Account column already carries — review found the redact
+        map's raw namespaced value ('account-1/private-project-1') being
+        printed verbatim into a row that already had 'account-1' as its own
+        column."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        section = out.split("## Cost by project")[1].split("## Top")[0]
+        data_rows = [ln for ln in section.splitlines() if ln.strip().startswith("account-")]
+        assert len(data_rows) == 2
+        for row in data_rows:
+            assert "account-1/private-project-1" not in row
+            assert "account-2/private-project-1" not in row
+            assert "private-project-1" in row
+
+    def test_worktree_suffixed_siblings_collapse_into_one_family_row(self, tmp_path, monkeypatch, capsys):
+        """Two of this repo's own linked-worktree project dirs (sharing the
+        base-repo-slug-plus---claude-worktrees-<branch> shape iter_sessions
+        documents) aggregate into a single --by-project row instead of
+        fragmenting one row per branch."""
+        projects = tmp_path / "projects"
+        proj_a = projects / "-home-user-testrepo--claude-worktrees-branch-a"
+        proj_b = projects / "-home-user-testrepo--claude-worktrees-branch-b"
+        proj_a.mkdir(parents=True)
+        proj_b.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
+        _write_jsonl(proj_b / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000)])    # $1.00
+
+        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+
+        section = out.split("## Cost by project")[1].split("## Top")[0]
+        data_rows = [ln for ln in section.splitlines() if ln.strip() and not ln.strip().startswith("Project")]
+        assert len(data_rows) == 1  # not one row per worktree
+        assert float(data_rows[0].split()[-2].replace(",", "")) == pytest.approx(3.00)
+
+    def test_by_project_empty_corpus_renders_clean_zero_state(self, fake_projects, capsys):
+        """No priced turns at all: the per-project section renders the same
+        zero-state line as the top-N-sessions section, not a traceback or an
+        empty table header with no explanation."""
+        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        section = out.split("## Cost by project")[1].split("## Top")[0]
+        assert "(no priced turns in range)" in section
+
+    def test_by_project_single_root_omits_raw_label_under_default_redaction(self, tmp_path, capsys):
+        """General invariant, not just the prefix-specific one covered by
+        test_multi_root_project_column_omits_redundant_account_prefix: the raw
+        (pre-redaction) project directory name must be absent from
+        --by-project output — the single-root branch has no account prefix
+        to begin with, so it needs its own assertion of the general rule."""
+        root = _write_cost_root(tmp_path, "acct-a", "-home-user-secret-clientname", "sess-a",
+                                 [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root])
+        out = capsys.readouterr().out
+        section = out.split("## Cost by project")[1].split("## Top")[0]
+        assert "-home-user-secret-clientname" not in section
+        assert "private-project-1" in section
+
+    def test_by_project_multi_root_omits_raw_label_under_default_redaction(self, tmp_path, capsys):
+        """Same general invariant as the single-root test above, for the
+        multi-root branch — distinct from the redundant-prefix-specific
+        assertion in test_multi_root_project_column_omits_redundant_account_prefix."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-secret-clientname-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-secret-clientname-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        section = out.split("## Cost by project")[1].split("## Top")[0]
+        assert "-home-user-secret-clientname-a" not in section
+        assert "-home-user-secret-clientname-b" not in section
+
+    def test_by_project_flag_off_omits_section_entirely(self, tmp_path, capsys):
+        """--by-project defaults False; the '## Cost by project' header must
+        not appear at all when the flag is omitted — pins the `if by_project:`
+        guard against a future refactor hoisting the print unconditionally."""
+        root = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                 [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
+        out = capsys.readouterr().out
+        assert "## Cost by project" not in out
+
+    def test_non_worktree_label_colliding_with_suffix_shape_merges_into_existing_family(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """_project_family matches on the literal '--claude-worktrees-'
+        substring, not on genuine worktree provenance. Genuine collision: a
+        project whose own (non-worktree) name happens to end in that exact
+        substring strips down to the same family as an unrelated project
+        that already has that name verbatim — merging two distinct projects'
+        spend into one --by-project row. Pins the CURRENT (merging) behavior
+        as a documented limitation, not a desired one — see
+        _project_family's docstring."""
+        projects = tmp_path / "projects"
+        unrelated = projects / "-home-user-shared-family"
+        coincidental = projects / "-home-user-shared-family--claude-worktrees-fake"
+        unrelated.mkdir(parents=True)
+        coincidental.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(unrelated / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])    # $2.00
+        _write_jsonl(coincidental / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000)])   # $1.00
+
+        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        section = out.split("## Cost by project")[1].split("## Top")[0]
+        data_rows = [ln for ln in section.splitlines() if ln.strip() and not ln.strip().startswith("Project")]
+        # Both derive to family "-home-user-shared-family" — one row, $3.00 total,
+        # even though they are two genuinely unrelated project directories.
+        assert len(data_rows) == 1
+        assert float(data_rows[0].split()[-2].replace(",", "")) == pytest.approx(3.00)
+
+
+class TestCostThreadSplit:
+    """Cost by thread: main-thread vs. subagent (isSidechain) dollar split."""
+
+    def test_main_and_subagent_dollars_sum_to_grand_total(self, fake_projects, capsys):
+        session_id = "sess-thread"
+        subagent_rec = _priced("claude-sonnet-5", input=500_000)  # subagent: $1.00
+        subagent_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000),  # main: $2.00
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+
+        grand_total = _extract_grand_total(out)
+        assert grand_total == pytest.approx(3.00)  # 2.00 + 1.00, hand-computed
+
+        thread_section = out.split("## Cost by thread")[1].split("## Top")[0]
+        main_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("main"))
+        subagent_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("subagent"))
+        main_dollars = float(main_line.split()[-2].replace(",", ""))
+        subagent_dollars = float(subagent_line.split()[-2].replace(",", ""))
+        assert main_dollars == pytest.approx(2.00)
+        assert subagent_dollars == pytest.approx(1.00)
+        assert main_dollars + subagent_dollars == pytest.approx(grand_total)
+
+    def test_subagent_dollars_not_misattributed_to_main_via_path_check(self, fake_projects, capsys):
+        """Subagent records are merged into the parent session's record list
+        by _read_session_file; iter_sessions yields only the main .jsonl
+        path, which never contains 'subagents' in its parts. A
+        `"subagents" in jsonl.parts`-style check on that yielded path would
+        find no match and misattribute every dollar here to main; the
+        isSidechain-based split must carry a nonzero subagent share instead."""
+        session_id = "sess-path-check"
+        main_jsonl = fake_projects / f"{session_id}.jsonl"
+        subagent_rec = _priced("claude-sonnet-5", input=1_000_000)  # subagent: $2.00
+        subagent_rec["isSidechain"] = True
+        _write_jsonl(main_jsonl, [_priced("claude-sonnet-5", input=1_000_000)])  # main: $2.00
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
+        assert "subagents" not in main_jsonl.parts  # the path a naive check would inspect
+
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        thread_section = out.split("## Cost by thread")[1].split("## Top")[0]
+        subagent_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("subagent"))
+        assert float(subagent_line.split()[-2].replace(",", "")) == pytest.approx(2.00)  # not 0.00
 
 
 # ---------------------------------------------------------------------------
