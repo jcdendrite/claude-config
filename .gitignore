@@ -106,6 +106,7 @@ claude/.claude/telemetry/
 # hooks/skills but is per-machine scratch space regardless of origin.
 claude/.claude/.handoff-nudge-fired.d/
 claude/.claude/.handoff-nudge.log
+claude/.claude/.permission-prompt-log.jsonl
 claude/.claude/.plan-review-routing-read.d/
 claude/.claude/.worktree-anchor-nudge.d/
 claude/.claude/briefs/

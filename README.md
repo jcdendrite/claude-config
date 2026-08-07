@@ -22,6 +22,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
 - [Configuration](#configuration)
   - [Worktree enforcement](#worktree-enforcement)
   - [Autonomous shipping](#autonomous-shipping)
+  - [Permission-prompt tracking](#permission-prompt-tracking)
   - [Repo relocation](#repo-relocation)
   - [Private-project redaction](#private-project-redaction)
   - [Auto mode](#auto-mode)
@@ -168,6 +169,7 @@ flowchart LR
 | `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
 | `set-session-title-from-branch.sh` | — (SessionStart, advisory) | Sets the terminal tab title to `<repo>/<branch>` on feature branches; see [`docs/hooks.md`](docs/hooks.md) |
+| `track-permission-prompts.sh` | — (Notification, `informational`, opt-in) | Appends a redacted permission-prompt event to a local log; see [Permission-prompt tracking](#permission-prompt-tracking) |
 
 See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all hooks, skills, scripts, and project-scoped plugins, see [`docs/hooks.md`](docs/hooks.md), [`docs/skills.md`](docs/skills.md), and [`docs/scripts.md`](docs/scripts.md).
 
@@ -329,6 +331,16 @@ mkdir -p .claude && touch .claude/autonomous-shipping-optout
 ```
 
 See [`docs/commit-stall-block.md`](docs/commit-stall-block.md) for the fire predicate, in-session recovery, log format, and known limitations.
+
+### Permission-prompt tracking
+
+If you're running in `auto` permission mode and want to know which commands still trigger an interactive approval dialog — and how often — this opt-in hook captures it. `track-permission-prompts.sh` (a `Notification` hook, matcher `permission_prompt`) appends the redacted payload to a local, gitignored log whenever the sentinel below exists on this machine.
+
+```bash
+touch ~/.claude/track-permission-prompts
+```
+
+See [`docs/permission-prompt-tracking.md`](docs/permission-prompt-tracking.md) for the log location/format, redaction coverage, and known limitations.
 
 ### Repo relocation
 

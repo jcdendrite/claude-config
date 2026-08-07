@@ -10,6 +10,7 @@ _lib_parse_tool_input_or_deny and reports either DENY:<msg> or OK:<tool>:<cmd>.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -1113,6 +1114,77 @@ class TestAutonomousShippingActive:
         assert "unbound variable" not in result.stderr
 
 
+# _lib_permission_prompt_tracking_active — direct unit coverage, mirroring
+# TestAutonomousShippingActive above minus the cases specific to the
+# per-repo optout and arity guard it doesn't have: this function is
+# zero-arity by design (a machine-global sentinel with no repo-scoped axis
+# to check against), so there is no repo_root, no optout, and no
+# wrong-arity case to pin.
+
+
+def _permission_prompt_tracking_active(env: dict) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_permission_prompt_tracking_active"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestPermissionPromptTrackingActive:
+    def test_inactive_when_sentinel_absent(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        assert not _permission_prompt_tracking_active({"HOME": str(home), "PATH": os.environ["PATH"]})
+
+    def test_active_when_sentinel_present(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "track-permission-prompts").touch()
+        assert _permission_prompt_tracking_active({"HOME": str(home), "PATH": os.environ["PATH"]})
+
+    def test_uses_config_dir_when_set(self, tmp_path: Path) -> None:
+        """CLAUDE_CONFIG_DIR relocates the sentinel lookup away from
+        $HOME/.claude — the sentinel at the resolved config dir governs,
+        not a hardcoded ~/.claude."""
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        (config_dir / "track-permission-prompts").touch()
+        assert _permission_prompt_tracking_active(
+            {"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir), "PATH": os.environ["PATH"]}
+        )
+
+    def test_sentinel_at_home_claude_ignored_when_config_dir_points_elsewhere(
+        self, tmp_path: Path
+    ) -> None:
+        """Inverse of the case above: a sentinel sitting at $HOME/.claude
+        must not activate tracking once CLAUDE_CONFIG_DIR points elsewhere
+        with no sentinel of its own — the resolved dir governs, not a
+        union of both locations."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "track-permission-prompts").touch()
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        assert not _permission_prompt_tracking_active(
+            {"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir), "PATH": os.environ["PATH"]}
+        )
+
+    def test_inactive_when_home_empty(self) -> None:
+        assert not _permission_prompt_tracking_active({"HOME": "", "PATH": os.environ["PATH"]})
+
+    def test_inactive_when_home_is_bare_root(self) -> None:
+        """Pins the ${HOME%/} normalization specifically, same as
+        TestAutonomousShippingActive's own bare-root case above: HOME=/
+        strips to an empty home_norm inside _lib_config_dir, so resolution
+        fails deterministically rather than depending on ambient
+        root-filesystem state."""
+        assert not _permission_prompt_tracking_active({"HOME": "/", "PATH": os.environ["PATH"]})
+
+
 # --- Shared credential-guard constants -------------------------------------
 #
 # Per-hook behavior against these constants is exercised end to end by
@@ -1514,6 +1586,131 @@ def test_lib_pem_private_key_block_regex_matches_full_block_under_jq() -> None:
     )
     jq_result = subprocess.run(["bash", "-c", jq_harness], capture_output=True, text=True, check=True)
     assert jq_result.stdout.strip() == "true"
+
+
+# --- _lib_redact_credential_shaped_strings ----------------------------------
+#
+# Extracted from redact-credential-values.sh's original inline
+# pattern-assembly-and-walk block so track-permission-prompts.sh doesn't
+# duplicate this security-sensitive logic. End-to-end coverage of each
+# caller's own payload shape lives in test_redact_credential_values.py and
+# test_track_permission_prompts.py; the tests here pin the shared
+# walk/pattern contract once, independent of either caller's fixtures.
+
+_REDACTED = "[REDACTED-CREDENTIAL]"
+
+
+def _redact_credential_shaped_strings(
+    json_arg: str, home: Path, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_redact_credential_shaped_strings "$1"', "bash", json_arg],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+class TestRedactCredentialShapedStrings:
+    def test_credential_shaped_string_is_redacted(self, tmp_path: Path) -> None:
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"token={token}")
+        result = _redact_credential_shaped_strings(payload, tmp_path / "home")
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert _REDACTED in result.stdout
+
+    def test_pem_block_is_redacted(self, tmp_path: Path) -> None:
+        pem_block = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEpAIBAAKCAQEAsynthetictestonlykeybodynotarealcredential\n"
+            "-----END RSA PRIVATE KEY-----"
+        )
+        payload = json.dumps(pem_block)
+        result = _redact_credential_shaped_strings(payload, tmp_path / "home")
+        assert result.returncode == 0
+        assert "MIIEpAIBAAKCAQEA" not in result.stdout
+        assert "-----BEGIN" not in result.stdout
+        assert _REDACTED in result.stdout
+
+    def test_non_matching_string_passes_through_unchanged(self, tmp_path: Path) -> None:
+        payload = json.dumps("just an ordinary sentence with no secrets")
+        result = _redact_credential_shaped_strings(payload, tmp_path / "home")
+        assert result.returncode == 0
+        assert result.stdout == payload
+
+    def test_malformed_input_fails_closed_emits_nothing(self, tmp_path: Path) -> None:
+        """Not valid JSON -- jq's walk fails to parse, so the function must
+        emit nothing and return non-zero rather than echo the unredacted
+        input back. Fail-closed, not fail-open: a caller that cannot tell
+        "redacted" apart from "redaction didn't run" must not act on the
+        latter -- this is the round-2 code-review fix for the credential
+        leak that fail-open's original "return original" contract caused
+        in track-permission-prompts.sh's persistent log."""
+        malformed = "not valid json {{"
+        result = _redact_credential_shaped_strings(malformed, tmp_path / "home")
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    # ------------------------------------------------------------------ #
+    # credential-value-patterns.md additions -- the class docstring above  #
+    # claims to pin this shared contract independent of either caller's   #
+    # fixtures; these tests back that claim rather than leaving it        #
+    # exercised only as a side effect of test_redact_credential_values.py #
+    # ------------------------------------------------------------------ #
+
+    def test_additions_file_at_legacy_home_claude_is_applied(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Internal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+        )
+        payload = json.dumps("token dpl_abcdefghijklmno here")
+        result = _redact_credential_shaped_strings(payload, home)
+        assert result.returncode == 0
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert _REDACTED in result.stdout
+
+    def test_additions_file_at_config_dir_is_applied(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "credential-value-patterns.md").write_text(
+            "Internal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+        )
+        payload = json.dumps("token dpl_abcdefghijklmno here")
+        result = _redact_credential_shaped_strings(
+            payload, home, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)}
+        )
+        assert result.returncode == 0
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert _REDACTED in result.stdout
+
+    def test_malformed_addition_line_skipped_builtin_and_other_additions_unaffected(
+        self, tmp_path: Path
+    ) -> None:
+        """One unparseable regex in the additions file must not invalidate
+        the whole combined pattern -- pins that (a) the built-in pattern
+        still fires and (b) a later, valid addition on its own line still
+        fires, mirroring test_redact_credential_values.py's caller-level
+        regression test at this function's own layer."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Bad line: [unterminated(\nInternal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+        )
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno")
+        result = _redact_credential_shaped_strings(payload, home)
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
 
 
 # --- _lib_config_lines -------------------------------------------------
