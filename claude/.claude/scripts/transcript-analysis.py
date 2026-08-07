@@ -2450,6 +2450,28 @@ def _derive_proj_label(jsonl: Path) -> str:
     return jsonl.parent.name.lstrip("-").replace("-", "/", 2).split("/", 2)[-1]
 
 
+# iter_sessions documents this repo's own worktree naming: a linked worktree's
+# project-dir slug is the main dir's slug with --claude-worktrees-<branch>
+# appended, which _derive_proj_label carries through unchanged onto its output.
+_WORKTREE_SUFFIX_RE = re.compile(r"--claude-worktrees-.+$")
+
+
+def _project_family(raw_proj_label: str) -> str:
+    """Collapse a _derive_proj_label output to its base-repo "family" key.
+
+    One repo's main checkout and every linked worktree derive to distinct
+    labels (repo, repo--claude-worktrees-branch-a, ...) that would otherwise
+    fragment --by-project's per-project rows across branches of the same repo.
+
+    Matches on the literal substring alone — a project whose own name happens
+    to contain "--claude-worktrees-" would have that trailing portion
+    stripped and merged into a false family. Below current scale to guard
+    against; re-evaluate if --by-project output ever shows an unexpected
+    merge.
+    """
+    return _WORKTREE_SUFFIX_RE.sub("", raw_proj_label)
+
+
 _REDACT_MAP_MISS_TOKEN = "private-project-unmapped"
 
 # A cost redact-map key is either a plain raw label (single-root reports,
@@ -2799,6 +2821,11 @@ _CACHE_WRITE_1H_MULTIPLIER = 2
 _CACHE_READ_MULTIPLIER = 0.1
 
 _SONNET_5_PROMO_EXPIRES = date(2026, 8, 31)  # vendor-stated introductory-rate end
+# Published standard rate taking effect the day after _SONNET_5_PROMO_EXPIRES
+# ($3.00/MTok input, up from the $2.00 introductory rate); see
+# _PRICING_SOURCE_URL. Recorded here so updating _MODEL_BASE_INPUT_RATES once
+# the STALE PRICING banner fires doesn't need a fresh vendor-page lookup.
+_SONNET_5_SUCCESSOR_BASE_RATE = 3.00
 _DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
 
 # Base input $/MTok per model ID, keyed on the exact string Claude Code writes
@@ -3133,6 +3160,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     _print_resolved_scope("cost", scope_label)
 
     session_redact_map: dict[str, str] = {}
+    by_project: bool = bool(getattr(args, "by_project", False))
 
     class_totals: dict[str, float] = dict.fromkeys(_TOKEN_CLASSES, 0.0)
     model_totals: dict[str, float] = defaultdict(float)
@@ -3140,6 +3168,15 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     bucket_totals: dict[str, float] = defaultdict(float)
     session_rows: list[dict] = []
     stale_models: set[str] = set()
+    main_total = 0.0
+    subagent_total = 0.0
+    # Keyed on (root_index_or_None, project_family) — see _project_family.
+    project_totals: dict[tuple[int | None, str], float] = defaultdict(float)
+    # One representative raw scoped_label per project_totals key, for redact
+    # lookup (_redact_proj_label) — several worktree-suffixed raw labels can
+    # collapse to one family, so the smallest raw label is picked for a
+    # deterministic (not iteration-order-dependent) display choice.
+    project_repr_label: dict[tuple[int | None, str], _RedactMapKey] = {}
 
     for jsonl, records in session_iter:
         raw_proj_label = _derive_proj_label(jsonl)
@@ -3178,6 +3215,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             model_totals[model] += turn_total
             bucket_totals[_context_bucket(context_at_turn)] += turn_total
             session_total += turn_total
+            if bool(rec.get("isSidechain")):
+                subagent_total += turn_total
+            else:
+                main_total += turn_total
 
         if session_total:
             if multi_root:
@@ -3209,16 +3250,65 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 "total": session_total,
             })
 
+            if by_project:
+                root_component = scoped_label[0] if multi_root else None
+                project_key = (root_component, _project_family(raw_proj_label))
+                project_totals[project_key] += session_total
+                raw_part = scoped_label[1] if isinstance(scoped_label, tuple) else scoped_label
+                current_repr = project_repr_label.get(project_key)
+                current_raw_part = current_repr[1] if isinstance(current_repr, tuple) else current_repr
+                if current_repr is None or raw_part < current_raw_part:
+                    project_repr_label[project_key] = scoped_label
+
     grand_total = sum(class_totals.values())
+
+    # Both invariants below sum the same per-turn dollar increments (the same
+    # dollars_by_class value feeds class_totals, main/subagent, and
+    # project_totals in the same loop iteration) through a different
+    # accumulator split — they guard the partition/bucketing logic (a branch
+    # that double-counts, drops, or misroutes a turn), not _price_turn's
+    # dollar math itself, since a wrong per-turn price would move both sides
+    # of either comparison together. Any gap beyond float64 summation noise
+    # (well under a millionth of a dollar here) still means a real bucketing
+    # bug, not rounding.
+    if abs(main_total + subagent_total - grand_total) > 1e-6:
+        raise AssertionError(
+            f"cost: main ({main_total:.6f}) + subagent ({subagent_total:.6f}) spend"
+            f" does not equal the grand total ({grand_total:.6f}) — the isSidechain"
+            " split is out of sync with the token-class totals"
+        )
+
+    if by_project:
+        project_grand_total = sum(project_totals.values())
+        if abs(project_grand_total - grand_total) > 1e-6:
+            raise AssertionError(
+                f"cost: --by-project rows sum to {project_grand_total:.6f} but the grand"
+                f" total is {grand_total:.6f} — per-project aggregation is out of sync"
+                " with the token-class totals"
+            )
 
     title_since = f"last {since_label}" if since_label else "all time"
     print(f"\n## Cost report ({title_since})\n")
 
     if stale_models:
+        # claude-sonnet-5's specific successor rate is recorded so this banner
+        # is actionable on sight — without it, an operator seeing the warning
+        # still has to re-fetch the vendor page to learn what to update
+        # _MODEL_BASE_INPUT_RATES to, which is the exact re-lookup this
+        # constant exists to save.
+        successor_hint = (
+            f" claude-sonnet-5's recorded successor base rate is"
+            f" ${_SONNET_5_SUCCESSOR_BASE_RATE:.2f}/MTok input — confirm against"
+            f" {_PRICING_SOURCE_URL} before updating _MODEL_BASE_INPUT_RATES."
+            if "claude-sonnet-5" in stale_models
+            else ""
+        )
         print(
             "STALE PRICING — today is past the re-verify-by date for: "
             + ", ".join(sorted(stale_models))
-            + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing the figures below.\n"
+            + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing the figures below."
+            + successor_hint
+            + "\n"
         )
 
     print("## Cost by token class\n")
@@ -3245,6 +3335,36 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     for bucket in (_CONTEXT_BUCKET_UNDER, _CONTEXT_BUCKET_OVER):
         val = bucket_totals.get(bucket, 0.0)
         print(f"{bucket:<8} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+
+    print("\n## Cost by thread\n")
+    print(f"{'Thread':<10} {'$':>14} {'Share':>7}")
+    print(f"{'main':<10} {main_total:>14,.2f} {_pct_of(main_total, grand_total):>7}")
+    print(f"{'subagent':<10} {subagent_total:>14,.2f} {_pct_of(subagent_total, grand_total):>7}")
+
+    if by_project:
+        print("\n## Cost by project\n")
+        if not project_totals:
+            print("(no priced turns in range)")
+        elif multi_root:
+            print(f"{'Account':<12} {'Project':<24} {'$':>14} {'Share':>7}")
+            for (root_idx, family), val in sorted(project_totals.items(), key=lambda kv: kv[1], reverse=True):
+                account_col = f"account-{root_idx + 1}" if redact else str(scan_roots[root_idx].parent)
+                repr_label = project_repr_label[(root_idx, family)]
+                # The redact map's multi-root value is "account-K/private-
+                # project-N" (see _build_redact_map) — strip the account
+                # prefix here since it's already the Account column above;
+                # printing both is redundant. "claude-config" carries no "/"
+                # and passes through unchanged.
+                proj_col = (
+                    _redact_proj_label(repr_label, redact_map).split("/", 1)[-1] if redact else family
+                )
+                print(f"{account_col:<12} {proj_col:<24} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+        else:
+            print(f"{'Project':<24} {'$':>14} {'Share':>7}")
+            for (root_idx, family), val in sorted(project_totals.items(), key=lambda kv: kv[1], reverse=True):
+                repr_label = project_repr_label[(root_idx, family)]
+                proj_col = _redact_proj_label(repr_label, redact_map) if redact else family
+                print(f"{proj_col:<24} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
 
     print(f"\n## Top {top_n} sessions by dollars\n")
     if not session_rows:
@@ -4518,6 +4638,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_cost.add_argument(
         "--top", type=int, default=20, metavar="N",
         help="Maximum number of per-session rows in the top-N-by-dollars section (default: 20).",
+    )
+    p_cost.add_argument(
+        "--by-project", action="store_true",
+        help=(
+            "Add a per-project cost breakdown, keyed on (account root, project family)."
+            " Composes with --projects and --this-repo; one repo's own worktrees"
+            " collapse into a single row instead of fragmenting per branch."
+        ),
     )
     p_cost.add_argument(
         "--no-redact", action="store_true",

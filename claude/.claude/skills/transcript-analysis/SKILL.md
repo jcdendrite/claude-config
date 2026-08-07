@@ -22,6 +22,7 @@ The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly
 | Which lever costs the most in actual dollars — cache read/write, output, or input? | `cost --since 30d` |
 | Are reviewer dispatches producing real findings or mostly zero-finding passes? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
+| Which client or profile does spend belong to? | `cost --by-project --config-dir <dir>` |
 | What fraction of Opus code-read turns are clearly dispatchable vs. read-then-edit loops? | `audit-routing-shape --since 35d` |
 | Pull a random sample of Opus code-read turns for delegation judgment curation | `audit-routing-samples --since 35d --sample 50 --seed 1` |
 
@@ -47,6 +48,7 @@ Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
 - `judgment-pair` captures what the human said immediately after a review output. Tool-result turns, `isMeta` injections, and `isCompactSummary` records between the review and the user reply are automatically skipped. Use `--out` to save output to a file for offline curation.
 - `audit-routing --redact` remaps project names to anonymized labels for public reporting — use this flag when posting output to GitHub issues.
 - `cost` redacts project names and session IDs by default (the opposite of `audit-routing`'s opt-in `--redact`) — pass `--no-redact` only for local use, never for output headed to a public issue.
+- `cost --config-dir` unions extra account profiles into one report; `--this-repo` and `--no-redact` are refused in that mode, and redacted labels are not comparable between reports (each run prints a corpus fingerprint).
 - `--projects` defaults to `*` — every project on the machine; scope it with `--this-repo` or an explicit glob (see `docs/transcript-analysis.md`'s "Scoping to this repo" section for the derivation and its gaps). `buckets`' Date range column describes whatever the glob matched rather than a bounded window — `buckets` takes no `--since`/`--until`; use `review-trace --since/--until` for a bounded window.
 - `review-trace` output is not publish-safe under the default machine-wide scope — each event line's branch string can carry a ticket ID or project name. Run it with `--this-repo` before quoting output anywhere public.
 
