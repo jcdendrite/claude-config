@@ -18,7 +18,7 @@ import sys
 import tempfile
 import time
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -1485,6 +1485,30 @@ def _normalize_skill_name(raw: str) -> str:
     return raw.rsplit("/", 1)[-1]
 
 
+def _dedup_new_project_dirs(candidates: Iterable[Path], visited_dirs: set[Path]) -> Iterator[Path]:
+    """Yield each directory in `candidates` at most once, keyed on resolved
+    real path, recording it into `visited_dirs` (mutated in place) as it's
+    yielded.
+
+    Shared across every multi-root project-dir scan in this file
+    (`_iter_scoped_sessions`, `_iter_glob_scoped_sessions`,
+    `_scan_root_transcripts`) — extracted after a cumulative review found
+    three near-identical copies of this same five-line pattern. Pass one
+    `visited_dirs` set across an entire multi-root loop (not a fresh one per
+    root) so a project dir aliased, by symlink, to one already yielded from a
+    prior root is caught too — not just two roots resolving to the same
+    directory.
+    """
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        resolved_dir = candidate.resolve()
+        if resolved_dir in visited_dirs:
+            continue
+        visited_dirs.add(resolved_dir)
+        yield candidate
+
+
 def _iter_scoped_sessions(
     slugs: list[str], include_subagents: bool, roots: Sequence[Path] | None = None
 ):
@@ -1508,13 +1532,8 @@ def _iter_scoped_sessions(
     for root in roots:
         if not root.is_dir():
             continue
-        for project_dir in sorted(root.iterdir()):
-            if project_dir.name not in wanted or not project_dir.is_dir():
-                continue
-            resolved_dir = project_dir.resolve()
-            if resolved_dir in visited_dirs:
-                continue
-            visited_dirs.add(resolved_dir)
+        candidates = (p for p in sorted(root.iterdir()) if p.name in wanted)
+        for project_dir in _dedup_new_project_dirs(candidates, visited_dirs):
             for jsonl in sorted(project_dir.glob("*.jsonl")):
                 records = _read_session_file(jsonl, include_subagents)
                 if records:
@@ -1536,13 +1555,7 @@ def _iter_glob_scoped_sessions(
     """
     visited_dirs: set[Path] = set()
     for root in roots:
-        for project_dir in sorted(root.glob(projects_glob)):
-            if not project_dir.is_dir():
-                continue
-            resolved_dir = project_dir.resolve()
-            if resolved_dir in visited_dirs:
-                continue
-            visited_dirs.add(resolved_dir)
+        for project_dir in _dedup_new_project_dirs(sorted(root.glob(projects_glob)), visited_dirs):
             for jsonl in sorted(project_dir.glob("*.jsonl")):
                 records = _read_session_file(jsonl, include_subagents)
                 if records:
@@ -3010,27 +3023,20 @@ def _scan_root_transcripts(root: Path, projects_glob: str, slugs: Sequence[str] 
     always "*" regardless of scope. Without this, the diagnostic line would
     report the whole config dir's transcript count under --this-repo, masking
     a genuinely-empty repo-scoped result behind an unrelated nonzero total —
-    the exact silent-zero failure Step 8 exists to surface. Dedups matched
-    project dirs by resolved real path, mirroring _iter_scoped_sessions' own
-    guard, so a slug aliasing another via a symlinked project dir doesn't
-    double-count in this diagnostic either.
+    the exact silent-zero failure Step 8 exists to surface. Both branches dedup
+    matched project dirs by resolved real path via _dedup_new_project_dirs, so
+    a project dir aliased to another (by symlink, whether reached by slug or
+    by glob) doesn't double-count in this diagnostic either.
     """
     if not os.access(root, os.R_OK | os.X_OK):
         raise PermissionError(errno.EACCES, "Permission denied", str(root))
-    if slugs is not None:
-        visited_dirs: set[Path] = set()
-        jsonl_paths = []
-        for slug in slugs:
-            proj_dir = root / slug
-            if not proj_dir.is_dir():
-                continue
-            resolved_dir = proj_dir.resolve()
-            if resolved_dir in visited_dirs:
-                continue
-            visited_dirs.add(resolved_dir)
-            jsonl_paths.extend(proj_dir.glob("*.jsonl"))
-    else:
-        jsonl_paths = list(root.glob(f"{projects_glob}/*.jsonl"))
+    visited_dirs: set[Path] = set()
+    candidates = (root / slug for slug in slugs) if slugs is not None else sorted(root.glob(projects_glob))
+    jsonl_paths = [
+        jsonl
+        for proj_dir in _dedup_new_project_dirs(candidates, visited_dirs)
+        for jsonl in proj_dir.glob("*.jsonl")
+    ]
     skipped = 0
     for jsonl in jsonl_paths:
         try:
@@ -3050,13 +3056,31 @@ def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
     every call would be a per-element filesystem stat inside that loop.
     `jsonl` is always a file path, so a root can only ever be one of its
     ancestors, never equal to it — `resolved.parents` alone covers every case.
+
+    Returns the FIRST matching root by list order when one declared root is a
+    genuine filesystem descendant of another (not just a symlink alias back
+    to it, which the dedup guards upstream already collapse to one root's
+    worth of sessions) — attributing every session under the nested root to
+    whichever sorts earlier, always the default config dir. Untested and
+    low-realism given this repo's own per-account layout (sibling
+    directories under `~/.config/claude-accounts/`, never nested); revisit if
+    `--config-dir` is ever pointed at a directory nested inside another
+    declared root.
     """
     resolved = jsonl.resolve()
     for idx, resolved_root in enumerate(resolved_roots):
         if resolved_root in resolved.parents:
             return idx
+    # Deliberately omits the raw jsonl path: main() has no top-level exception
+    # handler, so this message would otherwise reach stderr uncaught — the
+    # same reasoning and fix already applied to the redact-map-miss assertion
+    # a few lines below in the same loop (structural sibling, audited after a
+    # cumulative-diff review caught the fix hadn't been applied here too).
+    path_hash = hashlib.sha256(str(jsonl).encode()).hexdigest()[:12]
     raise AssertionError(
-        f"cost: {jsonl} matched no known scan root — roots list is out of sync with the session iterator"
+        f"cost: a session path (hash {path_hash}) matched no known scan root — roots list is"
+        " out of sync with the session iterator (a symlinked project dir resolving outside"
+        " every declared root is one way this can happen)"
     )
 
 

@@ -3341,6 +3341,19 @@ class TestScanRootTranscripts:
         )
         assert scanned == 1
 
+    def test_glob_mode_dedupes_symlinked_alias_by_resolved_path(self, tmp_path):
+        """The glob branch (--projects' default path) must dedupe the same
+        way the slugs branch does — review found this branch's own dedup was
+        missing, an asymmetry between the two branches of one function
+        introduced when the slugs branch was added later for --this-repo."""
+        real_proj = tmp_path / "-home-user-repo"
+        real_proj.mkdir()
+        (real_proj / "sess.jsonl").write_text("{}\n")
+        alias = tmp_path / "-home-user-repo-alias"
+        alias.symlink_to(real_proj)
+        scanned, _skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        assert scanned == 1
+
 
 class TestCostMultiRootRedaction:
     """Deny-case tests for cost's --config-dir redaction surface: no raw
@@ -3419,6 +3432,29 @@ class TestCostMultiRootRedaction:
         with pytest.raises(AssertionError) as exc_info:
             _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
         assert "-home-user-secret-clientname" not in str(exc_info.value)
+
+    def test_root_index_lookup_failure_omits_raw_path(self, tmp_path):
+        """_root_index_for_path's own 'no known scan root' AssertionError is a
+        structural sibling of the redact-map-miss assertion above — found by
+        cumulative-diff review to still embed the raw jsonl path (f"cost:
+        {jsonl} matched...") after the redact-map-miss sibling was fixed.
+        Reproduces the real trigger: a project dir under a declared
+        --config-dir root that is a symlink resolving OUTSIDE every declared
+        root (not just aliasing another declared root, which is the already-
+        covered, already-deduped case)."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        external = tmp_path / "external-unrelated-secret-clientname"
+        external.mkdir()
+        _write_jsonl(external / "sess-escaped.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        (root_b / "-home-user-escaped").symlink_to(external)
+
+        with pytest.raises(AssertionError) as exc_info:
+            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        assert "external-unrelated-secret-clientname" not in str(exc_info.value)
+        assert "-home-user-escaped" not in str(exc_info.value)
 
     def test_no_redact_refused_by_cost_report_itself_even_when_called_directly(self, tmp_path):
         """Defense-in-depth: _cost_report is the function that actually prints

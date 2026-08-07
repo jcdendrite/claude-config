@@ -237,7 +237,7 @@ every `--no-redact` run with a `DO NOT PUBLISH` banner on stdout and stderr.
 *Why:* `--no-redact` plus multi-root is the one command that puts client B's real
 project names into a document produced for client A; docs prose is not a control.
 
-**Step 6 — Add the per-project section, keyed on `(root, project-dir)`.**
+**Step 6 — Add the per-project section, keyed on `(root, project-family)`.**
 `_derive_proj_label` derives from `jsonl.parent.name` alone, so the same repo
 under two profiles collides. Key aggregation on the pair and print the account
 root as its own column. `--by-project` is an output-shape flag: it **composes**
