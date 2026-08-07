@@ -286,6 +286,31 @@ class TestTrackPermissionPrompts:
         assert mode == 0o600
 
     # ------------------------------------------------------------------ #
+    # Symlinked log path is refused                                       #
+    # ------------------------------------------------------------------ #
+
+    def test_symlinked_log_path_is_not_followed(self, tmp_path):
+        """If the log path is a symlink (e.g. planted by another local
+        account with write access to CONFIG_DIR), the hook refuses to
+        chmod or append through it rather than following the symlink to
+        whatever it points at."""
+        config_dir = tmp_path / ".claude"
+        _enable_sentinel(config_dir)
+        symlink_target = tmp_path / "attacker-owned-elsewhere.jsonl"
+        symlink_target.write_text("pre-existing content\n")
+        symlink_target.chmod(0o644)
+        _log_path(config_dir).symlink_to(symlink_target)
+        result = _run_hook(json.dumps(_notification_payload()), tmp_path)
+        assert result.returncode == 0
+        assert symlink_target.read_text() == "pre-existing content\n"
+        assert stat.S_IMODE(symlink_target.stat().st_mode) == 0o644
+        # The symlink itself must survive untouched too -- a future rewrite
+        # that unlinks-then-writes the log path could satisfy both
+        # assertions above while silently replacing the symlink with a
+        # plain file, defeating the guard's intent for later invocations.
+        assert _log_path(config_dir).is_symlink()
+
+    # ------------------------------------------------------------------ #
     # Repeated invocations append, never overwrite                       #
     # ------------------------------------------------------------------ #
 

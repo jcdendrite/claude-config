@@ -24,6 +24,9 @@
 # - Redaction (_lib_redact_credential_shaped_strings) is regex-shape-based
 #   and can miss a credential with no fixed shape, the same caveat
 #   redact-credential-values.sh's own header carries.
+# - The log path's symlink check and the subsequent chmod/append are not
+#   atomic, so a symlink planted in the narrow window between them would
+#   still be followed -- requires local write access to $CONFIG_DIR already.
 #
 # Kill switch: absence of ~/.claude/track-permission-prompts. Opt-in, not
 # on-by-default -- `touch ~/.claude/track-permission-prompts` to enable.
@@ -58,15 +61,17 @@ fi
 REDACTED_INPUT=$(_lib_redact_credential_shaped_strings "$INPUT")
 [ -n "$REDACTED_INPUT" ] || exit 0
 
-LOGGED_AT=$(_lib_jq -n -r 'now | todateiso8601' 2>/dev/null)
-[ -n "$LOGGED_AT" ] || exit 0
-
-# shellcheck disable=SC2016 # single-quoted on purpose: $logged_at is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
-LOG_LINE=$(printf '%s' "$REDACTED_INPUT" | _lib_jq -c --arg logged_at "$LOGGED_AT" \
-  '. + {logged_at: $logged_at}' 2>/dev/null)
+# One jq call computes and merges logged_at, rather than a separate `now`
+# call plus a second --arg merge -- matches redact-credential-values.sh's
+# own documented precedent of avoiding a second jq spawn per hook fire.
+LOG_LINE=$(printf '%s' "$REDACTED_INPUT" | _lib_jq -c '. + {logged_at: (now | todateiso8601)}' 2>/dev/null)
 [ -n "$LOG_LINE" ] || exit 0
 
 LOG_FILE="$CONFIG_DIR/.permission-prompt-log.jsonl"
+# Refuse a symlinked log path: both chmod and `>>` follow symlinks, so a
+# pre-planted symlink here would redirect appended content to a file
+# elsewhere the invoking user can write.
+[ -L "$LOG_FILE" ] && exit 0
 # umask closes the creation-time window (a default-mode file briefly
 # readable before the append even runs); the pre-append chmod closes the
 # separate case of a pre-existing, looser-mode file being appended to
