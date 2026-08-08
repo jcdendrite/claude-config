@@ -47,10 +47,21 @@
 # Usage:
 #   cleanup-merged-branches.sh
 #   cleanup-merged-branches.sh --dry-run
+#   cleanup-merged-branches.sh --all-projects --dry-run
+#   cleanup-merged-branches.sh --all-projects
+#
+# --all-projects sweeps every git repo found under the roots listed in
+# ~/.claude/cleanup-merged-branches-roots (one absolute path per line) instead
+# of just the current repo — see the "--all-projects: root discovery" section
+# below.
 #
 # Exit codes:
 #   0  success (including no-op)
-#   1  gh missing or unauthenticated
+#   1  gh missing or unauthenticated; with --all-projects, also a missing or
+#      unreadable roots config file, or set post-hoc if any repo's cleanup
+#      crashed outright — a handled per-branch failure (worktree remove or
+#      remote delete printed as "manual step needed") does not trip this;
+#      check each repo's own output for those
 #   2  bad arguments
 
 set -euo pipefail
@@ -66,14 +77,16 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 usage() {
-  echo "Usage: $(basename "$0") [--dry-run]" >&2
+  echo "Usage: $(basename "$0") [--dry-run] [--all-projects]" >&2
 }
 
 DRY_RUN=0
+ALL_PROJECTS=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --dry-run) DRY_RUN=1 ;;
-    *)         usage; exit 2 ;;
+    --dry-run)      DRY_RUN=1 ;;
+    --all-projects) ALL_PROJECTS=1 ;;
+    *)              usage; exit 2 ;;
   esac
   shift
 done
@@ -92,6 +105,101 @@ if ! gh auth status &>/dev/null; then
   echo "ERROR: gh is not authenticated. Run 'gh auth login' first." >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# --all-projects: root discovery
+#
+# ROOTS_FILE is user-local config, not part of this repo — no template is
+# shipped, matching ~/.claude/private-projects.md's opt-in-file precedent.
+# CLEANUP_MERGED_BRANCHES_ROOTS_FILE is a test seam (same pattern as
+# resume-context.sh's RESUME_CONTEXT_TMPDIR); production runs never set it.
+# ---------------------------------------------------------------------------
+
+ROOTS_FILE="${CLEANUP_MERGED_BRANCHES_ROOTS_FILE:-${HOME}/.claude/cleanup-merged-branches-roots}"
+
+# Bounds a pathological root (e.g. a root accidentally pointed at $HOME) so
+# discovery cannot walk the whole filesystem hunting for nested .git dirs.
+MAX_REPO_DISCOVERY_DEPTH=5
+
+if [ "$ALL_PROJECTS" -eq 1 ] && [ ! -r "$ROOTS_FILE" ]; then
+  echo "ERROR: --all-projects roots config file not found or unreadable: ${ROOTS_FILE}" >&2
+  echo "Create it with one absolute directory path per line — blank lines and '#' comments are ignored, and a leading '~' or '~/' expands to \$HOME. Example:" >&2
+  echo "  ~/code" >&2
+  echo "  /opt/repos" >&2
+  exit 1
+fi
+
+# read_configured_roots — parse ROOTS_FILE into the global CONFIGURED_ROOTS
+# array: one absolute directory per line, blank lines and `#`-comments
+# skipped, CRLF stripped, leading/trailing whitespace trimmed, and a leading
+# `~`/`~/` expanded to $HOME via literal prefix substitution (not full
+# tilde-user expansion).
+declare -a CONFIGURED_ROOTS=()
+read_configured_roots() {
+  local raw_line line
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+    line=${raw_line%$'\r'}
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    case "$line" in '#'*) continue ;; esac
+    if [[ "$line" == "~" ]]; then
+      line="$HOME"
+    elif [[ "$line" == \~/* ]]; then
+      line="${HOME}${line#\~}"
+    fi
+    CONFIGURED_ROOTS+=("$line")
+  done < "$ROOTS_FILE"
+}
+
+# discover_repo_roots — populate the global DISCOVERED_REPOS array with the
+# deduplicated, absolute repo root of every git repo found under
+# CONFIGURED_ROOTS. `-type d -name .git -prune` stops descent the instant a
+# repo root is found, so it never walks into a matched repo's own
+# .claude/worktrees/<branch>/ subdirectories — those hold a `.git` *file* (a
+# linked-worktree pointer), which `-type d` never matches, and pruning
+# already happened one level up at the parent repo's own .git directory. A
+# root line that is not a directory (typo, deleted since configured) is
+# warned to stderr and skipped; two configured roots that both reach the
+# same repo contribute it only once.
+declare -a DISCOVERED_REPOS=()
+discover_repo_roots() {
+  # Linear membership scan, not an associative array: `declare -A` is a
+  # bash-4+ construct that fails outright on macOS's frozen system bash 3.2
+  # (test_no_bash4_constructs.py guards against it repo-wide). Fine at the
+  # scale a machine's own repo count reaches.
+  local root git_dir repo_root already_seen _existing_repo
+  for root in "${CONFIGURED_ROOTS[@]+"${CONFIGURED_ROOTS[@]}"}"; do
+    if [ ! -d "$root" ]; then
+      echo "WARNING: configured root is not a directory, skipping: ${root}" >&2
+      continue
+    fi
+    while IFS= read -r -d '' git_dir; do
+      repo_root=$(cd "$(dirname "$git_dir")" && pwd -P)
+      already_seen=0
+      for _existing_repo in "${DISCOVERED_REPOS[@]+"${DISCOVERED_REPOS[@]}"}"; do
+        if [ "$_existing_repo" = "$repo_root" ]; then
+          already_seen=1
+          break
+        fi
+      done
+      if [ "$already_seen" -eq 0 ]; then
+        DISCOVERED_REPOS+=("$repo_root")
+      fi
+    done < <(find "$root" -maxdepth "$MAX_REPO_DISCOVERY_DEPTH" -type d -name .git -prune -print0 2>/dev/null)
+  done
+}
+
+# ---------------------------------------------------------------------------
+# run_repo_cleanup — single-repo cleanup body
+#
+# Everything from repo-root resolution through the end-of-run summary,
+# scoped to one repo. Called directly for the default single-repo path, or
+# once per repo in a backgrounded subshell under --all-projects (see the
+# sweep loop below) — the subshell contains this function's internal `exit`
+# calls so one repo's early exit doesn't end the whole sweep.
+# ---------------------------------------------------------------------------
+run_repo_cleanup() {
 
 # ---------------------------------------------------------------------------
 # Repo root — all git ops run from here
@@ -640,3 +748,47 @@ for BRANCH in "${SKIPPED_BRANCHES[@]}"; do
 done
 
 checked_out_skip_line
+
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch: single repo (default), or a sweep across every --all-projects root
+# ---------------------------------------------------------------------------
+
+if [ "$ALL_PROJECTS" -eq 0 ]; then
+  run_repo_cleanup
+else
+  read_configured_roots
+  discover_repo_roots
+
+  if [ "${#DISCOVERED_REPOS[@]}" -eq 0 ]; then
+    echo "No git repos found under any configured root in ${ROOTS_FILE}." >&2
+    exit 0
+  fi
+
+  SWEEP_HAD_FAILURE=0
+  for _sweep_repo in "${DISCOVERED_REPOS[@]}"; do
+    echo "== ${_sweep_repo} =="
+    # A subshell nested directly inside `if !(...)` or a `||` list runs with
+    # errexit silently disabled for its whole execution (a documented bash
+    # quirk, not specific to this script) — a genuine unguarded failure
+    # inside run_repo_cleanup would then pass as success instead of aborting
+    # that repo's cleanup. Backgrounding the subshell and `wait`-ing on it
+    # keeps errexit intact inside the subshell while still letting the sweep
+    # survive its nonzero exit. `<&0` undoes bash's default of redirecting a
+    # backgrounded job's stdin to /dev/null, which would otherwise silently
+    # break run_repo_cleanup's TTY-gated Tier B [y/N] prompts under a sweep.
+    _sweep_status=0
+    ( cd "$_sweep_repo" && run_repo_cleanup ) <&0 &
+    _sweep_pid=$!
+    wait "$_sweep_pid" || _sweep_status=$?
+    if [ "$_sweep_status" -ne 0 ]; then
+      echo "WARNING: cleanup failed in ${_sweep_repo}; continuing sweep" >&2
+      SWEEP_HAD_FAILURE=1
+    fi
+  done
+
+  if [ "$SWEEP_HAD_FAILURE" -eq 1 ]; then
+    exit 1
+  fi
+fi

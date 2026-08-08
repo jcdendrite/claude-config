@@ -10,6 +10,7 @@ import contextlib
 import json
 import os
 import pty
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -1686,3 +1687,406 @@ class TestClassifierEmitsNoShellDiagnostics:
         assert result.stderr == "", (
             f"classification must not emit shell diagnostics; got: {result.stderr!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# --all-projects: sweeps the cleanup across every repo under configured roots
+#
+# CLEANUP_MERGED_BRANCHES_ROOTS_FILE is the test seam for the roots config
+# file (mirrors resume-context.sh's RESUME_CONTEXT_TMPDIR) — production runs
+# never set it, reading ~/.claude/cleanup-merged-branches-roots instead.
+# ---------------------------------------------------------------------------
+
+def _run_all_projects(
+    tmp_path: Path,
+    env: dict,
+    roots_file: Path,
+    extra_args: list[str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Invoke the script with --all-projects from an arbitrary cwd (tmp_path).
+
+    Root discovery doesn't depend on the invoking cwd, unlike the single-repo
+    path's `git rev-parse --show-toplevel` — tmp_path itself is never a repo.
+    """
+    run_env = {**env, "CLEANUP_MERGED_BRANCHES_ROOTS_FILE": str(roots_file)}
+    return subprocess.run(
+        [str(_SCRIPT), "--all-projects"] + (extra_args or []),
+        cwd=str(tmp_path),
+        env=run_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+
+
+class TestAllProjectsRootsFileMissing:
+    """--all-projects with CLEANUP_MERGED_BRANCHES_ROOTS_FILE pointed at a
+    file that doesn't exist on disk."""
+
+    def test_missing_roots_file_exits_nonzero_and_explains_format(self, tmp_path, fake_gh):
+        env = fake_gh({})
+        roots_file = tmp_path / "cleanup-merged-branches-roots"  # never created
+        result = _run_all_projects(tmp_path, env, roots_file)
+
+        assert result.returncode != 0
+        assert str(roots_file) in result.stderr
+        assert "per line" in result.stderr.lower()
+        assert "#" in result.stderr  # comment-syntax mentioned
+
+
+class TestAllProjectsRootsFileUnreadable:
+    """Companion to TestAllProjectsRootsFileMissing: the roots file exists
+    but isn't readable by the invoking user (e.g. after a restrictive
+    umask or an accidental chmod) — `[ ! -r "$ROOTS_FILE" ]` is true for
+    both cases, and both must take the same error path."""
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_roots_file_exits_nonzero_and_explains_format(self, tmp_path, fake_gh):
+        env = fake_gh({})
+        roots_file = tmp_path / "cleanup-merged-branches-roots"
+        roots_file.write_text("/some/root\n")
+        roots_file.chmod(0o000)
+        try:
+            result = _run_all_projects(tmp_path, env, roots_file)
+        finally:
+            roots_file.chmod(0o644)  # restore before tmp_path teardown
+
+        assert result.returncode != 0
+        assert str(roots_file) in result.stderr
+        assert "per line" in result.stderr.lower()
+        assert "#" in result.stderr  # comment-syntax mentioned
+
+
+class TestAllProjectsRootsFileParsing:
+    """Blank lines, `#`-comments, a CRLF-terminated line, and a `~`-prefixed
+    line in the roots file are all handled per the parsing spec (mirrors
+    deny-private-project-refs.sh's private-projects.md parsing)."""
+
+    def test_blank_comment_crlf_and_tilde_lines_all_handled(self, tmp_path, fake_gh):
+        fake_home = tmp_path / "fake-home"
+        code_root = fake_home / "code"
+        code_root.mkdir(parents=True)
+
+        local, bare = _make_repo_with_remote(code_root)
+        _make_feature_branch(local, "feat/tilde-root-merge")
+        subprocess.run(["git", "branch", "-D", "feat/tilde-root-merge"], cwd=bare, check=True)
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_bytes(
+            b"# repo roots for cleanup-merged-branches --all-projects\r\n"
+            b"\n"
+            b"   \n"
+            b"~/code\r\n"
+        )
+
+        env = fake_gh({"feat/tilde-root-merge": {"number": 700, "mergedAt": "2026-05-01"}})
+        env["HOME"] = str(fake_home)
+        result = _run_all_projects(tmp_path, env, roots_file, extra_args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "not a directory" not in result.stderr.lower(), (
+            "a blank or comment line must never be treated as a configured root"
+        )
+        assert f"== {local.resolve()} ==" in result.stdout
+        assert "feat/tilde-root-merge" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/tilde-root-merge"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "dry-run must never delete"
+
+    def test_bare_tilde_line_resolves_to_home_itself(self, tmp_path, fake_gh):
+        """A roots-file line that is exactly `~` resolves to $HOME itself —
+        distinct from the `~/`-prefixed form tested above."""
+        fake_home = tmp_path / "fake-home"
+        fake_home.mkdir()
+
+        local, bare = _make_repo_with_remote(fake_home)
+        _make_feature_branch(local, "feat/bare-tilde-root")
+        subprocess.run(["git", "branch", "-D", "feat/bare-tilde-root"], cwd=bare, check=True)
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_text("~\n")
+
+        env = fake_gh({"feat/bare-tilde-root": {"number": 704, "mergedAt": "2026-05-01"}})
+        env["HOME"] = str(fake_home)
+        result = _run_all_projects(tmp_path, env, roots_file, extra_args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert f"== {local.resolve()} ==" in result.stdout
+        assert "feat/bare-tilde-root" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/bare-tilde-root"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "dry-run must never delete"
+
+    def test_padded_whitespace_real_path_line_is_trimmed(self, tmp_path, fake_gh):
+        """A roots-file line with real path content plus leading/trailing
+        spaces exercises the trim logic itself, not just the all-whitespace
+        blank-skip branch tested above."""
+        root = tmp_path / "padded-root"
+        root.mkdir()
+        local, bare = _make_repo_with_remote(root)
+        _make_feature_branch(local, "feat/padded-whitespace-root")
+        subprocess.run(["git", "branch", "-D", "feat/padded-whitespace-root"], cwd=bare, check=True)
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"  {root}  \n")
+
+        env = fake_gh({"feat/padded-whitespace-root": {"number": 705, "mergedAt": "2026-05-01"}})
+        result = _run_all_projects(tmp_path, env, roots_file, extra_args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "not a directory" not in result.stderr.lower(), (
+            "leading/trailing whitespace on a real path line must be trimmed"
+        )
+        assert f"== {local.resolve()} ==" in result.stdout
+        assert "feat/padded-whitespace-root" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/padded-whitespace-root"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "dry-run must never delete"
+
+
+class TestAllProjectsMissingConfiguredRoot:
+    """A configured root that no longer exists on disk (typo, deleted since
+    configured) is warned to stderr and skipped; the sweep continues with
+    the remaining roots."""
+
+    def test_nonexistent_root_warns_and_sweep_continues(self, tmp_path, fake_gh):
+        existing_root = tmp_path / "existing-root"
+        existing_root.mkdir()
+        local, bare = _make_repo_with_remote(existing_root)
+        _make_feature_branch(local, "feat/in-existing-root")
+        subprocess.run(["git", "branch", "-D", "feat/in-existing-root"], cwd=bare, check=True)
+
+        missing_root = tmp_path / "does-not-exist"
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{missing_root}\n{existing_root}\n")
+
+        env = fake_gh({"feat/in-existing-root": {"number": 701, "mergedAt": "2026-05-01"}})
+        result = _run_all_projects(tmp_path, env, roots_file, extra_args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "not a directory" in result.stderr.lower()
+        assert str(missing_root) in result.stderr
+        assert f"== {local.resolve()} ==" in result.stdout
+        assert "feat/in-existing-root" in result.stdout
+
+
+class TestAllProjectsNestedRepoDiscoveryAndWorktreeExclusion:
+    """Discovery finds a repo nested a couple of levels under a configured
+    root, and never descends into a matched repo's own
+    .claude/worktrees/<branch>/ subdirectory as if it were a second repo —
+    that subdirectory's `.git` is a linked-worktree *file*, not a directory,
+    and pruning already stopped descent one level up at the parent's own
+    .git directory."""
+
+    def test_nested_repo_found_worktree_subdir_not_double_counted(self, tmp_path, fake_gh):
+        root = tmp_path / "root"
+        nested_repo_dir = root / "org" / "team"
+        nested_repo_dir.mkdir(parents=True)
+        local, bare = _make_repo_with_remote(nested_repo_dir)
+        _make_feature_branch(local, "feat/for-worktree")
+
+        wt_path = local / ".claude" / "worktrees" / "feat-for-worktree"
+        wt_path.parent.mkdir(parents=True)
+        _make_worktree(local, "feat/for-worktree", wt_path)
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+
+        env = fake_gh({})
+        result = _run_all_projects(tmp_path, env, roots_file, extra_args=["--dry-run"])
+
+        assert result.returncode == 0
+        header_lines = [line for line in result.stdout.splitlines() if line.startswith("== ")]
+        assert header_lines == [f"== {local.resolve()} =="], (
+            f"expected exactly one discovered repo; got headers: {header_lines!r}"
+        )
+        assert wt_path.exists(), "dry-run must never remove a worktree"
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/for-worktree"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "dry-run must never delete"
+
+
+class TestAllProjectsMaxRepoDiscoveryDepth:
+    """MAX_REPO_DISCOVERY_DEPTH bounds how far discover_repo_roots descends
+    under a configured root, so a root pointed at (e.g.) $HOME by mistake
+    cannot make --all-projects walk the whole filesystem."""
+
+    def test_repo_at_depth_limit_found_one_level_deeper_not(self, tmp_path, fake_gh):
+        depth_match = re.search(
+            r"^MAX_REPO_DISCOVERY_DEPTH=(\d+)", _SCRIPT.read_text(), re.MULTILINE
+        )
+        assert depth_match, "MAX_REPO_DISCOVERY_DEPTH constant not found in script"
+        max_depth = int(depth_match.group(1))
+
+        root = tmp_path / "root"
+        root.mkdir()
+
+        # _make_repo_with_remote adds two more path components below its
+        # argument (a "local" subdir, then ".git" inside it), so the
+        # argument itself needs max_depth - 2 nested levels to land the
+        # repo's .git exactly at the maxdepth boundary.
+        within_bound_parent = root
+        for level in range(max_depth - 2):
+            within_bound_parent = within_bound_parent / f"lvl{level}"
+        within_bound_parent.mkdir(parents=True)
+        local_in, _ = _make_repo_with_remote(within_bound_parent)
+
+        beyond_bound_parent = root
+        for level in range(max_depth - 1):
+            beyond_bound_parent = beyond_bound_parent / f"lvl{level}"
+        beyond_bound_parent.mkdir(parents=True)
+        local_out, _ = _make_repo_with_remote(beyond_bound_parent)
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+
+        env = fake_gh({})
+        result = _run_all_projects(tmp_path, env, roots_file, extra_args=["--dry-run"])
+
+        assert result.returncode == 0
+        header_lines = [line for line in result.stdout.splitlines() if line.startswith("== ")]
+        assert f"== {local_in.resolve()} ==" in header_lines, (
+            f"repo at the maxdepth boundary must be discovered; got: {header_lines!r}"
+        )
+        assert f"== {local_out.resolve()} ==" not in header_lines, (
+            f"repo one level past maxdepth must not be discovered; got: {header_lines!r}"
+        )
+
+
+class TestAllProjectsDedupOverlappingRoots:
+    """Two configured roots whose trees overlap (one nested inside the
+    other) both reach the same repo — it is processed exactly once."""
+
+    def test_overlapping_roots_process_repo_once(self, tmp_path, fake_gh):
+        outer_root = tmp_path / "outer"
+        inner_root = outer_root / "inner"
+        inner_root.mkdir(parents=True)
+        local, bare = _make_repo_with_remote(inner_root)
+        _make_feature_branch(local, "feat/dedup-once")
+        subprocess.run(["git", "branch", "-D", "feat/dedup-once"], cwd=bare, check=True)
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{outer_root}\n{inner_root}\n")
+
+        env = fake_gh({"feat/dedup-once": {"number": 702, "mergedAt": "2026-05-01"}})
+        result = _run_all_projects(tmp_path, env, roots_file)
+
+        assert result.returncode == 0
+        header_lines = [line for line in result.stdout.splitlines() if line.startswith("== ")]
+        assert header_lines == [f"== {local.resolve()} =="], (
+            f"overlapping roots must contribute the same repo only once; got: {header_lines!r}"
+        )
+        remaining = subprocess.run(
+            ["git", "branch", "--list", "feat/dedup-once"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert remaining.strip() == ""
+
+
+class TestAllProjectsOneRepoFailureDoesNotStopSweep:
+    """A repo whose cleanup body errors under `set -e` must not abort the
+    sweep. A freshly `git init`'d repo with no commits reproduces this: its
+    HEAD is an unborn symref, so the unguarded
+    `CURRENT_HEAD=$(git rev-parse --abbrev-ref HEAD)` line fails outright —
+    the healthy sibling repo in the same sweep must still be fully cleaned,
+    and the overall exit code must reflect the one failure."""
+
+    def test_broken_repo_does_not_block_healthy_sibling(self, tmp_path, fake_gh):
+        root = tmp_path / "root"
+        root.mkdir()
+
+        healthy_dir = root / "healthy"
+        healthy_dir.mkdir()
+        local, bare = _make_repo_with_remote(healthy_dir)
+        _make_feature_branch(local, "feat/healthy-in-sweep")
+        subprocess.run(["git", "branch", "-D", "feat/healthy-in-sweep"], cwd=bare, check=True)
+
+        broken_dir = root / "broken"
+        broken_dir.mkdir()
+        subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=broken_dir, check=True)
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+
+        env = fake_gh({"feat/healthy-in-sweep": {"number": 703, "mergedAt": "2026-05-01"}})
+        result = _run_all_projects(tmp_path, env, roots_file)
+
+        assert result.returncode == 1, "one repo's failure must be reflected in the overall exit code"
+        assert "cleanup failed" in result.stderr.lower()
+        assert str(broken_dir.resolve()) in result.stderr
+        assert "feat/healthy-in-sweep" in result.stdout
+        remaining = subprocess.run(
+            ["git", "branch", "--list", "feat/healthy-in-sweep"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert remaining.strip() == ""
+
+
+class TestAllProjectsTierBPromptReachesOperator:
+    """The sweep loop's `<&0` stdin-reattachment (see the script's own
+    comment above the sweep loop) exists to keep the Tier B [y/N] prompt
+    interactive under a backgrounded per-repo subshell — proves it actually
+    delivers keystrokes to the prompt, mirroring
+    TestTierBReachableNoMergedPR's single-repo pty convention."""
+
+    def test_tier_b_prompt_delivered_and_answered_under_sweep(self, tmp_path, fake_gh):
+        root = tmp_path / "root"
+        root.mkdir()
+        local, remote = _make_repo_with_remote(root)
+        _make_tier_b_branch(local, remote, "tier-b-branch")
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+
+        env = {**fake_gh({}), "CLEANUP_MERGED_BRANCHES_ROOTS_FILE": str(roots_file)}
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                [str(_SCRIPT), "--all-projects"], cwd=str(tmp_path),
+                env=env,
+                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            os.close(slave_fd)
+            os.write(master_fd, b"y\n")
+            proc.wait(timeout=30)
+            os.close(master_fd)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+            raise
+
+        assert proc.returncode == 0
+        stdout = proc.stdout.read().decode()
+        assert "[y/N]" in stdout
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "tier-b-branch" not in branches
+
+
+class TestAllProjectsNoReposDiscovered:
+    """Zero repos found across every configured root is a no-op, not an
+    error: exit 0 with an explanatory stderr note."""
+
+    def test_no_repos_under_any_root_exits_zero(self, tmp_path, fake_gh):
+        empty_root = tmp_path / "empty-root"
+        empty_root.mkdir()
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{empty_root}\n")
+
+        env = fake_gh({})
+        result = _run_all_projects(tmp_path, env, roots_file)
+
+        assert result.returncode == 0
+        assert "no git repos found" in result.stderr.lower()
