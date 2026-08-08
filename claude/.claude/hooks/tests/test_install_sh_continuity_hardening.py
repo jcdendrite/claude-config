@@ -408,3 +408,33 @@ class TestInstallShStowAdoptionMigration:
             assert target.is_dir() and not target.is_symlink(), (
                 f"~/.claude/{name} must still migrate despite plans' failure"
             )
+
+    def test_repairs_pre_existing_per_entry_symlinks_left_by_the_ignore_bug(
+        self, tmp_path: Path
+    ) -> None:
+        """Reproduces the actual state found on a machine that already ran
+        the pre-fix install.sh: $HOME/.claude/briefs is a real, top-level
+        directory (so stow_migrate_adopted_dir's own idempotency check is a
+        no-op), but the file inside it is a per-entry symlink into the repo
+        -- left by the ineffective '^briefs$' --ignore pattern. The
+        migration block's added stow_repair_nested_adoption call must fix
+        this on a plain re-run, without a fresh top-level migration."""
+        home = tmp_path / "home"
+        repo = _build_fake_repo(tmp_path)
+        source = repo / "claude" / ".claude" / "briefs"
+        source.mkdir(parents=True)
+        (source / "task-a.md").write_text("# task a\n")
+
+        target = home / ".claude" / "briefs"
+        target.mkdir(parents=True)
+        (target / "task-a.md").symlink_to(source / "task-a.md")
+
+        result = _run_migration_block(home, repo)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert target.is_dir() and not target.is_symlink()
+        repaired = target / "task-a.md"
+        assert repaired.is_file() and not repaired.is_symlink(), (
+            "the per-entry symlink must be replaced by a real file"
+        )
+        assert repaired.read_text() == "# task a\n"
