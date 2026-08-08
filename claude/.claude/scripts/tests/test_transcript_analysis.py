@@ -189,6 +189,86 @@ def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
     assert tmp_path / "projects" == mod.PROJECTS_DIR
 
 
+class TestConfigDirFlag:
+    """--config-dir reassigns the module-level PROJECTS_DIR after argument
+    parsing, distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
+    test_projects_dir_honors_claude_config_dir covers above. Every test here
+    registers _mod.PROJECTS_DIR with monkeypatch before calling main() (even
+    when just re-setting it to its current value) so main()'s direct
+    `global PROJECTS_DIR` reassignment — which bypasses monkeypatch — is
+    still restored to its pre-test value at teardown, protecting the rest of
+    this shared, once-imported module from leaking state across tests."""
+
+    def test_flag_set_enumerates_sessions_from_the_fixture_dir(self, monkeypatch, tmp_path, capsys):
+        """The reassignment's core invariant: a subcommand actually finds
+        sessions under PATH/projects, not the module's default. The no-flag
+        and error-path tests below can both pass while this one is broken.
+
+        Asserts on captured stdout, not just the PROJECTS_DIR attribute --
+        the attribute alone would stay green even if `buckets`' own
+        session-iteration path captured PROJECTS_DIR into a local before
+        main()'s post-parse reassignment, silently reporting zero sessions
+        (the exact regression class this feature exists to close)."""
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", _mod.PROJECTS_DIR)
+        config_dir = tmp_path / "other-account"
+        proj = config_dir / "projects" / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "s.jsonl", [_asst("claude-sonnet-4-6", branch="feat-config-dir")])
+
+        monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "--config-dir", str(config_dir), "buckets"])
+        _mod.main()
+
+        assert config_dir / "projects" == _mod.PROJECTS_DIR
+        out = capsys.readouterr().out
+        assert "feat-config-dir" in out, (
+            f"the seeded session's branch never surfaced in `buckets` output: {out!r}"
+        )
+
+    def test_no_flag_leaves_projects_dir_unchanged_after_parsing(self, monkeypatch, tmp_path):
+        """Without --config-dir, main()'s post-parse reassignment must not
+        run at all. test_projects_dir_honors_claude_config_dir only covers
+        import time; the regression risk this guards is in the reassignment
+        main() performs after parsing, e.g. an unguarded `Path(None)`."""
+        fixture_projects_dir = tmp_path / "projects"
+        fixture_projects_dir.mkdir()
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", fixture_projects_dir)
+
+        monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "buckets"])
+        _mod.main()
+
+        assert fixture_projects_dir == _mod.PROJECTS_DIR
+
+    def test_this_repo_loud_error_on_zero_matches(self, monkeypatch, tmp_path, capsys):
+        """--config-dir + --this-repo, resolved against a config dir with no
+        matching project directories, errors loudly instead of silently
+        reporting an empty scope -- closes the original reported symptom
+        (declaring no sessions exist for a container that has them)."""
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", _mod.PROJECTS_DIR)
+        config_dir = tmp_path / "other-account"
+        (config_dir / "projects").mkdir(parents=True)  # exists, but empty
+
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["transcript-analysis.py", "--config-dir", str(config_dir), "buckets", "--this-repo"],
+        )
+        with pytest.raises(SystemExit):
+            _mod.main()
+
+        err = capsys.readouterr().err
+        assert "--config-dir" in err
+        assert "buckets" in err
+
+
 # ---------------------------------------------------------------------------
 # _table_cols self-tests
 # ---------------------------------------------------------------------------

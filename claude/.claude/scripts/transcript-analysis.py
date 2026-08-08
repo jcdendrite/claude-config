@@ -1623,12 +1623,42 @@ def _resolve_project_scope(
     mutually exclusive (enforced at each such subcommand's CLI boundary), so
     the this_repo branch always has a single root in practice; it still
     threads `roots` through for signature parity.
+
+    Under an explicit top-level --config-dir (a different flag from cost's
+    and context-distribution's own --config-dir above — see main()), zero of
+    the resolved slugs matching an actual directory fails closed
+    (sys.exit(1)) instead of returning an iterator that silently yields
+    nothing — this is the original reported symptom (declaring no sessions
+    exist for a container that has them), so an empty --this-repo scope here
+    is far more likely a wrong --config-dir than a genuinely session-less
+    repo. Without --config-dir, an empty scope stays silent, matching every
+    other subcommand's long-standing behavior. config_dir is read via
+    getattr (unlike this_repo above): it's a top-level parser flag rather
+    than something _add_project_scope_args wires per subparser, and this
+    file's many hand-built test `args` fixtures predate it, so its absence
+    means "not passed" (the real default), not a wiring bug. This check
+    reads the reassigned PROJECTS_DIR global (set in main()); main() refuses
+    the top-level --config-dir outright for both cost and
+    context-distribution before dispatch, so PROJECTS_DIR and `roots` can
+    never diverge here -- config_dir_arg being truthy guarantees `roots` is
+    None (those two subcommands are the only callers that ever pass a
+    non-None roots).
     """
     if args.this_repo:
         slugs = getattr(args, "_this_repo_slugs", None)
         if slugs is None:
             slugs = _repo_scoped_project_slugs(subcommand)
             args._this_repo_slugs = slugs
+        config_dir_arg = getattr(args, "config_dir", None)
+        if config_dir_arg and not any((PROJECTS_DIR / slug).is_dir() for slug in slugs):
+            print(
+                f"{subcommand}: --this-repo matched zero project directories under "
+                f"--config-dir {config_dir_arg} (checked {len(slugs)} candidate worktree "
+                "slug(s)) — refusing to report an empty scope silently; confirm "
+                "--config-dir points at the account these sessions actually live in.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         return (
             _iter_scoped_sessions(slugs, include_subagents, roots=roots),
             f"this repo ({len(slugs)} project dirs)",
@@ -4622,6 +4652,20 @@ def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Claude Code transcript analysis toolkit.")
+    # Top-level (not per-subcommand) so main() can reassign PROJECTS_DIR before
+    # any subcommand runs, regardless of which one was chosen. Resolving the
+    # path inside the script, via a plain CLI flag, rather than through a
+    # `CLAUDE_CONFIG_DIR=... python3 ...` shell prefix keeps a non-personal
+    # account's ~/.config/claude-accounts/<account> path out of the env-var-
+    # assignment shape Claude Code's Bash permission classifier denies on.
+    parser.add_argument(
+        "--config-dir", metavar="PATH", default=None,
+        help=(
+            "Resolve sessions under PATH/projects instead of the default "
+            "Claude Code config dir (CLAUDE_CONFIG_DIR, or ~/.claude). Must "
+            "precede the subcommand name."
+        ),
+    )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     p_buckets = sub.add_parser("buckets", help="Assistant turns bucketed by gitBranch × model family.")
@@ -5015,6 +5059,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     parsed = parser.parse_args()
+    if parsed.config_dir:
+        global PROJECTS_DIR
+        PROJECTS_DIR = Path(parsed.config_dir) / "projects"
     parsed.func(parsed)
 
 

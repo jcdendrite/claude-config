@@ -728,6 +728,10 @@ def write_plan_review_routing_read_marker(home: Path, session_id: str) -> Path:
     return marker
 
 
+def plan_review_pending_read_marker_path(home: Path, session_id: str) -> Path:
+    return home / ".claude" / ".plan-review-pending-read.d" / session_id
+
+
 def _symlink_if_absent(link: Path, target: Path) -> Path:
     """Create link -> target if link doesn't already exist. Idempotent."""
     link.parent.mkdir(parents=True, exist_ok=True)
