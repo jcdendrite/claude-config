@@ -268,6 +268,39 @@ class TestConfigDirFlag:
         assert "--config-dir" in err
         assert "buckets" in err
 
+    @pytest.mark.parametrize("subcommand", ["cost", "context-distribution"])
+    def test_top_level_config_dir_refused_for_subcommands_with_their_own(
+        self, monkeypatch, tmp_path, capsys, subcommand
+    ):
+        """cost and context-distribution both resolve their own scan roots
+        via their own --config-dir (_resolve_cost_roots), never reading the
+        module-global PROJECTS_DIR this top-level flag reassigns -- the two
+        same-named flags must not be allowed to silently diverge (one
+        validating an account, the other scanning a different one). The
+        refusal is unconditional on subcommand alone, checked before
+        args.this_repo is ever read, so a bare subcommand invocation (no
+        --this-repo) is the correct, strictly-scoped regression pin -- a
+        --this-repo variant would hit the identical check with no new
+        branch coverage."""
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", _mod.PROJECTS_DIR)
+        config_dir = tmp_path / "other-account"
+        (config_dir / "projects").mkdir(parents=True)
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["transcript-analysis.py", "--config-dir", str(config_dir), subcommand],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.main()
+        assert exc_info.value.code == 2
+
+        err = capsys.readouterr().err
+        assert subcommand in err
+        assert "--config-dir" in err
+        assert config_dir / "projects" != _mod.PROJECTS_DIR, (
+            "refusal must happen before the reassignment, not after"
+        )
+
 
 # ---------------------------------------------------------------------------
 # _table_cols self-tests

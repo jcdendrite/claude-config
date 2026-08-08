@@ -5060,6 +5060,20 @@ def main() -> None:
     parser = build_parser()
     parsed = parser.parse_args()
     if parsed.config_dir:
+        # cost and context-distribution resolve their own scan roots via
+        # their own --config-dir (_resolve_cost_roots), never reading the
+        # reassignment below -- refuse outright rather than let the two
+        # same-named flags silently diverge (this top-level one would
+        # validate one account while the subcommand scans another).
+        if parsed.subcommand in ("cost", "context-distribution"):
+            print(
+                f"{parsed.subcommand}: the top-level --config-dir has no effect here, since "
+                f"this subcommand resolves its own scan roots via its own --config-dir "
+                f"(repeatable, additive) -- use that instead: "
+                f"transcript-analysis.py {parsed.subcommand} --config-dir PATH",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         global PROJECTS_DIR
         PROJECTS_DIR = Path(parsed.config_dir) / "projects"
     parsed.func(parsed)
