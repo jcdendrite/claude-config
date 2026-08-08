@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -11,6 +12,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from helpers import HOOKS_DIR, bash_input, run_hook_reason
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
@@ -1759,12 +1761,16 @@ def _hook_deny_current(
     tool_id: str = "toolu_cur",
     ts: str | None = None,
     branch: str = "main",
+    tool_denial_kind: str | None = None,
+    is_error: bool = True,
 ) -> dict:
     """Build a current-format hook denial.
 
     Newer Claude Code transcripts no longer emit a hook_blocking_error
     attachment record — a denial surfaces only as a user record whose
-    tool_result block carries is_error and the denial text.
+    tool_result block carries is_error and the denial text. tool_denial_kind
+    mirrors the real toolDenialKind field, which lives on this parent user
+    record, not on the tool_result block itself.
     """
     rec: dict = {
         "type": "user",
@@ -1772,11 +1778,13 @@ def _hook_deny_current(
         "isSidechain": False,
         "message": {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": tool_id,
-             "content": message, "is_error": True},
+             "content": message, "is_error": is_error},
         ]},
     }
     if ts:
         rec["timestamp"] = ts
+    if tool_denial_kind:
+        rec["toolDenialKind"] = tool_denial_kind
     return rec
 
 
@@ -1823,6 +1831,165 @@ def _extract_deny_summary_count(out: str, label: str) -> int:
             if rest.isdigit():
                 return int(rest)
     return 0
+
+
+def _extract_pre_regime_count(out: str) -> int:
+    """Read --deny-summary's 'N errored, non-gate tool result(s) predate...' count.
+
+    Regex-extracts and int-compares rather than substring-containing on the
+    prefix (matching _extract_unpriced_total's pattern) — a plain 'in out'
+    check on '1 errored' would also pass for a count of 11.
+    """
+    match = re.search(r"(\d+) errored, non-gate tool result\(s\) predate", out)
+    assert match is not None, "pre-regime count line not found in output"
+    return int(match.group(1))
+
+
+def _extract_cross_tab_count(out: str, hook: str, shape: str) -> int:
+    """Read one (hook, shape) cell from --deny-summary's hook x command-shape
+    cross-tab table.
+
+    Both the hook-label and shape-label columns can carry a single internal
+    space (e.g. 'git commit', 'plan-review routing'), so whitespace-token
+    splitting doesn't apply — columns are separated by >=2 spaces by
+    construction (_print_deny_summary's col_width is always at least 2 wider
+    than the longest shape label), so splitting on runs of 2+ spaces keeps
+    each multi-word label intact as one column. The cross-tab's own header
+    ("  Hook  ...") is indented two spaces, unlike the marginal hook/gate
+    table's identically-worded row labels — this locates the header by its
+    unique two-space-indented "Hook" lead cell, then scopes the row search to
+    the block of two-space-indented lines directly beneath it, so a hook
+    label shared with the marginal table's own row (e.g. "code-review") never
+    matches the wrong table.
+    """
+    lines = out.splitlines()
+    header_idxs = [i for i, ln in enumerate(lines) if re.split(r"\s{2,}", ln.strip())[:1] == ["Hook"]]
+    assert len(header_idxs) == 1, f"cross-tab header not found uniquely: {len(header_idxs)}"
+    header_idx = header_idxs[0]
+    header_cols = re.split(r"\s{2,}", lines[header_idx].strip())
+    assert shape in header_cols, f"shape {shape!r} not a cross-tab column: {header_cols}"
+    shape_idx = header_cols.index(shape)
+    table_rows = []
+    for ln in lines[header_idx + 1:]:
+        if not ln.startswith("  "):
+            break
+        table_rows.append(ln)
+    matches = [ln for ln in table_rows if re.split(r"\s{2,}", ln.strip())[:1] == [hook]]
+    assert len(matches) == 1, f"cross-tab row not found uniquely for {hook!r}: {len(matches)}"
+    row_cols = re.split(r"\s{2,}", matches[0].strip())
+    return int(row_cols[shape_idx])
+
+
+class TestDropDenialCommandFlagValues:
+    """Direct unit coverage for _drop_denial_command_flag_values — the CLI-layer
+    --deny-summary tests (TestReviewTrace) exercise this only indirectly
+    through the full JSONL-fixture-to-stdout path."""
+
+    def test_empty_tokens_returns_empty_list(self):
+        assert _mod._drop_denial_command_flag_values([]) == []
+
+    def test_no_flags_returns_tokens_unchanged(self):
+        assert _mod._drop_denial_command_flag_values(["git", "commit", "-m", "x"]) == [
+            "git", "commit", "-m", "x",
+        ]
+
+    def test_separate_token_flag_drops_flag_and_its_value(self):
+        assert _mod._drop_denial_command_flag_values(["git", "-C", "/path", "commit"]) == [
+            "git", "commit",
+        ]
+
+    def test_double_separate_token_flags_both_dropped(self):
+        assert _mod._drop_denial_command_flag_values(
+            ["git", "-C", "/path", "-c", "user.name=x", "commit"]
+        ) == ["git", "commit"]
+
+    def test_attached_equals_flag_drops_only_the_one_token(self):
+        assert _mod._drop_denial_command_flag_values(["git", "--git-dir=/path", "status"]) == [
+            "git", "status",
+        ]
+
+    def test_all_four_named_flag_forms_drop_their_value(self):
+        assert _mod._drop_denial_command_flag_values(["git", "-C", "/a", "commit"]) == ["git", "commit"]
+        assert _mod._drop_denial_command_flag_values(["git", "-c", "x=y", "commit"]) == ["git", "commit"]
+        assert _mod._drop_denial_command_flag_values(["git", "--git-dir", "/a", "commit"]) == [
+            "git", "commit",
+        ]
+        assert _mod._drop_denial_command_flag_values(["git", "--work-tree", "/a", "commit"]) == [
+            "git", "commit",
+        ]
+
+    def test_separate_token_flag_at_end_of_list_drops_flag_with_no_value_token(self):
+        """A value-taking flag as the last token, with nothing after it, still
+        drops the flag itself — the unconditional i += 2 skip doesn't require
+        a following token to exist."""
+        assert _mod._drop_denial_command_flag_values(["git", "commit", "-C"]) == ["git", "commit"]
+
+
+class TestIsNongateFrictionKind:
+    """Direct unit coverage for _is_nongate_friction_kind — the CLI-layer
+    --deny-summary/timeline tests (TestReviewTrace) exercise this only
+    indirectly through the full JSONL-fixture-to-stdout path."""
+
+    def test_already_gate_denied_returns_false_even_with_nongate_kind(self):
+        assert _mod._is_nongate_friction_kind("interrupted", already_gate_denied=True) is False
+
+    def test_falsy_kind_returns_false(self):
+        assert _mod._is_nongate_friction_kind("", already_gate_denied=False) is False
+
+    def test_gate_kind_returns_false(self):
+        assert _mod._is_nongate_friction_kind(_mod._GATE_TOOL_DENIAL_KIND, already_gate_denied=False) is False
+
+    @pytest.mark.parametrize(
+        "kind", ["user-rejected", "automode-blocked", "automode-unavailable", "interrupted"]
+    )
+    def test_nongate_kind_returns_true(self, kind):
+        assert _mod._is_nongate_friction_kind(kind, already_gate_denied=False) is True
+
+    def test_unenumerated_future_kind_still_returns_true(self):
+        """A toolDenialKind value outside the four named kinds is still
+        non-gate friction as long as it isn't the gate kind — the label
+        printed for it is _friction_kind_label's concern, not this
+        predicate's."""
+        assert _mod._is_nongate_friction_kind("some-future-kind", already_gate_denied=False) is True
+
+
+class TestFrictionKindLabel:
+    """Direct unit coverage for _friction_kind_label — the CLI-layer
+    --deny-summary/timeline tests (TestReviewTrace) exercise this only
+    indirectly through the full JSONL-fixture-to-stdout path."""
+
+    @pytest.mark.parametrize(
+        "kind", ["user-rejected", "automode-blocked", "automode-unavailable", "interrupted"]
+    )
+    def test_enumerated_kind_returns_itself(self, kind):
+        assert _mod._friction_kind_label(kind) == kind
+
+    def test_unenumerated_kind_returns_other_kind_sentinel(self):
+        assert _mod._friction_kind_label("some-future-kind") == _mod._FRICTION_KIND_OTHER
+
+
+class TestSanitizeTableCell:
+    """Direct unit coverage for _sanitize_table_cell — the defense-in-depth
+    control-character strip every --deny-summary table cell passes through.
+    No CLI-layer test can reach this with live malicious input today, since
+    every caller already passes an allowlist-bounded label (_DENIAL_HOOK_LABELS,
+    _DENIAL_COMMAND_SUBCOMMANDS, _FRICTION_KINDS) — this pins the helper's own
+    behavior directly instead."""
+
+    def test_strips_esc_byte(self):
+        """Only the ESC control byte itself is stripped, not surrounding
+        printable characters — e.g. an ANSI escape sequence's bracket/digit
+        payload is left in place, just no longer interpretable as an escape."""
+        assert _mod._sanitize_table_cell("git\x1b[31mcommit") == "git[31mcommit"
+
+    def test_strips_null_and_del_bytes(self):
+        assert _mod._sanitize_table_cell("a\x00b\x7fc") == "abc"
+
+    def test_plain_label_unchanged(self):
+        assert _mod._sanitize_table_cell("git commit") == "git commit"
+
+    def test_empty_string_unchanged(self):
+        assert _mod._sanitize_table_cell("") == ""
 
 
 class TestReviewTrace:
@@ -2280,6 +2447,188 @@ class TestReviewTrace:
         assert _extract_deny_summary_count(out, "git commit") == 2
         assert _extract_deny_summary_count(out, "git push") == 1
 
+    def test_deny_summary_command_shape_empty_command_bucketed_as_other(self, fake_projects, capsys):
+        """A denial with an enumerated hook name but no paired Bash tool_use (an
+        empty command string) still lands the command-shape axis in 'other' — the
+        shape-axis counterpart to test_deny_summary_unmatched_hook_name_bucketed_not_dropped,
+        isolated from that test's hook-axis unmatched-ness."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "other") == 1
+
+    def test_deny_summary_git_dash_c_flag_value_dropped_bucketed_as_true_subcommand(
+        self, fake_projects, capsys
+    ):
+        """'git -C <path> commit' buckets as 'git commit', not 'other' and not a
+        naive misread of <path> as the subcommand — -C is
+        require-worktree-for-git-writes.sh's own resolution mechanism for a
+        compliant worktree write, so this is the dominant separate-token flag
+        shape in the worktree-enforcement denial category. The path itself never
+        appears in output."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", "git -C ~/repo commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "git commit") == 1
+        assert _extract_deny_summary_count(out, "other") == 0
+        assert "~/repo" not in out
+
+    def test_deny_summary_git_dash_lowercase_c_flag_value_dropped_bucketed_as_true_subcommand(
+        self, fake_projects, capsys
+    ):
+        """'git -c key=value commit' (a separate-token config override, the value
+        itself containing '=') buckets as 'git commit', not 'other'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", "git -c user.name=eng commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "git commit") == 1
+        assert _extract_deny_summary_count(out, "other") == 0
+
+    def test_deny_summary_git_dir_equals_attached_flag_value_dropped_bucketed_as_true_subcommand(
+        self, fake_projects, capsys
+    ):
+        """'git --git-dir=<path> status' (an =-attached flag, consuming only its
+        own token) buckets as 'git status', not 'other'. The path never appears
+        in output."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", "git --git-dir=~/repo/.git status")]),
+            _hook_deny_current("Blocked by worktree-enforcement gate: not in a linked worktree.", tool_id="b1"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "git status") == 1
+        assert _extract_deny_summary_count(out, "other") == 0
+        assert "~/repo" not in out
+
+    def test_deny_summary_work_tree_separate_token_flag_value_dropped_bucketed_as_true_subcommand(
+        self, fake_projects, capsys
+    ):
+        """'git --work-tree <path> commit' (a separate-token flag) buckets as
+        'git commit', not 'other'. The path never appears in output."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", "git --work-tree ~/repo commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "git commit") == 1
+        assert _extract_deny_summary_count(out, "other") == 0
+        assert "~/repo" not in out
+
+    def test_deny_summary_env_assignment_prefix_stripped_before_classification(
+        self, fake_projects, capsys
+    ):
+        """A leading NAME=VALUE environment-assignment prefix (the corpus shape
+        wrapping a marker.sh invocation with a live per-machine token) is
+        stripped before classification — the denial buckets as 'marker.sh write'
+        and the env value never appears in output."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use(
+                      "b1",
+                      "CLAUDE_CONFIG_DIR=~/.config/claude-accounts/proj "
+                      "~/.claude/scripts/marker.sh write code-review",
+                  )]),
+            _hook_deny_current(
+                "marker.sh invocation denied (path traversal '..' detected). "
+                "Command (truncated): ~/.claude/scripts/marker.sh write code-review",
+                tool_id="b1",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "marker.sh write") == 1
+        assert _extract_deny_summary_count(out, "other") == 0
+        assert "CLAUDE_CONFIG_DIR" not in out
+        assert "claude-accounts" not in out
+
+    def test_deny_summary_absolute_marker_script_path_basenamed_not_leaked(
+        self, fake_projects, capsys
+    ):
+        """An absolute marker.sh invocation path (rather than the tilde form) is
+        basenamed before classification — the denial buckets as 'marker.sh
+        activate', and the home-rooted path never appears in output."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", "~/.claude/scripts/marker.sh activate plan-review")]),
+            _hook_deny_current(
+                "marker.sh invocation denied (path traversal '..' detected). "
+                "Command (truncated): ~/.claude/scripts/marker.sh activate plan-review",
+                tool_id="b1",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "marker.sh activate") == 1
+        assert _extract_deny_summary_count(out, "other") == 0
+        assert "~/.claude/scripts" not in out
+
+    def test_deny_summary_unenumerated_attached_flag_before_subcommand_falls_to_other_no_leak(
+        self, fake_projects, capsys
+    ):
+        """A git global flag outside the named value-taking set (e.g.
+        --exec-path=<path>) is left in place by _drop_denial_command_flag_values,
+        but since it looks like a flag it must never be read as, and printed as,
+        the subcommand — the denial falls to 'other' rather than leaking the
+        attached path into the command-shape table."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", "git --exec-path=~/secret-tools status")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "other") == 1
+        assert "~/secret-tools" not in out
+
+    def test_deny_summary_esc_byte_in_trailing_argument_never_reaches_stdout(
+        self, fake_projects, capsys
+    ):
+        """An ESC byte embedded in an argument past the subcommand (e.g. a commit
+        message) never survives to stdout — the classifier only ever prints the
+        command and one subcommand token, so the denial buckets as 'git commit'
+        with the control byte discarded along with the rest of the argument."""
+        esc_message = "\x1b[31mFAKE PROMPT\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", f'git commit -m "{esc_message}"')]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "git commit") == 1
+        assert "\x1b" not in out
+
+    def test_deny_summary_unenumerated_non_flag_subcommand_token_falls_to_other_no_leak(
+        self, fake_projects, capsys
+    ):
+        """A credential-shaped token occupying the subcommand position itself
+        (not a flag, not a member of _DENIAL_COMMAND_SUBCOMMANDS) must never be
+        read as, and printed as, the subcommand — the denial falls to 'other'
+        and the token never appears anywhere in --deny-summary output."""
+        credential_token = "AKIA_FAKE_SECRET_ACCESS_KEY_ABCDEFGHIJKL"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_bash_use("b1", f"git {credential_token} status")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "other") == 1
+        assert credential_token not in out
+
     def test_deny_summary_unmatched_hook_name_bucketed_not_dropped(self, fake_projects, capsys):
         """A denial matched via _HOOK_DENIAL_SIGNATURE's 'invocation denied' alternative,
         which names no hook, lands in the 'unmatched' bucket rather than being silently
@@ -2293,6 +2642,98 @@ class TestReviewTrace:
         hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
         assert hook_cols["Count"] == "1"
         assert _extract_deny_summary_count(out, "other") == 1
+
+    def test_deny_summary_covers_marker_invocation_denied_wording(self, fake_projects, capsys):
+        """enforce-marker-script-shape.sh's 'marker.sh invocation denied ...' wording
+        names no hook via the 'blocked by <name> hook/gate' idiom, but the
+        '<name> invocation denied' pattern extracts 'marker.sh' as an enumerated
+        label rather than dropping it into 'unmatched'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current(
+                "marker.sh invocation denied (path traversal '..' detected). "
+                "Command (truncated): ~/.claude/scripts/marker.sh write ../foo"
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="marker.sh", row_startswith=True)
+        assert hook_cols["Count"] == "1"
+
+    def test_deny_summary_covers_self_labeled_gate_colon_wording(self, fake_projects, capsys):
+        """check-skill-length.sh states its own label as the message's own prefix
+        ('Skill length gate: ...') rather than via 'blocked by' — the
+        '<name> gate:' pattern extracts 'Skill length' as an enumerated label."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current(
+                "Skill length gate: one or more SKILL.md files grew past their "
+                "per-skill limit. Reduce to the limit or fewer lines before committing."
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        # "Skill length" is a two-word label; _table_cols assumes single-token
+        # cells (see its docstring), so this reads the row the same way the
+        # existing "git commit"/"git push" multi-word-label assertions do.
+        assert _extract_deny_summary_count(out, "Skill length") == 1
+
+    def test_deny_summary_unenumerated_colon_wording_falls_to_unmatched_no_leak(self, fake_projects, capsys):
+        """deny-credential-file-reads.sh's 'Read of '<path>' denied by the
+        credential-file read gate: ...' wording now matches _HOOK_DENIAL_SIGNATURE's
+        colon-anchored alternative (previously invisible), but the captured span
+        includes the 'denied by the' prefix and so isn't an enumerated label —
+        it falls to 'unmatched' rather than fabricating a new hook row, and the
+        credential-shaped path never appears in --deny-summary's output at all."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current(
+                "Read of './secrets/.netrc' denied by the credential-file "
+                "read gate: the path is credential-shaped."
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
+        assert hook_cols["Count"] == "1"
+        assert ".netrc" not in out
+        assert "secrets" not in out
+
+    @pytest.mark.parametrize(
+        "message_template",
+        [
+            "Blocked by {name} gate: could not source _lib.sh.",
+            "{name} invocation denied. Command (truncated): ~/.claude/scripts/marker.sh write foo",
+            "{name} gate: some detail.",
+        ],
+    )
+    def test_deny_summary_over_max_chars_hook_name_candidate_falls_to_unmatched_no_leak(
+        self, fake_projects, capsys, message_template
+    ):
+        """A candidate hook-name span longer than _DENIAL_HOOK_NAME_MAX_CHARS
+        (40) across each of the three extraction patterns never yields an
+        enumerated label — it falls to 'unmatched', and the credential-shaped
+        name never appears anywhere in --deny-summary's output."""
+        over_cap_name = "AKIA_FAKE_SECRET_ACCESS_KEY_" + "X" * 20  # 48 chars, over the 40-char cap
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current(message_template.format(name=over_cap_name)),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
+        assert hook_cols["Count"] == "1"
+        assert over_cap_name not in out
+
+    def test_deny_summary_attachment_hookname_not_enumerated_falls_to_unmatched(self, fake_projects, capsys):
+        """The legacy attachment branch's hookName field is bounded the same way as
+        the regex-extracted branch: an unenumerated hookName (legacy transcripts
+        predate this bound, so any historical value is unverified) is not echoed
+        verbatim into --deny-summary's hook/gate table — it falls to 'unmatched'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny("legacy-hook-slug"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
+        assert hook_cols["Count"] == "1"
+        assert "legacy-hook-slug" not in out
 
     def test_deny_summary_replaces_per_session_listing(self, fake_projects, capsys):
         """--deny-summary suppresses the normal per-session event listing entirely —
@@ -2321,6 +2762,418 @@ class TestReviewTrace:
         out = capsys.readouterr().out
         assert "No denials found in scope." in out
         assert "Denials by hook/gate" not in out
+
+    def test_absent_toolDenialKind_produces_no_friction_event(self, fake_projects, capsys):
+        """A current-format denial with no toolDenialKind field produces only a
+        `denial` event — no `friction` event, since a falsy toolDenialKind means
+        the field is absent, not friction."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
+        assert len(event_lines) == 1
+        assert "denial" in event_lines[0]
+        assert "friction" not in event_lines[0]
+
+    def test_already_gate_denied_record_produces_denial_not_friction(self, fake_projects, capsys):
+        """A record whose text matches the hook-denial signature AND carries a
+        non-gate toolDenialKind produces only a `denial` event, never also a
+        `friction` one — already_gate_denied short-circuits
+        _is_nongate_friction_kind so one record can't double-count across both
+        axes."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current(
+                "Commit blocked by code-review gate: run /code-review.",
+                tool_id="toolu_both", tool_denial_kind="user-rejected",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
+        assert len(event_lines) == 1
+        assert "denial" in event_lines[0]
+        assert "friction" not in event_lines[0]
+
+    def test_multi_block_record_produces_one_friction_event_for_the_errored_block_only(
+        self, fake_projects, capsys
+    ):
+        """toolDenialKind lives once on the parent user record, but a parallel
+        tool call can carry multiple tool_result blocks under it — only the
+        block whose own is_error is True is the one the interruption applies
+        to. A sibling successful block (is_error False) must not also be
+        promoted to its own spurious friction event carrying its unrelated
+        successful output."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            {
+                "type": "user",
+                "gitBranch": "main",
+                "isSidechain": False,
+                "toolDenialKind": "interrupted",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_errored",
+                     "content": "Request interrupted by user for tool use", "is_error": True},
+                    {"type": "tool_result", "tool_use_id": "toolu_ok",
+                     "content": "some unrelated successful output", "is_error": False},
+                ]},
+            },
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
+        assert len(friction_lines) == 1
+        assert "id=toolu_errored" in friction_lines[0]
+
+    def test_legacy_attachment_denial_and_friction_kind_coexist(self, fake_projects, capsys):
+        """A legacy attachment denial and a separate current-format friction
+        record (distinct tool_use_ids) in the same session produce one denial
+        event and one friction event — the legacy shape never carries
+        toolDenialKind, so it cannot itself become friction, and the two axes
+        don't interfere with each other."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny("require-code-review"),
+            _hook_deny_current(
+                "Request interrupted by user for tool use", tool_id="toolu_interrupt",
+                tool_denial_kind="interrupted",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
+        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
+        assert len(denial_lines) == 1
+        assert len(friction_lines) == 1
+        assert "denials=1" in out
+
+    def test_friction_dedup_set_independent_of_denial_dedup_set(self, fake_projects, capsys):
+        """A legacy attachment denial and a current-format record sharing the
+        SAME tool_use_id, where the current-format record carries a non-gate
+        toolDenialKind and non-signature-matching text, still produces a
+        friction event — friction dedups against its own set, never
+        seen_denial_ids, so an id already recorded there doesn't suppress a
+        later friction event."""
+        shared_id = "toolu_worktree"
+        attach = _hook_deny("worktree")  # toolUseID == "toolu_worktree"
+        friction_twin = _hook_deny_current(
+            "Request interrupted by user for tool use", tool_id=shared_id,
+            tool_denial_kind="interrupted",
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [attach, friction_twin])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
+        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
+        assert len(denial_lines) == 1
+        assert len(friction_lines) == 1
+
+    def test_friction_event_with_empty_tool_use_id_not_deduped_against_others(self, fake_projects, capsys):
+        """Multiple friction records with no tool_use_id (empty string) each
+        still produce their own event — an empty id is falsy and so is never
+        added to seen_friction_ids, matching hook_denial_key's own 'empty
+        string is a valid id' contract for denials."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current(
+                "Request interrupted by user for tool use", tool_id="",
+                tool_denial_kind="interrupted",
+            ),
+            _hook_deny_current(
+                "Request interrupted by user for tool use", tool_id="",
+                tool_denial_kind="interrupted", ts="2026-05-19T10:01:00.000Z",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
+        assert len(friction_lines) == 2
+
+    def test_unrecognized_toolDenialKind_prints_as_other_kind_not_raw_value(self, fake_projects, capsys):
+        """A toolDenialKind value outside the closed four-value enumeration
+        still produces a friction event, but prints as `other-kind` — the raw
+        field value is never echoed verbatim."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current(
+                "Some new denial shape not yet enumerated.", tool_id="toolu_future",
+                tool_denial_kind="some-future-kind",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
+        assert len(friction_lines) == 1
+        assert "kind=other-kind" in friction_lines[0]
+        assert "some-future-kind" not in friction_lines[0]
+
+    def test_friction_only_session_survives_deny_only_with_deny_summary(self, fake_projects, capsys):
+        """A session with only friction events (no denial-kind events at all) is
+        not dropped by --deny-only when --deny-summary also runs: the friction
+        tally reads the full per-session events list before deny_only's
+        has_denial skip is applied."""
+        _write_jsonl(fake_projects / "friction_only.jsonl", [
+            _hook_deny_current(
+                "Request interrupted by user for tool use", tool_id="toolu_a",
+                tool_denial_kind="interrupted",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_only=True, deny_summary=True))
+        out = capsys.readouterr().out
+        assert "No denials found in scope." not in out
+        friction_cols = _table_cols(out, header_contains="Kind", row_contains="interrupted", row_startswith=True)
+        assert friction_cols["Count"] == "1"
+
+    def test_friction_only_session_renders_timeline_line_default_output(self, fake_projects, capsys):
+        """Without --deny-summary, the same friction-only session's default
+        timeline renders a `friction` line rather than an empty denials=0
+        header with nothing under it — and, pinning the flip side, no
+        `denial`-kind line renders and denials=0 stays accurate, since
+        has_denial and --deny-only's own session-selection semantics stay
+        denial-kind-only."""
+        _write_jsonl(fake_projects / "friction_only.jsonl", [
+            _hook_deny_current(
+                "Request interrupted by user for tool use", tool_id="toolu_a",
+                tool_denial_kind="interrupted",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
+        assert len(event_lines) == 1
+        assert "friction" in event_lines[0]
+        assert "denial" not in event_lines[0]
+        assert "denials=0" in out
+
+    def test_deny_summary_prints_corpus_window(self, fake_projects, capsys):
+        """--deny-summary reports the earliest/latest in-scope record
+        timestamp as the corpus window, not just the grouped-count tables."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                tool_id="b1", ts="2026-07-01T10:00:01.000Z"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-15T09:00:00.000Z",
+                  content=[_bash_use("b2", "git push origin main")]),
+            _hook_deny_current("Push blocked by ready-for-review gate.",
+                                tool_id="b2", ts="2026-07-15T09:00:01.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert "Corpus window: 2026-07-01 to 2026-07-15" in out
+
+    def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(
+        self, fake_projects, capsys
+    ):
+        """An errored, non-gate-signature tool_result timestamped before
+        toolDenialKind's 2026-07-20 introduction structurally cannot carry
+        the field — it produces neither a denial nor a friction event (the
+        exact record shape this design would silently read as zero friction),
+        but --deny-summary reports it in a separate pre-regime count rather
+        than folding it into a zero. A same-shaped record dated inside the
+        regime with a real toolDenialKind is included as a control, pinning
+        that the pre-regime count is date-gated, not 'every non-denial
+        record'. A gate-matching denial dated before the regime is also
+        included, pinning that already-gate-denied records — already
+        correctly classified on the hook/gate axis regardless of era — are
+        excluded from the pre-regime count, which counts only the population
+        whose kind is genuinely unknowable, not every old record."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current(
+                "Request interrupted by user for tool use",
+                tool_id="pre_regime", ts="2026-06-25T10:00:00.000Z",
+            ),
+            _hook_deny_current(
+                "Commit blocked by code-review gate: run /code-review.",
+                tool_id="pre_regime_gate", ts="2026-06-25T10:01:00.000Z",
+            ),
+            _hook_deny_current(
+                "Request interrupted by user for tool use",
+                tool_id="in_regime", tool_denial_kind="interrupted",
+                ts="2026-07-25T10:00:00.000Z",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_pre_regime_count(out) == 1
+        friction_cols = _table_cols(out, header_contains="Kind", row_contains="interrupted", row_startswith=True)
+        assert friction_cols["Count"] == "1"
+
+    def test_deny_summary_cross_tab_shows_joint_counts_not_just_marginals(self, fake_projects, capsys):
+        """Two hooks each deny two command shapes with symmetric marginals
+        (code-review: 2 commits + 1 checkout = 3; worktree-enforcement: 1
+        commit + 2 checkouts = 3; git commit: 2+1=3; git checkout: 1+2=3) —
+        the marginal hook and shape tables alone can't distinguish which hook
+        denied which shape how many times. The cross-tab must show the true
+        joint counts (code-review x git commit = 2, worktree-enforcement x
+        git checkout = 2), not the marginal-implied even split."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:01:00.000Z",
+                  content=[_bash_use("b2", "git commit -m y")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b2"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:02:00.000Z",
+                  content=[_bash_use("b3", "git checkout main")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b3"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:03:00.000Z",
+                  content=[_bash_use("b4", "git commit -m z")]),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git commit' is not on the read-only allowlist.",
+                tool_id="b4",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:04:00.000Z",
+                  content=[_bash_use("b5", "git checkout main")]),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git checkout' is not on the read-only allowlist.",
+                tool_id="b5",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:05:00.000Z",
+                  content=[_bash_use("b6", "git checkout main")]),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git checkout' is not on the read-only allowlist.",
+                tool_id="b6",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        # Marginals confirm the symmetric setup (both hooks 3, both shapes 3).
+        assert _extract_deny_summary_count(out, "git commit") == 3
+        assert _extract_deny_summary_count(out, "git checkout") == 3
+        # The cross-tab is what actually distinguishes the two hooks' shapes.
+        assert _extract_cross_tab_count(out, "code-review", "git commit") == 2
+        assert _extract_cross_tab_count(out, "code-review", "git checkout") == 1
+        assert _extract_cross_tab_count(out, "worktree-enforcement", "git commit") == 1
+        assert _extract_cross_tab_count(out, "worktree-enforcement", "git checkout") == 2
+
+    def test_deny_summary_real_corpus_shapes_all_classify_no_other_or_unmatched(self, fake_projects, capsys):
+        """A fixture drawn from real transcript-analysis.py corpus denials —
+        realistic multi-line/chained commands and full hook-message wording,
+        not minimal strings copied from A3's own allowlist — across both of
+        GH-557's named categories (worktree-enforcement/other-git, marker.sh)
+        plus two more hooks (code-review, respond-pr) for label diversity.
+        Every one of these shapes was observed actually landing in
+        --deny-summary's 'other'/'unmatched' buckets before A2/A3, and must
+        classify cleanly now: both denominators are 0 for this fixture. The
+        four non-gate friction kinds never contribute to either denominator
+        in the first place — hook_counts/command_shape_counts are populated
+        only from `denial`-kind events, never `friction`-kind ones — so they
+        are irrelevant to, not merely absent from, this fixture."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z", content=[_bash_use(
+                "b1", "git checkout main && git pull --ff-only && git worktree add "
+                      ".claude/worktrees/some-feature -b some-feature",
+            )]),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git checkout' is not on the read-only allowlist, "
+                "and this write targets the MAIN working tree of a repo where worktree discipline is active.",
+                tool_id="b1",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:01:00.000Z", content=[_bash_use(
+                "b2", "git -C ~/repo/.claude/worktrees/some-feature add -A",
+            )]),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git add' targets a working directory outside "
+                "this repository (or its git state could not be determined), so it cannot be confirmed safe.",
+                tool_id="b2",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:02:00.000Z",
+                  content=[_bash_use("b3", "git push -u origin some-feature 2>&1")]),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git push' is not on the read-only allowlist, "
+                "and this write targets the MAIN working tree of a repo where worktree discipline is active.",
+                tool_id="b3",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:03:00.000Z",
+                  content=[_bash_use("b4", "git -C /tmp/ignoretest init -q")]),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git init' targets a working directory outside "
+                "this repository (or its git state could not be determined), so it cannot be confirmed safe.",
+                tool_id="b4",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:04:00.000Z",
+                  content=[_bash_use("b5", "git pull --ff-only")]),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git pull' is not on the read-only allowlist, "
+                "and this write targets the MAIN working tree of a repo where worktree discipline is active.",
+                tool_id="b5",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:05:00.000Z",
+                  content=[_bash_use("b6", "git config --system --show-origin --get-all credential.helper")]),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git config' is not on the read-only allowlist, "
+                "and this write targets the MAIN working tree of a repo where worktree discipline is active.",
+                tool_id="b6",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:06:00.000Z", content=[_bash_use(
+                "b7", "~/.claude/scripts/marker.sh write ready-for-review\n"
+                      "~/.claude/scripts/marker.sh deactivate ready-for-review 2>&1 || true",
+            )]),
+            _hook_deny_current(
+                "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh write "
+                "ready-for-review",
+                tool_id="b7",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:07:00.000Z",
+                  content=[_bash_use("b8", "~/.claude/scripts/marker.sh activate ready-for-review 2>&1")]),
+            _hook_deny_current(
+                "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh activate "
+                "ready-for-review",
+                tool_id="b8",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:08:00.000Z", content=[_bash_use(
+                "b9", "~/.claude/scripts/marker.sh deactivate plan-review && "
+                      "~/.claude/scripts/marker.sh write plan-review && echo \"markers updated\"",
+            )]),
+            _hook_deny_current(
+                "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh deactivate "
+                "plan-review",
+                tool_id="b9",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:09:00.000Z", content=[_bash_use(
+                "b10", "~/.claude/scripts/marker.sh status plan-review 2>&1 || "
+                       "ls -la ~/.claude/plan-review-markers/ 2>&1 | head",
+            )]),
+            _hook_deny_current(
+                "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh status "
+                "plan-review",
+                tool_id="b10",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:10:00.000Z", content=[_bash_use(
+                "b11", "~/.claude/scripts/marker.sh clear-stale\necho \"--- after ---\"\n"
+                       "ls ~/.claude/.plan-review-active.d/ 2>/dev/null",
+            )]),
+            _hook_deny_current(
+                "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh clear-stale",
+                tool_id="b11",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:11:00.000Z", content=[_bash_use(
+                "b12", "git commit --amend --no-edit\ngit log --oneline -3",
+            )]),
+            _hook_deny_current(
+                "Commit blocked by code-review gate: the currently staged changes have not been reviewed, "
+                "or the staged state has changed since the last review. Run the /code-review skill now.",
+                tool_id="b12",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:12:00.000Z", content=[_bash_use(
+                "b13", "gh api repos/example-org/example-repo/pulls/1/reviews "
+                       "--jq '.[] | {user: .user.login, state: .state, body: .body}' 2>&1 | head -60",
+            )]),
+            _hook_deny_current(
+                "PR comment access blocked by respond-pr gate. Run the /respond-pr skill instead.",
+                tool_id="b13",
+            ),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:13:00.000Z", content=[_bash_use(
+                "b14", "gh pr review 1 --repo example-org/example-repo --comment "
+                       "--body-file ~/handoffs/pr-1-review-body.md",
+            )]),
+            _hook_deny_current(
+                "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo.",
+                tool_id="b14",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert _extract_deny_summary_count(out, "other") == 0
+        assert _extract_deny_summary_count(out, "unmatched") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -7094,6 +7947,50 @@ class TestFrictionCount:
             signals["denials"] + signals["failed_test_runs"] + signals["struggle_turns"]
         )
 
+    def test_toolDenialKind_field_ignored_by_signature_matching_count(self, fake_projects, capsys):
+        """friction-count's denial signal counts purely by is_error + message-text
+        signature match (hook_denial_key), regardless of a record's own
+        toolDenialKind value — hook_denial_key never reads that field. Of the 8
+        records below, 7 carry a signature-matching is_error tool_result (or the
+        legacy attachment shape) and count: the plain attachment denial, the
+        signature-text record with no toolDenialKind, and the five kind-value
+        records (permission-rule, user-rejected, automode-blocked,
+        automode-unavailable, interrupted) whose text also matches the
+        signature. The 8th record — permission-rule kind, ordinary non-signature
+        error text — does not count."""
+        path = fake_projects / "sess.jsonl"
+        _write_jsonl(path, [
+            _hook_deny("require-code-review"),
+            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_nokind"),
+            _hook_deny_current(
+                "Commit blocked by code-review gate.", tool_id="toolu_pr",
+                tool_denial_kind="permission-rule",
+            ),
+            _hook_deny_current(
+                "Commit blocked by code-review gate.", tool_id="toolu_ur",
+                tool_denial_kind="user-rejected",
+            ),
+            _hook_deny_current(
+                "Commit blocked by code-review gate.", tool_id="toolu_ab",
+                tool_denial_kind="automode-blocked",
+            ),
+            _hook_deny_current(
+                "Commit blocked by code-review gate.", tool_id="toolu_au",
+                tool_denial_kind="automode-unavailable",
+            ),
+            _hook_deny_current(
+                "Commit blocked by code-review gate.", tool_id="toolu_int",
+                tool_denial_kind="interrupted",
+            ),
+            _hook_deny_current(
+                "npm ERR! command failed with exit code 1", tool_id="toolu_pr_nosig",
+                tool_denial_kind="permission-rule",
+            ),
+        ])
+        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
+        signals = json.loads(capsys.readouterr().out)
+        assert signals["denials"] == 7
+
 
 # ---------------------------------------------------------------------------
 # friction-count cross-path equality — pins hook_denial_key and the failed-test
@@ -7106,7 +8003,10 @@ class TestFrictionCountCrossPathEquality:
         """friction-count's denial count over one file equals cmd_review_trace's denial
         count over that same session. No isSidechain denial records in this fixture,
         so cmd_review_trace's (unfiltered) and friction-count's (isSidechain-filtered)
-        counts are directly comparable."""
+        counts are directly comparable. This fixture carries no toolDenialKind field
+        at all, so the equality holds only on the text-signature (denial-only) path —
+        see test_review_trace_friction_line_diverges_from_friction_count_denial_count
+        below for a record whose toolDenialKind makes the two counts diverge."""
         path = fake_projects / "sess.jsonl"
         _write_jsonl(path, [
             _hook_deny("require-code-review"),
@@ -7124,6 +8024,31 @@ class TestFrictionCountCrossPathEquality:
         _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
         signals = json.loads(capsys.readouterr().out)
         assert signals["denials"] == review_trace_denials
+
+    def test_review_trace_friction_line_diverges_from_friction_count_denial_count(self, fake_projects, capsys):
+        """A record carrying a non-gate toolDenialKind and non-signature-matching
+        text is invisible to friction-count's denial signal (hook_denial_key
+        never matches it) but produces review-trace's own `friction` line, not a
+        `denial` line — the two surfaces intentionally diverge once toolDenialKind
+        data exists, unlike the kind-free fixture in the test above."""
+        path = fake_projects / "sess.jsonl"
+        _write_jsonl(path, [
+            _hook_deny_current(
+                "Request interrupted by user for tool use", tool_id="toolu_interrupt",
+                tool_denial_kind="interrupted",
+            ),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        trace_out = capsys.readouterr().out
+        event_lines = [ln for ln in trace_out.splitlines() if ln.startswith("  [")]
+        assert len(event_lines) == 1
+        assert "friction" in event_lines[0]
+        assert "denial" not in event_lines[0]
+        assert "denials=0" in trace_out
+
+        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
+        signals = json.loads(capsys.readouterr().out)
+        assert signals["denials"] == 0
 
     def test_failed_test_count_matches_fail_seq_failing_subtotal(self, fake_projects, capsys):
         """friction-count's failed-test count equals cmd_fail_seq's failing-run
@@ -7445,3 +8370,286 @@ class TestFrictionCountCheckpoint:
             "denials", "failed_test_runs", "struggle_turns", "composite",
         }
         assert checkpoint_signals == non_checkpoint_signals
+
+
+# ---------------------------------------------------------------------------
+# _denial_hook_label enumeration — pins _DENIAL_HOOK_LABELS against each
+# hook's real deny-path wording, one case per hooks/*.sh label.
+# ---------------------------------------------------------------------------
+
+
+class TestDenialHookLabelEnumeration:
+    """Feeds each hook's deny-path wording (hand-transcribed verbatim from
+    hooks/*.sh, not driven through the real hook) through _denial_hook_label
+    and asserts the label it produces is a member of _DENIAL_HOOK_LABELS —
+    not _DENY_SUMMARY_UNMATCHED_HOOK. A hook's wording changing without
+    updating both this fixture and the enumeration set fails the affected
+    case, so drift here is caught rather than silently stale — but a hook
+    changing its wording to something this fixture never updates to match
+    would not be caught, since no real hook process ever runs.
+    TestDenialHookLabelEnumerationRealHooks below closes that gap for all
+    but three rows by driving the real hook subprocess instead."""
+
+    @pytest.mark.parametrize("hook_file,message,expected_label", [
+        ("block-gh-pr-merge.sh:49",
+         "Blocked by gh-pr-merge gate: could not source _lib.sh.",
+         "gh-pr-merge"),
+        ("check-claude-md-length.sh:42",
+         "Blocked by CLAUDE.md length gate: could not source _lib.sh.",
+         "CLAUDE.md length"),
+        ("check-skill-length.sh:41",
+         "Blocked by skill length gate: could not source _lib.sh.",
+         "skill length"),
+        ("deny-credential-bash-reads.sh:27",
+         "Blocked by credential-path Bash gate: could not source _lib.sh.",
+         "credential-path Bash"),
+        ("deny-credential-file-reads.sh:27",
+         "Blocked by credential-file read gate: could not source _lib.sh.",
+         "credential-file read"),
+        ("deny-data-file-reads.sh:65",
+         "Blocked by data-file read gate: could not source _lib.sh.",
+         "data-file read"),
+        ("deny-env-reads.sh:47",
+         "Blocked by env-read gate: could not source _lib.sh.",
+         "env-read"),
+        ("deny-escaped-backticks-in-pr-body.sh:46",
+         "Blocked by backtick-escape gate: could not source _lib.sh.",
+         "backtick-escape"),
+        ("deny-network-installs.sh:40",
+         "Blocked by network-install gate: could not source _lib.sh.",
+         "network-install"),
+        ("deny-pii-in-commits.sh:127",
+         "Blocked by PII commit gate: could not source _lib.sh — hook cannot evaluate the commit safely.",
+         "PII commit"),
+        ("deny-private-project-refs.sh:180",
+         "Blocked by redaction gate: could not source _lib.sh — hook cannot evaluate command detection safely.",
+         "redaction"),
+        ("deny-repo-relocation.sh:63",
+         "Blocked by repo-relocation hook: could not source _lib.sh — hook cannot evaluate relocation discipline safely.",
+         "repo-relocation"),
+        ("deny-reviewer-tree-mutation.sh:146",
+         "Blocked by reviewer-tree-mutation hook: could not source _lib.sh — hook cannot evaluate reviewer discipline safely.",
+         "reviewer-tree-mutation"),
+        ("enforce-marker-script-shape.sh:68",
+         "Blocked by marker-script-shape gate: could not source _lib.sh.",
+         "marker-script-shape"),
+        ("guard-settings-session-keys.sh:49",
+         "Blocked by settings session-keys gate: could not source _lib.sh.",
+         "settings session-keys"),
+        ("require-code-review.sh:48",
+         "Blocked by code-review gate: could not source _lib.sh.",
+         "code-review"),
+        ("require-memory-skill.sh:59",
+         "Blocked by memory-skill gate: could not source _lib.sh.",
+         "memory-skill"),
+        ("require-memory-skill.sh:125",
+         "Memory write blocked by ai-instruction-and-memory-files gate. You are writing to "
+         "MEMORY.md, which is part of Claude Code's auto-memory file system.",
+         "ai-instruction-and-memory-files"),
+        ("require-plan-review.sh:66",
+         "Blocked by plan-review gate: could not source _lib.sh.",
+         "plan-review"),
+        ("require-plan-review.sh:239",
+         "Plan presentation blocked by the plan-review gate: an uncommitted or modified "
+         "plan file exists in .claude/plans/ but no plan-review marker covering the "
+         "current plan set was found.",
+         "plan-review"),
+        ("require-routing-read.sh:27",
+         "Blocked by routing-read gate: could not source _lib.sh.",
+         "routing-read"),
+        ("require-routing-read.sh:68",
+         "Agent spawn blocked by plan-review routing gate: Read the plan-review skill's "
+         "ROUTING.md before spawning any specialist agent.",
+         "plan-review routing"),
+        ("require-ready-for-review.sh:80",
+         "Blocked by ready-for-review gate: could not source _lib.sh.",
+         "ready-for-review"),
+        ("require-respond-pr.sh:69",
+         "Blocked by respond-pr gate: could not source _lib.sh.",
+         "respond-pr"),
+        ("require-stow-reminder.sh:71",
+         "Blocked by stow-reminder gate: could not source _lib.sh.",
+         "stow-reminder"),
+        ("require-worktree-for-file-writes.sh:50",
+         "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh.",
+         "worktree-enforcement"),
+        ("require-worktree-for-git-writes.sh:91",
+         "Blocked by worktree-enforcement hook: could not source _lib.sh — hook cannot "
+         "evaluate git discipline safely.",
+         "worktree-enforcement"),
+        ("enforce-marker-script-shape.sh:277",
+         "marker.sh invocation denied (path traversal '..' detected). Command "
+         "(truncated): ~/.claude/scripts/marker.sh write foo",
+         "marker.sh"),
+        ("enforce-marker-script-shape.sh:353",
+         "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh bogus",
+         "marker.sh"),
+        ("check-claude-md-length.sh:85",
+         "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. "
+         "Reduce to the limit or fewer lines before committing.",
+         "AGENTS.md length"),
+        ("check-skill-length.sh:87",
+         "Skill length gate: one or more SKILL.md files grew past their per-skill limit. "
+         "Reduce to the limit or fewer lines before committing.",
+         "Skill length"),
+    ])
+    def test_hook_wording_produces_enumerated_label(self, hook_file, message, expected_label):
+        got = _mod._denial_hook_label("", message)
+        assert got == expected_label, (
+            f"{hook_file}'s wording produced {got!r}, expected the enumerated "
+            f"label {expected_label!r} — either the hook's wording drifted or "
+            f"_DENIAL_HOOK_LABELS is stale"
+        )
+        assert got in _mod._DENIAL_HOOK_LABELS
+        assert got != _mod._DENY_SUMMARY_UNMATCHED_HOOK
+
+
+# Every gate hook bootstraps identically: `set -uo pipefail`, define a raw
+# emit_deny stub, then `. "$(dirname "$0")/_lib.sh"` — if that source fails,
+# the stub denies with "Blocked by <label> gate/hook: could not source
+# _lib.sh." before ever reading stdin. Copying one hook script alone (no
+# _lib.sh alongside it, see _isolated_hook_copy) into a fresh directory
+# reliably fails that source line, driving this exact wording for real
+# rather than hand-typing it — one entry per _DENIAL_HOOK_LABELS member
+# reachable through this shared path.
+_BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "gh-pr-merge"),
+    ("check-claude-md-length.sh", "CLAUDE.md length"),
+    ("check-skill-length.sh", "skill length"),
+    ("deny-credential-bash-reads.sh", "credential-path Bash"),
+    ("deny-credential-file-reads.sh", "credential-file read"),
+    ("deny-data-file-reads.sh", "data-file read"),
+    ("deny-env-reads.sh", "env-read"),
+    ("deny-escaped-backticks-in-pr-body.sh", "backtick-escape"),
+    ("deny-network-installs.sh", "network-install"),
+    ("deny-pii-in-commits.sh", "PII commit"),
+    ("deny-private-project-refs.sh", "redaction"),
+    ("deny-repo-relocation.sh", "repo-relocation"),
+    ("deny-reviewer-tree-mutation.sh", "reviewer-tree-mutation"),
+    ("enforce-marker-script-shape.sh", "marker-script-shape"),
+    ("guard-settings-session-keys.sh", "settings session-keys"),
+    ("require-code-review.sh", "code-review"),
+    ("require-memory-skill.sh", "memory-skill"),
+    ("require-plan-review.sh", "plan-review"),
+    ("require-routing-read.sh", "routing-read"),
+    ("require-ready-for-review.sh", "ready-for-review"),
+    ("require-respond-pr.sh", "respond-pr"),
+    ("require-stow-reminder.sh", "stow-reminder"),
+    ("require-worktree-for-file-writes.sh", "worktree-enforcement"),
+    ("require-worktree-for-git-writes.sh", "worktree-enforcement"),
+)
+
+
+def _isolated_hook_copy(tmp_path: Path, hook_name: str) -> Path:
+    """Copy one hooks/*.sh script alone into an isolated directory, with no
+    _lib.sh alongside it, so the hook's own `. "$(dirname "$0")/_lib.sh"`
+    bootstrap line genuinely fails to source."""
+    dest_dir = tmp_path / "isolated-hook"
+    dest_dir.mkdir(exist_ok=True)
+    dest = dest_dir / hook_name
+    shutil.copy2(HOOKS_DIR / hook_name, dest)
+    return dest
+
+
+def _run_hook_raw_stderr(hook: Path, tool_input: dict) -> str:
+    """Invoke `hook` directly and return its raw stderr text.
+
+    Distinct from helpers.run_hook_reason, which parses a JSON stdout
+    payload emitted by the fully-sourced _lib_emit_deny — the bootstrap
+    source-failure path denies via the pre-source emit_deny stub, which
+    writes straight to stderr and exits 2 with empty stdout, so
+    run_hook_reason would read that as "allowed silently" (returns None).
+    """
+    result = subprocess.run(
+        [str(hook)], input=json.dumps(tool_input), capture_output=True, text=True, check=False,
+    )
+    return result.stderr
+
+
+class TestDenialHookLabelEnumerationRealHooks:
+    """Drives each hook's actual deny path via subprocess (the helpers.run_hook
+    pattern already established in hooks/tests/test_enforce_marker_script_shape.py)
+    and feeds the hook's own real stdout/stderr message through
+    _denial_hook_label, rather than a hand-transcribed string —
+    TestDenialHookLabelEnumeration above never runs a hook process at all.
+
+    Three of TestDenialHookLabelEnumeration's 31 rows stay fixture-only:
+    their real trigger needs machinery (an isolated $HOME with a live
+    active-bypass marker or session-keyed state) that belongs in each hook's
+    own dedicated test file, not duplicated here — require-memory-skill.sh:125
+    (ai-instruction-and-memory-files), require-plan-review.sh:239 (plan-review;
+    the label itself is still proven live below via require-plan-review.sh:66's
+    bootstrap-failure case), and require-routing-read.sh:68 (plan-review
+    routing)."""
+
+    @pytest.mark.parametrize("hook_name,expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_bootstrap_lib_sh_failure_produces_enumerated_label(self, tmp_path, hook_name, expected_label):
+        dest = _isolated_hook_copy(tmp_path, hook_name)
+        message = _run_hook_raw_stderr(dest, bash_input("echo hi"))
+        got = _mod._denial_hook_label("", message)
+        assert got == expected_label, (
+            f"{hook_name}'s real bootstrap-failure wording {message!r} produced "
+            f"{got!r}, expected the enumerated label {expected_label!r}"
+        )
+
+    def test_marker_sh_path_traversal_produces_enumerated_label(self):
+        """enforce-marker-script-shape.sh's own path-traversal deny path —
+        distinct real wording from the bootstrap-failure case above, which
+        shares the same 'marker.sh' label."""
+        cmd = "../../.claude/scripts/marker.sh write code-review"
+        message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "marker.sh"
+
+    def test_marker_sh_unknown_subcommand_produces_enumerated_label(self):
+        """enforce-marker-script-shape.sh's general 'invocation denied'
+        wording for an unenumerated subcommand — distinct real wording from
+        the path-traversal case above, which shares the same 'marker.sh' label."""
+        cmd = "~/.claude/scripts/marker.sh forge code-review"
+        message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "marker.sh"
+
+    def test_agents_md_over_limit_produces_enumerated_label(self, tmp_path):
+        """check-claude-md-length.sh's real 'grew past the 200-line limit'
+        deny path for a root AGENTS.md, mirroring
+        test_check_claude_md_length.py's own git-repo fixture pattern."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        agents_md = repo / "AGENTS.md"
+        agents_md.write_text("\n".join(f"line {i}" for i in range(190)) + "\n")
+        subprocess.run(["git", "add", "AGENTS.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        agents_md.write_text("\n".join(f"line {i}" for i in range(201)) + "\n")
+        subprocess.run(["git", "add", "AGENTS.md"], cwd=repo, check=True)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-claude-md-length.sh", bash_input("git commit -m foo"), cwd=repo,
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "AGENTS.md length"
+
+    def test_skill_md_over_limit_produces_enumerated_label(self, tmp_path):
+        """check-skill-length.sh's real 'grew past their per-skill limit' deny
+        path, mirroring test_check_skill_length.py's own git-repo fixture
+        pattern."""
+        repo = tmp_path / "repo"
+        skill_dir = repo / "claude" / ".claude" / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_path = "claude/.claude/skills/my-skill/SKILL.md"
+        skill_md.write_text("\n".join(f"line {i}" for i in range(190)) + "\n")
+        subprocess.run(["git", "add", skill_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        skill_md.write_text("\n".join(f"line {i}" for i in range(201)) + "\n")
+        subprocess.run(["git", "add", skill_path], cwd=repo, check=True)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-skill-length.sh", bash_input("git commit -m foo"), cwd=repo,
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "Skill length"

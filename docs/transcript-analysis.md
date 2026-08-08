@@ -335,6 +335,7 @@ CLASSIFICATION SUMMARY
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
 - `--deny-only` — restrict to sessions containing at least one hook denial
+- `--deny-summary` — replace the per-session event listing with corpus-wide denial-count tables and a friction-kind breakout (see "`--deny-summary`" below)
 - `--skill NAME` — restrict skill-invocation matching to one skill name
 
 Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. An event whose branch or model cannot be resolved renders `?`.
@@ -355,6 +356,57 @@ branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spaw
 The session above opened on `main`, then moved to `my-feature` partway through — the header's `branches=`/`models=` lists both, and each event line carries its own attribution rather than inheriting the session's first-record branch.
 
 **When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read.
+
+### `--deny-summary`
+
+Replaces the per-session event listing with a corpus-wide census: three grouped tables plus a friction-kind breakout, aggregated across every session in scope rather than printed per session. Combine with `--deny-only`, `--branches`, `--since`/`--until` to bound the window the same way as any other `review-trace` run.
+
+**Sample output** (synthetic, illustrative counts only).
+```
+Corpus window: 2026-06-24 to 2026-08-05
+
+## Denials by hook/gate (14 total)
+
+Hook/gate                                Count
+-----------------------------------------------
+worktree-enforcement                          6
+marker-script-shape                           5
+unmatched                                     3
+
+## Denials by attempted command shape (14 total)
+
+Shape             Count
+-----------------------
+git commit             5
+marker.sh write        4
+other                  3
+git checkout           2
+
+## Denials by hook/gate x command shape (14 total)
+
+  Hook                                  git checkout  git commit  marker.sh write  other
+  -----------------------------------------------------------------------------------------
+  marker-script-shape                              0           0                4      1
+  unmatched                                         1           0                0      2
+  worktree-enforcement                              1           5                0      0
+
+## Friction events by kind (9 total)
+
+Kind                     Count
+-------------------------------
+user-rejected                  5
+automode-blocked               2
+automode-unavailable           1
+interrupted                    1
+
+3 errored, non-gate tool result(s) predate the per-record denial-kind field's introduction (2026-07-20) and are excluded from the breakdown above — kind is structurally unmeasurable before that date, not zero.
+```
+
+- **The two marginal tables and the cross-tab.** "Denials by hook/gate" and "Denials by attempted command shape" are independent marginals over the same denial population `--deny-only` selects; "Denials by hook/gate x command shape" cross-tabs the two, since the marginals alone can't say which hook denied which command shape — a hook's row, read across the cross-tab's columns, is the only place that join is visible.
+- **`other` and `unmatched` are open buckets, not errors.** A command shape falls to `other` when the denied command isn't a recognized `git`/`gh`/`marker.sh` invocation (or its subcommand-position token looks like a flag rather than a subcommand); a hook/gate label falls to `unmatched` when the denial message matches the general hook-denial signature but names no hook the classifier recognizes. Both buckets stay printed — a shape or label that needs adding to the classifier shows up as a nonzero count here rather than being silently absorbed.
+- **Friction events are a different axis from denials.** A `denial` event is a hook or `permissions.allow` block, matched by message text. A `friction` event is one of four other reasons a tool call didn't go through, read from the record's own `toolDenialKind` field: `user-rejected` (a permission prompt the user declined), `automode-blocked`, `automode-unavailable`, or `interrupted` (`[Request interrupted by user for tool use]`). A `toolDenialKind` value outside that four-value set prints as `other-kind` rather than being echoed raw. Friction events never change `has_denial`, the per-session `denials=N` header, or `--deny-only`'s session-selection — those three stay denial-kind-only. `--deny-summary` is the only surface that tallies friction into a table; without it, the default per-session timeline still renders a `friction` line for each one, but nothing counts them.
+- **Combined with `--deny-only`.** Friction counts are tallied from a session's full event list before the `--deny-only` session filter is applied, so a session whose only events are friction (no denials at all) still contributes to the friction breakout even though `--deny-only` alone wouldn't select that session for the default timeline view.
+- **Corpus window and the pre-regime caveat.** The printed window is the earliest/latest timestamp among in-scope events, after `--branches`/`--since`/`--until` are applied. `toolDenialKind` was not recorded on any transcript before 2026-07-20, so an errored, non-gate tool result timestamped earlier than that can't be classified into the friction breakdown at all. Those records are counted separately, on the line under the friction table, rather than folded into the breakdown as zero friction.
 
 ---
 
