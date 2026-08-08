@@ -1,7 +1,7 @@
 #!/bin/bash
 # hook-class: informational
 # UserPromptSubmit and Stop hook: injects a one-shot context-window nudge
-# when the estimated token count crosses 60% of the model's context window,
+# when the estimated token count crosses 40% of the model's context window,
 # prompting the agent to suggest /handoff if the current task is not near
 # completion. Registered on both events so a session that crosses the
 # threshold on its final turn, with no further user prompt, still gets
@@ -142,7 +142,7 @@ if [ "$ESTIMATE" -eq 0 ] 2>/dev/null; then
   exit 0
 fi
 
-# Context window in tokens per model ID; THRESHOLD is 60% of it.
+# Context window in tokens per model ID; THRESHOLD is 40% of it.
 # Source: https://platform.claude.com/docs/en/about-claude/models/overview,
 # fetched 2026-08-03; re-verify by 2026-11-03.
 # Verified 200k: Haiku 4.5, Sonnet 4.5, Opus 4.5, Opus 4.1. Verified 1M:
@@ -160,7 +160,7 @@ case "$MODEL" in
   *)
     CONTEXT_WINDOW=1000000 ;;
 esac
-THRESHOLD=$(( CONTEXT_WINDOW * 60 / 100 ))
+THRESHOLD=$(( CONTEXT_WINDOW * 40 / 100 ))
 
 if [ "$ESTIMATE" -lt "$THRESHOLD" ] 2>/dev/null; then
   exit 0
@@ -183,7 +183,7 @@ touch "$FIRED_MARKER" 2>/dev/null || true
 jq -n --arg hookEventName "$HOOK_EVENT" '{
   hookSpecificOutput: {
     hookEventName: $hookEventName,
-    additionalContext: "Context is past 60% of this model'\''s context window. If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish."
+    additionalContext: "Context is past 40% of this model'\''s context window. If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish."
   }
 }' 2>/dev/null || true
 

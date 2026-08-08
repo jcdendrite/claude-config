@@ -707,6 +707,15 @@ def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int
 
 
 def cmd_subagents(args: argparse.Namespace) -> None:
+    """isSidechain turn counts and model split per branch, plus total
+    tool-result text bytes per thread-type (main vs. sidechain) per
+    branch — a measured signal for whether verbose tool output is being
+    delegated to subagents (see the subagent-delegation skill) rather than
+    accumulated in the main thread's own prefix. Byte totals cover only
+    text-typed tool-result blocks (via _content_text) — non-text blocks
+    (e.g. images) are not counted. Byte totals are aggregate only: no
+    tool-result content, file paths, session IDs, or cwd are ever printed.
+    """
     branch_filter = _branch_filter(args)
     session_iter, scope_label = _resolve_project_scope(args, "subagents", include_subagents=True)
     _print_resolved_scope("subagents", scope_label)
@@ -714,42 +723,63 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     branch_data: dict[str, dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
     )
+    branch_bytes: dict[str, dict[str, int]] = defaultdict(lambda: {"main": 0, "sidechain": 0})
     corpus_spawns = 0
     corpus_sidechain_turns = 0
 
     for _jsonl, records in session_iter:
         corpus_spawns += _count_subagent_spawns(records)
         for rec in records:
-            if rec.get("type") != "assistant":
-                continue
-            if bool(rec.get("isSidechain")):
-                corpus_sidechain_turns += 1
-            branch = rec.get("gitBranch") or ""
-            if not branch or (branch_filter and branch not in branch_filter):
-                continue
-            fam = _fam((rec.get("message") or {}).get("model", ""))
-            thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
-            branch_data[branch][thread][fam] += 1
+            rec_type = rec.get("type")
+            if rec_type == "assistant":
+                # corpus_sidechain_turns counts every isSidechain assistant
+                # turn read, before the branch filter below — it feeds
+                # _warn_if_subagent_format_drift's corpus-wide sanity check,
+                # not the per-branch table, so it must not be filtered.
+                if bool(rec.get("isSidechain")):
+                    corpus_sidechain_turns += 1
+                branch = rec.get("gitBranch") or ""
+                if not branch or (branch_filter and branch not in branch_filter):
+                    continue
+                fam = _fam((rec.get("message") or {}).get("model", ""))
+                thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
+                branch_data[branch][thread][fam] += 1
+            elif rec_type == "user":
+                branch = rec.get("gitBranch") or ""
+                if not branch or (branch_filter and branch not in branch_filter):
+                    continue
+                thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
+                content = (rec.get("message") or {}).get("content") or []
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
+                        continue
+                    branch_bytes[branch][thread] += len(_content_text(block.get("content", "")).encode())
 
     _warn_if_subagent_format_drift(corpus_spawns, corpus_sidechain_turns)
 
-    if not branch_data:
+    if not branch_data and not branch_bytes:
         print("No data found.")
         return
 
-    print(f"{'Branch':<40} {'Thread':<10} {'Opus':>6} {'Sonnet':>7} {'Haiku':>6} {'Other':>6}")
-    print("-" * 83)
-    for branch in sorted(branch_data):
+    print(
+        f"{'Branch':<40} {'Thread':<10} {'Opus':>6} {'Sonnet':>7} {'Haiku':>6} {'Other':>6}"
+        f" {'Bytes':>18}"
+    )
+    print("-" * 99)
+    for branch in sorted(set(branch_data) | set(branch_bytes)):
         first = True
         for thread in ("main", "sidechain"):
             d = branch_data[branch][thread]
-            if not any(d.values()):
+            bytes_total = branch_bytes[branch][thread]
+            if not any(d.values()) and not bytes_total:
                 continue
             label = branch if first else ""
             first = False
             print(
                 f"{label:<40} {thread:<10} {d.get('opus', 0):>6} {d.get('sonnet', 0):>7} "
-                f"{d.get('haiku', 0):>6} {d.get('other', 0):>6}"
+                f"{d.get('haiku', 0):>6} {d.get('other', 0):>6} {bytes_total:>18,}"
             )
 
 
@@ -1587,11 +1617,12 @@ def _resolve_project_scope(
     silently reuse the first's resolved slugs instead of re-resolving for the
     second.
 
-    `roots` defaults to (PROJECTS_DIR,), so every caller but cost — the only
-    subcommand that can pass more than one root, via --config-dir — is
-    unaffected. --this-repo and multi-root are mutually exclusive (enforced
-    at cost's CLI boundary), so the this_repo branch always has a single root
-    in practice; it still threads `roots` through for signature parity.
+    `roots` defaults to (PROJECTS_DIR,), so a caller that never passes
+    --config-dir is unaffected — currently cost and context-distribution are
+    the only subcommands that accept it. --this-repo and multi-root are
+    mutually exclusive (enforced at each such subcommand's CLI boundary), so
+    the this_repo branch always has a single root in practice; it still
+    threads `roots` through for signature parity.
     """
     if args.this_repo:
         slugs = getattr(args, "_this_repo_slugs", None)
@@ -2865,6 +2896,43 @@ _CONTEXT_BUCKET_THRESHOLD = 200_000  # inclusive edge of the "≥200k" finding
 _CONTEXT_BUCKET_UNDER = "<200k"
 _CONTEXT_BUCKET_OVER = ">=200k"
 
+# Context window in tokens per model ID, mirroring
+# nudge-handoff-near-context-cap.sh's own CONTEXT_WINDOW case statement
+# exactly (same prefix list, same trailing-dash dated-snapshot match) so a
+# threshold percentage computed here means the same absolute token count the
+# hook would compute for the same model ID. Source:
+# https://platform.claude.com/docs/en/about-claude/models/overview, fetched
+# 2026-08-03; re-verify by 2026-11-03. Verified 200k: Haiku 4.5, Sonnet 4.5,
+# Opus 4.5, Opus 4.1. Verified 1M: Fable 5, Mythos 5, Opus 5, Opus
+# 4.8/4.7/4.6, Sonnet 5, Sonnet 4.6. An unlisted ID takes the 1M default.
+_200K_CONTEXT_MODEL_PREFIXES: tuple[str, ...] = (
+    "claude-haiku-4-5",
+    "claude-sonnet-4-5",
+    "claude-opus-4-5",
+    "claude-opus-4-1",
+)
+_200K_CONTEXT_WINDOW = 200_000
+_DEFAULT_CONTEXT_WINDOW = 1_000_000
+
+# Candidate threshold percentages of a model's context window, for
+# context-distribution's crossing-count/dollar-share table.
+_CONTEXT_DISTRIBUTION_THRESHOLD_PCTS: tuple[int, ...] = (30, 40, 50, 60)
+
+
+def _context_window_for_model(model: str) -> int:
+    """Context window in tokens for one model ID.
+
+    A prefix requires an exact match or a trailing "-" (dated-snapshot
+    suffix), not a bare trailing wildcard, so a longer numeral
+    (claude-opus-4-10) can't collide with a shorter one (claude-opus-4-1) by
+    string prefix alone — the same collision guard as the bash hook this
+    mirrors.
+    """
+    for prefix in _200K_CONTEXT_MODEL_PREFIXES:
+        if model == prefix or model.startswith(prefix + "-"):
+            return _200K_CONTEXT_WINDOW
+    return _DEFAULT_CONTEXT_WINDOW
+
 
 def _model_rates(model: str) -> dict[str, float] | None:
     """Return per-MTok dollar rates for one model ID, or None if unpriced."""
@@ -2943,8 +3011,8 @@ _DO_NOT_PUBLISH_BANNER = (
 )
 
 
-def _resolve_cost_roots(args: argparse.Namespace) -> list[Path]:
-    """Assemble cost's scan roots from the default config dir plus any
+def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> list[Path]:
+    """Assemble a subcommand's scan roots from the default config dir plus any
     --config-dir extras, in argument order, deduped by resolved path.
 
     Mirrors post-crash-sessions.py:1067-1111's --config-dir contract: exit 2
@@ -2955,12 +3023,17 @@ def _resolve_cost_roots(args: argparse.Namespace) -> list[Path]:
     rather than silently scoping to the wrong thing. Returns each root's
     projects/ subdirectory, ready for _resolve_project_scope's roots
     parameter.
+
+    `subcommand` labels the printed refusal messages (default "cost", cost's
+    own long-standing call sites and tests); context-distribution passes its
+    own name so a refusal is attributed to the subcommand the caller actually
+    invoked, not always "cost".
     """
     extra_config_dirs: list[str] = getattr(args, "extra_config_dirs", None) or []
 
     if args.this_repo and extra_config_dirs:
         print(
-            "cost: --this-repo and --config-dir are mutually exclusive"
+            f"{subcommand}: --this-repo and --config-dir are mutually exclusive"
             " (--this-repo cannot filter a foreign config dir's worktrees)",
             file=sys.stderr,
         )
@@ -2972,11 +3045,11 @@ def _resolve_cost_roots(args: argparse.Namespace) -> list[Path]:
     for raw in extra_config_dirs:
         candidate = Path(raw)
         if not candidate.is_dir():
-            print(f"cost: --config-dir {raw!r} is not a directory", file=sys.stderr)
+            print(f"{subcommand}: --config-dir {raw!r} is not a directory", file=sys.stderr)
             sys.exit(2)
         if not (candidate / "projects").is_dir():
             print(
-                f"cost: --config-dir {raw!r} rejected: no projects/ subdirectory found",
+                f"{subcommand}: --config-dir {raw!r} rejected: no projects/ subdirectory found",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -2988,7 +3061,7 @@ def _resolve_cost_roots(args: argparse.Namespace) -> list[Path]:
 
     if len(config_dirs) > 1 and getattr(args, "no_redact", False):
         print(
-            "cost: --no-redact is refused when more than one root is in scope"
+            f"{subcommand}: --no-redact is refused when more than one root is in scope"
             " (--config-dir was given); drop --no-redact or scope to a single profile",
             file=sys.stderr,
         )
@@ -3398,6 +3471,135 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         for row in sorted(session_rows, key=lambda r: r["total"], reverse=True)[:top_n]:
             sid = _redact_session_id(row["session_id"], session_redact_map) if redact else row["session_id"]
             print(f"{sid:<16} {row['proj_label']:<24} {row['total']:>14,.2f}")
+
+
+def cmd_context_distribution(args: argparse.Namespace) -> None:
+    """CLI entry point for the context-distribution subcommand.
+
+    Root resolution happens here, at the CLI boundary, rather than inside
+    _context_distribution_report, mirroring cmd_cost — --config-dir
+    validation exits before any scan work.
+    """
+    roots = _resolve_cost_roots(args, subcommand="context-distribution")
+    _context_distribution_report(args, roots)
+
+
+def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
+    """Per-session peak context-at-turn, bucketed at candidate threshold
+    percentages of the model's context window — grounds a handoff-nudge
+    threshold choice against measured sessions instead of picking one blind.
+
+    Peak-context tracking is restricted to main-thread (non-sidechain) turns:
+    a subagent dispatch pays its own prefix from scratch and is never a
+    candidate for /handoff, so folding sidechain turns into a session's peak
+    would mix two different context-growth stories into one number. Each
+    main-thread turn's context_at_turn (input_tokens + cache_read_input_tokens
+    + ephemeral_1h + ephemeral_5m, from _price_turn, same formula cost's own
+    bucket logic uses) is expressed as a fraction of that turn's own model's
+    context window via _context_window_for_model, and the session's peak is
+    the maximum such fraction across its main-thread turns — so a session
+    that mixes models with different windows is judged by how close each
+    turn came to its own model's limit, not a single window assumed for the
+    whole session.
+
+    Dollar totals per session sum ALL turns (main and sidechain), matching
+    cost's own definition of a session's total spend — a session's dollar
+    share reflects its full cost including any subagent work it spawned, not
+    just its main-thread portion.
+
+    roots is None for every direct caller other than cmd_context_distribution
+    (this module's own tests included) — that keeps the single-root report
+    byte-for-byte unchanged, including the absence of cmd_cost's per-root
+    scan-summary lines, which only cost's own CLI path emits.
+    """
+    redact: bool = not bool(getattr(args, "no_redact", False))
+
+    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    multi_root = len(scan_roots) > 1
+
+    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
+    # point for this refusal, but every direct caller of this function
+    # (including this module's own tests) bypasses that boundary.
+    if not redact and multi_root:
+        print(
+            "context-distribution: --no-redact is refused when more than one root is in scope"
+            " (--config-dir was given); drop --no-redact or scope to a single profile",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if not redact:
+        print(_DO_NOT_PUBLISH_BANNER)
+        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+
+    since_ts, since_raw = _parse_since_nd_arg(args, "context-distribution")
+    since_label = since_raw or ""
+
+    session_iter, scope_label = _resolve_project_scope(
+        args, "context-distribution", include_subagents=True, roots=roots
+    )
+    _print_resolved_scope("context-distribution", scope_label)
+
+    title_since = f"last {since_label}" if since_label else "all time"
+    print(f"\n## Context distribution report ({title_since})\n")
+
+    session_peak_pcts: list[float] = []
+    session_dollars: list[float] = []
+    total_dollars = 0.0
+
+    for _jsonl, records in session_iter:
+        peak_pct = 0.0
+        session_total = 0.0
+
+        for rec in records:
+            if rec.get("type") != "assistant":
+                continue
+            msg = rec.get("message") or {}
+            usage = msg.get("usage")
+            if not usage:
+                continue
+
+            if since_ts is not None:
+                rec_ts = _parse_ts(rec.get("timestamp"))
+                if rec_ts is None or rec_ts < since_ts:
+                    continue
+
+            model = msg.get("model", "")
+            dollars_by_class, context_at_turn, _turn_unpriced_tokens = _price_turn(model, usage)
+
+            if dollars_by_class is not None:
+                session_total += sum(dollars_by_class.values())
+
+            if not bool(rec.get("isSidechain")):
+                turn_pct = context_at_turn / _context_window_for_model(model)
+                if turn_pct > peak_pct:
+                    peak_pct = turn_pct
+
+        if session_total == 0.0 and peak_pct == 0.0:
+            continue
+
+        session_peak_pcts.append(peak_pct)
+        session_dollars.append(session_total)
+        total_dollars += session_total
+
+    total_sessions = len(session_peak_pcts)
+    print(f"Sessions in scope: {total_sessions:,}   Total priced dollars: {total_dollars:,.2f}\n")
+
+    print(
+        "## Peak context-at-turn crossing thresholds (share of main-thread turns'"
+        " own model context window; dollars include each session's subagent spend)\n"
+    )
+    print(f"{'Threshold':>10} {'Sessions':>9} {'SessShare':>10} {'$':>14} {'DollarShare':>12}")
+    for pct in _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS:
+        threshold_frac = pct / 100
+        crossed_count = sum(1 for p in session_peak_pcts if p >= threshold_frac)
+        crossed_dollars = sum(
+            d for p, d in zip(session_peak_pcts, session_dollars, strict=True) if p >= threshold_frac
+        )
+        print(
+            f"{pct:>9}% {crossed_count:>9,} {_pct_of(crossed_count, total_sessions):>10}"
+            f" {crossed_dollars:>14,.2f} {_pct_of(crossed_dollars, total_dollars):>12}"
+        )
 
 
 def cmd_cost_trend(args: argparse.Namespace) -> None:
@@ -4443,7 +4645,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_duration.add_argument("--gap-minutes", type=int, default=30, metavar="N")
     p_duration.set_defaults(func=cmd_duration)
 
-    p_sub = sub.add_parser("subagents", help="isSidechain turn counts and model split per branch.")
+    p_sub = sub.add_parser(
+        "subagents",
+        help="isSidechain turn counts and model split per branch, plus tool-result bytes per thread.",
+    )
     p_sub.add_argument("--branches", metavar="B1,B2,...")
     _add_project_scope_args(p_sub)
     p_sub.set_defaults(func=cmd_subagents)
@@ -4680,6 +4885,38 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_cost.set_defaults(func=cmd_cost)
+
+    p_context_dist = sub.add_parser(
+        "context-distribution",
+        help=(
+            "Per-session peak context-at-turn, bucketed at candidate threshold percentages"
+            " (30/40/50/60%%) of the model's context window, with each threshold's session"
+            " count and dollar-cost share. Redacted by default."
+        ),
+    )
+    _add_project_scope_args(p_context_dist)
+    p_context_dist.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Refused together with --this-repo or --no-redact."
+        ),
+    )
+    p_context_dist.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_context_dist.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "This report's output is aggregate-only (no project names or session IDs), so"
+            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
+            " banner and enforces the same multi-root refusal as cost, for CLI parity."
+            " Refused when --config-dir puts more than one root in scope."
+        ),
+    )
+    p_context_dist.set_defaults(func=cmd_context_distribution)
 
     p_cost_trend = sub.add_parser(
         "cost-trend",

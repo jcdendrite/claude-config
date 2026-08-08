@@ -2,8 +2,8 @@
 
 The hook is a UserPromptSubmit and Stop hook that emits a one-shot
 hookSpecificOutput.additionalContext JSON payload when the estimated carried
-token count crosses 60% of the resolved model's context window (200k models:
-120 000; 1M models: 600 000; unrecognized/missing model IDs default to the 1M
+token count crosses 40% of the resolved model's context window (200k models:
+80 000; 1M models: 400 000; unrecognized/missing model IDs default to the 1M
 window). The nudge fires once per session — a marker file gates subsequent
 turns.
 
@@ -38,8 +38,8 @@ HOOK_EVENT_NAMES = ["UserPromptSubmit", "Stop"]
 # Mirrors the hook's own window table so no test hand-computes a threshold.
 LARGE_WINDOW = 1_000_000
 SMALL_WINDOW = 200_000
-LARGE_THRESHOLD = 600_000
-SMALL_THRESHOLD = 120_000
+LARGE_THRESHOLD = 400_000
+SMALL_THRESHOLD = 80_000
 ABOVE_LARGE = 650_000
 
 # Four verified 200k models and four verified 1M models, chosen so the two
@@ -160,7 +160,7 @@ def _drift_marker_path(
 
 class TestNudgeHandoffNearContextCap:
     def test_below_threshold_is_silent(self, tmp_path):
-        """Token sum below 120 000: no stdout, no marker, no log (skip line was removed)."""
+        """Token sum below 80 000: no stdout, no marker, no log (skip line was removed)."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_assistant_record(input_tok=30000, output_tok=20000)])
         result = _run_hook(_base_payload(transcript), tmp_path)
@@ -453,8 +453,8 @@ class TestNudgeHandoffNearContextCap:
 
     @pytest.mark.parametrize("model,window", KNOWN_MODEL_WINDOWS)
     def test_fires_at_exactly_threshold_for_model(self, tmp_path, model, window):
-        """Each known model ID fires when its own 60%-of-window threshold is met exactly."""
-        threshold = window * 60 // 100
+        """Each known model ID fires when its own 40%-of-window threshold is met exactly."""
+        threshold = window * 40 // 100
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(threshold, model=model)])
         result = _run_hook(_base_payload(transcript), tmp_path)
@@ -464,7 +464,7 @@ class TestNudgeHandoffNearContextCap:
     @pytest.mark.parametrize("model,window", KNOWN_MODEL_WINDOWS)
     def test_silent_one_below_threshold_for_model(self, tmp_path, model, window):
         """Each known model ID stays silent one token below its own threshold."""
-        threshold = window * 60 // 100
+        threshold = window * 40 // 100
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(threshold - 1, model=model)])
         result = _run_hook(_base_payload(transcript), tmp_path)

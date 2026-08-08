@@ -2308,6 +2308,41 @@ def _cost_args(
     })()
 
 
+def _context_distribution_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    no_redact: bool = False,
+    extra_config_dirs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "no_redact": no_redact,
+        "extra_config_dirs": extra_config_dirs,
+    })()
+
+
+def _extract_context_distribution_row(out: str, pct: int) -> dict[str, str]:
+    """Read one context-distribution threshold row ('Threshold Sessions
+    SessShare $ DollarShare') by its leading 'NN%' token, rather than
+    _table_cols' row_contains, since every row's leading token is a candidate
+    substring of another row's trailing percentage columns."""
+    target = f"{pct}%"
+    for line in out.splitlines():
+        tokens = line.split()
+        if tokens and tokens[0] == target:
+            return {
+                "sessions": tokens[1],
+                "sess_share": tokens[2],
+                "dollars": tokens[3],
+                "dollar_share": tokens[4],
+            }
+    raise AssertionError(f"threshold row for {pct}% not found in output:\n{out}")
+
+
 def _exit_plan_mode(tool_id: str = "epm1") -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "ExitPlanMode", "input": {}}
 
@@ -3726,6 +3761,123 @@ class TestCostThreadSplit:
         thread_section = out.split("## Cost by thread")[1].split("## Top")[0]
         subagent_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("subagent"))
         assert float(subagent_line.split()[-2].replace(",", "")) == pytest.approx(2.00)  # not 0.00
+
+
+# ---------------------------------------------------------------------------
+# context-distribution
+# ---------------------------------------------------------------------------
+
+
+class TestContextDistribution:
+    def test_threshold_crossing_and_dollar_share_hand_computed(self, fake_projects, capsys):
+        """Three sessions with distinct peak context-at-turn percentages of
+        claude-sonnet-5's 1M default window (65%, 45%, 10%) cross a different
+        subset of the 30/40/50/60% thresholds — crossing-count and
+        dollar-share are verified against hand-computed expected values at
+        every threshold, not just one."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=650_000),  # peak 65%, $1.30
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=450_000),  # peak 45%, $0.90
+        ])
+        _write_jsonl(fake_projects / "sess-c.jsonl", [
+            _priced("claude-sonnet-5", input=100_000),  # peak 10%, $0.20
+        ])
+        _mod._context_distribution_report(_context_distribution_args())
+        out = capsys.readouterr().out
+
+        assert "Sessions in scope: 3" in out
+        assert "Total priced dollars: 2.40" in out
+
+        # 30%/40%: sessions A and B cross (65% and 45% both >= threshold);
+        # dollars = 1.30 + 0.90 = 2.20; share = 2.20 / 2.40 = 91.7%.
+        for pct in (30, 40):
+            row = _extract_context_distribution_row(out, pct)
+            assert row["sessions"] == "2"
+            assert row["dollars"] == "2.20"
+            assert row["dollar_share"] == "91.7%"
+
+        # 50%/60%: only session A crosses (65% >= threshold, 45% does not);
+        # dollars = 1.30; share = 1.30 / 2.40 = 54.2%.
+        for pct in (50, 60):
+            row = _extract_context_distribution_row(out, pct)
+            assert row["sessions"] == "1"
+            assert row["dollars"] == "1.30"
+            assert row["dollar_share"] == "54.2%"
+
+    def test_peak_exactly_at_threshold_counts_as_crossing(self, fake_projects, capsys):
+        """A session whose peak lands exactly on a candidate threshold (not
+        strictly above it) still counts as crossing — the comparison is
+        >=, mirroring the nudge hook's own 'fires at exactly threshold'
+        test for its single threshold. Regression guard for a future
+        float-rounding change silently flipping >= to >."""
+        _write_jsonl(fake_projects / "sess-exact.jsonl", [
+            _priced("claude-sonnet-5", input=400_000),  # peak exactly 40% of 1M
+        ])
+        _mod._context_distribution_report(_context_distribution_args())
+        out = capsys.readouterr().out
+        row_40 = _extract_context_distribution_row(out, 40)
+        assert row_40["sessions"] == "1"
+
+    def test_sidechain_turns_excluded_from_peak_context_tracking(self, fake_projects, capsys):
+        """A session's peak is computed from main-thread turns only — a deep
+        sidechain (subagent) turn must not count toward the session's own
+        handoff-relevant peak, since subagent context isn't shared with the
+        parent and doesn't accumulate toward a /handoff decision."""
+        session_id = "sess-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", input=100_000),  # main: peak 10%
+        ])
+        subagent_rec = _priced("claude-sonnet-5", input=900_000)  # sidechain: would-be peak 90%
+        subagent_rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
+
+        _mod._context_distribution_report(_context_distribution_args())
+        out = capsys.readouterr().out
+        # Session's own peak stays 10% (main-thread only) — crosses no threshold.
+        row_30 = _extract_context_distribution_row(out, 30)
+        assert row_30["sessions"] == "0"
+        # But dollars still sum main + sidechain: $0.20 (main, 100k input) +
+        # $1.80 (sidechain, 900k input) = $2.00 — a bug that coupled the
+        # sidechain exclusion to the dollar total too (instead of only the
+        # peak) would silently drop the sidechain's $1.80 here.
+        assert "Total priced dollars: 2.00" in out
+
+    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+        """--no-redact is refused when --config-dir puts more than one root in
+        scope, mirroring cost's own refusal exactly."""
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_context_distribution(
+                _context_distribution_args(no_redact=True, extra_config_dirs=[str(acct_b)])
+            )
+        assert exc_info.value.code == 2
+        assert "--no-redact" in capsys.readouterr().err
+
+    def test_no_redact_allowed_alone_with_single_root(self, fake_projects, capsys):
+        """--no-redact with no --config-dir (single root) is unaffected — it
+        prints the DO NOT PUBLISH banner but does not exit, the allow-path
+        counterpart to the multi-root refusal above."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
+        _mod._context_distribution_report(_context_distribution_args(no_redact=True))
+        out = capsys.readouterr().out
+        assert _mod._DO_NOT_PUBLISH_BANNER in out
+        assert "Sessions in scope: 1" in out
+
+    def test_no_sessions_in_scope_prints_zero_without_division_error(self, fake_projects, capsys):
+        """An empty scope (no priced or main-thread turns anywhere) prints a
+        zero-sessions summary and 0.0% shares rather than raising ZeroDivisionError."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
+        _mod._context_distribution_report(_context_distribution_args())
+        out = capsys.readouterr().out
+        assert "Sessions in scope: 0" in out
+        row_30 = _extract_context_distribution_row(out, 30)
+        assert row_30["sessions"] == "0"
+        assert row_30["dollar_share"] == "0.0%"
 
 
 # ---------------------------------------------------------------------------
@@ -6052,6 +6204,93 @@ class TestSubagents:
         out = capsys.readouterr().out
         assert "branch-a" in out
         assert "branch-b" not in out
+
+
+class TestSubagentsToolResultBytes:
+    """cmd_subagents' tool-result byte-count dimension: main vs. sidechain,
+    per branch, reusing the same tool_result-block walk as cmd_fail_seq and
+    the friction-signal helpers."""
+
+    def test_main_thread_tool_result_bytes_attributed_to_main_row(self, fake_projects, capsys):
+        """A main-thread (isSidechain unset) tool_result block's content length
+        is counted into that branch's main row."""
+        text = "x" * 250
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[]),
+            _user_msg([_tool_result("t1", text)], branch="main"),
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Bytes"] == str(len(text.encode()))
+
+    def test_sidechain_tool_result_bytes_attributed_to_sidechain_row_not_main(
+        self, fake_projects, capsys
+    ):
+        """A sidechain (isSidechain=True) tool_result block's content length
+        is counted into that branch's sidechain row, never the main row."""
+        text = "y" * 100
+        sidechain_result = _user_msg([_tool_result("t2", text)], branch="main")
+        sidechain_result["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[]),
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True, content=[]),
+            sidechain_result,
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        sidechain_cols = _table_cols(
+            out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1
+        )
+        assert main_cols["Bytes"] == "0"
+        assert sidechain_cols["Bytes"] == str(len(text.encode()))
+
+    def test_user_record_without_tool_result_block_contributes_zero_bytes(
+        self, fake_projects, capsys
+    ):
+        """A plain user message (string content, no tool_result block) contributes
+        0 bytes — also pins the isinstance(content, list) guard against treating
+        a string message's characters as blocks."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[]),
+            _user_msg("just a plain user message, no tool_result", branch="main"),
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Bytes"] == "0"
+
+    def test_empty_transcript_produces_no_data_found_without_crash(self, fake_projects, capsys):
+        """A transcript file with zero records is skipped by iter_sessions
+        (records list is empty) — cmd_subagents prints the existing
+        no-data message rather than crashing on an empty session."""
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert "No data found." in out
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_transcript_file_skipped_without_crash(self, fake_projects, capsys):
+        """An unreadable transcript file is silently skipped (mirrors
+        _read_session_file's existing OSError→[] handling) rather than
+        aborting the byte-attribution walk; a sibling readable transcript's
+        bytes are still counted correctly."""
+        text = "z" * 40
+        _write_jsonl(fake_projects / "readable.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[]),
+            _user_msg([_tool_result("t3", text)], branch="main"),
+        ])
+        locked = fake_projects / "locked.jsonl"
+        locked.write_text('{"type": "assistant"}\n')
+        os.chmod(locked, 0o000)
+        try:
+            _mod.cmd_subagents(_subagents_args())
+        finally:
+            os.chmod(locked, 0o644)  # restore before tmp_path teardown
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Bytes"] == str(len(text.encode()))
 
 
 # ---------------------------------------------------------------------------
