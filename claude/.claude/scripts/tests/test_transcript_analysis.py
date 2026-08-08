@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -1118,6 +1119,187 @@ class TestReviewerYield:
         cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True)
         assert cols["Dispatches"] == "1"
         assert "(1 meta.json files failed to parse, excluded)" in out
+
+
+class TestExtractCitedPaths:
+    """_extract_cited_paths(text) -> set[str]: a pure tokenizer over one
+    bounded, length-capped character class. Deliberately unselective — a
+    bare word matches too — so these tests document what the function
+    returns *before* _normalize_cited_path filters it, not "real paths only."
+    """
+
+    def test_extracts_a_slash_containing_candidate_verbatim(self):
+        result = _mod._extract_cited_paths("claude/.claude/scripts/transcript-analysis.py:2549")
+        assert result == {"claude/.claude/scripts/transcript-analysis.py:2549"}
+
+    def test_extracts_a_tilde_path_without_expanding_it(self):
+        """Extraction is purely lexical tokenization — ~-expansion is
+        _normalize_cited_path's job, not this function's."""
+        result = _mod._extract_cited_paths("~/.claude/plans/x.md")
+        assert result == {"~/.claude/plans/x.md"}
+
+    def test_bare_prose_words_are_extracted_too(self):
+        """No `/` or `.` is required by the regex — separator filtering
+        happens downstream in _normalize_cited_path's step 2, not here."""
+        result = _mod._extract_cited_paths("no findings here")
+        assert result == {"no", "findings", "here"}
+
+    def test_real_path_recovered_from_surrounding_prose(self):
+        text = "Reviewed the diff; see claude/.claude/scripts/transcript-analysis.py:2455 for the join."
+        result = _mod._extract_cited_paths(text)
+        assert "claude/.claude/scripts/transcript-analysis.py:2455" in result
+
+    def test_empty_text_returns_empty_set(self):
+        assert _mod._extract_cited_paths("") == set()
+
+    def test_candidate_longer_than_the_cap_splits_into_bounded_chunks(self):
+        """A single unbroken run longer than _CITED_PATH_CANDIDATE_MAX_CHARS
+        is not dropped or truncated silently — the greedy bounded quantifier
+        emits consecutive capped matches that together cover the whole run."""
+        max_chars = _mod._CITED_PATH_CANDIDATE_MAX_CHARS
+        run = "a" * (max_chars + 50)
+        result = _mod._extract_cited_paths(run)
+        assert result == {"a" * max_chars, "a" * 50}
+
+    def test_adversarial_slash_run_completes_under_one_second(self):
+        """A 100 KB non-matching slash-heavy line (no terminating token) must
+        not trigger catastrophic backtracking. _CITED_PATH_CANDIDATE_RE's
+        flat character class is linear-time regardless of input shape, unlike
+        a nested-quantifier "(?:[\\w.-]+/)+[\\w.-]+" pattern, which hangs on
+        this exact input. A hard deadline is required rather than a
+        post-hoc wall-clock assertion: catastrophic backtracking hangs
+        rather than returns slowly, so a measured-after-the-fact assertion
+        can never fail on the failure mode it exists to catch."""
+        if not hasattr(signal, "SIGALRM"):
+            pytest.skip("signal.alarm is POSIX-only")
+        adversarial_input = "a/" * 50_000  # 100,000 chars, no terminating token
+
+        def _raise_timeout(signum, frame):
+            raise TimeoutError("_extract_cited_paths did not complete within 1 second")
+
+        previous_handler = signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.alarm(1)
+        try:
+            _mod._extract_cited_paths(adversarial_input)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+
+class TestNormalizeCitedPath:
+    """_normalize_cited_path(candidate, cwd) -> key | None: the six ordered,
+    lexical-only normalization steps that turn a raw extracted candidate
+    into (or discard it from) the edit-index join key."""
+
+    def _key(self, path: str) -> str:
+        """The same digest _normalize_cited_path computes, for expected-value
+        construction — not a re-implementation of any normalization step."""
+        return _mod.hashlib.sha256(path.encode()).hexdigest()[:16]
+
+    def test_tilde_path_expands_against_home_before_relative_resolution(self, monkeypatch, tmp_path):
+        """Pins step 3 (~-expansion) running before step 4 (relative-path
+        resolution): if step 4 ran first, '~/.claude/plans/x.md' would be
+        joined onto `cwd` unexpanded rather than resolved against $HOME."""
+        home = tmp_path / "home" / "reviewer"
+        monkeypatch.setenv("HOME", str(home))
+        result = _mod._normalize_cited_path("~/.claude/plans/x.md", cwd="/repo/unrelated/cwd")
+        assert result == self._key(f"{home}/.claude/plans/x.md")
+
+    def test_unexpandable_other_user_tilde_is_discarded(self, monkeypatch, tmp_path):
+        """A '~otheruser/...' candidate is discarded outright, not resolved
+        via a pwd.getpwnam directory-service lookup — expanduser leaves it
+        starting with '~' when the user doesn't exist locally."""
+        monkeypatch.setenv("HOME", str(tmp_path / "home" / "reviewer"))
+        result = _mod._normalize_cited_path(
+            "~definitely-not-a-real-account-xyz/notes.md", cwd="/repo"
+        )
+        assert result is None
+
+    def test_private_tmp_collapses_to_tmp(self):
+        result = _mod._normalize_cited_path("/private/tmp/scratch/report.md", cwd="/repo")
+        assert result == self._key("/tmp/scratch/report.md")
+
+    def test_trailing_line_suffix_stripped(self):
+        with_line = _mod._normalize_cited_path("src/foo.py:42", cwd="/repo")
+        without_line = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert with_line == without_line == self._key("/repo/src/foo.py")
+
+    def test_trailing_line_col_suffix_stripped(self):
+        with_line_col = _mod._normalize_cited_path("src/foo.py:42:7", cwd="/repo")
+        without_suffix = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert with_line_col == without_suffix == self._key("/repo/src/foo.py")
+
+    def test_relative_and_absolute_citations_of_the_same_file_match(self):
+        relative = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        absolute = _mod._normalize_cited_path("/repo/src/foo.py", cwd="/anywhere")
+        assert relative == absolute == self._key("/repo/src/foo.py")
+
+    def test_worktree_rooted_absolute_path_matches_plain_repo_relative(self):
+        """A worktree-rooted absolute citation normalizes to the same key as
+        a plain repo-relative one once the worktree-prefix segment is
+        stripped — that's the join key's whole purpose."""
+        worktree_rooted = _mod._normalize_cited_path(
+            "/repo/.claude/worktrees/gh558-branch/src/foo.py", cwd="/irrelevant"
+        )
+        plain_relative = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert worktree_rooted == plain_relative == self._key("/repo/src/foo.py")
+
+    def test_absolute_citation_matches_worktree_rooted_edit_on_a_different_branch(self):
+        """Worktree-prefix stripping is branch-name-agnostic by construction
+        (`.claude/worktrees/[^/]+/` matches any single branch segment): an
+        edit made in a different branch's worktree of the *same* repo
+        normalizes to the same key as a plain absolute citation of that
+        repo's file — the join key carries no branch identity."""
+        absolute_citation = _mod._normalize_cited_path("/repo/src/foo.py", cwd="/repo")
+        worktree_edit = _mod._normalize_cited_path(
+            "src/foo.py", cwd="/repo/.claude/worktrees/some-other-branch"
+        )
+        assert absolute_citation == worktree_edit == self._key("/repo/src/foo.py")
+
+    def test_two_repos_sharing_a_relative_suffix_do_not_match(self):
+        repo_a = _mod._normalize_cited_path("src/foo.py", cwd="/projects/repo-a")
+        repo_b = _mod._normalize_cited_path("src/foo.py", cwd="/projects/repo-b")
+        assert repo_a != repo_b
+
+    def test_nested_worktree_stripped_to_fixpoint(self):
+        """An isolation:worktree agent spawned under a worktree-anchored
+        parent leaves two '.claude/worktrees/<branch>/' segments in the
+        path; both must be stripped, not just the first."""
+        nested = _mod._normalize_cited_path(
+            "/repo/.claude/worktrees/outer-branch/.claude/worktrees/inner-agent/src/foo.py",
+            cwd="/irrelevant",
+        )
+        assert nested == self._key("/repo/src/foo.py")
+
+    def test_slash_containing_branch_slug_under_strips_to_first_segment(self):
+        """A hand-created branch named 'docs/x' (violating this repo's own
+        single-segment branch-slug convention) is not losslessly decidable
+        from the path alone with zero filesystem access — the normalizer
+        takes only the first segment ('docs') as the branch, leaving 'x/'
+        as an unstripped leftover. Documents the bias; does not crash."""
+        result = _mod._normalize_cited_path(
+            "/repo/.claude/worktrees/docs/x/src/foo.py", cwd="/irrelevant"
+        )
+        assert result == self._key("/repo/x/src/foo.py")
+
+    def test_dotdot_resolves_against_unstripped_cwd_before_worktree_stripping(self):
+        """'../../../.venv/bin/pytest' (this repo's own CLAUDE.md idiom) means
+        three levels above the *worktree* — resolving it against the
+        unstripped `cwd` (not a pre-stripped one) is what makes that true."""
+        result = _mod._normalize_cited_path(
+            "../../../.venv/bin/pytest", cwd="/repo/.claude/worktrees/gh558-branch"
+        )
+        assert result == self._key("/repo/.venv/bin/pytest")
+
+    def test_bare_filename_with_no_directory_separator_is_rejected(self):
+        assert _mod._normalize_cited_path("SKILL.md", cwd="/repo") is None
+
+    def test_no_resolvable_repo_still_normalizes(self):
+        """A cwd with no .claude/worktrees marker at all (a plain, non-worktree
+        checkout) is not an error case — the function needs no repo
+        detection, only lexical joining."""
+        result = _mod._normalize_cited_path("src/foo.py", cwd="/home/reviewer/plain-checkout")
+        assert result == self._key("/home/reviewer/plain-checkout/src/foo.py")
 
 
 # ---------------------------------------------------------------------------

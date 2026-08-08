@@ -2772,6 +2772,103 @@ def _classify_reviewer_verdict(text: str) -> tuple[str, int]:
     return (_REVIEWER_VERDICT_UNCLASSIFIED, 0)
 
 
+# Generous bound for any realistic cited path (worktree prefix + repo-relative
+# suffix); still a hard cap so a run of pathish characters (a code-fence
+# border, `tree` output) can't grow one match unboundedly.
+_CITED_PATH_CANDIDATE_MAX_CHARS = 300
+# One flat, bounded character class — no group is itself quantified, unlike
+# the natural "(?:[\w.-]+/)+[\w.-]+" shape, which backtracks catastrophically
+# on a long non-matching slash run. Same safety property as
+# _DENIAL_HOOK_NAME_RE, copied for the same reason. Deliberately unselective:
+# a bare word matches too (no `/` or `.` required here) — separator and
+# extension filtering happens in _normalize_cited_path, not in extraction.
+_CITED_PATH_CANDIDATE_RE = re.compile(rf"[\w./~:-]{{1,{_CITED_PATH_CANDIDATE_MAX_CHARS}}}")
+
+
+def _extract_cited_paths(text: str) -> set[str]:
+    """Extract raw candidate path strings from one blob of reviewer prose.
+
+    Returns every run matched by _CITED_PATH_CANDIDATE_RE, deduplicated —
+    including runs that turn out to be plain prose words or bare filenames.
+    _normalize_cited_path is what decides whether a candidate is a real,
+    join-able path; this function only tokenizes.
+    """
+    return set(_CITED_PATH_CANDIDATE_RE.findall(text))
+
+
+# Strips a trailing ":line" or ":line:col" suffix (e.g. "foo.py:42" or
+# "foo.py:42:7") — normalization step 1.
+_CITED_PATH_LINE_SUFFIX_RE = re.compile(r":\d+(?::\d+)?$")
+# Matches one ".claude/worktrees/<branch>/" segment, anywhere in the path —
+# normalization step 6. `[^/]+` takes only the branch's first path segment,
+# a documented bias toward under-stripping on a slash-containing branch slug
+# (see _normalize_cited_path's docstring); this is not losslessly decidable
+# from the path alone with zero filesystem access.
+_CITED_PATH_WORKTREE_PREFIX_RE = re.compile(r"\.claude/worktrees/[^/]+/")
+
+
+def _normalize_cited_path(candidate: str, cwd: str) -> str | None:
+    """Normalize one raw candidate from _extract_cited_paths into a join key,
+    or None if the candidate is discarded.
+
+    Lexical only: no Path.resolve(), os.path.realpath, or stat — those chase
+    symlinks (e.g. macOS's /tmp -> /private/tmp) and would make the join key
+    depend on where each analyst's clone lives, and an OSError from that
+    traversal would embed the offending path in its message with no
+    top-level handler to catch it. The one exception is os.path.expanduser's
+    own pwd.getpwnam lookup for an "~otheruser" candidate (step 3, below) —
+    that candidate is discarded regardless of whether the lookup succeeds, so
+    it never affects the key of a candidate this function actually resolves.
+
+    Ordered steps (an implementer will get the order wrong otherwise):
+      1. Strip a trailing ":line" or ":line:col" suffix.
+      2. Reject a candidate with no directory separator — a bare "SKILL.md"
+         is ordinary prose, not a path, and resolving it against `cwd` would
+         manufacture a false in-repo match.
+      3. Expand a leading "~" lexically (os.path.expanduser). A candidate
+         still starting with "~" afterward is the unexpandable "~otheruser"
+         form and is discarded, not resolved via a directory-service lookup.
+         This runs before step 4 (relative-path resolution) because a
+         "~"-prefixed candidate is neither absolute nor genuinely relative —
+         expanduser is a no-op on a non-leading "~", so this must expand it
+         before anything joins it to `cwd`.
+      4. Resolve ".." and relative segments against the **unstripped** `cwd`,
+         for a candidate still relative after step 3. Must precede step 6:
+         "../../../.venv/bin/pytest" (this repo's own CLAUDE.md idiom) means
+         three levels above the worktree, and resolving it against an
+         already-worktree-stripped `cwd` would silently change what
+         directory it names.
+      5. Collapse a leading "/private/tmp" to "/tmp" (macOS-only aliasing;
+         inert on Linux, where that prefix cannot appear in a transcript).
+      6. Strip ".claude/worktrees/<branch>/" to fixpoint, not once, so a
+         nested worktree (an isolation:worktree agent under a
+         worktree-anchored parent) doesn't leave a dangling second segment.
+    """
+    path = _CITED_PATH_LINE_SUFFIX_RE.sub("", candidate)  # 1
+
+    if "/" not in path:  # 2
+        return None
+
+    if path.startswith("~"):  # 3
+        path = os.path.expanduser(path)
+        if path.startswith("~"):
+            return None  # unexpandable "~otheruser/..." form
+
+    if not path.startswith("/"):  # 4 — still relative after step 3
+        path = os.path.normpath(os.path.join(cwd, path))
+
+    if path.startswith("/private/tmp"):  # 5
+        path = "/tmp" + path[len("/private/tmp"):]
+
+    while True:  # 6 — to fixpoint
+        stripped = _CITED_PATH_WORKTREE_PREFIX_RE.sub("", path)
+        if stripped == path:
+            break
+        path = stripped
+
+    return hashlib.sha256(path.encode()).hexdigest()[:16]
+
+
 def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     """Per-reviewer-agent-type dispatch-to-verdict yield.
 
