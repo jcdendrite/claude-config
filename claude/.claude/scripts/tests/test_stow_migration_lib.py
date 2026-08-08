@@ -355,3 +355,70 @@ class TestRepairNestedAdoption:
         assert result.stderr.strip() != "", (
             "leaving a dangling symlink unrepaired must warn, not go silent"
         )
+
+    def test_repaired_entry_preserves_the_source_files_mode(self, tmp_path: Path) -> None:
+        """mktemp creates $tmp at 0600; a plain cp onto an existing
+        destination leaves that mode alone instead of adopting the source's
+        -- cp -p is required, not incidental, to avoid silently narrowing a
+        repaired entry's permissions."""
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        source = repo / "claude" / ".claude" / "briefs"
+        source.mkdir(parents=True)
+        source_file = source / "task-a.md"
+        source_file.write_text("# task a\n")
+        source_file.chmod(0o644)
+
+        target = home / ".claude" / "briefs"
+        target.mkdir(parents=True)
+        (target / "task-a.md").symlink_to(source_file)
+
+        result = _run_repair(repo, "briefs", home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        repaired_mode = (target / "task-a.md").stat().st_mode & 0o777
+        assert repaired_mode == 0o644, (
+            f"repaired entry must keep the source's mode, not mktemp's 0600; "
+            f"got {oct(repaired_mode)}"
+        )
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_mktemp_failure_is_caught_and_leaves_the_symlink_in_place(
+        self, tmp_path: Path
+    ) -> None:
+        """Forces the mktemp branch (:223) to fail by making $target
+        unwritable -- the mv-failure branch (:240) is not exercised here:
+        mktemp always creates $tmp inside $target for same-filesystem mv
+        atomicity, so a permission state that blocks mv would already have
+        blocked the preceding mktemp, making mktemp-succeeds/mv-fails
+        unreachable via plain permission bits. Left undemonstrated for that
+        reason, not by oversight."""
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        source = repo / "claude" / ".claude" / "briefs"
+        source.mkdir(parents=True)
+        (source / "task-a.md").write_text("# task a\n")
+
+        target = home / ".claude" / "briefs"
+        target.mkdir(parents=True)
+        (target / "task-a.md").symlink_to(source / "task-a.md")
+        target.chmod(0o500)
+        try:
+            result = _run_repair(repo, "briefs", home)
+        finally:
+            target.chmod(0o700)
+
+        assert result.returncode == 0, (
+            f"a per-entry mktemp failure must not abort the function; stderr={result.stderr!r}"
+        )
+        # A substring of the library's own warning, not blanket non-emptiness:
+        # mktemp emits its own diagnostic on this exact failure independent of
+        # the library, so a bare "stderr is non-empty" check would still pass
+        # if the library's own "could not de-adopt" echo were silently broken.
+        assert "could not de-adopt" in result.stderr, (
+            f"a failed de-adopt attempt must warn via the library's own "
+            f"message, not just mktemp's; stderr={result.stderr!r}"
+        )
+        assert (target / "task-a.md").is_symlink(), (
+            "the original symlink must be left in place when mktemp fails"
+        )

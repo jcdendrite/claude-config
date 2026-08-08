@@ -224,7 +224,11 @@ stow_repair_nested_adoption() {
           echo "[install] warning: could not de-adopt $entry -- leaving it as a symlink into $repo_dir" >&2
           continue
         }
-        if ! cp -- "$entry" "$tmp"; then
+        # -p preserves the resolved source's mode: mktemp creates $tmp at
+        # 0600, and plain cp onto an existing destination leaves that mode
+        # alone instead of adopting the source's, silently narrowing every
+        # repaired entry's permissions otherwise.
+        if ! cp -p -- "$entry" "$tmp"; then
           rm -f -- "$tmp"
           echo "[install] warning: could not copy $entry before de-adopting -- leaving it as a symlink into $repo_dir" >&2
           continue
