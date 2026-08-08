@@ -249,6 +249,103 @@ custom hook becomes viable without the self-widening flaw, and is worth
 adding back with that guard as its prerequisite, not as an independent
 follow-up.
 
+## The manifest-edit disclosure hook
+
+`deny-network-installs.sh` closes named installs, but a `package.json` can
+gain a dependency with no install command at all — an agent edits the
+manifest directly, then a later bare `npm install`/`pnpm install` (the
+lockfile-restore shape `deny-network-installs.sh` deliberately allows)
+fetches whatever the edit just declared, with the prompt showing only the
+restore command and nothing naming the new package. Surfaced by a session
+that added four devDependencies to a manifest during unrelated work,
+reasoning that the packages already existed elsewhere in the same monorepo
+at identical versions — nothing required it to say so first.
+
+Three layers close this, each targeting a different one of three surfaces
+(named install command, manifest edit, bare restore that follows) — this is
+deliberately **not** defense in depth, and all three depend on the same
+agent cooperating; there is no deny-class backstop, by decision.
+
+| Layer | Mechanism | Surface | Enforcement |
+|---|---|---|---|
+| 1 — the duty | `claude/.claude/CLAUDE.md`'s "Name every new package before it is fetched" `§Safety` bullet | All three | Prose, agent-cooperative — the only layer carrying *why* the package is needed |
+| 2 — the reminder | `ask-new-dependency-disclosure.sh` | The manifest edit | Hook-returned `ask`, best-effort |
+| 3 — the handoff text | `deny-network-installs.sh`'s `_INSTALL_ALTERNATIVE` | The named install command | Amended deny-message text, reaches the model on `stderr`, not the human |
+
+**`ask-new-dependency-disclosure.sh`** — `informational`, `PreToolUse` on
+`Edit`/`Write`/`MultiEdit`. Reconstructs the post-write `package.json` from
+`tool_input` (`Edit`'s `old_string`→`new_string`; `MultiEdit`'s `edits`
+applied sequentially against a running buffer; `Write`'s `content`
+verbatim) via `parse-manifest-dependencies.py`, diffs the
+`dependencies`/`devDependencies`/`peerDependencies`/`optionalDependencies`
+union against the on-disk pre-state, and asks — naming each
+`name@constraint` pair, capped at 10 with an "…and N more" marker — only
+when that diff is non-empty. `parse-manifest-dependencies.py` targets
+Python 3.9 explicitly: stock macOS `/usr/bin/python3` is 3.9.6, with no
+`tomllib` and no `match` statement, which is also why this hook covers only
+`package.json` and not `requirements.txt`/`go.mod` (see residuals below).
+
+A hook-returned `ask` renders as an interactive prompt under `acceptEdits`
+and `bypassPermissions` (see the finding recorded above, under "WebFetch
+domain allowlisting — considered and rejected"), which is what makes
+Layer 2 viable at all — it exists specifically to cover the manifest edit
+in those two modes, not in `default` mode where a hook-`ask` trivially
+renders regardless.
+
+Fail-open but loud on a matched, non-excluded manifest: a manifest that
+doesn't match `package.json` (case-sensitive), sits under
+`node_modules/`/`fixtures/`/`__fixtures__/`/`test-data/`, or is evaluated
+with `python3` absent/unusable (e.g. the Xcode Command Line Tools shim)
+allows silently, since none of those is reachable by crafting the
+manifest's own content. An on-disk pre-state over 5 MB, or the helper
+erroring/timing out/emitting unparseable output, instead degrades to a
+generic ask naming no packages — manifest content is agent-authored, so
+silence there would be a one-step-suppressible reminder. No repo-scoped
+opt-out sentinel: a `.claude/*-optout` file this hook would be the sole
+reader of is agent-writable with one `Write` call and produces total,
+silent, permanent suppression.
+
+**Named residuals:**
+
+*Not detected by key-set diffing:* `overrides`/`resolutions` repointing an
+existing name at a different tarball; `scripts.preinstall`/`postinstall`;
+registry redirection generally.
+
+*Not on the Edit path:* bash heredoc/`tee`/`sed`/`node -e` manifest writes;
+`npx create-*` scaffolding (a Bash subprocess writes the manifest, so this
+hook never fires for it); `git pull`/`merge` importing a manifest change
+followed by the deliberately-allowed bare restore; `npm pkg set
+dependencies.<name>=<ver>` — writes a manifest entry today with no deny and
+no ask, since `deny-network-installs.sh`'s verb loop does single-token
+compares and `pkg`/`set` match no listed verb. Closing it needs a
+token-*pair* match gated on a `dependencies.`/`devDependencies.`/
+`peerDependencies.`/`optionalDependencies.` value prefix — a naive `pkg`
+verb addition would deny `npm pkg get`/`npm pkg delete` (read operations)
+under a message claiming an install. **This is the highest-priority
+follow-up of the whole residual list** — it is the only route that
+reproduces the originating incident end-to-end (manifest write, then a
+permitted bare restore fetches it) with no mechanical layer in the path at
+all.
+
+*Other:* the 14 `permissions.deny` managers (`brew`, `cargo install`, `go
+install`, `cargo add`, `bundle add`, `poetry add`, `deno add`, …) inherit
+nothing from Layers 2 or 3 — only Layer 1 applies to those; a monorepo
+dependency moved between two of the four sections fires on the receiving
+package while the removal side is silent (correct-by-design, but pinned as
+a named false positive); N sequential `Edit`s produce N prompts; a
+brand-new `package.json` fires on every entry up to the 10-name cap;
+`_lib_capped`'s `timeout` wrapper degrades to no cap at all without GNU
+coreutils, so the helper carries its own 5-second `SIGALRM`-based runtime
+bound, independent of coreutils; a `git+https://user:TOKEN@host/...`-shaped
+version constraint is disclosed verbatim in the ask reason, by design — the
+CLAUDE.md duty this hook backstops requires naming the exact constraint, and
+this is the same content a human reviewing the manifest diff by eye would
+see, not an additional exposure channel; non-`package.json` ecosystems, including
+this repo's own `requirements.txt` — deferred not because of the
+`tomllib` hazard (which doesn't apply to a line-based format) but because
+of its own grammar hazards (`-r`/`-e` includes, environment markers, PEP
+503 name normalization), ranked just below `npm pkg set` above; lockfiles.
+
 ## The two PII guard hooks
 
 | Hook | Gates | Armed by |

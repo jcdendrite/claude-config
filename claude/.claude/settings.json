@@ -328,6 +328,11 @@
             "type": "command",
             "command": "~/.claude/hooks/enforce-marker-script-shape.sh",
             "statusMessage": "Checking gate-release authority..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ask-new-dependency-disclosure.sh",
+            "statusMessage": "Checking for undeclared dependencies..."
           }
         ]
       },

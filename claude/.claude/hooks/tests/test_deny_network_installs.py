@@ -434,6 +434,15 @@ class TestDenyNetworkInstalls:
         assert reason is not None
         assert "shell escape" in reason
 
+    def test_deny_message_names_the_package_naming_requirement(self, isolated_home):
+        """The `!`-handoff must demand package, version, and rationale before
+        the user runs the install — not just point at the shell escape.
+        See claude/.claude/CLAUDE.md's "Name every new package before it is
+        fetched" duty, which this message's naming requirement backs."""
+        reason = run_hook_reason(DENY_NETWORK_INSTALLS_HOOK, bash_input("npm install lodash"), home=isolated_home)
+        assert reason is not None
+        assert "name the package, its exact version constraint, and why" in reason
+
     # ------------------------------------------------------------------ #
     # Non-Bash passthrough                                                #
     # ------------------------------------------------------------------ #

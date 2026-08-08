@@ -80,6 +80,15 @@
 
 - Never run sudo commands directly.
 - Installing new software autonomously is strictly prohibited — a general go-ahead ("try X", "see if Y works") does not authorize it; restoring already-declared dependencies (`pip install -r requirements.txt`, bare `npm install`) is unaffected. Point the user to the `!` shell escape for a genuine new install.
+- **Name every new package before it is fetched.** Causing a package not already
+  declared to be fetched — by an install command, a manifest edit, or a bare
+  restore run after one — requires stating each package, its exact version
+  constraint, and why. For a manifest edit, get explicit confirmation before
+  making it. For an install command or restore, this is in addition to — not
+  instead of — the installing-new-software prohibition: name the package before handing the
+  command to the user via the `!` escape. The package already existing
+  elsewhere in the same monorepo or lockfile is not authorization. Upgrades of
+  already-declared packages are outside this rule.
 - Never commit secrets, credentials, API keys, or large binary assets to repositories.
 - Never use the Read tool on files likely to contain secrets (`.env`, `.claude.json`, `credentials.json`, similar). Reading pulls the secret into the conversation context. The `!` shell escape does not avoid this either — Claude Code adds shell-mode output to the conversation transcript, so a secret printed via `! cat` reaches your context the same as the Read tool would. When the user needs to inspect such a file's content, ask them to run the command in a separate terminal window outside this session. This distinction matters when a Bash command is denied for referencing a credential-shaped path (an SSH private key, `.netrc`, a cloud credential store, and similar) — the gate has no bypass and no verb carve-out, so a legitimate non-exposing command (`ssh-add`, `chmod`, `ssh -i`) against that path is denied along with the exposing ones. For a non-exposing command, name the exact blocked command to the user for them to run via `!` themselves — its output carries no secret content. For a content-exposing command, ask them to run it in a separate terminal instead. Either way, do not try an alternate construction of the same operation to route around the denial.
 - Apply the **principle of least privilege** when recommending or provisioning credentials, roles, or grants: default to the narrowest scope the operation actually needs, not the broadest one available. Account-wide secrets, root tokens, and admin scopes are never the default.
