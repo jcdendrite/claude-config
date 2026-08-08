@@ -398,7 +398,7 @@ Two structured alternatives fail:
    per-bucket, plus discarded-bare-filename counts. Compare to 65% and to the
    20-point inter-arm gap. Record in this file, redacted per Verification 1.
    Below either gate → abandon action, post to GH-558, no PR. Spike code
-   discarded.
+   discarded. **Done: both gates clear — see "Spike result," below.**
 3. `_normalize_cited_path` + `_extract_cited_paths` as pure functions, with their
    unit tests. No command wiring yet.
 4. Single-pass transcript scan replacing `_last_assistant_text`.
@@ -409,6 +409,43 @@ Two structured alternatives fail:
 7. Docs, SKILL.md row, full suite, corpus run, measure the subagent-read cost
    gate.
 8. `/code-review`, `/ready-for-review`, PR with `Closes #558`.
+
+## Spike result
+
+Throwaway script (not committed), scored against a representative bounded-
+class regex requiring a trailing dot-extension — deliberately looser than the
+real extractor, since it also counts bare filenames (no `/`) to measure their
+discard rate, and applies none of the ordered normalization steps (those
+change what key a candidate normalizes to, not whether one survives at all).
+Run machine-wide, all projects, all time, over every in-corpus reviewer
+dispatch with a paired subagent transcript (parent-side `Write`-blob scan plus
+last-assistant-text scan, matching both output contracts). No project labels,
+paths, or session ids below — aggregate counts only, per
+`docs/private-project-redaction.md`.
+
+- **Dispatches scored:** 1,325. **Read errors:** 0 (excluded from the
+  denominator; none occurred in this run).
+- **Corpus-wide coverage: 87.2%** (1,155/1,325) — clears the 65% floor with
+  wide margin.
+- **Per-bucket coverage:** `findings-found` 90.9% (780/858); `zero-finding`
+  87.4% (195/223); `unclassified` 73.8% (180/244, not part of the gap check —
+  the gap gate compares only the two verdict-bucket arms the rate itself
+  bucketizes).
+- **Inter-arm gap (findings-found vs. zero-finding): 3.5 points** — clears the
+  20-point ceiling with wide margin.
+- **Bare-filename discards:** in the thousands per bucket (proportional to
+  bucket size), confirming the discard path fires routinely and isn't a
+  theoretical concern — not a precise count, since the spike regex is
+  intentionally looser than the real extractor and this figure is not
+  reused downstream.
+
+**Both gates clear decisively** (87.2% vs. 65%; 3.5 vs. 20 points) — proceeding
+to Implementation sequence step 3. The margin is wide enough that the
+looseness of the spike's regex (vs. the real extractor's tighter, normalized
+one) does not put the result in doubt: even a real extractor that recovers
+substantially fewer candidates than this permissive one would need to lose
+most of a 22-point cushion on the floor, or most of a 16.5-point cushion on
+the gap, to fail either gate.
 
 ## Critical files
 
