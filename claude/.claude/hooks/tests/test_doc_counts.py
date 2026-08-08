@@ -24,8 +24,12 @@ Design:
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
 from typing import NamedTuple
 
 import pytest
@@ -179,15 +183,67 @@ def _count_ground_every_choice_categories() -> int:
 
 
 def _count_handoff_nudge_threshold_percentage() -> int:
-    """Return the handoff-nudge threshold percentage from the hook's THRESHOLD calculation."""
+    """Return the handoff-nudge pct-arm percentage from the hook's PCT_THRESHOLD calculation."""
     hook_path = REPO_ROOT / _NUDGE_HOOK_REL_PATH
     text = hook_path.read_text()
-    match = re.search(r"THRESHOLD=\$\(\( CONTEXT_WINDOW \* (\d+) / 100 \)\)", text)
+    match = re.search(r"PCT_THRESHOLD=\$\(\( CONTEXT_WINDOW \* (\d+) / 100 \)\)", text)
     if match is None:
         raise ValueError(
-            "Could not find 'THRESHOLD=$(( CONTEXT_WINDOW * N / 100 ))' in "
+            "Could not find 'PCT_THRESHOLD=$(( CONTEXT_WINDOW * N / 100 ))' in "
             f"{_NUDGE_HOOK_REL_PATH}; the hook's threshold calculation was "
             "reworded and this ground truth needs updating."
+        )
+    return int(match.group(1))
+
+
+def _count_handoff_nudge_abs_cap_default() -> int:
+    """Return the handoff-nudge absolute-token cap, derived behaviorally.
+
+    Fires the hook against a synthetic 1M-window-model transcript whose
+    estimate exceeds any plausible cap, with HANDOFF_NUDGE_ABS_CAP unset, and
+    reads the computed threshold back out of the emitted additionalContext —
+    avoiding a second source-scanning regex (on an ABS_CAP= literal) on top
+    of the percentage one above.
+    """
+    hook_path = REPO_ROOT / _NUDGE_HOOK_REL_PATH
+    transcript_record = {
+        "type": "assistant",
+        "message": {
+            "model": "claude-sonnet-5",
+            "usage": {
+                "cache_read_input_tokens": 999_000_000,
+                "cache_creation_input_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            },
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        transcript_path = tmp_path / "t.jsonl"
+        transcript_path.write_text(json.dumps(transcript_record) + "\n")
+        payload = {
+            "session_id": "doc-count-abs-cap-probe",
+            "transcript_path": str(transcript_path),
+            "hook_event_name": "UserPromptSubmit",
+        }
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        env.pop("HANDOFF_NUDGE_ABS_CAP", None)
+        result = subprocess.run(
+            [str(hook_path)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+    match = re.search(r"threshold \((\d+) tokens\)", result.stdout)
+    if match is None:
+        raise ValueError(
+            "Could not find 'threshold (N tokens)' in the hook's emitted "
+            f"additionalContext (stdout: {result.stdout!r}); the nudge "
+            "message wording changed and this ground truth needs updating."
         )
     return int(match.group(1))
 
@@ -262,7 +318,7 @@ _REGISTERED_FACTS: list[DocCountFact] = [
     ),
     DocCountFact(
         ground_truth_fn=_count_handoff_nudge_threshold_percentage,
-        label="handoff-nudge THRESHOLD percentage in nudge-handoff-near-context-cap.sh",
+        label="handoff-nudge PCT_THRESHOLD percentage in nudge-handoff-near-context-cap.sh",
         occurrences=[
             Occurrence(
                 rel_path="docs/handoff-nudge.md",
@@ -279,20 +335,31 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 pattern=r"well past (\d+)% without completing",
                 description="docs/handoff-nudge.md: well past N% without completing",
             ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_handoff_nudge_abs_cap_default,
+        label="handoff-nudge HANDOFF_NUDGE_ABS_CAP default, derived behaviorally",
+        occurrences=[
             Occurrence(
-                rel_path="README.md",
-                pattern=r"suggests `/handoff` at ~(\d+)% context usage",
-                description="README.md: suggests /handoff at ~N% context usage",
+                rel_path="docs/handoff-nudge.md",
+                pattern=r"\| 1M \(default\) \| 400000 \| (\d+)",
+                description="docs/handoff-nudge.md: table 1M-row effective threshold",
             ),
             Occurrence(
                 rel_path="README.md",
-                pattern=r"every turn beyond (\d+)% is waste",
-                description="README.md: every turn beyond N% is waste",
+                pattern=r"capped at (\d+) tokens",
+                description="README.md: capped at N tokens",
             ),
             Occurrence(
                 rel_path="README.md",
-                pattern=r"~(\d+)%: suggested threshold for `/handoff`",
-                description="README.md: ~N%: suggested threshold for /handoff",
+                pattern=r"past a (\d+)-token prefix on the largest context window",
+                description="README.md: past a N-token prefix on the largest context window",
+            ),
+            Occurrence(
+                rel_path="README.md",
+                pattern=r"(\d+) tokens \(default\): the absolute-token cap",
+                description="README.md: N tokens (default): the absolute-token cap",
             ),
         ],
     ),

@@ -141,3 +141,20 @@ Before writing the file, verify:
 - Load-bearing claims in §2/§3/§6 carry a confidence tag — `[engineer-confirmed]`, `[verified: <evidence>]` (the command run, file read, or test output that established it), or `[assumed]` — so the resuming session re-verifies only what was never verified
 - Every §3 step has been re-checked against the §3.5 categorization rule: a step matching any §3.5 anchor shape is mis-bucketed — move it to §3.5 (bulk deletes include removing many branches or worktrees in one command). A cited justification ("per repo convention", "per memory") does not downgrade a step's irreversibility; a step claiming a convention names the file that states it
 - Draft verification used Bash (`cat`/`grep`/`sed -n`/`wc -l`), not `Read` — a `Read` of the handoff path consumes the file out from under any remaining `Edit` calls
+
+## After writing: record the conversion signal
+
+Once the handoff file is written and verified, append one line recording this session's id to
+`nudge-handoff-near-context-cap.sh`'s own log — pairing it with that hook's `nudged` lines lets a
+future report count how often a nudge fire is followed by a handoff in the same session, without
+joining to transcript content:
+
+```bash
+CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SESSION_ID=$(head -n1 "$CONFIG_DIR/sessions/$PPID" 2>/dev/null)
+[ -n "$SESSION_ID" ] && printf 'handoff session=%s\n' "$SESSION_ID" >> "$CONFIG_DIR/.handoff-nudge.log"
+```
+
+Best-effort: `sessions/$PPID` is the session-id lookup file `capture-session-id.sh` writes at
+session start; if it's absent, the append is silently skipped — this is a conversion metric, not
+a gate.

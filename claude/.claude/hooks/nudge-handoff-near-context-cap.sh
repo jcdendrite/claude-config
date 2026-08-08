@@ -1,11 +1,13 @@
 #!/bin/bash
 # hook-class: informational
 # UserPromptSubmit and Stop hook: injects a one-shot context-window nudge
-# when the estimated token count crosses 40% of the model's context window,
-# prompting the agent to suggest /handoff if the current task is not near
-# completion. Registered on both events so a session that crosses the
-# threshold on its final turn, with no further user prompt, still gets
-# warned.
+# when the estimated token count crosses the lesser of 40% of the model's
+# context window or an absolute-token cap (HANDOFF_NUDGE_ABS_CAP, default
+# 360000 — see docs/handoff-nudge.md for why cost tracks absolute tokens,
+# not window percentage), prompting the agent to suggest /handoff if the
+# current task is not near completion. Registered on both events so a
+# session that crosses the threshold on its final turn, with no further
+# user prompt, still gets warned.
 #
 # Nudge is one-shot per session: a marker file under
 # ~/.claude/.handoff-nudge-fired.d/<session_id> is written on first fire and
@@ -29,8 +31,10 @@
 #   - claude -p one-shot runs do not fire SessionEnd, so nudge-fired markers from
 #     those sessions accumulate without being cleaned up. Files are zero-byte.
 #   - Model→window resolution below is a hardcoded, dated table — see docs/handoff-nudge.md.
-#   - An unrecognized model ID defaults to the 1M window, which can silently miss
-#     firing for a future smaller-window model with no log signal at all.
+#   - An unrecognized model ID defaults to the 1M window, whose effective threshold
+#     is bounded by HANDOFF_NUDGE_ABS_CAP; a future smaller-window model can still
+#     silently miss firing if its real window sits below the cap, with no log
+#     signal at all.
 
 INPUT=$(cat 2>/dev/null)
 
@@ -142,7 +146,7 @@ if [ "$ESTIMATE" -eq 0 ] 2>/dev/null; then
   exit 0
 fi
 
-# Context window in tokens per model ID; THRESHOLD is 40% of it.
+# Context window in tokens per model ID; the pct arm below is 40% of it.
 # Source: https://platform.claude.com/docs/en/about-claude/models/overview,
 # fetched 2026-08-03; re-verify by 2026-11-03.
 # Verified 200k: Haiku 4.5, Sonnet 4.5, Opus 4.5, Opus 4.1. Verified 1M:
@@ -160,7 +164,22 @@ case "$MODEL" in
   *)
     CONTEXT_WINDOW=1000000 ;;
 esac
-THRESHOLD=$(( CONTEXT_WINDOW * 40 / 100 ))
+
+# Cache-read cost is linear in absolute tokens, so pct-of-window alone lets
+# the same rule fire 5x later in dollar terms on a 1M-window model than a
+# 200k one; ABS_CAP bounds the pct arm — see docs/handoff-nudge.md "Why this
+# cap" for the grounding. HANDOFF_NUDGE_ABS_CAP overrides the cap; a
+# malformed value (empty, non-digit, zero-padded — an invalid octal literal
+# in bash arithmetic — or 10+ digits, which risks wrapping negative in bash's
+# signed 64-bit arithmetic) falls back to the default rather than letting
+# THRESHOLD degrade toward 0/unset or negative, either of which fires on
+# every session.
+PCT_THRESHOLD=$(( CONTEXT_WINDOW * 40 / 100 ))
+case "$HANDOFF_NUDGE_ABS_CAP" in
+  ''|*[!0-9]*|0[0-9]*|?????????*) ABS_CAP=360000 ;;
+  *) ABS_CAP=$HANDOFF_NUDGE_ABS_CAP ;;
+esac
+THRESHOLD=$(( PCT_THRESHOLD < ABS_CAP ? PCT_THRESHOLD : ABS_CAP ))
 
 if [ "$ESTIMATE" -lt "$THRESHOLD" ] 2>/dev/null; then
   exit 0
@@ -172,19 +191,24 @@ if [ -f "$FIRED_MARKER" ]; then
   exit 0
 fi
 
-# Fire: emit nudge, write marker, and log the event.
-mkdir -p "$MARKER_DIR" 2>/dev/null || true
-# Evict stale markers from one-shot runs that skipped SessionEnd cleanup.
-find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
-printf 'nudged session=%s est=%s model=%s window=%s event=%s\n' \
-  "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
-touch "$FIRED_MARKER" 2>/dev/null || true
-
-jq -n --arg hookEventName "$HOOK_EVENT" '{
+# Fire: build the nudge JSON first and only write the marker/log if it
+# actually produced output — jq -n … 2>/dev/null below would otherwise
+# swallow a jq failure while the marker/log writes had already burned the
+# session's one shot. timeout 2 matches the tail | jq -s call above.
+# shellcheck disable=SC2016 # single-quoted on purpose: $hookEventName/$threshold are jq --arg/--argjson bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but wrapping in `timeout` is opaque to shellcheck's jq awareness.
+OUTPUT=$(timeout 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson threshold "$THRESHOLD" '{
   hookSpecificOutput: {
     hookEventName: $hookEventName,
-    additionalContext: "Context is past 40% of this model'\''s context window. If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish."
+    additionalContext: ("Context is past this session'\''s handoff-nudge threshold (" + ($threshold|tostring) + " tokens). If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish.")
   }
-}' 2>/dev/null || true
+}' 2>/dev/null) && [ -n "$OUTPUT" ] && {
+  mkdir -p "$MARKER_DIR" 2>/dev/null || true
+  # Evict stale markers from one-shot runs that skipped SessionEnd cleanup.
+  find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
+  printf 'nudged session=%s est=%s model=%s window=%s event=%s\n' \
+    "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
+  touch "$FIRED_MARKER" 2>/dev/null || true
+  printf '%s' "$OUTPUT"
+}
 
 exit 0

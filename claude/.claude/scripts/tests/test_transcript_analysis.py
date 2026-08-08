@@ -3291,13 +3291,20 @@ def _context_distribution_args(
     })()
 
 
+_CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER = "## Peak absolute-token crossing thresholds"
+
+
 def _extract_context_distribution_row(out: str, pct: int) -> dict[str, str]:
-    """Read one context-distribution threshold row ('Threshold Sessions
-    SessShare $ DollarShare') by its leading 'NN%' token, rather than
-    _table_cols' row_contains, since every row's leading token is a candidate
-    substring of another row's trailing percentage columns."""
+    """Read one context-distribution percentage-table threshold row
+    ('Threshold Sessions SessShare $ DollarShare') by its leading 'NN%'
+    token, rather than _table_cols' row_contains, since every row's leading
+    token is a candidate substring of another row's trailing percentage
+    columns. Scoped to the output before the absolute-token table's own
+    header, so an absolute threshold's leading token (a plain digit, never a
+    percentage) can't be misread as a percentage row by coincidence."""
+    section = out.split(_CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER, 1)[0]
     target = f"{pct}%"
-    for line in out.splitlines():
+    for line in section.splitlines():
         tokens = line.split()
         if tokens and tokens[0] == target:
             return {
@@ -3307,6 +3314,27 @@ def _extract_context_distribution_row(out: str, pct: int) -> dict[str, str]:
                 "dollar_share": tokens[4],
             }
     raise AssertionError(f"threshold row for {pct}% not found in output:\n{out}")
+
+
+def _extract_context_distribution_abs_row(out: str, threshold: int) -> dict[str, str]:
+    """Read one context-distribution absolute-token-table threshold row by
+    its leading comma-formatted token (e.g. '80,000'). Scoped to the output
+    at/after the absolute table's own header, the section-boundary
+    counterpart of _extract_context_distribution_row above."""
+    if _CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER not in out:
+        raise AssertionError(f"absolute-token table header not found in output:\n{out}")
+    section = out.split(_CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER, 1)[1]
+    target = f"{threshold:,}"
+    for line in section.splitlines():
+        tokens = line.split()
+        if tokens and tokens[0] == target:
+            return {
+                "sessions": tokens[1],
+                "sess_share": tokens[2],
+                "dollars": tokens[3],
+                "dollar_share": tokens[4],
+            }
+    raise AssertionError(f"absolute threshold row for {threshold:,} not found in output:\n{out}")
 
 
 def _exit_plan_mode(tool_id: str = "epm1") -> dict:
@@ -4836,7 +4864,9 @@ class TestContextDistribution:
 
     def test_no_sessions_in_scope_prints_zero_without_division_error(self, fake_projects, capsys):
         """An empty scope (no priced or main-thread turns anywhere) prints a
-        zero-sessions summary and 0.0% shares rather than raising ZeroDivisionError."""
+        zero-sessions summary and 0.0% shares rather than raising
+        ZeroDivisionError — in both the percentage table and its absolute-token
+        sibling, since both share the same _pct_of-guarded arithmetic."""
         _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
         _mod._context_distribution_report(_context_distribution_args())
         out = capsys.readouterr().out
@@ -4844,6 +4874,106 @@ class TestContextDistribution:
         row_30 = _extract_context_distribution_row(out, 30)
         assert row_30["sessions"] == "0"
         assert row_30["dollar_share"] == "0.0%"
+        row_abs = _extract_context_distribution_abs_row(out, 80_000)
+        assert row_abs["sessions"] == "0"
+        assert row_abs["dollar_share"] == "0.0%"
+
+    def test_unpriced_model_still_contributes_to_absolute_bucket(self, fake_projects, capsys):
+        """A model ID absent from _MODEL_BASE_INPUT_RATES prices at $0, but its
+        turns still feed the absolute-token peak — that path computes from
+        context_at_turn + output_tokens directly, and its value doesn't depend
+        on _context_window_for_model's result, unlike the percentage path."""
+        _write_jsonl(fake_projects / "sess-unpriced.jsonl", [
+            _priced("claude-opus-4-7", input=250_000),  # unpriced model; crosses the 250,000 bucket
+        ])
+        _mod._context_distribution_report(_context_distribution_args())
+        out = capsys.readouterr().out
+        row = _extract_context_distribution_abs_row(out, 250_000)
+        assert row["sessions"] == "1"
+        assert row["dollars"] == "0.00"
+
+    def test_mixed_window_session_argmax_differs_between_pct_and_abs_peak(self, fake_projects, capsys):
+        """A session with one turn on a 200k-window model (high percentage,
+        lower absolute tokens) and one turn on a 1M-window model (lower
+        percentage, higher absolute tokens) — the percentage table's peak and
+        the absolute table's peak come from different turns, pinning that
+        peak_abs_tokens is its own tracked maximum, not peak_pct * window."""
+        _write_jsonl(fake_projects / "sess-mixed.jsonl", [
+            _priced("claude-sonnet-4-5", input=190_000),  # 200k model: 95% of window, abs 190,000
+            _priced("claude-sonnet-5", input=300_000),  # 1M model: 30% of window, abs 300,000
+        ])
+        _mod._context_distribution_report(_context_distribution_args())
+        out = capsys.readouterr().out
+        row_60 = _extract_context_distribution_row(out, 60)
+        assert row_60["sessions"] == "1"  # peak_pct 95%, from the 200k turn
+        row_250k = _extract_context_distribution_abs_row(out, 250_000)
+        assert row_250k["sessions"] == "1"  # peak_abs_tokens 300,000, from the 1M turn
+        row_400k = _extract_context_distribution_abs_row(out, 400_000)
+        assert row_400k["sessions"] == "0"  # peak_abs_tokens is 300,000, not higher
+
+    def test_absolute_peak_accumulator_flat_and_nested_cache_creation_agree(self):
+        """One turn's cache_creation expressed via the hook's flat
+        cache_creation_input_tokens field and an equal-total turn expressed via
+        the nested ephemeral_1h/ephemeral_5m split feed the new absolute-peak
+        accumulator (_session_peak_context) to the identical total — pinning
+        the _cache_write_split equivalence the accumulator leans on, rather
+        than only citing it."""
+        flat_usage = _priced(
+            "claude-sonnet-5", input=100_000, cache_read=50_000, output=5_000, flat_cache_creation=30_000
+        )["message"]["usage"]
+        nested_usage = _priced(
+            "claude-sonnet-5", input=100_000, cache_read=50_000, output=5_000,
+            ephemeral_1h=10_000, ephemeral_5m=20_000,
+        )["message"]["usage"]
+
+        _dollars_flat, context_flat, _unpriced_flat = _mod._price_turn("claude-sonnet-5", flat_usage)
+        _dollars_nested, context_nested, _unpriced_nested = _mod._price_turn("claude-sonnet-5", nested_usage)
+
+        _peak_pct_flat, peak_abs_flat = _mod._session_peak_context([(context_flat, 5_000, 1_000_000)])
+        _peak_pct_nested, peak_abs_nested = _mod._session_peak_context([(context_nested, 5_000, 1_000_000)])
+
+        expected = 100_000 + 50_000 + 30_000 + 5_000
+        assert peak_abs_flat == peak_abs_nested == expected
+
+    def test_session_peak_context_tracks_independent_maxima(self):
+        """_session_peak_context's two maxima are independent — the turn with
+        the highest percentage of its own window need not be the turn with the
+        highest absolute token count."""
+        turns = [
+            (190_000, 0, 200_000),  # pct 95%, abs 190,000
+            (300_000, 0, 1_000_000),  # pct 30%, abs 300,000
+        ]
+        peak_pct, peak_abs_tokens = _mod._session_peak_context(turns)
+        assert peak_pct == pytest.approx(0.95)
+        assert peak_abs_tokens == 300_000
+
+    def test_session_peak_context_abs_includes_output_tokens(self):
+        """peak_abs_tokens is context_at_turn + output_tokens — the hook's own
+        four-field ESTIMATE sum — not context_at_turn alone; peak_pct is
+        unaffected by output_tokens, matching context_at_turn's own definition."""
+        turns = [(100_000, 50_000, 1_000_000)]
+        peak_pct, peak_abs_tokens = _mod._session_peak_context(turns)
+        assert peak_pct == pytest.approx(0.1)
+        assert peak_abs_tokens == 150_000
+
+    def test_session_peak_context_no_main_thread_turns_returns_zero(self):
+        """No main-thread turns (e.g. a session with only sidechain activity)
+        yields (0.0, 0) rather than raising."""
+        assert _mod._session_peak_context([]) == (0.0, 0)
+
+    def test_context_distribution_rows_session_share_hand_computed(self):
+        """_context_distribution_rows' session-share arithmetic, exercised
+        directly on a synthetic multi-session fixture with a known expected
+        fraction — a handoff-nudge cap chosen off this report's session-share
+        column is only as trustworthy as this arithmetic."""
+        peaks = [0.9, 0.5, 0.3, 0.1, 0.05]
+        dollars = [1.0, 1.0, 1.0, 1.0, 1.0]
+        rows = _mod._context_distribution_rows([0.4], peaks, dollars)
+        # 2 of 5 sessions (0.9, 0.5) cross 0.4 -> 40.0% session-share.
+        assert rows[0]["sessions"] == 2
+        assert rows[0]["session_share"] == "40.0%"
+        assert rows[0]["dollars"] == pytest.approx(2.0)
+        assert rows[0]["dollar_share"] == "40.0%"
 
 
 # ---------------------------------------------------------------------------

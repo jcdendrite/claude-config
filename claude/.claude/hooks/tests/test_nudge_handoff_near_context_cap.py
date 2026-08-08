@@ -2,10 +2,12 @@
 
 The hook is a UserPromptSubmit and Stop hook that emits a one-shot
 hookSpecificOutput.additionalContext JSON payload when the estimated carried
-token count crosses 40% of the resolved model's context window (200k models:
-80 000; 1M models: 400 000; unrecognized/missing model IDs default to the 1M
-window). The nudge fires once per session — a marker file gates subsequent
-turns.
+token count crosses the lesser of 40% of the resolved model's context window
+or an absolute-token cap (HANDOFF_NUDGE_ABS_CAP, default 360000). 200k models
+stay at 80000 (below the default cap, unaffected); 1M models — including
+unrecognized/missing model IDs, which default to the 1M window — are capped
+at 360000 rather than the raw 400000 (40% of 1M). The nudge fires once per
+session — a marker file gates subsequent turns.
 
 All tests sandbox $HOME via monkeypatch so markers and logs land in tmp_path
 rather than the real $HOME.
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -38,23 +41,46 @@ HOOK_EVENT_NAMES = ["UserPromptSubmit", "Stop"]
 # Mirrors the hook's own window table so no test hand-computes a threshold.
 LARGE_WINDOW = 1_000_000
 SMALL_WINDOW = 200_000
-LARGE_THRESHOLD = 400_000
-SMALL_THRESHOLD = 80_000
+SMALL_THRESHOLD = 80_000  # 40% of 200k — the pct arm, unaffected by the cap (A7)
+DEFAULT_ABS_CAP = 360_000  # HANDOFF_NUDGE_ABS_CAP's shipped default
+# Effective 200k-window threshold under min(pct, cap) — a distinct symbol from
+# SMALL_THRESHOLD (currently equal to it per A7) so a future cap below 80,000
+# doesn't silently overload one name with two meanings.
+EFFECTIVE_SMALL_THRESHOLD = SMALL_THRESHOLD
+# Effective 1M-window threshold under min(pct, cap): 40% of 1M is 400,000,
+# above the cap, so the cap itself governs (see the collision-probe
+# re-derivation for why the probe below must not be parameterized on this).
+LARGE_THRESHOLD = DEFAULT_ABS_CAP
 ABOVE_LARGE = 650_000
 
-# Four verified 200k models and four verified 1M models, chosen so the two
-# 1M Opus rows flank the 200k Opus 4.5/4.1 entries — a same-major-version
-# sanity check that 4.5/4.1 (200k) and 4.6/4.8 (1M) don't collapse onto the
-# same window under a careless broad `case` arm (e.g. claude-opus-4-*).
-KNOWN_MODEL_WINDOWS = [
-    ("claude-haiku-4-5", SMALL_WINDOW),
-    ("claude-sonnet-4-5", SMALL_WINDOW),
-    ("claude-opus-4-5", SMALL_WINDOW),
-    ("claude-opus-4-1", SMALL_WINDOW),
-    ("claude-sonnet-5", LARGE_WINDOW),
-    ("claude-opus-5", LARGE_WINDOW),
-    ("claude-opus-4-6", LARGE_WINDOW),
-    ("claude-opus-4-8", LARGE_WINDOW),
+# The collision probe below only discriminates a correct case-glob arm from a
+# broken one when the cap sits strictly above SMALL_THRESHOLD (or the buggy
+# and correct arms collapse to the same value) and at or below 40% of 1M (or
+# the correct arm also fires at cap-1, a false red) — see the collision-probe
+# re-derivation. Fails loudly at collection time rather than silently
+# defanging the probe.
+assert 80_000 < DEFAULT_ABS_CAP <= 400_000, (
+    "the collision probe below only discriminates a correct case-glob arm "
+    "from a broken one when the cap is strictly above SMALL_THRESHOLD and at "
+    "or below 40% of the 1M window"
+)
+
+# Literal, not derived from the production ternary formula — mirroring that
+# formula here would make the two threshold tests below tautological on
+# formula shape. Four verified 200k models and four verified 1M models,
+# chosen so the two 1M Opus rows flank the 200k Opus 4.5/4.1 entries — a
+# same-major-version sanity check that 4.5/4.1 (200k) and 4.6/4.8 (1M) don't
+# collapse onto the same window under a careless broad `case` arm (e.g.
+# claude-opus-4-*).
+KNOWN_MODEL_THRESHOLDS = [
+    ("claude-haiku-4-5", SMALL_WINDOW, EFFECTIVE_SMALL_THRESHOLD),
+    ("claude-sonnet-4-5", SMALL_WINDOW, EFFECTIVE_SMALL_THRESHOLD),
+    ("claude-opus-4-5", SMALL_WINDOW, EFFECTIVE_SMALL_THRESHOLD),
+    ("claude-opus-4-1", SMALL_WINDOW, EFFECTIVE_SMALL_THRESHOLD),
+    ("claude-sonnet-5", LARGE_WINDOW, LARGE_THRESHOLD),
+    ("claude-opus-5", LARGE_WINDOW, LARGE_THRESHOLD),
+    ("claude-opus-4-6", LARGE_WINDOW, LARGE_THRESHOLD),
+    ("claude-opus-4-8", LARGE_WINDOW, LARGE_THRESHOLD),
 ]
 
 # IDs that share a known 200k arm's literal string prefix but extend it with
@@ -451,20 +477,18 @@ class TestNudgeHandoffNearContextCap:
     # Per-model context-window resolution (GH-556)
     # -----------------------------------------------------------------------
 
-    @pytest.mark.parametrize("model,window", KNOWN_MODEL_WINDOWS)
-    def test_fires_at_exactly_threshold_for_model(self, tmp_path, model, window):
-        """Each known model ID fires when its own 40%-of-window threshold is met exactly."""
-        threshold = window * 40 // 100
+    @pytest.mark.parametrize("model,window,threshold", KNOWN_MODEL_THRESHOLDS)
+    def test_fires_at_exactly_threshold_for_model(self, tmp_path, model, window, threshold):
+        """Each known model ID fires when its own effective threshold is met exactly."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(threshold, model=model)])
         result = _run_hook(_base_payload(transcript), tmp_path)
         assert result.returncode == 0
         assert result.stdout.strip() != ""
 
-    @pytest.mark.parametrize("model,window", KNOWN_MODEL_WINDOWS)
-    def test_silent_one_below_threshold_for_model(self, tmp_path, model, window):
-        """Each known model ID stays silent one token below its own threshold."""
-        threshold = window * 40 // 100
+    @pytest.mark.parametrize("model,window,threshold", KNOWN_MODEL_THRESHOLDS)
+    def test_silent_one_below_threshold_for_model(self, tmp_path, model, window, threshold):
+        """Each known model ID stays silent one token below its own effective threshold."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(threshold - 1, model=model)])
         result = _run_hook(_base_payload(transcript), tmp_path)
@@ -472,7 +496,8 @@ class TestNudgeHandoffNearContextCap:
         assert result.stdout.strip() == ""
 
     def test_old_120k_constant_no_longer_fires_on_1m_models(self, tmp_path):
-        """135 000 (fired under the old flat 120 000 constant) is now silent on a 1M model. Direct GH-556 regression test."""
+        """135 000 (fired under the old flat 120 000 constant) is now silent on a 1M model — well
+        below the 360000 absolute cap. Direct GH-556 regression test."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(135000, model="claude-sonnet-5")])
         result = _run_hook(_base_payload(transcript), tmp_path)
@@ -536,13 +561,32 @@ class TestNudgeHandoffNearContextCap:
         (claude-opus-4-10 vs the claude-opus-4-1 arm) must not match that arm — it should fall to
         the 1M default. Direct regression pin for the case-glob prefix-collision bug: the fix
         anchors each arm to an exact match or a trailing "-", not a bare trailing "*".
+
+        Parameterized on SMALL_THRESHOLD, not the cap: a buggy arm that wrongly matched the 200k
+        glob would fire at exactly SMALL_THRESHOLD, while the correct arm (falling to the 1M
+        default) stays silent there for any cap above it — see the module-level range assertion
+        above and the positive control below.
         """
         transcript = tmp_path / "t.jsonl"
-        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD - 1, model=model_id)])
+        _write_transcript(transcript, [_record_totalling(SMALL_THRESHOLD, model=model_id)])
         result = _run_hook(_base_payload(transcript), tmp_path)
         assert result.returncode == 0
         assert result.stdout.strip() == "", (
             f"{model_id} matched a 200k arm by string-prefix collision instead of falling to the 1M default"
+        )
+
+    @pytest.mark.parametrize("model_id", COLLIDING_MODEL_IDS)
+    def test_longer_numeral_fires_at_1m_arm_effective_threshold(self, tmp_path, model_id):
+        """Positive control for the probe above: the same colliding model ID DOES fire once its
+        estimate reaches the 1M arm's effective threshold (the cap) — proving it correctly falls
+        to that arm and respects its threshold, not merely that it fails to match the 200k one.
+        """
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model=model_id)])
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", (
+            f"{model_id} should fall to the 1M arm and fire once its estimate reaches the cap"
         )
 
     def test_nudged_log_line_includes_model_and_window(self, tmp_path):
@@ -574,6 +618,151 @@ class TestNudgeHandoffNearContextCap:
         assert result.stdout.strip() == ""
         log = _log_path(tmp_path)
         assert "schema-drift" in log.read_text()
+
+    # -----------------------------------------------------------------------
+    # The true no-match default arm — distinct from the collision probe above,
+    # which pins a *mismatched-prefix* model ID. This one has no colliding
+    # `case`-statement prefix at all, and its effective threshold now
+    # reflects the cap rather than the "may never fire" assumption the old
+    # flat-400,000 default carried.
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.parametrize("total,expect_fire", [(LARGE_THRESHOLD - 1, False), (LARGE_THRESHOLD, True)])
+    def test_true_no_match_default_arm_effective_threshold_reflects_cap(self, tmp_path, total, expect_fire):
+        """A model ID with no `case`-statement prefix overlap at all still resolves to the 1M
+        default, whose effective threshold is the absolute cap, not the raw 400,000 pct value."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(total, model="some-other-vendor-model")])
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        assert (result.stdout.strip() != "") == expect_fire
+
+    # -----------------------------------------------------------------------
+    # HANDOFF_NUDGE_ABS_CAP consumer override
+    # -----------------------------------------------------------------------
+
+    def test_abs_cap_override_changes_effective_threshold(self, tmp_path):
+        """A valid HANDOFF_NUDGE_ABS_CAP overrides the default cap for 1M-window models."""
+        custom_cap = 200_000
+        below = tmp_path / "below.jsonl"
+        _write_transcript(below, [_record_totalling(custom_cap - 1, model="claude-sonnet-5")])
+        result_below = _run_hook(
+            _base_payload(below, session_id="override-below"),
+            tmp_path,
+            extra_env={"HANDOFF_NUDGE_ABS_CAP": str(custom_cap)},
+        )
+        assert result_below.returncode == 0
+        assert result_below.stdout.strip() == ""
+
+        at_cap = tmp_path / "at.jsonl"
+        _write_transcript(at_cap, [_record_totalling(custom_cap, model="claude-sonnet-5")])
+        result_at = _run_hook(
+            _base_payload(at_cap, session_id="override-at"),
+            tmp_path,
+            extra_env={"HANDOFF_NUDGE_ABS_CAP": str(custom_cap)},
+        )
+        assert result_at.returncode == 0
+        assert result_at.stdout.strip() != ""
+
+    def test_abs_cap_override_unset_falls_back_to_default(self, tmp_path):
+        """With HANDOFF_NUDGE_ABS_CAP unset, the 1M-window arm uses the shipped default cap."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+
+    @pytest.mark.parametrize(
+        "malformed_value", ["abc", "080000", "", "-1", "1.5", "1e5", "9223372036854775808"]
+    )
+    def test_abs_cap_malformed_override_falls_back_to_default_not_zero(self, tmp_path, malformed_value):
+        """A malformed HANDOFF_NUDGE_ABS_CAP (non-numeric, zero-padded, empty, negative,
+        non-integer, or 10+ digits — which risks wrapping negative in bash's signed 64-bit
+        arithmetic, e.g. 2**63) must fall back to the shipped default rather than degrade
+        THRESHOLD toward 0/unset/negative — which would fire on every session, the opposite of
+        "override ignored"."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript, [_record_totalling(LARGE_THRESHOLD - 1, model="claude-sonnet-5")]
+        )
+        result = _run_hook(
+            _base_payload(transcript), tmp_path,
+            extra_env={"HANDOFF_NUDGE_ABS_CAP": malformed_value},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == "", (
+            f"malformed HANDOFF_NUDGE_ABS_CAP={malformed_value!r} should fall back to the "
+            "default cap, not fire below it"
+        )
+
+    @pytest.mark.parametrize(
+        "malformed_value", ["abc", "080000", "", "-1", "1.5", "1e5", "9223372036854775808"]
+    )
+    def test_abs_cap_malformed_override_positive_control_fires_at_default(self, tmp_path, malformed_value):
+        """Positive control for the test above: proves the fallback actually lands on the
+        shipped default (LARGE_THRESHOLD) rather than some other silent-non-firing state —
+        e.g. the "080000" case reaches THRESHOLD via an invalid-octal arithmetic error rather
+        than the case guard, which the negative-only test above cannot distinguish from a
+        guard regression that leaves the hook permanently silent."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")]
+        )
+        result = _run_hook(
+            _base_payload(transcript), tmp_path,
+            extra_env={"HANDOFF_NUDGE_ABS_CAP": malformed_value},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", (
+            f"malformed HANDOFF_NUDGE_ABS_CAP={malformed_value!r} should fall back to the "
+            "default cap and fire at it, not stay silent indefinitely"
+        )
+
+    # -----------------------------------------------------------------------
+    # M3: additionalContext states the computed threshold, ordering hazard
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.parametrize("model,threshold", [("claude-haiku-4-5", SMALL_THRESHOLD), ("claude-sonnet-5", LARGE_THRESHOLD)])
+    def test_additional_context_states_the_computed_threshold(self, tmp_path, model, threshold):
+        """additionalContext embeds THRESHOLD via --argjson, on both a 200k and a 1M model —
+        the only thing that would catch a CONTEXT_WINDOW-instead-of-THRESHOLD wiring slip."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(threshold, model=model)])
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        assert str(threshold) in ctx
+
+    def test_jq_failure_building_context_does_not_burn_marker_or_log(self, tmp_path):
+        """A jq failure while building additionalContext must not write the marker or log line —
+        the capture-then-test fix must not silently swallow that failure the way the original
+        `jq -n … 2>/dev/null || true` did. A shim `jq` on PATH fails only the final `-n` build
+        call; earlier extraction calls (`-r`, `-s`) still delegate to the real jq."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+
+        real_jq = shutil.which("jq")
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        fake_jq = fake_bin / "jq"
+        fake_jq.write_text(
+            "#!/bin/bash\n"
+            "for arg in \"$@\"; do\n"
+            "  if [ \"$arg\" = \"-n\" ]; then exit 1; fi\n"
+            "done\n"
+            f'exec "{real_jq}" "$@"\n'
+        )
+        fake_jq.chmod(0o755)
+
+        result = _run_hook(
+            _base_payload(transcript), tmp_path,
+            extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert not _marker_path(tmp_path).exists()
+        assert not _log_path(tmp_path).exists()
 
     # -----------------------------------------------------------------------
     # CLAUDE_CONFIG_DIR resolution
