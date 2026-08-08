@@ -1815,6 +1815,11 @@ class TestAllProjectsRootsFileParsing:
         assert result.returncode == 0
         assert f"== {local.resolve()} ==" in result.stdout
         assert "feat/bare-tilde-root" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/bare-tilde-root"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "dry-run must never delete"
 
     def test_padded_whitespace_real_path_line_is_trimmed(self, tmp_path, fake_gh):
         """A roots-file line with real path content plus leading/trailing
@@ -1838,6 +1843,11 @@ class TestAllProjectsRootsFileParsing:
         )
         assert f"== {local.resolve()} ==" in result.stdout
         assert "feat/padded-whitespace-root" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/padded-whitespace-root"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "dry-run must never delete"
 
 
 class TestAllProjectsMissingConfiguredRoot:
