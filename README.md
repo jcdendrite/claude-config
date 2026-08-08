@@ -408,7 +408,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires on session start, after `/clear`, and after compaction. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
 
-2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `~/.claude/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` at ~60% context usage because cleaner context produces a higher-quality resume file, and every turn beyond 60% is waste. Resume with `resume-context --cwd <worktree-path> ~/.claude/handoffs/<slug>-handoff.md` when the handoff named a worktree, or `resume-context ~/.claude/handoffs/<slug>-handoff.md` alone from the main checkout — either form moves the file to a temp path and launches a new session with it loaded, consumption mechanical rather than dependent on the resuming session remembering to read or delete the file. `--cwd` launches the session in that directory outright, rather than depending on the invoker separately `cd`-ing there first.
+2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `~/.claude/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` at ~40% context usage because cleaner context produces a higher-quality resume file, and every turn beyond 40% is waste. Resume with `resume-context --cwd <worktree-path> ~/.claude/handoffs/<slug>-handoff.md` when the handoff named a worktree, or `resume-context ~/.claude/handoffs/<slug>-handoff.md` alone from the main checkout — either form moves the file to a temp path and launches a new session with it loaded, consumption mechanical rather than dependent on the resuming session remembering to read or delete the file. `--cwd` launches the session in that directory outright, rather than depending on the invoker separately `cd`-ing there first.
 
 ### When to use which
 
@@ -420,7 +420,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 ### Threshold reference
 
-- ~60%: suggested threshold for `/handoff` — this repo's own chosen fraction, not a vendor-specified figure. `nudge-handoff-near-context-cap.sh` computes it against the resolved model's actual context window (200k or 1M, model-dependent); see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for the per-model table and known limitations.
+- ~40%: suggested threshold for `/handoff` — this repo's own chosen fraction, not a vendor-specified figure. `nudge-handoff-near-context-cap.sh` computes it against the resolved model's actual context window (200k or 1M, model-dependent); see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for the per-model table and known limitations.
 - ~83.5%: auto-compact trigger (community-reported; configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
 - Run `analyze-context` to inspect token usage for the current session.
 

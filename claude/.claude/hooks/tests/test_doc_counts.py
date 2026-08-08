@@ -138,6 +138,7 @@ def _count_name_only_skills() -> int:
 
 _GROUND_EVERY_CHOICE_BULLET = "- **Ground every choice.**"
 _GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
+_NUDGE_HOOK_REL_PATH = "claude/.claude/hooks/nudge-handoff-near-context-cap.sh"
 
 
 def _count_ground_every_choice_categories() -> int:
@@ -175,6 +176,20 @@ def _count_ground_every_choice_categories() -> int:
     if terminator:
         body = body[: terminator.start()]
     return len(re.findall(r"^  - \*\*", body, re.MULTILINE))
+
+
+def _count_handoff_nudge_threshold_percentage() -> int:
+    """Return the handoff-nudge threshold percentage from the hook's THRESHOLD calculation."""
+    hook_path = REPO_ROOT / _NUDGE_HOOK_REL_PATH
+    text = hook_path.read_text()
+    match = re.search(r"THRESHOLD=\$\(\( CONTEXT_WINDOW \* (\d+) / 100 \)\)", text)
+    if match is None:
+        raise ValueError(
+            "Could not find 'THRESHOLD=$(( CONTEXT_WINDOW * N / 100 ))' in "
+            f"{_NUDGE_HOOK_REL_PATH}; the hook's threshold calculation was "
+            "reworded and this ground truth needs updating."
+        )
+    return int(match.group(1))
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +257,42 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 rel_path="docs/skills.md",
                 pattern=r"(\w+) skills in this repo use `skillOverrides: name-only`",
                 description="docs/skills.md: N skills use skillOverrides: name-only",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_handoff_nudge_threshold_percentage,
+        label="handoff-nudge THRESHOLD percentage in nudge-handoff-near-context-cap.sh",
+        occurrences=[
+            Occurrence(
+                rel_path="docs/handoff-nudge.md",
+                pattern=r"total crosses (\d+)% of that window",
+                description="docs/handoff-nudge.md: total crosses N% of that window",
+            ),
+            Occurrence(
+                rel_path="docs/handoff-nudge.md",
+                pattern=r"Threshold \((\d+)%\)",
+                description="docs/handoff-nudge.md: table header threshold percentage",
+            ),
+            Occurrence(
+                rel_path="docs/handoff-nudge.md",
+                pattern=r"well past (\d+)% without completing",
+                description="docs/handoff-nudge.md: well past N% without completing",
+            ),
+            Occurrence(
+                rel_path="README.md",
+                pattern=r"suggests `/handoff` at ~(\d+)% context usage",
+                description="README.md: suggests /handoff at ~N% context usage",
+            ),
+            Occurrence(
+                rel_path="README.md",
+                pattern=r"every turn beyond (\d+)% is waste",
+                description="README.md: every turn beyond N% is waste",
+            ),
+            Occurrence(
+                rel_path="README.md",
+                pattern=r"~(\d+)%: suggested threshold for `/handoff`",
+                description="README.md: ~N%: suggested threshold for /handoff",
             ),
         ],
     ),
