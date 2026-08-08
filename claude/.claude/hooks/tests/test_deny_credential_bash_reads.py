@@ -423,6 +423,140 @@ class TestDenyCredentialBashReads:
         assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "allow"
 
     # ------------------------------------------------------------------ #
+    # Env-file loader flag exemption                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_env_file_flag_reproducer_allowed(self, isolated_home):
+        """The originally reported false positive: a `.env`-shaped argument
+        to `deno test --env-file=` loads the file into the test process's
+        environment rather than printing it, so the command must not deny
+        just because it also passes a real test target afterward."""
+        command = (
+            "deno test --config /repo/deno.json --unstable-net --allow-all "
+            "--env-file=/repo/tests/.env /repo/tests/unit/"
+        )
+        assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "allow"
+
+    def test_env_file_flag_space_form_allowed(self, isolated_home):
+        command = (
+            "deno test --config /repo/deno.json --unstable-net --allow-all "
+            "--env-file /repo/tests/.env /repo/tests/unit/"
+        )
+        assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "allow"
+
+    def test_env_file_flag_against_tool_that_does_not_parse_it_allowed(self, isolated_home):
+        """Accepted residual: the flag is inert argv padding to any
+        command that doesn't actually parse it. BSD `cat` (this suite's
+        environment) rejects `--env-file` outright (`cat: illegal option --
+        -`, exit 1, file unread, confirmed this session) rather than reading
+        the argument as a path, so this case is inert padding rather than a
+        live exposure — accepted knowingly rather than closed, since closing
+        it needs a runner allowlist plus shell-segment parsing, heavier than
+        this guardrail warrants."""
+        assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input("cat --env-file t/.env"), home=isolated_home) == "allow"
+
+    @pytest.mark.parametrize("flag_form", ["--env-file {path}", "--env-file={path}"])
+    def test_env_file_flag_against_non_env_credential_path_denied(self, isolated_home, flag_form):
+        """Condition 2, the invariant that actually breaks: only a
+        `.env`-shaped argument is exempt, so a non-`.env` credential path in
+        flag position still denies, in both the `=` and space argument
+        forms. Proves the hook's scan-strip-re-scan wiring only -- the full
+        credential-family sweep is pinned at the cheaper unit layer in
+        test_lib.py::test_lib_strip_env_file_flag_args_non_env_credential_family_unstripped."""
+        command = flag_form.format(path="~/.netrc")
+        assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "deny"
+
+    def test_env_file_flag_metacharacter_terminated_argument_denied(self, isolated_home):
+        """The case that actually tests the metacharacter boundary: no
+        spaces around `;`, so the argument run for the exempted `--env-file`
+        flag stops right at the semicolon rather than swallowing the second
+        command and its own credential-shaped argument. A spaced `&&`
+        variant would pass trivially (the `.netrc` token would survive
+        anyway, whitespace-separated) and prove nothing about this
+        boundary."""
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK,
+            bash_input("--env-file=t/.env;cat </foo/.netrc"),
+            home=isolated_home,
+        ) == "deny"
+
+    def test_env_file_flag_alongside_separate_env_credential_argument_denied(self, isolated_home):
+        """A second, unexempted credential token elsewhere in the same
+        command must still deny even though the first `.env` reference is
+        itself exempt."""
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK,
+            bash_input("cat /foo/.env --env-file=/bar/.env"),
+            home=isolated_home,
+        ) == "deny"
+
+    def test_env_file_flag_uppercase_spelling_denied(self, isolated_home):
+        """The flag match is case-sensitive, so `--ENV-FILE=` is not
+        recognized as the documented loader flag and the `.env` argument
+        stays denied by the (case-insensitive) built-in scan."""
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK, bash_input("--ENV-FILE=t/.env"), home=isolated_home
+        ) == "deny"
+
+    def test_env_file_flag_backslash_continuation_denied(self, isolated_home):
+        """Sed is line-oriented, so a `\\`-continuation between the flag
+        and its argument leaves the argument on a separate line from the
+        flag and the strip never joins them -- the command stays denied."""
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK,
+            bash_input("--env-file \\\nt/.env"),
+            home=isolated_home,
+        ) == "deny"
+
+    def test_env_file_flag_named_ssh_key_argument_still_denies_via_ssh_check(self, isolated_home):
+        """Regression guard: `~/.ssh/deploy_key` is not `.env`-shaped, so
+        condition 2 already leaves it unstripped -- but this also proves the
+        `.ssh` deny-by-default check downstream (which reads the un-stripped
+        text) is what ultimately catches it, since _LIB_CREDENTIAL_PATH_REGEX
+        itself does not match a named file under `.ssh`."""
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK,
+            bash_input("pytest --envfile ~/.ssh/deploy_key"),
+            home=isolated_home,
+        ) == "deny"
+
+    def test_env_file_flag_alongside_separate_ssh_key_reference_denied(self, isolated_home):
+        """Regression guard: a command carrying BOTH an exempted
+        `--env-file=.env` flag AND an unrelated named-SSH-key reference must
+        still deny via the `.ssh` check downstream -- clearing the
+        credential-regex match that the `.env` flag alone explains must not
+        also skip the independent `.ssh` and guard-file checks for the rest
+        of the command."""
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK,
+            bash_input("--env-file=t/.env cat ~/.ssh/deploy_key"),
+            home=isolated_home,
+        ) == "deny"
+
+    def test_env_file_flag_guard_file_glob_still_denies(self, isolated_home):
+        """Regression guard: a personal `credential-file-guard.md` glob
+        that would itself match only the flag text (a shape the exemption
+        would otherwise clear) still denies, since that check also reads the
+        un-stripped command text."""
+        guard_file = isolated_home / ".claude" / "credential-file-guard.md"
+        guard_file.write_text("--env-file=*\n")
+        assert run_hook(
+            DENY_CREDENTIAL_BASH_READS_HOOK,
+            bash_input("deno test --env-file=/repo/tests/.env /repo/tests/unit/"),
+            home=isolated_home,
+        ) == "deny"
+
+    # The fail-closed-on-transform-failure guarantee is not reproducible
+    # end-to-end at this layer: _lib_parse_tool_input_or_deny extracts
+    # $COMMAND via `jq -r`, and jq's own JSON string parsing replaces an
+    # invalid UTF-8 byte with the Unicode replacement character before this
+    # hook ever sees it, so the sed-failure path never actually receives an
+    # invalid byte through the hook's JSON tool-input interface. Pinned
+    # directly at the library level instead, in
+    # test_lib.py::test_lib_strip_env_file_flag_args_returns_original_text_unchanged_on_sed_failure,
+    # which injects the byte via argv rather than through jq.
+
+    # ------------------------------------------------------------------ #
     # Deny message content                                                #
     # ------------------------------------------------------------------ #
 

@@ -2,7 +2,24 @@
 # hook-class: gate
 # Gate: deny Claude's Bash tool whenever the raw command text contains a credential-path token (SSH private key basename, .netrc/_netrc, .git-credentials, a cloud credential-store path, a non-template .env variant, credentials.json). Always on, no arming file, no bypass valve — closes the Bash-based read gap that deny-env-reads.sh and deny-data-file-reads.sh leave open by only gating the Read tool.
 # Matches the path token alone, with no verb condition: the set of commands that can expose file content (vim, tee, dd, openssl, curl --upload-file, ...) is unbounded, so a verb allowlist would trade a bounded false-positive cost for an unbounded bypass surface. Also denies non-exposing commands like ssh-add/chmod/ssh -i — run those via the `!` shell escape instead.
-# Documented residuals, both pinned by regression tests rather than solved: the basename-token match (not path-qualified) also matches a bare string search like `grep id_rsa .` that never opens the file; and a command referencing a credential only through an earlier symlink/rename under an innocuous name carries no credential-path token in the text this hook sees.
+# One exemption: a `.env`-shaped argument to a documented env-file loader flag (`--env-file`, `--env-file-if-exists`, `--envfile`) is stripped before the re-scan below, since that flag loads the file into a subprocess environment rather than printing it. See _lib_strip_env_file_flag_args in _lib.sh for the argument-shape and metacharacter-termination conditions that keep every other credential family denied in flag position.
+#
+# Documented residuals, each pinned by a regression test rather than solved:
+# - The basename-token match (not path-qualified) also matches a bare string
+#   search for an SSH private-key basename that never opens the file.
+# - A command referencing a credential only through an earlier symlink/
+#   rename under an innocuous name carries no credential-path token in the
+#   text this hook sees.
+# - The env-file exemption above still allows a runner to load then print
+#   the file's own contents (`docker run --env-file=t/.env alpine env`) — a
+#   deliberate print, not the accidental exposure this gate targets.
+# - The exemption is inert argv padding to anything that doesn't parse the
+#   flag, so `bash -c 'cat "$2"' _ --env-file <path>/.env` still reads the
+#   file through the gate.
+# - The strip's sed-failure fallback (BSD sed on an invalid UTF-8 byte) is
+#   pinned by a unit test that's skipped whenever GNU sed is detected, so CI
+#   (ubuntu-24.04, GNU sed) never exercises that regression test directly --
+#   only a contributor's local BSD/macOS sed runs it.
 #
 # Fail-closed on unparseable hook input.
 
@@ -42,8 +59,18 @@ COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 
 # Case-folded (-i): on a case-insensitive-but-case-preserving filesystem (macOS APFS/HFS+, Windows NTFS), `id_RSA` opens the same file as `id_rsa` -- a case-sensitive match here would silently bypass a gate with no other bypass valve.
 if printf '%s' "$COMMAND_UNQUOTED" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
-  emit_deny "Blocked by credential-path Bash gate: the command references a credential-shaped path (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, or a non-template .env/credentials.json path). Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content (e.g. ssh-add, chmod, ssh -i), run it yourself via the ! shell escape instead of through Claude's Bash tool."
-  exit 0
+  # Strip only now that the raw text has already matched, then re-scan --
+  # never the reverse order, which would hand an empty/no-op strip an
+  # unmatched string and turn a strip failure into a silent allow. A cleared
+  # re-scan falls through to the .ssh and credential-file-guard.md checks
+  # below rather than returning allow outright, so a command that also
+  # carries an unrelated credential-shaped token (one only those checks
+  # catch) alongside an exempted env-file flag still reaches them.
+  COMMAND_ENV_FILE_STRIPPED=$(_lib_strip_env_file_flag_args "$COMMAND_UNQUOTED")
+  if printf '%s' "$COMMAND_ENV_FILE_STRIPPED" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
+    emit_deny "Blocked by credential-path Bash gate: the command references a credential-shaped path (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, or a non-template .env/credentials.json path). Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content (e.g. ssh-add, chmod, ssh -i), run it yourself via the ! shell escape instead of through Claude's Bash tool."
+    exit 0
+  fi
 fi
 
 # Custom-named SSH keys (deploy_key, github_actions_key, ...) have no fixed

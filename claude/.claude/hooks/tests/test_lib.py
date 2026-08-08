@@ -1570,6 +1570,179 @@ def test_lib_strip_shell_quotes_over_strips_double_quoted_literal_apostrophe() -
     assert _strip_shell_quotes("""~/.ssh/id_r"'"sa""") == "~/.ssh/id_rsa"
 
 
+# --- _lib_strip_env_file_flag_args ------------------------------------------
+#
+# End-to-end coverage of this function's effect (through
+# deny-credential-bash-reads.sh's scan-strip-re-scan ordering) lives in
+# test_deny_credential_bash_reads.py. The tests here pin the transformation
+# itself in isolation, the same split _lib_strip_shell_quotes's own comment
+# above establishes.
+
+
+def _strip_env_file_flag_args(text: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_strip_env_file_flag_args "$1"', "bash", text],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def test_lib_strip_env_file_flag_args_strips_env_file_equals_form() -> None:
+    result = _strip_env_file_flag_args("deno test --env-file=t/.env --allow-all")
+    assert "--env-file" not in result
+    assert "t/.env" not in result
+    assert "--allow-all" in result
+
+
+def test_lib_strip_env_file_flag_args_strips_env_file_space_form() -> None:
+    result = _strip_env_file_flag_args("deno test --env-file t/.env --allow-all")
+    assert "--env-file" not in result
+    assert "t/.env" not in result
+    assert "--allow-all" in result
+
+
+def test_lib_strip_env_file_flag_args_strips_env_file_if_exists_equals_form() -> None:
+    """Node's spelling — `=` form only per its own docs; over-covering the
+    space form for this flag costs nothing (condition 2 still gates the
+    argument), but only the `=` form is exercised here since that's the
+    documented shape."""
+    result = _strip_env_file_flag_args("node --env-file-if-exists=t/.env script.js")
+    assert "--env-file-if-exists" not in result
+    assert "t/.env" not in result
+    assert "script.js" in result
+
+
+def test_lib_strip_env_file_flag_args_strips_envfile_space_form() -> None:
+    """pytest-dotenv's spelling — space form only per its own docs."""
+    result = _strip_env_file_flag_args("pytest --envfile t/.env tests/")
+    assert "--envfile" not in result
+    assert "t/.env" not in result
+    assert "tests/" in result
+
+
+def test_lib_strip_env_file_flag_args_strips_repeated_flags() -> None:
+    """Required regression test: two `--env-file=` occurrences separated by a
+    single space share that space between the first match's terminator and
+    the second match's left anchor, so a single sed pass strips only the
+    first -- the fixed-point loop in _lib_strip_env_file_flag_args is what
+    catches the second. Pinned so a future edit that drops the loop (reverts
+    to a single sed invocation) doesn't silently leave a second `--env-file`
+    occurrence denying a command that should now be exempt."""
+    result = _strip_env_file_flag_args("deno test --env-file=a/.env --env-file=b/.env run")
+    assert "--env-file" not in result
+    assert "a/.env" not in result
+    assert "b/.env" not in result
+    assert "run" in result
+
+
+def test_lib_strip_env_file_flag_args_left_anchor_negative_unstripped() -> None:
+    """A flag not preceded by whitespace or start-of-string (embedded
+    mid-token, here inside `.e--env-file=xnv`) must not be treated as a real
+    flag occurrence -- the left anchor is what keeps this function from
+    stripping arbitrary substrings that merely contain the flag spelling."""
+    assert _strip_env_file_flag_args("/foo/.e--env-file=xnv") == "/foo/.e--env-file=xnv"
+
+
+def test_lib_strip_env_file_flag_args_uppercase_flag_unstripped() -> None:
+    """Case-sensitive by design (no `-i`): `--ENV-FILE=` must survive the
+    strip, so the caller's case-insensitive re-scan still denies it rather
+    than risking a case-insensitive-filesystem bypass."""
+    assert _strip_env_file_flag_args("--ENV-FILE=t/.env") == "--ENV-FILE=t/.env"
+
+
+def test_lib_strip_env_file_flag_args_metacharacter_terminated_argument_leaves_following_token_intact() -> None:
+    """The argument run stops at a shell metacharacter (here `;`), not
+    just whitespace, so a credential token immediately following it (here
+    `.netrc`) survives the strip and remains in the string the caller
+    re-scans."""
+    result = _strip_env_file_flag_args("--env-file=t/.env;cat </foo/.netrc")
+    assert ".netrc" in result
+
+
+def test_lib_strip_env_file_flag_args_non_env_argument_unstripped() -> None:
+    """Condition 2: an argument whose basename isn't `.env`-shaped must
+    survive regardless of the flag it's attached to -- `--env-file ~/.netrc`
+    stays a `.netrc` reference, not silently exempted alongside `.env`."""
+    assert _strip_env_file_flag_args("--env-file=~/.netrc") == "--env-file=~/.netrc"
+
+
+# Every _LIB_CREDENTIAL_PATH_REGEX alternative that condition 2 must NOT
+# treat as `.env`-shaped -- every group 1 SSH-key basename plus every group 2
+# credential-file path. Excludes the `.env`/`.env.*` variants themselves
+# (those ARE meant to strip) and group 3's `.ssh` directory-reference shapes
+# (covered separately by test_env_file_flag_named_ssh_key_argument_still_denies_via_ssh_check
+# in test_deny_credential_bash_reads.py, since those shapes deny via a
+# different mechanism -- _lib_has_unsafe_ssh_dir_reference -- not this regex).
+_NON_ENV_CREDENTIAL_PATHS = [
+    "/foo/id_rsa",
+    "/foo/id_dsa",
+    "/foo/id_ecdsa",
+    "/foo/id_ed25519",
+    "~/.netrc",
+    "~/_netrc",
+    "~/.git-credentials",
+    "/foo/credentials.json",
+    "~/.credentials.json",
+    "~/.aws/credentials",
+    "~/.docker/config.json",
+    "~/.kube/config",
+    "~/.config/gh/hosts.yml",
+]
+
+
+@pytest.mark.parametrize("credential_path", _NON_ENV_CREDENTIAL_PATHS)
+@pytest.mark.parametrize("flag_form", ["--env-file {path}", "--env-file={path}"])
+def test_lib_strip_env_file_flag_args_non_env_credential_family_unstripped(
+    flag_form: str, credential_path: str
+) -> None:
+    """Condition 2's full family sweep: every non-`.env`-shaped alternative
+    in _LIB_CREDENTIAL_PATH_REGEX must survive the strip attached to either
+    argument form, not just the one representative case exercised at the
+    hook layer in test_deny_credential_bash_reads.py."""
+    command = flag_form.format(path=credential_path)
+    assert credential_path in _strip_env_file_flag_args(command)
+
+
+def _sed_is_gnu() -> bool:
+    result = subprocess.run(["sed", "--version"], capture_output=True, text=True, check=False)
+    return result.returncode == 0 and "GNU sed" in result.stdout
+
+
+@pytest.mark.skipif(
+    _sed_is_gnu(),
+    reason="GNU sed passes an invalid UTF-8 byte through rather than "
+    "failing, so this fail-closed path (BSD sed's \"illegal byte sequence\" "
+    "exit under a UTF-8 locale) only reproduces on BSD sed; CI runs "
+    "ubuntu-24.04 (GNU sed) and would not observe the failure this test pins.",
+)
+def test_lib_strip_env_file_flag_args_returns_original_text_unchanged_on_sed_failure() -> None:
+    """On a sed failure, the function returns $1 unchanged rather
+    than a partial or empty result, so the caller's re-scan still sees the
+    original credential-shaped text and denies. Injects the invalid byte via
+    argv (not the JSON-based hook interface): jq's own JSON string
+    extraction replaces an invalid UTF-8 byte with the Unicode replacement
+    character before the hook ever sets $COMMAND, so this failure mode is
+    unreachable end-to-end through the hook's actual tool-input interface --
+    only directly at this function's own argument boundary, which is what
+    this test exercises."""
+    command_text = "--env-file=t/.env cat ~/.netrc"
+    raw = command_text.encode("utf-8")
+    raw = raw.replace(b"cat", b"c\xffat", 1)  # a lone 0xFF byte: invalid on its own in UTF-8
+    harness = f'. {_LIB_SH}; _lib_strip_env_file_flag_args "$1"'.encode()
+    env = dict(os.environ)
+    env["LC_ALL"] = "en_US.UTF-8"
+    result = subprocess.run(
+        [b"bash", b"-c", harness, b"bash", raw],
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout == raw
+
+
 def test_lib_pem_private_key_block_regex_matches_full_block_under_jq() -> None:
     """Redaction-only counterpart to _LIB_CREDENTIAL_VALUE_REGEX's header-only
     PEM alternative — must compile under jq's Oniguruma engine (its only

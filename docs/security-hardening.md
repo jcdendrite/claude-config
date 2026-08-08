@@ -76,11 +76,20 @@ specifically denies on the path token alone, with no carve-out for a
 command that references the path without exposing its content (`ssh-add`,
 `chmod`, `ssh -i`) — the set of verbs that CAN expose content is
 unbounded, so a verb allowlist would trade a bounded false-positive cost
-for an unbounded bypass. Run a specific legitimate non-exposing command
-via the `!` shell escape instead — its output carries no secret content,
-so it's safe there. To inspect the file's actual content, use a separate
-terminal window outside this session: `!` does not avoid this either,
-since Claude Code adds shell-mode output to the conversation transcript.
+for an unbounded bypass. That no-verb-allowlist stance is unchanged; the
+one narrower exemption is a `.env`-shaped argument to a documented env-file
+loader flag (`--env-file`, `--env-file-if-exists`, `--envfile` — Deno,
+Docker/podman/docker compose, Node, and pytest-dotenv respectively), which
+loads the file into a subprocess environment rather than printing it. The
+argument must still resolve to a `.env`-shaped basename (`--env-file
+~/.netrc` still denies) and its own text must terminate at whitespace or a
+shell metacharacter (`; & | < > ( ) $` or a backtick), not swallow past it
+— see `_lib_strip_env_file_flag_args` in `_lib.sh`. Run a specific
+legitimate non-exposing command via the `!` shell escape instead — its
+output carries no secret content, so it's safe there. To inspect the
+file's actual content, use a separate terminal window outside this
+session: `!` does not avoid this either, since Claude Code adds
+shell-mode output to the conversation transcript.
 `redact-credential-values.sh` is the
 different-layer backstop for the two gate hooks: a credential can enter
 context through a path neither one anticipates (a `WebFetch` response, a
@@ -500,6 +509,25 @@ to hold PII/PHI or live credentials:
   searching FOR the literal string `id_rsa` (e.g. `grep "id_rsa" .`), not
   opening a file by that name, is denied too. Accepted false-positive cost,
   not a gap in the credential-exposure coverage itself.
+- `deny-credential-bash-reads.sh`'s env-file loader exemption still allows a
+  runner to load the file and then print it in the same invocation
+  (`docker run --env-file=t/.env alpine env`) — a deliberate print, not the
+  accidental exposure this gate targets. There is no default value-layer
+  backstop for this: `redact-credential-values.sh` only redacts GitHub
+  token prefixes, an AWS access key ID, and a PEM header (see the value-shape
+  limitation above), not a `.env` file's own key=value contents, so this one
+  shape makes the Bash gate weaker than its `deny-credential-file-reads.sh`
+  Read-tool sibling, which has no such exemption. Adding an `--env-file` glob
+  to `~/.claude/credential-file-guard.md` re-denies it, since that scan site
+  reads the un-stripped command text and is never fed the exemption's output.
+- The exemption is text-pattern matching, not shell-semantics-aware: `bash -c
+  'cat "$2"' _ --env-file <path>/.env` passes the gate, because `--env-file
+  <path>/.env` reads as the documented loader flag even though bash actually
+  reassigns `--env-file` to `$1` and hands `cat` only `$2` (the bare path) as
+  its argument — the flag is inert argv padding to the command that's really
+  running, not a real env-file load. Scope stays bounded to the `.env`
+  family: every other credential shape still requires a `.env`-shaped
+  basename to reach this exemption at all.
 - Both credential-path gates deny-by-default under `.ssh` (and its
   backup-suffixed siblings `.ssh.bak`/`.ssh_backup`/`.ssh.old`): any named
   file reference is denied unless its basename is on a small safe
