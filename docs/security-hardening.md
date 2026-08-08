@@ -185,19 +185,32 @@ file. That native rule was the right primitive to reach for first per this
 repo's own "default-suspect over-powered primitives" standard, and it avoids
 the custom hook's specific defects (a hand-rolled host parser, a `python3`
 hard dependency, an ask-under-auto-mode assumption Claude Code doesn't
-document as reliable). It does **not**, however, close the actual gap that
-makes a custom allowlist-file hook unsafe here: nothing in this repo gates
-edits to `settings.json` beyond `ask-review-permissions.sh`, which is
-`hook-class: informational` and returns only an `ask` decision — the same
-class of prompt this repo's own hooks avoid relying on in
-`auto`/`bypassPermissions` precisely because a hook-returned `ask` isn't
-documented to force a prompt there. An agent can edit `permissions.allow` to
-add a `WebFetch(domain:...)` rule for a host of its own choosing exactly as
-readily as it could have appended a line to the custom hook's additions
-file — the self-widening path is unchanged, only the location of the list
-moved. Closing that would need a genuine `deny`-class guard on
-`permissions.*` edits, which doesn't exist today for any permission family
-and is out of scope for this hook family.
+document as reliable — `acceptEdits`/`bypassPermissions` are a separately
+verified exception, see below). It does **not**, however, close the actual
+gap that makes a custom allowlist-file hook unsafe here: nothing in this
+repo gates edits to `settings.json` beyond `ask-review-permissions.sh`,
+which is `hook-class: informational` and returns only an `ask` decision — a
+soft gate a human can approve without scrutiny, unlike a hard `deny`. An
+agent can edit `permissions.allow` to add a `WebFetch(domain:...)` rule for
+a host of its own choosing exactly as readily as it could have appended a
+line to the custom hook's additions file — the self-widening path is
+unchanged, only the location of the list moved. Closing that would need a
+genuine `deny`-class guard on `permissions.*` edits, which doesn't exist
+today for any permission family and is out of scope for this hook family.
+
+A `PreToolUse` hook's `permissionDecision: "ask"` does render as an
+interactive prompt under `--permission-mode acceptEdits` and
+`--permission-mode bypassPermissions` — verified 2026-08-08 against Claude
+Code 2.1.223, via a throwaway hook gating an ordinary file (isolating the
+result from `.claude/settings.json`'s own native edit confirmation, which
+fires independently of hooks) plus a no-hook control confirming the prompt
+is attributable to the hook rather than baseline Edit-confirmation
+behavior. `auto` mode's classifier layer was not tested and its `ask`
+reliability remains open. The `bypassPermissions` result is notable on its
+own: that mode is documented to skip permission checks more broadly than
+`acceptEdits`, yet a hook's `ask` still surfaced there. None of this closes
+the self-widening gap above — even a reliably-rendering `ask` is a soft
+gate, not a hard `deny`.
 
 Separately, OWASP's [GenAI Security Project — LLM01:2025 Prompt
 Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) gives a
