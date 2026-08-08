@@ -68,6 +68,18 @@
 # content into a decision envelope. Disposition is inverted from
 # _lib_emit_deny: where that hard-blocks on encode failure, this one
 # `exit 0`s silently -- a half-built payload is worse than none.
+#
+# Known gaps (accepted, not chased further -- rationale: docs/security-hardening.md):
+#   - `overrides`/`resolutions` repointing an existing name at a different
+#     tarball, and `scripts.preinstall`/`postinstall`, aren't detected --
+#     key-set diffing only sees dependency-name additions.
+#   - Bash heredoc/`tee`/`sed`/`node -e`/`npx create-*` manifest writes
+#     never fire this hook -- it only sees Edit/Write/MultiEdit tool calls.
+#   - `npm pkg set dependencies.<name>=<ver>` writes a manifest entry with
+#     no ask -- the highest-priority follow-up of this hook family, since
+#     it reproduces the originating incident end-to-end.
+#   - Non-`package.json` ecosystems (including this repo's own
+#     `requirements.txt`) and lockfiles aren't covered.
 
 set -uo pipefail
 
