@@ -27,7 +27,39 @@ mkdir -p "$HOME/.local/bin"
 # not yet exist into a single symlink pointing back into this checkout — which
 # would put every file Claude Code writes at runtime inside the git clone.
 mkdir -p "$HOME/.claude"
-stow -v --adopt -t "$HOME" claude
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: stow-adoption-migration — start
+# plans/, handoffs/, briefs/ are the only stow-adopted paths the Write/Edit
+# tools target from an arbitrary skill invocation (handoff/brief writes,
+# plan-mode's default plan path) — migrate them off stow management first so
+# a symlink resolving into this checkout can no longer collide with worktree
+# enforcement, then tell stow to leave them alone going forward.
+#
+# Sourced from its own known repo-relative path, not ~/.claude/scripts/...,
+# which doesn't exist yet at this point in a fresh install (migration runs
+# before stow does). Not relocate-claude-config.sh itself — sourcing that
+# would turn on set -u/pipefail for the rest of install.sh, fatal on an
+# empty array under macOS system bash 3.2.
+# shellcheck source=claude/.claude/scripts/_stow_migration_lib.sh
+. "$REPO_DIR/claude/.claude/scripts/_stow_migration_lib.sh"
+
+STOW_MIGRATION_FAILURES=()
+for name in plans handoffs briefs; do
+  if ! stow_migrate_adopted_dir "$REPO_DIR" "$name"; then
+    STOW_MIGRATION_FAILURES+=("$name")
+  fi
+done
+if [ ${#STOW_MIGRATION_FAILURES[@]} -gt 0 ]; then
+  echo "[install] warning: could not migrate the following off stow management: ${STOW_MIGRATION_FAILURES[*]} — re-run install.sh to retry; stow keeps managing them as symlinks in the meantime" >&2
+fi
+# INSTALL_TEST_FIXTURE: stow-adoption-migration — end
+
+# --ignore values are anchored Perl regexes, not literal strings — anchoring
+# with ^...$ stops a future name containing '.' or '-' from over-matching.
+stow -v --adopt --ignore='^plans$' --ignore='^handoffs$' --ignore='^briefs$' -t "$HOME" claude
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on

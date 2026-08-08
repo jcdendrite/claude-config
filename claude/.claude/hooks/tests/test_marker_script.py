@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 
 import pytest
 from conftest import _seed_session
@@ -12,12 +13,33 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     TRAVERSAL_SESSION_ID,
+    agent_input,
     bash_input,
     plant_traversal_canary,
+    read_input,
     run_hook,
 )
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
+
+# Every write/activate/deactivate subcommand marker.sh dispatches. Shared by
+# TestMarkerScriptSessionMissing and TestMarkerScriptSessionIdValidation so
+# a subcommand added to the dispatch but only one of the two parametrize
+# lists can't silently narrow coverage on the other guard.
+ALL_MARKER_SUBCOMMAND_ARGS = [
+    ["write", "code-review"],
+    ["write", "skill-review"],
+    ["write", "plan-review"],
+    ["write", "ready-for-review"],
+    ["activate", "plan-review"],
+    ["activate", "ready-for-review"],
+    ["activate", "respond-pr"],
+    ["activate", "memory-skill"],
+    ["deactivate", "plan-review"],
+    ["deactivate", "ready-for-review"],
+    ["deactivate", "respond-pr"],
+    ["deactivate", "memory-skill"],
+]
 
 
 def _run(
@@ -44,23 +66,7 @@ class TestMarkerScriptSessionMissing:
     continues and writes a malformed marker with an empty session-id
     suffix."""
 
-    @pytest.mark.parametrize(
-        "args",
-        [
-            ["write", "code-review"],
-            ["write", "skill-review"],
-            ["write", "plan-review"],
-            ["write", "ready-for-review"],
-            ["activate", "plan-review"],
-            ["activate", "ready-for-review"],
-            ["activate", "respond-pr"],
-            ["activate", "memory-skill"],
-            ["deactivate", "plan-review"],
-            ["deactivate", "ready-for-review"],
-            ["deactivate", "respond-pr"],
-            ["deactivate", "memory-skill"],
-        ],
-    )
+    @pytest.mark.parametrize("args", ALL_MARKER_SUBCOMMAND_ARGS)
     def test_exits_2_when_session_file_missing(self, isolated_home, git_repo, args):
         result = _run(args, cwd=git_repo, home=isolated_home)
         assert result.returncode == 2, (
@@ -86,23 +92,7 @@ class TestMarkerScriptSessionIdValidation:
     session file, rather than flowing into `rm -f`/`>` against a path outside
     the marker/active directories."""
 
-    @pytest.mark.parametrize(
-        "args",
-        [
-            ["write", "code-review"],
-            ["write", "skill-review"],
-            ["write", "plan-review"],
-            ["write", "ready-for-review"],
-            ["activate", "plan-review"],
-            ["activate", "ready-for-review"],
-            ["activate", "respond-pr"],
-            ["activate", "memory-skill"],
-            ["deactivate", "plan-review"],
-            ["deactivate", "ready-for-review"],
-            ["deactivate", "respond-pr"],
-            ["deactivate", "memory-skill"],
-        ],
-    )
+    @pytest.mark.parametrize("args", ALL_MARKER_SUBCOMMAND_ARGS)
     def test_exits_2_when_session_id_is_path_escaping(self, isolated_home, git_repo, args):
         _seed_session(isolated_home, TRAVERSAL_SESSION_ID)
         result = _run(args, cwd=git_repo, home=isolated_home)
@@ -881,3 +871,168 @@ class TestSessionStartTimeResolution:
         assert result.returncode == 0, result.stderr
         active_file = isolated_home / ".claude" / ".plan-review-active.d" / sid
         assert active_file.exists()
+
+
+class TestMarkerScriptRoutingReadBackfill:
+    """`activate plan-review` backfills routing-read credit from
+    log-routing-read.sh's pending-read record when its mtime is within the
+    bounded backfill window -- closes the ordering race where a Read landing
+    just before activate previously earned no credit at all."""
+
+    SID = "test-session-backfill"
+
+    def _pending_read_path(self, home, sid=SID):
+        return home / ".claude" / ".plan-review-pending-read.d" / sid
+
+    def _routing_read_path(self, home, sid=SID):
+        return home / ".claude" / ".plan-review-routing-read.d" / sid
+
+    def _seed_pending_read(self, home, sid, age_seconds):
+        pending = self._pending_read_path(home, sid)
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.touch()
+        stamp = time.time() - age_seconds
+        os.utime(pending, (stamp, stamp))
+
+    def test_activate_backfills_when_pending_read_is_within_window(
+        self, isolated_home, git_repo
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._seed_pending_read(isolated_home, sid, age_seconds=4 * 60)
+
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert self._routing_read_path(isolated_home, sid).exists()
+
+    def test_activate_does_not_backfill_when_pending_read_is_outside_window(
+        self, isolated_home, git_repo
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._seed_pending_read(isolated_home, sid, age_seconds=6 * 60)
+
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert not self._routing_read_path(isolated_home, sid).exists()
+
+    def test_read_before_activate_now_credits_intentional_widening(
+        self, isolated_home, git_repo
+    ):
+        """Pins the deliberate behavior change: a ROUTING.md Read that
+        happens before marker.sh activate now grants routing-read credit,
+        where test_log_routing_read.py's
+        test_read_routing_md_without_active_marker_writes_pending_read_only
+        shows the routing-read marker itself is still not written directly
+        at Read time. Exercises the real hook + script pair, not seeded
+        fixtures, so it proves the two mechanisms actually agree with each
+        other."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        run_hook(
+            HOOKS_DIR / "log-routing-read.sh",
+            read_input("/home/user/.claude/skills/plan-review/ROUTING.md", session_id=sid),
+            home=isolated_home,
+        )
+        assert not self._routing_read_path(isolated_home, sid).exists(), (
+            "sanity check: no active marker existed yet, so the Read must not "
+            "have written the routing-read marker directly"
+        )
+
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert self._routing_read_path(isolated_home, sid).exists(), (
+            "activate must backfill routing-read credit from the pending-read "
+            "record left by the earlier Read"
+        )
+
+    def test_read_for_unrelated_task_still_credits_a_later_activate_within_window(
+        self, isolated_home, git_repo
+    ):
+        """Pins the accepted trade-off ciso-reviewer named: the pending-read
+        record carries no signal about WHY ROUTING.md was read. A Read
+        performed for a wholly unrelated task (no plan-review session
+        active, several minutes of other work following it) still credits
+        a plan-review `activate` as long as it lands inside the 5-minute
+        window -- a deliberate, disclosed trade-off, not an oversight to
+        fix here."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+
+        # No plan-review session is active when this Read happens -- e.g.
+        # the agent opened ROUTING.md while editing the skill itself,
+        # unrelated to any imminent plan-review.
+        run_hook(
+            HOOKS_DIR / "log-routing-read.sh",
+            read_input("/home/user/.claude/skills/plan-review/ROUTING.md", session_id=sid),
+            home=isolated_home,
+        )
+        assert not self._routing_read_path(isolated_home, sid).exists(), (
+            "sanity check: no active marker existed yet, so the Read must not "
+            "have written the routing-read marker directly"
+        )
+
+        # Several minutes of unrelated work follow, still inside the window.
+        pending = self._pending_read_path(isolated_home, sid)
+        stamp = time.time() - 4 * 60
+        os.utime(pending, (stamp, stamp))
+
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert self._routing_read_path(isolated_home, sid).exists(), (
+            "activate must credit the earlier ROUTING.md Read even though it "
+            "was performed for an unrelated task, per the accepted "
+            "intent-decoupled trade-off"
+        )
+
+    def test_read_outside_window_then_activate_still_denies_agent_spawn(
+        self, isolated_home, git_repo
+    ):
+        """End-to-end deny-path pin, mirroring the rigor already given to
+        the allow-path above: chains the three real hooks -- the pending
+        write (log-routing-read.sh, Read outside the 5-minute window),
+        marker.sh activate, and require-routing-read.sh (Agent spawn) --
+        and asserts the spawn is still denied."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+
+        run_hook(
+            HOOKS_DIR / "log-routing-read.sh",
+            read_input("/home/user/.claude/skills/plan-review/ROUTING.md", session_id=sid),
+            home=isolated_home,
+        )
+        pending = self._pending_read_path(isolated_home, sid)
+        stale = time.time() - 6 * 60
+        os.utime(pending, (stale, stale))
+
+        activate_result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert activate_result.returncode == 0, activate_result.stderr
+        assert not self._routing_read_path(isolated_home, sid).exists()
+
+        assert run_hook(
+            HOOKS_DIR / "require-routing-read.sh",
+            agent_input(session_id=sid),
+            home=isolated_home,
+        ) == "deny"
+
+    def test_deactivate_clears_pending_read_marker_too(self, isolated_home, git_repo):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        active_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        active_dir.mkdir(parents=True)
+        (active_dir / sid).touch()
+        routing_read_dir = isolated_home / ".claude" / ".plan-review-routing-read.d"
+        routing_read_dir.mkdir(parents=True)
+        (routing_read_dir / sid).touch()
+        self._seed_pending_read(isolated_home, sid, age_seconds=10)
+
+        result = _run(["deactivate", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert not (active_dir / sid).exists()
+        assert not (routing_read_dir / sid).exists()
+        assert not self._pending_read_path(isolated_home, sid).exists()

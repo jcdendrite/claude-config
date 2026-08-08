@@ -151,4 +151,4 @@ Forcing a registry-500 code to a 200 response to suppress a retry hides the fail
 18. **Anti-pattern E** — Is there any code that decides whether to capture telemetry by inspecting the HTTP status of a returned Response object? That pattern discards the original exception; throw instead so the boundary holds the real error. (E)
 19. **Anti-pattern F** — Is any code forcing a registry-mapped-5xx error to a 200 response to suppress retries? Mint the code that owns the intended status. (Rule 8 / C / F)
 
-See `~/.claude/skills/error-handling/REFERENCES.md` for the research and primary-source citations behind these rules.
+See `${CLAUDE_SKILL_DIR}/REFERENCES.md` for the research and primary-source citations behind these rules.

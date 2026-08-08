@@ -221,7 +221,7 @@ For hook content, invoke `claude-hook-review`. For `permissions.allow` rules, in
 
 ## Reviewer routing
 
-Read `~/.claude/skills/plan-review/ROUTING.md` before any spawn decision.
+Read `${CLAUDE_SKILL_DIR}/ROUTING.md` before any spawn decision.
 
 ## Output format
 

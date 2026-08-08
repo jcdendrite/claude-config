@@ -279,6 +279,16 @@ case "$SUBCOMMAND" in
         CLAUDE_PID=$(_resolve_claude_pid) || exit 2
         mkdir -p "$CONFIG_DIR/.plan-review-active.d"
         printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
+        # Backfill: a ROUTING.md Read landing just before this activate still
+        # counts, via log-routing-read.sh's pending-read record. 5 minutes
+        # covers a same-turn re-read while staying well inside
+        # require-routing-read.sh's 60-minute freshness window, so a stale
+        # Read from earlier in the session can't falsely backfill.
+        PENDING_READ="$CONFIG_DIR/.plan-review-pending-read.d/$SESSION_ID"
+        if [ -f "$PENDING_READ" ] && [ -n "$(find "$PENDING_READ" -mmin -5 2>/dev/null)" ]; then
+          mkdir -p "$CONFIG_DIR/.plan-review-routing-read.d"
+          touch "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
+        fi
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -310,6 +320,7 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
         rm -f "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
+        rm -f "$CONFIG_DIR/.plan-review-pending-read.d/$SESSION_ID"
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2

@@ -6,6 +6,7 @@ from helpers import (
     HOOKS_DIR,
     TRAVERSAL_SESSION_ID,
     agent_input,
+    plan_review_pending_read_marker_path,
     plan_review_routing_read_marker_path,
     plant_traversal_canary,
     read_input,
@@ -28,10 +29,17 @@ class TestLogRoutingRead:
         run_hook(LOG_ROUTING_READ_HOOK, read_input(ROUTING_MD_PATH, session_id=sid))
         assert plan_review_routing_read_marker_path(isolated_home, sid).exists()
 
-    def test_read_routing_md_without_active_marker_is_noop(self, isolated_home):
+    def test_read_routing_md_without_active_marker_writes_pending_read_only(
+        self, isolated_home
+    ):
+        """No active marker yet: the routing-read marker itself is still not
+        written directly, but the pending-read record now is (unconditional
+        write) -- this is the raw material marker.sh activate's bounded-
+        window backfill later reads to credit a Read that happened first."""
         sid = "session-no-active"
         run_hook(LOG_ROUTING_READ_HOOK, read_input(ROUTING_MD_PATH, session_id=sid))
         assert not plan_review_routing_read_marker_path(isolated_home, sid).exists()
+        assert plan_review_pending_read_marker_path(isolated_home, sid).exists()
 
     def test_read_unrelated_file_is_noop(self, isolated_home):
         sid = "session-other-file"
@@ -64,6 +72,8 @@ class TestLogRoutingRead:
         run_hook(LOG_ROUTING_READ_HOOK, {"tool_name": "Read", "tool_input": {"file_path": ROUTING_MD_PATH}})
         routing_read_dir = isolated_home / ".claude" / ".plan-review-routing-read.d"
         assert not routing_read_dir.exists() or not any(routing_read_dir.iterdir())
+        pending_read_dir = isolated_home / ".claude" / ".plan-review-pending-read.d"
+        assert not pending_read_dir.exists() or not any(pending_read_dir.iterdir())
 
     def test_hook_always_exits_allow(self, isolated_home):
         sid = "session-always-allow"
@@ -156,5 +166,28 @@ class TestLogRoutingRead:
         assert canary.stat().st_mtime_ns == mtime_before, (
             "a traversal session_id must not reach the touch on a file "
             "outside .plan-review-routing-read.d/"
+        )
+        assert canary.read_text() == CANARY_CONTENT
+
+    def test_traversal_session_id_does_not_touch_pending_read_marker_dir(self, isolated_home):
+        """The pending-read write has no active-marker precondition (unlike
+        the routing-read write above), so this needs its own traversal proof
+        independent of test_traversal_session_id_allows_and_does_not_touch_marker_dir
+        — a session_id of '../canary' must not reach it either.
+
+        .plan-review-pending-read.d/../canary resolves to the same
+        $HOME/.claude/canary the sibling test above uses; see that test's
+        docstring for why mtime, not content, is the assertion that
+        discriminates guard-present from guard-absent for a `touch`."""
+        canary = plant_traversal_canary(isolated_home)
+        mtime_before = canary.stat().st_mtime_ns
+
+        assert run_hook(
+            LOG_ROUTING_READ_HOOK,
+            read_input(ROUTING_MD_PATH, session_id=TRAVERSAL_SESSION_ID),
+        ) == "allow"
+        assert canary.stat().st_mtime_ns == mtime_before, (
+            "a traversal session_id must not reach the touch on a file "
+            "outside .plan-review-pending-read.d/"
         )
         assert canary.read_text() == CANARY_CONTENT
