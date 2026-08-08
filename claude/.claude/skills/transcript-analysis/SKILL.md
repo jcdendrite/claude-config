@@ -1,6 +1,6 @@
 ---
 name: transcript-analysis
-description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, PR-to-branch mapping, or per-session review-activity timelines (skill invocations, hook denials, reviewer spawns). For token-cost or cache-efficiency analysis use token-analyzer.py directly.
+description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, PR-to-branch mapping, per-session review-activity timelines (skill invocations, hook denials, reviewer spawns), or a corpus-wide census of denial/friction shapes. For token-cost or cache-efficiency analysis use token-analyzer.py directly.
 ---
 
 The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly from the shell.
@@ -16,6 +16,7 @@ The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly
 | How much work went through subagents vs the main thread? | `subagents --branches <branch>` |
 | Map branches to PRs; count per-author review comments | `pr-link --repo owner/repo --branches <branch>` |
 | Which sessions ran review skills, hit a hook denial, or spawned reviewer agents? | `review-trace` |
+| Which denial/friction shapes recur across sessions — a corpus-wide census, not per-session? | `review-trace --deny-summary` |
 | Which skills did a branch invoke, by source (auto-trigger / routing / `/slash`)? | `skill-invocation --branches <branch>` |
 | Where did a human push back on an AI review's output? | `judgment-pair` |
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
@@ -44,7 +45,7 @@ Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
 - Durations from `duration` are wall-clock dominated by idle gaps. Look at `Active(min)`, not `Span(min)`.
 - `pr-link` requires `gh` and network access. All other subcommands are local-only and make no writes.
 - A model-vs-model comparison is only meaningful when there are multiple all-Opus and all-Sonnet execution branches. One or two branches per model is directional, not a controlled A/B.
-- `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis and `--deny-only` to isolate sessions that hit an enforcement hook.
+- `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis, `--deny-only` to isolate sessions that hit an enforcement hook, and `--deny-summary` for a corpus-wide census by hook, by command shape, and their cross-tab, plus a friction-kind breakout — a distinct axis from denials — see `docs/transcript-analysis.md`'s `review-trace` section for the full output shape.
 - `judgment-pair` captures what the human said immediately after a review output. Tool-result turns, `isMeta` injections, and `isCompactSummary` records between the review and the user reply are automatically skipped. Use `--out` to save output to a file for offline curation.
 - `audit-routing --redact` remaps project names to anonymized labels for public reporting — use this flag when posting output to GitHub issues.
 - `cost` redacts project names and session IDs by default (the opposite of `audit-routing`'s opt-in `--redact`) — pass `--no-redact` only for local use, never for output headed to a public issue.

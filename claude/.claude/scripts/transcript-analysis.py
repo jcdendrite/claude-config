@@ -13,11 +13,12 @@ import json
 import os
 import random
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -809,18 +810,33 @@ AUDIT_JUDGMENT_SKILLS: frozenset[str] = frozenset({
 _REVIEWER_PREFIX = "staff-"
 _REVIEWER_EXACT = "ciso-reviewer"
 
-# Current-format transcripts record a hook denial as an is_error tool_result
-# with no structured marker — it is distinguishable from an ordinary tool
-# error only by the deny message text. These patterns match the Claude Code
+# Shared bound for every hook-name/label capture below (detection and
+# extraction alike): a name-shaped character class (word chars, spaces, '.',
+# '-') capped at this many characters, matching every hook's own static
+# "<name> hook/gate" wording — never an unbounded `.+?`, which would echo
+# arbitrary denial-message text (a dynamic file path, say) into
+# --deny-summary's output if a future hook ever interpolated one into this
+# span.
+_DENIAL_HOOK_NAME_MAX_CHARS = 40
+
+# Current-format transcripts record a hook denial as an is_error tool_result,
+# distinguishable from an ordinary tool error only by the deny message text —
+# hook_denial_key deliberately does not read the parent user record's
+# toolDenialKind field, a separate friction-class axis classified by
+# _is_nongate_friction_kind below. These patterns match the Claude Code
 # hook-denial idiom ("Blocked by <hook>", "blocked by <X> gate", "… invocation
-# denied"). Detection is therefore best-effort in both directions: an
-# atypically worded hook denial is missed, and an ordinary tool error whose
-# text happens to contain the idiom is a false positive. review-trace is a
-# candidate locator, not an exact counter — callers treat denial counts as
-# approximate. Legacy transcripts additionally carry an explicit
+# denied", "<name> gate: …" / "<name> hook: …" — a hook stating its own label
+# directly, e.g. "Skill length gate: ..."). Detection is therefore best-effort
+# in both directions: an atypically worded hook denial is missed, and an
+# ordinary tool error whose text happens to contain the idiom is a false
+# positive. review-trace is a candidate locator, not an exact counter —
+# callers treat denial counts as approximate. Legacy transcripts additionally
+# carry an explicit
 # hook_blocking_error attachment record, matched separately and exactly.
 _HOOK_DENIAL_SIGNATURE = re.compile(
-    r"blocked by .{0,80}?\b(?:hook|gate)\b|invocation denied\b",
+    r"blocked by .{0,80}?\b(?:hook|gate)\b"
+    r"|invocation denied\b"
+    rf"|[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}\s+(?:hook|gate):",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -874,26 +890,163 @@ def hook_denial_key(item: dict) -> tuple[str, dict | str] | None:
 # Extracts the hook/gate name from a denial message's own "blocked by <name>
 # hook/gate" wording — every hook's emit_deny call already writes this shape
 # (e.g. "Blocked by code-review gate: ..."), so the name is read off the
-# denial text itself rather than an invented category label. The capture is
-# bounded to a name-shaped character class (word chars, spaces, '.', '-') and
-# _DENIAL_HOOK_NAME_MAX_CHARS chars, matching every hook's own static "<name>
-# hook/gate" wording — not an unbounded `.+?`, which would echo arbitrary
-# denial-message text (a dynamic file path, say) into --deny-summary's output
-# if a future hook ever interpolated one into this span.
-_DENIAL_HOOK_NAME_MAX_CHARS = 40
+# denial text itself rather than an invented category label.
 _DENIAL_HOOK_NAME_RE = re.compile(
     rf"blocked by (?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate)\b", re.IGNORECASE
 )
 
+# Two wordings hooks emit that the "blocked by <name> hook/gate" idiom above
+# doesn't cover: enforce-marker-script-shape.sh's path-traversal and
+# shape-mismatch denials name their own script directly ("marker.sh
+# invocation denied ..."), and several hooks state their own label as the
+# message's own prefix rather than via "blocked by" (e.g. check-skill-length.sh's
+# "Skill length gate: ..."). Both inherit the same bounded character class and
+# _DENIAL_HOOK_NAME_MAX_CHARS cap as the pattern above.
+_DENIAL_HOOK_NAME_INVOCATION_DENIED_RE = re.compile(
+    rf"(?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+invocation denied\b", re.IGNORECASE
+)
+_DENIAL_HOOK_NAME_COLON_RE = re.compile(
+    rf"(?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate):", re.IGNORECASE
+)
+
+# The hand-maintained set of prose labels hooks/*.sh actually emits — sourced
+# by grepping every hook's emit_deny call, not from hooks/*.sh basenames
+# (which match none of these; see the module-level docstring for why). A
+# captured name is trusted only if it's a member of this set; anything else
+# (a coincidental match, an unanticipated wording, an unbounded interpolated
+# value that happened to survive the character-class bound) falls to
+# _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim. Regression
+# coverage: TestDenialHookLabelEnumeration in test_transcript_analysis.py
+# drives each hook's real deny-path wording and asserts the label it
+# produces is a member here, so a hook's wording change or a new hook shows
+# up as a test failure rather than a silently stale set.
+_DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
+    # "blocked by <name> hook/gate" — one entry per hooks/*.sh label.
+    "gh-pr-merge",  # block-gh-pr-merge.sh:49
+    "CLAUDE.md length",  # check-claude-md-length.sh:42
+    "skill length",  # check-skill-length.sh:41
+    "credential-path Bash",  # deny-credential-bash-reads.sh:27
+    "credential-file read",  # deny-credential-file-reads.sh:27
+    "data-file read",  # deny-data-file-reads.sh:65
+    "env-read",  # deny-env-reads.sh:47
+    "backtick-escape",  # deny-escaped-backticks-in-pr-body.sh:46
+    "network-install",  # deny-network-installs.sh:40
+    "PII commit",  # deny-pii-in-commits.sh:127
+    "redaction",  # deny-private-project-refs.sh:180
+    "repo-relocation",  # deny-repo-relocation.sh:63
+    "reviewer-tree-mutation",  # deny-reviewer-tree-mutation.sh:146
+    "marker-script-shape",  # enforce-marker-script-shape.sh:68
+    "settings session-keys",  # guard-settings-session-keys.sh:49
+    "code-review",  # require-code-review.sh:48
+    "memory-skill",  # require-memory-skill.sh:59
+    "ai-instruction-and-memory-files",  # require-memory-skill.sh:125
+    "plan-review",  # require-plan-review.sh:66
+    "plan-review routing",  # require-routing-read.sh:68
+    "ready-for-review",  # require-ready-for-review.sh:80
+    "respond-pr",  # require-respond-pr.sh:69
+    "routing-read",  # require-routing-read.sh:27
+    "stow-reminder",  # require-stow-reminder.sh:71
+    "worktree-enforcement",  # require-worktree-for-file-writes.sh:50, require-worktree-for-git-writes.sh:91
+    # "<name> invocation denied" (_DENIAL_HOOK_NAME_INVOCATION_DENIED_RE).
+    "marker.sh",  # enforce-marker-script-shape.sh:277,353
+    # "<name> gate:"/"<name> hook:" (_DENIAL_HOOK_NAME_COLON_RE) — a hook
+    # stating its own label as the message's own prefix. check-claude-md-length.sh:85's
+    # message reads "CLAUDE.md/AGENTS.md length gate: ..."; '/' isn't in the
+    # name-shaped class, so only the AGENTS.md half of the label survives.
+    "AGENTS.md length",  # check-claude-md-length.sh:85
+    "Skill length",  # check-skill-length.sh:87
+})
+
 # --deny-summary's unmatched-hook-name bucket: a denial matched by
 # _HOOK_DENIAL_SIGNATURE (e.g. via the "invocation denied" alternative, which
-# names no hook) but from which no hook/gate name can be extracted.
+# names no hook) but from which no enumerated hook/gate name can be extracted.
 _DENY_SUMMARY_UNMATCHED_HOOK = "unmatched"
 
-# --deny-summary's attempted-command-shape buckets, checked in order; a
-# command matching none of these falls into "other".
-_DENIAL_COMMAND_SHAPES: tuple[str, ...] = ("git commit", "git checkout", "git push")
+# --deny-summary's attempted-command-shape classifier: an allowlist, not a
+# free-text sanitizer. A command failing to normalize into one of the
+# multiplexer shapes below falls into "other".
 _DENY_SUMMARY_OTHER_COMMAND_SHAPE = "other"
+
+# Strips a leading NAME=VALUE environment-assignment prefix (one such prefix
+# is observed in the corpus, wrapping a marker.sh invocation with a live
+# per-machine token) before any other normalization runs, so that token never
+# reaches printed output.
+_DENIAL_COMMAND_ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+")
+
+# The multiplexer commands the corpus is dominated by — only these get a
+# command+subcommand shape; every other command shape, including an empty
+# command, falls to "other". "marker.sh" is matched post-basename, since the
+# real invocation is always a tilde or absolute script path.
+_DENIAL_COMMAND_MULTIPLEXERS: frozenset[str] = frozenset({"git", "gh", "marker.sh"})
+
+# Per-multiplexer closed allowlist of real subcommands --deny-summary trusts
+# in the printed "<multiplexer> <subcommand>" shape — same discipline as
+# _DENIAL_HOOK_LABELS: a candidate subcommand token that isn't a member (a
+# credential-shaped string, a path, an unenumerated wording) falls to "other"
+# rather than being echoed verbatim. Sourced from the corpus's observed
+# denied invocations plus _LIB_READONLY_GIT_SUBCMDS in hooks/_lib.sh for the
+# git read-only entries; new entries are added deliberately, not accreted.
+_DENIAL_COMMAND_SUBCOMMANDS: dict[str, frozenset[str]] = {
+    "git": frozenset({
+        "add", "checkout", "commit", "config", "diff", "fetch", "init", "log",
+        "merge", "pull", "push", "restore", "rev-parse", "show", "status",
+        "symbolic-ref",
+    }),
+    "gh": frozenset({"api", "auth", "issue", "pr"}),
+    "marker.sh": frozenset({"activate", "clear-stale", "deactivate", "status", "write"}),
+}
+
+# Second layer beyond the allowlist above, matching _DENIAL_HOOK_NAME_MAX_CHARS's
+# defense-in-depth pattern: bounds a future malformed allowlist entry rather
+# than serving as the primary defense, which is allowlist membership itself.
+_DENIAL_COMMAND_SUBCOMMAND_MAX_CHARS = 20
+_DENIAL_COMMAND_SUBCOMMAND_RE = re.compile(rf"^[\w-]{{1,{_DENIAL_COMMAND_SUBCOMMAND_MAX_CHARS}}}$")
+
+# git flags that take their value as the following token — dropping (not
+# skipping) both the flag and its value keeps the value from being misread
+# as the subcommand, e.g. "git -C <path> commit" would otherwise leave
+# <path> at index 1 once "-C" alone is skipped, so a naive scan reads <path>
+# as the subcommand instead of "commit" at index 2. -C is
+# require-worktree-for-git-writes.sh's own resolution mechanism for a
+# compliant worktree write, so it's the dominant separate-token form in the
+# worktree-enforcement denial category.
+_DENIAL_COMMAND_FLAGS_WITH_SEPARATE_VALUE: frozenset[str] = frozenset({"-C", "-c", "--git-dir", "--work-tree"})
+
+# git flags whose value is glued to the flag by "=" — the value already
+# lives inside this one token, so nothing further needs dropping.
+_DENIAL_COMMAND_FLAG_VALUE_ATTACHED_PREFIXES: tuple[str, ...] = ("--git-dir=", "--work-tree=")
+
+
+def _drop_denial_command_flag_values(tokens: list[str]) -> list[str]:
+    """Drop (not skip) the values of git's value-taking repo-selection flags.
+
+    A separate-token flag (-C, -c, --git-dir, --work-tree) consumes itself
+    and the token after it; an =-attached flag (--git-dir=<path>,
+    --work-tree=<path>) consumes only itself, since its value is already
+    inside that token. Skipping a flag without dropping its value would
+    leave the value in place to be misread as the subcommand.
+    """
+    kept: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in _DENIAL_COMMAND_FLAGS_WITH_SEPARATE_VALUE:
+            i += 2  # drop the flag token and its value token
+            continue
+        if token.startswith(_DENIAL_COMMAND_FLAG_VALUE_ATTACHED_PREFIXES):
+            i += 1  # value is glued to this token; nothing further to drop
+            continue
+        kept.append(token)
+        i += 1
+    return kept
+
+# Extraction patterns tried in order against a current-shape denial message;
+# the first to yield a name in _DENIAL_HOOK_LABELS wins.
+_DENIAL_HOOK_NAME_PATTERNS: tuple[re.Pattern, ...] = (
+    _DENIAL_HOOK_NAME_RE,
+    _DENIAL_HOOK_NAME_INVOCATION_DENIED_RE,
+    _DENIAL_HOOK_NAME_COLON_RE,
+)
 
 
 def _denial_hook_label(hook_name: str, message: str) -> str:
@@ -902,48 +1055,211 @@ def _denial_hook_label(hook_name: str, message: str) -> str:
     Legacy-shape denials carry the name directly (hook_name, from the
     attachment record's hookName field); current-shape denials carry no
     structured hook identity, so the name is extracted from the denial
-    message text. Neither source: _DENY_SUMMARY_UNMATCHED_HOOK.
+    message text via each pattern in _DENIAL_HOOK_NAME_PATTERNS in turn.
+    Either source is trusted only if the candidate is a member of
+    _DENIAL_HOOK_LABELS — an unenumerated hookName (legacy transcripts predate
+    this bound entirely) or an unenumerated extracted candidate both fall to
+    _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim.
     """
-    if hook_name:
-        return hook_name
-    m = _DENIAL_HOOK_NAME_RE.search(message)
-    return m.group("name").strip() if m else _DENY_SUMMARY_UNMATCHED_HOOK
+    candidate = (hook_name or "").strip()
+    if candidate:
+        return candidate if candidate in _DENIAL_HOOK_LABELS else _DENY_SUMMARY_UNMATCHED_HOOK
+    for pattern in _DENIAL_HOOK_NAME_PATTERNS:
+        m = pattern.search(message)
+        if m is None:
+            continue
+        name = m.group("name").strip().removeprefix("the ")
+        if name in _DENIAL_HOOK_LABELS:
+            return name
+    return _DENY_SUMMARY_UNMATCHED_HOOK
 
 
 def _denial_command_shape(command: str) -> str:
-    """Classify a denied Bash command's git-subcommand shape for --deny-summary."""
-    for shape in _DENIAL_COMMAND_SHAPES:
-        if shape in command:
-            return shape
+    """Classify a denied Bash command's shape for --deny-summary.
+
+    Normalizes before matching, in order: strips a leading NAME=VALUE
+    environment assignment, basenames the first token (an absolute script
+    path is a home-rooted path, one of this repo's six always-on structural
+    redaction detectors), and drops the values of git's repo-selection flags
+    (see _drop_denial_command_flag_values). Only a multiplexer command
+    (_DENIAL_COMMAND_MULTIPLEXERS) gets a command+subcommand shape, and only
+    when the candidate subcommand token doesn't itself look like a flag — an
+    unenumerated flag (one _drop_denial_command_flag_values doesn't know
+    about) is left in place rather than dropped, so this guards it from
+    being read as, and printed as, the subcommand — and is itself a member of
+    that multiplexer's _DENIAL_COMMAND_SUBCOMMANDS allowlist, so an
+    unenumerated non-flag token (a credential-shaped string, a raw control
+    byte) falls to "other" instead of being echoed verbatim. Anything else,
+    including an empty command, falls to "other". Nothing past the
+    subcommand token is ever printed, so an argument value — a commit
+    message, a path, a control character — never survives to stdout.
+    """
+    stripped = _DENIAL_COMMAND_ENV_PREFIX_RE.sub("", command)
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        tokens = stripped.split()
+    if not tokens:
+        return _DENY_SUMMARY_OTHER_COMMAND_SHAPE
+    tokens[0] = os.path.basename(tokens[0])
+    tokens = _drop_denial_command_flag_values(tokens)
+    if len(tokens) > 1 and tokens[0] in _DENIAL_COMMAND_MULTIPLEXERS and not tokens[1].startswith("-"):
+        subcommand = tokens[1]
+        allowed_subcommands = _DENIAL_COMMAND_SUBCOMMANDS.get(tokens[0], frozenset())
+        if subcommand in allowed_subcommands and _DENIAL_COMMAND_SUBCOMMAND_RE.match(subcommand):
+            return f"{tokens[0]} {subcommand}"
     return _DENY_SUMMARY_OTHER_COMMAND_SHAPE
 
 
-def _print_deny_summary(hook_counts: dict[str, int], command_shape_counts: dict[str, int]) -> None:
-    """Print --deny-summary's two grouped denial-count tables."""
+# toolDenialKind's gate-axis value — a permission-layer denial (hook denial or
+# allowlist miss), already covered by hook_denial_key's message-signature
+# match. The four other values (user-rejected, automode-blocked,
+# automode-unavailable, interrupted) are friction, not a gate denial.
+_GATE_TOOL_DENIAL_KIND = "permission-rule"
+
+# The date toolDenialKind first appears in the corpus (the corpus itself
+# starts 2026-06-24), determined by a corpus scan rather than a documented
+# Claude Code rollout date — a user/tool_result record timestamped before
+# this date structurally cannot carry the field, so --deny-summary's
+# friction-kind breakdown must not read a pre-regime record's absent kind as
+# zero friction.
+_TOOL_DENIAL_KIND_REGIME_START = "2026-07-20"
+_TOOL_DENIAL_KIND_REGIME_START_TS = _parse_ts(f"{_TOOL_DENIAL_KIND_REGIME_START}T00:00:00Z")
+
+
+def _is_nongate_friction_kind(tool_denial_kind: str, already_gate_denied: bool) -> bool:
+    """True if a user record's toolDenialKind marks non-gate friction.
+
+    A falsy toolDenialKind means the field is absent from this record — not
+    friction. already_gate_denied guards against double-classifying a block
+    hook_denial_key already matched via the message-text signature, so a
+    record can never produce both a denial event and a friction event.
+    """
+    if already_gate_denied or not tool_denial_kind:
+        return False
+    return tool_denial_kind != _GATE_TOOL_DENIAL_KIND
+
+
+# --deny-summary's/review-trace's printed friction_kind vocabulary — closed,
+# so a future harness-added toolDenialKind value prints as _FRICTION_KIND_OTHER
+# rather than echoing the raw field verbatim.
+_FRICTION_KINDS: frozenset[str] = frozenset({
+    "user-rejected",
+    "automode-blocked",
+    "automode-unavailable",
+    "interrupted",
+})
+_FRICTION_KIND_OTHER = "other-kind"
+
+
+def _friction_kind_label(tool_denial_kind: str) -> str:
+    """Map a friction event's toolDenialKind to its printed label."""
+    return tool_denial_kind if tool_denial_kind in _FRICTION_KINDS else _FRICTION_KIND_OTHER
+
+
+# Defense-in-depth beyond each label source's own closed vocabulary
+# (_DENIAL_HOOK_LABELS, _DENIAL_COMMAND_SUBCOMMANDS, _FRICTION_KINDS): strips
+# ASCII control characters before a value is written into a --deny-summary
+# table cell, the same way the per-session timeline's msg!r already guards
+# free-text denial messages.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _sanitize_table_cell(value: str) -> str:
+    """Strip ASCII control characters from a --deny-summary table cell value."""
+    return _CONTROL_CHAR_RE.sub("", value)
+
+
+def _print_deny_summary(
+    hook_counts: dict[str, int],
+    command_shape_counts: dict[str, int],
+    hook_shape_counts: Counter[tuple[str, str]],
+    friction_counts: dict[str, int],
+    pre_regime_tool_result_count: int,
+    corpus_min_ts: float | None,
+    corpus_max_ts: float | None,
+) -> None:
+    """Print --deny-summary's grouped denial-count tables plus the friction breakout.
+
+    hook_shape_counts cross-tabs the hook/gate axis against the command-shape
+    axis — the two marginal tables alone can't say which hook denied which
+    command shape, which is the whole point of the census this feeds.
+    """
+    if corpus_min_ts is not None and corpus_max_ts is not None:
+        print(f"\nCorpus window: {_fmt_date(corpus_min_ts)} to {_fmt_date(corpus_max_ts)}")
+
     total = sum(hook_counts.values())
     print(f"\n## Denials by hook/gate ({total} total)\n")
     print(f"{'Hook/gate':<40} {'Count':>6}")
     print("-" * 47)
     for label, count in sorted(hook_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        print(f"{label:<40} {count:>6}")
+        print(f"{_sanitize_table_cell(label):<40} {count:>6}")
 
     print(f"\n## Denials by attempted command shape ({total} total)\n")
     print(f"{'Shape':<16} {'Count':>6}")
     print("-" * 23)
     for label, count in sorted(command_shape_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        print(f"{label:<16} {count:>6}")
+        print(f"{_sanitize_table_cell(label):<16} {count:>6}")
+
+    # Column set is the observed shapes only (already restricted to A3's
+    # classifier output plus "other"), not a fixed enumeration — the
+    # multiplexer+subcommand shape space is open-ended by construction.
+    # Skipped entirely (rather than rendering a header-only, zero-row table)
+    # when scope has zero denials — a friction-only report has nothing to
+    # cross-tab.
+    if hook_counts or command_shape_counts:
+        shapes = sorted(command_shape_counts.keys())
+        hooks = sorted(hook_counts.keys())
+        col_width = max((len(s) for s in shapes), default=5) + 2
+        # Rows/header are indented two spaces — unlike the marginal tables above,
+        # deliberately, so a hook-label row here never collides with a
+        # column-0 row-label match against the hook/gate marginal table.
+        print(f"\n## Denials by hook/gate x command shape ({total} total)\n")
+        header = f"  {'Hook':<40}" + "".join(
+            f"{_sanitize_table_cell(shape):>{col_width}}" for shape in shapes
+        )
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for hook in hooks:
+            row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
+                f"{hook_shape_counts.get((hook, shape), 0):>{col_width}}" for shape in shapes
+            )
+            print(row)
+
+    friction_total = sum(friction_counts.values())
+    print(f"\n## Friction events by kind ({friction_total} total)\n")
+    print(f"{'Kind':<24} {'Count':>6}")
+    print("-" * 31)
+    for label, count in sorted(friction_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        print(f"{_sanitize_table_cell(label):<24} {count:>6}")
+    print(
+        f"\n{pre_regime_tool_result_count} errored, non-gate tool result(s) predate the"
+        f" per-record denial-kind field's introduction ({_TOOL_DENIAL_KIND_REGIME_START})"
+        " and are excluded from the breakdown above — kind is structurally unmeasurable"
+        " before that date, not zero."
+    )
 
 
 def cmd_review_trace(args: argparse.Namespace) -> None:
     """Emit an ordered review-event timeline per session.
 
-    Three event types are detected per session:
+    Four event types are detected per session:
     - skill: main-thread Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
     - denial: a hook-blocking denial in either transcript shape — a legacy
       `attachment` record (type==hook_blocking_error) or a current-format
       `tool_result` block with is_error and a hook-denial message signature.
       A denial recorded as both shapes is collapsed to one event by tool_use_id.
+    - friction: a current-format `user` record whose own toolDenialKind field
+      marks non-gate friction (user-rejected, automode-blocked,
+      automode-unavailable, interrupted) — see _is_nongate_friction_kind.
+      Deduped by tool_use_id in its own set, independent of denial dedup.
     - reviewer: Agent/Task spawn where subagent_type starts with 'staff-' or == 'ciso-reviewer'
+
+    denial and friction are deliberately separate event kinds: has_denial,
+    denials=N, and --deny-only's session-selection all stay denial-kind-only,
+    so a non-gate toolDenialKind value never broadens what those three
+    surfaces report — only the default timeline and --deny-summary's own
+    friction breakout render friction events.
 
     Branch and model are resolved per event from the record that produced it,
     not from the session's first record: each is the last non-empty value
@@ -976,10 +1292,20 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     scope_header_printed = False
 
     # --deny-summary's corpus-wide accumulators: hook/gate name -> count,
-    # attempted-command shape -> count. Populated below in place of the
-    # normal per-session printing when --deny-summary is set.
+    # attempted-command shape -> count, (hook, shape) pair -> count (the
+    # cross-tab a marginal count alone can't express), friction kind -> count.
+    # Populated below in place of the normal per-session printing when
+    # --deny-summary is set.
     hook_counts: dict[str, int] = defaultdict(int)
     command_shape_counts: dict[str, int] = defaultdict(int)
+    hook_shape_counts: Counter[tuple[str, str]] = Counter()
+    friction_counts: dict[str, int] = defaultdict(int)
+    # Earliest/latest in-scope record timestamp, and a count of errored,
+    # non-gate tool results timestamped before toolDenialKind existed — both
+    # --deny-summary only, so the flag's off-path pays no extra bookkeeping.
+    corpus_min_ts: float | None = None
+    corpus_max_ts: float | None = None
+    pre_regime_tool_result_count = 0
     any_session_matched = False
 
     for jsonl, records in session_iter:
@@ -988,6 +1314,11 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         # appears as both an attachment record and an is_error tool_result
         # sharing one tool_use_id; this set collapses the pair to one event.
         seen_denial_ids: set[str] = set()
+
+        # Friction events dedup against their own set, never seen_denial_ids
+        # above — sharing it would let a friction event suppress a later
+        # legitimate denial sharing a tool_use_id.
+        seen_friction_ids: set[str] = set()
 
         # tool_use_id -> attempted command, for --deny-summary's by-command-shape
         # grouping. Indexed from every assistant tool_use block on the main
@@ -1112,28 +1443,70 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
             # Claude Code stopped emitting the hook_blocking_error attachment
             # record; current transcripts surface a denial only as an is_error
             # tool_result, identified by the hook-denial message signature.
+            #
+            # --- Signal 2c: non-gate friction, current shape (toolDenialKind) ---
+            # toolDenialKind lives on this same `user` record, not on the
+            # tool_result block — read once, but classification below still
+            # requires the individual block's own is_error, since a parallel
+            # tool call can carry an unrelated successful block alongside it.
             if rec_type == "user":
+                tool_denial_kind = rec.get("toolDenialKind") or ""
+                # A falsy tool_denial_kind this far before the regime start
+                # means the field structurally could not exist yet, not that
+                # this record measured zero friction. Scoped to the same
+                # is_error-and-non-gate-signature population
+                # _is_nongate_friction_kind would classify below, so the
+                # count reflects records that could plausibly have been
+                # friction, not every tool_result in the era (which would
+                # count ordinary successful tool calls too) — tallied
+                # separately and reported apart from the friction-kind
+                # breakdown.
+                pre_regime = (
+                    deny_summary
+                    and not tool_denial_kind
+                    and rec_ts is not None
+                    and _TOOL_DENIAL_KIND_REGIME_START_TS is not None
+                    and rec_ts < _TOOL_DENIAL_KIND_REGIME_START_TS
+                    and (not branch_filter or evt_branch in branch_filter)
+                )
                 for block in ((rec.get("message") or {}).get("content") or []):
                     if not isinstance(block, dict) or block.get("type") != "tool_result":
                         continue
                     denial = hook_denial_key(block)
-                    if denial is None:
-                        continue
-                    tool_use_id, message = denial
-                    if tool_use_id and tool_use_id in seen_denial_ids:
-                        continue
-                    if tool_use_id:
-                        seen_denial_ids.add(tool_use_id)
-                    events.append({
-                        "kind": "denial",
-                        "hook_name": "",
-                        "tool_use_id": tool_use_id,
-                        "message": message,
-                        "ts": rec_ts_str,
-                        "line_no": line_no,
-                        "branch": evt_branch,
-                        "model": evt_model,
-                    })
+                    already_gate_denied = denial is not None
+                    if denial is not None:
+                        tool_use_id, message = denial
+                        if not (tool_use_id and tool_use_id in seen_denial_ids):
+                            if tool_use_id:
+                                seen_denial_ids.add(tool_use_id)
+                            events.append({
+                                "kind": "denial",
+                                "hook_name": "",
+                                "tool_use_id": tool_use_id,
+                                "message": message,
+                                "ts": rec_ts_str,
+                                "line_no": line_no,
+                                "branch": evt_branch,
+                                "model": evt_model,
+                            })
+
+                    if block.get("is_error") and _is_nongate_friction_kind(tool_denial_kind, already_gate_denied):
+                        friction_tool_use_id = block.get("tool_use_id") or ""
+                        if not (friction_tool_use_id and friction_tool_use_id in seen_friction_ids):
+                            if friction_tool_use_id:
+                                seen_friction_ids.add(friction_tool_use_id)
+                            events.append({
+                                "kind": "friction",
+                                "friction_kind": tool_denial_kind,
+                                "tool_use_id": friction_tool_use_id,
+                                "message": _content_text(block.get("content")),
+                                "ts": rec_ts_str,
+                                "line_no": line_no,
+                                "branch": evt_branch,
+                                "model": evt_model,
+                            })
+                    elif pre_regime and not already_gate_denied and block.get("is_error"):
+                        pre_regime_tool_result_count += 1
 
         # Branch filtering happens after dedup (seen_denial_ids was populated
         # above over every event, unconditionally) so a duplicate-id denial on
@@ -1146,7 +1519,31 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
             continue
         any_session_matched = True
 
+        # Corpus window reads the full branch-filtered per-session events list
+        # before the deny_only skip below, same as the friction tally above —
+        # so the reported window matches whatever --branches/--since/--until
+        # actually put in scope, not the pre-branch-filter raw record range.
+        if deny_summary:
+            for evt in events:
+                evt_ts = _parse_ts(evt.get("ts"))
+                if evt_ts is None:
+                    continue
+                if corpus_min_ts is None or evt_ts < corpus_min_ts:
+                    corpus_min_ts = evt_ts
+                if corpus_max_ts is None or evt_ts > corpus_max_ts:
+                    corpus_max_ts = evt_ts
+
         has_denial = any(e["kind"] == "denial" for e in events)
+
+        # Friction tally reads the full per-session events list before the
+        # deny_only skip below, so a friction-only session (has_denial False)
+        # still contributes when --deny-only and --deny-summary run together.
+        # deny_only's own session-selection stays denial-kind-only, unchanged.
+        if deny_summary:
+            for evt in events:
+                if evt["kind"] == "friction":
+                    friction_counts[_friction_kind_label(evt["friction_kind"])] += 1
+
         if deny_only and not has_denial:
             continue
 
@@ -1154,9 +1551,12 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
             for evt in events:
                 if evt["kind"] != "denial":
                     continue
-                hook_counts[_denial_hook_label(evt["hook_name"], evt["message"])] += 1
+                hook_label = _denial_hook_label(evt["hook_name"], evt["message"])
                 command = tool_use_commands.get(evt["tool_use_id"], "")
-                command_shape_counts[_denial_command_shape(command)] += 1
+                command_shape = _denial_command_shape(command)
+                hook_counts[hook_label] += 1
+                command_shape_counts[command_shape] += 1
+                hook_shape_counts[(hook_label, command_shape)] += 1
             continue
 
         skill_count = sum(1 for e in events if e["kind"] == "skill")
@@ -1186,15 +1586,23 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 uid = evt['tool_use_id']
                 msg = evt['message']
                 print(f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  id={uid}  msg={msg!r}{suffix}")
+            elif kind == "friction":
+                fkind = _friction_kind_label(evt['friction_kind'])
+                uid = evt['tool_use_id']
+                msg = evt['message']
+                print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}  msg={msg!r}{suffix}")
             elif kind == "reviewer-spawn":
                 print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
 
     if deny_summary:
-        if sum(hook_counts.values()):
+        if sum(hook_counts.values()) or sum(friction_counts.values()):
             if not scope_header_printed:
                 _print_resolved_scope("review-trace", scope_label)
                 scope_header_printed = True
-            _print_deny_summary(hook_counts, command_shape_counts)
+            _print_deny_summary(
+                hook_counts, command_shape_counts, hook_shape_counts, friction_counts,
+                pre_regime_tool_result_count, corpus_min_ts, corpus_max_ts,
+            )
         elif any_session_matched:
             # Scope resolved and had matching sessions, but none carried a
             # denial — printed explicitly so this reads distinctly from a
@@ -4819,9 +5227,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_trace.add_argument(
         "--deny-summary", action="store_true",
         help=(
-            "Replace the per-session event listing with two grouped denial-count"
-            " tables: by originating hook/gate, and by attempted command shape"
-            " (git commit / git checkout / git push / other)."
+            "Replace the per-session event listing with grouped denial-count"
+            " tables — by originating hook/gate, by attempted command shape"
+            " (git commit / git checkout / git push / other), and a cross-tab"
+            " of the two — plus the corpus date window covered."
         ),
     )
     p_review_trace.add_argument(

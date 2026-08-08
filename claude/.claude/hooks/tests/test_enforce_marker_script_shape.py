@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import time
 
 import pytest
 from helpers import (
+    CLAUDE_DIR,
     HOOKS_DIR,
     bash_input,
     edit_input,
@@ -19,31 +21,34 @@ from helpers import (
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
+# The 14 single-command tilde-form shapes the hook accepts — single source of
+# truth for both test_valid_shapes_allowed (which pins hook acceptance) and
+# TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
+# coverage over this same set), so the two can't silently drift apart.
+TILDE_MARKER_SHAPES = [
+    "~/.claude/scripts/marker.sh write code-review",
+    "~/.claude/scripts/marker.sh write skill-review",
+    "~/.claude/scripts/marker.sh write plan-review",
+    "~/.claude/scripts/marker.sh write ready-for-review",
+    "~/.claude/scripts/marker.sh activate plan-review",
+    "~/.claude/scripts/marker.sh activate ready-for-review",
+    "~/.claude/scripts/marker.sh activate respond-pr",
+    "~/.claude/scripts/marker.sh activate memory-skill",
+    "~/.claude/scripts/marker.sh deactivate plan-review",
+    "~/.claude/scripts/marker.sh deactivate ready-for-review",
+    "~/.claude/scripts/marker.sh deactivate respond-pr",
+    "~/.claude/scripts/marker.sh deactivate memory-skill",
+    "~/.claude/scripts/marker.sh clear-stale",
+    "~/.claude/scripts/marker.sh clear-stale --dry-run",
+]
+
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
     # Valid shapes — 14 single-command shapes, each must be allowed       #
     # ------------------------------------------------------------------ #
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "~/.claude/scripts/marker.sh write code-review",
-            "~/.claude/scripts/marker.sh write skill-review",
-            "~/.claude/scripts/marker.sh write plan-review",
-            "~/.claude/scripts/marker.sh write ready-for-review",
-            "~/.claude/scripts/marker.sh activate plan-review",
-            "~/.claude/scripts/marker.sh activate ready-for-review",
-            "~/.claude/scripts/marker.sh activate respond-pr",
-            "~/.claude/scripts/marker.sh activate memory-skill",
-            "~/.claude/scripts/marker.sh deactivate plan-review",
-            "~/.claude/scripts/marker.sh deactivate ready-for-review",
-            "~/.claude/scripts/marker.sh deactivate respond-pr",
-            "~/.claude/scripts/marker.sh deactivate memory-skill",
-            "~/.claude/scripts/marker.sh clear-stale",
-            "~/.claude/scripts/marker.sh clear-stale --dry-run",
-        ],
-    )
+    @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
     def test_valid_shapes_allowed(self, command):
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command)) == "allow"
 
@@ -997,3 +1002,59 @@ class TestGateReleaseAuthorityFileWrites:
         assert "code-writer" in reason
         assert "report" in reason.lower()
         assert "code-review-markers" in reason
+
+
+class TestPrescriptionAllowlistAlignment:
+    """Every tilde-form marker.sh (subcommand, argument) shape the hook
+    accepts must have a matching permissions.allow entry, except a fixed,
+    literal exception set — not "any other shape A4/A5 decline", which would
+    silently re-grant a future excluded shape. Absolute-path forms are out of
+    scope: every existing and proposed permissions.allow rule is tilde-only
+    by convention, even though the hook's MARKER_SHAPE regex also accepts an
+    absolute-path prefix.
+    """
+
+    # clear-stale sweeps every session's dead-PID bypass markers machine-wide
+    # (not just this session's) and is ungated by the hook's no-gate-release
+    # check, so it fails A5 admission test (iii) even though CLAUDE.md
+    # prescribes it and the hook accepts it — see GH-557 plan, A5.
+    ALLOWLIST_EXCEPTIONS = frozenset({
+        "clear-stale",  # follow-up: marker.sh clear-stale scoping issue (not yet filed)
+        "clear-stale --dry-run",  # follow-up: marker.sh clear-stale scoping issue (not yet filed)
+    })
+
+    @staticmethod
+    def _allowed_bash_commands() -> set[str]:
+        settings = json.loads((CLAUDE_DIR / "settings.json").read_text())
+        allow_entries = settings.get("permissions", {}).get("allow", [])
+        commands = set()
+        for entry in allow_entries:
+            m = re.fullmatch(r"Bash\((.*)\)", entry)
+            if m:
+                commands.add(m.group(1))
+        return commands
+
+    @pytest.mark.parametrize("shape", TILDE_MARKER_SHAPES)
+    def test_every_hook_accepted_tilde_shape_has_an_allow_entry_or_is_excepted(self, shape):
+        allowed_bash_commands = self._allowed_bash_commands()
+        # Drive the hook itself rather than trusting the shared constant — a
+        # shape that drifted out of sync with the hook's own regex must fail
+        # here, not silently pass the allowlist comparison below.
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(shape)) == "allow", (
+            f"{shape!r} is expected to be hook-accepted per TILDE_MARKER_SHAPES "
+            "but the hook denied it."
+        )
+        subcommand_and_argument = shape.removeprefix("~/.claude/scripts/marker.sh ")
+        if subcommand_and_argument in self.ALLOWLIST_EXCEPTIONS:
+            return
+        assert shape in allowed_bash_commands, (
+            f"{shape!r} is hook-accepted and not in ALLOWLIST_EXCEPTIONS, but "
+            f"settings.json's permissions.allow has no matching Bash({shape}) entry."
+        )
+
+    def test_allowlist_exceptions_is_exactly_the_clear_stale_forms(self):
+        """Pins the exception set to its authored literal, not to whatever
+        shape A4/A5 happens to exclude at any given time — an open-ended
+        "any excluded shape" clause would silently re-grant a future
+        disqualified shape instead of failing this test."""
+        assert {"clear-stale", "clear-stale --dry-run"} == self.ALLOWLIST_EXCEPTIONS
