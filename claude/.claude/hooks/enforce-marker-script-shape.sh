@@ -76,9 +76,9 @@ _lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON."
 # ---------------------------------------------------------------------------
 # A review gate may be released only by a caller that could have run the
 # review. No agent in _LIB_NO_GATE_RELEASE_AGENTS could have: most carry no
-# `Skill` tool and cannot invoke a review skill at all, and the two harness
-# built-ins that do carry it (Explore, Plan) are dispatched read-only by
-# mandate. Either way a marker written by one asserts a review that could not
+# `Skill` tool and cannot invoke a review skill at all, and the one harness
+# built-in that does carry it (`Plan`) is dispatched read-only by mandate.
+# Either way a marker written by one asserts a review that could not
 # have happened. marker.sh resolves session_id by walking
 # the process ancestor chain to the Claude main process, so such a write is
 # indistinguishable from the parent session's and releases the gate for the

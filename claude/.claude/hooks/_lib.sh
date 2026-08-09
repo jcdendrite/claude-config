@@ -1184,17 +1184,18 @@ _lib_is_review_only_agent() {
 # The boundary rests on two different grounds, and conflating them misleads
 # whoever adds the next entry:
 #   - Every file-backed identity here (code-writer, the staff-* reviewers,
-#     ciso-reviewer, skill-fidelity-reviewer) declares no `Skill` tool in its
+#     ciso-reviewer, skill-fidelity-reviewer, and — as of the Explore.md
+#     same-named override — Explore) declares no `Skill` tool in its
 #     agents/*.md frontmatter, so it cannot invoke a review skill at all.
 #     test_agent_roster.py asserts that mechanically, so granting `Skill` to
 #     one of them fails a test rather than silently widening what a subagent
 #     can release.
-#   - The two harness built-ins (Explore, Plan) are understood to carry
-#     `Skill` — they ship with the harness, so this repo holds no frontmatter
-#     and no registry that could confirm or falsify it. They are listed on
-#     mandate (they are dispatched read-only), which holds either way; do not
-#     rewrite this as a tool-absence claim on the strength of the harness
-#     behaving one way today.
+#   - `Plan` is the one harness built-in with no agents/*.md file in this
+#     repo, and is understood to carry `Skill` — it ships with the harness, so
+#     this repo holds no frontmatter and no registry that could confirm or
+#     falsify it. It is listed on mandate (dispatched read-only), which holds
+#     either way; do not rewrite this as a tool-absence claim on the strength
+#     of the harness behaving one way today.
 # Either way a marker write from one of these identities is unearned rather
 # than merely unusual, which is what the deny turns on.
 #
