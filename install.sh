@@ -51,15 +51,26 @@ for name in plans handoffs briefs; do
   if ! stow_migrate_adopted_dir "$REPO_DIR" "$name"; then
     STOW_MIGRATION_FAILURES+=("$name")
   fi
+  # Repairs a prior run's per-entry adoption regardless of the migration
+  # outcome above -- see stow_repair_nested_adoption's own comment.
+  stow_repair_nested_adoption "$REPO_DIR" "$name"
 done
 if [ ${#STOW_MIGRATION_FAILURES[@]} -gt 0 ]; then
   echo "[install] warning: could not migrate the following off stow management: ${STOW_MIGRATION_FAILURES[*]} — re-run install.sh to retry; stow keeps managing them as symlinks in the meantime" >&2
 fi
 # INSTALL_TEST_FIXTURE: stow-adoption-migration — end
 
-# --ignore values are anchored Perl regexes, not literal strings — anchoring
-# with ^...$ stops a future name containing '.' or '-' from over-matching.
-stow -v --adopt --ignore='^plans$' --ignore='^handoffs$' --ignore='^briefs$' -t "$HOME" claude
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them against a real `stow` binary. Keep both markers
+# on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: stow-adopt-ignore — start
+# --ignore values are anchored Perl regexes matched against each item's path
+# relative to the package root (claude/), not its basename — '^plans$' never
+# matches '.claude/plans' and silently fails to protect it once '.claude'
+# itself is unfolded (forced real by the mkdir -p above), so stow adopts
+# every file inside individually instead of leaving the directory alone.
+stow -v --adopt --ignore='^\.claude/plans$' --ignore='^\.claude/handoffs$' --ignore='^\.claude/briefs$' -t "$HOME" claude
+# INSTALL_TEST_FIXTURE: stow-adopt-ignore — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on

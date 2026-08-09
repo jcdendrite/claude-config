@@ -167,3 +167,82 @@ stow_migrate_adopted_dir() {
   echo "[install] migrated ~/.claude/$name off stow management to a real directory (backup kept at $backup_dir)"
   return 0
 }
+
+# Print the canonicalized realpath of $1, or nothing if it cannot be
+# resolved. Delegates to Python rather than hand-rolling a symlink-chain
+# walker, since BSD readlink (macOS) has no -f flag; python3 is already a
+# required install.sh dependency.
+_stow_migration_lib_realpath() {
+  python3 -c 'import os, sys
+print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null
+}
+
+# stow_repair_nested_adoption REPO_DIR NAME
+# Idempotent repair for a prior bug: stow's --ignore is matched against each
+# item's path relative to the package root (e.g. .claude/briefs), not its
+# basename, so a bare name pattern silently fails to protect a directory
+# nested under an already-unfolded parent -- `stow --adopt` walks in and
+# turns each pre-existing file into an individual symlink back into the
+# package, defeating the point of `stow_migrate_adopted_dir` above. Installs
+# that ran with the old, ineffective pattern are left with these per-entry
+# symlinks; this replaces each one (a real copy of its resolved content)
+# rather than requiring a fresh top-level migration, which
+# stow_migrate_adopted_dir's own idempotency check would skip since $target
+# is already a real directory. A plain real entry, or a symlink resolving
+# outside $expected_source, is left untouched. Only scans $target's direct
+# children, not subdirectories: plans/, handoffs/, and briefs/ are documented
+# flat namespaces (one <slug>.md per entry), and dotfiles are excluded from
+# the same premise -- neither this function nor the bug it repairs has ever
+# had a dotfile or nested-subdirectory case to handle.
+stow_repair_nested_adoption() {
+  local repo_dir="$1" name="$2"
+  local target="$HOME/.claude/$name"
+  local expected_source="$repo_dir/claude/.claude/$name"
+
+  # The ! -L arm matters when stow_migrate_adopted_dir has failed and left
+  # $target as the original whole-directory symlink into $expected_source
+  # (its documented step (a)/(b) retry outcome) -- without it, -d follows
+  # the symlink and this function would glob the tracked package tree
+  # instead of a no-op.
+  [ -d "$target" ] && [ ! -L "$target" ] || return 0
+  local expected_source_real
+  expected_source_real=$(cd -P -- "$expected_source" 2>/dev/null && pwd -P) || return 0
+
+  local nullglob_was_set=0
+  if shopt -q nullglob; then nullglob_was_set=1; fi
+  shopt -s nullglob
+  local entries=("$target"/*)
+  if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
+
+  local entry resolved tmp
+  for entry in "${entries[@]}"; do
+    [ -L "$entry" ] || continue
+    resolved=$(_stow_migration_lib_realpath "$entry")
+    case "$resolved" in
+      "$expected_source_real"/*)
+        tmp=$(mktemp "$target/.stow-repair.XXXXXX") || {
+          echo "[install] warning: could not de-adopt $entry -- leaving it as a symlink into $repo_dir" >&2
+          continue
+        }
+        # -p preserves the resolved source's mode: mktemp creates $tmp at
+        # 0600, and plain cp onto an existing destination leaves that mode
+        # alone instead of adopting the source's, silently narrowing every
+        # repaired entry's permissions otherwise.
+        if ! cp -p -- "$entry" "$tmp"; then
+          rm -f -- "$tmp"
+          echo "[install] warning: could not copy $entry before de-adopting -- leaving it as a symlink into $repo_dir" >&2
+          continue
+        fi
+        # A direct mv (no separate rm) so the swap has no intermediate state
+        # where $entry doesn't exist under either name: mv/rename(2)
+        # atomically replaces the symlink destination with $tmp's content on
+        # the same filesystem, closing the window a separate rm-then-mv
+        # would leave between removing the old symlink and placing the copy.
+        # A failed rename leaves both $entry (still the original symlink)
+        # and $tmp (the copy) intact -- $tmp is deliberately not cleaned up
+        # here so its path stays available for manual recovery.
+        mv -- "$tmp" "$entry" || echo "[install] warning: could not de-adopt $entry -- its content was copied to $tmp but the swap failed; the original symlink is still in place" >&2
+        ;;
+    esac
+  done
+}
