@@ -1566,11 +1566,12 @@ class TestReviewerYield:
         )
         assert cols["Edited"] == "1"
 
-    def test_code_writer_subagent_edit_after_reviewer_dispatch_counts(self, fake_projects, capsys):
-        """An edit made by a code-writer subagent dispatched after the
-        reviewer returned counts toward Active/Edited — the dominant fix
-        path this repo's own CLAUDE.md mandates, not only parent
-        main-thread edits."""
+    def test_code_writer_subagent_edit_after_reviewer_dispatch_does_not_count(self, fake_projects, capsys):
+        """Documents the Verification 7(a) cost-gate fallback's shipped
+        scope: the edit index is parent-main-thread-only, so an edit made
+        inside a code-writer subagent transcript does not count toward
+        Active/Edited even though it followed the reviewer dispatch — the
+        originally-designed subagent-inclusive behavior is not what ships."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
             _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
@@ -1593,14 +1594,18 @@ class TestReviewerYield:
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
         )
-        assert cols["Active"] == "1"
-        assert cols["Edited"] == "1"
+        assert cols["Active"] == "0"
+        assert cols["Edited"] == "0"
 
     def test_sibling_reviewer_findings_write_after_zero_finding_dispatch_does_not_count(self, fake_projects, capsys):
         """A sibling reviewer dispatched after a zero-finding dispatch
         returns writes only its own findings file — that write must not
         satisfy Active for the zero-finding dispatch, or every review
-        fan-out would falsely look active regardless of fix work."""
+        fan-out would falsely look active regardless of fix work. Passes
+        trivially under the Verification 7(a) cost-gate fallback (the edit
+        index is parent-main-thread-only, so no subagent write ever counts),
+        rather than exercising the reviewer-write subagent_type exclusion
+        this test was originally written to pin."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "ciso-reviewer")]),
             _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),

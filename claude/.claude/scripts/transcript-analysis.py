@@ -2992,96 +2992,6 @@ def _index_parent_edits(records: list[dict], since_ts: float | None) -> dict[str
     return index
 
 
-def _index_subagent_edits(jsonl_path: Path, since_ts: float | None) -> dict[str, float]:
-    """Code-write edit index for one non-reviewer subagent transcript:
-    normalized path key -> latest edit timestamp. Reuses _read_session_file's
-    existing OSError-to-[] swallow — an unreadable subagent transcript simply
-    contributes no edits, matching that helper's established contract.
-    """
-    index: dict[str, float] = {}
-    for rec in _read_session_file(jsonl_path, include_subagents=False):
-        if rec.get("type") != "assistant":
-            continue
-        rec_ts = _parse_ts(rec.get("timestamp"))
-        if rec_ts is None:
-            continue
-        if since_ts is not None and rec_ts < since_ts:
-            continue
-        cwd = rec.get("cwd") or ""
-        for block in (rec.get("message") or {}).get("content") or []:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            if block.get("name") not in _CODE_WRITE_TOOLS:
-                continue
-            raw_path = _code_write_target_path(block.get("input") or {})
-            if not raw_path:
-                continue
-            key = _normalize_cited_path(raw_path, cwd)
-            if key is not None:
-                index[key] = max(index.get(key, float("-inf")), rec_ts)
-    return index
-
-
-def _index_reviewer_yield_edits(
-    records: list[dict],
-    dispatch_index: dict[str, Path],
-    tool_result_ts: dict[str, float],
-    since_ts: float | None,
-) -> dict[str, float]:
-    """Combine the parent-main-thread edit index with qualifying subagent
-    edits for one session: normalized path key -> latest edit timestamp.
-
-    A subagent's transcript is read only when (a) its own dispatch
-    subagent_type is not in the reviewer set — a reviewer subagent's only
-    Write is its own findings file, excluded outright rather than
-    pattern-matched (see cmd_reviewer_yield's docstring) — and (b) its
-    dispatch timestamp is after the earliest in-window reviewer dispatch's
-    tool_result timestamp in this session, bounding the new subagent-read
-    I/O to dispatches that could plausibly be fix work following a review
-    rather than every subagent the session ever spawned.
-    """
-    index = _index_parent_edits(records, since_ts)
-
-    reviewer_return_ts: list[float] = []
-    non_reviewer_dispatches: list[tuple[str, float]] = []  # (tool_use_id, dispatch_ts)
-    for rec in records:
-        if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
-            continue
-        dispatch_ts = _parse_ts(rec.get("timestamp"))
-        if dispatch_ts is None:
-            continue
-        if since_ts is not None and dispatch_ts < since_ts:
-            continue
-        for block in (rec.get("message") or {}).get("content") or []:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            if block.get("name") not in _SPAWN_TOOL_NAMES:
-                continue
-            stype = (block.get("input") or {}).get("subagent_type") or ""
-            tid = block.get("id") or ""
-            if _is_reviewer_subagent_type(stype):
-                return_ts = tool_result_ts.get(tid)
-                if return_ts is not None:
-                    reviewer_return_ts.append(return_ts)
-            else:
-                non_reviewer_dispatches.append((tid, dispatch_ts))
-
-    if not reviewer_return_ts:
-        return index  # no in-window reviewer returned in this session — nothing to scope subagent reads against
-
-    read_scope_threshold = min(reviewer_return_ts)
-    for tid, dispatch_ts in non_reviewer_dispatches:
-        if dispatch_ts <= read_scope_threshold:
-            continue
-        paired = dispatch_index.get(tid)
-        if paired is None:
-            continue
-        for key, ts in _index_subagent_edits(paired, since_ts).items():
-            index[key] = max(index.get(key, float("-inf")), ts)
-
-    return index
-
-
 # Both "~/.claude/plans/x.md" and a repo-relative ".claude/plans/x.md" share
 # this literal tail, so a substring check needs no cwd or normalization.
 _CITED_PATH_PLAN_FILE_MARKER = ".claude/plans/"
@@ -3159,13 +3069,16 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     A second table reports, per (agent type, bucket), whether the dispatch's
     own cited paths were later edited: Cited (>=1 extracted citation after
     excluding the dispatch's own self-referenced/plan-file candidates),
-    Active (of those, the session recorded ANY code edit afterward — parent
-    main thread or a subsequent non-reviewer subagent dispatch, the null
+    Active (of those, the session recorded ANY code edit afterward, the null
     control for "was the session still working at all"), and Edited (of the
     Active ones, a cited path itself was among the edited paths). Rate =
-    Edited / Active, so it cannot exceed 100%. A reviewer subagent's own
-    Write (its findings file) is excluded from the edit index outright by
-    subagent_type, not by pattern-matching its target. The unclassified
+    Edited / Active, so it cannot exceed 100%. Active/Edited currently
+    reflect parent-main-thread edits only — subagent-transcript edit reads
+    were measured against Verification 7(a)'s cost gate (delta ~16.2s over
+    the inherited 13.5s baseline) and excluded under the gate's own
+    pre-committed fallback, so this undercounts real fix work whenever it
+    happened inside a code-writer dispatch, which this repo's own CLAUDE.md
+    mandates for implementation work. The unclassified
     bucket is not scored (prints "excluded" for Cited/Active/Edited/Rate) —
     an unreadable subagent transcript lands there via its empty verdict text
     and is separately counted in the printed read-error line, never entered
@@ -3198,7 +3111,10 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
         meta_read_errors += session_meta_read_errors
 
         tool_result_ts = _build_tool_result_ts_map(records, since_ts)
-        edit_index = _index_reviewer_yield_edits(records, dispatch_index, tool_result_ts, since_ts)
+        # Cost gate (Verification 7(a)): subagent-edit reads measured ~16.4s enabled vs
+        # ~0.2s parent-only median, delta ~16.2s exceeds the inherited 13.5s baseline —
+        # the plan's own pre-committed fallback, parent-only index shipped instead.
+        edit_index = _index_parent_edits(records, since_ts)
         overall_max_edit_ts = max(edit_index.values()) if edit_index else None
 
         for rec in records:
