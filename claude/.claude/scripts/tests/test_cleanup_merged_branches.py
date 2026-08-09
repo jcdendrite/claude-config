@@ -2018,11 +2018,13 @@ class TestDirenvNonAllowedEnvrcBehaviorUnchanged:
 class TestLoadedCredentialNeverAppearsInOutput:
     """load_repo_environment captures `direnv export bash`'s stdout straight
     into a shell variable via `eval` and never echoes it — a credential the
-    per-repo .envrc exports must not reach the script's own stdout/stderr,
-    including on the abort/error paths (git-identity guard, gh-auth
-    downgrade warning) that run after the eval."""
+    per-repo .envrc exports must not reach the script's own stdout/stderr.
+    Keys the gh shim by the exported token (not branch name), so the branch
+    only gets classified as merged if the token was actually consumed —
+    otherwise this test would pass just as well on a regressed
+    load_repo_environment that never runs the eval at all."""
 
-    def test_direnv_exported_token_value_is_never_printed(self, tmp_path, fake_gh):
+    def test_direnv_exported_token_value_is_never_printed(self, tmp_path):
         local, bare = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/done")
         subprocess.run(["git", "branch", "-D", "feat/done"], cwd=bare, check=True)
@@ -2033,14 +2035,26 @@ class TestLoadedCredentialNeverAppearsInOutput:
         # silently replace this fixture with a placeholder and defeat the
         # test's purpose.
         exported_value = "direnv-export-value-must-never-leak-9f3a7c21b6"
-        env = fake_gh(
-            {"feat/done": {"number": 1, "mergedAt": "2026-05-01"}},
+        gh_shim_source = _gh_shim_source_by_token({
+            exported_value: {"feat/done": {"number": 1, "mergedAt": "2026-05-01"}},
+        })
+        env = _shimmed_env(
+            tmp_path, gh_shim_source,
             direnv_source=_direnv_shim_source_static_export("GH_TOKEN", exported_value),
         )
         result = _run_script(local, env)
 
         assert exported_value not in result.stdout
         assert exported_value not in result.stderr
+        branches = subprocess.run(
+            ["git", "branch", "--list", "feat/done"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert branches.strip() == "", (
+            "the branch must be deleted — proving the token was actually "
+            "loaded and consumed by classify_branch, not just absent from "
+            "output because load_repo_environment silently never ran"
+        )
 
 
 class TestDirenvStdinReadingEnvrcDoesNotHangScript:

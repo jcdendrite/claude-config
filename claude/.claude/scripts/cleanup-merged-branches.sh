@@ -112,8 +112,11 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 # readonly: load_repo_environment() below evals arbitrary `export` statements
-# from an .envrc; a clobber attempt on either variable aborts under set -e
-# instead of silently flipping --dry-run or repointing destructive git ops.
+# from an .envrc; a clobber attempt on DRY_RUN aborts under set -e instead of
+# silently flipping --dry-run. ALL_PROJECTS is readonly for symmetry — every
+# read of it happens before load_repo_environment ever runs, so it has
+# nothing left to protect by this point, but the shared declaration keeps
+# both dispatch-controlling flags handled the same way.
 readonly DRY_RUN ALL_PROJECTS
 
 # ---------------------------------------------------------------------------
