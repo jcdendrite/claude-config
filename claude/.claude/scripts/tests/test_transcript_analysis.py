@@ -114,6 +114,16 @@ def _extract_grand_total(out: str) -> float:
     return float(match.group(1).replace(",", ""))
 
 
+def _extract_summary_unpriced(out: str) -> tuple[int, int]:
+    """Read --summary's dedicated 'Unpriced tokens: N tokens across M model IDs'
+    line as (N, M) — distinct from the full report's own
+    'Unpriced tokens (unknown model IDs): N' line, which _extract_unpriced_total
+    reads."""
+    match = re.search(r"Unpriced tokens: ([\d,]+) tokens across (\d+) model IDs", out)
+    assert match is not None, "summary unpriced-tokens line not found in output"
+    return int(match.group(1).replace(",", "")), int(match.group(2))
+
+
 def _asst(
     model: str,
     *,
@@ -3225,6 +3235,7 @@ def _priced(
     output: int = 0,
     flat_cache_creation: int | None = None,
     ts: str = "2026-05-19T10:00:00.000Z",
+    branch: str = "main",
 ) -> dict:
     """Build an assistant record with explicit priced usage fields for cost tests.
 
@@ -3233,9 +3244,10 @@ def _priced(
     field set to their sum — matching every real usage record sampled, where the
     two always agree. flat_cache_creation=N omits the nested block entirely and
     emits only the flat field (the pre-nested-block fallback shape), ignoring
-    ephemeral_1h/ephemeral_5m.
+    ephemeral_1h/ephemeral_5m. branch="main" by default so every pre-existing
+    call site (predating --branches) is unaffected.
     """
-    rec = _asst(model, ts=ts, content=[])
+    rec = _asst(model, branch=branch, ts=ts, content=[])
     usage: dict = {
         "input_tokens": input,
         "output_tokens": output,
@@ -3262,6 +3274,8 @@ def _cost_args(
     no_redact: bool = False,
     extra_config_dirs: list[str] | None = None,
     by_project: bool = False,
+    branches: str | None = None,
+    summary: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -3271,6 +3285,8 @@ def _cost_args(
         "no_redact": no_redact,
         "extra_config_dirs": extra_config_dirs,
         "by_project": by_project,
+        "branches": branches,
+        "summary": summary,
     })()
 
 
@@ -4755,6 +4771,453 @@ class TestCostThreadSplit:
         thread_section = out.split("## Cost by thread")[1].split("## Top")[0]
         subagent_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("subagent"))
         assert float(subagent_line.split()[-2].replace(",", "")) == pytest.approx(2.00)  # not 0.00
+
+
+class TestPriceTurnArity:
+    def test_price_turn_returns_exactly_three_values(self):
+        """Pins _price_turn's (dollars_by_class, context_at_turn, unpriced_tokens)
+        three-tuple return signature — three other call sites (audit-routing,
+        context-distribution, cost-trend) consume it positionally; a future
+        edit widening it for one caller would silently break the rest.
+        audit-routing-shape and audit-routing-samples classify Opus turn
+        shape only and never call _price_turn."""
+        usage = _priced("claude-sonnet-5", input=100)["message"]["usage"]
+        result = _mod._price_turn("claude-sonnet-5", usage)
+        assert len(result) == 3
+        dollars, context_at_turn, unpriced_tokens = result
+        assert isinstance(dollars, dict)
+        assert isinstance(context_at_turn, int)
+        assert isinstance(unpriced_tokens, int)
+
+
+class TestCostBranchFilter:
+    """--branches: per-record (not per-session) gitBranch filtering."""
+
+    def test_branch_filter_is_per_record_not_per_session(self, fake_projects, capsys):
+        """One session's records split across two branches: --branches A
+        returns only A's dollars, and --branches A + --branches B sum to the
+        unfiltered total — a session-level (not per-record) filter would
+        misprice this in both directions (row2: one real session in this
+        repo's own corpus splits 863 records on a feature branch, 212 on
+        main)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),  # $2.00
+            _priced("claude-sonnet-5", input=500_000, branch="main"),         # $1.00
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        unfiltered_total = _extract_grand_total(capsys.readouterr().out)
+
+        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        feature_total = _extract_grand_total(capsys.readouterr().out)
+        assert feature_total == pytest.approx(2.00)
+
+        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        main_total = _extract_grand_total(capsys.readouterr().out)
+        assert main_total == pytest.approx(1.00)
+
+        assert feature_total + main_total == pytest.approx(unfiltered_total)
+
+    def test_branch_filter_accepts_comma_separated_list(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),  # $2.00
+            _priced("claude-sonnet-5", input=500_000, branch="feature-b"),    # $1.00
+            _priced("claude-sonnet-5", input=250_000, branch="main"),         # $0.50
+        ])
+        _mod._cost_report(_cost_args(branches="feature-a,feature-b"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(3.00)
+
+    def test_null_git_branch_record_counted_unfiltered_excluded_under_branch_filter(
+        self, fake_projects, capsys
+    ):
+        """A null-gitBranch record is counted in an unfiltered run but
+        excluded (deliberately) under any --branches filter — pins that the
+        branch-filter sum invariant above isn't silently passing only because
+        the fixture happens to have no null-branch record."""
+        no_branch_rec = _priced("claude-sonnet-5", input=1_000_000)  # $2.00
+        no_branch_rec["gitBranch"] = None
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            no_branch_rec,
+            _priced("claude-sonnet-5", input=500_000, branch="main"),  # $1.00
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.00)
+
+        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(1.00)
+
+
+class TestCostTokensColumn:
+    """The 'Cost by token class' table's Tokens column, from _token_counts."""
+
+    def test_tokens_column_hand_computed_totals(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced(
+                "claude-sonnet-5",
+                input=100_000, cache_read=200_000, ephemeral_1h=10_000, ephemeral_5m=20_000, output=5_000,
+            ),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        input_cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert int(input_cols["Tokens"].replace(",", "")) == 100_000
+        cache_read_cols = _table_cols(out, header_contains="Class", row_contains="cache_read", row_startswith=True)
+        assert int(cache_read_cols["Tokens"].replace(",", "")) == 200_000
+        output_cols = _table_cols(out, header_contains="Class", row_contains="output", row_startswith=True)
+        assert int(output_cols["Tokens"].replace(",", "")) == 5_000
+
+    def test_tokens_column_excludes_unpriced_turns(self, fake_projects, capsys):
+        """An unpriced model's tokens are excluded from the Tokens column —
+        the same `dollars_by_class is None: continue` guard _price_turn's
+        dollar accumulation already applies, so an unpriced turn's tokens are
+        surfaced only via the separate unpriced-tokens counter, never folded
+        into a total that looks complete."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("<synthetic>", input=1_000_000),   # unpriced
+            _priced("claude-sonnet-5", input=100_000),  # priced
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        input_cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert int(input_cols["Tokens"].replace(",", "")) == 100_000  # not 1,100,000
+
+
+class TestCostSummary:
+    """--summary: a structurally scoped, aggregate-only rendering branch."""
+
+    def test_summary_without_this_repo_exits_nonzero(self, fake_projects, capsys):
+        with pytest.raises(SystemExit):
+            _mod._cost_report(_cost_args(summary=True), date(2026, 8, 2))
+        assert "--summary requires --this-repo" in capsys.readouterr().err
+
+    def test_summary_with_explicit_default_projects_glob_exits_nonzero(self, fake_projects, capsys):
+        """Even the literal default glob '*' is refused alongside --summary
+        when --this-repo is absent — --summary does not accept --projects as
+        an alternative scope gate at all, default value or otherwise."""
+        with pytest.raises(SystemExit):
+            _mod._cost_report(_cost_args(summary=True, projects="*"), date(2026, 8, 2))
+
+    def test_summary_with_machine_wide_projects_bypass_glob_exits_nonzero(self, fake_projects, capsys):
+        """row23: every _path_to_project_slug-derived project slug begins
+        with '-', so a glob like '-*' is machine-wide despite not being the
+        literal default '*' — pins that this bypass is refused too, not just
+        the literal default value."""
+        with pytest.raises(SystemExit):
+            _mod._cost_report(_cost_args(summary=True, projects="-*"), date(2026, 8, 2))
+
+    def test_summary_refuses_by_project_in_combination(self, tmp_path, monkeypatch, capsys):
+        projects = tmp_path / "projects"
+        (projects / "-repo-main").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit):
+            _mod._cost_report(_cost_args(summary=True, this_repo=True, by_project=True), date(2026, 8, 2))
+
+    def test_summary_refuses_no_redact_in_combination(self, tmp_path, monkeypatch, capsys):
+        projects = tmp_path / "projects"
+        (projects / "-repo-main").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit):
+            _mod._cost_report(_cost_args(summary=True, this_repo=True, no_redact=True), date(2026, 8, 2))
+
+    def test_summary_refuses_config_dir_in_combination(self, tmp_path, monkeypatch, capsys):
+        projects = tmp_path / "projects"
+        (projects / "-repo-main").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit):
+            _mod._cost_report(
+                _cost_args(summary=True, this_repo=True, extra_config_dirs=["/somewhere"]),
+                date(2026, 8, 2),
+            )
+
+    def test_summary_emits_nothing_identifying_and_excludes_cross_repo_spend(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Items 7 and 7a: a ≥2-project fixture (neither labelled
+        claude-config, so the redact-map-miss path is exercisable if this
+        path wrongly touched it). This repo's own raw label, the out-of-scope
+        project's raw label, and every session ID are absent from --summary
+        output; _redact_proj_label/_build_redact_map are never called on this
+        path; and the out-of-scope project's dollars are excluded from the
+        printed total, not just from the label set."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        other = projects / "-home-user-otherrepo"
+        other.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "sess-mine.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])    # $2.00
+        _write_jsonl(other / "sess-other.jsonl", [_priced("claude-sonnet-5", input=5_000_000)])  # $10.00
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        def _must_not_be_called(*a, **k):
+            raise AssertionError("must not be called under --summary")
+        monkeypatch.setattr(_mod, "_redact_proj_label", _must_not_be_called)
+        monkeypatch.setattr(_mod, "_build_redact_map", _must_not_be_called)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+
+        assert "repo-main" not in out
+        assert "otherrepo" not in out
+        assert "sess-mine" not in out
+        assert "sess-other" not in out
+        assert "private-project" not in out
+        assert _extract_grand_total(out) == pytest.approx(2.00)  # not 12.00 — other project's $10 excluded
+
+    def test_summary_never_prints_session_or_project_sections(self, tmp_path, monkeypatch, capsys):
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "## Top" not in out
+        assert "## Cost by project" not in out
+        assert "## Cost by context-at-turn bucket" not in out
+        assert "1 priced sessions" in out
+        assert "1 priced turns" in out
+
+    def test_summary_unpriced_model_line_and_tokens_column_exclusion(self, tmp_path, monkeypatch, capsys):
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "sess.jsonl", [
+            _priced("<synthetic>", input=1_000_000, output=500_000),  # unpriced
+            _priced("claude-sonnet-5", input=100_000),                 # priced
+        ])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        unpriced_tokens, unpriced_models = _extract_summary_unpriced(out)
+        assert unpriced_tokens == 1_000_000 + 500_000
+        assert unpriced_models == 1
+        input_cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert int(input_cols["Tokens"].replace(",", "")) == 100_000  # unpriced turn excluded
+
+    def test_summary_unpriced_line_present_even_when_zero(self, tmp_path, monkeypatch, capsys):
+        """Always prints the unpriced-tokens line, even at zero — an
+        unrecognized model ID must never silently understate a published
+        figure with no marker."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        unpriced_tokens, unpriced_models = _extract_summary_unpriced(out)
+        assert unpriced_tokens == 0
+        assert unpriced_models == 0
+
+    def test_summary_stale_pricing_banner_present_past_expiry(self, tmp_path, monkeypatch, capsys):
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 9, 1))
+        out = capsys.readouterr().out
+        assert "STALE PRICING" in out
+
+    def test_summary_stale_pricing_banner_absent_before_expiry(self, tmp_path, monkeypatch, capsys):
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "STALE PRICING" not in out
+
+
+class TestCostWorktreeAgentBranchCarryForward:
+    """A worktree-agent-* subagent record's branch is resolved by carry-
+    forward against its own session's main-thread branch history, not
+    excluded and not taken literally — see _session_branch_index and
+    _attributed_branch."""
+
+    def test_worktree_agent_record_folds_into_branch_active_at_dispatch_time(self, fake_projects, capsys):
+        """(a): a main-thread record on the requested branch, followed (later
+        timestamp) by a worktree-agent-* record — the subagent's dollars fold
+        into the requested branch's headline total, not a separate line."""
+        session_id = "sess-carry-a"
+        main_rec = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="feature-a", ts="2026-08-01T10:00:00.000Z",
+        )  # $2.00
+        agent_rec = _priced(
+            "claude-sonnet-5", input=500_000, branch="worktree-agent-abc123", ts="2026-08-01T11:00:00.000Z",
+        )  # $1.00, later than main_rec
+        agent_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [main_rec])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
+
+        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(3.00)  # 2.00 + 1.00 folded in
+
+    def test_worktree_agent_record_before_any_main_thread_activity_falls_forward(self, fake_projects, capsys):
+        """(b): the worktree-agent-* record's timestamp is *earlier* than any
+        main-thread record in the session — resolves by falling forward to
+        the index's earliest entry, same result as (a)."""
+        session_id = "sess-carry-b"
+        agent_rec = _priced(
+            "claude-sonnet-5", input=500_000, branch="worktree-agent-abc123", ts="2026-08-01T09:00:00.000Z",
+        )  # earlier than the only main-thread record
+        agent_rec["isSidechain"] = True
+        main_rec = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="feature-a", ts="2026-08-01T10:00:00.000Z",
+        )
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [main_rec])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
+
+        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(3.00)
+
+    def test_worktree_agent_record_resolves_through_mid_session_branch_switch(self, fake_projects, capsys):
+        """(c) the discriminating case: main-thread records switch branches
+        mid-session (feature-a, then later main), and the worktree-agent-*
+        record's real timestamp falls *before* the switch — must resolve to
+        the pre-switch (feature-a) branch. _read_session_file appends every
+        subagent record after every main-thread record, so this record sits
+        *after* both main-thread records in the merged list despite its
+        earlier timestamp; a position- or last-branch-seen-based resolution
+        would misresolve it to main instead of feature-a."""
+        session_id = "sess-carry-c"
+        first_main = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="feature-a", ts="2026-08-01T10:00:00.000Z",
+        )  # $2.00
+        second_main = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-01T12:00:00.000Z",
+        )  # $2.00
+        agent_rec = _priced(
+            "claude-sonnet-5", input=500_000, branch="worktree-agent-abc123", ts="2026-08-01T11:00:00.000Z",
+        )  # $1.00, between the two main-thread turns
+        agent_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [first_main, second_main])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
+
+        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        feature_out = capsys.readouterr().out
+        assert _extract_grand_total(feature_out) == pytest.approx(3.00)  # first_main + agent
+
+        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        main_out = capsys.readouterr().out
+        assert _extract_grand_total(main_out) == pytest.approx(2.00)  # second_main only
+
+    def test_worktree_agent_record_unresolvable_with_no_main_thread_branch_in_session(
+        self, fake_projects, capsys
+    ):
+        """(d): a session with no main-thread branch-bearing record at all —
+        the worktree-agent-* record is counted in an unfiltered run but
+        excluded from every --branches filter's total, the one case that
+        stays genuinely unattributable (renders '?', GH-482's sentinel
+        convention reused). The main-thread record present here carries no
+        gitBranch of its own (branch="") — a wholly empty main file would
+        instead exercise a pre-existing, unrelated desync between
+        _build_redact_map's own (non-subagent-merged) scan basis and cost's
+        subagent-merged session iterator, not the carry-forward behavior
+        this test targets."""
+        session_id = "sess-carry-d"
+        agent_rec = _priced("claude-sonnet-5", input=1_000_000, branch="worktree-agent-abc123")  # $2.00
+        agent_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [_user_msg("hi", branch="")])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
+
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(2.00)
+
+        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

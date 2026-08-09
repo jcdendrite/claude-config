@@ -22,6 +22,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
 - [Configuration](#configuration)
   - [Worktree enforcement](#worktree-enforcement)
   - [Autonomous shipping](#autonomous-shipping)
+  - [PR cost disclosure](#pr-cost-disclosure)
   - [Permission-prompt tracking](#permission-prompt-tracking)
   - [Repo relocation](#repo-relocation)
   - [Private-project redaction](#private-project-redaction)
@@ -331,6 +332,20 @@ mkdir -p .claude && touch .claude/autonomous-shipping-optout
 ```
 
 See [`docs/commit-stall-block.md`](docs/commit-stall-block.md) for the fire predicate, in-session recovery, log format, and known limitations.
+
+### PR cost disclosure
+
+`pr-description` can embed a `## Cost` section — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary` — directly into a PR body. Off by default; gated by a **content-addressed** sentinel, not a content-free flag like `worktree-required` above.
+
+```bash
+gh repo view --json nameWithOwner --jq .nameWithOwner > .claude/pr-cost-disclosure
+git add .claude/pr-cost-disclosure
+git commit -m "Enable PR cost disclosure"
+```
+
+Content-addressing matters because `claude/.claude/skills/` is this repo's own stow package, and copying `.claude/` wholesale into a new repo — the documented way people adopt config from a repo like this one — is exactly how an inert presence-only flag would travel silently into a repo that never opted in. `.claude/pr-cost-disclosure`'s content must equal the repo's own `owner/repo` string, checked live against `gh repo view` at gate time — a copied file still names the *origin* repo and fails the match anywhere else. It does not, and is not meant to, distinguish between two different clones of this same repo's own origin: a non-fork contributor working directly against this repo's origin has a sentinel that correctly matches, because they are, in fact, working in the repo it names.
+
+The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
 
 ### Permission-prompt tracking
 

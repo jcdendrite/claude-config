@@ -631,8 +631,10 @@ _lib_worktree_enforcement_active() {
 # only restricts a hostile repo, while autonomous shipping removes a human
 # checkpoint — so a repo's own committed content must never grant it. There
 # is no repo-level "required" file in this code path; committing one has no
-# effect. Two tiers only: (1) machine sentinel
-# (~/.claude/autonomous-shipping-required), required; (2) per-repo opt-out
+# effect. Two tiers only: (1) machine sentinel, required — the resolved
+# config dir's autonomous-shipping-required, unioned with the literal
+# ~/.claude/autonomous-shipping-required so a sentinel armed before
+# CLAUDE_CONFIG_DIR adoption still activates; (2) per-repo opt-out
 # (.claude/autonomous-shipping-optout), narrows the machine default off for
 # this repo only. Every error path (filesystem error, empty $HOME, empty
 # REPO_ROOT, wrong argument count) fails toward NOT shipping — the safe
@@ -649,7 +651,11 @@ _lib_autonomous_shipping_active() {
   # than adding one.
   local config_dir
   config_dir=$(_lib_config_dir) || return 1
-  [ -f "$config_dir/autonomous-shipping-required" ] || return 1
+  # Union, not swap, for this specific scenario only (not a full structural
+  # mirror of _lib_worktree_enforcement_active's fallback — see the
+  # fail-toward-NOT-shipping divergence in the header comment above): a
+  # machine-wide sentinel armed before CLAUDE_CONFIG_DIR adoption still activates.
+  [ -f "$config_dir/autonomous-shipping-required" ] || [ -f "$HOME/.claude/autonomous-shipping-required" ] || return 1
   [ -f "$repo_root/.claude/autonomous-shipping-optout" ] && return 1
   return 0
 }

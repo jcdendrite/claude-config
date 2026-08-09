@@ -68,6 +68,21 @@ not something you can resolve. If none match, proceed without a layer.
 - **The attribution trailer** as the last line of the body:
   `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
 
+## Cost section
+
+Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
+
+Gate: (a) `.claude/pr-cost-disclosure` exists, (b) its trimmed content is non-empty, (c) `gh repo view --json nameWithOwner --jq .nameWithOwner` exits zero with stdout equal to (b) — the sentinel names this repo's own `owner/repo`, so a copy-pasted `.claude/` elsewhere still fails (c). Three outcomes, never a boolean: (1) match → regenerate. (2) gate succeeds but sentinel absent/empty/non-matching → delete the block if one exists. (3) the gate check itself fails (`gh repo view` errors or returns empty) → leave any existing block untouched, note the skip in the report. Never collapse (3) into (2) — a transient `gh` failure must not silently strip a published disclosure.
+
+Resolve the branch immediately before the call and pass it as a quoted, opaque literal — never string-interpolated unquoted (ref names can carry shell metacharacters):
+
+```bash
+branch="$(git rev-parse --abbrev-ref HEAD)"
+python3 ~/.claude/scripts/transcript-analysis.py cost --this-repo --branches "$branch" --summary
+```
+
+If `$branch` is the literal `HEAD` (detached HEAD), omit the section and say why, rather than publish a `$0.00` block for an unresolved branch. Otherwise embed stdout **verbatim** under `## Cost`, followed by the exact command (branch filled in) — never recompose, round, or re-narrate the figures. Session/turn counts and per-model-ID dollars are not neutral — they signal engagement scale and model mix, the point in a repo opting in for this, not necessarily one whose sentinel exists for a different reason.
+
 ## Checks
 
 Run every check below in both modes — against the draft in author mode,
@@ -79,7 +94,10 @@ section delimited by `<!-- code-review:deferred:start -->` /
 `/code-review` runs and must survive byte-identical, delimiters included.
 Lift the delimited span out before the coherence pass and reinsert it
 verbatim afterward — left in place it is precisely the "what is this?" span
-that pass is told to flag.
+that pass is told to flag. A `## Cost` section (`<!-- pr-cost:start -->` /
+`<!-- pr-cost:end -->`, "Cost section" above) gets the same lift-out
+treatment but not the same reinsert rule, stated here rather than left to
+proximity: it regenerates fresh every sync, never reinserted verbatim.
 
 **Reader-coherence pass.** Before the pattern checks below, read the
 body end to end as the reviewer will and answer: **does this document

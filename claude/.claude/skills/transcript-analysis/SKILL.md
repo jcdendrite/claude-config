@@ -1,6 +1,6 @@
 ---
 name: transcript-analysis
-description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, PR-to-branch mapping, per-session review-activity timelines (skill invocations, hook denials, reviewer spawns), a per-session narrative of typed prompts classified as initial/followup/explicit correction, or a corpus-wide census of denial/friction shapes. For token-cost or cache-efficiency analysis use token-analyzer.py directly.
+description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, PR-to-branch mapping, per-session review-activity timelines (skill invocations, hook denials, reviewer spawns), a per-session narrative of typed prompts classified as initial/followup/explicit correction, or a corpus-wide census of denial/friction shapes. For token-cost, cache-efficiency, or branch/repo-scoped dollar cost use the `cost` subcommand.
 ---
 
 The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly from the shell.
@@ -22,6 +22,7 @@ The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly
 | What prompts did I write, and where did I redirect Claude? | `user-input` |
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | Which lever costs the most in actual dollars — cache read/write, output, or input? | `cost --since 30d` |
+| What did this branch cost, as a publish-ready aggregate for a PR body? | `cost --this-repo --branches <branch> --summary` |
 | Are reviewer dispatches producing real findings or mostly zero-finding passes? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
 | Which client or profile does spend belong to? | `cost --by-project --config-dir <dir>` |

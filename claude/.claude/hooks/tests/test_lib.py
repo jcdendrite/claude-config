@@ -1018,6 +1018,37 @@ class TestAutonomousShippingActive:
         repo.mkdir()
         assert _autonomous_shipping_active(home, repo)
 
+    def test_active_when_config_dir_differentiated_and_only_home_claude_sentinel_present(
+        self, tmp_path: Path
+    ) -> None:
+        """The fix this test pins: a machine-wide sentinel armed at
+        $HOME/.claude before CLAUDE_CONFIG_DIR adoption must still activate
+        autonomous shipping once CLAUDE_CONFIG_DIR points elsewhere with no
+        sentinel of its own -- union, not swap. Inverse of
+        TestPermissionPromptTrackingActive.test_sentinel_at_home_claude_ignored_when_config_dir_points_elsewhere,
+        which asserts the opposite for a function with no such fallback."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. {_LIB_SH}; _lib_autonomous_shipping_active "$1"',
+                "bash",
+                str(repo),
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 0
+
     def test_inactive_when_machine_file_present_and_repo_optout(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         repo = tmp_path / "repo"
