@@ -127,7 +127,8 @@ design against it — read it directly. The split is locate-and-report
 When root-causing a check or test failure requires a read-heavy probe —
 finding how existing tests handle a pattern, locating the relevant
 convention, mapping an analogous code shape — dispatch that probe as an
-objective to `Explore` or `general-purpose` (`model: sonnet`). Use the
+objective to `Explore` (no `model` needed — pinned via `Explore.md`) or
+`general-purpose` (`model: sonnet`). Use the
 same split as Codebase discovery above: `Explore` for excerpt-level
 search (locate, grep, pattern-match); `general-purpose` when the probe
 must read whole files to understand structure or reproduce behavior.

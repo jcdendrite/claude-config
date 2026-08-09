@@ -123,7 +123,7 @@ If not all three hold, point at the canonical source.
 
 6. **`maxTurns` integer validation** — `maxTurns: 20`, not `maxTurns: "20"`. Strings are silently ignored; the cap will not apply.
 
-7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing". Reviewer, code-writing, and specialist agents pin `model: sonnet`; routinely-dispatched subagents do not pin `opus`.
+7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing". Reviewer, code-writing, and specialist agents *request* `model: sonnet` — resolution is not guaranteed. `Explore`'s pin (`claude/.claude/agents/Explore.md`) is the one exception that is enforced, since it's a repo-owned override rather than a per-dispatch request. Routinely-dispatched subagents do not pin `opus`.
 
 8. **Length** — under the 200-line target. Flag anything that drifts past 200 (and especially past 300) without a load-bearing reason.
 

@@ -470,8 +470,10 @@ class TestBashInPlaceEditFamily:
 
 
 class TestBuiltinAgents:
-    """Explore and Plan are harness built-ins with no local agent file —
-    locks in that the closed review-only set covers them too."""
+    """`Plan` is a harness built-in with no local agent file; `Explore` now
+    has an override (`agents/Explore.md`) but is tested here too, since both
+    identities must stay covered by the closed review-only set regardless of
+    which grounds their membership rests on."""
 
     def test_explore_sed_dash_i_denied(self):
         assert run_hook(HOOK, bash_input("sed -i src/x.ts", agent_type="Explore")) == "deny"
@@ -779,9 +781,12 @@ class TestFullRoster:
         roster (CANARY_AGENTS in test_agent_roster.py — the agents/*.md
         personas that emit findings output) are deliberately kept as separate
         sources of truth: the gate additionally carries the harness built-ins
-        Explore/Plan, which have no .md file, so the relation is subset, not
-        equality. Without this cross-check the split is a silent-drift hazard:
-        a new staff-* reviewer registered in CANARY_AGENTS (forced by
+        Explore/Plan — Plan has no .md file at all, and Explore's override
+        file exists but isn't a code-review-dispatched findings-emitting
+        persona, so it lives in NON_REVIEWER_AGENTS rather than
+        CANARY_AGENTS — so the relation is subset, not equality. Without this
+        cross-check the split is a silent-drift hazard: a new staff-*
+        reviewer registered in CANARY_AGENTS (forced by
         test_doc_counts) but forgotten in _LIB_REVIEW_ONLY_AGENTS would be
         un-gated and free to mutate the tree under review. This test turns
         that omission into a loud failure."""

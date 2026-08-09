@@ -142,29 +142,37 @@ no plan-mode-to-execution model switch the way `opusplan` provides. Every
 subagent that *inherits* the parent model runs on whatever that anchor model
 is.
 
-Subagent model is resolved in this order — the first that applies wins:
+Subagent model resolution follows this **requested** order — not a
+guarantee. Measured: `staff-*`/`ciso-reviewer` dispatches carrying an
+explicit request or a frontmatter pin still resolved to Opus in a nontrivial
+share of sampled cases; see the global `CLAUDE.md`'s Model Routing section.
 
 1. `CLAUDE_CODE_SUBAGENT_MODEL` environment variable (global override)
 2. The `model` parameter on the `Agent` dispatch
 3. The `model:` frontmatter in the agent's definition file
 4. The parent / main-conversation model (inherited)
 
+`Explore` sits outside this order entirely: this repo ships a same-named
+override, `claude/.claude/agents/Explore.md`, which replaces the built-in
+before resolution applies at all — its pin is a repo-owned fact, not a
+request the platform can decline.
+
 The routinely-dispatched built-in and repo-shipped subagents resolve as
 follows:
 
 | Agent | Model under an auto-mode parent | Why |
 |---|---|---|
-| `Explore` | Haiku | Pinned by Claude Code; read-only search |
-| `staff-*`, `ciso-reviewer` | Sonnet | `model: sonnet` frontmatter in `~/.claude/agents/` |
+| `Explore` | Sonnet | `claude/.claude/agents/Explore.md` override — independent of parent model |
+| `staff-*`, `ciso-reviewer` | Requested Sonnet, resolved unreliably | `model: sonnet` frontmatter in `~/.claude/agents/` — not always honored |
 | `code-writer` | Sonnet | `model: sonnet` frontmatter |
 | `general-purpose` | **Inherited from parent** | No model of its own — falls through to the parent |
 
 If the session is anchored to Opus (`claude-auto --model opus`, or a
 manual Shift+Tab into auto mode from an Opus session), dispatching
 `general-purpose` without an explicit model runs that work on Opus — roughly
-5x the per-token cost of Sonnet. To keep it off Opus, pass an explicit
-`model: sonnet` on the `Agent` dispatch; resolution step 2 overrides the
-inherited parent at step 4.
+5x the per-token cost of Sonnet. Pass an explicit `model: sonnet` on the
+`Agent` dispatch to request Sonnet instead; resolution step 2 is a request
+that competes with step 4, not a guaranteed override.
 
 Since a session cannot reliably tell whether it is in auto mode, or which
 model that session is anchored to, treat this as unconditional: always

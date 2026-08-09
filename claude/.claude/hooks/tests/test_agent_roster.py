@@ -51,6 +51,7 @@ CANARY_AGENTS = sorted(REVIEWER_AGENTS + ["skill-fidelity-reviewer.md"])
 # test_no_uncategorized_agents test will fail until it is categorized.
 NON_REVIEWER_AGENTS = [
     "code-writer.md",   # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
+    "Explore.md",       # same-named override of the harness built-in; read-only search, not a reviewer
 ]
 
 # Maximum description length for agent frontmatter.
@@ -67,6 +68,7 @@ AGENT_DESCRIPTION_MAX_CHARS = 1000
 # will fail until both are updated.
 NON_REVIEWER_MODELS = {
     "code-writer.md": "sonnet",  # implementer
+    "Explore.md": "sonnet",      # same-named built-in override
 }
 
 
@@ -362,21 +364,27 @@ class TestAgentFrontmatter:
 
 
 # Members of _LIB_NO_GATE_RELEASE_AGENTS that are harness built-ins with no
-# agents/*.md file in this repo. Both are understood to carry the Skill tool,
-# so their inclusion rests on mandate (they are dispatched read-only) rather
-# than on tool absence, and the frontmatter assertions below cannot apply to
-# them. Enumerated as a closed set so a typo'd or renamed roster entry fails
-# the test rather than silently skipping it.
+# agents/*.md file in this repo. `Plan` is understood to carry the Skill tool,
+# so its inclusion rests on mandate (dispatched read-only) rather than on tool
+# absence, and the frontmatter assertions below cannot apply to it. Enumerated
+# as a closed set so a typo'd or renamed roster entry fails the test rather
+# than silently skipping it.
 #
-# Two platform assumptions ride on this exemption, neither checkable from this
-# repo — record them here so they are searchable rather than silent:
-#   - What tools the harness grants these two. There is no registry to read,
-#     so the mandate grounding is what the deny actually rests on.
-#   - That a subagent cannot itself invoke Task. If that ever changes, either
-#     built-in could delegate a marker write to a full-tool-set agent and
-#     release a gate, which is exactly what the Task assertion below closes
-#     for the file-backed members. Re-derive this exemption if it does.
-HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS = {"Explore", "Plan"}
+# `Explore` moved out of this set once `agents/Explore.md` shipped as a
+# same-named override of the harness built-in: its `tools:` frontmatter is now
+# on disk and checkable the same way as any other file-backed no-gate-release
+# member (no `Skill`, no `Task`), so it no longer needs the mandate exemption
+# below. If `Explore.md` is ever deleted, `Explore` goes back in this set.
+#
+# Two platform assumptions ride on the remaining exemption, neither checkable
+# from this repo — record them here so they are searchable rather than silent:
+#   - What tools the harness grants `Plan`. There is no registry to read, so
+#     the mandate grounding is what the deny actually rests on.
+#   - That a subagent cannot itself invoke Task. If that ever changes, `Plan`
+#     could delegate a marker write to a full-tool-set agent and release a
+#     gate, which is exactly what the Task assertion below closes for the
+#     file-backed members. Re-derive this exemption if it does.
+HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS = {"Plan"}
 
 
 def _no_gate_release_agents() -> list[str]:
@@ -470,6 +478,22 @@ class TestNoGateReleaseRosterSync:
                 f"roster and re-derive the boundary."
             )
 
+    def test_explore_tools_are_exactly_read_grep_glob(self):
+        """Pins Explore.md's own no-Write/Edit/Bash design guarantee.
+
+        The Skill/Task-absence checks above are roster-wide and can't assert
+        this: code-writer.md is also on the roster and legitimately carries
+        Write/Edit/Bash. Explore's read-only guarantee needs its own
+        assertion, or a future edit adding Bash back passes every other test
+        here while silently turning a read-only search agent into one that
+        can mutate the tree it is dispatched read-only against.
+        """
+        assert self._declared_tools("Explore") == {"Read", "Grep", "Glob"}, (
+            "Explore.md's tools: line changed. It must stay exactly "
+            "Read, Grep, Glob — no Write, Edit, or Bash — per the agent's "
+            "own stated design (see Explore.md's body)."
+        )
+
     def test_harness_builtin_exemptions_have_no_agent_file(self):
         """The exemption list must stay an exemption, not a bypass.
 
@@ -505,7 +529,7 @@ class TestNoGateReleaseRosterSync:
         front of the claim that the new name really is a Skill-carrying harness
         built-in gated by mandate rather than by tool absence.
         """
-        assert {"Explore", "Plan"} == HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS, (
+        assert {"Plan"} == HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS, (
             "The harness-built-in exemption set changed. Each member is exempt "
             "from the no-Skill frontmatter assertion, so adding one removes real "
             "coverage. Confirm the new name is genuinely a harness built-in with "
