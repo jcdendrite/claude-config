@@ -5781,6 +5781,23 @@ class TestEditFormat:
         assert _extract_account_edit_calls(out, "account-1") == 1
         assert _extract_account_edit_calls(out, "account-2") == 2
 
+    def test_per_account_zero_calls_prints_no_edit_family_line(self, tmp_path, capsys):
+        """An account contributing zero Edit/Write/MultiEdit calls prints the
+        'no edit-family calls' line for its row rather than a ZeroDivisionError
+        or a silently-omitted row — the per-account counterpart to
+        test_zero_edit_family_calls_prints_zeroes_without_division_error,
+        which only covers the case where every account is empty."""
+        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
+            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
+        ])
+        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
+            _user_msg("hi"),
+        ])
+        _mod._edit_format_report(_edit_format_args(), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert _extract_account_edit_calls(out, "account-1") == 1
+        assert "account-2  no edit-family calls" in out
+
     def test_zero_edit_family_calls_prints_zeroes_without_division_error(self, fake_projects, capsys):
         """An empty scope (no Edit/Write/MultiEdit calls anywhere) prints a
         zero census and 0.0%/n-a shares rather than raising ZeroDivisionError."""
@@ -5854,6 +5871,31 @@ class TestScanEditFormatSession:
         stats = _mod._scan_edit_format_session(records)
         assert stats["cause"]["whitespace_only"] == 1
 
+    def test_notfound_cause_abandoned_no_retry(self):
+        """A not_found failure with no later Edit call on the SAME
+        file_path (a later call on a different file doesn't count) — the
+        model gave up rather than retrying — lands in abandoned_no_retry,
+        not content_differs or any other bucket."""
+        records = [
+            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x=1", new_string="x=2")], out=10),
+            _error_result("e1", "String to replace not found in file."),
+            _opus([_edit_tool_use("e2", file_path="/bar.py", old_string="y=1", new_string="y=2")], out=10),
+        ]
+        stats = _mod._scan_edit_format_session(records)
+        assert stats["cause"]["abandoned_no_retry"] == 1
+
+    def test_notfound_cause_identical_retry(self):
+        """A not_found failure whose next same-file Edit retries the exact
+        same old_string (byte-identical, not just whitespace-equivalent)
+        lands in identical_retry, not whitespace_only or content_differs."""
+        records = [
+            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x = 1", new_string="x = 2")], out=10),
+            _error_result("e1", "String to replace not found in file."),
+            _opus([_edit_tool_use("e2", file_path="/foo.py", old_string="x = 1", new_string="x = 3")], out=10),
+        ]
+        stats = _mod._scan_edit_format_session(records)
+        assert stats["cause"]["identical_retry"] == 1
+
     def test_multi_edit_notfound_counted_as_owner_not_tracked_not_a_crash(self):
         """A not_found failure whose owner is MultiEdit (not Edit) has no
         old_string in edit_order to pair against — must be counted, not
@@ -5865,6 +5907,23 @@ class TestScanEditFormatSession:
         stats = _mod._scan_edit_format_session(records)
         assert stats["known_failures"][("MultiEdit", "not_found")] == 1
         assert stats["cause"]["owner_not_tracked"] == 1
+
+    def test_known_failure_pattern_takes_precedence_over_governance(self):
+        """A tool_result whose text matches both a known-failure pattern and
+        a governance pattern classifies as the known failure — pinning the
+        early-continue ordering at the site that decides it, so a future
+        pattern addition that should instead take governance precedence
+        fails a test rather than silently misclassifying."""
+        records = [
+            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
+            _error_result(
+                "e1",
+                "Error: file has not been read yet, denied by your permission settings.",
+            ),
+        ]
+        stats = _mod._scan_edit_format_session(records)
+        assert stats["known_failures"][("Edit", "unread")] == 1
+        assert stats["governance"]["permissions"] == 0
 
     @pytest.mark.parametrize("length,expected_bucket", [
         (0, "0-99"), (99, "0-99"),

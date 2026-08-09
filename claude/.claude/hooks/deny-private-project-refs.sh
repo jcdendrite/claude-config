@@ -306,9 +306,13 @@ fi
 #   OSS specs / standards bodies: CVE, CWE, RFC, PEP, ISO, IETF, W3C,
 #                                 NIST, ECMA, ANSI, OSC
 #   Public-project trackers:      GH (GitHub shorthand), BUG (bugzilla),
-#                                 JEP / JDK (OpenJDK), LLVM, GCC
-#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF,
-#   happen to match [A-Z]{2,}-\d+: GPT (OpenAI's model family)
+#                                 JEP / JDK (OpenJDK), LLVM, GCC, GPT
+#                                 (OpenAI's public model-family name —
+#                                 a vendor brand, not a technical constant,
+#                                 so it accepts the same unbounded-digit
+#                                 tradeoff as GH/BUG rather than a fixed set)
+#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF
+#   happen to match [A-Z]{2,}-\d+:
 #   Designated placeholders:      PROJ, TICKET — reserved for examples
 #                                 and docs; see repo CLAUDE.md
 #                                 "Redact private-project-identifying

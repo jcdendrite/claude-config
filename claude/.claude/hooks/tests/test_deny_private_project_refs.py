@@ -151,6 +151,20 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
+    def test_gpt_allowlist_accepts_unbounded_digits_by_design(self, claude_config_repo):
+        """GPT is allowlisted by prefix, not by an enumerated set of real
+        model names — an implausible generation number is still allowed,
+        matching the same unbounded-digit tradeoff GH/BUG/JDK already
+        accept. Documents the tradeoff rather than leaving it unasserted."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Compare against GPT-99999999 in the benchmark table'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     def test_synthetic_tracker_id_in_message_denied(self, claude_config_repo):
         assert (
             run_hook(
