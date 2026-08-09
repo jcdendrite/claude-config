@@ -17,6 +17,8 @@
 # it. A branch with an open PR, or a merged-by-name match whose tip isn't
 # part of that merge, is skipped rather than deleted; a `gh` lookup failure
 # also skips (fails closed) rather than treating an error as "no PR found".
+# Skip lines are reported once per distinct reason, with a count and the
+# branch names, rather than one line per branch.
 #
 # Tier A branches are deleted without prompting. Tier B branches prompt
 # interactively; when stdin is not a TTY, Tier B branches are skipped with
@@ -55,13 +57,32 @@
 # of just the current repo — see the "--all-projects: root discovery" section
 # below.
 #
+# Every invocation, single-repo included, loads that repo's own environment
+# via `direnv export bash` (load_repo_environment) before any `gh` call runs
+# — a script's own `cd` never fires direnv's shell hook, so without this a
+# sweep would query every repo with the invoking shell's credentials, and a
+# single-repo run could carry stale credentials from wherever the invoking
+# shell last had its PROMPT_COMMAND hook fire (a non-interactive context,
+# e.g. this script itself, never re-fires it). This resync can *remove*
+# credentials the invoking shell had, not just add per-repo ones: direnv's
+# own diff mechanism unsets whatever the shell's prior context added when the
+# current directory's own `.envrc` doesn't re-supply it — matching what an
+# interactive `cd` into that directory would do. Absent direnv, this is a
+# no-op and every repo is queried with the invoking shell's environment,
+# unchanged from before this behavior was added.
+#
 # Exit codes:
 #   0  success (including no-op)
 #   1  gh missing or unauthenticated; with --all-projects, also a missing or
 #      unreadable roots config file, or set post-hoc if any repo's cleanup
 #      crashed outright — a handled per-branch failure (worktree remove or
 #      remote delete printed as "manual step needed") does not trip this;
-#      check each repo's own output for those
+#      check each repo's own output for those. Under --all-projects with
+#      direnv installed, an unauthenticated invoking-shell `gh` no longer
+#      causes exit 1 by itself — it's downgraded to a warning, since each
+#      swept repo's own gh auth state is what actually governs that repo.
+#      Without direnv, or in single-repo mode, unauthenticated `gh` still
+#      hard-exits 1.
 #   2  bad arguments
 
 set -euo pipefail
@@ -90,6 +111,10 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+# readonly: load_repo_environment() below evals arbitrary `export` statements
+# from an .envrc; a clobber attempt on either variable aborts under set -e
+# instead of silently flipping --dry-run or repointing destructive git ops.
+readonly DRY_RUN ALL_PROJECTS
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -102,8 +127,17 @@ if ! command -v gh &>/dev/null; then
 fi
 
 if ! gh auth status &>/dev/null; then
-  echo "ERROR: gh is not authenticated. Run 'gh auth login' first." >&2
-  exit 1
+  # Under --all-projects with direnv present, each repo loads its own gh
+  # credentials below — the invoking shell's auth state isn't what any
+  # swept repo actually uses, so a warning replaces the hard exit. Without
+  # direnv (most stow consumers), the invoking shell's auth state is what
+  # every repo gets, so it still must hard-exit here.
+  if [ "$ALL_PROJECTS" -eq 1 ] && command -v direnv &>/dev/null; then
+    echo "WARNING: gh is not authenticated for the invoking shell; each swept repo's own gh auth state governs under --all-projects." >&2
+  else
+    echo "ERROR: gh is not authenticated. Run 'gh auth login' first." >&2
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -190,6 +224,20 @@ discover_repo_roots() {
   done
 }
 
+# load_repo_environment — apply the environment direnv's shell hook would
+# apply on `cd`. That hook is installed into PROMPT_COMMAND, so a script's
+# own `cd` never fires it and a sweep would query every repo with the
+# invoking shell's credentials instead of each repo's own.
+load_repo_environment() {
+  command -v direnv >/dev/null 2>&1 || return 0
+  local direnv_exports
+  # </dev/null: an .envrc that reads stdin would otherwise consume the TTY
+  # the sweep reattaches for the Tier B prompt, hanging with no output.
+  # direnv's stdout carries secret values verbatim and is never printed.
+  direnv_exports=$(direnv export bash </dev/null 2>/dev/null) || return 0
+  eval "$direnv_exports"
+}
+
 # ---------------------------------------------------------------------------
 # run_repo_cleanup — single-repo cleanup body
 #
@@ -206,6 +254,30 @@ run_repo_cleanup() {
 # ---------------------------------------------------------------------------
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
+REPO_GIT_DIR=$(git rev-parse --absolute-git-dir)
+# --path-format needs git >=2.31 (2021); an older git echoes it back as a
+# literal output line instead of erroring, degrading this comparison rather
+# than failing loudly — verified via `git rev-parse --this-flag-does-not-exist`.
+REPO_GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir)
+# readonly: an .envrc's GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR would otherwise
+# repoint the git-root re-check below, and clobbering these directly would
+# make the worktree-vs-main-checkout guard downstream compare against the
+# wrong path.
+readonly REPO_ROOT REPO_GIT_DIR REPO_GIT_COMMON_DIR
+
+load_repo_environment
+
+# eval above runs in this scope; re-verify none of the three moved. Per
+# `git help git` (GIT_COMMON_DIR), refs/heads/* — what `git branch -D`
+# mutates — is a non-worktree file taken from GIT_COMMON_DIR when set,
+# independent of GIT_DIR/GIT_WORK_TREE, so --show-toplevel and
+# --absolute-git-dir alone would miss a GIT_COMMON_DIR-only redirection.
+if [ "$(git rev-parse --show-toplevel)" != "$REPO_ROOT" ] \
+   || [ "$(git rev-parse --absolute-git-dir)" != "$REPO_GIT_DIR" ] \
+   || [ "$(git rev-parse --path-format=absolute --git-common-dir)" != "$REPO_GIT_COMMON_DIR" ]; then
+  echo "ERROR: this repo's environment changed git's repo root, git dir, or common dir (an .envrc exporting GIT_DIR, GIT_WORK_TREE, or GIT_COMMON_DIR?); aborting this repo untouched." >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Default branch resolution
@@ -366,10 +438,38 @@ else:
 
 # print_skip_reason_lines — report every branch classify_branch skipped
 # (open PR / stale name / gh error), and why, so a skip is never silent.
+# Groups by identical reason text: a repo where every branch fails `gh` the
+# same way reports one line with a count and the branch names, not one line
+# per branch. Distinct-PR-number reasons (open PR, stale name) differ per
+# branch and so stay one line each, unaffected by the grouping.
 print_skip_reason_lines() {
-  local _i
+  # Linear scan against parallel arrays, not an associative array — see the
+  # bash-3.2 note on discover_repo_roots above.
+  local -a _reason_messages=()
+  local -a _reason_branch_lists=()
+  local -a _reason_counts=()
+  local _i _j _found _message
   for _i in "${!SKIP_REASON_BRANCHES[@]}"; do
-    echo "Skipped: ${SKIP_REASON_BRANCHES[$_i]} (${SKIP_REASON_MESSAGES[$_i]})"
+    _message="${SKIP_REASON_MESSAGES[$_i]}"
+    _found=-1
+    for _j in "${!_reason_messages[@]}"; do
+      if [ "${_reason_messages[$_j]}" = "$_message" ]; then
+        _found="$_j"
+        break
+      fi
+    done
+    if [ "$_found" -eq -1 ]; then
+      _reason_messages+=("$_message")
+      _reason_branch_lists+=("${SKIP_REASON_BRANCHES[$_i]}")
+      _reason_counts+=(1)
+    else
+      _reason_branch_lists[_found]="${_reason_branch_lists[_found]}, ${SKIP_REASON_BRANCHES[$_i]}"
+      _reason_counts[_found]=$(( _reason_counts[_found] + 1 ))
+    fi
+  done
+  for _i in "${!_reason_messages[@]}"; do
+    printf 'Skipped %d branch(es) (%s): %s\n' \
+      "${_reason_counts[$_i]}" "${_reason_messages[$_i]}" "${_reason_branch_lists[$_i]}"
   done
 }
 

@@ -11,8 +11,11 @@ import json
 import os
 import pty
 import re
+import shlex
+import shutil
 import subprocess
 import textwrap
+import uuid
 from pathlib import Path
 
 import pytest
@@ -147,26 +150,271 @@ def _gh_shim_source(pr_data: dict[str, object]) -> str:
     """)
 
 
+def _gh_shim_source_by_token(token_to_pr_data: dict[str, dict]) -> str:
+    """gh shim variant for the per-repo-credential tests (verification
+    cases 1, 2, 10 in the plan): selects its PR_DATA table by the current
+    GH_TOKEN env var rather than by branch name alone, and never by cwd —
+    keying on cwd would let a test pass without load_repo_environment's
+    direnv call ever running. A GH_TOKEN with no matching table (including
+    unset, which reads as "") gets an empty table: no PR found for any
+    branch, matching a repo queried under the wrong (or no) identity."""
+    payload = json.dumps(token_to_pr_data)
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json, os, subprocess, sys
+
+        TOKEN_TABLES = json.loads({payload!r})
+        PR_DATA = TOKEN_TABLES.get(os.environ.get("GH_TOKEN", ""), {{}})
+
+        args = sys.argv[1:]
+
+        if args and args[0] == "auth" and len(args) > 1 and args[1] == "status":
+            sys.exit(0)
+
+        if args and args[0] == "pr" and "--head" in args:
+            head_idx = args.index("--head")
+            branch = args[head_idx + 1]
+            info = PR_DATA.get(branch)
+
+            if info is None:
+                print("[]")
+                sys.exit(0)
+
+            rows_in = info if isinstance(info, list) else [info]
+            rows_out = []
+            for row in rows_in:
+                state = row.get("state", "MERGED")
+                merged_at = row.get("mergedAt")
+                head_ref_oid = row.get("headRefOid")
+                if state == "MERGED" and head_ref_oid is None:
+                    head_ref_oid = subprocess.run(
+                        ["git", "rev-parse", branch],
+                        capture_output=True, text=True, check=True,
+                    ).stdout.strip()
+                rows_out.append({{
+                    "number": row["number"],
+                    "headRefName": branch,
+                    "state": state,
+                    "mergedAt": (merged_at + "T00:00:00Z") if merged_at else None,
+                    "headRefOid": head_ref_oid,
+                }})
+            print(json.dumps(rows_out))
+            sys.exit(0)
+
+        sys.exit(0)
+    """)
+
+
+def _noop_direnv_shim_source() -> str:
+    """Default direnv shim installed for every test: `export bash` exits 0
+    with no output, modeling a directory with no identity-bearing .envrc.
+    Tests exercising direnv's own export payload pass their own source via
+    _shimmed_env's direnv_source parameter."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        sys.exit(0)
+    """)
+
+
+def _direnv_shim_source_by_cwd(exports_by_cwd: dict[str, dict[str, str]]) -> str:
+    """direnv shim modeling per-directory `.envrc` exports: `export bash`
+    emits `export NAME=VALUE` for the current directory's configured table
+    (looked up by os.getcwd(), matching real direnv's per-directory
+    scoping) and nothing for a directory with no entry — matching real
+    direnv exiting 0 with no exports outside any `.envrc`."""
+    payload = json.dumps(exports_by_cwd)
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json, os, shlex, sys
+
+        EXPORTS_BY_CWD = json.loads({payload!r})
+
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            for name, value in EXPORTS_BY_CWD.get(os.getcwd(), {{}}).items():
+                print(f"export {{name}}={{shlex.quote(value)}}")
+        sys.exit(0)
+    """)
+
+
+def _direnv_shim_source_static_export(name: str, value: str) -> str:
+    """direnv shim that unconditionally exports one NAME=VALUE on `export
+    bash`, regardless of cwd — for tests that only need one export to
+    reach (or be safely rejected by) the calling shell."""
+    quoted_value = shlex.quote(value)
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import sys
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            print("export {name}={quoted_value}")
+        sys.exit(0)
+    """)
+
+
+def _direnv_shim_source_unconditional_unset(name: str) -> str:
+    """direnv shim that unconditionally emits `unset NAME` on `export
+    bash`, regardless of cwd — models direnv leaving a container's
+    identity behind when the current directory has no matching .envrc."""
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import sys
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            print("unset {name}")
+        sys.exit(0)
+    """)
+
+
+def _direnv_shim_source_exits_nonzero_with_unset_payload() -> str:
+    """direnv shim modeling a non-`allow`ed .envrc: `export bash` exits 1
+    but still writes an unset payload to stdout — the exit-status guard in
+    load_repo_environment must discard this cleanly."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            print("unset GH_TOKEN")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+
+
+def _direnv_shim_source_reads_stdin() -> str:
+    """direnv shim modeling an .envrc that reads stdin — if
+    load_repo_environment omitted `</dev/null`, this call would hang
+    waiting for input that never comes."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            sys.stdin.read()
+        sys.exit(0)
+    """)
+
+
+# gh-credential env vars that must never leak from a contributor's real
+# shell into a test's PATH-shimmed subprocess (see _base_test_env).
+_SENSITIVE_ENV_VARS = frozenset({
+    "GH_TOKEN", "GH_HOST", "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR",
+})
+
+
+def _base_test_env() -> dict:
+    """Inherited env with DIRENV_* and gh-credential vars stripped.
+
+    Left as inherited, `direnv export bash` run from a test's tmp_path
+    would emit the *revert* half of a contributor's real DIRENV_* diff,
+    restoring a PATH without the test's own shim dir — the script's next
+    `gh` call would be the contributor's real gh with their real token,
+    against real GitHub.
+    """
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("DIRENV_") and key not in _SENSITIVE_ENV_VARS
+    }
+
+
+# Tools the script and _worktree-lib.sh need on a normal (non-lsof,
+# non-usage-error) run — mirrors TestGhMissing's min_bin list. Symlinking
+# only these into a curated directory keeps the absent-direnv PATH free of
+# a real direnv without also losing any other tool that happens to share
+# direnv's install directory (e.g. git, via the same package-manager prefix).
+_TOOLS_NEEDED_WITHOUT_DIRENV = ("git", "python3", "bash", "grep", "awk", "sed", "dirname")
+
+
+def _curated_path_without_direnv(tmp_path: Path) -> str:
+    curated_dir = tmp_path / f"curated_bin_{uuid.uuid4().hex}"
+    curated_dir.mkdir()
+    for tool in _TOOLS_NEEDED_WITHOUT_DIRENV:
+        tool_path = shutil.which(tool)
+        if tool_path:
+            (curated_dir / tool).symlink_to(tool_path)
+    return str(curated_dir)
+
+
+def _shimmed_env(
+    tmp_path: Path,
+    gh_shim_source_text: str,
+    *,
+    direnv_source: str | None = None,
+    direnv_present: bool = True,
+) -> dict:
+    """Build the credential-scrubbed, PATH-shimmed env every test's `gh`
+    invocation must use — the single seam `fake_gh` and every
+    hand-rolled shim site route through, so none can skip the
+    DIRENV_*/token scrubbing.
+
+    direnv_present=False replaces the inherited PATH with a curated
+    directory holding only the tools the script needs, none of them
+    `direnv` — deterministic on machines with and without direnv actually
+    installed, and immune to direnv sharing an install prefix with a tool
+    the script does need (e.g. git).
+    """
+    shim_dir = tmp_path / f"shim_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(gh_shim_source_text)
+    gh_shim.chmod(0o755)
+
+    if direnv_present:
+        direnv_shim = shim_dir / "direnv"
+        direnv_shim.write_text(direnv_source or _noop_direnv_shim_source())
+        direnv_shim.chmod(0o755)
+        base_path = os.environ.get("PATH", "")
+    else:
+        base_path = _curated_path_without_direnv(tmp_path)
+
+    new_path = os.pathsep.join([str(shim_dir), base_path])
+    return {**_base_test_env(), "PATH": new_path}
+
+
 @pytest.fixture()
-def fake_gh(tmp_path, monkeypatch):
-    """Yield a factory that installs a gh shim and returns the env dict.
+def fake_gh(tmp_path):
+    """Yield a factory that installs a gh shim (and a default no-op direnv
+    shim, via _shimmed_env) and returns the env dict.
 
     Usage in tests:
         env = fake_gh({"feat/foo": {"number": 1, "mergedAt": "2026-05-01"}})
         result = _run_script(repo, env)
     """
-    shim_dir = tmp_path / "gh_shim"
-    shim_dir.mkdir()
-
-    def _make_env(pr_data: dict) -> dict:
-        shim_py = shim_dir / "gh"
-        shim_py.write_text(_gh_shim_source(pr_data))
-        shim_py.chmod(0o755)
-        new_path = str(shim_dir) + ":" + os.environ.get("PATH", "")
-        env = {**os.environ, "PATH": new_path}
-        return env
+    def _make_env(pr_data: dict, **kwargs) -> dict:
+        return _shimmed_env(tmp_path, _gh_shim_source(pr_data), **kwargs)
 
     return _make_env
+
+
+class TestShimmedEnvScrubsCredentials:
+    """The shared shim-env helper (fake_gh and every hand-rolled site route
+    through it) must strip DIRENV_* and gh-credential vars inherited from
+    the contributor's real shell. Left in place, a real `direnv export
+    bash` run from a test's tmp_path would emit the *revert* half of the
+    contributor's own DIRENV_* diff, restoring a PATH without the test's
+    shim dir — the script's next `gh` call would be the contributor's real
+    gh with their real token, against real GitHub."""
+
+    def test_direnv_and_credential_vars_are_stripped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DIRENV_DIR", "-/some/container")
+        monkeypatch.setenv("GH_TOKEN", "contributors-real-token")
+        monkeypatch.setenv("GH_HOST", "github.example.com")
+        monkeypatch.setenv("GITHUB_TOKEN", "contributors-real-github-token")
+        monkeypatch.setenv("GH_ENTERPRISE_TOKEN", "contributors-real-enterprise-token")
+        monkeypatch.setenv("GITHUB_ENTERPRISE_TOKEN", "contributors-real-gh-enterprise-token")
+        monkeypatch.setenv("GH_CONFIG_DIR", "/some/contributor/gh-config")
+
+        env = _shimmed_env(tmp_path, _gh_shim_source({}))
+
+        for leaked_var in (
+            "DIRENV_DIR", "GH_TOKEN", "GH_HOST", "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR",
+        ):
+            assert leaked_var not in env, f"{leaked_var} must be scrubbed from the shimmed env"
 
 
 def _run_script(
@@ -591,16 +839,11 @@ class TestGhMissing:
 
     def test_gh_missing_exits_nonzero(self, tmp_path):
         local, _ = _make_repo_with_remote(tmp_path)
-        # Build a minimal PATH: a tmpdir with symlinks to every tool the
-        # script needs (git, python3, bash, dirname — the last for sourcing
-        # _worktree-lib.sh) but no gh — so command -v gh fails.
-        bin_dir = tmp_path / "min_bin"
-        bin_dir.mkdir()
-        for tool in ("git", "python3", "bash", "grep", "awk", "sed", "dirname"):
-            tool_path = subprocess.run(["which", tool], capture_output=True, text=True).stdout.strip()
-            if tool_path:
-                (bin_dir / tool).symlink_to(tool_path)
-        env = {**os.environ, "PATH": str(bin_dir)}
+        # _curated_path_without_direnv's tool list omits `gh` (and `direnv`),
+        # so it doubles as a minimal no-gh PATH here — reusing it, rather than
+        # hand-rolling a second symlink loop, keeps this site routed through
+        # the same credential-scrubbed base env as every other test.
+        env = {**_base_test_env(), "PATH": _curated_path_without_direnv(tmp_path)}
         result = _run_script(local, env)
         assert result.returncode != 0
         assert "gh" in result.stderr.lower() or "install" in result.stderr.lower()
@@ -991,12 +1234,7 @@ class TestTierBReachableNoMergedPR:
         _make_tier_b_branch(local, remote, "tier-b-branch")
         _make_feature_branch(local, "tier-c-branch")
 
-        shim_dir = tmp_path / "gh_shim_sep"
-        shim_dir.mkdir()
-        shim_py = shim_dir / "gh"
-        shim_py.write_text(_gh_shim_source({"tier-a-branch": {"number": 1, "mergedAt": "2026-05-01"}}))
-        shim_py.chmod(0o755)
-        env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
+        env = _shimmed_env(tmp_path, _gh_shim_source({"tier-a-branch": {"number": 1, "mergedAt": "2026-05-01"}}))
 
         result = subprocess.run(
             [str(_SCRIPT), "--dry-run"], cwd=local,
@@ -1019,12 +1257,7 @@ class TestTierBReachableNoMergedPR:
         local, remote = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "tier-a-branch")
 
-        shim_dir = tmp_path / "gh_shim_a"
-        shim_dir.mkdir()
-        shim_py = shim_dir / "gh"
-        shim_py.write_text(_gh_shim_source({"tier-a-branch": {"number": 1, "mergedAt": "2026-05-01"}}))
-        shim_py.chmod(0o755)
-        env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
+        env = _shimmed_env(tmp_path, _gh_shim_source({"tier-a-branch": {"number": 1, "mergedAt": "2026-05-01"}}))
 
         result = subprocess.run(
             [str(_SCRIPT)], cwd=local,
@@ -1097,12 +1330,7 @@ class TestLockedWorktreeLiveness:
             cwd=local, check=True,
         )
 
-        shim_dir = tmp_path / "gh_shim_live"
-        shim_dir.mkdir()
-        shim_py = shim_dir / "gh"
-        shim_py.write_text(_gh_shim_source({"locked-branch": {"number": 300, "mergedAt": "2026-05-01"}}))
-        shim_py.chmod(0o755)
-        env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
+        env = _shimmed_env(tmp_path, _gh_shim_source({"locked-branch": {"number": 300, "mergedAt": "2026-05-01"}}))
 
         result = subprocess.run(
             [str(_SCRIPT)], cwd=local,
@@ -1125,12 +1353,7 @@ class TestLockedWorktreeLiveness:
             cwd=local, check=True,
         )
 
-        shim_dir = tmp_path / "gh_shim_dead"
-        shim_dir.mkdir()
-        shim_py = shim_dir / "gh"
-        shim_py.write_text(_gh_shim_source({"stale-locked-branch": {"number": 301, "mergedAt": "2026-05-01"}}))
-        shim_py.chmod(0o755)
-        env = {**os.environ, "PATH": str(shim_dir) + ":" + os.environ.get("PATH", "")}
+        env = _shimmed_env(tmp_path, _gh_shim_source({"stale-locked-branch": {"number": 301, "mergedAt": "2026-05-01"}}))
 
         result = subprocess.run(
             [str(_SCRIPT)], cwd=local,
@@ -1398,6 +1621,57 @@ class TestFailClosedOnGhError:
         )
         assert ref_check.returncode == 0, "unparseable gh output must fail closed, not fall through to Tier B"
         assert "gh lookup failed" in result.stdout
+
+
+class TestAggregatedSkipLinesSingleRepo:
+    """print_skip_reason_lines groups by identical reason text — a repo
+    where every branch shares one skip reason reports it once, with a
+    count and the branch names, not once per branch."""
+
+    def test_single_skip_reason_uses_count_of_one_phrasing(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "solo-erroring-branch")
+
+        env = fake_gh({"solo-erroring-branch": "error"})
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert (
+            "Skipped 1 branch(es) (gh lookup failed; skipping to fail closed): "
+            "solo-erroring-branch" in result.stdout
+        )
+
+    def test_gh_failures_aggregate_while_open_pr_skip_stays_per_branch(self, tmp_path, fake_gh):
+        """Distinct-PR-number skips (open PR, stale name) carry different
+        text per branch and so are never collapsed, while byte-identical
+        `gh` failure reasons are."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_tier_b_branch(local, remote, "erroring-one")
+        _make_tier_b_branch(local, remote, "erroring-two")
+        _make_feature_branch(local, "feat/in-review")
+
+        env = fake_gh({
+            "erroring-one": "error",
+            "erroring-two": "error",
+            "feat/in-review": [{"number": 30, "state": "OPEN"}],
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        # Membership, not hardcoded join order — the grouping invariant
+        # doesn't care which erroring branch is listed first.
+        gh_failure_lines = [
+            line for line in result.stdout.splitlines()
+            if line.startswith("Skipped 2 branch(es) (gh lookup failed; skipping to fail closed): ")
+        ]
+        assert len(gh_failure_lines) == 1, f"expected exactly one aggregated skip line; got: {result.stdout!r}"
+        listed_branches = gh_failure_lines[0].rsplit(": ", 1)[1].split(", ")
+        assert set(listed_branches) == {"erroring-one", "erroring-two"}
+        assert "Skipped 1 branch(es) (open PR #30): feat/in-review" in result.stdout
+        # No causal wording added to the aggregated line — the reason text
+        # must stay accurate for non-credential gh failures too (rate
+        # limit, network, a non-GitHub or local-only remote).
+        assert "check your credentials" not in result.stdout.lower()
 
 
 class TestStaleNameNoOpenPR:
@@ -1690,6 +1964,298 @@ class TestClassifierEmitsNoShellDiagnostics:
 
 
 # ---------------------------------------------------------------------------
+# load_repo_environment — applies to both the single-repo and sweep paths;
+# the cases below that don't need a multi-repo sweep run single-repo.
+# ---------------------------------------------------------------------------
+
+class TestDirenvAbsentBehaviorUnchanged:
+    """With no direnv on PATH, load_repo_environment is a no-op — behavior
+    is identical to before this feature existed."""
+
+    def test_absent_direnv_cleans_normally(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/done")
+        subprocess.run(["git", "branch", "-D", "feat/done"], cwd=bare, check=True)
+
+        env = fake_gh(
+            {"feat/done": {"number": 1, "mergedAt": "2026-05-01"}},
+            direnv_present=False,
+        )
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch", "--list", "feat/done"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert branches.strip() == ""
+
+
+class TestDirenvNonAllowedEnvrcBehaviorUnchanged:
+    """A non-`allow`ed .envrc (direnv exits 1 with an unset payload on
+    stdout) is discarded cleanly — behavior identical to
+    the absent-direnv case."""
+
+    def test_direnv_exit_nonzero_cleans_normally(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/done")
+        subprocess.run(["git", "branch", "-D", "feat/done"], cwd=bare, check=True)
+
+        env = fake_gh(
+            {"feat/done": {"number": 1, "mergedAt": "2026-05-01"}},
+            direnv_source=_direnv_shim_source_exits_nonzero_with_unset_payload(),
+        )
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch", "--list", "feat/done"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert branches.strip() == ""
+
+
+class TestLoadedCredentialNeverAppearsInOutput:
+    """load_repo_environment captures `direnv export bash`'s stdout straight
+    into a shell variable via `eval` and never echoes it — a credential the
+    per-repo .envrc exports must not reach the script's own stdout/stderr,
+    including on the abort/error paths (git-identity guard, gh-auth
+    downgrade warning) that run after the eval."""
+
+    def test_direnv_exported_token_value_is_never_printed(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/done")
+        subprocess.run(["git", "branch", "-D", "feat/done"], cwd=bare, check=True)
+
+        # A distinctive sentinel, not a real-token-shaped string (e.g. no
+        # `ghp_` prefix) — this repo's own credential-redaction hook rewrites
+        # token-shaped literals in source on write, which would otherwise
+        # silently replace this fixture with a placeholder and defeat the
+        # test's purpose.
+        exported_value = "direnv-export-value-must-never-leak-9f3a7c21b6"
+        env = fake_gh(
+            {"feat/done": {"number": 1, "mergedAt": "2026-05-01"}},
+            direnv_source=_direnv_shim_source_static_export("GH_TOKEN", exported_value),
+        )
+        result = _run_script(local, env)
+
+        assert exported_value not in result.stdout
+        assert exported_value not in result.stderr
+
+
+class TestDirenvStdinReadingEnvrcDoesNotHangScript:
+    """An .envrc that reads stdin must not hang the script —
+    load_repo_environment's `</dev/null` isolates the direnv call from
+    whatever the harness's own stdin is doing. A pipe kept open with
+    nothing written proves this: `_run_script`'s default
+    stdin=DEVNULL would hit EOF immediately either way, passing on unfixed
+    code (a tautological test), which is why this needs a held-open fd."""
+
+    def test_stdin_reading_envrc_does_not_hang(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/done")
+        subprocess.run(["git", "branch", "-D", "feat/done"], cwd=bare, check=True)
+
+        env = fake_gh(
+            {"feat/done": {"number": 1, "mergedAt": "2026-05-01"}},
+            direnv_source=_direnv_shim_source_reads_stdin(),
+        )
+
+        read_fd, write_fd = os.pipe()
+        proc = subprocess.Popen(
+            [str(_SCRIPT)], cwd=local, env=env,
+            stdin=read_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        os.close(read_fd)
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            pytest.fail(
+                "script hung on a stdin-reading .envrc — "
+                "load_repo_environment's </dev/null guard regressed"
+            )
+        finally:
+            os.close(write_fd)
+
+        assert proc.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch", "--list", "feat/done"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert branches.strip() == "", "Tier A branch must still be cleaned"
+
+
+class TestEnvrcCannotOverrideDryRun:
+    """An .envrc exporting DRY_RUN=0 must not convert `--dry-run` into a
+    real deletion run — readonly DRY_RUN aborts the eval under set -e
+    instead. Asserted behaviorally: bash's `readonly variable` diagnostic
+    text and line number differ between bash 3.2 (macOS) and 5.x (CI)."""
+
+    def test_envrc_dry_run_override_is_rejected(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/would-delete")
+
+        env = fake_gh(
+            {"feat/would-delete": {"number": 1, "mergedAt": "2026-05-01"}},
+            direnv_source=_direnv_shim_source_static_export("DRY_RUN", "0"),
+        )
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode != 0
+        local_branches = subprocess.run(
+            ["git", "branch", "--list", "feat/would-delete"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert "feat/would-delete" in local_branches, "readonly override must prevent a real delete"
+        remote_refs = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "feat/would-delete"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert "feat/would-delete" in remote_refs, "remote branch must survive too — no push --delete issued"
+
+
+_REDIRECTION_GUARD_BRANCH = "shared-branch-name"
+
+
+def _build_redirection_guard_repos(tmp_path: Path):
+    """Two independent repos sharing one candidate branch name, for the
+    GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR redirection-guard tests (case 9).
+    Repo B carries a real local branch and a real pushed remote ref under
+    that name so a redirected destructive op has something to actually
+    delete — an empty or differently-named repo B would pass the
+    assertions below on both correct and broken code."""
+    repo_a_dir = tmp_path / "repo-a"
+    repo_a_dir.mkdir()
+    repo_b_dir = tmp_path / "repo-b"
+    repo_b_dir.mkdir()
+    local_a, bare_a = _make_repo_with_remote(repo_a_dir)
+    local_b, bare_b = _make_repo_with_remote(repo_b_dir)
+    _make_feature_branch(local_a, _REDIRECTION_GUARD_BRANCH)
+    _make_feature_branch(local_b, _REDIRECTION_GUARD_BRANCH)
+    return local_a, bare_a, local_b, bare_b
+
+
+def _assert_redirection_guard_did_not_touch_either_repo(local_a, local_b):
+    branches_a = subprocess.run(
+        ["git", "branch", "--list", _REDIRECTION_GUARD_BRANCH],
+        cwd=local_a, capture_output=True, text=True,
+    ).stdout
+    assert _REDIRECTION_GUARD_BRANCH in branches_a, "repo A's own branch must be untouched"
+
+    branches_b = subprocess.run(
+        ["git", "branch", "--list", _REDIRECTION_GUARD_BRANCH],
+        cwd=local_b, capture_output=True, text=True,
+    ).stdout
+    assert _REDIRECTION_GUARD_BRANCH in branches_b, "repo B's local branch must survive"
+
+    remote_refs_b = subprocess.run(
+        ["git", "ls-remote", "--heads", "origin", _REDIRECTION_GUARD_BRANCH],
+        cwd=local_b, capture_output=True, text=True,
+    ).stdout
+    assert _REDIRECTION_GUARD_BRANCH in remote_refs_b, "repo B's remote ref must survive"
+
+
+class TestEnvrcRedirectionGuard:
+    """An .envrc exporting GIT_DIR, GIT_WORK_TREE, or GIT_COMMON_DIR must
+    not repoint the script's destructive git ops at a different repository
+    — the post-eval re-check in run_repo_cleanup aborts this repo instead.
+    Three sub-cases share one fixture (_build_redirection_guard_repos)
+    since each env var evades a different subset of the three
+    `git rev-parse` checks."""
+
+    def test_git_dir_alone_aborts(self, tmp_path, fake_gh):
+        local_a, bare_a, local_b, bare_b = _build_redirection_guard_repos(tmp_path)
+        env = fake_gh(
+            {_REDIRECTION_GUARD_BRANCH: {"number": 1, "mergedAt": "2026-05-01"}},
+            direnv_source=_direnv_shim_source_static_export(
+                "GIT_DIR", str(local_b / ".git"),
+            ),
+        )
+        result = _run_script(local_a, env)
+
+        assert result.returncode != 0
+        assert "environment changed git's repo root" in result.stderr, (
+            "GIT_DIR-only sub-case: the guard's distinct abort message must fire "
+            "(--show-toplevel alone does not change under GIT_DIR)"
+        )
+        _assert_redirection_guard_did_not_touch_either_repo(local_a, local_b)
+
+    def test_git_work_tree_aborts(self, tmp_path, fake_gh):
+        local_a, bare_a, local_b, bare_b = _build_redirection_guard_repos(tmp_path)
+        env = fake_gh(
+            {_REDIRECTION_GUARD_BRANCH: {"number": 1, "mergedAt": "2026-05-01"}},
+            direnv_source=_direnv_shim_source_static_export(
+                "GIT_WORK_TREE", str(local_b),
+            ),
+        )
+        result = _run_script(local_a, env)
+
+        assert result.returncode != 0
+        assert "environment changed git's repo root" in result.stderr, (
+            "GIT_WORK_TREE sub-case: the guard's distinct abort message must fire "
+            "(caught by the --show-toplevel check)"
+        )
+        _assert_redirection_guard_did_not_touch_either_repo(local_a, local_b)
+
+    def test_git_common_dir_alone_aborts(self, tmp_path, fake_gh):
+        local_a, bare_a, local_b, bare_b = _build_redirection_guard_repos(tmp_path)
+        env = fake_gh(
+            {_REDIRECTION_GUARD_BRANCH: {"number": 1, "mergedAt": "2026-05-01"}},
+            direnv_source=_direnv_shim_source_static_export(
+                "GIT_COMMON_DIR", str(local_b / ".git"),
+            ),
+        )
+        result = _run_script(local_a, env)
+
+        assert result.returncode != 0
+        assert "environment changed git's repo root" in result.stderr, (
+            "GIT_COMMON_DIR-only sub-case: the guard's distinct abort message must "
+            "fire (caught by neither --show-toplevel nor --absolute-git-dir)"
+        )
+        _assert_redirection_guard_did_not_touch_either_repo(local_a, local_b)
+
+
+class TestEnvrcNoMatchingEntryGetsUnsetPayload:
+    """A repo under no .envrc, with the invoking shell's own credentials
+    already loaded, must have them unset by direnv's scripted `unset`
+    payload. This exercises load_repo_environment's handling of an
+    `unset` line — it cannot pin real direnv's own behavior outside any
+    .envrc, which isn't reproducible in a shim."""
+
+    def test_no_envrc_entry_unsets_the_invoking_shells_token(self, tmp_path):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/only-under-parent-token")
+
+        gh_shim_source = _gh_shim_source_by_token({
+            "loaded-parent-token": {
+                "feat/only-under-parent-token": {"number": 1, "mergedAt": "2026-05-01"},
+            },
+        })
+        env = _shimmed_env(
+            tmp_path, gh_shim_source,
+            direnv_source=_direnv_shim_source_unconditional_unset("GH_TOKEN"),
+        )
+        # Models the invoking shell already having a container's GH_TOKEN
+        # loaded before the script starts, e.g. this repo is a container
+        # sibling but itself carries no matching .envrc.
+        env["GH_TOKEN"] = "loaded-parent-token"
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch", "--list", "feat/only-under-parent-token"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert "feat/only-under-parent-token" in branches, (
+            "the unset payload must remove the invoking shell's GH_TOKEN — "
+            "if it survived, this branch would show up as merged and be deleted"
+        )
+
+
+# ---------------------------------------------------------------------------
 # --all-projects: sweeps the cleanup across every repo under configured roots
 #
 # CLEANUP_MERGED_BRANCHES_ROOTS_FILE is the test seam for the roots config
@@ -1717,6 +2283,208 @@ def _run_all_projects(
         capture_output=True,
         text=True,
     )
+
+
+class TestAllProjectsLoadsPerRepoEnvironment:
+    """Each repo in a --all-projects sweep is queried with that repo's own
+    direnv-sourced identity, not the invoking shell's (or a sibling
+    repo's). The gh shim is keyed on GH_TOKEN, never cwd — keying on cwd
+    would let this pass without direnv ever running. Fails on code that
+    never calls load_repo_environment."""
+
+    def test_two_repos_each_use_their_own_direnv_identity(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        repo_a_dir = root / "repo-a"
+        repo_a_dir.mkdir()
+        repo_b_dir = root / "repo-b"
+        repo_b_dir.mkdir()
+        local_a, bare_a = _make_repo_with_remote(repo_a_dir)
+        local_b, bare_b = _make_repo_with_remote(repo_b_dir)
+        _make_feature_branch(local_a, "feat/a-merged")
+        _make_feature_branch(local_b, "feat/b-merged")
+
+        direnv_source = _direnv_shim_source_by_cwd({
+            str(local_a.resolve()): {"GH_TOKEN": "token-a"},
+            str(local_b.resolve()): {"GH_TOKEN": "token-b"},
+        })
+        gh_shim_source = _gh_shim_source_by_token({
+            "token-a": {"feat/a-merged": {"number": 1, "mergedAt": "2026-05-01"}},
+            "token-b": {"feat/b-merged": {"number": 2, "mergedAt": "2026-05-02"}},
+        })
+        env = _shimmed_env(tmp_path, gh_shim_source, direnv_source=direnv_source)
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+        result = _run_all_projects(tmp_path, env, roots_file)
+
+        assert result.returncode == 0
+        branches_a = subprocess.run(
+            ["git", "branch", "--list", "feat/a-merged"],
+            cwd=local_a, capture_output=True, text=True,
+        ).stdout
+        assert branches_a.strip() == "", "repo A must be cleaned under its own identity"
+        branches_b = subprocess.run(
+            ["git", "branch", "--list", "feat/b-merged"],
+            cwd=local_b, capture_output=True, text=True,
+        ).stdout
+        assert branches_b.strip() == "", "repo B must be cleaned under its own identity"
+
+
+class TestAllProjectsNoCrossRepoCredentialLeak:
+    """A repo with no matching .envrc entry must not inherit an earlier
+    repo's exported identity in the same sweep."""
+
+    def test_middle_repo_without_envrc_entry_does_not_inherit_earlier_identity(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        repo_dirs = {}
+        for name in ("repo-1", "repo-2", "repo-3"):
+            repo_dir = root / name
+            repo_dir.mkdir()
+            repo_dirs[name] = repo_dir
+        local_1, bare_1 = _make_repo_with_remote(repo_dirs["repo-1"])
+        local_2, bare_2 = _make_repo_with_remote(repo_dirs["repo-2"])
+        local_3, bare_3 = _make_repo_with_remote(repo_dirs["repo-3"])
+        # Same branch name in every repo: if repo-2 inherited repo-1's
+        # identity, gh would report it merged there too.
+        shared_branch = "feat/shared-name"
+        _make_feature_branch(local_1, shared_branch)
+        _make_feature_branch(local_2, shared_branch)
+        _make_feature_branch(local_3, shared_branch)
+
+        direnv_source = _direnv_shim_source_by_cwd({
+            str(local_1.resolve()): {"GH_TOKEN": "token-1"},
+            # local_2 deliberately absent: models a repo under no .envrc.
+            str(local_3.resolve()): {"GH_TOKEN": "token-3"},
+        })
+        gh_shim_source = _gh_shim_source_by_token({
+            "token-1": {shared_branch: {"number": 1, "mergedAt": "2026-05-01"}},
+        })
+        env = _shimmed_env(tmp_path, gh_shim_source, direnv_source=direnv_source)
+
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+        result = _run_all_projects(tmp_path, env, roots_file)
+
+        assert result.returncode == 0
+        branches_1 = subprocess.run(
+            ["git", "branch", "--list", shared_branch],
+            cwd=local_1, capture_output=True, text=True,
+        ).stdout
+        assert shared_branch not in branches_1, "repo-1 must still be cleaned under its own identity"
+        branches_2 = subprocess.run(
+            ["git", "branch", "--list", shared_branch],
+            cwd=local_2, capture_output=True, text=True,
+        ).stdout
+        assert shared_branch in branches_2, (
+            "repo-2 has no .envrc entry and must not inherit repo-1's identity"
+        )
+
+
+class TestAggregatedSkipLinesAcrossSweep:
+    """Aggregation, sweep variant, plus fail-closed preserved: a repo
+    where every branch's gh lookup fails reports one skip line, the sweep
+    still exits 0, and a healthy sibling repo in the same sweep is still
+    fully cleaned."""
+
+    def test_all_gh_failures_aggregate_and_sibling_repo_still_cleaned(self, tmp_path, fake_gh):
+        root = tmp_path / "root"
+        root.mkdir()
+        failing_dir = root / "failing"
+        failing_dir.mkdir()
+        local_failing, bare_failing = _make_repo_with_remote(failing_dir)
+        _make_tier_b_branch(local_failing, bare_failing, "reachable-erroring-one")
+        _make_tier_b_branch(local_failing, bare_failing, "reachable-erroring-two")
+
+        healthy_dir = root / "healthy"
+        healthy_dir.mkdir()
+        local_healthy, bare_healthy = _make_repo_with_remote(healthy_dir)
+        _make_feature_branch(local_healthy, "feat/healthy-merged")
+        subprocess.run(["git", "branch", "-D", "feat/healthy-merged"], cwd=bare_healthy, check=True)
+
+        env = fake_gh({
+            "reachable-erroring-one": "error",
+            "reachable-erroring-two": "error",
+            "feat/healthy-merged": {"number": 90, "mergedAt": "2026-05-01"},
+        })
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+        result = _run_all_projects(tmp_path, env, roots_file)
+
+        assert result.returncode == 0
+        skip_lines = [
+            line for line in result.stdout.splitlines()
+            if line.startswith("Skipped 2 branch(es)")
+        ]
+        assert len(skip_lines) == 1, f"expected exactly one aggregated skip line; got: {result.stdout!r}"
+        assert "reachable-erroring-one" in skip_lines[0]
+        assert "reachable-erroring-two" in skip_lines[0]
+        assert "gh lookup failed; skipping to fail closed" in skip_lines[0]
+
+        # Fail-closed preserved: both erroring branches survive untouched.
+        for branch in ("reachable-erroring-one", "reachable-erroring-two"):
+            ref_check = subprocess.run(
+                ["git", "rev-parse", "--verify", f"refs/heads/{branch}"],
+                cwd=local_failing, capture_output=True,
+            )
+            assert ref_check.returncode == 0, f"{branch} must survive a gh failure"
+
+        healthy_branches = subprocess.run(
+            ["git", "branch", "--list", "feat/healthy-merged"],
+            cwd=local_healthy, capture_output=True, text=True,
+        ).stdout
+        assert healthy_branches.strip() == "", "sibling repo must still be fully cleaned"
+
+
+class TestAllProjectsGhAuthDowngradeWithDirenv:
+    """Under --all-projects, an unauthenticated invoking-shell gh is
+    downgraded to a warning when direnv is present — the sweep still
+    proceeds."""
+
+    def test_unauth_with_direnv_present_warns_and_proceeds(self, tmp_path, fake_gh):
+        root = tmp_path / "root"
+        root.mkdir()
+        local, bare = _make_repo_with_remote(root)
+        _make_feature_branch(local, "feat/done")
+        subprocess.run(["git", "branch", "-D", "feat/done"], cwd=bare, check=True)
+
+        env = fake_gh({
+            "__auth__": "unauth",
+            "feat/done": {"number": 1, "mergedAt": "2026-05-01"},
+        })
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+        result = _run_all_projects(tmp_path, env, roots_file)
+
+        assert result.returncode == 0
+        assert "not authenticated" in result.stderr.lower()
+        branches = subprocess.run(
+            ["git", "branch", "--list", "feat/done"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert branches.strip() == "", "the sweep must still proceed and clean the repo"
+
+
+class TestAllProjectsGhAuthHardExitsWithoutDirenv:
+    """Companion to TestAllProjectsGhAuthDowngradeWithDirenv: with no
+    direnv, the invoking shell's credentials are what every repo actually
+    gets, so an unauthenticated gh must still hard-exit — matching
+    test_gh_unauth_exits_nonzero's single-repo behavior."""
+
+    def test_unauth_without_direnv_still_exits_nonzero(self, tmp_path, fake_gh):
+        # The auth check runs before roots-file discovery, so no repo needs
+        # to exist under this root for this test to reach its assertion.
+        root = tmp_path / "root"
+        root.mkdir()
+
+        env = fake_gh({"__auth__": "unauth"}, direnv_present=False)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+        result = _run_all_projects(tmp_path, env, roots_file)
+
+        assert result.returncode != 0
+        assert "not authenticated" in result.stderr.lower()
 
 
 class TestAllProjectsRootsFileMissing:
