@@ -36,6 +36,7 @@ Env overrides:
 """
 import argparse
 import json
+import math
 import os
 import platform
 import re
@@ -73,11 +74,13 @@ _FIND_SWEEP_TIMEOUT_SECONDS = 25.0
 # is a hang-detection backstop, not a measured value.
 _SUBPROCESS_TIMEOUT_SECONDS = 5.0
 
-# Heuristic, not a vendor-specified value: covers the write latency of a
-# session's last turn landing on disk shortly before a crash. Only used to
-# decide whether a transcript with no registry or lock entry at all is worth
-# surfacing as corroborating-only evidence.
-_NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS = 600.0
+# Sized to "was this session plausibly still open when the crash happened,"
+# not write latency: an empirical sample of 11 crash-orphaned transcripts had
+# gaps between last activity and boot ranging 29min-2h45m, so 4h covers that
+# range with margin. Only used to decide whether a transcript with no
+# registry or lock entry at all is worth surfacing as corroborating-only
+# evidence.
+_NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS = 14400.0
 
 # CLI versions this registry/lock schema has actually been read against.
 # A version outside this set doesn't change how anything is parsed (every
@@ -103,6 +106,7 @@ CLASS_RESUMABLE = "resumable"
 CLASS_CRASHED_NO_TRANSCRIPT = "crashed-no-transcript"
 CLASS_CLEAN_EXIT = "clean-exit"
 CLASS_UNKNOWN = "unknown"
+CLASS_POSSIBLE_CRASH = "possible-crash"
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +410,18 @@ def _fmt_ts(ts: float | None) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _fmt_age(seconds: float) -> str:
+    """Single floored unit — '45m old', '3h old', '12d old' — never fractional."""
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m old"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h old"
+    days = hours // 24
+    return f"{days}d old"
+
+
 # ---------------------------------------------------------------------------
 # Source A — session registry
 # ---------------------------------------------------------------------------
@@ -681,6 +697,7 @@ def _classify_session(
     boot_time: float | None,
     ps_lstart,
     ps_usable: bool,
+    near_boot_window_seconds: float = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS,
 ) -> SessionRow:
     entry_count = len(registry_entries) + len(lock_entries)
     has_main_transcript = transcript is not None and transcript.has_main
@@ -813,9 +830,10 @@ def _classify_session(
     branch = transcript.git_branch if transcript is not None else None
     last_activity = transcript.last_activity if transcript is not None else None
     return SessionRow(
-        session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
-        "only a transcript exists, with no registry or lock entry; its last activity sits near the last "
-        "boot, but this alone does not prove a crash.",
+        session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
+        f"only a transcript exists, with no registry or lock entry; its last activity sits within "
+        f"{near_boot_window_seconds / 3600:g}h before the last boot, but with no registry or "
+        "lock corroboration this cannot confirm the session was still open at crash time.",
         entry_count, _cwd_missing(cwd),
     )
 
@@ -830,6 +848,7 @@ def build_report(
     find_root: Path,
     ps_lstart=_ps_lstart,
     boot_time_fn=_boot_time,
+    near_boot_window_seconds: float = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS,
 ) -> Report:
     boot_time = boot_time_fn()
 
@@ -872,13 +891,16 @@ def build_report(
     ps_usable = _ps_usable(ps_lstart=resolved_ps_lstart)
 
     known_session_ids = set(registry_by_session) | set(lock_by_session)
-    near_boot_only = _near_boot_transcript_only_ids(transcripts, known_session_ids, boot_time)
+    near_boot_only = _near_boot_transcript_only_ids(
+        transcripts, known_session_ids, boot_time, window_seconds=near_boot_window_seconds,
+    )
     all_session_ids = known_session_ids | set(near_boot_only)
 
     rows = [
         _classify_session(
             sid, registry_by_session.get(sid, []), lock_by_session.get(sid, []),
             transcripts.get(sid), boot_time=boot_time, ps_lstart=resolved_ps_lstart, ps_usable=ps_usable,
+            near_boot_window_seconds=near_boot_window_seconds,
         )
         for sid in sorted(all_session_ids)
     ]
@@ -914,7 +936,7 @@ def _assign_ordinal(value: str, ordinal_map: dict[str, str], prefix: str) -> str
     return ordinal_map[value]
 
 
-def render_report(report: Report, *, redact: bool) -> str:
+def render_report(report: Report, *, redact: bool, now: float | None = None) -> str:
     lines: list[str] = ["# Post-crash session recovery report", ""]
 
     if redact:
@@ -972,35 +994,44 @@ def render_report(report: Report, *, redact: bool) -> str:
             return None
         return _assign_ordinal(value, cwd_map, "project") if redact else value
 
-    resumable = sorted(
-        (r for r in report.rows if r.classification == CLASS_RESUMABLE),
-        key=lambda r: r.last_activity or 0.0, reverse=True,
-    )
-    lines.append(f"## Resumable ({len(resumable)})")
-    lines.append("")
-    if not resumable:
-        lines.append("None found.")
-    for row in resumable:
-        cwd_display = cwd_of(row.cwd)
-        sid_display = sid_of(row.session_id)
-        # shlex.quote: this line is meant to be copy-pasted straight into a shell, and cwd/session_id
-        # both trace back to locally-readable but not fully trusted strings (a git branch name, a
-        # directory name) — quoting turns even a crafted value into an inert argument, not a second command.
-        if cwd_display:
-            lines.append(f"cd {shlex.quote(cwd_display)} && claude --resume {shlex.quote(sid_display)}")
-            if row.cwd_missing:
-                lines.append("  WARNING: this directory no longer exists on disk — resuming will fail.")
-        else:
-            lines.append(
-                f"claude --resume {shlex.quote(sid_display)}  # cwd unknown — resuming from this directory may fail"
-            )
-        meta = [f"last activity {_fmt_ts(row.last_activity)}"]
-        if not redact and row.git_branch:
-            meta.append(f"branch {row.git_branch}")
-        meta.append(f"{row.entry_count} underlying entr{'y' if row.entry_count == 1 else 'ies'}")
-        lines.append("  " + ", ".join(meta))
-        lines.append(f"  {row.detail}")
-    lines.append("")
+    def render_resume_section(class_key: str, title: str) -> None:
+        """Shared layout for Resumable and Possible-crash: both are rows with a
+        real resume command, so they share the resume-command line, cwd-missing
+        warning, meta line, and detail line."""
+        rows = sorted(
+            (r for r in report.rows if r.classification == class_key),
+            key=lambda r: r.last_activity or 0.0, reverse=True,
+        )
+        lines.append(f"## {title} ({len(rows)})")
+        lines.append("")
+        if not rows:
+            lines.append("None found.")
+        for row in rows:
+            cwd_display = cwd_of(row.cwd)
+            sid_display = sid_of(row.session_id)
+            # shlex.quote: this line is meant to be copy-pasted straight into a shell, and cwd/session_id
+            # both trace back to locally-readable but not fully trusted strings (a git branch name, a
+            # directory name) — quoting turns even a crafted value into an inert argument, not a second command.
+            if cwd_display:
+                lines.append(f"cd {shlex.quote(cwd_display)} && claude --resume {shlex.quote(sid_display)}")
+                if row.cwd_missing:
+                    lines.append("  WARNING: this directory no longer exists on disk — resuming will fail.")
+            else:
+                lines.append(
+                    f"claude --resume {shlex.quote(sid_display)}  # cwd unknown — resuming from this directory may fail"
+                )
+            meta = [f"last activity {_fmt_ts(row.last_activity)}"]
+            if now is not None and row.last_activity is not None and row.last_activity <= now:
+                meta.append(_fmt_age(now - row.last_activity))
+            if not redact and row.git_branch:
+                meta.append(f"branch {row.git_branch}")
+            meta.append(f"{row.entry_count} underlying entr{'y' if row.entry_count == 1 else 'ies'}")
+            lines.append("  " + ", ".join(meta))
+            lines.append(f"  {row.detail}")
+        lines.append("")
+
+    render_resume_section(CLASS_RESUMABLE, "Resumable")
+    render_resume_section(CLASS_POSSIBLE_CRASH, "Possible crash — transcript only")
 
     other_groups = (
         (CLASS_CRASHED_NO_TRANSCRIPT, "Crashed, no transcript"),
@@ -1033,6 +1064,8 @@ def render_report(report: Report, *, redact: bool) -> str:
         )
         for path in report.legacy_bare_pid_dead:
             lines.append(f"  {path.name if redact else path}")
+        if not redact:
+            lines.append("  rm -- " + " ".join(shlex.quote(str(p)) for p in report.legacy_bare_pid_dead))
         lines.append("")
 
     lines.append(
@@ -1078,6 +1111,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "drop git branch names, for pasting into a public issue or channel."
         ),
     )
+    parser.add_argument(
+        "--near-boot-hours", type=float, metavar="HOURS", default=None,
+        help=(
+            f"How far before the last boot a transcript's last activity can sit and still surface "
+            f"under 'Possible crash' when it has no registry or lock corroboration (default "
+            f"{_NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS / 3600:g}h). Widen this to recover sessions from "
+            "an older crash, e.g. --near-boot-hours 72 for three days."
+        ),
+    )
     return parser
 
 
@@ -1112,8 +1154,22 @@ def main(argv: list[str] | None = None) -> int:
 
     find_root = Path(os.environ.get(_FIND_ROOT_ENV_VAR, str(Path.home())))
 
-    report = build_report(config_dirs=config_dirs, find_root=find_root)
-    print(render_report(report, redact=args.redact))
+    near_boot_window_seconds = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS
+    if args.near_boot_hours is not None:
+        # math.isfinite rejects nan/inf: a bare `<= 0` check lets `nan` through (NaN
+        # comparisons are always False), silently disabling near-boot detection.
+        if not math.isfinite(args.near_boot_hours) or args.near_boot_hours <= 0:
+            print(
+                f"post-crash-sessions: --near-boot-hours must be positive, got {args.near_boot_hours!r}",
+                file=sys.stderr,
+            )
+            return 2
+        near_boot_window_seconds = args.near_boot_hours * 3600
+
+    report = build_report(
+        config_dirs=config_dirs, find_root=find_root, near_boot_window_seconds=near_boot_window_seconds,
+    )
+    print(render_report(report, redact=args.redact, now=time.time()))
     return 0
 
 
