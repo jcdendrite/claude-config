@@ -2723,15 +2723,26 @@ def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, Path], int]:
     return index, meta_read_errors
 
 
-def _last_assistant_text(jsonl_path: Path) -> str:
-    """Return the last non-empty assistant text block in one transcript file, or ''.
+def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], bool]:
+    """Walk one transcript file once, collecting both reviewer-yield join inputs.
 
-    A trailing assistant record with no text (e.g. a final tool-only turn)
-    does not blank out an earlier one — this walks the whole file and keeps
-    the most recent non-empty text seen, matching "last assistant text
-    block" rather than "last assistant record's text, possibly empty."
+    Returns (last_assistant_text, write_content_blobs, read_error):
+      - last_assistant_text: the last non-empty assistant text block, or ''.
+        A trailing assistant record with no text (e.g. a final tool-only turn)
+        does not blank out an earlier one — this walks the whole file and
+        keeps the most recent non-empty text seen, matching "last assistant
+        text block" rather than "last assistant record's text, possibly
+        empty."
+      - write_content_blobs: every Write tool_use's input.content string
+        found along the same walk, in file order.
+      - read_error: True on OSError opening/reading jsonl_path. A read
+        failure is not a legitimate zero-citation transcript, so the caller
+        must exclude it from a coverage denominator rather than count it as
+        one — last_assistant_text and write_content_blobs are ("", []) in
+        this case, matching the prior ''-on-OSError contract for the text.
     """
     last_text = ""
+    write_content_blobs: list[str] = []
     try:
         with open(jsonl_path) as fh:
             for raw in fh:
@@ -2741,12 +2752,22 @@ def _last_assistant_text(jsonl_path: Path) -> str:
                     continue
                 if rec.get("type") != "assistant":
                     continue
-                text = _content_text((rec.get("message") or {}).get("content", ""))
+                content = (rec.get("message") or {}).get("content", "")
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict) or block.get("type") != "tool_use":
+                            continue
+                        if block.get("name") != "Write":
+                            continue
+                        blob = (block.get("input") or {}).get("content")
+                        if isinstance(blob, str):
+                            write_content_blobs.append(blob)
+                text = _content_text(content)
                 if text.strip():
                     last_text = text
     except OSError:
-        return ""
-    return last_text
+        return "", [], True
+    return last_text, write_content_blobs, False
 
 
 def _classify_reviewer_verdict(text: str) -> tuple[str, int]:
@@ -2939,7 +2960,8 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
                 paired_jsonl = dispatch_index.get(block.get("id") or "")
                 if paired_jsonl is None:
                     continue  # no matching meta.json — excluded entirely, not "unclassified"
-                bucket, n = _classify_reviewer_verdict(_last_assistant_text(paired_jsonl))
+                last_assistant_text, _write_content_blobs, _read_error = _scan_reviewer_transcript(paired_jsonl)
+                bucket, n = _classify_reviewer_verdict(last_assistant_text)
                 row = agg[stype]
                 row["dispatches"] += 1
                 if bucket == _REVIEWER_VERDICT_FINDINGS_FOUND:
