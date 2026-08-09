@@ -2744,9 +2744,8 @@ def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], list[st
         along the same walk, in file order — this dispatch's own findings
         file is almost always among them, giving the caller a
         path-normalized set-membership exclusion (see
-        _dispatch_self_reference_keys) instead of the free-text-prose
-        matching the edit index's own reviewer-write exclusion already
-        rejects for the same fragility reason.
+        _dispatch_self_reference_keys) instead of fragile free-text-prose
+        matching against the dispatching prompt.
       - transcript_cwd: the cwd field from the first record in this
         transcript that carries one, or '' if none do. Reviewer-cited
         relative paths were written from the reviewer subagent's own
@@ -2920,8 +2919,8 @@ def _normalize_cited_path(candidate: str, cwd: str) -> str | None:
 def _is_reviewer_subagent_type(stype: str) -> bool:
     """True for a subagent_type in reviewer-yield's reviewer-agent set
     (review-trace's _REVIEWER_PREFIX/_REVIEWER_EXACT plus
-    skill-fidelity-reviewer) — shared by the dispatch loop and the edit
-    index's reviewer-write exclusion so the two sets cannot drift apart."""
+    skill-fidelity-reviewer), used by the dispatch-classification loop to
+    decide which Agent/Task tool_use blocks to aggregate."""
     return stype.startswith(_REVIEWER_PREFIX) or stype in (_REVIEWER_EXACT, _REVIEWER_YIELD_EXTRA_EXACT)
 
 
@@ -2967,6 +2966,12 @@ def _index_parent_edits(records: list[dict], since_ts: float | None) -> dict[str
     path key -> latest edit timestamp. A second pass over the same
     already-materialized records list iter_sessions handed the caller — no
     new parent-side file I/O.
+
+    A record with no cwd field indexes its edit under a key normalized
+    against "" rather than being skipped, so it can silently miss a join
+    against a citation whose own cwd is a real path — low-likelihood, since
+    Claude Code populates cwd on essentially every record, and not currently
+    tested.
     """
     index: dict[str, float] = {}
     for rec in records:
@@ -3111,9 +3116,9 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
         meta_read_errors += session_meta_read_errors
 
         tool_result_ts = _build_tool_result_ts_map(records, since_ts)
-        # Cost gate (Verification 7(a)): subagent-edit reads measured ~16.4s enabled vs
-        # ~0.2s parent-only median, delta ~16.2s exceeds the inherited 13.5s baseline —
-        # the plan's own pre-committed fallback, parent-only index shipped instead.
+        # Subagent-transcript edit reads measured ~16.2s slower than a parent-only
+        # scan on a --since 30d corpus run — parent-only index shipped; see
+        # docs/transcript-analysis.md for the tradeoff.
         edit_index = _index_parent_edits(records, since_ts)
         overall_max_edit_ts = max(edit_index.values()) if edit_index else None
 
@@ -3225,6 +3230,7 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
             print(
                 f"{stype:<28} {bucket:<15} {dispatches:>10} {cited_s:>6} {active_s:>6} {edited_s:>6} {rate_s:>12}"
             )
+    print("\n  (Active/Edited count parent-main-thread edits only; see docs for the cost-gate fallback.)")
     if transcript_read_errors:
         print(f"\n  ({transcript_read_errors:,} reviewer transcripts failed to read, excluded from Cited)")
 

@@ -1566,12 +1566,13 @@ class TestReviewerYield:
         )
         assert cols["Edited"] == "1"
 
-    def test_code_writer_subagent_edit_after_reviewer_dispatch_does_not_count(self, fake_projects, capsys):
-        """Documents the Verification 7(a) cost-gate fallback's shipped
-        scope: the edit index is parent-main-thread-only, so an edit made
-        inside a code-writer subagent transcript does not count toward
-        Active/Edited even though it followed the reviewer dispatch — the
-        originally-designed subagent-inclusive behavior is not what ships."""
+    def test_subagent_authored_edit_never_counts_under_parent_only_index(self, fake_projects, capsys):
+        """Pins the shipped parent-only-index behavior: an edit made inside a
+        code-writer subagent transcript does not count toward Active/Edited
+        even though it followed the reviewer dispatch. This does not exercise
+        a subagent_type-based reviewer-write exclusion — no such mechanism
+        exists in the shipped code (removed by the cost-gate fallback); the
+        edit index simply never reads subagent transcripts at all."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
             _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
@@ -1597,15 +1598,14 @@ class TestReviewerYield:
         assert cols["Active"] == "0"
         assert cols["Edited"] == "0"
 
-    def test_sibling_reviewer_findings_write_after_zero_finding_dispatch_does_not_count(self, fake_projects, capsys):
-        """A sibling reviewer dispatched after a zero-finding dispatch
-        returns writes only its own findings file — that write must not
-        satisfy Active for the zero-finding dispatch, or every review
-        fan-out would falsely look active regardless of fix work. Passes
-        trivially under the Verification 7(a) cost-gate fallback (the edit
-        index is parent-main-thread-only, so no subagent write ever counts),
-        rather than exercising the reviewer-write subagent_type exclusion
-        this test was originally written to pin."""
+    def test_sibling_reviewer_findings_write_never_counts_under_parent_only_index(self, fake_projects, capsys):
+        """Pins the shipped parent-only-index behavior: a sibling reviewer
+        dispatched after a zero-finding dispatch writes only its own findings
+        file, and that write does not satisfy Active for the zero-finding
+        dispatch. This does not exercise a subagent_type-based reviewer-write
+        exclusion — no such mechanism exists in the shipped code (removed by
+        the cost-gate fallback); the edit index simply never reads subagent
+        transcripts at all, reviewer or otherwise."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "ciso-reviewer")]),
             _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
@@ -1873,6 +1873,33 @@ class TestReviewerYield:
         assert sentinel_path not in captured.out
         assert sentinel_path not in captured.err
 
+    def test_cited_via_write_blob_and_edited_paths_never_appear_in_output(self, fake_projects, capsys):
+        """The same non-leakage guarantee as
+        test_cited_and_edited_paths_never_appear_in_output, but with the
+        sentinel path cited only through a reviewer's own Write blob
+        (input.content), not the last assistant text — both citation-
+        extraction code paths must not leak a raw path."""
+        sentinel_path = "SENTINEL-ROOT/SENTINEL-PROJ/y.py"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+            _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
+            _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[
+                _edit_use("e1", path=sentinel_path),
+            ]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[
+                _write_use("w1", f"Reviewed {sentinel_path}, confirmed the issue."),
+                {"type": "text", "text": "**No concerns**"},
+            ])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        captured = capsys.readouterr()
+        assert sentinel_path not in captured.out
+        assert sentinel_path not in captured.err
+
 
 class TestExtractCitedPaths:
     """_extract_cited_paths(text) -> set[str]: a pure tokenizer over one
@@ -1901,6 +1928,13 @@ class TestExtractCitedPaths:
         text = "Reviewed the diff; see claude/.claude/scripts/transcript-analysis.py:2455 for the join."
         result = _mod._extract_cited_paths(text)
         assert "claude/.claude/scripts/transcript-analysis.py:2455" in result
+
+    def test_non_ascii_path_extracted_verbatim(self):
+        """_CITED_PATH_CANDIDATE_RE's \\w is Unicode-by-default (no re.ASCII
+        flag), relied on deliberately so a non-ASCII path segment is not
+        split at the boundary of its non-ASCII characters."""
+        result = _mod._extract_cited_paths("see café/日本語/foo.py for the fix")
+        assert "café/日本語/foo.py" in result
 
     def test_empty_text_returns_empty_set(self):
         assert _mod._extract_cited_paths("") == set()
@@ -2053,6 +2087,156 @@ class TestNormalizeCitedPath:
         detection, only lexical joining."""
         result = _mod._normalize_cited_path("src/foo.py", cwd="/home/reviewer/plain-checkout")
         assert result == self._key("/home/reviewer/plain-checkout/src/foo.py")
+
+    def test_non_ascii_path_round_trips_through_extraction_and_normalization(self):
+        """A non-ASCII path (café/日本語-style) survives extraction and
+        normalization to a stable key — pins that a future 'safety' narrowing
+        of _CITED_PATH_CANDIDATE_RE to ASCII-only would silently break
+        non-ASCII paths with no test catching it."""
+        candidates = _mod._extract_cited_paths("see café/日本語/foo.py for the fix")
+        candidate = next(c for c in candidates if "/" in c)
+        result = _mod._normalize_cited_path(candidate, cwd="/repo")
+        assert result == self._key("/repo/café/日本語/foo.py")
+
+
+class TestBuildToolResultTsMap:
+    """_build_tool_result_ts_map(records, since_ts) -> {tool_use_id: timestamp}:
+    the tool_result side of reviewer-yield's Active/Edited ordering join."""
+
+    def test_tool_result_on_user_type_record_maps_to_its_own_timestamp(self):
+        ts = "2026-05-19T10:00:30.000Z"
+        records = [_user_msg([_tool_result("a1", "ok")], ts=ts)]
+        result = _mod._build_tool_result_ts_map(records, since_ts=None)
+        assert result == {"a1": _mod._parse_ts(ts)}
+
+    def test_since_excludes_out_of_window_tool_result(self):
+        old_ts = "2020-01-01T00:00:00.000Z"
+        new_ts = "2099-12-31T00:00:00.000Z"
+        records = [
+            _user_msg([_tool_result("old", "ok")], ts=old_ts),
+            _user_msg([_tool_result("new", "ok")], ts=new_ts),
+        ]
+        since_ts = _mod._parse_ts("2050-01-01T00:00:00.000Z")
+        result = _mod._build_tool_result_ts_map(records, since_ts)
+        assert result == {"new": _mod._parse_ts(new_ts)}
+
+    def test_unparseable_timestamp_omitted(self):
+        records = [_user_msg([_tool_result("a1", "ok")], ts="not-a-timestamp")]
+        result = _mod._build_tool_result_ts_map(records, since_ts=None)
+        assert result == {}
+
+
+class TestIndexParentEdits:
+    """_index_parent_edits(records, since_ts) -> {normalized_key: latest_ts}:
+    the parent-main-thread edit side of reviewer-yield's overlap join."""
+
+    def test_write_tool_use_produces_keyed_entry(self):
+        ts = "2026-05-19T11:00:00.000Z"
+        records = [
+            {**_asst("claude-opus-4-7", ts=ts, content=[_write_use("w1", "content", path="src/foo.py")]),
+             "cwd": "/repo"},
+        ]
+        result = _mod._index_parent_edits(records, since_ts=None)
+        key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert result == {key: _mod._parse_ts(ts)}
+
+    def test_edit_tool_use_produces_keyed_entry(self):
+        ts = "2026-05-19T11:00:00.000Z"
+        records = [
+            {**_asst("claude-opus-4-7", ts=ts, content=[_edit_use("e1", path="src/foo.py")]), "cwd": "/repo"},
+        ]
+        result = _mod._index_parent_edits(records, since_ts=None)
+        key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert result == {key: _mod._parse_ts(ts)}
+
+    def test_multiedit_tool_use_produces_keyed_entry(self):
+        ts = "2026-05-19T11:00:00.000Z"
+        multiedit = {"type": "tool_use", "id": "m1", "name": "MultiEdit", "input": {
+            "file_path": "src/foo.py", "edits": [{"old_string": "a", "new_string": "b"}],
+        }}
+        records = [{**_asst("claude-opus-4-7", ts=ts, content=[multiedit]), "cwd": "/repo"}]
+        result = _mod._index_parent_edits(records, since_ts=None)
+        key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert result == {key: _mod._parse_ts(ts)}
+
+    def test_notebook_edit_tool_use_produces_keyed_entry(self):
+        """NotebookEdit carries notebook_path, not file_path — the index's
+        _code_write_target_path fallback."""
+        ts = "2026-05-19T11:00:00.000Z"
+        notebook_edit = {"type": "tool_use", "id": "n1", "name": "NotebookEdit", "input": {
+            "notebook_path": "nb/analysis.ipynb",
+        }}
+        records = [{**_asst("claude-opus-4-7", ts=ts, content=[notebook_edit]), "cwd": "/repo"}]
+        result = _mod._index_parent_edits(records, since_ts=None)
+        key = _mod._normalize_cited_path("nb/analysis.ipynb", cwd="/repo")
+        assert result == {key: _mod._parse_ts(ts)}
+
+    def test_since_excludes_out_of_window_edit(self):
+        old_ts = "2020-01-01T00:00:00.000Z"
+        new_ts = "2099-12-31T00:00:00.000Z"
+        records = [
+            {**_asst("claude-opus-4-7", ts=old_ts, content=[_edit_use("e1", path="src/old.py")]), "cwd": "/repo"},
+            {**_asst("claude-opus-4-7", ts=new_ts, content=[_edit_use("e2", path="src/new.py")]), "cwd": "/repo"},
+        ]
+        since_ts = _mod._parse_ts("2050-01-01T00:00:00.000Z")
+        result = _mod._index_parent_edits(records, since_ts)
+        assert list(result) == [_mod._normalize_cited_path("src/new.py", cwd="/repo")]
+
+
+class TestReviewerYieldCitedKeys:
+    """_reviewer_yield_cited_keys(last_assistant_text, write_content_blobs, cwd,
+    self_ref_keys) -> set[key]: the citation-extraction join key set for one
+    reviewer dispatch."""
+
+    def test_text_channel_candidate_surfaces(self):
+        result = _mod._reviewer_yield_cited_keys(
+            "Found 1 issue in src/foo.py needing a fix", [], cwd="/repo", self_ref_keys=set(),
+        )
+        assert result == {_mod._normalize_cited_path("src/foo.py", cwd="/repo")}
+
+    def test_blob_channel_candidate_surfaces(self):
+        result = _mod._reviewer_yield_cited_keys(
+            "", ["Reviewed src/foo.py, no issues found."], cwd="/repo", self_ref_keys=set(),
+        )
+        assert result == {_mod._normalize_cited_path("src/foo.py", cwd="/repo")}
+
+    def test_self_ref_key_excluded(self):
+        self_ref_key = _mod._normalize_cited_path("/scratch/findings.md", cwd="/repo")
+        result = _mod._reviewer_yield_cited_keys(
+            "Findings written to /scratch/findings.md", [], cwd="/repo", self_ref_keys={self_ref_key},
+        )
+        assert result == set()
+
+    def test_plan_file_candidate_excluded(self):
+        result = _mod._reviewer_yield_cited_keys(
+            "See .claude/plans/foo.md for context", [], cwd="/repo", self_ref_keys=set(),
+        )
+        assert result == set()
+
+    def test_same_path_in_both_channels_dedupes_to_one_key(self):
+        result = _mod._reviewer_yield_cited_keys(
+            "Found 1 issue in src/foo.py needing a fix",
+            ["Reviewed src/foo.py, confirmed the issue."],
+            cwd="/repo", self_ref_keys=set(),
+        )
+        assert result == {_mod._normalize_cited_path("src/foo.py", cwd="/repo")}
+
+
+class TestDispatchSelfReferenceKeys:
+    """_dispatch_self_reference_keys(write_target_paths, transcript_cwd) ->
+    set[key]: the reviewer's own Write-target self-reference exclusion set."""
+
+    def test_normalizes_each_write_target_path(self):
+        result = _mod._dispatch_self_reference_keys(
+            ["/scratch/findings.md", "src/foo.py"], transcript_cwd="/repo",
+        )
+        assert result == {
+            _mod._normalize_cited_path("/scratch/findings.md", cwd="/repo"),
+            _mod._normalize_cited_path("src/foo.py", cwd="/repo"),
+        }
+
+    def test_empty_write_target_paths_returns_empty_set(self):
+        assert _mod._dispatch_self_reference_keys([], transcript_cwd="/repo") == set()
 
 
 # ---------------------------------------------------------------------------

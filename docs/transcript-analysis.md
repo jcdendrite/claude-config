@@ -177,13 +177,13 @@ Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/re
 
 ## reviewer-yield
 
-**Purpose.** Per-reviewer-agent-type dispatch-to-verdict yield: for each main-thread reviewer-agent dispatch (`staff-*`, `ciso-reviewer`, `skill-fidelity-reviewer`), joins it to its own subagent transcript via `subagents/<id>.meta.json`'s `toolUseId` field, then classifies the transcript's last assistant text block as findings-found, zero-finding, or unclassified — answering "are reviewer-agent dispatches producing real findings, or mostly zero-finding passes" (the efficiency-audit tracking issue's F4).
+**Purpose.** Per-reviewer-agent-type dispatch-to-verdict yield: for each main-thread reviewer-agent dispatch (`staff-*`, `ciso-reviewer`, `skill-fidelity-reviewer`), joins it to its own subagent transcript via `subagents/<id>.meta.json`'s `toolUseId` field, then classifies the transcript's last assistant text block as findings-found, zero-finding, or unclassified — answering "are reviewer-agent dispatches producing real findings, or mostly zero-finding passes" (the efficiency-audit tracking issue's F4). A second table reports, per (agent type, verdict bucket), whether the paths a reviewer cited were later edited — answering "did the session subsequently act on what was cited," not only whether the reviewer spoke (GH-558).
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since Nd` — limit to dispatches with timestamp in the last N days (e.g. `30d`)
-- `--redact` — accepted for CLI parity with `cost`/`audit-routing`; currently a no-op, since this subcommand's output is aggregate-only per agent type and carries no project-label or session-id field to redact.
+- `--redact` — accepted for CLI parity with `cost`/`audit-routing`; a no-op in practice, since cited-path candidates are held only as sha256 digests and never surface as raw paths, so both tables stay aggregate-only by construction. This does not cover the pre-existing `--projects` scope-header line (shared by every subcommand — see the `cost` section's redaction notes above).
 
 **Sample output.**
 ```
@@ -193,9 +193,20 @@ AgentType                    Dispatches   Found   Zero  Unclass  Findings
 -------------------------------------------------------------------------
 ciso-reviewer                       230      87     32      111       265
 staff-sdet                          283     130     23      130       449
+
+## Reviewer-agent cited-path edit overlap (last 30d)
+
+AgentType                    Bucket          Dispatches  Cited Active Edited         Rate
+-----------------------------------------------------------------------------------------
+staff-sdet                   findings-found         297    297    296    124        41.9%
+staff-sdet                   zero-finding            30     30     30      7        23.3%
+
+  (Active/Edited count parent-main-thread edits only; see docs for the cost-gate fallback.)
 ```
 
 **When to reach for it.** Judge whether a reviewer agent's dispatch volume is worth its cost. Verdict classification is best-effort: it recognizes the `**No X concerns**`, `Wrote findings to <path>. Found <N> issues.`, `**Approve with concerns**`, and `**Request changes**` contract shapes (case-insensitive, bold-optional, singular/plural-tolerant) documented in `claude/.claude/agents/*.md`. The bulleted `**Approve with concerns**`/`**Request changes**` verdicts land in `Found` alongside the numeric-count verdicts, but carry no derivable count of their own — `Findings` is therefore a lower bound on actual findings, not an exact total. A dispatch whose `subagents/*.meta.json` sidecar can't be resolved at all is excluded entirely, not counted as `Unclass`. A `subagents/*.meta.json` sidecar that exists but is unreadable (invalid JSON) or is missing `toolUseId` is a second, distinct exclusion path — also excluded entirely, and corpus-wide counted in a `(N meta.json files failed to parse, excluded)` line printed under the table.
+
+The second table's columns: `Cited` = dispatches yielding at least one extracted, path-normalized citation (excluding the dispatch's own findings-file target and any cited plan file, which would otherwise self-match a `/plan-review` dispatch against the plan the parent then edits). `Active` = of those, dispatches after which the session recorded any code edit at all — a null control for "was the session still working," not yet path-specific. `Edited` = of the `Active` ones, a *cited* path itself was among the edited paths — the real cited-path-overlap signal. `Rate` = `Edited ÷ Active`, so it cannot exceed 100%. `insufficient` in `Rate` means `Active` fell below 10 for that cell — too few qualifying dispatches to report a rate. `excluded` marks the `unclassified` bucket, which this table doesn't score at all. **`Active`/`Edited` currently count parent-main-thread edits only** — a measured cost gate (subagent-transcript edit reads added roughly 16s over a 13.5s all-time baseline on a `--since 30d` run) triggered the plan's own pre-committed fallback of excluding subagent-sourced edits from the index. This repo's own `CLAUDE.md` mandates routing implementation work to a `code-writer` subagent, so `Active`/`Edited` undercount real fix work whenever it happened there rather than in the reviewing session's own main thread — a known, named limitation, not a silent gap.
 
 ---
 
