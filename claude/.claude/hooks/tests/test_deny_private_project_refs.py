@@ -130,6 +130,7 @@ class TestDenyPrivateProjectRefs:
             "Fix JDK-12345",
             "Upstream LLVM-123",
             "GCC-456 workaround",
+            "Compare against GPT-5 in the benchmark table",
             "Require SHA-256",
             "Deprecate MD-5",
             "Support HTTP-2",
@@ -139,7 +140,7 @@ class TestDenyPrivateProjectRefs:
         ],
         ids=[
             "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf",
-            "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc",
+            "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc", "gpt",
             "sha", "md", "http", "tls",
             "proj_placeholder", "ticket_placeholder",
         ],

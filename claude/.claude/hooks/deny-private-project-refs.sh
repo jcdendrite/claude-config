@@ -307,13 +307,13 @@ fi
 #                                 NIST, ECMA, ANSI, OSC
 #   Public-project trackers:      GH (GitHub shorthand), BUG (bugzilla),
 #                                 JEP / JDK (OpenJDK), LLVM, GCC
-#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF
-#   happen to match [A-Z]{2,}-\d+:
+#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF,
+#   happen to match [A-Z]{2,}-\d+: GPT (OpenAI's model family)
 #   Designated placeholders:      PROJ, TICKET — reserved for examples
 #                                 and docs; see repo CLAUDE.md
 #                                 "Redact private-project-identifying
 #                                 content" for the rationale.
-OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|PROJ|TICKET)-'
+OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|PROJ|TICKET)-'
 
 # Extract paths passed to any gh-pr body-source flag. Covers:
 #   --body-file <path>    --body-file=<path>

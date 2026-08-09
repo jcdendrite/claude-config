@@ -1,6 +1,7 @@
 #!/bin/bash
 # hook-class: informational
 # PostToolUse redactor on Bash|Read|WebFetch|Grep|Task results: replaces credential-value shapes (GitHub token prefix, full PEM private-key block) with [REDACTED-CREDENTIAL] before the model's next turn reads them -- the value-shape backstop for credentials that reach context through a path deny-credential-bash-reads.sh/deny-credential-file-reads.sh don't cover (WebFetch body, Grep match, subagent output).
+# That parenthetical names the motivating channels, not the full matcher -- Bash and Read are also covered above, Read backstopped further by deny-data-file-reads.sh's size cap.
 # Only recognizes vendor-fixed value shapes (GitHub token prefix, AWS access key ID, PEM header/footer); .netrc, .git-credentials, Docker/Kube credential values have no fixed shape and rely on the path gates instead. Fails open on any parse/extraction failure -- an informational hook has no deny primitive.
 # Also fails open (skips redaction, returns the original content) when tool_response exceeds _LIB_SIZE_THRESHOLD_BYTES (5 MB): this is the one channel-specific residual, since WebFetch/Grep/Task -- the channels this hook exists to backstop -- have no other size cap the way Read does via deny-data-file-reads.sh.
 
