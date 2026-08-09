@@ -165,6 +165,11 @@ _prompt_sentinel_opt_in() {
   fi
 }
 
+# SENTINEL_INVENTORY (defined in the INSTALL_TEST_FIXTURE: sentinel-inventory
+# block below) must already be populated by the time this runs — every
+# top-level call site in this script satisfies that by ordering, since both
+# blocks are defined, in file order, before this function is ever called.
+# configure_machine_level_opt_ins iterates its scope=machine-promptable rows.
 configure_machine_level_opt_ins() {
   if [ ! -t 0 ]; then
     echo ""
@@ -174,14 +179,192 @@ configure_machine_level_opt_ins() {
   fi
   echo ""
   echo "=== Machine-level opt-ins ==="
-  _prompt_sentinel_opt_in "$HOME/.claude/worktree-required" "Worktree enforcement" \
-    "Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'."
-  _prompt_sentinel_opt_in "$HOME/.claude/autonomous-shipping-required" "Autonomous shipping" \
-    "Lets Claude Code commit, push, and open PRs without asking first, on every repo without a per-repo .claude/autonomous-shipping-optout. A repo cannot enable this by committing anything — only this machine-level file can. See README 'Autonomous shipping'."
+  SENTINEL_INVENTORY_PROMPTED_INDICES=""
+  local sentinel_index=0 entry path_template scope human_name prompt_description default_state docs_anchor
+  for entry in "${SENTINEL_INVENTORY[@]}"; do
+    IFS='|' read -r path_template scope human_name prompt_description default_state docs_anchor <<< "$entry"
+    if [ "$scope" = "machine-promptable" ]; then
+      _prompt_sentinel_opt_in "$HOME/.claude/$path_template" "$human_name" "$prompt_description"
+      SENTINEL_INVENTORY_PROMPTED_INDICES="$SENTINEL_INVENTORY_PROMPTED_INDICES $sentinel_index"
+    fi
+    sentinel_index=$((sentinel_index + 1))
+  done
 }
 # INSTALL_TEST_FIXTURE: machine-level-opt-ins — end
 
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: sentinel-inventory — start
+# Flat, pipe-delimited rows rather than an associative array: the system bash
+# on macOS (and this machine's default) is 3.2, which has no `declare -A`.
+# Schema (no surrounding whitespace around any `|` — IFS='|' read -r would
+# otherwise bake leading/trailing spaces into every field):
+#   path-template|scope|human-name|prompt-description|default-state|docs-anchor
+# scope is one of: machine-promptable (offered by configure_machine_level_opt_ins
+# above, path-template resolved against $HOME/.claude/), machine (report-only,
+# same resolution), repo (report-only, path-template resolved against this
+# repo's own root), or repo-content-addressed (report-only, three-state:
+# absent / present-and-matching / present-but-mismatched — see
+# report_sentinel_inventory below). prompt-description is carried only for
+# machine-promptable rows. default-state is the sentinel's own state — always
+# "disabled" here, since every row names a file whose own presence is what
+# activates the behavior it describes (a kill-switch row's human-name names
+# the suppression itself, not the feature it suppresses, so presence still
+# reads as that suppression being "enabled").
+SENTINEL_INVENTORY=(
+  "worktree-required|machine-promptable|Worktree enforcement|Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'.|disabled|README.md § Worktree enforcement"
+  "autonomous-shipping-required|machine-promptable|Autonomous shipping|Lets Claude Code commit, push, and open PRs without asking first, on every repo without a per-repo .claude/autonomous-shipping-optout. A repo cannot enable this by committing anything — only this machine-level file can. See README 'Autonomous shipping'.|disabled|README.md § Autonomous shipping"
+  "track-permission-prompts|machine-promptable|Permission-prompt tracking|Logs each interactive permission-prompt Notification (credential-shaped values redacted) to ~/.claude/.permission-prompt-log.jsonl, so you can see which commands still trigger a prompt under auto permission mode. No per-repo opt-out.|disabled|docs/permission-prompt-tracking.md"
+  ".error-mode-nudge-enabled|machine|Error-mode analysis nudge||disabled|docs/error-mode-nudge.md"
+  ".handoff-nudge-disabled|machine|Handoff-near-cap nudge suppression||disabled|docs/handoff-nudge.md"
+  ".consume-durable-continuity-disabled|machine|Durable-continuity auto-consume suppression||disabled|docs/hooks.md § Utility hooks"
+  ".commit-stall-block-disabled|machine|Commit-stall auto-advance suppression||disabled|docs/commit-stall-block.md"
+  ".session-title-disabled|machine|Branch-based session-title suppression (machine-wide)||disabled|docs/hooks.md § Utility hooks"
+  ".claude/worktree-required|repo|Worktree enforcement (committed, this repo)||disabled|README.md § Worktree enforcement"
+  ".claude/worktree-optout|repo|Worktree enforcement opt-out (this repo)||disabled|README.md § Worktree enforcement"
+  ".claude/autonomous-shipping-optout|repo|Autonomous-shipping opt-out (this repo)||disabled|README.md § Autonomous shipping"
+  ".claude/session-title-disabled|repo|Branch-based session-title suppression (this repo)||disabled|docs/hooks.md § Utility hooks"
+  ".claude/pr-cost-disclosure|repo-content-addressed|PR cost disclosure (this repo)||disabled|README.md § PR cost disclosure"
+)
+
+# Whether $1 (a zero-based SENTINEL_INVENTORY index) was prompted by
+# configure_machine_level_opt_ins during this run — report_sentinel_inventory
+# uses this to suppress a redundant enable-hint for a sentinel the user was
+# just asked about.
+_sentinel_index_prompted_this_run() {
+  case " ${SENTINEL_INVENTORY_PROMPTED_INDICES:-} " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Prints "ENABLED" when $1 exists, else $2 (the row's own default-state,
+# always "disabled" per the schema comment above) — the same two labels
+# _prompt_sentinel_opt_in's own prompts already use.
+_sentinel_state_label() {
+  if [ -f "$1" ]; then
+    printf 'ENABLED'
+  else
+    printf '%s' "$2"
+  fi
+}
+
+_report_machine_sentinel() {
+  local sentinel_index="$1" path_template="$2" human_name="$3" default_state="$4" docs_anchor="$5" diverged_config_dir="$6"
+  local home_path="$HOME/.claude/$path_template"
+  if [ -n "$diverged_config_dir" ]; then
+    local config_dir_path="$diverged_config_dir/$path_template"
+    # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
+    # unexpanded here, naming the literal env var in the diagnostic message,
+    # not this run's own resolved value (already printed on the next line).
+    printf '  %s: DIVERGED — CLAUDE_CONFIG_DIR and $HOME/.claude disagree\n' "$human_name"
+    printf '    %s: %s\n' "$home_path" "$(_sentinel_state_label "$home_path" "$default_state")"
+    printf '    %s: %s\n' "$config_dir_path" "$(_sentinel_state_label "$config_dir_path" "$default_state")"
+    printf '    docs: %s\n' "$docs_anchor"
+    return 0
+  fi
+  local state
+  state="$(_sentinel_state_label "$home_path" "$default_state")"
+  printf '  %s: %s (%s)\n' "$human_name" "$state" "$home_path"
+  printf '    docs: %s\n' "$docs_anchor"
+  if [ "$state" = "$default_state" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
+    printf '    → to enable: touch %s\n' "$home_path"
+  fi
+}
+
+_report_repo_sentinel() {
+  local sentinel_index="$1" path_template="$2" human_name="$3" default_state="$4" docs_anchor="$5"
+  local repo_path="$REPO_DIR/$path_template"
+  local state
+  state="$(_sentinel_state_label "$repo_path" "$default_state")"
+  printf '  %s: %s (%s)\n' "$human_name" "$state" "$path_template"
+  printf '    docs: %s\n' "$docs_anchor"
+  if [ "$state" = "$default_state" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
+    printf '    → to enable: touch %s\n' "$path_template"
+  fi
+}
+
+# Three states, not two — .claude/pr-cost-disclosure's content, not just its
+# presence, is what the pr-description skill's gate actually checks (its
+# content must equal this repo's own "owner/repo" from `gh repo view`), so a
+# stale copy landed via a wholesale `.claude/` copy-paste must read as a
+# warning, not as silently enabled. A `gh repo view` failure (offline, no
+# remote, unauthenticated) reports "could not verify" rather than guessing.
+_report_content_addressed_sentinel() {
+  local sentinel_index="$1" path_template="$2" human_name="$3" docs_anchor="$4"
+  local repo_path="$REPO_DIR/$path_template"
+  local name_with_owner=""
+  # Bounded the same way require-ready-for-review.sh:191 bounds its own `gh`
+  # network call, so an offline/hung/auth-prompting gh can't stall this
+  # unconditional (no TTY guard) reporting step. GNU coreutils `timeout` is
+  # not guaranteed present here (see the availability check and its
+  # `brew install coreutils` hint later in this file) — an array prefix that
+  # collapses to nothing when absent keeps the call itself unconditional.
+  local -a gh_timeout_prefix=()
+  command -v timeout >/dev/null 2>&1 && gh_timeout_prefix=(timeout 5)
+  name_with_owner="$("${gh_timeout_prefix[@]}" gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || name_with_owner=""
+  printf '  %s:\n' "$human_name"
+  if [ ! -f "$repo_path" ]; then
+    printf '    absent (%s)\n' "$path_template"
+    if [ -n "$name_with_owner" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
+      printf "    → to enable: write %s (this repo's own owner/repo, from gh repo view) to %s\n" "$name_with_owner" "$path_template"
+    fi
+  else
+    local stored_content
+    stored_content="$(tr -d '[:space:]' < "$repo_path")"
+    if [ -z "$name_with_owner" ]; then
+      printf '    present (%s); could not verify against gh repo view — no network/auth or non-GitHub remote\n' "$path_template"
+    elif [ "$stored_content" = "$name_with_owner" ]; then
+      printf '    present, matches this repo (%s)\n' "$path_template"
+    else
+      printf '    present but MISMATCHED — content does not name this repo (%s); likely a copied .claude/ from another repo\n' "$path_template"
+    fi
+  fi
+  printf '    docs: %s\n' "$docs_anchor"
+}
+
+# Read-only: creates and removes nothing. Called after
+# configure_machine_level_opt_ins so a just-prompted row's hint can be
+# suppressed. Resolves machine-scope state the way _lib_config_dir()
+# (claude/.claude/hooks/_lib.sh) would: CLAUDE_CONFIG_DIR when it names a
+# directory other than $HOME/.claude, else $HOME/.claude alone. When the two
+# differ, both paths' state are printed and flagged as diverged rather than
+# picking one — the prompt above only ever mutates $HOME/.claude, but some
+# sentinel readers honor only CLAUDE_CONFIG_DIR with no fallback, so which
+# copy is "the real one" genuinely depends on the specific sentinel.
+report_sentinel_inventory() {
+  echo ""
+  echo "=== Opt-in sentinel inventory ==="
+  local diverged_config_dir=""
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    local normalized_config_dir="${CLAUDE_CONFIG_DIR%/}"
+    if [ "$normalized_config_dir" != "${HOME%/}/.claude" ]; then
+      diverged_config_dir="$normalized_config_dir"
+    fi
+  fi
+
+  local sentinel_index=0 entry path_template scope human_name prompt_description default_state docs_anchor
+  for entry in "${SENTINEL_INVENTORY[@]}"; do
+    IFS='|' read -r path_template scope human_name prompt_description default_state docs_anchor <<< "$entry"
+    case "$scope" in
+      machine-promptable | machine)
+        _report_machine_sentinel "$sentinel_index" "$path_template" "$human_name" "$default_state" "$docs_anchor" "$diverged_config_dir"
+        ;;
+      repo)
+        _report_repo_sentinel "$sentinel_index" "$path_template" "$human_name" "$default_state" "$docs_anchor"
+        ;;
+      repo-content-addressed)
+        _report_content_addressed_sentinel "$sentinel_index" "$path_template" "$human_name" "$docs_anchor"
+        ;;
+    esac
+    sentinel_index=$((sentinel_index + 1))
+  done
+}
+# INSTALL_TEST_FIXTURE: sentinel-inventory — end
+
 configure_machine_level_opt_ins
+report_sentinel_inventory
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
 if [ -f "$SETTINGS_FILE" ]; then

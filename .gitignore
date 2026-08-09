@@ -52,6 +52,12 @@ claude/.claude/credential-value-patterns.md
 # claude/.claude/hooks/_lib.sh (worktree) and docs/error-mode-nudge.md (nudge).
 claude/.claude/worktree-required
 claude/.claude/.error-mode-nudge-enabled
+claude/.claude/autonomous-shipping-required
+claude/.claude/track-permission-prompts
+claude/.claude/.commit-stall-block-disabled
+claude/.claude/.handoff-nudge-disabled
+claude/.claude/.consume-durable-continuity-disabled
+claude/.claude/.session-title-disabled
 
 # Review-gate marker state is per-machine session bookkeeping written by
 # ~/.claude/scripts/marker.sh, never content that ships with the package.

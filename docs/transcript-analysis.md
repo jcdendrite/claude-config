@@ -500,15 +500,51 @@ Pricing is looked up per exact model ID (Sonnet 5 and Sonnet 4.6 price different
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); mutually exclusive with `--projects`
+- `--branches B1,B2,...` — filter to specific branches (default: all). Per-record, not per-session: a single session routinely spans branches, so a session-level filter would misprice it in both directions. A `worktree-agent-*` subagent record's own literal `gitBranch` is not what `--branches` filters on — see "Worktree-isolated subagent attribution" below.
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). The default resolved config dir (`$CLAUDE_CONFIG_DIR`, or `~/.claude`) is always scanned first; each extra directory must contain its own `projects/` subdirectory or the run is rejected. Use this to union spend across account profiles (e.g. a machine running several `~/.config/claude-accounts/<account>/` profiles) into one report. Refused together with `--this-repo` (it cannot filter a foreign config dir's worktrees) and with `--no-redact` (more than one root in scope would put one profile's real project names into a report meant to also cover another).
-- `--by-project` — add a per-project cost breakdown, keyed on (account root, project family); composes with both `--projects` and `--this-repo`. One repo's own worktrees collapse into a single family row instead of fragmenting per branch. When `--config-dir` puts more than one root in scope, each row also carries an `Account` column using the same `account-N` labeling the per-root scan-summary lines use. Under `--no-redact` (single-root only — see below), the Project column shows the raw, suffix-collapsed directory name instead of a `private-project-N` placeholder, same as every other section of this report.
+- `--by-project` — add a per-project cost breakdown, keyed on (account root, project family); composes with both `--projects` and `--this-repo`. One repo's own worktrees collapse into a single family row instead of fragmenting per branch. When `--config-dir` puts more than one root in scope, each row also carries an `Account` column using the same `account-N` labeling the per-root scan-summary lines use. Under `--no-redact` (single-root only — see below), the Project column shows the raw, suffix-collapsed directory name instead of a `private-project-N` placeholder, same as every other section of this report. Refused together with `--summary`.
 - `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`)
 - `--top N` — maximum per-session rows in the top-N-by-dollars section (default: 20)
-- `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output. Refused when `--config-dir` puts more than one root in scope.
+- `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output. Refused when `--config-dir` puts more than one root in scope, and refused together with `--summary`.
+- `--summary` — a distinct, aggregate-only rendering mode meant to be embedded directly in a PR body (see the `pr-description` skill's `## Cost` section). Requires `--this-repo` and refuses any other scope flag, including a non-default `--projects` glob — every project-directory slug is absolute-path-derived and therefore starts with `-`, so a glob like `-*` would otherwise be machine-wide despite not being the literal default `*`. Also refuses `--by-project`, `--no-redact`, and `--config-dir` in combination — each drives an identity-bearing code path (`## Cost by project`, raw labels, multi-root scan-summary lines) `--summary` structurally never reaches. It never builds or reads the redact map, never prints the `DO NOT PUBLISH` banner, and never emits a per-root raw-path label — nothing it prints is keyed by project or session identity. It does print the scan-count diagnostic ("scanned N transcripts, M skipped") and the zero-scope `WARNING`, since those are identity-free under single-root `--this-repo` scope and are what makes an empty or under-scanned corpus visible instead of a silent `$0.00`. Always prints "Unpriced tokens: N tokens across M model IDs", even at zero. Carries the `STALE PRICING` banner in the same block as the dollar tables, same as the full report.
 
 Redacted project labels (`private-project-N`) and the printed corpus fingerprint are **not comparable across two separate report runs** — a changed corpus (a new session, a removed project dir, a different `--config-dir` set) can renumber every ordinal, single- or multi-root. Treat each run's redacted output as self-contained; never diff `private-project-3` between two runs and assume it names the same project.
 
-**Sample output.**
+**Worktree-isolated subagent attribution.** A subagent dispatched with `isolation: "worktree"` runs on a harness-generated `worktree-agent-<hash>` branch, not the branch that dispatched it. `--branches` filters on each record's *attributed* branch, not that literal value: for every `worktree-agent-*` record, `cost` resolves the dispatching session's own branch active at that record's timestamp (falling forward to the session's earliest branch if the record predates every main-thread record), and folds the subagent's dollars and tokens into that branch's total — the same real spend a plain literal-`gitBranch` filter would otherwise silently drop. The one genuinely unattributable case — a session with no main-thread branch-bearing record at all — renders `?` (reusing the `?` sentinel `review-trace`/`judgment-pair` already use for "no signal to carry forward") and is excluded from every `--branches`-filtered total. Attribution is scoped to the dispatching session only; a `worktree-agent-*` record is never resolved against a *different* session's main-thread history.
+
+**The disclosed fields are not neutral.** `--summary`'s output is aggregate-only, but "aggregate" does not mean "safe to publish by default": session count and priced-turn count signal how much engagement went into a branch, per-class token volume signals how long that engagement ran, and per-model-ID dollars discloses which models are in use. That is the intended read for a repo that opts into publishing it (see `pr-description`'s `## Cost` section and `docs/hooks.md`'s `pr-cost-disclosure` entry) — it is not a property of the output format itself, and a repo enabling the gating sentinel for an unrelated reason should not assume these fields are harmless to expose.
+
+The branch itself is never echoed in `--summary`'s text — it only narrows which records the tables below are computed from — so a reviewer confirms scope by re-running the printed command, not by reading a label in the output.
+
+**Sample output (`--summary`, synthetic, illustrative counts only).**
+```
+## Cost summary (all time)
+Scope: 6 transcripts scanned, 4 priced sessions, 812 priced turns
+
+## Cost by token class
+
+Class                       $   Share         Tokens
+cache_read              612.19   48.9%      6,121,900
+cache_write_5m          310.44   24.8%      2,483,520
+output                  270.02   21.6%        540,040
+input                    58.87    4.7%      1,177,400
+total                 1,251.52
+
+## Cost by model ID
+
+Model                                     $   Share
+claude-sonnet-5                    1,251.52  100.0%
+
+Unpriced tokens: 0 tokens across 0 model IDs
+
+## Cost by thread
+
+Thread          $   Share
+main            975.32   77.9%
+subagent        276.20   22.1%
+```
+
+**Sample output (full report).**
 ```
 ## Cost report (last 30d)
 

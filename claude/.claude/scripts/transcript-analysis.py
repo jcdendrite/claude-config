@@ -3780,6 +3780,25 @@ def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, 
     return dollars, context_at_turn, 0
 
 
+def _token_counts(usage: dict) -> dict[str, int]:
+    """Per-class raw token counts for one turn's usage, keyed like _TOKEN_CLASSES.
+
+    Mirrors _price_turn's own class breakdown (same fields, same
+    _cache_write_split reuse) so cost's Tokens column sums the same fields
+    its $ column already prices — callers apply it at the same point
+    _price_turn's dollar accumulation does, after a turn is confirmed priced,
+    so an unpriced model's tokens are excluded here too.
+    """
+    eph_1h, eph_5m = _cache_write_split(usage)
+    return {
+        "input": int(usage.get("input_tokens", 0)),
+        "output": int(usage.get("output_tokens", 0)),
+        "cache_read": int(usage.get("cache_read_input_tokens", 0)),
+        "cache_write_1h": eph_1h,
+        "cache_write_5m": eph_5m,
+    }
+
+
 def _session_peak_context(main_thread_turns: Sequence[tuple[int, int, int]]) -> tuple[float, int]:
     """Track a session's peak context two ways over the same main-thread turns.
 
@@ -3993,6 +4012,71 @@ def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
     )
 
 
+# The harness's ephemeral-isolation branch name for an `isolation: "worktree"`
+# subagent dispatch (see claude/.claude/CLAUDE.md's Agent Briefing section) —
+# not a claim about which branch the dispatched work belongs to.
+_WORKTREE_AGENT_BRANCH_PREFIX = "worktree-agent-"
+
+
+def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
+    """Build one session's sorted (timestamp, gitBranch) index from its own
+    main-thread (non-sidechain) records — the carry-forward source
+    _attributed_branch resolves a worktree-agent-* record's branch against.
+
+    Built fresh per session, from that session's records alone: this is new
+    machinery, not an extension of GH-482's position-based carry-forward
+    (cmd_review_trace/cmd_judgment_pair), which never crosses the main-file/
+    subagents-subdirectory boundary. A record with no parseable timestamp
+    cannot be placed in timestamp order and is excluded.
+    """
+    index: list[tuple[float, str]] = []
+    for main_rec in records:
+        if bool(main_rec.get("isSidechain")):
+            continue
+        main_branch = main_rec.get("gitBranch")
+        if not main_branch:
+            continue
+        main_ts = _parse_ts(main_rec.get("timestamp"))
+        if main_ts is None:
+            continue
+        index.append((main_ts, main_branch))
+    index.sort()
+    return index
+
+
+def _attributed_branch(rec: dict, branch_index: Sequence[tuple[float, str]]) -> str | None:
+    """Resolve one record's branch for --branches filtering.
+
+    A record whose own gitBranch starts with _WORKTREE_AGENT_BRANCH_PREFIX is
+    resolved instead against branch_index (see _session_branch_index): the
+    entry with the largest timestamp <= the record's own, falling forward to
+    the index's earliest entry when none precedes it (dispatched before any
+    main-thread activity in the session, or the record itself carries no
+    parseable timestamp) — the dispatching session's branch active at that
+    moment, correctly resolving through a mid-session branch switch. Every
+    other record's own gitBranch is returned unchanged.
+
+    Returns None — the "?" sentinel case, reusing GH-482's convention for "no
+    signal to carry forward" — when branch_index is empty (no main-thread
+    branch-bearing record anywhere in the session) or when rec itself carries
+    no gitBranch at all.
+    """
+    raw_branch = rec.get("gitBranch") or ""
+    if not raw_branch.startswith(_WORKTREE_AGENT_BRANCH_PREFIX):
+        return raw_branch or None
+    if not branch_index:
+        return None
+    rec_ts = _parse_ts(rec.get("timestamp"))
+    if rec_ts is None:
+        return branch_index[0][1]
+    resolved = branch_index[0][1]
+    for entry_ts, entry_branch in branch_index:
+        if entry_ts > rec_ts:
+            break
+        resolved = entry_branch
+    return resolved
+
+
 def cmd_cost(args: argparse.Namespace) -> None:
     """CLI entry point for the cost subcommand.
 
@@ -4023,12 +4107,45 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     unchanged, including the absence of the per-root scan-summary lines below,
     which only cmd_cost's CLI path (always passing an explicit roots list)
     emits.
+
+    --summary renders a wholly separate, aggregate-only block (session and
+    priced-turn counts plus class/model/thread totals, never a per-session or
+    per-project row) instead of the full report below — see the summary_mode
+    branches threaded through this function. --branches filters the per-turn
+    loop on each record's *attributed* branch (_attributed_branch), not its
+    literal gitBranch: a worktree-agent-* record (an isolation:"worktree"
+    subagent dispatch) is resolved by carry-forward against its own
+    session's main-thread branch history instead.
     """
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = not bool(getattr(args, "no_redact", False))
 
     scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
+
+    summary_mode: bool = bool(getattr(args, "summary", False))
+    if summary_mode:
+        # --this-repo alone is the gate: every _path_to_project_slug-derived
+        # slug is "-"-prefixed, so "any --projects value other than the
+        # literal default *" would still admit a machine-wide glob like "-*".
+        if not getattr(args, "this_repo", False) or getattr(args, "projects", None) not in (None, "*"):
+            print(
+                "cost: --summary requires --this-repo and refuses any --projects scope"
+                " (including the default glob) — see docs/transcript-analysis.md",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if (
+            bool(getattr(args, "by_project", False))
+            or bool(getattr(args, "no_redact", False))
+            or getattr(args, "extra_config_dirs", None)
+        ):
+            print(
+                "cost: --summary refuses --by-project, --no-redact, and --config-dir in"
+                " combination — it is a fixed, aggregate-only output mode",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement point
     # for this refusal, but every direct caller of _cost_report (including
@@ -4049,6 +4166,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     since_ts, since_raw = _parse_since_nd_arg(args, "cost")
     since_label = since_raw or ""
+    branch_filter = _branch_filter(args)
 
     # _resolve_project_scope's fail-closed --this-repo check runs before
     # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
@@ -4060,6 +4178,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # would be a per-element filesystem stat inside that loop.
     resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
 
+    total_transcripts_scanned = 0
     if roots is not None:
         glob = _projects_glob(args)
         # --this-repo's slugs were already resolved (and cached on args) by
@@ -4078,24 +4197,32 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 print(f"cost: {root_label}: cannot scan ({detail}) — treating as 0 transcripts", file=sys.stderr)
                 scanned, skipped = 0, 0
             print(f"cost: {root_label}: scanned {scanned:,} transcripts, {skipped:,} skipped (unreadable)")
+            total_transcripts_scanned += scanned
             if scanned == 0:
                 print(
                     f"WARNING: cost: {root_label}: no transcripts found for this scope"
                     " — check the config dir and --projects/--this-repo filter."
                 )
 
-    redact_map: dict[_RedactMapKey, str] = _build_redact_map(roots) if redact else {}
-    if redact:
-        print(
-            f"Corpus fingerprint: {_corpus_fingerprint(redact_map)}"
-            "  (private-project labels are not comparable across a different fingerprint)"
-        )
-    _print_resolved_scope("cost", scope_label)
+    # --summary skips the redact map and the per-project-dir-count scope
+    # header — nothing it prints is identity-keyed; its own scope line below
+    # reports total_transcripts_scanned, the scan step's post-existence-check
+    # count, instead.
+    redact_map: dict[_RedactMapKey, str] = {}
+    if not summary_mode:
+        redact_map = _build_redact_map(roots) if redact else {}
+        if redact:
+            print(
+                f"Corpus fingerprint: {_corpus_fingerprint(redact_map)}"
+                "  (private-project labels are not comparable across a different fingerprint)"
+            )
+        _print_resolved_scope("cost", scope_label)
 
     session_redact_map: dict[str, str] = {}
     by_project: bool = bool(getattr(args, "by_project", False))
 
     class_totals: dict[str, float] = dict.fromkeys(_TOKEN_CLASSES, 0.0)
+    class_token_totals: dict[str, int] = dict.fromkeys(_TOKEN_CLASSES, 0)
     model_totals: dict[str, float] = defaultdict(float)
     unpriced_tokens: dict[str, int] = defaultdict(int)
     bucket_totals: dict[str, float] = defaultdict(float)
@@ -4103,6 +4230,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     stale_models: set[str] = set()
     main_total = 0.0
     subagent_total = 0.0
+    priced_session_count = 0
+    priced_turn_count = 0
     # Keyed on (root_index_or_None, project_family) — see _project_family.
     project_totals: dict[tuple[int | None, str], float] = defaultdict(float)
     # One representative raw scoped_label per project_totals key, for redact
@@ -4114,9 +4243,13 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     for jsonl, records in session_iter:
         raw_proj_label = _derive_proj_label(jsonl)
         session_id = jsonl.stem[:12]
-        if redact:
+        if redact and not summary_mode:
             _assign_session_redact_label(session_id, session_redact_map)
         session_total = 0.0
+
+        # Only needed when --branches is active — the carry-forward source
+        # _attributed_branch resolves each worktree-agent-* record against.
+        branch_index = _session_branch_index(records) if branch_filter is not None else None
 
         for rec in records:
             if rec.get("type") != "assistant":
@@ -4131,6 +4264,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 if rec_ts is None or rec_ts < since_ts:
                     continue
 
+            if branch_filter is not None:
+                attributed_branch = _attributed_branch(rec, branch_index)
+                if attributed_branch is None or attributed_branch not in branch_filter:
+                    continue
+
             model = msg.get("model", "")
             dollars_by_class, context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
 
@@ -4141,57 +4279,62 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             if today > _MODEL_RATE_EXPIRES[model]:
                 stale_models.add(model)
 
+            token_counts = _token_counts(usage)
             turn_total = 0.0
             for cls in _TOKEN_CLASSES:
                 class_totals[cls] += dollars_by_class[cls]
+                class_token_totals[cls] += token_counts[cls]
                 turn_total += dollars_by_class[cls]
             model_totals[model] += turn_total
             bucket_totals[_context_bucket(context_at_turn)] += turn_total
             session_total += turn_total
+            priced_turn_count += 1
             if bool(rec.get("isSidechain")):
                 subagent_total += turn_total
             else:
                 main_total += turn_total
 
         if session_total:
-            if multi_root:
-                scoped_label: _RedactMapKey = (_root_index_for_path(jsonl, resolved_scan_roots), raw_proj_label)
-            else:
-                scoped_label = raw_proj_label
-            if redact:
-                proj_display = _redact_proj_label(scoped_label, redact_map)
-                if proj_display == _REDACT_MAP_MISS_TOKEN:
-                    # Deliberately omits raw_proj_label: main() has no top-level
-                    # exception handler, so this message would otherwise reach
-                    # stderr uncaught — re-leaking the exact client-identifying
-                    # string --redact exists to hide. A short hash (like
-                    # _corpus_fingerprint's) and the root index are enough to
-                    # debug a desync without exposing the plaintext label.
-                    root_idx = scoped_label[0] if isinstance(scoped_label, tuple) else None
-                    label_hash = hashlib.sha256(raw_proj_label.encode()).hexdigest()[:12]
-                    root_desc = f"root {root_idx}" if root_idx is not None else "the single scan root"
-                    raise AssertionError(
-                        f"cost: redact map has no entry for a project label under {root_desc}"
-                        f" (label hash {label_hash}) — the redact map's roots are out of sync"
-                        " with the session iterator's roots"
-                    )
-            else:
-                proj_display = raw_proj_label
-            session_rows.append({
-                "session_id": session_id,
-                "proj_label": proj_display,
-                "total": session_total,
-            })
+            priced_session_count += 1
+            if not summary_mode:
+                if multi_root:
+                    scoped_label: _RedactMapKey = (_root_index_for_path(jsonl, resolved_scan_roots), raw_proj_label)
+                else:
+                    scoped_label = raw_proj_label
+                if redact:
+                    proj_display = _redact_proj_label(scoped_label, redact_map)
+                    if proj_display == _REDACT_MAP_MISS_TOKEN:
+                        # Deliberately omits raw_proj_label: main() has no top-level
+                        # exception handler, so this message would otherwise reach
+                        # stderr uncaught — re-leaking the exact client-identifying
+                        # string --redact exists to hide. A short hash (like
+                        # _corpus_fingerprint's) and the root index are enough to
+                        # debug a desync without exposing the plaintext label.
+                        root_idx = scoped_label[0] if isinstance(scoped_label, tuple) else None
+                        label_hash = hashlib.sha256(raw_proj_label.encode()).hexdigest()[:12]
+                        root_desc = f"root {root_idx}" if root_idx is not None else "the single scan root"
+                        raise AssertionError(
+                            f"cost: redact map has no entry for a project label under {root_desc}"
+                            f" (label hash {label_hash}) — the redact map's roots are out of sync"
+                            " with the session iterator's roots"
+                        )
+                else:
+                    proj_display = raw_proj_label
+                session_rows.append({
+                    "session_id": session_id,
+                    "proj_label": proj_display,
+                    "total": session_total,
+                })
 
-            if by_project:
-                root_component = scoped_label[0] if multi_root else None
-                project_key = (root_component, _project_family(raw_proj_label))
-                project_totals[project_key] += session_total
-                raw_part = scoped_label[1] if isinstance(scoped_label, tuple) else scoped_label
-                current_repr = project_repr_label.get(project_key)
-                current_raw_part = current_repr[1] if isinstance(current_repr, tuple) else current_repr
-                if current_repr is None or raw_part < current_raw_part:
-                    project_repr_label[project_key] = scoped_label
+                if by_project:
+                    root_component = scoped_label[0] if multi_root else None
+                    project_key = (root_component, _project_family(raw_proj_label))
+                    project_totals[project_key] += session_total
+                    raw_part = scoped_label[1] if isinstance(scoped_label, tuple) else scoped_label
+                    current_repr = project_repr_label.get(project_key)
+                    current_raw_part = current_repr[1] if isinstance(current_repr, tuple) else current_repr
+                    if current_repr is None or raw_part < current_raw_part:
+                        project_repr_label[project_key] = scoped_label
 
     grand_total = sum(class_totals.values())
 
@@ -4221,7 +4364,14 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             )
 
     title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Cost report ({title_since})\n")
+    if summary_mode:
+        print(f"\n## Cost summary ({title_since})\n")
+        print(
+            f"Scope: {total_transcripts_scanned:,} transcripts scanned, "
+            f"{priced_session_count:,} priced sessions, {priced_turn_count:,} priced turns"
+        )
+    else:
+        print(f"\n## Cost report ({title_since})\n")
 
     if stale_models:
         # claude-sonnet-5's specific successor rate is recorded so this banner
@@ -4245,34 +4395,45 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         )
 
     print("## Cost by token class\n")
-    print(f"{'Class':<16} {'$':>14} {'Share':>7}")
+    print(f"{'Class':<16} {'$':>14} {'Share':>7} {'Tokens':>14}")
     for cls in _TOKEN_CLASSES:
         val = class_totals[cls]
-        print(f"{cls:<16} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+        tok = class_token_totals[cls]
+        print(f"{cls:<16} {val:>14,.2f} {_pct_of(val, grand_total):>7} {tok:>14,}")
     print(f"{'total':<16} {grand_total:>14,.2f}")
 
     print("\n## Cost by model ID\n")
     print(f"{'Model':<28} {'$':>14} {'Share':>7}")
     for model, val in sorted(model_totals.items(), key=lambda kv: kv[1], reverse=True):
         print(f"{model:<28} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
-    for model, tok in sorted(unpriced_tokens.items()):
-        print(f"{model:<28} {'unpriced':>14} {tok:>10,} tokens")
     total_unpriced_tokens = sum(unpriced_tokens.values())
-    print(f"\nUnpriced tokens (unknown model IDs): {total_unpriced_tokens:,}")
+    if summary_mode:
+        # A dedicated, always-present line rather than the full report's
+        # per-model breakdown below — an unrecognized model ID must never
+        # silently understate a published figure with no marker, even at $0.
+        print(f"\nUnpriced tokens: {total_unpriced_tokens:,} tokens across {len(unpriced_tokens)} model IDs")
+    else:
+        for model, tok in sorted(unpriced_tokens.items()):
+            print(f"{model:<28} {'unpriced':>14} {tok:>10,} tokens")
+        print(f"\nUnpriced tokens (unknown model IDs): {total_unpriced_tokens:,}")
 
-    print(
-        f"\n## Cost by context-at-turn bucket (input_tokens + cache_read_input_tokens"
-        f" + ephemeral_1h + ephemeral_5m tokens, {_CONTEXT_BUCKET_THRESHOLD:,} boundary)\n"
-    )
-    print(f"{'Bucket':<8} {'$':>14} {'Share':>7}")
-    for bucket in (_CONTEXT_BUCKET_UNDER, _CONTEXT_BUCKET_OVER):
-        val = bucket_totals.get(bucket, 0.0)
-        print(f"{bucket:<8} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+    if not summary_mode:
+        print(
+            f"\n## Cost by context-at-turn bucket (input_tokens + cache_read_input_tokens"
+            f" + ephemeral_1h + ephemeral_5m tokens, {_CONTEXT_BUCKET_THRESHOLD:,} boundary)\n"
+        )
+        print(f"{'Bucket':<8} {'$':>14} {'Share':>7}")
+        for bucket in (_CONTEXT_BUCKET_UNDER, _CONTEXT_BUCKET_OVER):
+            val = bucket_totals.get(bucket, 0.0)
+            print(f"{bucket:<8} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
 
     print("\n## Cost by thread\n")
     print(f"{'Thread':<10} {'$':>14} {'Share':>7}")
     print(f"{'main':<10} {main_total:>14,.2f} {_pct_of(main_total, grand_total):>7}")
     print(f"{'subagent':<10} {subagent_total:>14,.2f} {_pct_of(subagent_total, grand_total):>7}")
+
+    if summary_mode:
+        return
 
     if by_project:
         print("\n## Cost by project\n")
@@ -5784,6 +5945,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Emit real project names and session IDs instead of anonymized labels."
             " Never publish --no-redact output — see docs/transcript-analysis.md."
             " Refused when --config-dir puts more than one root in scope."
+        ),
+    )
+    p_cost.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
+    p_cost.add_argument(
+        "--summary", action="store_true",
+        help=(
+            "Compact, aggregate-only block for a PR body: dollars and tokens by token class,"
+            " model ID, and thread, plus session and priced-turn counts — no per-session or"
+            " per-project row. Requires --this-repo; refuses --projects, --by-project,"
+            " --no-redact, and --config-dir."
         ),
     )
     p_cost.set_defaults(func=cmd_cost)
