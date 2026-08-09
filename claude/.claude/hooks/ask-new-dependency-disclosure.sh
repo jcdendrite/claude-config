@@ -123,18 +123,24 @@ case "$FILE_PATH" in
     ;;
 esac
 
-# Strips C0 (0x00-0x1F, 0x7F) and C1 (0x80-0x9F) control bytes, every
-# Unicode Cf (Format) character (bidi-override/isolate controls and
-# zero-width joiners -- the "Trojan Source" character set), and caps
+# Strips C0/C1 control codepoints (U+0000-U+001F, U+007F-U+009F) and every
+# Unicode Cf (Format) codepoint (bidi-override/isolate controls and
+# zero-width joiners -- the "Trojan Source" character set), then caps
 # length, before an agent-controlled value (the file path on the
-# degraded-ask path) enters a human-facing reason string. The helper
-# applies the same Cf rule (via Python's unicodedata) to every dependency
-# name/constraint it emits; this uses jq's Oniguruma \p{Cf} instead since
-# python3 availability isn't guaranteed at this call site (the size guard
-# below fires before step 6's interpreter probe, by design).
+# degraded-ask path) enters a human-facing reason string. Both passes run
+# inside one jq call rather than shelling out to `tr -d`: `tr` deletes raw
+# bytes, and a byte-range delete for 0x7F-0x9F corrupts any multi-byte
+# UTF-8 character whose continuation byte falls in that range (verified:
+# GNU tr on Linux mangles this hook's own "…and N more" marker this way;
+# BSD tr on macOS happens not to). jq decodes to codepoints before its
+# regex ever runs, so the same two ranges match by character, not by byte.
+# The helper applies the equivalent Cf rule (via Python's unicodedata) to
+# every dependency name/constraint it emits; this hook uses jq instead
+# since python3 availability isn't guaranteed at this call site (the size
+# guard below fires before step 6's interpreter probe, by design).
 _MAX_ASK_FIELD_CHARS=200
 _sanitize_ask_field() {
-  printf '%s' "$1" | tr -d '\000-\037\177-\237' | _lib_jq -Rr 'gsub("\\p{Cf}"; "")' | cut -c "1-${_MAX_ASK_FIELD_CHARS}"
+  printf '%s' "$1" | _lib_jq -Rr 'gsub("[\\x00-\\x1f\\x7f-\\x9f]"; "") | gsub("\\p{Cf}"; "")' | cut -c "1-${_MAX_ASK_FIELD_CHARS}"
 }
 
 _emit_ask() {
