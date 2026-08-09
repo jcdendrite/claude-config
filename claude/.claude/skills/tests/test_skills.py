@@ -664,6 +664,30 @@ class TestPrDescriptionExternalStateCheck:
         assert "whether CI is *passing* is not" in self._body()
 
 
+class TestPrDescriptionCostSectionWiring:
+    """Wiring tripwire, not a behavioral test: pr-description has no
+    behavioral test suite in this repo (its tests/ doesn't exist), so the
+    `## Cost` section's actual runtime behavior -- sentinel absent -> no
+    section; present + matching -> sync regenerates; gh failure -> existing
+    block left untouched; detached HEAD -> section omitted -- is validated
+    by manual runtime observation only.
+
+    This only proves the delimiters and the content-addressed gate check
+    are present in the source text, not that they execute correctly.
+    """
+
+    def _body(self):
+        return _skill_file("pr-description").read_text()
+
+    def test_declares_pr_cost_delimiters(self):
+        body = self._body()
+        assert "<!-- pr-cost:start -->" in body
+        assert "<!-- pr-cost:end -->" in body
+
+    def test_declares_content_addressed_gate_check(self):
+        assert "gh repo view --json nameWithOwner --jq .nameWithOwner" in self._body()
+
+
 class TestRespondPrPromiseRedemption:
     """Pin the Guidelines bullet requiring a filed `will create` ticket to
     update every place that promise was already published (GH-476).
