@@ -878,6 +878,59 @@ _lib_strip_shell_quotes() {
 # Three alternations with different trailing boundaries. Group 1 excludes a following `.` so `id_rsa` doesn't match inside the safe-to-read `id_rsa.pub`, and `.env` doesn't match inside `.env.foo`/`package.env`; `.env`'s own dotted variants beyond the ones enumerated here are deliberately left to deny-env-reads.sh's broader `.env.*` gate. Group 2 (`.netrc`, `.git-credentials`, `credentials.json`, and the three directory-qualified stores) has no known safe dotted-suffix variant, so it allows a following `.` too — closing a `credentials.json.bak`/`.netrc.bak`-style backup-copy bypass group 1's exclusion would otherwise leave open. Group 3 matches `.ssh` (optionally backup/rename-suffixed, e.g. `.ssh.bak`, `.ssh_backup`, `.ssh.old` — the same `.bak`-style continuation group 2 allows) only as a directory/glob reference (`~/.ssh`, `~/.ssh/`, `~/.ssh//`, `~/.ssh/*`, `~/.ssh/.*`), not `.ssh/<filename>`; a named-file reference under `.ssh` (or its backup-suffixed siblings) is instead deny-by-default via `_lib_has_unsafe_ssh_dir_reference` below, since enumerating every unsafe key basename doesn't scale the way enumerating the few safe ones does.
 _LIB_CREDENTIAL_PATH_REGEX='(^|[^A-Za-z0-9_.])(id_rsa|id_dsa|id_ecdsa|id_ed25519|\.env|\.env\.local|\.env\.production|\.env\.development|\.env\.staging|\.env\.test)([^A-Za-z0-9_.]|$)|(^|[^A-Za-z0-9_.])(\.netrc|_netrc|\.git-credentials|credentials\.json|\.credentials\.json|\.aws/credentials|\.docker/config\.json|\.kube/config|\.config/gh/hosts\.yml)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.])\.ssh([._-][A-Za-z0-9_.-]*)?(/+(\*|\.|[^A-Za-z0-9_./]|$)|[^A-Za-z0-9_./]|$)'
 
+# Env-file loader flags whose argument is loaded into a subprocess
+# environment rather than printed: Deno/Docker/podman/docker compose
+# `--env-file`, Node's `--env-file-if-exists`, and pytest-dotenv's
+# `--envfile`. Consumed only by _lib_strip_env_file_flag_args below.
+_LIB_ENV_FILE_FLAG_REGEX='--env-file-if-exists|--env-file|--envfile'
+
+# Strips a `.env`-shaped argument to one of the flags above from $1, so
+# deny-credential-bash-reads.sh can re-scan the result and downgrade a match
+# caused only by that flag argument to an allow. Only ever called on text
+# that already matched _LIB_CREDENTIAL_PATH_REGEX -- the caller's
+# scan-then-strip-then-re-scan ordering is what makes this fail-closed, not
+# anything in this function. Precondition: expects shell-quote-stripped input
+# (via _lib_strip_shell_quotes first, as the sole caller does) -- a quote
+# character adjacent to the argument breaks the terminator match, so calling
+# this directly on raw quoted text (e.g. `--env-file="t/.env"`) silently no-ops
+# the strip (fails closed, not a bypass, but surprising to a future caller).
+# Two substitutions (the `=` and space argument forms), each: left-anchored
+# to start-of-string or whitespace, re-emitted via \1 so a strip can't join
+# two previously-separated tokens; requires the argument's basename to be
+# `.env`-shaped, optionally with one dotted suffix (`.env.production`, ...) --
+# `--env-file ~/.netrc`/`~/.aws/credentials`/etc. all still deny, since none
+# of those arguments is `.env`-shaped; and requires the argument run to
+# terminate at whitespace or a shell metacharacter (`; & | < > ( ) $` or a
+# backtick), not whitespace alone, so a following credential token (as in
+# `--env-file=t/.env;cat </foo/.netrc`) survives into the re-scan.
+# Case-sensitive (no `-i`): errs toward leaving `--ENV-FILE=...` denied
+# rather than risking a silent case-insensitive-filesystem bypass.
+# Looped to a fixed point: a single pass consumes a stripped flag's own
+# whitespace terminator, which is the same character the next flag's left
+# anchor needs, so back-to-back `--env-file=... --env-file=...` occurrences
+# would otherwise leave every occurrence after the first unstripped. Each
+# pass that changes the string strictly shortens it, so this terminates.
+# On any sed failure (a non-zero exit -- e.g. BSD sed on an invalid UTF-8
+# byte under a UTF-8 locale, which exits 1 emitting nothing), returns $1
+# unchanged rather than a partial/empty result, so the caller's re-scan
+# still sees the original credential-shaped text and denies.
+_lib_strip_env_file_flag_args() {
+  local text prev stripped
+  text="$1"
+  while :; do
+    prev="$text"
+    if ! stripped=$(printf '%s' "$text" | sed -E \
+      -e "s/(^|[[:space:]])($_LIB_ENV_FILE_FLAG_REGEX)=[^[:space:];&|<>()\$\`]*\.env(\.[A-Za-z0-9_-]+)?([[:space:];&|<>()\$\`]|\$)/\1 /g" \
+      -e "s/(^|[[:space:]])($_LIB_ENV_FILE_FLAG_REGEX)[[:space:]]+[^[:space:];&|<>()\$\`]*\.env(\.[A-Za-z0-9_-]+)?([[:space:];&|<>()\$\`]|\$)/\1 /g"); then
+      printf '%s' "$1"
+      return 0
+    fi
+    text="$stripped"
+    [ "$text" = "$prev" ] && break
+  done
+  printf '%s' "$text"
+}
+
 # Basenames under a `.ssh`-shaped directory that are safe to read (never
 # private-key material): the three conventional non-secret files, and
 # anything ending `.pub` (a public key). Consumed only by
