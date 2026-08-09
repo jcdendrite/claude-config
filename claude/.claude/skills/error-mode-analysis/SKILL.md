@@ -26,7 +26,7 @@ Invoke `transcript-narrative` and `transcript-analysis` by name — do not resta
 - `transcript-narrative` produces the annotated per-phase timeline and a first pass of ranked lessons.
 - `transcript-analysis` produces the quantitative appendix (`fail-seq`, `review-trace`, `duration`, `subagents`, `pr-link`).
 
-`review-trace` is the most load-bearing subcommand for this step — it locates every skill invocation, hook denial, and reviewer-agent spawn per session, which is exactly the "pipeline working" and "bot findings" evidence Step 4 needs.
+`review-trace` is the most load-bearing subcommand for this step — it locates every skill invocation, hook denial, and reviewer-agent spawn per session, which is exactly the "pipeline working" and "bot findings" evidence Step 4 needs. `user-input --corrections-only` surfaces every FOLLOWUP/EXPLICIT_CORRECTION moment in a session with the prompt text itself — use it to populate Step 4's Human-unique and Cross-session process buckets with verbatim evidence instead of re-reading full transcripts by hand.
 
 ## Step 3 — Collect PR review comments
 
