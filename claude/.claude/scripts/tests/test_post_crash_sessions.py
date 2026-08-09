@@ -983,6 +983,25 @@ def test_classify_near_boot_transcript_only_session_is_possible_crash():
     assert "no registry or lock corroboration" in row.detail
 
 
+def test_classify_near_boot_transcript_only_session_detail_reflects_custom_window():
+    transcript = _transcript_info(session_id="s1", last_activity=950.0, has_main=True)
+    row = _mod._classify_session(
+        "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        near_boot_window_seconds=72 * 3600,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "within 72h before the last boot" in row.detail
+
+
+def test_classify_near_boot_transcript_only_session_detail_formats_fractional_window():
+    transcript = _transcript_info(session_id="s1", last_activity=950.0, has_main=True)
+    row = _mod._classify_session(
+        "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        near_boot_window_seconds=1.5 * 3600,
+    )
+    assert "within 1.5h before the last boot" in row.detail
+
+
 def test_classify_subagent_only_transcript_does_not_count_as_resumable():
     """A subagent transcript with no main-thread transcript cannot be
     --resume'd; classification stays crashed-no-transcript, with a note."""
@@ -1378,6 +1397,24 @@ def test_render_report_possible_crash_unredacted_preserves_real_values():
     assert "feature-x" in output
 
 
+def test_render_report_possible_crash_detail_with_custom_window_survives_redact():
+    """The detail line's near-boot-window fragment is a value the user
+    supplied on their own command line, not cwd/session/branch data — it
+    renders unchanged under --redact rather than being stripped or mapped."""
+    row = _mod.SessionRow(
+        session_id="sess-one", classification=_mod.CLASS_POSSIBLE_CRASH,
+        cwd="/repo/example-project", git_branch="feature-x", last_activity=1000.0,
+        detail=(
+            "only a transcript exists, with no registry or lock entry; its last activity sits "
+            "within 72h before the last boot, but with no registry or lock corroboration this "
+            "cannot confirm the session was still open at crash time."
+        ),
+        entry_count=0, cwd_missing=False,
+    )
+    output = _mod.render_report(_blank_report(rows=[row]), redact=True)
+    assert "within 72h before the last boot" in output
+
+
 def test_build_report_transcript_only_near_boot_surfaces_as_possible_crash(tmp_path):
     """End-to-end regression for the original bug shape: a real transcript
     file with no registry entry and no lock file, last activity inside the
@@ -1403,6 +1440,34 @@ def test_build_report_transcript_only_near_boot_surfaces_as_possible_crash(tmp_p
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
     output = _mod.render_report(report, redact=False)
     assert "Possible crash — transcript only (1)" in output
+
+
+def test_build_report_near_boot_window_seconds_widens_what_surfaces(tmp_path):
+    """A transcript 3 days before boot is invisible at the default 4h window
+    and surfaces only when the caller widens near_boot_window_seconds — the
+    end-to-end path exercised by --near-boot-hours."""
+    config_dir_path = tmp_path / "config"
+    (config_dir_path / "sessions").mkdir(parents=True)
+    session_id = "old-orphan-transcript"
+    transcript_path = config_dir_path / "projects" / "any-project-dir-name" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [
+        _meta_record(session_id), _cwd_record("/tmp/old-orphan-proj", session_id=session_id),
+    ])
+    boot_time = 1_700_000_000.0
+    last_activity = boot_time - 3 * 86400  # 3 days before boot
+    os.utime(transcript_path, (last_activity, last_activity))
+
+    default_report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: boot_time,
+    )
+    assert session_id not in {row.session_id for row in default_report.rows}
+
+    widened_report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: boot_time,
+        near_boot_window_seconds=4 * 86400,
+    )
+    row = next(r for r in widened_report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
 
 
 # ---------------------------------------------------------------------------
@@ -1503,6 +1568,39 @@ def test_main_rejects_nonexistent_config_dir(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
     exit_code = _mod.main(["--config-dir", str(missing)])
     assert exit_code == 2
+
+
+def test_main_rejects_zero_near_boot_hours(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty-config"))
+    (tmp_path / "empty-config").mkdir()
+    exit_code = _mod.main(["--near-boot-hours", "0"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--near-boot-hours" in captured.err
+
+
+def test_main_rejects_negative_near_boot_hours(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty-config"))
+    (tmp_path / "empty-config").mkdir()
+    exit_code = _mod.main(["--near-boot-hours", "-1"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--near-boot-hours" in captured.err
+
+
+def test_main_rejects_nan_near_boot_hours(tmp_path, monkeypatch, capsys):
+    """A bare `<= 0` check lets `nan` through — NaN comparisons are always
+    False in Python — which would silently disable near-boot detection with
+    exit code 0 and no error. math.isfinite closes that gap."""
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty-config"))
+    (tmp_path / "empty-config").mkdir()
+    exit_code = _mod.main(["--near-boot-hours", "nan"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--near-boot-hours" in captured.err
 
 
 def test_main_always_scans_default_config_dir_first(monkeypatch, tmp_path, capsys):
@@ -1615,4 +1713,27 @@ def test_main_redact_flag_produces_ordinal_output(tmp_path, monkeypatch, capsys)
     assert str(proj) not in captured.out
     assert "session-1" in captured.out
     assert "project-1" in captured.out
+
+
+def test_main_threads_near_boot_hours_into_build_report(tmp_path, monkeypatch, capsys):
+    """Proves the CLI-to-build_report wiring hermetically, by spying on
+    build_report itself, rather than depending on the real system boot time
+    (main() has no boot_time_fn injection seam, unlike build_report) — the
+    actual windowing behavior is already covered, injectably, by
+    test_build_report_near_boot_window_seconds_widens_what_surfaces."""
+    captured_kwargs = {}
+
+    def fake_build_report(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _blank_report()
+
+    monkeypatch.setattr(_mod, "build_report", fake_build_report)
+    empty_config = tmp_path / "empty-config"
+    empty_config.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(empty_config))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    exit_code = _mod.main(["--near-boot-hours", "72"])
+    assert exit_code == 0
+    assert captured_kwargs["near_boot_window_seconds"] == 72 * 3600.0
 

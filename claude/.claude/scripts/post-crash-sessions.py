@@ -36,6 +36,7 @@ Env overrides:
 """
 import argparse
 import json
+import math
 import os
 import platform
 import re
@@ -696,6 +697,7 @@ def _classify_session(
     boot_time: float | None,
     ps_lstart,
     ps_usable: bool,
+    near_boot_window_seconds: float = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS,
 ) -> SessionRow:
     entry_count = len(registry_entries) + len(lock_entries)
     has_main_transcript = transcript is not None and transcript.has_main
@@ -830,7 +832,7 @@ def _classify_session(
     return SessionRow(
         session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
         f"only a transcript exists, with no registry or lock entry; its last activity sits within "
-        f"{_NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS / 3600:g}h before the last boot, but with no registry or "
+        f"{near_boot_window_seconds / 3600:g}h before the last boot, but with no registry or "
         "lock corroboration this cannot confirm the session was still open at crash time.",
         entry_count, _cwd_missing(cwd),
     )
@@ -846,6 +848,7 @@ def build_report(
     find_root: Path,
     ps_lstart=_ps_lstart,
     boot_time_fn=_boot_time,
+    near_boot_window_seconds: float = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS,
 ) -> Report:
     boot_time = boot_time_fn()
 
@@ -888,13 +891,16 @@ def build_report(
     ps_usable = _ps_usable(ps_lstart=resolved_ps_lstart)
 
     known_session_ids = set(registry_by_session) | set(lock_by_session)
-    near_boot_only = _near_boot_transcript_only_ids(transcripts, known_session_ids, boot_time)
+    near_boot_only = _near_boot_transcript_only_ids(
+        transcripts, known_session_ids, boot_time, window_seconds=near_boot_window_seconds,
+    )
     all_session_ids = known_session_ids | set(near_boot_only)
 
     rows = [
         _classify_session(
             sid, registry_by_session.get(sid, []), lock_by_session.get(sid, []),
             transcripts.get(sid), boot_time=boot_time, ps_lstart=resolved_ps_lstart, ps_usable=ps_usable,
+            near_boot_window_seconds=near_boot_window_seconds,
         )
         for sid in sorted(all_session_ids)
     ]
@@ -1105,6 +1111,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "drop git branch names, for pasting into a public issue or channel."
         ),
     )
+    parser.add_argument(
+        "--near-boot-hours", type=float, metavar="HOURS", default=None,
+        help=(
+            f"How far before the last boot a transcript's last activity can sit and still surface "
+            f"under 'Possible crash' when it has no registry or lock corroboration (default "
+            f"{_NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS / 3600:g}h). Widen this to recover sessions from "
+            "an older crash, e.g. --near-boot-hours 72 for three days."
+        ),
+    )
     return parser
 
 
@@ -1139,7 +1154,21 @@ def main(argv: list[str] | None = None) -> int:
 
     find_root = Path(os.environ.get(_FIND_ROOT_ENV_VAR, str(Path.home())))
 
-    report = build_report(config_dirs=config_dirs, find_root=find_root)
+    near_boot_window_seconds = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS
+    if args.near_boot_hours is not None:
+        # math.isfinite rejects nan/inf: a bare `<= 0` check lets `nan` through (NaN
+        # comparisons are always False), silently disabling near-boot detection.
+        if not math.isfinite(args.near_boot_hours) or args.near_boot_hours <= 0:
+            print(
+                f"post-crash-sessions: --near-boot-hours must be positive, got {args.near_boot_hours!r}",
+                file=sys.stderr,
+            )
+            return 2
+        near_boot_window_seconds = args.near_boot_hours * 3600
+
+    report = build_report(
+        config_dirs=config_dirs, find_root=find_root, near_boot_window_seconds=near_boot_window_seconds,
+    )
     print(render_report(report, redact=args.redact, now=time.time()))
     return 0
 
