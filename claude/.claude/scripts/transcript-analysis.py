@@ -2689,6 +2689,10 @@ _REVIEWER_VERDICT_FINDINGS_FOUND = "findings-found"
 _REVIEWER_VERDICT_ZERO_FINDING = "zero-finding"
 _REVIEWER_VERDICT_UNCLASSIFIED = "unclassified"
 
+# Table 2's minimum Active count per (agent type, bucket) row before Rate is
+# reportable — GH-558 (Part B)'s decision 4.
+_REVIEWER_YIELD_ACTIVE_FLOOR = 10
+
 
 def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, Path], int]:
     """Map each subagent dispatch's toolUseId to its paired .jsonl path, for one session.
@@ -2723,10 +2727,11 @@ def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, Path], int]:
     return index, meta_read_errors
 
 
-def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], bool]:
-    """Walk one transcript file once, collecting both reviewer-yield join inputs.
+def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], list[str], str, bool]:
+    """Walk one transcript file once, collecting all reviewer-yield join inputs.
 
-    Returns (last_assistant_text, write_content_blobs, read_error):
+    Returns (last_assistant_text, write_content_blobs, write_target_paths,
+    transcript_cwd, read_error):
       - last_assistant_text: the last non-empty assistant text block, or ''.
         A trailing assistant record with no text (e.g. a final tool-only turn)
         does not blank out an earlier one — this walks the whole file and
@@ -2735,14 +2740,28 @@ def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], bool]:
         empty."
       - write_content_blobs: every Write tool_use's input.content string
         found along the same walk, in file order.
+      - write_target_paths: every Write tool_use's input.file_path found
+        along the same walk, in file order — this dispatch's own findings
+        file is almost always among them, giving the caller a
+        path-normalized set-membership exclusion (see
+        _dispatch_self_reference_keys) instead of the free-text-prose
+        matching the edit index's own reviewer-write exclusion already
+        rejects for the same fragility reason.
+      - transcript_cwd: the cwd field from the first record in this
+        transcript that carries one, or '' if none do. Reviewer-cited
+        relative paths were written from the reviewer subagent's own
+        working directory, not the dispatching parent's, which can diverge
+        under an isolation:worktree reviewer dispatch (ledger row A).
       - read_error: True on OSError opening/reading jsonl_path. A read
         failure is not a legitimate zero-citation transcript, so the caller
         must exclude it from a coverage denominator rather than count it as
-        one — last_assistant_text and write_content_blobs are ("", []) in
-        this case, matching the prior ''-on-OSError contract for the text.
+        one — every other field is ("", [], [], "") in this case, matching
+        the prior ''-on-OSError contract for the text.
     """
     last_text = ""
     write_content_blobs: list[str] = []
+    write_target_paths: list[str] = []
+    transcript_cwd = ""
     try:
         with open(jsonl_path) as fh:
             for raw in fh:
@@ -2750,6 +2769,10 @@ def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], bool]:
                     rec = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
+                if not transcript_cwd:
+                    rec_cwd = rec.get("cwd")
+                    if isinstance(rec_cwd, str) and rec_cwd:
+                        transcript_cwd = rec_cwd
                 if rec.get("type") != "assistant":
                     continue
                 content = (rec.get("message") or {}).get("content", "")
@@ -2759,15 +2782,19 @@ def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], bool]:
                             continue
                         if block.get("name") != "Write":
                             continue
-                        blob = (block.get("input") or {}).get("content")
+                        block_input = block.get("input") or {}
+                        blob = block_input.get("content")
                         if isinstance(blob, str):
                             write_content_blobs.append(blob)
+                        target = block_input.get("file_path")
+                        if isinstance(target, str) and target:
+                            write_target_paths.append(target)
                 text = _content_text(content)
                 if text.strip():
                     last_text = text
     except OSError:
-        return "", [], True
-    return last_text, write_content_blobs, False
+        return "", [], [], "", True
+    return last_text, write_content_blobs, write_target_paths, transcript_cwd, False
 
 
 def _classify_reviewer_verdict(text: str) -> tuple[str, int]:
@@ -2890,8 +2917,226 @@ def _normalize_cited_path(candidate: str, cwd: str) -> str | None:
     return hashlib.sha256(path.encode()).hexdigest()[:16]
 
 
+def _is_reviewer_subagent_type(stype: str) -> bool:
+    """True for a subagent_type in reviewer-yield's reviewer-agent set
+    (review-trace's _REVIEWER_PREFIX/_REVIEWER_EXACT plus
+    skill-fidelity-reviewer) — shared by the dispatch loop and the edit
+    index's reviewer-write exclusion so the two sets cannot drift apart."""
+    return stype.startswith(_REVIEWER_PREFIX) or stype in (_REVIEWER_EXACT, _REVIEWER_YIELD_EXTRA_EXACT)
+
+
+def _code_write_target_path(tool_input: dict) -> str | None:
+    """A code-write tool_use's target path. NotebookEdit carries
+    notebook_path instead of file_path; MultiEdit's single file_path already
+    covers its own case."""
+    return tool_input.get("file_path") or tool_input.get("notebook_path")
+
+
+def _build_tool_result_ts_map(records: list[dict], since_ts: float | None) -> dict[str, float]:
+    """Map each tool_use_id to its tool_result record's timestamp, for one
+    session's already-materialized records — no new file I/O. tool_result
+    blocks live on user-type records, not the assistant-type records the
+    rest of reviewer-yield's loop filters to. A tool_result whose own
+    timestamp is missing/unparseable, or outside the --since window, is
+    omitted — the caller then treats that dispatch's Active/Edited ordering
+    as undecidable rather than guessing at it.
+    """
+    tool_result_ts: dict[str, float] = {}
+    for rec in records:
+        if rec.get("type") != "user":
+            continue
+        rec_ts = _parse_ts(rec.get("timestamp"))
+        if rec_ts is None:
+            continue
+        if since_ts is not None and rec_ts < since_ts:
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            tid = block.get("tool_use_id")
+            if tid:
+                tool_result_ts[tid] = rec_ts
+    return tool_result_ts
+
+
+def _index_parent_edits(records: list[dict], since_ts: float | None) -> dict[str, float]:
+    """Parent-main-thread code-write edit index for one session: normalized
+    path key -> latest edit timestamp. A second pass over the same
+    already-materialized records list iter_sessions handed the caller — no
+    new parent-side file I/O.
+    """
+    index: dict[str, float] = {}
+    for rec in records:
+        if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+            continue
+        rec_ts = _parse_ts(rec.get("timestamp"))
+        if rec_ts is None:
+            continue
+        if since_ts is not None and rec_ts < since_ts:
+            continue
+        cwd = rec.get("cwd") or ""
+        for block in (rec.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in _CODE_WRITE_TOOLS:
+                continue
+            raw_path = _code_write_target_path(block.get("input") or {})
+            if not raw_path:
+                continue
+            key = _normalize_cited_path(raw_path, cwd)
+            if key is not None:
+                index[key] = max(index.get(key, float("-inf")), rec_ts)
+    return index
+
+
+def _index_subagent_edits(jsonl_path: Path, since_ts: float | None) -> dict[str, float]:
+    """Code-write edit index for one non-reviewer subagent transcript:
+    normalized path key -> latest edit timestamp. Reuses _read_session_file's
+    existing OSError-to-[] swallow — an unreadable subagent transcript simply
+    contributes no edits, matching that helper's established contract.
+    """
+    index: dict[str, float] = {}
+    for rec in _read_session_file(jsonl_path, include_subagents=False):
+        if rec.get("type") != "assistant":
+            continue
+        rec_ts = _parse_ts(rec.get("timestamp"))
+        if rec_ts is None:
+            continue
+        if since_ts is not None and rec_ts < since_ts:
+            continue
+        cwd = rec.get("cwd") or ""
+        for block in (rec.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in _CODE_WRITE_TOOLS:
+                continue
+            raw_path = _code_write_target_path(block.get("input") or {})
+            if not raw_path:
+                continue
+            key = _normalize_cited_path(raw_path, cwd)
+            if key is not None:
+                index[key] = max(index.get(key, float("-inf")), rec_ts)
+    return index
+
+
+def _index_reviewer_yield_edits(
+    records: list[dict],
+    dispatch_index: dict[str, Path],
+    tool_result_ts: dict[str, float],
+    since_ts: float | None,
+) -> dict[str, float]:
+    """Combine the parent-main-thread edit index with qualifying subagent
+    edits for one session: normalized path key -> latest edit timestamp.
+
+    A subagent's transcript is read only when (a) its own dispatch
+    subagent_type is not in the reviewer set — a reviewer subagent's only
+    Write is its own findings file, excluded outright rather than
+    pattern-matched (see cmd_reviewer_yield's docstring) — and (b) its
+    dispatch timestamp is after the earliest in-window reviewer dispatch's
+    tool_result timestamp in this session, bounding the new subagent-read
+    I/O to dispatches that could plausibly be fix work following a review
+    rather than every subagent the session ever spawned.
+    """
+    index = _index_parent_edits(records, since_ts)
+
+    reviewer_return_ts: list[float] = []
+    non_reviewer_dispatches: list[tuple[str, float]] = []  # (tool_use_id, dispatch_ts)
+    for rec in records:
+        if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+            continue
+        dispatch_ts = _parse_ts(rec.get("timestamp"))
+        if dispatch_ts is None:
+            continue
+        if since_ts is not None and dispatch_ts < since_ts:
+            continue
+        for block in (rec.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in _SPAWN_TOOL_NAMES:
+                continue
+            stype = (block.get("input") or {}).get("subagent_type") or ""
+            tid = block.get("id") or ""
+            if _is_reviewer_subagent_type(stype):
+                return_ts = tool_result_ts.get(tid)
+                if return_ts is not None:
+                    reviewer_return_ts.append(return_ts)
+            else:
+                non_reviewer_dispatches.append((tid, dispatch_ts))
+
+    if not reviewer_return_ts:
+        return index  # no in-window reviewer returned in this session — nothing to scope subagent reads against
+
+    read_scope_threshold = min(reviewer_return_ts)
+    for tid, dispatch_ts in non_reviewer_dispatches:
+        if dispatch_ts <= read_scope_threshold:
+            continue
+        paired = dispatch_index.get(tid)
+        if paired is None:
+            continue
+        for key, ts in _index_subagent_edits(paired, since_ts).items():
+            index[key] = max(index.get(key, float("-inf")), ts)
+
+    return index
+
+
+# Both "~/.claude/plans/x.md" and a repo-relative ".claude/plans/x.md" share
+# this literal tail, so a substring check needs no cwd or normalization.
+_CITED_PATH_PLAN_FILE_MARKER = ".claude/plans/"
+
+
+def _is_plan_file_candidate(candidate: str) -> bool:
+    """True for a candidate citing a plan file under ~/.claude/plans/ or an
+    in-repo .claude/plans/ — a /plan-review dispatch routinely cites the very
+    plan the parent session then edits, a guaranteed self-match that would
+    otherwise inflate the cited/edited overlap with no fix-work signal."""
+    return _CITED_PATH_PLAN_FILE_MARKER in candidate
+
+
+def _dispatch_self_reference_keys(write_target_paths: list[str], transcript_cwd: str) -> set[str]:
+    """Normalized keys of this dispatch's own Write targets (its findings
+    file and any other file it wrote) — a path-normalized set-membership
+    exclusion, not free-text prose matching. The dispatching parent's prompt
+    routinely names the very files under review ("review foo.py, bar.py"),
+    so extracting candidates from that prompt text and excluding all of them
+    would silently drop legitimate citations of files that really were the
+    ones with the issue; the reviewer's own recorded Write targets carry no
+    such false-positive risk.
+    """
+    keys: set[str] = set()
+    for target in write_target_paths:
+        key = _normalize_cited_path(target, transcript_cwd)
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
+def _reviewer_yield_cited_keys(
+    last_assistant_text: str, write_content_blobs: list[str], cwd: str, self_ref_keys: set[str]
+) -> set[str]:
+    """Normalized citation keys for one reviewer dispatch: candidates from
+    both the last assistant text and every Write blob (deduplicated via set
+    union), minus plan-file self-matches and the dispatch's own
+    self-referenced paths (see _is_plan_file_candidate and
+    _dispatch_self_reference_keys)."""
+    raw_candidates = _extract_cited_paths(last_assistant_text)
+    for blob in write_content_blobs:
+        raw_candidates |= _extract_cited_paths(blob)
+    keys: set[str] = set()
+    for candidate in raw_candidates:
+        if _is_plan_file_candidate(candidate):
+            continue
+        key = _normalize_cited_path(candidate, cwd)
+        if key is None or key in self_ref_keys:
+            continue
+        keys.add(key)
+    return keys
+
+
 def cmd_reviewer_yield(args: argparse.Namespace) -> None:
-    """Per-reviewer-agent-type dispatch-to-verdict yield.
+    """Per-reviewer-agent-type dispatch-to-verdict yield, plus cited-path edit overlap.
 
     Joins each main-thread reviewer-agent dispatch (Agent/Task tool_use with
     subagent_type in the reviewer set — review-trace's _REVIEWER_PREFIX/
@@ -2911,21 +3156,30 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     count (contributes 0) — the printed Findings total is therefore a lower
     bound on actual findings, not an exact count.
 
-    --redact is accepted for CLI parity with cost/audit-routing; this
-    subcommand's output is aggregate-only (per-agent-type rows), so there is
-    currently no project-label or session-id field to redact.
+    A second table reports, per (agent type, bucket), whether the dispatch's
+    own cited paths were later edited: Cited (>=1 extracted citation after
+    excluding the dispatch's own self-referenced/plan-file candidates),
+    Active (of those, the session recorded ANY code edit afterward — parent
+    main thread or a subsequent non-reviewer subagent dispatch, the null
+    control for "was the session still working at all"), and Edited (of the
+    Active ones, a cited path itself was among the edited paths). Rate =
+    Edited / Active, so it cannot exceed 100%. A reviewer subagent's own
+    Write (its findings file) is excluded from the edit index outright by
+    subagent_type, not by pattern-matching its target. The unclassified
+    bucket is not scored (prints "excluded" for Cited/Active/Edited/Rate) —
+    an unreadable subagent transcript lands there via its empty verdict text
+    and is separately counted in the printed read-error line, never entered
+    as a legitimate zero-citation dispatch.
+
+    --redact is accepted for CLI parity with cost/audit-routing. Cited-path
+    candidates are held only as sha256 digests (_normalize_cited_path), never
+    as raw paths, so no path can reach this subcommand's aggregate-only
+    output by construction — this does not cover the pre-existing
+    --projects scope-header line (_print_resolved_scope), a separate,
+    unfixed channel shared by every subcommand.
     """
-    since_ts: float | None = None
-    since_label: str = ""
-    since_raw: str | None = getattr(args, "since", None) or None
-    if since_raw:
-        try:
-            days = float(since_raw.rstrip("d"))
-            since_ts = time.time() - days * 86400
-            since_label = since_raw
-        except ValueError:
-            print(f"reviewer-yield: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
-            sys.exit(1)
+    since_ts, since_raw = _parse_since_nd_arg(args, "reviewer-yield")
+    since_label = since_raw or ""
 
     session_iter, scope_label = _resolve_project_scope(args, "reviewer-yield")
     _print_resolved_scope("reviewer-yield", scope_label)
@@ -2934,11 +3188,19 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     agg: dict[str, dict[str, int]] = defaultdict(
         lambda: {"dispatches": 0, "findings_found": 0, "zero_finding": 0, "unclassified": 0, "total_findings": 0}
     )
+    # (agent_type, bucket) -> {cited, active, edited}
+    agg2: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: {"cited": 0, "active": 0, "edited": 0})
     meta_read_errors = 0
+    transcript_read_errors = 0
 
     for jsonl, records in session_iter:
         dispatch_index, session_meta_read_errors = _index_subagent_dispatches(jsonl)
         meta_read_errors += session_meta_read_errors
+
+        tool_result_ts = _build_tool_result_ts_map(records, since_ts)
+        edit_index = _index_reviewer_yield_edits(records, dispatch_index, tool_result_ts, since_ts)
+        overall_max_edit_ts = max(edit_index.values()) if edit_index else None
+
         for rec in records:
             if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
                 continue
@@ -2951,16 +3213,19 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
                     continue
                 if block.get("name") not in _SPAWN_TOOL_NAMES:
                     continue
-                stype = (block.get("input") or {}).get("subagent_type") or ""
-                if not (
-                    stype.startswith(_REVIEWER_PREFIX)
-                    or stype in (_REVIEWER_EXACT, _REVIEWER_YIELD_EXTRA_EXACT)
-                ):
+                block_input = block.get("input") or {}
+                stype = block_input.get("subagent_type") or ""
+                if not _is_reviewer_subagent_type(stype):
                     continue
-                paired_jsonl = dispatch_index.get(block.get("id") or "")
+                tool_use_id = block.get("id") or ""
+                paired_jsonl = dispatch_index.get(tool_use_id)
                 if paired_jsonl is None:
                     continue  # no matching meta.json — excluded entirely, not "unclassified"
-                last_assistant_text, _write_content_blobs, _read_error = _scan_reviewer_transcript(paired_jsonl)
+                last_assistant_text, write_content_blobs, write_target_paths, transcript_cwd, read_error = (
+                    _scan_reviewer_transcript(paired_jsonl)
+                )
+                if read_error:
+                    transcript_read_errors += 1
                 bucket, n = _classify_reviewer_verdict(last_assistant_text)
                 row = agg[stype]
                 row["dispatches"] += 1
@@ -2971,6 +3236,27 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
                     row["zero_finding"] += 1
                 else:
                     row["unclassified"] += 1
+
+                if bucket == _REVIEWER_VERDICT_UNCLASSIFIED:
+                    continue  # table 2 reports "excluded" for this bucket — no citation scoring
+
+                self_ref_keys = _dispatch_self_reference_keys(write_target_paths, transcript_cwd)
+                cited_keys = _reviewer_yield_cited_keys(
+                    last_assistant_text, write_content_blobs, transcript_cwd, self_ref_keys
+                )
+                if not cited_keys:
+                    continue
+                row2 = agg2[(stype, bucket)]
+                row2["cited"] += 1
+
+                threshold = tool_result_ts.get(tool_use_id)
+                if threshold is None:
+                    continue  # no paired tool_result, or its timestamp was unparseable — ordering undecidable
+                if overall_max_edit_ts is None or overall_max_edit_ts <= threshold:
+                    continue  # no qualifying edit anywhere in the session after this dispatch returned
+                row2["active"] += 1
+                if any(edit_index.get(k, float("-inf")) > threshold for k in cited_keys):
+                    row2["edited"] += 1
 
     title_since = f"last {since_label}" if since_label else "all time"
     print(f"\n## Reviewer-agent yield ({title_since})\n")
@@ -2994,6 +3280,37 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
         )
     if meta_read_errors:
         print(f"\n  ({meta_read_errors:,} meta.json files failed to parse, excluded)")
+
+    print(f"\n## Reviewer-agent cited-path edit overlap ({title_since})\n")
+    header2 = (
+        f"{'AgentType':<28} {'Bucket':<15} {'Dispatches':>10} {'Cited':>6} {'Active':>6} {'Edited':>6} {'Rate':>12}"
+    )
+    print(header2)
+    print("-" * len(header2))
+    for stype in sorted(agg):
+        row = agg[stype]
+        for bucket, dispatches in (
+            (_REVIEWER_VERDICT_FINDINGS_FOUND, row["findings_found"]),
+            (_REVIEWER_VERDICT_ZERO_FINDING, row["zero_finding"]),
+            (_REVIEWER_VERDICT_UNCLASSIFIED, row["unclassified"]),
+        ):
+            if dispatches == 0:
+                continue
+            if bucket == _REVIEWER_VERDICT_UNCLASSIFIED:
+                cited_s = active_s = edited_s = rate_s = "excluded"
+            else:
+                row2 = agg2[(stype, bucket)]
+                cited_s, active_s, edited_s = str(row2["cited"]), str(row2["active"]), str(row2["edited"])
+                rate_s = (
+                    "insufficient"
+                    if row2["active"] < _REVIEWER_YIELD_ACTIVE_FLOOR
+                    else f"{row2['edited'] / row2['active']:>6.1%}"
+                )
+            print(
+                f"{stype:<28} {bucket:<15} {dispatches:>10} {cited_s:>6} {active_s:>6} {edited_s:>6} {rate_s:>12}"
+            )
+    if transcript_read_errors:
+        print(f"\n  ({transcript_read_errors:,} reviewer transcripts failed to read, excluded from Cited)")
 
 
 def cmd_skill_pair(args: argparse.Namespace) -> None:
