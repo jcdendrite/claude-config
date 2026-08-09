@@ -3656,9 +3656,12 @@ _CONTEXT_BUCKET_OVER = ">=200k"
 
 # Context window in tokens per model ID, mirroring
 # nudge-handoff-near-context-cap.sh's own CONTEXT_WINDOW case statement
-# exactly (same prefix list, same trailing-dash dated-snapshot match) so a
-# threshold percentage computed here means the same absolute token count the
-# hook would compute for the same model ID. Source:
+# exactly (same prefix list, same trailing-dash dated-snapshot match), so
+# _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS resolves to the window the hook
+# multiplies by for the same model ID. A fixed percentage of that window
+# still resolves to a different absolute token count on a 200k model than
+# on a 1M one — see _CONTEXT_DISTRIBUTION_THRESHOLD_ABS for the sibling
+# table expressed directly in absolute tokens instead. Source:
 # https://platform.claude.com/docs/en/about-claude/models/overview, fetched
 # 2026-08-03; re-verify by 2026-11-03. Verified 200k: Haiku 4.5, Sonnet 4.5,
 # Opus 4.5, Opus 4.1. Verified 1M: Fable 5, Mythos 5, Opus 5, Opus
@@ -3673,8 +3676,26 @@ _200K_CONTEXT_WINDOW = 200_000
 _DEFAULT_CONTEXT_WINDOW = 1_000_000
 
 # Candidate threshold percentages of a model's context window, for
-# context-distribution's crossing-count/dollar-share table.
+# context-distribution's crossing-count/session-share/dollar-share table.
 _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS: tuple[int, ...] = (30, 40, 50, 60)
+
+# Candidate absolute-token thresholds, in the hook's own ESTIMATE unit (input
+# + cache_read + cache_creation + output — see _session_peak_context), for
+# context-distribution's own crossing-count/session-share/dollar-share table.
+# A candidate-threshold sweep like _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS, but
+# fixed rather than scaled per model's window. Not the same thing as
+# _CONTEXT_BUCKET_THRESHOLD above, which is a fixed *reporting* bucket edge
+# consumed by cost/cost-trend, not a candidate-threshold sweep. Spans the
+# 200k-model effective floor (80_000, 40% of 200k) through the 1M-model's
+# uncapped 40%-of-window value (400_000) and beyond, into the range where
+# 1M-model sessions have actually been observed firing. 360_000 is included
+# because it is the live 1M-model effective threshold today
+# (nudge-handoff-near-context-cap.sh's HANDOFF_NUDGE_ABS_CAP default) — a
+# re-run of this report must be able to show the value the hook is actually
+# configured to fire at, not just candidates for a future change.
+_CONTEXT_DISTRIBUTION_THRESHOLD_ABS: tuple[int, ...] = (
+    80_000, 135_000, 180_000, 250_000, 360_000, 400_000, 600_000, 800_000,
+)
 
 
 def _context_window_for_model(model: str) -> int:
@@ -3759,9 +3780,66 @@ def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, 
     return dollars, context_at_turn, 0
 
 
+def _session_peak_context(main_thread_turns: Sequence[tuple[int, int, int]]) -> tuple[float, int]:
+    """Track a session's peak context two ways over the same main-thread turns.
+
+    Each element of main_thread_turns is one turn's
+    (context_at_turn, output_tokens, context_window) — context_at_turn from
+    _price_turn (input + cache_read + ephemeral_1h + ephemeral_5m).
+
+    Returns (peak_pct, peak_abs_tokens):
+    - peak_pct is the session's maximum context_at_turn / context_window.
+    - peak_abs_tokens is the session's maximum context_at_turn + output_tokens
+      — the hook's own four-field ESTIMATE unit.
+
+    The two are tracked as independent per-turn maxima, never one derived
+    from the other (peak_abs_tokens != peak_pct * window): on a session that
+    mixes a 200k-window turn with a 1M-window turn, the turn with the
+    highest percentage of its own window is not necessarily the turn with
+    the highest absolute token count.
+    """
+    peak_pct = 0.0
+    peak_abs_tokens = 0
+    for context_at_turn, output_tokens, context_window in main_thread_turns:
+        pct = context_at_turn / context_window
+        if pct > peak_pct:
+            peak_pct = pct
+        abs_tokens = context_at_turn + output_tokens
+        if abs_tokens > peak_abs_tokens:
+            peak_abs_tokens = abs_tokens
+    return peak_pct, peak_abs_tokens
+
+
 def _pct_of(value: float, total: float) -> str:
     """value/total as a percentage string; 0.0% (not an undefined dash) when total is zero."""
     return f"{100 * value / total:.1f}%" if total else "0.0%"
+
+
+def _context_distribution_rows(
+    thresholds: Sequence[float], peaks: Sequence[float], dollars: Sequence[float]
+) -> list[dict[str, object]]:
+    """For each threshold, in peaks' own unit, return a row of crossing-count,
+    session-share, crossed-dollars, and dollar-share — the arithmetic shared
+    by context-distribution's percentage table and its absolute-token table.
+
+    peaks and dollars are parallel per-session sequences (peaks[i] and
+    dollars[i] describe the same session). A session crosses a threshold
+    when peaks[i] >= threshold, matching the hook's own >=-shaped trigger
+    condition.
+    """
+    total_sessions = len(peaks)
+    total_dollars = sum(dollars)
+    rows: list[dict[str, object]] = []
+    for threshold in thresholds:
+        crossed_count = sum(1 for p in peaks if p >= threshold)
+        crossed_dollars = sum(d for p, d in zip(peaks, dollars, strict=True) if p >= threshold)
+        rows.append({
+            "sessions": crossed_count,
+            "session_share": _pct_of(crossed_count, total_sessions),
+            "dollars": crossed_dollars,
+            "dollar_share": _pct_of(crossed_dollars, total_dollars),
+        })
+    return rows
 
 
 _DO_NOT_PUBLISH_BANNER = (
@@ -4243,8 +4321,7 @@ def cmd_context_distribution(args: argparse.Namespace) -> None:
 
 
 def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
-    """Per-session peak context-at-turn, bucketed at candidate threshold
-    percentages of the model's context window — grounds a handoff-nudge
+    """Per-session peak context, bucketed two ways — grounds a handoff-nudge
     threshold choice against measured sessions instead of picking one blind.
 
     Peak-context tracking is restricted to main-thread (non-sidechain) turns:
@@ -4253,12 +4330,22 @@ def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path]
     would mix two different context-growth stories into one number. Each
     main-thread turn's context_at_turn (input_tokens + cache_read_input_tokens
     + ephemeral_1h + ephemeral_5m, from _price_turn, same formula cost's own
-    bucket logic uses) is expressed as a fraction of that turn's own model's
-    context window via _context_window_for_model, and the session's peak is
-    the maximum such fraction across its main-thread turns — so a session
-    that mixes models with different windows is judged by how close each
-    turn came to its own model's limit, not a single window assumed for the
-    whole session.
+    bucket logic uses) feeds two independent per-session maxima, tracked by
+    _session_peak_context:
+    - peak_pct: context_at_turn expressed as a fraction of that turn's own
+      model's context window via _context_window_for_model — so a session
+      that mixes models with different windows is judged by how close each
+      turn came to its own model's limit, not a single window assumed for
+      the whole session. Reported against
+      _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS.
+    - peak_abs_tokens: context_at_turn plus that turn's output_tokens — the
+      same four-field sum nudge-handoff-near-context-cap.sh's own ESTIMATE
+      computes, so a threshold read off this table transfers directly to the
+      hook's unit. Reported against _CONTEXT_DISTRIBUTION_THRESHOLD_ABS.
+    Neither is derived from the other (peak_abs_tokens != peak_pct * window):
+    on a session mixing a 200k-window turn with a 1M-window turn, the turn
+    with the highest percentage of its own window need not be the turn with
+    the highest absolute token count.
 
     Dollar totals per session sum ALL turns (main and sidechain), matching
     cost's own definition of a session's total spend — a session's dollar
@@ -4302,11 +4389,12 @@ def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path]
     print(f"\n## Context distribution report ({title_since})\n")
 
     session_peak_pcts: list[float] = []
+    session_peak_abs_tokens: list[int] = []
     session_dollars: list[float] = []
     total_dollars = 0.0
 
     for _jsonl, records in session_iter:
-        peak_pct = 0.0
+        main_thread_turns: list[tuple[int, int, int]] = []
         session_total = 0.0
 
         for rec in records:
@@ -4329,14 +4417,16 @@ def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path]
                 session_total += sum(dollars_by_class.values())
 
             if not bool(rec.get("isSidechain")):
-                turn_pct = context_at_turn / _context_window_for_model(model)
-                if turn_pct > peak_pct:
-                    peak_pct = turn_pct
+                output_tokens = int(usage.get("output_tokens", 0))
+                main_thread_turns.append((context_at_turn, output_tokens, _context_window_for_model(model)))
+
+        peak_pct, peak_abs_tokens = _session_peak_context(main_thread_turns)
 
         if session_total == 0.0 and peak_pct == 0.0:
             continue
 
         session_peak_pcts.append(peak_pct)
+        session_peak_abs_tokens.append(peak_abs_tokens)
         session_dollars.append(session_total)
         total_dollars += session_total
 
@@ -4348,15 +4438,28 @@ def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path]
         " own model context window; dollars include each session's subagent spend)\n"
     )
     print(f"{'Threshold':>10} {'Sessions':>9} {'SessShare':>10} {'$':>14} {'DollarShare':>12}")
-    for pct in _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS:
-        threshold_frac = pct / 100
-        crossed_count = sum(1 for p in session_peak_pcts if p >= threshold_frac)
-        crossed_dollars = sum(
-            d for p, d in zip(session_peak_pcts, session_dollars, strict=True) if p >= threshold_frac
-        )
+    pct_rows = _context_distribution_rows(
+        [pct / 100 for pct in _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS], session_peak_pcts, session_dollars
+    )
+    for pct, row in zip(_CONTEXT_DISTRIBUTION_THRESHOLD_PCTS, pct_rows, strict=True):
         print(
-            f"{pct:>9}% {crossed_count:>9,} {_pct_of(crossed_count, total_sessions):>10}"
-            f" {crossed_dollars:>14,.2f} {_pct_of(crossed_dollars, total_dollars):>12}"
+            f"{pct:>9}% {row['sessions']:>9,} {row['session_share']:>10}"
+            f" {row['dollars']:>14,.2f} {row['dollar_share']:>12}"
+        )
+
+    print(
+        "\n## Peak absolute-token crossing thresholds (input + cache_read + cache_creation"
+        " + output tokens across main-thread turns — nudge-handoff-near-context-cap.sh's own"
+        " ESTIMATE unit; dollars include each session's subagent spend)\n"
+    )
+    print(f"{'Threshold':>10} {'Sessions':>9} {'SessShare':>10} {'$':>14} {'DollarShare':>12}")
+    abs_rows = _context_distribution_rows(
+        _CONTEXT_DISTRIBUTION_THRESHOLD_ABS, session_peak_abs_tokens, session_dollars
+    )
+    for abs_threshold, row in zip(_CONTEXT_DISTRIBUTION_THRESHOLD_ABS, abs_rows, strict=True):
+        print(
+            f"{abs_threshold:>10,} {row['sessions']:>9,} {row['session_share']:>10}"
+            f" {row['dollars']:>14,.2f} {row['dollar_share']:>12}"
         )
 
 
@@ -5688,9 +5791,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_context_dist = sub.add_parser(
         "context-distribution",
         help=(
-            "Per-session peak context-at-turn, bucketed at candidate threshold percentages"
-            " (30/40/50/60%%) of the model's context window, with each threshold's session"
-            " count and dollar-cost share. Redacted by default."
+            "Per-session peak context-at-turn, bucketed both at candidate threshold percentages"
+            " (30/40/50/60%%) of the model's context window and at candidate absolute-token"
+            " thresholds, with each threshold's session-share and dollar-cost share."
+            " Redacted by default."
         ),
     )
     _add_project_scope_args(p_context_dist)
