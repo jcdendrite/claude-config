@@ -478,6 +478,29 @@ class TestTableColsHelper:
         with pytest.raises(AssertionError, match="not unique"):
             _table_cols(out, header_contains="Lead", row_contains="2026-W20")
 
+    def test_occurrence_scoping_excludes_content_after_the_selected_block(self):
+        """occurrence=N must stop its row/header search at its own table's
+        boundary (next blank line or next header-containing line), not
+        search to the end of `out` — every existing occurrence= call site
+        (reviewer-yield's Table 2, always the last table printed, with a
+        composite row_contains already globally unique) would stay green
+        even if that boundary were dropped, since there is nothing after
+        Table 2 for an unscoped search to leak into. This fixture puts a
+        second occurrence directly after the first's true boundary, with a
+        row that would also satisfy `row_contains` if the boundary weren't
+        enforced — occurrence=1 must select only the first table's row."""
+        out = "\n".join([
+            "Header      Count",
+            "------------------",
+            "alpha           1",
+            "",
+            "Header      Count",
+            "------------------",
+            "alpha           2",
+        ])
+        cols = _table_cols(out, header_contains="Header", row_contains="alpha", occurrence=1)
+        assert cols["Count"] == "1"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
