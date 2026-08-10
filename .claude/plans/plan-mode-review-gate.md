@@ -290,13 +290,16 @@ mode with no pre-existing repo-relative plan, which is the common case —
   section's fail-closed/`_lib_capped`/`clear-stale` subsections.
 - The harness's `ExitPlanMode` approval UI renders content from
   `planFilePath` (the file this gate hashes), not independently from the
-  same payload's `tool_input.plan` (inline text). `[unverified — BLOCKING:
-  the existing test fixture (`exitplanmode_input()`) sets `plan` and
-  `planFilePath` to different content specifically to isolate them for unit
-  testing, which does not establish what the real harness does; see
-  Verification's blocking precondition]` anchors: root — if this proves
-  false, the gate's chosen hash target is wrong and the design needs to
-  hash `.plan` instead of (or in addition to) the file.
+  same payload's `tool_input.plan` (inline text). `[verified: ExitPlanMode's
+  own tool description, fetched via ToolSearch during implementation —
+  "This tool does NOT take the plan content as a parameter... it will read
+  the plan from the file you wrote" and "The user will see the contents of
+  your plan file when they review it." This is the tool's documented
+  contract, not an independently-reproduced observation of a live approval
+  render — see require-plan-review.sh's comment at the `PLAN_MODE_HASH`
+  computation for the same citation recorded at the code site.]` anchors:
+  root — if this proves false, the gate's chosen hash target is wrong and
+  the design needs to hash `.plan` instead of (or in addition to) the file.
 
 **Over-powered-primitive check (per plan-it Step 5):** the chosen mechanism
 (direct Write from the main session into existing protected state) is the
@@ -364,21 +367,26 @@ what is actually presented).
 
 ## Verification
 
-**Blocking precondition, before implementation proceeds.** `ciso-reviewer`
+**Blocking precondition — resolved during implementation.** `ciso-reviewer`
 flagged that this plan's soundness assumes the harness's `ExitPlanMode`
 approval UI renders content sourced from `planFilePath` (the file this gate
 hashes) and not independently from `tool_input.plan` (the inline text field
-also present on the same payload, per `exitplanmode_input()`). Nothing in
-this codebase confirms which field the UI actually renders from — the two
-are set to *deliberately different* content in the existing test fixture,
-which proves only that the fixture isolates the two fields for unit testing,
-not that the real harness ever produces divergent content between them. If
-they can diverge and the UI renders `.plan` while this gate hashes
-`.planFilePath`, a human could approve content different from what the gate
-verified. Confirm this empirically (a scratch plan-mode session, or a
-maintainer with harness-internals visibility) before relying on this gate
-for anything beyond same-team, non-adversarial plan authors; if they can
-diverge, hash `.plan` instead of (or in addition to) the file.
+also present on the same payload, per `exitplanmode_input()`). The existing
+test fixture sets the two fields to *deliberately different* content only to
+isolate them for unit testing, which by itself proves nothing about the real
+harness. Resolution: the `ExitPlanMode` tool's own description (fetched via
+ToolSearch, a primary source distinct from the test fixture) states plainly
+that the tool "does NOT take the plan content as a parameter... it will read
+the plan from the file you wrote" and "the user will see the contents of
+your plan file when they review it" — confirming the render source is
+`planFilePath`, matching this gate's hash target. This is the tool's
+documented contract, not an independently-reproduced observation of a live
+approval render (e.g., a scratch plan-mode session with the file edited
+mid-flow) — a maintainer who later gets harness-internals visibility should
+still treat this as worth an independent confirmation if the stakes rise
+beyond same-team, non-adversarial plan authors. The citation is also
+recorded at the code site: `require-plan-review.sh`'s comment at the
+`PLAN_MODE_HASH` computation.
 
 - `claude/.claude/hooks/tests/test_require_plan_review.py`: new cases using
   the existing `exitplanmode_input()` helper —

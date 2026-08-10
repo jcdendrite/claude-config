@@ -20,6 +20,9 @@ Subcommands:
   clear-stale [--dry-run]
              Evict active-bypass markers whose originating session is no
              longer alive. --dry-run reports without removing.
+  resolve-session-id
+             Print this session's canonically-resolved session id. Takes no
+             skill argument.
 
 Valid (subcommand, skill) combinations:
   write       code-review | skill-review | plan-review | ready-for-review
@@ -197,6 +200,12 @@ case "$SUBCOMMAND" in
       exit 2
     fi
     ;;
+  resolve-session-id)
+    if [ -n "$ARG2" ]; then
+      usage
+      exit 2
+    fi
+    ;;
   *)
     printf "marker.sh: unknown subcommand '%s'\n" "$SUBCOMMAND" >&2
     usage
@@ -239,18 +248,37 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_ROOT=$(_resolve_repo_root) || exit 2
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-        # Content-addressed: the marker holds a hash of the active plan file
-        # set (paths + contents), so editing a reviewed plan re-arms
-        # require-plan-review.sh on the next gate hit. _lib_active_plan_hash
-        # is the single source of truth shared with the read side.
-        #
-        # Capture into a variable before redirecting. Writing the function's
-        # output straight into the marker path would let `>` truncate an
-        # existing valid marker before the function even runs, so a failed
-        # attempt would destroy a good marker as a side effect.
-        if ! PLAN_HASH=$(_lib_active_plan_hash "$REPO_ROOT"); then
-          printf 'marker.sh: cannot read active plan file %s — cannot compute the plan-review hash. Abort without writing a marker.\n' "$PLAN_HASH" >&2
-          exit 2
+        # A plan-mode declaration takes priority over the repo-relative plan
+        # set: the /plan-review skill's Step 0 writes the harness-designated
+        # plan-mode file's path into this sibling file when the session is in
+        # plan mode. Content-addressed like the repo-relative case below —
+        # hash the DECLARED TARGET's current content, read fresh here, not
+        # the sibling file's own bytes and not any hash computed earlier — so
+        # a plan revision mid-review is still caught.
+        PLANMODE_SIBLING="$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
+        if PLANMODE_TARGET=$(_lib_capped cat "$PLANMODE_SIBLING" 2>/dev/null); then
+          PLAN_HASH=$(_lib_capped sha256sum -- "$PLANMODE_TARGET" 2>/dev/null | awk '{print $1}')
+          if [ -z "$PLAN_HASH" ]; then
+            # Matches _lib_active_plan_hash's own abort contract below:
+            # falling back to the repo-relative hash here would silently
+            # write a completion marker that doesn't cover what was reviewed.
+            printf 'marker.sh: cannot read plan-mode file %s — cannot compute the plan-review hash. Abort without writing a marker.\n' "$PLANMODE_TARGET" >&2
+            exit 2
+          fi
+        else
+          # Content-addressed: the marker holds a hash of the active plan
+          # file set (paths + contents), so editing a reviewed plan re-arms
+          # require-plan-review.sh on the next gate hit. _lib_active_plan_hash
+          # is the single source of truth shared with the read side.
+          #
+          # Capture into a variable before redirecting. Writing the
+          # function's output straight into the marker path would let `>`
+          # truncate an existing valid marker before the function even runs,
+          # so a failed attempt would destroy a good marker as a side effect.
+          if ! PLAN_HASH=$(_lib_active_plan_hash "$REPO_ROOT"); then
+            printf 'marker.sh: cannot read active plan file %s — cannot compute the plan-review hash. Abort without writing a marker.\n' "$PLAN_HASH" >&2
+            exit 2
+          fi
         fi
         mkdir -p "$CONFIG_DIR/plan-review-markers"
         printf '%s\n' "$PLAN_HASH" \
@@ -319,6 +347,7 @@ case "$SUBCOMMAND" in
       plan-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
+        rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
         rm -f "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
         rm -f "$CONFIG_DIR/.plan-review-pending-read.d/$SESSION_ID"
         ;;
@@ -350,6 +379,12 @@ case "$SUBCOMMAND" in
       dir_name=$(basename "$active_dir")
       for entry in "$active_dir"/*; do
         [ -f "$entry" ] || continue
+        # Name-based exemption, not a PID-liveness question: this sibling
+        # holds a declared plan-mode path, never a PID, so the ^[0-9]+$ test
+        # below would always misread it as a dead marker and evict it.
+        case "$entry" in
+          *.planmode-path) continue ;;
+        esac
         stored_pid=$(cat "$entry" 2>/dev/null | tr -d '[:space:]')
         entry_name=$(basename "$entry")
         if [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null; then
@@ -371,5 +406,9 @@ case "$SUBCOMMAND" in
     else
       printf 'clear-stale: evicted %d orphan(s), kept %d active\n' "$EVICTED" "$KEPT"
     fi
+    ;;
+  resolve-session-id)
+    SESSION_ID=$(_resolve_session_id) || exit 2
+    printf '%s' "$SESSION_ID"
     ;;
 esac

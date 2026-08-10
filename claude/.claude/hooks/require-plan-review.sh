@@ -92,6 +92,45 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
+# Plan-mode branch: ExitPlanMode carries tool_input.planFilePath naming the
+# harness plan-mode file on the very call being gated, so it is hashed fresh
+# here with no stored state and checked ahead of the repo-relative plan below.
+# Priority matters: a session holding a valid repo-relative marker that opens
+# a NESTED plan-mode question must not have that stale marker authorize
+# unreviewed plan-mode content — so a non-empty planFilePath decides the call
+# outright, on a match or a mismatch, rather than falling through. An absent
+# or empty planFilePath (Write/Edit/MultiEdit, or an ExitPlanMode call outside
+# plan mode) falls through to the repo-relative check unchanged.
+if [ "$TOOL_NAME" = "ExitPlanMode" ]; then
+  PLAN_MODE_FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.planFilePath // empty')
+  if [ -n "$PLAN_MODE_FILE_PATH" ]; then
+    # ExitPlanMode's own tool description was checked directly this session and confirms the approval UI renders from the file named by planFilePath, not independently from tool_input.plan: "it will read the plan from the file you wrote... The user will see the contents of your plan file when they review it."
+    PLAN_MODE_HASH=$(_lib_capped sha256sum -- "$PLAN_MODE_FILE_PATH" 2>/dev/null | awk '{print $1}')
+    if [ -z "$PLAN_MODE_HASH" ]; then
+      # Unreadable, missing, or timed out. Fail closed rather than falling
+      # through to the repo-relative check -- that would silently re-permit
+      # the exact silent-allow bug this branch exists to close whenever a
+      # stale repo-relative marker happens to be present.
+      emit_deny "Blocked by plan-review gate: cannot read the plan-mode file '$PLAN_MODE_FILE_PATH' named by ExitPlanMode, so the gate cannot tell whether it has been reviewed.
+
+Plan presentation stays blocked until this is fixed — an unreadable plan-mode file is an unknown review state, not an absent one. Repair the file (chmod, or address whatever plan mode did to lose track of it), then retry. Running /plan-review first will fail the same way, since it hashes the same file."
+      exit 0
+    fi
+    if ! CONFIG_DIR=$(_lib_config_dir); then
+      emit_deny "Blocked by plan-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+      exit 0
+    fi
+    REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+    if _lib_marker_value_present "$CONFIG_DIR/plan-review-markers" "$PLAN_MODE_HASH" "$REPO_HASH."; then
+      exit 0
+    fi
+    emit_deny "Plan presentation blocked by the plan-review gate: this session is in harness plan mode and the plan file ExitPlanMode named has no plan-review marker covering its current content.
+
+  Run /plan-review against the plan-mode file before calling ExitPlanMode. The skill records the review in ~/.claude/plan-review-markers/ and plan presentation will be allowed on retry."
+    exit 0
+  fi
+fi
+
 # Compute the content-addressed hash of the active plan file set (paths +
 # contents; see _lib_active_plan_hash in _lib.sh for the full contract). A
 # plan file that is tracked and identical to HEAD is historical (its PR

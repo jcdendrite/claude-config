@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import time
 
@@ -873,6 +874,43 @@ class TestSessionStartTimeResolution:
         assert active_file.exists()
 
 
+class TestMarkerScriptResolveSessionId:
+    """`marker.sh resolve-session-id` exposes _resolve_session_id's result to
+    a caller that needs the canonically-resolved session id without
+    performing a write -- see SKILL.md's declare-planmode-path recipe, which
+    uses this instead of a hand-rolled, non-liveness-checked lookup."""
+
+    SID = "test-session-resolve"
+
+    def test_prints_the_resolved_session_id(self, isolated_home, git_repo):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        result = _run(["resolve-session-id"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == sid
+
+    def test_exits_2_with_empty_stdout_when_session_file_missing(self, isolated_home, git_repo):
+        result = _run(["resolve-session-id"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert result.stdout == ""
+
+    def test_rejects_stale_reused_pid_entry(self, isolated_home, git_repo):
+        """A sessions/<pid> entry whose recorded start time doesn't match the
+        live process's actual lstart -- the shape a reused PID's stale entry
+        takes -- must not resolve. Proves this subcommand delegates to the
+        canonical liveness-matched walk rather than a naive lookup, matching
+        TestSessionStartTimeResolution's coverage of the same guard for the
+        write/activate arms."""
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / str(os.getpid())).write_text(
+            "test-session-stale-resolve\nMon Jan  1 00:00:00 1970\n"
+        )
+        result = _run(["resolve-session-id"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert result.stdout == ""
+
+
 class TestMarkerScriptRoutingReadBackfill:
     """`activate plan-review` backfills routing-read credit from
     log-routing-read.sh's pending-read record when its mtime is within the
@@ -1036,3 +1074,213 @@ class TestMarkerScriptRoutingReadBackfill:
         assert not (active_dir / sid).exists()
         assert not (routing_read_dir / sid).exists()
         assert not self._pending_read_path(isolated_home, sid).exists()
+
+
+class TestMarkerScriptPlanModeSibling:
+    """`write plan-review` prioritizes a `.planmode-path` sibling file over
+    _lib_active_plan_hash when one is present -- see require-plan-review.sh's
+    ExitPlanMode branch, which is the read-side counterpart this write must
+    agree with byte-for-byte."""
+
+    SID = "test-session-planmode"
+
+    def _sibling_path(self, home, sid=SID):
+        return home / ".claude" / ".plan-review-active.d" / f"{sid}.planmode-path"
+
+    def _declare_sibling(self, home, target_path, sid=SID):
+        sibling = self._sibling_path(home, sid)
+        sibling.parent.mkdir(parents=True, exist_ok=True)
+        sibling.write_text(str(target_path))
+        return sibling
+
+    def test_valid_sibling_stores_fresh_hash_of_target_not_repo_relative_hash(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The stored marker must be the plan-mode target's own hash, not
+        _lib_active_plan_hash's repo-relative result -- even when an active
+        repo-relative plan set also exists, so the two hashes would differ if
+        the write arm picked the wrong source."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# repo-relative plan\n")
+
+        plan_mode_file = tmp_path / "planmode.md"
+        plan_mode_file.write_text("# plan-mode content\n")
+        self._declare_sibling(isolated_home, plan_mode_file, sid)
+
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        marker = isolated_home / ".claude" / "plan-review-markers" / next(
+            f.name for f in (isolated_home / ".claude" / "plan-review-markers").iterdir()
+        )
+        stored_hash = marker.read_text().strip()
+        expected_digest = subprocess.run(
+            ["sha256sum", str(plan_mode_file)], capture_output=True, text=True, check=True
+        ).stdout.split()[0]
+        assert stored_hash == expected_digest, (
+            f"expected the plan-mode target's own hash {expected_digest!r}, got "
+            f"{stored_hash!r} (looks like the repo-relative hash was used instead)"
+        )
+
+    def test_edit_between_declare_and_write_changes_stored_hash(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Freshness, not a cached value: the target is hashed at write time,
+        so an edit after the sibling was declared is still caught."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        plan_mode_file = tmp_path / "planmode.md"
+        plan_mode_file.write_text("# version one\n")
+        self._declare_sibling(isolated_home, plan_mode_file, sid)
+
+        assert _run(["write", "plan-review"], cwd=git_repo, home=isolated_home).returncode == 0
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        marker = marker_dir / next(f.name for f in marker_dir.iterdir())
+        first_hash = marker.read_text().strip()
+
+        plan_mode_file.write_text("# version two\n")
+        assert _run(["write", "plan-review"], cwd=git_repo, home=isolated_home).returncode == 0
+        second_hash = marker.read_text().strip()
+
+        assert first_hash != second_hash, "editing the target must change the stored hash"
+
+    def test_sibling_absent_falls_back_to_repo_relative_hash_unchanged(
+        self, isolated_home, git_repo
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# repo-relative plan\n")
+        assert not self._sibling_path(isolated_home, sid).exists()
+
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        stored_hash = (marker_dir / next(f.name for f in marker_dir.iterdir())).read_text().strip()
+        assert re.fullmatch(r"[0-9a-f]{64}", stored_hash)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_sibling_present_but_target_unreadable_aborts_without_writing(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Matches _lib_active_plan_hash's own abort contract: falling back
+        to the repo-relative hash here would silently write a completion
+        marker that doesn't cover what was actually reviewed."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        plan_mode_file = tmp_path / "unreadable-planmode.md"
+        plan_mode_file.write_text("# secret\n")
+        plan_mode_file.chmod(0o000)
+        self._declare_sibling(isolated_home, plan_mode_file, sid)
+
+        try:
+            result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        finally:
+            plan_mode_file.chmod(0o644)
+
+        assert result.returncode == 2, result.stderr
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an aborted write must not write a marker: {stray}"
+
+    def test_sibling_target_read_timeout_aborts_within_budget(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """_lib_capped caps the sha256sum call at 5s; a stalled read on the
+        sibling's declared target (e.g. a dead network mount) must abort the
+        write within that budget, not hang -- mirrors
+        test_planfilepath_target_read_timeout_denies_within_budget in
+        test_require_plan_review.py for the read side of this same hash.
+
+        The stub only sleeps when called with a filename argument -- this
+        `write plan-review` case also computes REPO_HASH via
+        _marker_lib_repo_hash beforehand, which pipes a short string through
+        `sha256sum` with no filename argument at all; sleeping unconditionally
+        would stall that unrelated, uncapped call too (it hashes an in-memory
+        path string, not file/network I/O, so it carries no real timeout risk)
+        and inflate this test's budget by that call's full sleep on top of the
+        one actually under test."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_sha256sum = shutil.which("sha256sum")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "sha256sum"
+        stub.write_text(f'#!/bin/bash\nif [ "$#" -gt 0 ]; then sleep 10; fi\nexec {real_sha256sum} "$@"\n')
+        stub.chmod(0o755)
+
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        plan_mode_file = tmp_path / "slow-planmode.md"
+        plan_mode_file.write_text("# plan\n")
+        self._declare_sibling(isolated_home, plan_mode_file, sid)
+
+        start = time.monotonic()
+        result = _run(
+            ["write", "plan-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode != 0, result.stderr
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
+            f"it does not), took {elapsed:.1f}s"
+        )
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a timed-out write must not write a marker: {stray}"
+
+    def test_deactivate_removes_the_sibling(self, isolated_home, git_repo, tmp_path):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        sibling = self._declare_sibling(isolated_home, tmp_path / "planmode.md", sid)
+        assert sibling.exists()
+
+        result = _run(["deactivate", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert not sibling.exists()
+
+    @pytest.mark.parametrize(
+        "adjacent_pid",
+        [
+            pytest.param(None, id="no_adjacent_pid_file"),
+            pytest.param("live", id="live_pid_adjacent"),
+            pytest.param("dead", id="dead_pid_adjacent"),
+        ],
+    )
+    def test_clear_stale_does_not_evict_a_live_sibling(
+        self, isolated_home, git_repo, tmp_path, adjacent_pid
+    ):
+        """The sibling holds a path, never a PID, so clear-stale's
+        ^[0-9]+$ liveness test would always misread it as a dead marker
+        without the name-based exemption. Runs regardless of the adjacent
+        PID file's liveness state -- the sibling's survival does not depend
+        on it."""
+        sid = self.SID
+        sibling = self._declare_sibling(isolated_home, tmp_path / "planmode.md", sid)
+
+        if adjacent_pid is not None:
+            active_dir = isolated_home / ".claude" / ".plan-review-active.d"
+            active_dir.mkdir(parents=True, exist_ok=True)
+            stored_pid = str(os.getpid()) if adjacent_pid == "live" else "99999999"
+            (active_dir / sid).write_text(stored_pid)
+
+        result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert sibling.exists(), "clear-stale must not evict a live .planmode-path sibling"
+
+    def test_activate_does_not_create_a_sibling_file(self, isolated_home, git_repo):
+        """The sibling is written by the skill's Step 0 declaration, not by
+        `marker.sh activate` -- activate's own behavior is unchanged."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert not self._sibling_path(isolated_home, sid).exists()

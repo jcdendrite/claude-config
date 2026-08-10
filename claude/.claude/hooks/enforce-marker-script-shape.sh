@@ -19,6 +19,12 @@
 #     `marker.sh` from the op keyword (variable or function wrapper) is not
 #     caught. Documented at that check; the path-based arm is what makes the
 #     gate-release property hold regardless.
+#   - A Bash-tool file redirect (`printf`/`tee`/`cat` `>` path) that never
+#     mentions `marker.sh` bypasses this hook's write-authority check
+#     entirely, for any agent type — only the Write/Edit/MultiEdit arm's
+#     path-based check catches a direct file write; the Bash arm's Stage-1
+#     fast-reject only matches commands containing the literal `marker.sh`
+#     substring.
 #   - `deactivate` / `clear-stale` are ungated for every agent type (they
 #     re-arm gates rather than release them).
 #   - Marker state reached by a tool other than Bash/Write/Edit/MultiEdit
@@ -37,7 +43,7 @@
 # gate. The "if" field is a hint only.
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
-# match one of the 14 single-command shapes, the marker.sh write chain to git
+# match one of the 15 single-command shapes, the marker.sh write chain to git
 # commit, or a chain of two-or-more valid marker.sh shapes joined by `&&`
 # (any op/target combination) — equivalent to running each op separately,
 # since every marker operation is independently allowlisted or harmless. No
@@ -293,7 +299,7 @@ fi
 # Path prefix + one valid (op, target) shape — no anchors, no trailing
 # suffix. Shared building block for VALID_PATTERN and the marker-chain
 # pattern below, so the path-prefix regex fragment has one authoritative copy.
-MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?)'
+MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id)'
 
 # Strict allowlist. Tilde form (~/.claude/scripts/marker.sh) and absolute
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
@@ -333,7 +339,7 @@ fi
 # Marker-chain allowance. A chain of two-or-more valid marker.sh shapes
 # joined by `&&`, any op/target combination, is permitted — the chain's end
 # state is identical to running each op separately, and every op is already
-# individually allowlisted (the 12 shapes in permissions.allow) or harmless
+# individually allowlisted (the 13 shapes in permissions.allow) or harmless
 # (clear-stale only evicts dead-PID bypass markers). No new capability is
 # reachable through the chain that isn't already reachable by running the
 # calls one at a time.
@@ -367,6 +373,7 @@ Valid shapes:
   ~/.claude/scripts/marker.sh deactivate memory-skill
   ~/.claude/scripts/marker.sh clear-stale
   ~/.claude/scripts/marker.sh clear-stale --dry-run
+  ~/.claude/scripts/marker.sh resolve-session-id
 
 Chains of valid marker.sh operations joined by && are permitted. Chaining to
 any other command (except the blessed 'git commit' tail), or using ||/;,
