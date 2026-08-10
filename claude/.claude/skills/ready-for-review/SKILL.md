@@ -66,7 +66,7 @@ the existing owner or open a separate branch. Rebase once the default branch is 
 ## 3. Code review (halt on findings)
 
 Run `/code-review` against the **cumulative** PR-vs-default-branch
-diff — not staged changes, not per-commit deltas:
+diff — not staged changes, not per-commit deltas (Claude Code ≤2.1.223 could refuse this exact shape via a buggy worktree-isolation Bash-tool check, fixed in 2.1.224 — if it recurs, resolve the base ref via a temp file and `read` instead):
 
 ```bash
 BASE_REF=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main)

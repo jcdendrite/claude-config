@@ -161,4 +161,6 @@ SESSION_ID=$(head -n1 "$CONFIG_DIR/sessions/$PPID" 2>/dev/null)
 
 Best-effort: `sessions/$PPID` is the session-id lookup file `capture-session-id.sh` writes at
 session start; if it's absent, the append is silently skipped — this is a conversion metric, not
-a gate.
+a gate. (Claude Code ≤2.1.223 could refuse this exact shape via a buggy worktree-isolation
+Bash-tool check, fixed in 2.1.224 — if it recurs, split into single-statement calls with the
+session id substituted as a literal rather than carried in a variable.)

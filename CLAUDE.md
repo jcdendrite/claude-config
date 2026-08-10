@@ -44,11 +44,15 @@ so run tests and lint from a worktree via `../../../.venv/bin/pytest` and
 `claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on
 `git pull` — no re-install needed.
 
-**Footgun: never recommend `>>` writes through stow-symlinked files.**
+**Footgun: never recommend `>>` writes through stow-symlinked files pointing
+at a git-tracked target.**
 Files under `~/.claude/` (e.g. `~/.claude/CLAUDE.md`) are symlinks to
 tracked files in this repo — appending via `>>` writes through the
 symlink and silently stages changes to the public repo. Edit the
-committed file directly via PR.
+committed file directly via PR instead. This does not cover gitignored
+runtime state under `claude/.claude/` (e.g. `.handoff-nudge.log`) — an
+append there never reaches `git status`, so check `.gitignore` before
+assuming this rule blocks a specific write.
 
 **Terminology:** Use "project" / "private project", not "client", in
 `claude-config` prose. The redaction hook is `deny-private-project-refs`.
