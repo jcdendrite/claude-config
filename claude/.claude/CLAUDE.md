@@ -29,6 +29,7 @@
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
 - Use descriptive variable and function names. No generic names.
 - **Default-consider delegation.** Before running a Bash command, starting a broad search, initiating a check suite, or beginning a Read-heavy probe, ask whether the *objective* (not the individual command) belongs in a subagent. The parent's context is re-read every turn, so verbose tool output left in it is paid for repeatedly. See the `subagent-delegation` skill for the two-test gate, which subagent fits which case, and what stays inline.
+- **Locate before a whole-file read.** Once you've decided to read a file, decide *how much* of it. When you don't know which part you need, a single `Grep` inside that file hands back the matching line numbers — then `Read` that range plus a margin. When you don't know how big it is, `wc -l` answers that in one cheap call. Read it whole when the task is the whole file — reviewing it, restructuring it — or when you already know it's short.
 - **Scope discipline.** Four axes govern which edits belong in a change.
 
   **Axis 1 — File boundary.** Do not edit a file unless the ticket scopes it OR the edit is required to make the ticket's change correct (e.g., a caller's signature must change because the ticket changed the callee). Files noticed while passing through but not in scope go into one of three buckets:
