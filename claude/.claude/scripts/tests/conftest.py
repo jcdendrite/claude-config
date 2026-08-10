@@ -1,9 +1,10 @@
 """Shared git-repo scaffolding helpers for the worktree-cleanup script tests
-(test_cleanup_merged_branches.py, test_cleanup_idle_open_pr_worktrees.py).
+(test_cleanup_merged_branches.py, test_cleanup_idle_open_pr_worktrees.py),
+plus suite-wide transcript-corpus isolation (see the autouse fixture below).
 
-These are plain helper functions, not pytest fixtures — they take `tmp_path`
-(or a repo built from it) as an explicit argument rather than being injected,
-matching the calling convention already established in
+The scaffolding helpers are plain functions, not pytest fixtures — they take
+`tmp_path` (or a repo built from it) as an explicit argument rather than
+being injected, matching the calling convention already established in
 test_cleanup_merged_branches.py. They have no shape-specific dependency on
 either script's `gh` query: building a local git repo, a feature branch, and
 a worktree is identical regardless of which script is under test.
@@ -12,6 +13,37 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_transcript_corpus_lookups(tmp_path, monkeypatch):
+    """Pin both env vars transcript-analysis.py's root resolution reads, so no
+    test in this suite can accidentally scan or declare against this
+    workstation's real ~/.claude.
+
+    Pinning only TRANSCRIPT_CONFIG_DIRS_FILE is insufficient:
+    _resolve_scan_roots/_resolve_cost_roots' base is PROJECTS_DIR/config_dir()
+    (config_dir()/"projects" at import), and config_dir() reads $HOME when
+    CLAUDE_CONFIG_DIR is unset — on a real workstation with a populated
+    ~/.claude, an unpinned test would scan the real corpus; in CI, where
+    $HOME/.claude is simply absent, the same test would pass for an unrelated
+    reason. Both must be pinned for the isolation to be real rather than
+    CI-only. TRANSCRIPT_CONFIG_DIRS_FILE points at a nonexistent path by
+    default (declared_transcript_roots() treats a missing file as a silent
+    single-root no-op), so an ordinary test never sees a declared root unless
+    it opts in by writing that path itself.
+
+    test_post_crash_sessions.py's own
+    test_main_smoke_against_live_environment_no_traceback is a deliberate,
+    documented exception to this isolation (it asserts no hardcoded counts,
+    only a clean run) — this fixture does not special-case it, since pinning
+    CLAUDE_CONFIG_DIR to an empty tmp dir still satisfies that test's actual
+    assertions.
+    """
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "isolated-claude-config"))
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "nonexistent-transcript-config-dirs"))
 
 
 def _init_repo(path: Path) -> None:

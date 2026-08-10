@@ -35,6 +35,19 @@ All four gaps are silent under-coverage, not an error: a narrower-than-expected 
 
 ---
 
+## Corpus scope: the declared-roots file
+
+Every subcommand's default scan corpus is a **union**, not a single account. List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. The resolved-scope header (`<NAME> SOURCES (...)`) always states the root count, even at one root with nothing declared — that unconditional line is what makes a scan self-disclosing about whether it covered one account or several. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
+
+This union amplifies two costs, both linearly in the number of declared roots:
+
+- **Scan time.** Measured on one workstation: ~9s per root at top-level scope, ~16s per root with `--include-subagents`. A four-root union runs roughly 35–65s against ~9s at one root — expect a per-root progress line on stderr above one root so a long-running scan doesn't read as hung. The one narrowing control, if a given invocation needs to run faster or scope to fewer accounts: pass an explicit single top-level `--config-dir PATH`, which overrides the union back to exactly one root (see "Scoping to this repo" above and the `cost`/`context-distribution` sections below for their own separate, repeatable `--config-dir`).
+- **Redaction's ordinal fingerprint.** `cost` and `audit-routing --redact` already read every project's transcript bytes to build their redact map, even under `--this-repo` (see the `cost` section's `--config-dir` contract below) — a structural fingerprint of the operator's other local projects. A declared-roots union multiplies both the bytes read and that fingerprint's information content: the ordinals now encode which projects exist across every declared account, not just one. Two redacted reports built from the **same** declared-roots file assign the same `account-N` to the same physical root regardless of which profile produced either report, which makes them correlatable by ordinal across time — a property that did not exist before this file was populated. This is a privacy tradeoff to weigh before posting a second public report from an unchanged roots file: an operator who posts two redacted reports months apart gives a reader no way to learn `account-2`'s name, but does hand them a way to tell that both posts came from the same underlying account. Two reports built from **different** declared-roots files are not comparable; a changed root set can renumber every ordinal.
+
+Redaction stays `cost`/`context-distribution`/`audit-routing`-only under this union — see each subcommand's section below. No other subcommand redacts, and none of them narrows the union to one account short of the `--config-dir` escape hatch above.
+
+---
+
 ## buckets
 
 **Purpose.** Show assistant-turn counts bucketed by git branch × model family, with session count and date range.
@@ -46,7 +59,7 @@ All four gaps are silent under-coverage, not an error: a narrower-than-expected 
 
 **Sample output.**
 ```
-BUCKETS SOURCES (this repo (6 project dirs))
+BUCKETS SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcript-config-dirs declared))
 Branch                                   Proj  Sess   Total   Opus  Sonnet  Haiku  Other  Date range
 -----------------------------------------------------------------------------------------------------------------
 GH-333/audit-routing-samples-subcommand     1     2     237     78     159      0      0  2026-05-26..2026-05-28
@@ -306,7 +319,7 @@ bin          sessions   turns  skill-inv  skill/1k commits  w-skill  wo-skill  n
 
 **Sample output** (default scope — this repo, main thread):
 ```
-SKILL INVOCATION SOURCES (this repo; main thread)
+SKILL INVOCATION SOURCES (this repo; main thread; 1 root (no ~/.claude/transcript-config-dirs declared))
 skill                                    top-level  routed  user-slash    total
 --------------------------------------------------------------------------------
 code-review                                    207       8           2      217
@@ -353,7 +366,7 @@ Branch and model are resolved *per event*, from the record that produced it — 
 
 **Sample output.**
 ```
-REVIEW TRACE SOURCES (this repo (6 project dirs))
+REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcript-config-dirs declared))
 
 ### ~/.claude/projects/my-project/abc123.jsonl
 branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=4
@@ -519,7 +532,7 @@ Pricing is looked up per exact model ID (Sonnet 5 and Sonnet 4.6 price different
 - `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output. Refused when `--config-dir` puts more than one root in scope, and refused together with `--summary`.
 - `--summary` — a distinct, aggregate-only rendering mode meant to be embedded directly in a PR body (see the `pr-description` skill's `## Cost` section). Requires `--this-repo` and refuses any other scope flag, including a non-default `--projects` glob — every project-directory slug is absolute-path-derived and therefore starts with `-`, so a glob like `-*` would otherwise be machine-wide despite not being the literal default `*`. Also refuses `--by-project`, `--no-redact`, and `--config-dir` in combination — each drives an identity-bearing code path (`## Cost by project`, raw labels, multi-root scan-summary lines) `--summary` structurally never reaches. It never builds or reads the redact map, never prints the `DO NOT PUBLISH` banner, and never emits a per-root raw-path label — nothing it prints is keyed by project or session identity. It does print the scan-count diagnostic ("scanned N transcripts, M skipped") and the zero-scope `WARNING`, since those are identity-free under single-root `--this-repo` scope and are what makes an empty or under-scanned corpus visible instead of a silent `$0.00`. Always prints "Unpriced tokens: N tokens across M model IDs", even at zero. Carries the `STALE PRICING` banner in the same block as the dollar tables, same as the full report.
 
-Redacted project labels (`private-project-N`) and the printed corpus fingerprint are **not comparable across two separate report runs** — a changed corpus (a new session, a removed project dir, a different `--config-dir` set) can renumber every ordinal, single- or multi-root. Treat each run's redacted output as self-contained; never diff `private-project-3` between two runs and assume it names the same project.
+Redacted project labels (`private-project-N`, `account-N`) and the printed corpus fingerprint are **not comparable across two report runs built from different declared-roots files** — a changed corpus (a new session, a removed project dir, a different declared-roots or `--config-dir` set) can renumber every ordinal. Two runs built from the *same* declared-roots file, even from different active profiles, assign the same ordinal to the same physical root and stay comparable — see "Corpus scope: the declared-roots file" above. Treat a run's redacted output as self-contained unless you know the roots file behind it is unchanged; never diff `private-project-3` between two runs without that guarantee and assume it names the same project.
 
 **Worktree-isolated subagent attribution.** A subagent dispatched with `isolation: "worktree"` runs on a harness-generated `worktree-agent-<hash>` branch, not the branch that dispatched it. `--branches` filters on each record's *attributed* branch, not that literal value: for every `worktree-agent-*` record, `cost` resolves the dispatching session's own branch active at that record's timestamp (falling forward to the session's earliest branch if the record predates every main-thread record), and folds the subagent's dollars and tokens into that branch's total — the same real spend a plain literal-`gitBranch` filter would otherwise silently drop. The one genuinely unattributable case — a session with no main-thread branch-bearing record at all — renders `?` (reusing the `?` sentinel `review-trace`/`judgment-pair` already use for "no signal to carry forward") and is excluded from every `--branches`-filtered total. Attribution is scoped to the dispatching session only; a `worktree-agent-*` record is never resolved against a *different* session's main-thread history.
 

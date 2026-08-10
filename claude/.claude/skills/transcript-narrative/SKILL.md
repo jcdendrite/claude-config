@@ -8,14 +8,20 @@ description: Produce a narrative case study / annotated timeline from Claude Cod
 Identify the branches, session date-range, and repos in play. Use `buckets` to enumerate branches and per-branch models:
 
 ```bash
-python3 ~/.claude/scripts/transcript-analysis.py buckets --this-repo
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" buckets --this-repo
 ```
 
 Note the branch names — you will pass them to later subcommands via `--branches <branch>`.
 
 ## Step 2 — Extract verbatim user turns
 
-Read the session JSONL transcripts at `~/.claude/projects/*/`. Each file is one session. Filter to turns where:
+Get the transcript file set — every declared account, not just the active one — and read only those files:
+
+```bash
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" sessions --paths --include-subagents
+```
+
+Read each returned path directly with the Read tool. Do not hand-roll a glob for this step — `sessions --paths` is the single source of the file set, resolved against every declared account (`~/.claude/transcript-config-dirs`), not just the one the active profile happens to be pointed at. From the records you read, filter to turns where:
 - `role == "user"`
 - `isSidechain` is absent or `false` — exclude subagent/sidechain turns entirely
 
@@ -25,7 +31,7 @@ For each qualifying turn, record:
 - Session ID and timestamp
 - `message.content[].text` — the verbatim prompt text
 
-Do not vendor a script for this extraction. Read the JSONL directly with the Read tool or a short inline shell expression, filtering by the criteria above.
+Do not vendor a script for this extraction, and do not hand-roll a shell expression or glob to find the files — `sessions --paths` above is the one place file discovery happens. Read only the paths it returned, with the Read tool, filtering by the criteria above.
 
 ## Step 3 — Bucket prompts into phases and build an annotated timeline
 
@@ -47,19 +53,19 @@ Run these subcommands and include their output as a quantitative appendix that g
 
 ```bash
 # Test-failure convergence vs thrashing
-python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches <branch>
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" fail-seq --branches <branch>
 
 # Active vs idle time
-python3 ~/.claude/scripts/transcript-analysis.py duration --branches <branch>
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" duration --branches <branch>
 
 # Subagent vs main-thread split
-python3 ~/.claude/scripts/transcript-analysis.py subagents --branches <branch>
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" subagents --branches <branch>
 
 # Branch → PR mapping
-python3 ~/.claude/scripts/transcript-analysis.py pr-link --repo owner/repo --branches <branch>
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" pr-link --repo owner/repo --branches <branch>
 
 # Review-skill invocations, hook denials, reviewer-spawn timeline
-python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --this-repo
 ```
 
 For `fail-seq` interpretation: a spike followed by zeros is convergent (expected); oscillation with no sustained run of zeros is thrashing (flag for the lessons step). See `transcript-analysis` for the full reading guide.

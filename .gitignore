@@ -46,6 +46,12 @@ claude/.claude/data-file-read-guard.md
 claude/.claude/credential-file-guard.md
 claude/.claude/credential-value-patterns.md
 
+# Same belt-and-suspenders for the user-local declared-roots file read by
+# _config_dir.py's declared_transcript_roots(). It belongs at
+# ~/.claude/transcript-config-dirs directly; this entry prevents an
+# accidental copy inside the stowed tree from being committed.
+claude/.claude/transcript-config-dirs
+
 # Machine-level opt-in markers belong at ~/.claude/ directly, created by hand
 # (touch), never via the stow package. These entries stop an accidental in-tree
 # copy from being committed and shipped to every stow user. See
