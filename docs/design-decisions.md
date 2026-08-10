@@ -237,3 +237,15 @@ The accepted cost is that protection is now single-layer. Files under `~/.claude
 ## 20. Hashline edit format declined (2026-08-08)
 
 Evaluated replacing Claude Code's built-in `Edit`/`Write` with Stencil's "hashline" content-hashed-line edit format and declined it — the empirical record, the measurement subcommand, and the redaction-defect disposition are in the [hashline edit format case study](case-studies/hashline-edit-format.md).
+
+## 21. Cost-lever register consolidated across six prior plans (2026-08-10)
+
+Six plans each accumulated their own rejected-alternatives section for cost-reduction levers; a seventh re-measured ground the first six had already closed. [`cost-levers-considered.md`](cost-levers-considered.md) consolidates every lever investigated so far — lever, verdict, measured reason, source plan — into one page.
+
+A numbered section in this file was considered and rejected for the register itself: the ~30 rows involved would dominate a file whose sections are each one self-contained decision. Amending an already-merged plan file in place was also rejected — this repo's CLAUDE.md (Axis 3) treats merged plans as read-only records, and editing one wouldn't un-scatter the other five.
+
+## 22. Main-thread/subagent cost association published in docs, not the delegation skill (2026-08-10)
+
+Re-deriving the main-thread-vs-subagent split from `transcript-analysis.py` (default config dir, last 14 days, 2026-08-10) gives main 71.4% / subagent 28.6% of dollars (`cost --since 14d`, `## Cost by thread`) and main 28.9% / sidechain 71.1% of tool-result bytes (`subagents --since 14d`, summed per-branch `main`/`sidechain` byte columns). The two shares move in opposite directions: the main thread carries a minority of raw tool-result bytes but a majority of the dollar cost. This is an observed association across an uncontrolled mix of session shapes, not a causal per-byte price — sidechain prefixes are shorter for reasons beyond byte placement, and the tool computes no joined per-byte cost model (see [`cost-levers-considered.md`](cost-levers-considered.md)'s "dollar-per-byte allocation model" entry).
+
+This reverses PR #593's closure of the "delegation-discipline pilot," which was closed as unmeasurable on ISO-week time-series noise: ~25 days of history against a >3x noise floor, with a September 1 repricing inside any window powered enough to detect a trend. That reasoning ruled out a recurring measurement program, not a single cross-sectional ratio — a time series needs enough history to clear a noise floor, a cross-sectional snapshot needs only one well-scoped run, so this entry doesn't revive the pilot itself. The number lives here rather than in `subagent-delegation/SKILL.md` because a dated, drifting ratio has no staleness gate to keep it honest in an auto-triggering skill body — the same principle applied to keeping measured figures out of `CLAUDE.md` proper. The skill's qualitative delegation argument is unchanged by this entry.

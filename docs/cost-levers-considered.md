@@ -1,0 +1,81 @@
+# Cost levers considered
+
+A register of cost-reduction levers this repo has investigated and closed —
+adopted, rejected, superseded, or declined — across prior plans. Six plans
+each accumulated their own rejected-alternatives section; this page
+consolidates them so a seventh plan doesn't re-measure ground already
+covered. Sibling to [`design-decisions.md`](design-decisions.md), which
+records the shorter-form architectural decisions this repo has made; this
+page is scoped specifically to *cost* levers and keeps the verdict plus the
+measured reason, not the full investigation.
+
+Each entry names its source plan under `.claude/plans/`. Merged plan files
+are read-only historical records (see the repo CLAUDE.md, Axis 3) — this
+register doesn't restate their content, it indexes it.
+
+## From `token-spend-reduction.md` — "Cut Claude Code token spend"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Handoff-nudge threshold as a flat percent of context window | Partially adopted, later superseded | No data justified a specific percentage; the existing ≥200k dollar-share bucket was too coarse. Superseded by `absolute-token-handoff-threshold.md`'s absolute-cap approach. |
+| Subagent-delegation byte measurement (extend the `subagents` subcommand) | Adopted (as a measurement tool) | 44% of turns are subagent turns, and roughly 90% of spend is prompt-prefix (cache-read), not newly generated work — worth instrumenting, not worth acting on without more data. |
+| Cache-TTL selection (5-minute vs. 1-hour) as a configurable lever | Rejected, not deferred | TTL is set per-request by the API caller via `cache_control` — nothing in `settings.json`, hooks, or env vars exposes this field, and every account on this machine shares the identical stowed `settings.json`. There is no lever here to pull. |
+| Skipping cumulative `/code-review` for single-commit PRs | Rejected (falsified) | `require-code-review.sh` hashes the staged increment, not the commit's resulting content — `git commit --amend` reviews only the amendment, leaving the rest of the commit's content unreviewed. |
+| Capping reviewer-ownership fan-out in `/code-review` | Rejected | No cap exists today, and a checklist-item-touch filter would exclude exactly the reviewer positioned to catch cross-lane bleed. |
+| Gating `skill-fidelity-reviewer` on diff file paths | Rejected (falsified twice) | Orthogonal to what the reviewer actually checks; `/ready-for-review` already implements the intended fix by a different mechanism. |
+| Retiring `staff-analytics-engineer` from auto-routing | Rejected | `reviewer-yield` measurement: 6 dispatches, 6 found, 0 zero-finding, 0 unclassified — flagged concerns in every dispatch sampled. "Findings" is a documented lower bound on value, not a yield signal to cut against. |
+| Model routing (reduce Opus usage) | No change needed | Opus measured at 15.7% of spend; the existing `model: opusplan` routing was already correct for that share. |
+
+## From `absolute-token-handoff-threshold.md` (PR #593) — "Re-unit the handoff nudge"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Percent-of-window threshold → `min(pct, absolute_cap)` | Adopted | 18 fires observed since PR #579, all on 1M-window models, mean 655,477 tokens (min 433,055 / max 879,994) — roughly $0.20 charged on every subsequent call at $0.30/MTok cache-read before the cap kicked in. |
+| Delegation-discipline pilot (recurring measurement of delegation adherence) | Closed, not deferred | 71.2% of tool-result bytes already land in sidechains, and the effect size was unmeasurable in the available window: ISO-week granularity, ~25 days of history, >3x noise floor, and a September 1 repricing inside any window powered enough to detect it. |
+| Sonnet→Haiku routing for verbose-output absorption | Closed on prior evidence | The retired Haiku check-runner agent (see [`case-studies/check-runner.md`](case-studies/check-runner.md)) already measured "cheap model absorbs verbose output" dead across six documented incidents. |
+| Repo-set default model change (`settings.json`) | Declined deliberately, kept in reach | Changing a shared model default to simplify one threshold calculation inverts the priority — the default should serve model-routing intent, not be reshaped around a nudge's math. |
+| Static session-prefix trimming | Named, not solved | ~15,700 of 177,761 tokens (~8.8%) is a fixed floor; ~1,950 tokens was identified as a clean, isolated win deserving its own change — left as a named follow-up, not implemented here. |
+| Dollar-per-byte allocation model (derive a causal per-byte price from the main/sidechain split) | Declined | The main/sidechain split is an observed association across an uncontrolled mix, not a causal per-byte price — see the delegation-ratio note in [`design-decisions.md`](design-decisions.md). |
+
+## From `noble-sauteeing-dream.md` (GH-556) — "Per-model context-window threshold for the handoff nudge"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| "~25% cheaper per turn than waiting for auto-compaction" as the nudge's justification | Rejected, removed as unverifiable | Cold-start turn cost measured mean $0.153 / median $0.126, vs. mean $0.086 for continuing turns in the 200–300k window — a handoff is not a flat win at the point the nudge fires. |
+| Models-API-backed context-window cache, or shelling out to `transcript-analysis.py`'s price table | Rejected as heavier than the bug requires | Adds a `python3` subprocess to a <500ms hook hot path, or needs credentials plus its own staleness policy, to fix a lookup-table bug. |
+| Runtime staleness banner in hook output | Rejected | Would spend tokens on a maintainer-facing message every session and make hook stdout non-deterministic. |
+
+## From `handoff-boundary-decision-rule.md` — "Plan-boundary continue-vs-handoff decision rule"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Retuning `HANDOFF_NUDGE_ABS_CAP` from 360,000 to 300,000 | Rejected, dropped | The measured cost-per-work crossover falls inside the 300–400k bucket (~350k midpoint), bracketing the current value rather than favoring 300,000. Cost-per-work buckets: 250–300k at 1.5x, 300–400k at 2.1x. A 45.5% session-share at 300,000 shows the value is merely permissible, not better. |
+| Automating the continue-vs-handoff decision via a hook | Rejected | A hook cannot see how much work remains, which is half of the breakeven calculation. |
+| "Always hand off before implementation" as blanket advice | Rejected as mispriced | Net-negative at the median plan boundary: 141 sessions, median context 152k (continued) vs. 175k (handed off) — inside a 1.00–1.31x cost band, against a 3.55x fresh-session ramp cost for turns 0–5. |
+
+## From `hashline-edit-format.md` — "Hashline edit format: evaluate, decline, and document"
+
+Full empirical record: [`case-studies/hashline-edit-format.md`](case-studies/hashline-edit-format.md).
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Adopting Stencil's hashline content-hashed-line edit format, replacing `Edit`/`Write` | Rejected, declined | Benchmarked against `patch`, not `str_replace` (Δ REPLACE +3.3 on Sonnet 4.5 only, Opus unbenchmarked). `str_replace`-mechanical failures are 0.77% of `Edit` calls (57/7,428) in this repo's corpus; eliminating anchoring tokens saves only 0.67% of total assistant output tokens, with a 0.08% benefit ceiling (6/7,428). Governance hooks already block 4.4x more edits (252) than the edit format itself would fix (57). |
+| Fixing the redaction-hook edit-failure defect (6 failures) by skipping mutation on `Read` | Rejected | Removing `Read` from the redaction matcher opens a real unredacted-credential residual for a 0.08% edit-failure gain — not a favorable trade. |
+| `PostToolUse Edit` hook narrating the self-inflicted redaction failure | Rejected | A layer whose only purpose is to explain a failure the previous layer creates — a compounding-defensive-layers tell, not a fix. |
+
+## From `subagent-delegation-debug-probe.md` — "Delegate debug-investigation reads to stop context-limit handoffs"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Revive check-runner-style delegation for check-running itself | Rejected | Inline checks are cheap (~6K tokens, harness-truncated) against a ~61K-token investigation read — the check output was never the cost driver. |
+| Instruct the parent to write tests to a file before authoring | Rejected | Test-authoring content measured at ~2.3K characters — not a problem this needs to solve. |
+| Delegate debug-investigation reads (read-only) to a subagent | Adopted | Investigation reads measured ≈244K characters (~61K tokens), roughly 10x the check output (~6K tokens); a multi-session chain compacted three times and handed off before shipping because of this read weight. |
+| Write-capable debug-and-fix agent | Rejected as the heavier primitive | Reintroduces the model-agency failure class documented in check-runner Incident 1 (see [`case-studies/check-runner.md`](case-studies/check-runner.md)) — an agent that can edit files while looking at a failing check will attempt to fix it, defeating the separation delegation exists to provide. |
+
+## From `pin-explore-to-sonnet.md` (this plan) — Step 1's superseded earlier draft
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Flip `claude/.claude/settings.json`'s shared `model` default from `opusplan` to `sonnet` | Superseded, dropped after four revisions | Collided with `guard-settings-session-keys.sh`, which hard-blocks any Claude-Code-authored commit touching that key with no in-session bypass, requiring the engineer to commit it manually outside the harness. Also touched 11 sites across 5 files asserting "opusplan is the default," needed a new CHANGELOG entry and an escalation wrapper for Opus-during-planning users, and only fixed `Explore` for sessions already anchored to Sonnet — not one started with `--model opus`. Dropped in favor of the agent-owned override in `Explore.md`, which needs none of the above. |
+| `ANTHROPIC_MODEL=sonnet` environment variable | Rejected, sibling of the above | Sits above the `model` setting in Claude Code's own precedence order and only fixes one machine, not the repo-owned agent. |
+| `CLAUDE_CODE_SUBAGENT_MODEL` global override | Rejected, sibling of the above | A global override `docs/auto-mode.md` already advises against — it would force every subagent to one model, not just `Explore`. |
