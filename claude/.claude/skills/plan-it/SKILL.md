@@ -77,3 +77,11 @@ Invoke `/plan-review` against the written plan file. Address any findings before
 **If plan mode is active:** after `/plan-review` is clean and findings are addressed, call `ExitPlanMode` to request approval. The harness shows the plan file's contents in the approval UI; do not also ask conversationally.
 
 **Draft-PR handoff for design-doc or cross-team contract changes.** If the plan introduces a new design document (e.g., a new file under `docs/design/`) or defines a cross-team data contract (a schema shape, enum, or API surface that downstream teams or analytical pipelines depend on), after `ExitPlanMode` is approved and the plan + doc are committed on the implementation branch, push the branch and open a **draft** PR before starting implementation. Async comments on the rendered diff are easier to thread than prose in a plan file, and downstream reviewers may need lead time. Skip this for plans that are implementation-only (no new design doc, no cross-team contract).
+
+## Step 7 — Commit the plan, then choose where implementation runs
+
+Commit the reviewed plan to the implementation branch before implementation begins — it makes an approved plan durable before a phase that rewrites the working tree, and `handoff` §5 already requires it.
+
+Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Hand off when `nudge-handoff-near-context-cap.sh` has fired for this session, when the engineer asked for one, when the session is ending regardless, or when a `handoff` §2 reason applies on its own terms. Treat the nudge as a floor rather than the only signal — it fires once, is globally disableable, and per `docs/handoff-nudge.md` can stay silent on an unrecognized model or a schema-drifted transcript.
+
+Delegating implementation to `code-writer` is a separate axis, not a tiebreaker: a subagent starts from a fresh context either way, so it neither argues for handing off nor for staying.
