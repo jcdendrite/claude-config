@@ -610,6 +610,51 @@ def test_active_bypass_marker_live_false_for_traversal_id_without_touching_targe
     assert canary.exists(), "a traversal id must not let the eviction rm escape the marker dir"
 
 
+# The plan-review skill also writes a `.planmode-path` sibling into the same
+# active-marker directory as the PID file this helper reads (see marker.sh's
+# `write plan-review` and require-plan-review.sh's ExitPlanMode branch). The
+# two are read by entirely separate code -- this helper vs. a plain `cat` of
+# the sibling -- so the two-way non-interference property below is what that
+# design depends on: neither read may perturb the other.
+
+
+def _sibling_path(home: Path, session_id: str) -> Path:
+    return home / ".claude" / _MARKER_DIR_NAME / f"{session_id}.planmode-path"
+
+
+def test_active_bypass_marker_live_true_with_sibling_present_does_not_alter_it(
+    tmp_path,
+) -> None:
+    """A live PID marker still liveness-checks correctly with a sibling file
+    present alongside it, and the sibling's content survives the read
+    untouched -- this helper only ever reads/evicts the exact session-id
+    file it was called with."""
+    _write_active_bypass_marker(tmp_path, "sess-with-sibling", str(os.getpid()))
+    sibling = _sibling_path(tmp_path, "sess-with-sibling")
+    sibling.write_text("/home/user/.claude/plans/scratch-plan.md")
+
+    assert _active_bypass_marker_live(tmp_path, "sess-with-sibling")
+    assert sibling.read_text() == "/home/user/.claude/plans/scratch-plan.md", (
+        "a live-PID read must not alter the sibling file's content"
+    )
+
+
+def test_active_bypass_marker_live_evicts_dead_pid_without_touching_sibling(
+    tmp_path,
+) -> None:
+    """The reverse direction: evicting a dead-PID marker removes only the
+    PID file, never the sibling sharing its directory -- the sibling's own
+    content/hash-read logic (marker.sh's job, not this helper's) is
+    unaffected by the PID file's liveness state."""
+    _write_active_bypass_marker(tmp_path, "sess-dead-with-sibling", "99999999")
+    sibling = _sibling_path(tmp_path, "sess-dead-with-sibling")
+    sibling.write_text("/home/user/.claude/plans/scratch-plan.md")
+
+    assert not _active_bypass_marker_live(tmp_path, "sess-dead-with-sibling")
+    assert sibling.exists(), "evicting the dead-PID marker must not remove the sibling"
+    assert sibling.read_text() == "/home/user/.claude/plans/scratch-plan.md"
+
+
 # Empty session_id is deliberately NOT tested here. `$HOME/.claude/<dir>/` with
 # an empty id names the marker directory itself, which `[ -f ]` rejects whether
 # or not the guard ran — no canary placement can separate the two states, so any

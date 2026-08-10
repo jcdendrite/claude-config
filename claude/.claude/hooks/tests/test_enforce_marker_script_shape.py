@@ -21,7 +21,7 @@ from helpers import (
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
-# The 14 single-command tilde-form shapes the hook accepts — single source of
+# The 15 single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
@@ -40,12 +40,13 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh deactivate memory-skill",
     "~/.claude/scripts/marker.sh clear-stale",
     "~/.claude/scripts/marker.sh clear-stale --dry-run",
+    "~/.claude/scripts/marker.sh resolve-session-id",
 ]
 
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — 14 single-command shapes, each must be allowed       #
+    # Valid shapes — 15 single-command shapes, each must be allowed       #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
@@ -692,6 +693,31 @@ class TestGateReleaseAuthority:
             == "allow"
         )
 
+    def test_resolve_session_id_allowed_for_main_session(self):
+        """resolve-session-id is a pure read that releases no gate, so it is
+        not subject to the gate-release authority check at all — confirmed
+        explicitly rather than assumed from the regex accepting the shape."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} resolve-session-id"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_resolve_session_id_allowed_for_restricted_subagent(self, agent_type):
+        """Same as the main-session case, for a restricted subagent — releasing
+        no gate means resolve-session-id is allowed for every agent type, not
+        just ones with review authority."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} resolve-session-id", agent_type=agent_type),
+            )
+            == "allow"
+        )
+
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
     def test_full_tool_set_agents_may_still_write(self, agent_type):
         assert (
@@ -786,6 +812,34 @@ class TestGateReleaseAuthority:
             == "allow"
         )
 
+    @pytest.mark.xfail(
+        reason=(
+            "known gap: enforce-marker-script-shape.sh's Bash arm only matches "
+            "marker.sh-mentioning commands, not raw redirects — see "
+            "agent-reviews/ciso-reviewer-1786305269-plan-mode-review-gate.md "
+            "finding 2; tracked for a follow-up PR"
+        ),
+        strict=True,
+    )
+    def test_bash_redirect_write_to_planmode_sibling_bypasses_write_authority(self):
+        """A raw Bash redirect that writes the same sibling path the
+        Write-tool arm correctly denies (see
+        TestGateReleaseAuthorityFileWrites.test_marker_path_write_denied)
+        never mentions `marker.sh`, so the Bash arm's Stage-1 fast-reject
+        exits allow before the gate-release authority check ever runs — for
+        any restricted agent type."""
+        cmd = (
+            'printf "%s" "/tmp/attacker-plan.md" > '
+            "~/.claude/.plan-review-active.d/deadbeef.planmode-path"
+        )
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
 
 class TestGateReleaseAuthorityFileWrites:
     """The path-based arm: marker state is guarded on the file-write surface too.
@@ -814,6 +868,7 @@ class TestGateReleaseAuthorityFileWrites:
             ".claude/skill-review-markers/deadbeef.session",
             ".claude/ready-for-review-markers/deadbeef.session",
             ".claude/.plan-review-active.d/session",
+            ".claude/.plan-review-active.d/session.planmode-path",
         ],
     )
     def test_marker_path_write_denied(self, marker_home, agent_type, relative_path):
@@ -824,6 +879,21 @@ class TestGateReleaseAuthorityFileWrites:
                 home=marker_home,
             )
             == "deny"
+        )
+
+    def test_main_session_may_write_the_planmode_path_sibling(self, marker_home):
+        """The plan-review skill's Step 0 declares the plan-mode file's path
+        via a main-session Write to this sibling shape -- the specific claim
+        flagged for ciso-reviewer/staff-sdet sign-off: no `agent_type` key
+        passes through unconditionally, same as any other main-session Write
+        under this arm."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(marker_home / ".claude/.plan-review-active.d/session.planmode-path")),
+                home=marker_home,
+            )
+            == "allow"
         )
 
     @pytest.mark.parametrize("tool_input_builder", [write_input, edit_input, multiedit_input])

@@ -21,6 +21,15 @@ Write the active-session marker so this skill's own Write/Edit operations are no
 
 If the chain fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since the hook would block any Write/Edit during the review.
 
+If this session is in harness plan mode, the plan-mode system reminder names a file path under the Claude Code config directory's `plans/` subdirectory (e.g. `~/.claude/plans/<slug>.md`) that the eventual `ExitPlanMode` call reads from directly — distinct from any plan committed under this repo's `.claude/plans/`. Declare that exact path so `require-plan-review.sh` can gate `ExitPlanMode` against it. Resolve this session's id via `~/.claude/scripts/marker.sh resolve-session-id` — a plain read, not a marker-shape write, so none of the write-authority restriction below applies to it. If it fails, abort and report; do not write a sibling file with no session id in its name. Otherwise write the plan-mode file's path, with no trailing newline, to `.plan-review-active.d/<the id just resolved>.planmode-path` under the config directory (`$CLAUDE_CONFIG_DIR`, or `~/.claude` when unset) — using the Write tool, not Bash. `marker.sh` has no argument for this path, and a Bash-written file at this path is not covered by the same subagent-write restriction a Write tool call is. `marker.sh write plan-review` reads this file to decide which plan set the completion marker covers, falling back to the repo-relative plan set when it is absent. Skip this sub-step entirely when no plan-mode reminder is present in this session.
+
+<!-- HOOK_TEST_FIXTURE: declare-planmode-path — the hook-alignment test suite executes this recipe (a bash equivalent of the Write tool call above) to verify the resulting sibling file lands at the path and content require-plan-review.sh and marker.sh expect. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```
+CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SESSION_ID=$(~/.claude/scripts/marker.sh resolve-session-id) || exit 1
+printf '%s' "$PLAN_MODE_FILE_PATH" > "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
+```
+
 ## Step 1 — Identify the plan
 
 Find the plan to review. Check, in order:

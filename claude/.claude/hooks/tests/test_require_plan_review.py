@@ -831,7 +831,7 @@ class TestMarkerWriteReadAgreement:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**exitplanmode_input(), "session_id": sid},
+                {**exitplanmode_input(plan_file_path=""), "session_id": sid},
                 cwd=plan_review_repo,
             )
             == "allow"
@@ -843,7 +843,7 @@ class TestMarkerWriteReadAgreement:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**exitplanmode_input(), "session_id": sid},
+                {**exitplanmode_input(plan_file_path=""), "session_id": sid},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -884,7 +884,7 @@ class TestUnhashablePlanFailsClosed:
         try:
             decision = run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**exitplanmode_input(), "session_id": sid},
+                {**exitplanmode_input(plan_file_path=""), "session_id": sid},
                 cwd=plan_review_repo,
             )
         finally:
@@ -905,7 +905,7 @@ class TestUnhashablePlanFailsClosed:
         try:
             reason = run_hook_reason(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**exitplanmode_input(), "session_id": sid},
+                {**exitplanmode_input(plan_file_path=""), "session_id": sid},
                 cwd=plan_review_repo,
             )
         finally:
@@ -953,7 +953,7 @@ class TestContentAddressedPlanReviewMarker:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**exitplanmode_input(), "session_id": sid},
+                {**exitplanmode_input(plan_file_path=""), "session_id": sid},
                 cwd=plan_review_repo,
             )
             == "deny"
@@ -1072,7 +1072,7 @@ class TestRequirePlanReviewExitPlanMode:
         """Gate arms: plan exists, no marker → ExitPlanMode denied."""
         result = run_hook(
             REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(), "session_id": "test-session-epm"},
+            {**exitplanmode_input(plan_file_path=""), "session_id": "test-session-epm"},
             cwd=plan_review_repo,
         )
         assert result == "deny"
@@ -1081,7 +1081,7 @@ class TestRequirePlanReviewExitPlanMode:
         """Deny reason contains /plan-review reference and ExitPlanMode-specific wording."""
         reason = run_hook_reason(
             REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(), "session_id": "test-session-epm-reason"},
+            {**exitplanmode_input(plan_file_path=""), "session_id": "test-session-epm-reason"},
             cwd=plan_review_repo,
         )
         assert reason is not None
@@ -1094,7 +1094,7 @@ class TestRequirePlanReviewExitPlanMode:
         write_plan_review_marker(plan_review_home, plan_review_repo, sid)
         result = run_hook(
             REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(), "session_id": sid},
+            {**exitplanmode_input(plan_file_path=""), "session_id": sid},
             cwd=plan_review_repo,
         )
         assert result == "allow"
@@ -1105,7 +1105,7 @@ class TestRequirePlanReviewExitPlanMode:
         shutil.rmtree(plans_dir, ignore_errors=True)
         result = run_hook(
             REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(), "session_id": "test-session-epm-noplan"},
+            {**exitplanmode_input(plan_file_path=""), "session_id": "test-session-epm-noplan"},
             cwd=plan_review_repo,
         )
         assert result == "allow"
@@ -1116,7 +1116,7 @@ class TestRequirePlanReviewExitPlanMode:
         subprocess.run(["git", "commit", "-m", "plan"], cwd=plan_review_repo, check=True)
         result = run_hook(
             REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(), "session_id": "test-session-epm-committed"},
+            {**exitplanmode_input(plan_file_path=""), "session_id": "test-session-epm-committed"},
             cwd=plan_review_repo,
         )
         assert result == "allow"
@@ -1125,7 +1125,7 @@ class TestRequirePlanReviewExitPlanMode:
         """No session_id → deny (fail-closed; can't key per-session marker)."""
         result = run_hook(
             REQUIRE_PLAN_REVIEW_HOOK,
-            exitplanmode_input(),  # no session_id key
+            exitplanmode_input(plan_file_path=""),  # no session_id key
             cwd=plan_review_repo,
         )
         assert result == "deny"
@@ -1134,7 +1134,7 @@ class TestRequirePlanReviewExitPlanMode:
         """No session_id deny reason uses ExitPlanMode-specific wording, not a generic message."""
         reason = run_hook_reason(
             REQUIRE_PLAN_REVIEW_HOOK,
-            exitplanmode_input(),  # no session_id key
+            exitplanmode_input(plan_file_path=""),  # no session_id key
             cwd=plan_review_repo,
         )
         assert reason is not None and "plan presentation" in reason.lower()
@@ -1147,7 +1147,7 @@ class TestRequirePlanReviewExitPlanMode:
         skips the scope filter, and the hook falls through to emit_deny.
         This test confirms the hook does not crash under set -uo pipefail.
         """
-        payload = exitplanmode_input()
+        payload = exitplanmode_input(plan_file_path="")
         # Confirm no file_path field — the helper must not include it.
         assert "file_path" not in payload.get("tool_input", {})
         result = run_hook(
@@ -1171,7 +1171,7 @@ class TestRequirePlanReviewExitPlanMode:
         (active_dir / sid).write_text(str(os.getpid()))  # live PID
         result = run_hook(
             REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(), "session_id": sid},
+            {**exitplanmode_input(plan_file_path=""), "session_id": sid},
             cwd=plan_review_repo,
         )
         assert result == "deny"
@@ -1191,7 +1191,7 @@ class TestRequirePlanReviewExitPlanMode:
         write_plan_review_marker(plan_review_home, plan_review_repo, other_sid)
         result = run_hook(
             REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(), "session_id": "test-session-epm-current"},
+            {**exitplanmode_input(plan_file_path=""), "session_id": "test-session-epm-current"},
             cwd=plan_review_repo,
         )
         assert result == "allow"
@@ -1204,7 +1204,7 @@ class TestRequirePlanReviewExitPlanMode:
         (plan_review_repo / ".claude" / "plans" / "impl-plan.md").write_text("edited after review\n")
         result = run_hook(
             REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(), "session_id": "test-session-epm-current"},
+            {**exitplanmode_input(plan_file_path=""), "session_id": "test-session-epm-current"},
             cwd=plan_review_repo,
         )
         assert result == "deny"
@@ -1553,4 +1553,273 @@ class TestRequirePlanReviewLatency:
             f"tier-2 read took {seeded_seconds:.3f}s across "
             f"{SEEDED_SIBLING_WORKTREE_COUNT} worktrees vs {baseline_seconds:.3f}s "
             f"across 1 — over the allowed {allowed:.3f}s."
+        )
+
+
+class TestRequirePlanReviewPlanMode:
+    """ExitPlanMode's tool_input.planFilePath names the harness plan-mode file
+    directly on the very call being gated, so require-plan-review.sh hashes
+    it fresh and checks it against plan-review-markers/ ahead of the
+    repo-relative check -- see the hook's own comment on why the ordering is
+    required, not cosmetic (a stale repo-relative marker must not authorize
+    unreviewed plan-mode content presented via a nested plan-mode question).
+
+    Every other ExitPlanMode test in this file passes plan_file_path="" to
+    isolate itself from this branch and exercise the repo-relative check in
+    the shape it always has -- see the module-wide exitplanmode_input()
+    call-site update accompanying this class.
+    """
+
+    def _write_planmode_marker(self, home, repo, session_id, plan_mode_file):
+        """Seed a completion marker keyed to a plan-mode file's content hash,
+        mirroring what `marker.sh write plan-review` computes when a
+        `.planmode-path` sibling declares `plan_mode_file` as its target."""
+        digest = hashlib.sha256(plan_mode_file.read_bytes()).hexdigest()
+        marker = plan_review_marker_path(home, repo, session_id)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(digest + "\n")
+        return marker
+
+    def test_matching_planmode_hash_allows_exitplanmode(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        sid = "session-planmode-match"
+        plan_mode_file = tmp_path / "planmode-scratch.md"
+        plan_mode_file.write_text("# Plan-mode plan\n\nContent.\n")
+        self._write_planmode_marker(plan_review_home, plan_review_repo, sid, plan_mode_file)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_stale_or_no_marker_denies_with_planfilepath_set(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """Regression test for the bug this plan fixes: with no repo-relative
+        plan present, the pre-fix hook's CURRENT_HASH-empty short-circuit
+        let ExitPlanMode through unconditionally regardless of planFilePath.
+        A plan-mode ExitPlanMode call with no covering marker must now deny."""
+        sid = "session-planmode-nomark"
+        shutil.rmtree(plan_review_repo / ".claude" / "plans", ignore_errors=True)
+        plan_mode_file = tmp_path / "planmode-scratch.md"
+        plan_mode_file.write_text("# Unreviewed plan-mode content\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_nested_planmode_denies_despite_stale_repo_marker(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """Ordering regression: a valid, fresh repo-relative marker must not
+        authorize a NESTED plan-mode ExitPlanMode call presenting different,
+        unreviewed content. Plan-mode priority over the repo-relative check
+        is what closes this -- see the companion test below, which proves
+        the repo-relative marker seeded here is genuinely valid on its own
+        terms, so this deny is attributable to the ordering fix."""
+        sid = "session-nested-planmode"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        plan_mode_file = tmp_path / "planmode-scratch.md"
+        plan_mode_file.write_text("# Different, unreviewed plan-mode content\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_nested_planmode_companion_repo_marker_alone_would_allow(
+        self, plan_review_repo, plan_review_home
+    ):
+        """Companion to the case above, same session and same seeded marker:
+        a Write call (which carries no planFilePath to prioritize) is
+        allowed by that marker. This is what proves the prior test's deny
+        comes from the ordering fix and not from an invalid or mis-seeded
+        marker -- without the ordering fix, ExitPlanMode would follow this
+        same repo-relative path and wrongly allow too.
+
+        Proxy, not a mutation-tested proof: this rules out "mis-seeded
+        marker" by inference from Write sharing the hook's repo-relative
+        branch with post-priority-check ExitPlanMode, not by executing the
+        pre-fix branch ordering with the priority block physically removed."""
+        sid = "session-nested-planmode"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_absent_and_empty_planfilepath_fall_through_identically(
+        self, plan_review_repo, plan_review_home
+    ):
+        """planFilePath absent (no key at all) and planFilePath="" (present,
+        empty) must both fall through to the repo-relative check unchanged.
+        jq's `// empty` maps a missing/null field to empty, but an empty
+        STRING is already empty without that fallback ever triggering -- the
+        two paths through the hook's `[ -n ... ]` guard are not guaranteed to
+        agree without exercising both."""
+        sid = "session-planfilepath-variants"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+
+        absent_payload = {
+            "tool_name": "ExitPlanMode",
+            "tool_input": {"plan": "# Test plan\n"},
+            "session_id": sid,
+        }
+        empty_payload = {**exitplanmode_input(plan_file_path=""), "session_id": sid}
+
+        assert run_hook(REQUIRE_PLAN_REVIEW_HOOK, absent_payload, cwd=plan_review_repo) == "allow"
+        assert run_hook(REQUIRE_PLAN_REVIEW_HOOK, empty_payload, cwd=plan_review_repo) == "allow"
+
+    def test_planfilepath_naming_nonexistent_target_denies_even_with_valid_repo_marker(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        sid = "session-planmode-missing"
+        write_plan_review_marker(plan_review_home, plan_review_repo, sid)
+        missing_path = str(tmp_path / "does-not-exist.md")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=missing_path), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_planfilepath_naming_unreadable_target_denies(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        sid = "session-planmode-unreadable"
+        plan_mode_file = tmp_path / "unreadable-plan.md"
+        plan_mode_file.write_text("# secret\n")
+        plan_mode_file.chmod(0o000)
+        try:
+            result = run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+        finally:
+            plan_mode_file.chmod(0o644)
+        assert result == "deny"
+
+    def test_planfilepath_target_read_timeout_denies_within_budget(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """_lib_capped caps the sha256sum call at 5s; a stalled read (e.g. a
+        dead network mount under the plan-mode file's path) must deny within
+        that budget, not hang the ExitPlanMode call indefinitely."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_sha256sum = shutil.which("sha256sum")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "sha256sum"
+        stub.write_text(f'#!/bin/bash\nsleep 10\nexec {real_sha256sum} "$@"\n')
+        stub.chmod(0o755)
+
+        plan_mode_file = tmp_path / "slow-plan.md"
+        plan_mode_file.write_text("# plan\n")
+
+        sid = "session-planmode-timeout"
+        start = time.monotonic()
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
+            cwd=plan_review_repo,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+        assert result == "deny"
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if it "
+            f"does not), took {elapsed:.1f}s"
+        )
+
+
+class TestPlanReviewSkillPlanModeFixture:
+    """Exercises the new Step 0 declare-planmode-path fixture end to end: the
+    recipe lands the sibling file at the path and content marker.sh expects,
+    and marker.sh write plan-review + require-plan-review.sh's ExitPlanMode
+    check together honor a review declared this way."""
+
+    def _run_activate_then_declare(self, repo, home, monkeypatch, plan_mode_file):
+        run_skill_command(
+            extract_skill_command(PLAN_REVIEW_SKILL, "activate-gate"),
+            cwd=repo,
+            isolated_home=home,
+        )
+        monkeypatch.setenv("PLAN_MODE_FILE_PATH", str(plan_mode_file))
+        run_skill_command(
+            extract_skill_command(PLAN_REVIEW_SKILL, "declare-planmode-path"),
+            cwd=repo,
+            isolated_home=home,
+        )
+
+    def test_declare_planmode_path_fixture_lands_sibling_file(
+        self, plan_review_repo, plan_review_home, tmp_path, monkeypatch
+    ):
+        sid = "session-declare-planmode"
+        _seed_session(plan_review_home, sid)
+        plan_mode_file = tmp_path / "harness-plan.md"
+        plan_mode_file.write_text("# Harness plan-mode content\n")
+
+        self._run_activate_then_declare(plan_review_repo, plan_review_home, monkeypatch, plan_mode_file)
+
+        sibling = plan_review_home / ".claude" / ".plan-review-active.d" / f"{sid}.planmode-path"
+        assert sibling.exists(), (
+            "SKILL.md declare-planmode-path recipe ran but no sibling file landed "
+            "at the path marker.sh expects — skill and script disagree on layout."
+        )
+        assert sibling.read_text() == str(plan_mode_file), (
+            "the sibling file must hold the declared plan-mode path verbatim, with "
+            "no trailing newline"
+        )
+
+    def test_declared_planmode_path_chains_through_marker_write_and_gate(
+        self, plan_review_repo, plan_review_home, tmp_path, monkeypatch
+    ):
+        """Chained integration: Step 0's recipe -> marker.sh write plan-review
+        (subprocess) -> require-plan-review.sh's ExitPlanMode check
+        (subprocess). Catches a cross-file data-shape mismatch (trailing
+        newline, relative-path convention) that three independently-mocked
+        unit tests could each pass while the composed path fails."""
+        sid = "session-declare-planmode-chain"
+        _seed_session(plan_review_home, sid)
+        plan_mode_file = tmp_path / "harness-plan-chain.md"
+        plan_mode_file.write_text("# Harness plan-mode content for the chain test\n")
+
+        self._run_activate_then_declare(plan_review_repo, plan_review_home, monkeypatch, plan_mode_file)
+
+        result = subprocess.run(
+            ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "plan-review"],
+            cwd=plan_review_repo,
+            env={**os.environ, "HOME": str(plan_review_home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
         )
