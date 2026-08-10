@@ -82,6 +82,11 @@ Invoke `/plan-review` against the written plan file. Address any findings before
 
 Commit the reviewed plan to the implementation branch before implementation begins — it makes an approved plan durable before a phase that rewrites the working tree, and `handoff` §5 already requires it.
 
-Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Hand off when `nudge-handoff-near-context-cap.sh` has fired for this session, when the engineer asked for one, when the session is ending regardless, or when a `handoff` §2 reason applies on its own terms. Treat the nudge as a floor rather than the only signal — it fires once, is globally disableable, and per `docs/handoff-nudge.md` can stay silent on an unrecognized model or a schema-drifted transcript.
+Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check` and act on its JSON (`docs/handoff-nudge.md` carries the contract):
+
+- `"status":"ok"` — hand off when `over_threshold` is `true`, or when `already_fired` is `true`. Report `estimate` and `threshold`. Say so when `nudge_disabled` is `true`: the measurement is still valid, but no nudge will arrive on its own. When `"model_recognized":false`, report `model` and `context_window` as well and treat the result as a soft number — the window fell back to the 1M default, so the threshold may not match the running model and those two fields are what let the engineer judge how far off it is.
+- `"status":"cannot-resolve"` or `"status":"schema-drift"` — say the estimate is unavailable, name the `reason`, and fall back to judgment: session length, how much of the task remains, whether the plan boundary is a natural seam.
+
+These are a floor, not the only signal: hand off regardless when the engineer asked, when the session is ending anyway, or when a `handoff` §2 reason applies on its own terms. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or plan file.
 
 Delegating implementation to `code-writer` is a separate axis, not a tiebreaker: a subagent starts from a fresh context either way, so it neither argues for handing off nor for staying.
