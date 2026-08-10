@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -177,6 +178,116 @@ def _drift_marker_path(
 ) -> Path:
     base = config_dir if config_dir is not None else tmp_path / ".claude"
     return base / ".handoff-nudge-fired.d" / f"{session_id}-drift"
+
+
+# ---------------------------------------------------------------------------
+# --check mode helpers
+# ---------------------------------------------------------------------------
+
+# --check takes no stdin payload: it resolves its own session by walking
+# process ancestors for a sessions/<pid> entry. Under a bare subprocess.run
+# with a list argv and no shell, the hook's $PPID is this pytest process, so
+# seeding sessions/<os.getpid()> puts the entry at hop 1. Isolation comes from
+# the tmp_path-scoped HOME, not from PID uniqueness — tests sharing the one
+# real pytest PID never collide because their config dirs differ.
+
+
+def _live_lstart(pid: int) -> str:
+    """The process start time as the hook reads it.
+
+    Mirrors capture-session-id.sh's pinned `TZ=UTC LC_ALL=C ps -o lstart=`
+    recipe, including command-substitution's trailing-newline strip, so the
+    stored and live values compare byte-for-byte the way the hook expects.
+    """
+    proc = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+        check=False,
+    )
+    return proc.stdout.rstrip("\n")
+
+
+def _seed_session(
+    config_dir: Path,
+    pid: int,
+    session_id: str = SESSION_ID,
+    start_time: str | None = None,
+) -> Path:
+    """Write the sessions/<pid> lookup file capture-session-id.sh would write."""
+    sessions_dir = config_dir / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    entry = sessions_dir / str(pid)
+    stamp = _live_lstart(pid) if start_time is None else start_time
+    entry.write_text(f"{session_id}\n{stamp}\n")
+    return entry
+
+
+def _seed_transcript(
+    config_dir: Path,
+    records: list[dict],
+    session_id: str = SESSION_ID,
+    slug: str = "-tmp-project",
+) -> Path:
+    """Place a transcript where the session-id glob will find it."""
+    project_dir = config_dir / "projects" / slug
+    project_dir.mkdir(parents=True, exist_ok=True)
+    transcript = project_dir / f"{session_id}.jsonl"
+    _write_transcript(transcript, records)
+    return transcript
+
+
+def _check_env(tmp_path: Path, extra_env: dict | None = None) -> dict:
+    env = {**os.environ, "HOME": str(tmp_path)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    env.pop("HANDOFF_NUDGE_ABS_CAP", None)
+    if extra_env:
+        env.update(extra_env)
+    return env
+
+
+def _run_check(tmp_path: Path, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [str(NUDGE_HOOK), "--check"],
+        capture_output=True,
+        text=True,
+        env=_check_env(tmp_path, extra_env),
+        check=False,
+    )
+
+
+def _check_json(result: subprocess.CompletedProcess) -> dict:
+    assert result.returncode == 0, f"--check must exit 0; stderr={result.stderr}"
+    return json.loads(result.stdout)
+
+
+def _default_config_dir(tmp_path: Path) -> Path:
+    return tmp_path / ".claude"
+
+
+# The hook caps its ancestor walk at CHECK_MAX_ANCESTOR_HOPS. Hop 1 is the
+# hook's own $PPID, so N wrapper processes put the pytest-owned sessions entry
+# at hop N+1 — the boundary tests below seed exactly at the cap and one past it.
+CHECK_MAX_ANCESTOR_HOPS = 6
+
+
+def _wrapper_chain(tmp_path: Path, depth: int, final_argv: list[str]) -> list[str]:
+    """Build `depth` nested bash wrappers around final_argv.
+
+    Returns the argv to invoke. Each wrapper runs the next as a forked child
+    (a script file's last command is not exec-optimized), so the resulting
+    process chain has exactly `depth` shells between the caller and final_argv.
+    """
+    argv = final_argv
+    for level in range(depth):
+        wrapper = tmp_path / f"hop{level}.sh"
+        wrapper.write_text(
+            "#!/bin/bash\n" + " ".join(shlex.quote(part) for part in argv) + "\n"
+        )
+        wrapper.chmod(0o755)
+        argv = ["bash", str(wrapper)]
+    return argv
 
 
 # ---------------------------------------------------------------------------
@@ -811,3 +922,375 @@ class TestNudgeHandoffNearContextCap:
         )
         assert result.returncode == 0
         assert result.stdout.strip() == ""
+
+
+class TestCheckMode:
+    """Read-only --check mode: reports the session's estimate, writes nothing.
+
+    Consumed by plan-it Step 7 and the handoff skill, which branch on `status`
+    and act on `over_threshold`. Refusing is a first-class outcome: every
+    unresolved condition returns a named reason rather than a guessed number,
+    because a confident number for the wrong session is worse than none.
+    """
+
+    def _seeded(self, tmp_path, total=LARGE_THRESHOLD - 1, model="claude-opus-5"):
+        """Seed a resolvable session at hop 1 and return its config dir."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid())
+        _seed_transcript(config_dir, [_record_totalling(total, model=model)])
+        return config_dir
+
+    # -- side-effect freedom ------------------------------------------------
+
+    def test_writes_no_marker_and_no_log(self, tmp_path):
+        """--check must not consume the session's one nudge or append to the
+        log that transcript-analysis.py reads as conversion evidence."""
+        config_dir = self._seeded(tmp_path, total=ABOVE_LARGE)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "ok"
+        assert payload["over_threshold"] is True
+        assert not _marker_path(tmp_path, config_dir=config_dir).exists()
+        assert not _drift_marker_path(tmp_path, config_dir=config_dir).exists()
+        assert not _log_path(tmp_path, config_dir=config_dir).exists()
+
+    def test_does_not_read_stdin(self, tmp_path):
+        """The dispatch must precede the hook's unconditional `cat`.
+
+        Invoked from a Bash tool call with no redirect, that `cat` reads
+        inherited stdin and blocks. pytest's own stdin is already closed, so a
+        regressed ordering would still pass a plain subprocess.run — this holds
+        the pipe open and never writes, so reading stdin hangs and fails here.
+        """
+        self._seeded(tmp_path)
+        proc = subprocess.Popen(
+            [str(NUDGE_HOOK), "--check"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_check_env(tmp_path),
+        )
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            pytest.fail("--check blocked on stdin; the dispatch runs after the `cat`")
+        stdout = proc.stdout.read()
+        proc.stdout.close()
+        proc.stderr.close()
+        proc.stdin.close()
+        assert json.loads(stdout)["status"] == "ok"
+
+    # -- ancestor walk ------------------------------------------------------
+
+    def test_resolves_through_multi_hop_ancestor_walk(self, tmp_path):
+        """The walk must advance past an ancestor with no sessions entry.
+
+        Production needs 2-3 hops (a Bash tool call's shell, or a subshell);
+        seeding at hop 1 alone would leave the loop itself untested. What
+        discriminates is the pair of assertions at the end: the session
+        resolved, and no entry existed at the wrapper the walk had to cross.
+        Capping the loop at one hop turns this into
+        `cannot-resolve`/`session-id-unresolved`.
+        """
+        config_dir = self._seeded(tmp_path)
+        pid_file = tmp_path / "wrapper.pid"
+        wrapper = tmp_path / "wrapper.sh"
+        wrapper.write_text('#!/bin/bash\nprintf "%s" "$$" > "$2"\n"$1" --check\n')
+        wrapper.chmod(0o755)
+        result = subprocess.run(
+            ["bash", str(wrapper), str(NUDGE_HOOK), str(pid_file)],
+            capture_output=True,
+            text=True,
+            env=_check_env(tmp_path),
+            check=False,
+        )
+        wrapper_pid = int(pid_file.read_text())
+        # The entry lives at the pytest PID, the wrapper's parent — resolving
+        # it means the walk crossed the wrapper, which has no entry.
+        payload = _check_json(result)
+        assert payload["status"] == "ok"
+        assert payload["session_id"] == SESSION_ID
+        assert not (config_dir / "sessions" / str(wrapper_pid)).exists()
+
+    @pytest.mark.parametrize(
+        "wrappers, expected_status",
+        [(CHECK_MAX_ANCESTOR_HOPS - 1, "ok"), (CHECK_MAX_ANCESTOR_HOPS, "cannot-resolve")],
+        ids=["at-cap", "one-past-cap"],
+    )
+    def test_ancestor_walk_stops_at_the_hop_cap(self, tmp_path, wrappers, expected_status):
+        """The cap is a deliberate bound — a wedged process table must become a
+        fast refusal, not a hang — so both sides of it are pinned. N wrappers
+        put the entry at hop N+1, so N = cap-1 is the last resolvable depth and
+        N = cap is one past it. An off-by-one in the loop bound moves one of
+        these two without moving the other."""
+        self._seeded(tmp_path, total=ABOVE_LARGE)
+        argv = _wrapper_chain(tmp_path, wrappers, [str(NUDGE_HOOK), "--check"])
+        result = subprocess.run(
+            argv, capture_output=True, text=True, env=_check_env(tmp_path), check=False
+        )
+        payload = _check_json(result)
+        assert payload["status"] == expected_status
+        if expected_status == "cannot-resolve":
+            assert payload["reason"] == "session-id-unresolved"
+
+    def test_refuses_when_session_id_unresolved(self, tmp_path):
+        """No sessions entry anywhere in the walk means no session to report."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_transcript(config_dir, [_record_totalling(ABOVE_LARGE)])
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "cannot-resolve"
+        assert payload["reason"] == "session-id-unresolved"
+        assert "estimate" not in payload
+
+    def test_refuses_on_stale_pid(self, tmp_path):
+        """A stored start time that disagrees with the live process means the
+        PID was reused; binding to it would report another session's number."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid(), start_time="Mon Jan  1 00:00:00 2001")
+        _seed_transcript(config_dir, [_record_totalling(ABOVE_LARGE)])
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "cannot-resolve"
+        assert payload["reason"] == "session-id-stale-pid"
+
+    @pytest.mark.parametrize(
+        "malformed", [TRAVERSAL_SESSION_ID, "../../etc", "sess/id", "sess*", "sess?[a]"]
+    )
+    def test_refuses_malformed_session_id(self, tmp_path, malformed):
+        """The session id becomes a glob and path component, and unlike the
+        fire path's harness-supplied value this one is read off disk.
+
+        The refusal reason is the whole assertion. `--check` has no write path
+        at all, so containment here is enforced by refusing rather than by
+        guarding a write — a no-file-created assertion would pass even with
+        the validation deleted, and is deliberately not made.
+        """
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid(), session_id=malformed)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "cannot-resolve"
+        assert payload["reason"] == "session-id-malformed"
+
+    @pytest.mark.parametrize(
+        "entry_text",
+        ["", "\n", f"{SESSION_ID}\n", "\nMon Jan  1 00:00:00 2001\n"],
+        ids=["empty-file", "blank-line", "session-id-only", "missing-session-id"],
+    )
+    def test_refuses_malformed_sessions_entry(self, tmp_path, entry_text):
+        """`sessions/<pid>` is an on-disk file with no format version, so a
+        truncated or empty entry must refuse rather than compare an empty
+        stored start time against a live one and call that a stale PID."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        sessions_dir = config_dir / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / str(os.getpid())).write_text(entry_text)
+        _seed_transcript(config_dir, [_record_totalling(ABOVE_LARGE)])
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "cannot-resolve"
+        assert payload["reason"] in {"session-id-unresolved", "session-id-stale-pid"}
+
+    # -- transcript resolution ----------------------------------------------
+
+    def test_refuses_when_transcript_not_found(self, tmp_path):
+        """Zero glob matches must not read as one — bash's default expands an
+        unmatched pattern to the literal pattern string."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid())
+        (config_dir / "projects" / "-tmp-project").mkdir(parents=True)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "cannot-resolve"
+        assert payload["reason"] == "transcript-not-found"
+
+    def test_refuses_when_transcript_ambiguous(self, tmp_path):
+        """Two project dirs holding the same session id: refuse rather than
+        pick one, since guessing reports a number from the wrong tree."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid())
+        _seed_transcript(config_dir, [_record_totalling(ABOVE_LARGE)], slug="-tmp-main")
+        _seed_transcript(config_dir, [_record_totalling(ABOVE_LARGE)], slug="-tmp-worktree")
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "cannot-resolve"
+        assert payload["reason"] == "transcript-ambiguous"
+
+    def test_resolves_under_inherited_noglob(self, tmp_path):
+        """--check runs from an arbitrary Bash tool call, so the caller's shell
+        options are inherited. Under `set -f` an unguarded pattern stays
+        unexpanded and reads as one match holding the literal pattern, which
+        would surface as usage-block-missing instead of the real estimate."""
+        self._seeded(tmp_path, total=ABOVE_LARGE)
+        wrapper = tmp_path / "noglob.sh"
+        wrapper.write_text('#!/bin/bash\nset -f\n"$1" --check\nexit 0\n')
+        wrapper.chmod(0o755)
+        result = subprocess.run(
+            ["bash", str(wrapper), str(NUDGE_HOOK)],
+            capture_output=True,
+            text=True,
+            env=_check_env(tmp_path),
+            check=False,
+        )
+        payload = _check_json(result)
+        assert payload["status"] == "ok"
+        assert payload["estimate"] == ABOVE_LARGE
+
+    def test_refuses_when_usage_block_missing(self, tmp_path):
+        """A transcript with no assistant usage record has nothing to sum."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid())
+        _seed_transcript(config_dir, [{"type": "user", "message": {"content": []}}])
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "cannot-resolve"
+        assert payload["reason"] == "usage-block-missing"
+
+    # -- config dir ---------------------------------------------------------
+
+    def test_refuses_on_unresolvable_config_dir(self, tmp_path):
+        """A relative CLAUDE_CONFIG_DIR resolves differently per invocation
+        cwd; the fire path fails open, --check names the reason instead."""
+        self._seeded(tmp_path)
+        payload = _check_json(
+            _run_check(tmp_path, extra_env={"CLAUDE_CONFIG_DIR": "relative/profile"})
+        )
+        assert payload["status"] == "cannot-resolve"
+        assert payload["reason"] == "config-dir-unresolved"
+
+    def test_resolves_from_overridden_config_dir(self, tmp_path):
+        """sessions/, the transcript glob root, and the kill-switch all come
+        from CLAUDE_CONFIG_DIR when set, not from $HOME/.claude."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        _seed_session(config_dir, os.getpid())
+        _seed_transcript(config_dir, [_record_totalling(ABOVE_LARGE)])
+        (config_dir / ".handoff-nudge-disabled").touch()
+        # A decoy under the default location must not be what gets read.
+        home_config = _default_config_dir(tmp_path)
+        home_config.mkdir(parents=True, exist_ok=True)
+        _seed_session(home_config, os.getpid(), session_id="decoy-session")
+        payload = _check_json(
+            _run_check(tmp_path, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)})
+        )
+        assert payload["status"] == "ok"
+        assert payload["session_id"] == SESSION_ID
+        assert payload["nudge_disabled"] is True
+
+    # -- reported fields ----------------------------------------------------
+
+    def test_reports_below_threshold(self, tmp_path):
+        self._seeded(tmp_path, total=LARGE_THRESHOLD - 1)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "ok"
+        assert payload["estimate"] == LARGE_THRESHOLD - 1
+        assert payload["threshold"] == LARGE_THRESHOLD
+        assert payload["over_threshold"] is False
+
+    @pytest.mark.parametrize("total", [LARGE_THRESHOLD, ABOVE_LARGE])
+    def test_reports_at_or_above_threshold(self, tmp_path, total):
+        """The fire path fires at >= THRESHOLD, so --check must agree at the
+        boundary or the two would disagree about the same session."""
+        self._seeded(tmp_path, total=total)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["estimate"] == total
+        assert payload["over_threshold"] is True
+
+    @pytest.mark.parametrize("model, window, threshold", KNOWN_MODEL_THRESHOLDS)
+    def test_known_model_reported_as_recognized(self, tmp_path, model, window, threshold):
+        """Both verified lists are enumerated arms, so a listed 1M model must
+        report recognized — otherwise the most common models read as
+        defaulted and every consumer hedges on a correct number."""
+        self._seeded(tmp_path, total=threshold, model=model)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["model"] == model
+        assert payload["context_window"] == window
+        assert payload["threshold"] == threshold
+        assert payload["model_recognized"] is True
+
+    @pytest.mark.parametrize("model", COLLIDING_MODEL_IDS + ["claude-unknown-9"])
+    def test_unknown_model_reported_as_defaulted(self, tmp_path, model):
+        """An ID with no arm takes the 1M default; saying so is the whole
+        point of the field, since the threshold may not match that model."""
+        self._seeded(tmp_path, total=ABOVE_LARGE, model=model)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["context_window"] == LARGE_WINDOW
+        assert payload["model_recognized"] is False
+
+    def test_reports_already_fired(self, tmp_path):
+        """Replaces the 'it fires once' caveat the skill bodies used to carry."""
+        config_dir = self._seeded(tmp_path, total=ABOVE_LARGE)
+        marker = _marker_path(tmp_path, config_dir=config_dir)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "ok"
+        assert payload["already_fired"] is True
+
+    def test_killswitch_reported_not_honoured(self, tmp_path):
+        """The kill-switch suppresses notifying, not measuring — a session
+        that explicitly asks for a number still gets one."""
+        config_dir = self._seeded(tmp_path, total=ABOVE_LARGE)
+        (config_dir / ".handoff-nudge-disabled").touch()
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "ok"
+        assert payload["estimate"] == ABOVE_LARGE
+        assert payload["nudge_disabled"] is True
+
+    def test_abs_cap_override_changes_reported_threshold(self, tmp_path):
+        """`compute_threshold` is shared with the fire path, so an override
+        must reach --check's reported threshold too — otherwise a future edit
+        that inlines the cap here would report a number the fire path would
+        never act on, and nothing would fail."""
+        override = 120_000
+        self._seeded(tmp_path, total=override + 1)
+        payload = _check_json(
+            _run_check(tmp_path, extra_env={"HANDOFF_NUDGE_ABS_CAP": str(override)})
+        )
+        assert payload["threshold"] == override
+        assert payload["over_threshold"] is True
+
+    def test_emits_every_field_the_skill_bodies_branch_on(self, tmp_path):
+        """`plan-it` Step 7 and the `handoff` warrant check tell an agent to
+        branch on these field names. Nothing else ties that prose to the hook,
+        so a rename here would desync guidance an LLM acts on at inference
+        time without failing any test. A UUID-shaped id is used because that
+        is what the harness actually supplies."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        uuid_session = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
+        _seed_session(config_dir, os.getpid(), session_id=uuid_session)
+        _seed_transcript(
+            config_dir, [_record_totalling(ABOVE_LARGE)], session_id=uuid_session
+        )
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["session_id"] == uuid_session
+        for field in (
+            "status",
+            "estimate",
+            "threshold",
+            "over_threshold",
+            "model",
+            "context_window",
+            "model_recognized",
+            "already_fired",
+            "nudge_disabled",
+        ):
+            assert field in payload, f"{field} is referenced by a SKILL.md branch"
+
+    def test_schema_drift_reported_without_writes(self, tmp_path):
+        """All-zero token fields mean the transcript schema moved; --check
+        says so and still writes neither the drift marker nor a log line."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid())
+        _seed_transcript(config_dir, [_record_totalling(0)])
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "schema-drift"
+        assert payload["session_id"] == SESSION_ID
+        assert not _drift_marker_path(tmp_path, config_dir=config_dir).exists()
+        assert not _log_path(tmp_path, config_dir=config_dir).exists()
