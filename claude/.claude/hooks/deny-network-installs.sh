@@ -52,7 +52,7 @@ fi
 # has-token's boundary check — same helper as deny-credential-bash-reads.sh.
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 
-_INSTALL_ALTERNATIVE="If this install is intentional, ask the user to run it themselves via the ! shell escape, which runs outside the tool-call path this hook gates."
+_INSTALL_ALTERNATIVE="If this install is intentional, name the package, its exact version constraint, and why, then ask the user to run it themselves via the ! shell escape, which runs outside the tool-call path this hook gates."
 
 _INSTALL_VALUE_TAKING_MARKERS="-r --requirement -e --editable"
 

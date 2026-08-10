@@ -391,29 +391,54 @@ def bash_input(
     return payload
 
 
-def edit_input(file_path: str, agent_type: str | None = None, cwd: str | None = None) -> dict:
+def edit_input(
+    file_path: str,
+    agent_type: str | None = None,
+    cwd: str | None = None,
+    old_string: str = "a",
+    new_string: str = "b",
+    replace_all: bool | None = None,
+) -> dict:
+    """`old_string`/`new_string`/`replace_all` default to the prior
+    hardcoded placeholders ("a" -> "b", no replace_all field) — existing
+    call sites that don't care about content keep the same payload. Pass
+    them explicitly for a content-dependent test (e.g. a manifest-diffing
+    hook)."""
+    tool_input: dict = {"file_path": file_path, "old_string": old_string, "new_string": new_string}
+    if replace_all is not None:
+        tool_input["replace_all"] = replace_all
+    payload: dict = {"tool_name": "Edit", "tool_input": tool_input}
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    if cwd is not None:
+        payload["cwd"] = cwd
+    return payload
+
+
+def write_input(
+    file_path: str, agent_type: str | None = None, cwd: str | None = None, content: str = "x"
+) -> dict:
+    """`content` defaults to the prior hardcoded placeholder — existing call
+    sites that don't care about content keep the same payload."""
+    payload: dict = {"tool_name": "Write", "tool_input": {"file_path": file_path, "content": content}}
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    if cwd is not None:
+        payload["cwd"] = cwd
+    return payload
+
+
+def multiedit_input(
+    file_path: str, agent_type: str | None = None, cwd: str | None = None, edits: list | None = None
+) -> dict:
+    """`edits` defaults to the prior hardcoded empty list — existing call
+    sites that don't care about content keep the same payload. Each item is
+    a dict with `old_string`/`new_string` and an optional `replace_all`,
+    matching the real MultiEdit tool_input shape."""
     payload: dict = {
-        "tool_name": "Edit",
-        "tool_input": {"file_path": file_path, "old_string": "a", "new_string": "b"},
+        "tool_name": "MultiEdit",
+        "tool_input": {"file_path": file_path, "edits": edits if edits is not None else []},
     }
-    if agent_type is not None:
-        payload["agent_type"] = agent_type
-    if cwd is not None:
-        payload["cwd"] = cwd
-    return payload
-
-
-def write_input(file_path: str, agent_type: str | None = None, cwd: str | None = None) -> dict:
-    payload: dict = {"tool_name": "Write", "tool_input": {"file_path": file_path, "content": "x"}}
-    if agent_type is not None:
-        payload["agent_type"] = agent_type
-    if cwd is not None:
-        payload["cwd"] = cwd
-    return payload
-
-
-def multiedit_input(file_path: str, agent_type: str | None = None, cwd: str | None = None) -> dict:
-    payload: dict = {"tool_name": "MultiEdit", "tool_input": {"file_path": file_path, "edits": []}}
     if agent_type is not None:
         payload["agent_type"] = agent_type
     if cwd is not None:
