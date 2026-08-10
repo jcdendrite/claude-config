@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
 _BASH = shutil.which("bash") or "/bin/bash"
 
@@ -51,25 +53,11 @@ def _extract_opt_ins_and_inventory_blocks() -> str:
     return opt_ins + "\n" + inventory
 
 
-def _fake_gh(tmp_path: Path, script_body: str) -> Path:
-    """A fake `gh` on its own PATH-prepended directory, so tests never hit
-    the network or depend on a real repo/auth state. `script_body` is the
-    body of the fake gh's case statement over "$@"."""
-    bin_dir = tmp_path / "fake-bin"
-    bin_dir.mkdir(exist_ok=True)
-    gh = bin_dir / "gh"
-    gh.write_text(f"#!/bin/bash\n{script_body}\n")
-    gh.chmod(0o755)
-    return bin_dir
-
-
-def _base_env(home: Path, repo_dir: Path, gh_bin_dir: Path | None = None) -> dict:
+def _base_env(home: Path, repo_dir: Path) -> dict:
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["REPO_DIR"] = str(repo_dir)
     env.pop("CLAUDE_CONFIG_DIR", None)
-    if gh_bin_dir is not None:
-        env["PATH"] = f"{gh_bin_dir}:{env['PATH']}"
     return env
 
 
@@ -248,15 +236,18 @@ class TestConfigureMachineLevelOptInsNonInteractiveSnapshot:
         named sentinel paths stay absent) to a full recursive $HOME
         snapshot: report_sentinel_inventory is read-only by design, and
         configure_machine_level_opt_ins must still no-op under closed stdin
-        now that it also consumes SENTINEL_INVENTORY."""
+        now that it also consumes SENTINEL_INVENTORY. The account-scoped
+        pr-cost-disclosure sentinel is included here so a reporter that
+        rewrote it in place (rather than only reading it) would be caught --
+        the array previously never created that file at all."""
         home = tmp_path / "home"
         home.mkdir()
         (home / ".claude").mkdir()
         (home / ".claude" / "existing-file.txt").write_text("pre-existing content\n")
+        (home / ".claude" / "pr-cost-disclosure").write_text("dollars\n")
         repo = tmp_path / "repo"
         (repo / ".claude").mkdir(parents=True)
         (repo / ".claude" / "worktree-optout").write_text("")
-        gh_bin_dir = _fake_gh(tmp_path, "exit 1")
 
         def snapshot() -> dict[str, tuple[bool, str | None]]:
             result = {}
@@ -280,7 +271,7 @@ class TestConfigureMachineLevelOptInsNonInteractiveSnapshot:
             capture_output=True,
             text=True,
             check=False,
-            env=_base_env(home, repo, gh_bin_dir),
+            env=_base_env(home, repo),
         )
         after = snapshot()
 
@@ -298,9 +289,8 @@ class TestReportSentinelInventory:
         home.mkdir()
         repo = tmp_path / "repo"
         repo.mkdir()
-        gh_bin_dir = _fake_gh(tmp_path, "exit 1")
 
-        result = _run_report(_base_env(home, repo, gh_bin_dir))
+        result = _run_report(_base_env(home, repo))
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert "Worktree enforcement: disabled" in result.stdout
@@ -312,9 +302,8 @@ class TestReportSentinelInventory:
         (home / ".claude" / "worktree-required").write_text("")
         repo = tmp_path / "repo"
         repo.mkdir()
-        gh_bin_dir = _fake_gh(tmp_path, "exit 1")
 
-        result = _run_report(_base_env(home, repo, gh_bin_dir))
+        result = _run_report(_base_env(home, repo))
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert "Worktree enforcement: ENABLED" in result.stdout
@@ -325,60 +314,305 @@ class TestReportSentinelInventory:
         repo = tmp_path / "repo"
         (repo / ".claude").mkdir(parents=True)
         (repo / ".claude" / "worktree-optout").write_text("")
-        gh_bin_dir = _fake_gh(tmp_path, "exit 1")
 
-        result = _run_report(_base_env(home, repo, gh_bin_dir))
+        result = _run_report(_base_env(home, repo))
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert "Worktree enforcement opt-out (this repo): ENABLED" in result.stdout
         assert ".claude/worktree-optout" in result.stdout
 
-    def test_content_addressed_sentinel_absent(self, tmp_path: Path) -> None:
+    def test_account_sentinel_absent_reports_disabled_with_enable_hint(
+        self, tmp_path: Path
+    ) -> None:
         home = tmp_path / "home"
         home.mkdir()
         repo = tmp_path / "repo"
         repo.mkdir()
-        gh_bin_dir = _fake_gh(tmp_path, "exit 1")
+        sentinel_path = home / ".claude" / "pr-cost-disclosure"
 
-        result = _run_report(_base_env(home, repo, gh_bin_dir))
+        result = _run_report(_base_env(home, repo))
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert "absent (.claude/pr-cost-disclosure)" in result.stdout
+        assert f"PR cost disclosure (this account): disabled ({sentinel_path})" in result.stdout
+        assert f'to enable: echo dollars > "{sentinel_path}"' in result.stdout
 
-    def test_content_addressed_sentinel_present_and_matching(self, tmp_path: Path) -> None:
+    def test_account_sentinel_exact_dollars_reports_enabled(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("dollars")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "PR cost disclosure (this account): ENABLED (mode=dollars)" in result.stdout
+
+    def test_account_sentinel_trailing_newline_reports_enabled(self, tmp_path: Path) -> None:
+        """Pins the documented enable command's own output: `echo dollars >
+        <path>` writes a trailing newline, not a bare `dollars`."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("dollars\n")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "PR cost disclosure (this account): ENABLED (mode=dollars)" in result.stdout
+
+    def test_account_sentinel_leading_whitespace_reports_enabled(self, tmp_path: Path) -> None:
+        """Pins that the trim is bidirectional, not right-only."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text(" dollars")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "PR cost disclosure (this account): ENABLED (mode=dollars)" in result.stdout
+
+    def test_account_sentinel_uppercase_dollars_reports_enabled(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("DOLLARS")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "PR cost disclosure (this account): ENABLED (mode=dollars)" in result.stdout
+
+    def test_account_sentinel_mixed_case_dollars_reports_enabled(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("Dollars")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "PR cost disclosure (this account): ENABLED (mode=dollars)" in result.stdout
+
+    def test_account_sentinel_empty_file_reports_disabled(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "PR cost disclosure (this account): disabled" in result.stdout
+
+    def test_account_sentinel_whitespace_only_reports_disabled(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text(" \n")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "PR cost disclosure (this account): disabled" in result.stdout
+
+    def test_account_sentinel_interior_whitespace_not_deleted_reports_disabled(
+        self, tmp_path: Path
+    ) -> None:
+        """Fail-open shape 1: `tr -d '[:space:]'` would collapse "dol lars"
+        to "dollars" and enable disclosure -- the required grammar strips
+        only leading/trailing whitespace, so this must stay disabled."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("dol lars")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "ENABLED" not in result.stdout
+        assert 'present but mode not recognized: "dol lars" — treated as disabled' in result.stdout
+
+    def test_account_sentinel_second_line_ignored_reports_disabled(
+        self, tmp_path: Path
+    ) -> None:
+        """Fail-open shape 2: `IFS= read -r mode < file` reads only the first
+        line and would treat "dollars\\nallowance" as opt-in -- the whole
+        file must be read and compared, not just its first line."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("dollars\nallowance\n")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "ENABLED" not in result.stdout
+        assert "treated as disabled" in result.stdout
+
+    def test_account_sentinel_value_with_trailing_extra_chars_reports_disabled(
+        self, tmp_path: Path
+    ) -> None:
+        """Fail-open shape 3: an unanchored compare (`[[ $mode == *dollars*
+        ]]`) would enable on "dollarsx" -- the compare must be an anchored
+        equality test."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("dollarsx")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "ENABLED" not in result.stdout
+        assert 'present but mode not recognized: "dollarsx" — treated as disabled' in result.stdout
+
+    def test_account_sentinel_value_with_leading_extra_chars_reports_disabled(
+        self, tmp_path: Path
+    ) -> None:
+        """Fail-open shape 3, the other direction: "xdollars" must not match
+        an unanchored compare either."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("xdollars")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "ENABLED" not in result.stdout
+        assert 'present but mode not recognized: "xdollars" — treated as disabled' in result.stdout
+
+    def test_account_sentinel_unrecognized_value_echoed_in_report(
+        self, tmp_path: Path
+    ) -> None:
+        """A typo is not silent in practice -- install.sh's inventory
+        reports the literal unrecognized value at install time."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("allowance")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        result = _run_report(_base_env(home, repo))
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert (
+            'present but mode not recognized: "allowance" — treated as disabled'
+            in result.stdout
+        )
+
+    def test_account_sentinel_resolves_against_claude_config_dir_when_set(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "other-config-dir"
+        (config_dir).mkdir()
+        (config_dir / "pr-cost-disclosure").write_text("dollars\n")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = _base_env(home, repo)
+        env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+
+        result = _run_report(env)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        sentinel_path = config_dir / "pr-cost-disclosure"
+        assert f"PR cost disclosure (this account): ENABLED (mode=dollars) ({sentinel_path})" in result.stdout
+        assert "the only path this scope checks" in result.stdout
+
+    def test_account_sentinel_does_not_union_with_home_claude(self, tmp_path: Path) -> None:
+        """Resolution, not union: a sentinel present only at $HOME/.claude
+        must not activate disclosure once CLAUDE_CONFIG_DIR is set -- the
+        two paths are never both checked."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "pr-cost-disclosure").write_text("dollars\n")
+        config_dir = tmp_path / "other-config-dir"
+        config_dir.mkdir()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = _base_env(home, repo)
+        env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+
+        result = _run_report(env)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        sentinel_path = config_dir / "pr-cost-disclosure"
+        assert f"PR cost disclosure (this account): disabled ({sentinel_path})" in result.stdout
+
+    def test_account_sentinel_relative_claude_config_dir_reports_disabled(
+        self, tmp_path: Path
+    ) -> None:
+        """A relative CLAUDE_CONFIG_DIR is invalid, not cwd-relative -- it
+        must fall back to $HOME/.claude, exactly like an unset value."""
         home = tmp_path / "home"
         home.mkdir()
         repo = tmp_path / "repo"
-        (repo / ".claude").mkdir(parents=True)
-        (repo / ".claude" / "pr-cost-disclosure").write_text("someorg/somerepo\n")
-        gh_bin_dir = _fake_gh(
-            tmp_path,
-            'case "$*" in *"nameWithOwner"*) echo "someorg/somerepo" ;; *) exit 1 ;; esac',
-        )
+        repo.mkdir()
+        env = _base_env(home, repo)
+        env["CLAUDE_CONFIG_DIR"] = "relative/config/dir"
 
-        result = _run_report(_base_env(home, repo, gh_bin_dir))
+        result = _run_report(env)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert "present, matches this repo" in result.stdout
+        sentinel_path = home / ".claude" / "pr-cost-disclosure"
+        assert f"PR cost disclosure (this account): disabled ({sentinel_path})" in result.stdout
 
-    def test_content_addressed_sentinel_present_but_mismatched(self, tmp_path: Path) -> None:
-        """A .claude/ directory copied wholesale from another repo carries a
-        pr-cost-disclosure file naming the *origin* repo -- must read as a
-        warning, not as silently enabled."""
+    def test_account_sentinel_nonexistent_config_dir_reports_disabled_without_aborting(
+        self, tmp_path: Path
+    ) -> None:
         home = tmp_path / "home"
         home.mkdir()
         repo = tmp_path / "repo"
-        (repo / ".claude").mkdir(parents=True)
-        (repo / ".claude" / "pr-cost-disclosure").write_text("otherorg/otherrepo\n")
-        gh_bin_dir = _fake_gh(
-            tmp_path,
-            'case "$*" in *"nameWithOwner"*) echo "someorg/somerepo" ;; *) exit 1 ;; esac',
-        )
+        repo.mkdir()
+        env = _base_env(home, repo)
+        env["CLAUDE_CONFIG_DIR"] = str(tmp_path / "does-not-exist")
 
-        result = _run_report(_base_env(home, repo, gh_bin_dir))
+        result = _run_report(env)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert "present but MISMATCHED" in result.stdout
+        assert "PR cost disclosure (this account): disabled" in result.stdout
+
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root bypasses discretionary file-permission bits (CAP_DAC_OVERRIDE "
+        "on Linux), so chmod(0o000) does not make the file unreadable and this "
+        "sentinel would resolve to ENABLED instead of the asserted disabled",
+    )
+    def test_account_sentinel_unreadable_file_reports_disabled_without_aborting(
+        self, tmp_path: Path
+    ) -> None:
+        """Proves the guarded read (`|| mode=""`) survives a permission
+        failure -- an unguarded command substitution here would abort all of
+        install.sh under set -e, not just this report line."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        sentinel_path = home / ".claude" / "pr-cost-disclosure"
+        sentinel_path.write_text("dollars\n")
+        sentinel_path.chmod(0o000)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        try:
+            result = _run_report(_base_env(home, repo))
+        finally:
+            sentinel_path.chmod(0o644)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert f"PR cost disclosure (this account): disabled ({sentinel_path})" in result.stdout
 
     def test_diverged_config_dir_prints_both_paths(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -389,8 +623,7 @@ class TestReportSentinelInventory:
         config_dir.mkdir()
         repo = tmp_path / "repo"
         repo.mkdir()
-        gh_bin_dir = _fake_gh(tmp_path, "exit 1")
-        env = _base_env(home, repo, gh_bin_dir)
+        env = _base_env(home, repo)
         env["CLAUDE_CONFIG_DIR"] = str(config_dir)
 
         result = _run_report(env)
@@ -409,7 +642,6 @@ class TestReportSentinelInventory:
         home.mkdir()
         repo = tmp_path / "repo"
         repo.mkdir()
-        gh_bin_dir = _fake_gh(tmp_path, "exit 1")
         script = (
             "set -e\n"
             + _extract_inventory_block()
@@ -420,7 +652,7 @@ class TestReportSentinelInventory:
             capture_output=True,
             text=True,
             check=False,
-            env=_base_env(home, repo, gh_bin_dir),
+            env=_base_env(home, repo),
         )
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"

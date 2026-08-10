@@ -72,7 +72,20 @@ not something you can resolve. If none match, proceed without a layer.
 
 Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
 
-Gate: (a) `.claude/pr-cost-disclosure` exists, (b) its trimmed content is non-empty, (c) `gh repo view --json nameWithOwner --jq .nameWithOwner` exits zero with stdout equal to (b) — the sentinel names this repo's own `owner/repo`, so a copy-pasted `.claude/` elsewhere still fails (c). Three outcomes, never a boolean: (1) match → regenerate. (2) gate succeeds but sentinel absent/empty/non-matching → delete the block if one exists. (3) the gate check itself fails (`gh repo view` errors or returns empty) → leave any existing block untouched, note the skip in the report. Never collapse (3) into (2) — a transient `gh` failure must not silently strip a published disclosure.
+Gate: resolve the config dir as `$CLAUDE_CONFIG_DIR` when it is set **and absolute**, else `$HOME/.claude` — a relative `$CLAUDE_CONFIG_DIR` is invalid, not a cwd-relative path, and disables the section. Read `<config-dir>/pr-cost-disclosure`, trim leading and trailing whitespace only, lowercase via `tr '[:upper:]' '[:lower:]'`. Exactly `dollars` → regenerate the block. Anything else — absent, unreadable, empty, interior whitespace, a second line, any other value — delete the block if one exists. Treating an unreadable file as "off" rather than as "leave the block alone" is deliberate: a local read fails rarely and self-heals on the next sync, so the gate prefers under-disclosing to guessing. Do not reintroduce an indeterminate third outcome here. Resolve that one path only; never also check `$HOME/.claude` when `$CLAUDE_CONFIG_DIR` is set, or one account's opt-in would activate disclosure under another. The sentinel is per Claude account, not per repo: cost is an organizational fact, and each account is its own billing entity.
+
+```bash
+case "${CLAUDE_CONFIG_DIR:-}" in
+  /*) config_dir="${CLAUDE_CONFIG_DIR%/}" ;;
+  *) config_dir="$HOME/.claude" ;;
+esac
+sentinel_path="$config_dir/pr-cost-disclosure"
+mode=$(cat "$sentinel_path" 2>/dev/null) || mode=""
+mode="${mode#"${mode%%[![:space:]]*}"}"
+mode="${mode%"${mode##*[![:space:]]}"}"
+mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
+[ "$mode" = "dollars" ]
+```
 
 Resolve the branch immediately before the call and pass it as a quoted, opaque literal — never string-interpolated unquoted (ref names can carry shell metacharacters):
 
@@ -81,7 +94,7 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 python3 ~/.claude/scripts/transcript-analysis.py cost --this-repo --branches "$branch" --summary
 ```
 
-If `$branch` is the literal `HEAD` (detached HEAD), omit the section and say why, rather than publish a `$0.00` block for an unresolved branch. Otherwise embed stdout **verbatim** under `## Cost`, followed by the exact command (branch filled in) — never recompose, round, or re-narrate the figures. Session/turn counts and per-model-ID dollars are not neutral — they signal engagement scale and model mix, the point in a repo opting in for this, not necessarily one whose sentinel exists for a different reason.
+If `$branch` is the literal `HEAD` (detached HEAD), omit the section and say why, rather than publish a `$0.00` block for an unresolved branch. Otherwise embed stdout **verbatim** under `## Cost`, followed by the exact command (branch filled in) — never recompose, round, or re-narrate the figures. Session/turn counts and per-model-ID dollars are not neutral — they signal engagement scale and model mix. That is the intended read under an account that opted in; it is not a property of the output format, and an account enabling this for one engagement should not assume the fields are harmless in another.
 
 ## Checks
 

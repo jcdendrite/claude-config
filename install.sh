@@ -204,14 +204,16 @@ configure_machine_level_opt_ins() {
 # scope is one of: machine-promptable (offered by configure_machine_level_opt_ins
 # above, path-template resolved against $HOME/.claude/), machine (report-only,
 # same resolution), repo (report-only, path-template resolved against this
-# repo's own root), or repo-content-addressed (report-only, three-state:
-# absent / present-and-matching / present-but-mismatched — see
-# report_sentinel_inventory below). prompt-description is carried only for
-# machine-promptable rows. default-state is the sentinel's own state — always
-# "disabled" here, since every row names a file whose own presence is what
-# activates the behavior it describes (a kill-switch row's human-name names
-# the suppression itself, not the feature it suppresses, so presence still
-# reads as that suppression being "enabled").
+# repo's own root), or account (report-only, path-template resolved against
+# $CLAUDE_CONFIG_DIR when set and absolute, else $HOME/.claude — never both;
+# see _report_account_sentinel below). prompt-description is carried only for
+# machine-promptable rows. default-state is the sentinel's own state —
+# "disabled" here for every row, but what makes a row match its default-state
+# differs: machine-promptable/machine/repo rows key off the file's own
+# presence (a kill-switch row's human-name names the suppression itself, not
+# the feature it suppresses, so presence still reads as that suppression
+# being "enabled"), while the account row's state comes from the file's
+# content instead — see _report_account_sentinel.
 SENTINEL_INVENTORY=(
   "worktree-required|machine-promptable|Worktree enforcement|Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'.|disabled|README.md § Worktree enforcement"
   "autonomous-shipping-required|machine-promptable|Autonomous shipping|Lets Claude Code commit, push, and open PRs without asking first, on every repo without a per-repo .claude/autonomous-shipping-optout. A repo cannot enable this by committing anything — only this machine-level file can. See README 'Autonomous shipping'.|disabled|README.md § Autonomous shipping"
@@ -225,7 +227,7 @@ SENTINEL_INVENTORY=(
   ".claude/worktree-optout|repo|Worktree enforcement opt-out (this repo)||disabled|README.md § Worktree enforcement"
   ".claude/autonomous-shipping-optout|repo|Autonomous-shipping opt-out (this repo)||disabled|README.md § Autonomous shipping"
   ".claude/session-title-disabled|repo|Branch-based session-title suppression (this repo)||disabled|docs/hooks.md § Utility hooks"
-  ".claude/pr-cost-disclosure|repo-content-addressed|PR cost disclosure (this repo)||disabled|README.md § PR cost disclosure"
+  "pr-cost-disclosure|account|PR cost disclosure (this account)||disabled|README.md § PR cost disclosure"
 )
 
 # Whether $1 (a zero-based SENTINEL_INVENTORY index) was prompted by
@@ -285,43 +287,46 @@ _report_repo_sentinel() {
   fi
 }
 
-# Three states, not two — .claude/pr-cost-disclosure's content, not just its
-# presence, is what the pr-description skill's gate actually checks (its
-# content must equal this repo's own "owner/repo" from `gh repo view`), so a
-# stale copy landed via a wholesale `.claude/` copy-paste must read as a
-# warning, not as silently enabled. A `gh repo view` failure (offline, no
-# remote, unauthenticated) reports "could not verify" rather than guessing.
-_report_content_addressed_sentinel() {
+# Content, not presence, is this row's state — see the mode grammar in
+# claude/.claude/skills/pr-description/SKILL.md, whose gate this reporter
+# mirrors byte-for-byte (same trim/lowercase/anchored-compare snippet, pinned
+# in both places so they cannot silently diverge). Resolution, not union:
+# $CLAUDE_CONFIG_DIR only when set and absolute, else $HOME/.claude — never
+# both, so one account's opt-in cannot activate disclosure under another
+# account's config dir.
+_report_account_sentinel() {
   local sentinel_index="$1" path_template="$2" human_name="$3" docs_anchor="$4"
-  local repo_path="$REPO_DIR/$path_template"
-  local name_with_owner=""
-  # Bounded the same way require-ready-for-review.sh:191 bounds its own `gh`
-  # network call, so an offline/hung/auth-prompting gh can't stall this
-  # unconditional (no TTY guard) reporting step. GNU coreutils `timeout` is
-  # not guaranteed present here (see the availability check and its
-  # `brew install coreutils` hint later in this file) — an array prefix that
-  # collapses to nothing when absent keeps the call itself unconditional.
-  local -a gh_timeout_prefix=()
-  command -v timeout >/dev/null 2>&1 && gh_timeout_prefix=(timeout 5)
-  name_with_owner="$("${gh_timeout_prefix[@]}" gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || name_with_owner=""
-  printf '  %s:\n' "$human_name"
-  if [ ! -f "$repo_path" ]; then
-    printf '    absent (%s)\n' "$path_template"
-    if [ -n "$name_with_owner" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
-      printf "    → to enable: write %s (this repo's own owner/repo, from gh repo view) to %s\n" "$name_with_owner" "$path_template"
-    fi
+  local config_dir
+  case "${CLAUDE_CONFIG_DIR:-}" in
+    /*) config_dir="${CLAUDE_CONFIG_DIR%/}" ;;
+    *) config_dir="$HOME/.claude" ;;
+  esac
+  local sentinel_path="$config_dir/$path_template"
+  local state
+  if [ ! -f "$sentinel_path" ]; then
+    state="disabled"
   else
-    local stored_content
-    stored_content="$(tr -d '[:space:]' < "$repo_path")"
-    if [ -z "$name_with_owner" ]; then
-      printf '    present (%s); could not verify against gh repo view — no network/auth or non-GitHub remote\n' "$path_template"
-    elif [ "$stored_content" = "$name_with_owner" ]; then
-      printf '    present, matches this repo (%s)\n' "$path_template"
+    local mode
+    mode=$(cat "$sentinel_path" 2>/dev/null) || mode=""
+    mode="${mode#"${mode%%[![:space:]]*}"}"
+    mode="${mode%"${mode##*[![:space:]]}"}"
+    mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
+    if [ "$mode" = "dollars" ]; then
+      state="ENABLED (mode=dollars)"
+    elif [ -z "$mode" ]; then
+      state="disabled"
     else
-      printf '    present but MISMATCHED — content does not name this repo (%s); likely a copied .claude/ from another repo\n' "$path_template"
+      state="present but mode not recognized: \"$mode\" — treated as disabled"
     fi
   fi
+  printf '  %s: %s (%s)\n' "$human_name" "$state" "$sentinel_path"
+  # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
+  # unexpanded here, naming the literal env var in the diagnostic message.
+  printf '    the only path this scope checks — never falls back to $HOME/.claude when CLAUDE_CONFIG_DIR is set\n'
   printf '    docs: %s\n' "$docs_anchor"
+  if [ ! -f "$sentinel_path" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
+    printf '    → to enable: echo dollars > "%s"\n' "$sentinel_path"
+  fi
 }
 
 # Read-only: creates and removes nothing. Called after
@@ -354,8 +359,8 @@ report_sentinel_inventory() {
       repo)
         _report_repo_sentinel "$sentinel_index" "$path_template" "$human_name" "$default_state" "$docs_anchor"
         ;;
-      repo-content-addressed)
-        _report_content_addressed_sentinel "$sentinel_index" "$path_template" "$human_name" "$docs_anchor"
+      account)
+        _report_account_sentinel "$sentinel_index" "$path_template" "$human_name" "$docs_anchor"
         ;;
     esac
     sentinel_index=$((sentinel_index + 1))
