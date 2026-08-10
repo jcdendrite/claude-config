@@ -121,7 +121,12 @@ notification is off.
    one proceeds, two or more means `transcript-ambiguous` — rather than on
    whether a `-f` test succeeds. `_lib_marker_value_present` (`_lib.sh:257-266`)
    is the in-repo precedent for the save/restore, including restoring the prior
-   `nullglob` state for callers that rely on the default.
+   `nullglob` state for callers that rely on the default. Save and clear
+   `noglob` in the same breath: `--check` runs from an arbitrary Bash tool call,
+   and a caller with `set -f` suppresses expansion entirely, which `nullglob`
+   does not rescue — measured, the pattern survives as a single match holding
+   the literal string, so a missing transcript would report as
+   `usage-block-missing` instead of `transcript-not-found`.
 3. *The ancestor walk stops at 6 hops.* Measured need is 2 (invoked directly
    from a Bash tool call) or 3 (through a subshell); 6 leaves headroom for
    wrapper shells without becoming unbounded. Terminate on any of: hop count
@@ -497,8 +502,15 @@ hook-enforced), `claude-hook-review` (hook changes), then `/code-review`.
 - **The nudge-to-handoff conversion report** against `transcript-analysis.py`.
 - **A cost-per-output-token subcommand** for `transcript-analysis.py`.
 - **The macOS `xargs` shellcheck test failure** — pre-existing and unrelated.
-- **Refactoring the model→window table's entries.** Row 5 moves the block
-  verbatim into a function; the entries, arms, and dated re-verify comment are
-  untouched.
+- **Restructuring the model→window table.** Row 5 moves the block into a
+  function; the existing arms and the dated re-verify comment stay as they are.
+  One arm is *added* rather than changed: the table listed only 200k models, so
+  every 1M model fell through the default arm and was indistinguishable from an
+  unknown ID — `model_recognized` would have read `false` for Opus 5 and
+  Sonnet 5, making every consumer hedge on a correct number. The 1M arm
+  enumerates exactly the IDs the header comment already names as verified 1M,
+  so the default arm comes to mean "no entry for this ID." Retuning the window
+  values, re-sourcing the table, or changing its staleness control all remain
+  out of scope.
 - **Logging `model_recognized` on the fire path.** `--check` reports it; the
   `nudged` log line's fields stay as they are.
