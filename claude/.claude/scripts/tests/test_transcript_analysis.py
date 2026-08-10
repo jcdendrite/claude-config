@@ -6905,6 +6905,24 @@ class TestEditFormat:
         assert _extract_account_edit_calls(out, "account-1") == 1
         assert _extract_account_edit_calls(out, "account-2") == 2
 
+    def test_per_account_breakdown_ordinal_is_resolved_path_sorted_not_scan_order(self, tmp_path, capsys):
+        """account-N is assigned by resolved-path sort (_redaction_ordinals),
+        not by roots= list order -- "acct-b" sorts before "acct-empty", so
+        root_b is account-1 despite being passed second. The sibling test
+        above can't catch a regression to scan-order indexing because its
+        two root names already sort in scan order."""
+        root_empty = _write_cost_root(tmp_path, "acct-empty", "-home-user-repo-e", "sess-e", [
+            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
+        ])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
+            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
+            _opus([_edit_tool_use("e3", old_string="e", new_string="f")], out=10),
+        ])
+        _mod._edit_format_report(_edit_format_args(), roots=[root_empty, root_b])
+        out = capsys.readouterr().out
+        assert _extract_account_edit_calls(out, "account-1") == 2  # root_b, resolved-path-sorted first
+        assert _extract_account_edit_calls(out, "account-2") == 1  # root_empty
+
     def test_per_account_zero_calls_prints_no_edit_family_line(self, tmp_path, capsys):
         """An account contributing zero Edit/Write/MultiEdit calls prints the
         'no edit-family calls' line for its row rather than a ZeroDivisionError

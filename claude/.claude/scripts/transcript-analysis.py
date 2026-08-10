@@ -5487,21 +5487,29 @@ def _edit_format_report(args: argparse.Namespace, roots: Sequence[Path] | None =
     # _root_index_for_path usage — re-resolving every root on every session
     # would be a per-element filesystem stat inside that loop.
     resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
+    # Keyed by _redaction_ordinals, not _root_index_for_path's raw scan-order
+    # position — the same physical root must read as the same account-N here
+    # as in cost's and context-distribution's own per-account breakdowns,
+    # regardless of which profile is currently active.
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots) if multi_root else {}
 
     stats = _new_edit_format_stats()
-    per_account: list[dict] = [_new_edit_format_stats() for _ in scan_roots] if multi_root else []
+    per_account: dict[int, dict] = (
+        {ordinal: _new_edit_format_stats() for ordinal in redact_ordinals.values()} if multi_root else {}
+    )
 
     for jsonl, records in session_iter:
         session_stats = _scan_edit_format_session(records)
         _merge_edit_format_stats(stats, session_stats)
         if multi_root:
-            idx = _root_index_for_path(jsonl, resolved_scan_roots)
-            _merge_edit_format_stats(per_account[idx], session_stats)
+            root_position = _root_index_for_path(jsonl, resolved_scan_roots)
+            ordinal = redact_ordinals[resolved_scan_roots[root_position]]
+            _merge_edit_format_stats(per_account[ordinal], session_stats)
 
     _print_edit_format_report(stats, per_account if multi_root else None)
 
 
-def _print_edit_format_report(stats: dict, per_account: list[dict] | None) -> None:
+def _print_edit_format_report(stats: dict, per_account: dict[int, dict] | None) -> None:
     calls = stats["calls"]
     edit_n = calls.get("Edit", 0)
     write_n = calls.get("Write", 0)
@@ -5571,8 +5579,9 @@ def _print_edit_format_report(stats: dict, per_account: list[dict] | None) -> No
 
     if per_account is not None:
         print("\n## Per-account breakdown\n")
-        for idx, account_stats in enumerate(per_account):
-            account_label = f"account-{idx + 1}"
+        for ordinal in sorted(per_account):
+            account_stats = per_account[ordinal]
+            account_label = f"account-{ordinal}"
             a_calls = account_stats["calls"]
             a_edit_n = a_calls.get("Edit", 0)
             if a_edit_n == 0 and a_calls.get("Write", 0) == 0 and a_calls.get("MultiEdit", 0) == 0:
