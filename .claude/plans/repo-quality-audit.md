@@ -77,7 +77,7 @@ artifact currently records where.
 | Markdown report under `docs/reports/` | Lightest primitive that persists a finding set and survives PR-description loss. Rejected: GitHub issues (external tracker, no repo convention, findings need file:line context a comment box handles poorly); a generated dashboard/script (a build-and-maintain surface for a one-time audit). | root |
 | Phased backlog as a table inside the report | Keeps sequencing next to the evidence that justifies it. Rejected: one plan file per phase (8 files for work that may not all be funded — premature); an external project board (leaves the repo, drifts from the evidence). | root |
 | Phase 3 reorganizes **inside** `_lib.sh` rather than splitting out a new file | See "The design correction" below — the new-file split failed four independent checks. Rejected: new sibling file (breaks stow materialization + the test harness's hook glob); a `_shared/` directory (same stow problem, plus the repo bans that shape for skills). | row 10 |
-| Test-file split *before* source split for `transcript-analysis.py` | Gives each extracted source module a matching test module to verify against. Rejected: extract-shared-helpers only (does not address 25 subcommands in one module); big-bang package split (no per-module verification surface until the end). | row: monolith |
+| Test-file split *before* source split for `transcript-analysis.py` | Gives each extracted source module a matching test module to verify against. Rejected: extract-shared-helpers only (does not address 25 subcommands in one module); big-bang package split (no per-module verification surface until the end). | row 3 |
 
 **Assumptions:**
 
