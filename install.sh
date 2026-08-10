@@ -442,6 +442,46 @@ check_private_projects_file() {
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: transcript-config-dirs — start
+# declared_transcript_roots() (_config_dir.py) always reads
+# ~/.claude/transcript-config-dirs, never a CLAUDE_CONFIG_DIR-relative path —
+# a profile whose CLAUDE_CONFIG_DIR diverges from ~/.claude has no other way
+# to declare itself there.
+check_transcript_config_dirs() {
+  local _resolved_config_dir _resolved_default_dir
+  _resolved_config_dir="$(cd "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" 2>/dev/null && pwd -P)" || _resolved_config_dir=""
+  _resolved_default_dir="$(cd "$HOME/.claude" 2>/dev/null && pwd -P)" || _resolved_default_dir=""
+  if [ -n "$_resolved_config_dir" ] && [ "$_resolved_config_dir" != "$_resolved_default_dir" ]; then
+    echo ""
+    echo "TIP: this profile's CLAUDE_CONFIG_DIR ($_resolved_config_dir) differs from"
+    echo "     the default ~/.claude ($_resolved_default_dir). transcript-analysis.py's"
+    echo "     multi-account corpus union reads declared roots from"
+    echo "     ~/.claude/transcript-config-dirs only, never from this profile's own"
+    echo "     config dir — add this profile there, from the default profile, to"
+    echo "     include it in the union. See docs/transcript-analysis.md's 'Corpus"
+    echo "     scope: the declared-roots file' section."
+  fi
+
+  if [ -L "$HOME/.claude" ]; then
+    echo ""
+    echo "TIP: ~/.claude is a symlink to $(readlink "$HOME/.claude") — creating"
+    echo "     ~/.claude/transcript-config-dirs writes into that resolved location,"
+    echo "     not a separate directory."
+  fi
+
+  local roots_file="$HOME/.claude/transcript-config-dirs"
+  if [ -e "$roots_file" ] && ! grep -Evq '^[[:space:]]*(#|$)' "$roots_file" 2>/dev/null; then
+    echo ""
+    echo "WARNING: ~/.claude/transcript-config-dirs exists but contains no usable"
+    echo "         entries (only comments or blank lines). Either populate it or"
+    echo "         delete it — an empty file is the confusing state."
+  fi
+}
+# INSTALL_TEST_FIXTURE: transcript-config-dirs — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: local-bin-path — start
 # Whether $1 already has a non-comment line mentioning $2 — excludes
 # comment-only lines (same reason check_private_projects_file above excludes
@@ -557,6 +597,7 @@ if ! command -v timeout >/dev/null 2>&1; then
 fi
 
 check_private_projects_file
+check_transcript_config_dirs
 ensure_local_bin_on_path
 
 if ! python3 -c "import ensurepip" >/dev/null 2>&1; then

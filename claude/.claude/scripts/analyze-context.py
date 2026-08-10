@@ -19,74 +19,132 @@ investigate with the per-session view.
 """
 
 import argparse
+import importlib.util
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from _config_dir import config_dir
 
+# Fallback/display-only: main()'s actual scan roots come from
+# _transcript_analysis._resolve_scan_roots/_session_meta_dir_for_root, which
+# read that module's own PROJECTS_DIR, not this one -- monkeypatching this
+# file's PROJECTS_DIR no longer affects what main() scans.
 CLAUDE_DIR = config_dir()
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 SESSION_META_DIR = CLAUDE_DIR / "usage-data" / "session-meta"
+
+# transcript-analysis.py is a hyphenated filename, not a valid `import`
+# identifier -- load it by path, mirroring how this suite's own tests load
+# hyphenated sibling scripts (e.g. tests/test_analyze_context.py).
+_TRANSCRIPT_ANALYSIS_PATH = Path(__file__).parent / "transcript-analysis.py"
+sys.path.insert(0, str(_TRANSCRIPT_ANALYSIS_PATH.parent))
+_transcript_analysis_spec = importlib.util.spec_from_file_location(
+    "transcript_analysis", _TRANSCRIPT_ANALYSIS_PATH
+)
+_transcript_analysis = importlib.util.module_from_spec(_transcript_analysis_spec)
+_transcript_analysis_spec.loader.exec_module(_transcript_analysis)
 
 
 def cwd_to_project_key(cwd: Path) -> str:
     return str(cwd).replace("/", "-")
 
 
-def find_session_jsonl(session_id: str) -> Path | None:
-    if not PROJECTS_DIR.exists():
+def _find_session_in_root(session_id: str, root: Path) -> Path | None:
+    """Search one root's transcripts for session_id, exact then prefix match.
+
+    A plain filename glob, not iter_sessions: this only needs each main
+    session file's own stem, and iter_sessions' subagent-merge (subagent
+    files live one level deeper, under <session>/subagents/, and are never
+    exposed as their own path here) would read every transcript's full
+    content for no benefit to a filename match.
+    """
+    if not root.exists():
         return None
-    for project_dir in PROJECTS_DIR.iterdir():
-        if not project_dir.is_dir():
-            continue
-        candidate = project_dir / f"{session_id}.jsonl"
-        if candidate.exists():
-            return candidate
-        # Support prefix matching (e.g. the 12-char prefix shown in --top output).
-        matches = sorted(project_dir.glob(f"{session_id}*.jsonl"))
-        if matches:
-            return matches[0]
-    return None
+    prefix_matches: list[Path] = []
+    for jsonl in sorted(root.glob("*/*.jsonl")):
+        if jsonl.stem == session_id:
+            return jsonl
+        if jsonl.stem.startswith(session_id):
+            prefix_matches.append(jsonl)
+    return prefix_matches[0] if prefix_matches else None
 
 
-def latest_session_jsonl(project_key: str) -> tuple[str, Path] | None:
-    project_dir = PROJECTS_DIR / project_key
-    if not project_dir.exists():
+def find_session_jsonl(session_id: str, roots: Sequence[Path]) -> Path | None:
+    """Return session_id's transcript, searching roots in order (active
+    profile first). A short id can match a different session under another
+    declared root; that ambiguity is warned on stderr rather than resolved
+    silently to whichever root happened to be active.
+    """
+    found = [m for root in roots if (m := _find_session_in_root(session_id, root)) is not None]
+    if not found:
         return None
-    jsonls = sorted(
-        project_dir.glob("*.jsonl"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return (jsonls[0].stem, jsonls[0]) if jsonls else None
+    winner = found[0]
+    if len({m.resolve() for m in found}) > 1:
+        print(
+            f"find_session_jsonl: session id {session_id!r} matches different sessions "
+            f"across declared roots; using the active profile's match ({winner})",
+            file=sys.stderr,
+        )
+    return winner
+
+
+def latest_session_jsonl(project_key: str, roots: Sequence[Path]) -> tuple[str, Path] | None:
+    """Return the most recently modified session for project_key, comparing
+    mtimes across every root -- the same cwd's project dir can exist under
+    more than one declared root, and "latest" means latest overall, not
+    latest in whichever root happens to be active.
+    """
+    candidates: list[Path] = []
+    for root in roots:
+        project_dir = root / project_key
+        if project_dir.exists():
+            candidates.extend(project_dir.glob("*.jsonl"))
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return latest.stem, latest
 
 
 def parse_turns(jsonl_path: Path) -> list[dict]:
+    """Extract per-turn usage fields, merging subagent transcripts.
+
+    Reads via _read_session_file(include_subagents=True) so a session that
+    dispatched work to a subagent contributes that subagent's turns to the
+    growth curve too, instead of silently under-reporting it. Sorted by
+    timestamp afterward: _read_session_file appends subagent-file records
+    after all main-file records, and the growth curve's turn-by-turn deltas
+    are only meaningful in chronological order.
+    """
+    records = _transcript_analysis._read_session_file(jsonl_path, include_subagents=True)
     turns = []
-    with open(jsonl_path) as fh:
-        for raw in fh:
-            try:
-                record = json.loads(raw)
-                msg = record.get("message", {})
-                if not isinstance(msg, dict) or "usage" not in msg:
-                    continue
-                u = msg["usage"]
-                total_in = (
-                    u.get("input_tokens", 0)
-                    + u.get("cache_creation_input_tokens", 0)
-                    + u.get("cache_read_input_tokens", 0)
-                )
-                turns.append({
-                    "total_in": total_in,
-                    "output": u.get("output_tokens", 0),
-                    "is_sidechain": record.get("isSidechain", False),
-                    "skill": record.get("attributionSkill") or "",
-                    "ts": (record.get("timestamp") or "")[:16],
-                    "record_type": record.get("type", ""),
-                })
-            except (json.JSONDecodeError, KeyError, TypeError):
+    for record in records:
+        try:
+            msg = record.get("message", {})
+            if not isinstance(msg, dict) or "usage" not in msg:
                 continue
+            u = msg["usage"]
+            total_in = (
+                u.get("input_tokens", 0)
+                + u.get("cache_creation_input_tokens", 0)
+                + u.get("cache_read_input_tokens", 0)
+            )
+            raw_ts = record.get("timestamp") or ""
+            turns.append({
+                "total_in": total_in,
+                "output": u.get("output_tokens", 0),
+                "is_sidechain": record.get("isSidechain", False),
+                "skill": record.get("attributionSkill") or "",
+                "ts": raw_ts[:16],
+                "_sort_ts": raw_ts,
+                "record_type": record.get("type", ""),
+            })
+        except (KeyError, TypeError):
+            continue
+    turns.sort(key=lambda t: t["_sort_ts"])
+    for t in turns:
+        del t["_sort_ts"]
     return turns
 
 
@@ -95,7 +153,8 @@ def render_bar(value: int, peak: int, width: int = 40) -> str:
     return "█" * filled
 
 
-def analyze_session(session_id: str, jsonl_path: Path) -> None:
+def analyze_session(session_id: str, jsonl_path: Path, roots: Sequence[Path]) -> None:
+    _transcript_analysis._print_resolved_scope("session", session_id, roots)
     turns = parse_turns(jsonl_path)
     if not turns:
         print(f"No usage data found in {jsonl_path}", file=sys.stderr)
@@ -141,27 +200,43 @@ def analyze_session(session_id: str, jsonl_path: Path) -> None:
         print(f"  turn {idx:4}  {ts}  +{delta:>9,}  {label}{sidechain_tag}")
 
 
-def show_top(count: int) -> None:
-    if not SESSION_META_DIR.exists():
-        print(f"Session metadata directory not found: {SESSION_META_DIR}", file=sys.stderr)
+def _session_meta_dir_for_root(root: Path) -> Path:
+    """Return the usage-data/session-meta dir paired with a projects/ root.
+
+    Session metadata lives per config dir, alongside that config dir's own
+    projects/ -- each root's sessions must be paired with that same root's
+    own metadata, not always the active profile's SESSION_META_DIR.
+    """
+    return root.parent / "usage-data" / "session-meta"
+
+
+def show_top(count: int, roots: Sequence[Path]) -> None:
+    _transcript_analysis._print_resolved_scope("top", "*", roots)
+    meta_dirs = [_session_meta_dir_for_root(root) for root in roots]
+    if not any(d.exists() for d in meta_dirs):
+        print(
+            f"Session metadata directory not found in any of {len(roots)} scanned roots",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     sessions = []
-    for meta_file in SESSION_META_DIR.glob("*.json"):
-        try:
-            with open(meta_file) as fh:
-                d = json.load(fh)
-            direct_tokens = d.get("input_tokens", 0) + d.get("output_tokens", 0)
-            sessions.append({
-                "direct_tokens": direct_tokens,
-                "session_id": d.get("session_id", ""),
-                "project_path": d.get("project_path", "") or "",
-                "start_date": (d.get("start_time") or "")[:10],
-                "duration_min": d.get("duration_minutes", 0) or 0,
-                "agent_calls": (d.get("tool_counts") or {}).get("Agent", 0),
-            })
-        except (json.JSONDecodeError, KeyError, OSError, TypeError):
-            continue
+    for meta_dir in meta_dirs:
+        for meta_file in meta_dir.glob("*.json"):
+            try:
+                with open(meta_file) as fh:
+                    d = json.load(fh)
+                direct_tokens = d.get("input_tokens", 0) + d.get("output_tokens", 0)
+                sessions.append({
+                    "direct_tokens": direct_tokens,
+                    "session_id": d.get("session_id", ""),
+                    "project_path": d.get("project_path", "") or "",
+                    "start_date": (d.get("start_time") or "")[:10],
+                    "duration_min": d.get("duration_minutes", 0) or 0,
+                    "agent_calls": (d.get("tool_counts") or {}).get("Agent", 0),
+                })
+            except (json.JSONDecodeError, KeyError, OSError, TypeError):
+                continue
 
     sessions.sort(key=lambda s: s["direct_tokens"], reverse=True)
 
@@ -203,21 +278,22 @@ examples:
         help="show N heaviest sessions by direct token usage (default 10)",
     )
     args = parser.parse_args()
+    roots = _transcript_analysis._resolve_scan_roots(args)
 
     if args.top is not None:
-        show_top(args.top)
+        show_top(args.top, roots)
         return
 
     if args.session_id:
-        jsonl = find_session_jsonl(args.session_id)
+        jsonl = find_session_jsonl(args.session_id, roots)
         if jsonl is None:
             print(f"Session not found: {args.session_id}", file=sys.stderr)
             sys.exit(1)
-        analyze_session(args.session_id, jsonl)
+        analyze_session(args.session_id, jsonl, roots)
         return
 
     project_key = cwd_to_project_key(Path.cwd())
-    result = latest_session_jsonl(project_key)
+    result = latest_session_jsonl(project_key, roots)
     if result is None:
         print(
             f"No sessions found for project directory: {Path.cwd()}\n"
@@ -226,7 +302,7 @@ examples:
         )
         sys.exit(1)
     session_id, jsonl_path = result
-    analyze_session(session_id, jsonl_path)
+    analyze_session(session_id, jsonl_path, roots)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
 """Unit tests for the offline-testable parts of evals/run_skill_evals.py.
 
 Covers the runtime-mode stream-json trigger detector, the case-file `method`
-schema, the description-fidelity classification parser / scorer, and the
-behavioral-dispatch command builder. All
-deterministic — no claude -p call, CI-safe. Runtime-mode detector tests feed
-committed synthetic stream-json fixtures from evals/fixtures/.
+schema, the description-fidelity classification parser / scorer, the
+behavioral-dispatch command builder, and the dispatch session-store cleanup
+path. All deterministic — no claude -p call, CI-safe. Runtime-mode detector
+tests feed committed synthetic stream-json fixtures from evals/fixtures/.
 
 pyproject.toml adds 'evals' to the pytest pythonpath so `import run_skill_evals`
 resolves correctly.
@@ -13,6 +13,7 @@ resolves correctly.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -24,6 +25,7 @@ from run_skill_evals import (
     DISPOSITION_PASS_THRESHOLD,
     _build_dispatch_command,
     build_disposition_prompt,
+    compute_session_store_dir,
     detect_dispatch_in_lines,
     detect_trigger_in_lines,
     extract_governing_rule,
@@ -819,3 +821,43 @@ class TestBuildDispatchCommand:
             "a priming turn that delegates fills a subagent's context, not the parent's. "
             f"Expected one of: {prohibition_keywords}"
         )
+
+
+class TestComputeSessionStoreDir:
+    """compute_session_store_dir() resolves under the active config dir, not a hardcoded ~/.claude."""
+
+    def test_resolves_under_claude_config_dir_env_var(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CLAUDE_CONFIG_DIR set to a tmp_path dir -> session store computed under it, not ~/.claude."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        project_dir = Path("/tmp/claude-eval-bd-abc123")
+        hashed_name = str(project_dir).replace("/", "-")
+        assert compute_session_store_dir(project_dir) == tmp_path / "projects" / hashed_name
+
+    def test_cleanup_removes_only_the_run_session_dir_not_a_sibling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The main() finally block's cleanup (compute_session_store_dir + shutil.rmtree)
+        must remove only the dispatch project's own session-store directory under a
+        tmp_path config dir -- an unrelated sibling project's session-store directory
+        under the same projects/ dir must survive.
+        """
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        projects_dir = tmp_path / "projects"
+        projects_dir.mkdir()
+
+        dispatch_project = Path("/tmp/claude-eval-bd-run123")
+        run_session_dir = projects_dir / str(dispatch_project).replace("/", "-")
+        run_session_dir.mkdir()
+        (run_session_dir / "session.jsonl").write_text("{}")
+
+        sibling_project = Path("/tmp/some-unrelated-project")
+        sibling_session_dir = projects_dir / str(sibling_project).replace("/", "-")
+        sibling_session_dir.mkdir()
+        (sibling_session_dir / "session.jsonl").write_text("{}")
+
+        session_store = compute_session_store_dir(dispatch_project)
+        assert session_store == run_session_dir
+        shutil.rmtree(session_store, ignore_errors=True)
+
+        assert not run_session_dir.exists()
+        assert sibling_session_dir.exists()

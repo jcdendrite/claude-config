@@ -51,6 +51,9 @@ EVALS_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = REPO_ROOT / "claude" / ".claude" / "skills"
 PLUGINS_DIR = REPO_ROOT / "plugins"
 
+sys.path.insert(0, str(REPO_ROOT / "claude" / ".claude" / "scripts"))
+from _config_dir import config_dir  # noqa: E402
+
 # Priming prompt for warm dispatch mode. The file instructs the model to
 # actually read dispatch-project files via the Read tool, generating real
 # tool-call history that physically fills the session context window.
@@ -637,17 +640,18 @@ def _build_dispatch_command(
 
 
 def compute_session_store_dir(project_dir: Path) -> Path:
-    """Return the ~/.claude/projects/<path-hash> directory for a given project path.
+    """Return the <config_dir>/projects/<path-hash> directory for a given project path.
 
-    Claude Code stores sessions at ~/.claude/projects/<hash>/ where <hash> is
-    the project's absolute path with every "/" replaced by "-". Sessions live
-    externally from the project directory; shutil.rmtree(project_dir) does not
-    clean them. Verified by inspecting ~/.claude/projects/ before and after a
-    dispatch run: tempdir-based dispatch projects accumulate session dirs at
-    this location that survive the project cleanup.
+    Claude Code stores sessions at <config_dir>/projects/<hash>/ where <hash> is
+    the project's absolute path with every "/" replaced by "-", and <config_dir>
+    is CLAUDE_CONFIG_DIR if set, else ~/.claude. Sessions live externally from
+    the project directory; shutil.rmtree(project_dir) does not clean them.
+    Verified by inspecting ~/.claude/projects/ before and after a dispatch run:
+    tempdir-based dispatch projects accumulate session dirs at this location
+    that survive the project cleanup.
     """
     hashed_name = str(project_dir).replace("/", "-")
-    return Path.home() / ".claude" / "projects" / hashed_name
+    return config_dir() / "projects" / hashed_name
 
 
 def prime_dispatch_session(dispatch_project: Path, priming_prompt: str, model: str) -> str:
@@ -1405,7 +1409,7 @@ def main() -> int:
             shutil.rmtree(disposition_project, ignore_errors=True)
         if dispatch_project is not None:
             shutil.rmtree(dispatch_project, ignore_errors=True)
-            # Session files are stored externally at ~/.claude/projects/<path-hash>/
+            # Session files are stored externally at <config_dir>/projects/<path-hash>/
             # (path with "/" → "-"). shutil.rmtree above removes the project dir
             # but not the session store. Clean it up to avoid accumulating stale
             # session files across runs (both warm and cold dispatch runs leave them).

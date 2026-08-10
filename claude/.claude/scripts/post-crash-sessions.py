@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 from pathlib import Path
 
-from _config_dir import config_dir
+from _config_dir import config_dir, declared_roots_matching
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -126,6 +126,9 @@ class RegistryEntry:
     mtime: float | None
     path: Path
     pid_mismatch: bool
+    # The config dir this entry's sessions/ file was read from -- None only
+    # when a test constructs an entry directly without one.
+    config_dir: Path | None = None
 
 
 @dataclass
@@ -148,6 +151,9 @@ class TranscriptInfo:
     has_main: bool
     subagent_count: int
     path: Path
+    # The config dir this transcript was found under -- None only when a
+    # test constructs an entry directly without one.
+    config_dir: Path | None = None
 
 
 @dataclass
@@ -160,6 +166,9 @@ class SessionRow:
     detail: str
     entry_count: int
     cwd_missing: bool
+    # The config dir this session's evidence was found under -- None when the
+    # only evidence is a scheduled-task lock, which carries no account of its own.
+    config_dir: Path | None = None
 
 
 @dataclass
@@ -477,7 +486,7 @@ def _read_registry(config_dirs: list[Path]) -> tuple[list[RegistryEntry], list[P
                 started_at=_ms_to_seconds(data.get("startedAt")),
                 updated_at=_ms_to_seconds(data.get("updatedAt")),
                 version=_sanitize_for_terminal(data.get("version")), mtime=_safe_mtime(path), path=path,
-                pid_mismatch=pid_mismatch,
+                pid_mismatch=pid_mismatch, config_dir=cdir,
             ))
     return entries, legacy_paths, unparsed, any_sessions_dir_found
 
@@ -614,7 +623,7 @@ def _scan_transcripts(
             transcripts[session_id] = TranscriptInfo(
                 session_id=session_id, cwd=cwd, git_branch=git_branch,
                 first_seen_ts=_parse_iso_ts(ts_raw), last_activity=_safe_mtime(jsonl),
-                has_main=True, subagent_count=0, path=jsonl,
+                has_main=True, subagent_count=0, path=jsonl, config_dir=cdir,
             )
 
         for sub_jsonl in sorted(projects_dir.glob(f"*/*/{_SUBAGENT_SUBDIR}/*.jsonl")):
@@ -633,7 +642,7 @@ def _scan_transcripts(
                 info = TranscriptInfo(
                     session_id=parent_session_id, cwd=None, git_branch=None,
                     first_seen_ts=None, last_activity=None,
-                    has_main=False, subagent_count=0, path=sub_jsonl,
+                    has_main=False, subagent_count=0, path=sub_jsonl, config_dir=cdir,
                 )
                 transcripts[parent_session_id] = info
             info.subagent_count += 1
@@ -701,6 +710,13 @@ def _classify_session(
 ) -> SessionRow:
     entry_count = len(registry_entries) + len(lock_entries)
     has_main_transcript = transcript is not None and transcript.has_main
+    # A scheduled-task lock's path lives under the session's own cwd, not
+    # under any declared config dir, so it carries no account attribution;
+    # prefer the transcript's config dir, falling back to the registry's.
+    row_config_dir = (
+        transcript.config_dir if transcript is not None
+        else (registry_entries[0].config_dir if registry_entries else None)
+    )
     subagent_note = ""
     if transcript is not None and transcript.subagent_count and not has_main_transcript:
         plural = "s" if transcript.subagent_count != 1 else ""
@@ -714,7 +730,7 @@ def _classify_session(
         return SessionRow(
             session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
             "ps did not return usable output on this system; liveness could not be confirmed for any entry.",
-            entry_count, _cwd_missing(cwd),
+            entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
         )
 
     liveness: dict[tuple[str, int], str] = {}
@@ -728,7 +744,7 @@ def _classify_session(
         return SessionRow(
             session_id, CLASS_CLEAN_EXIT, cwd, branch, last_activity,
             "a live process matches a tracked pid; not crash evidence.",
-            entry_count, False,
+            entry_count, False, config_dir=row_config_dir,
         )
 
     if registry_entries:
@@ -737,7 +753,7 @@ def _classify_session(
             return SessionRow(
                 session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
                 "boot time could not be determined on this platform, so registry entries cannot be dated against it.",
-                entry_count, _cwd_missing(cwd),
+                entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
             )
 
         dead_before_boot = [
@@ -763,12 +779,12 @@ def _classify_session(
                 return SessionRow(
                     session_id, CLASS_RESUMABLE, cwd, branch, last_activity,
                     f"{boot_note} A transcript exists for this session.",
-                    entry_count, _cwd_missing(cwd),
+                    entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
                 )
             return SessionRow(
                 session_id, CLASS_CRASHED_NO_TRANSCRIPT, cwd, branch, last_activity,
                 f"{boot_note} No main transcript was found for this session.{subagent_note}",
-                entry_count, _cwd_missing(cwd),
+                entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
             )
 
         if dead_after_boot:
@@ -778,7 +794,7 @@ def _classify_session(
                 session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
                 f"registry entry written {_fmt_ts(newest.mtime)}, after boot ({_fmt_ts(boot_time)}) — "
                 "not evidence of surviving a crash.",
-                entry_count, _cwd_missing(cwd),
+                entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
             )
 
         if mtime_unknown:
@@ -787,14 +803,14 @@ def _classify_session(
                 session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
                 "registry entry's file modification time could not be read, so this session cannot be dated "
                 "against boot time.",
-                entry_count, _cwd_missing(cwd),
+                entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
             )
 
         cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
         return SessionRow(
             session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
             "registry procStart could not be parsed; this session's pid liveness could not be confirmed.",
-            entry_count, _cwd_missing(cwd),
+            entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
         )
 
     if lock_entries:
@@ -811,18 +827,18 @@ def _classify_session(
                 return SessionRow(
                     session_id, CLASS_RESUMABLE, cwd, branch, last_activity,
                     "scheduled-task lock's pid is dead; a transcript exists for this session.",
-                    entry_count, _cwd_missing(cwd),
+                    entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
                 )
             return SessionRow(
                 session_id, CLASS_CRASHED_NO_TRANSCRIPT, cwd, branch, last_activity,
                 f"scheduled-task lock's pid is dead; no transcript was found for this session.{subagent_note}",
-                entry_count, _cwd_missing(cwd),
+                entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
             )
         cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
         return SessionRow(
             session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
             "scheduled-task lock's procStart could not be parsed; liveness could not be confirmed.",
-            entry_count, _cwd_missing(cwd),
+            entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
         )
 
     # No registry, no lock entry — reached only for a near-boot transcript-only session.
@@ -834,7 +850,7 @@ def _classify_session(
         f"only a transcript exists, with no registry or lock entry; its last activity sits within "
         f"{near_boot_window_seconds / 3600:g}h before the last boot, but with no registry or "
         "lock corroboration this cannot confirm the session was still open at crash time.",
-        entry_count, _cwd_missing(cwd),
+        entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
     )
 
 
@@ -936,13 +952,28 @@ def _assign_ordinal(value: str, ordinal_map: dict[str, str], prefix: str) -> str
     return ordinal_map[value]
 
 
-def render_report(report: Report, *, redact: bool, now: float | None = None) -> str:
+def _account_ordinal_map(config_dirs: list[Path]) -> dict[str, str]:
+    """Stable account-N label per resolved config dir, sorted by resolved
+    path (not scan order) so the same physical account reads as the same
+    account-N regardless of which profile produced the report — mirrors
+    transcript-analysis.py's _redaction_ordinals convention."""
+    ordinal_map: dict[str, str] = {}
+    for cdir in sorted(config_dirs, key=lambda d: d.resolve()):
+        _assign_ordinal(str(cdir.resolve()), ordinal_map, "account")
+    return ordinal_map
+
+
+def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = False, now: float | None = None) -> str:
     lines: list[str] = ["# Post-crash session recovery report", ""]
 
-    if redact:
-        lines.append(f"Config directories scanned: {len(report.config_dirs)}")
-    else:
+    # Beyond a single dir, raw paths print only when the operator typed
+    # --config-dir themselves -- the declared-roots-file default must never
+    # disclose paths they didn't type this run.
+    show_raw_config_dirs = not redact and (config_dirs_explicit or len(report.config_dirs) == 1)
+    if show_raw_config_dirs:
         lines.append(f"Config directories scanned: {', '.join(str(d) for d in report.config_dirs)}")
+    else:
+        lines.append(f"Config directories scanned: {len(report.config_dirs)}")
     lines.append(
         "Freshness: a dead pid in the registry is only crash evidence until that pid is reused — "
         "run this before starting new Claude Code sessions after a reboot, since a fresh session can "
@@ -985,6 +1016,9 @@ def render_report(report: Report, *, redact: bool, now: float | None = None) -> 
 
     cwd_map: dict[str, str] = {}
     session_map: dict[str, str] = {}
+    # Only computed above one config dir: at a single root every row is the
+    # same, only-declared account, so tagging it would add noise, not signal.
+    account_labels = _account_ordinal_map(report.config_dirs) if len(report.config_dirs) > 1 else {}
 
     def sid_of(value: str) -> str:
         return _assign_ordinal(value, session_map, "session") if redact else value
@@ -993,6 +1027,11 @@ def render_report(report: Report, *, redact: bool, now: float | None = None) -> 
         if value is None:
             return None
         return _assign_ordinal(value, cwd_map, "project") if redact else value
+
+    def account_of(config_dir: Path | None) -> str | None:
+        if config_dir is None:
+            return None
+        return account_labels.get(str(config_dir.resolve()))
 
     def render_resume_section(class_key: str, title: str) -> None:
         """Shared layout for Resumable and Possible-crash: both are rows with a
@@ -1020,7 +1059,11 @@ def render_report(report: Report, *, redact: bool, now: float | None = None) -> 
                 lines.append(
                     f"claude --resume {shlex.quote(sid_display)}  # cwd unknown — resuming from this directory may fail"
                 )
-            meta = [f"last activity {_fmt_ts(row.last_activity)}"]
+            meta = []
+            account_label = account_of(row.config_dir)
+            if account_label:
+                meta.append(account_label)
+            meta.append(f"last activity {_fmt_ts(row.last_activity)}")
             if now is not None and row.last_activity is not None and row.last_activity <= now:
                 meta.append(_fmt_age(now - row.last_activity))
             if not redact and row.git_branch:
@@ -1051,7 +1094,9 @@ def render_report(report: Report, *, redact: bool, now: float | None = None) -> 
             sid_display = sid_of(row.session_id)
             cwd_display = cwd_of(row.cwd)
             location = f" ({cwd_display})" if cwd_display else ""
-            lines.append(f"session {sid_display}{location}: {row.detail}")
+            account_label = account_of(row.config_dir)
+            account_tag = f" [{account_label}]" if account_label else ""
+            lines.append(f"session {sid_display}{location}{account_tag}: {row.detail}")
         lines.append("")
 
     if report.legacy_bare_pid_dead:
@@ -1063,9 +1108,15 @@ def render_report(report: Report, *, redact: bool, now: float | None = None) -> 
             "listed here; do not delete a live one."
         )
         for path in report.legacy_bare_pid_dead:
-            lines.append(f"  {path.name if redact else path}")
-        if not redact:
+            lines.append(f"  {path.name if not show_raw_config_dirs else path}")
+        if show_raw_config_dirs:
             lines.append("  rm -- " + " ".join(shlex.quote(str(p)) for p in report.legacy_bare_pid_dead))
+        elif not redact:
+            lines.append(
+                "  (rm command omitted: these paths span declared accounts not passed via an explicit"
+                " --config-dir — re-run with --config-dir <dir> to get a runnable command for one account,"
+                " or --redact to suppress this note.)"
+            )
         lines.append("")
 
     lines.append(
@@ -1089,6 +1140,20 @@ def render_report(report: Report, *, redact: bool, now: float | None = None) -> 
 # CLI
 # ---------------------------------------------------------------------------
 
+def _declared_config_dirs() -> list[Path]:
+    """Declared roots from ~/.claude/transcript-config-dirs (or
+    TRANSCRIPT_CONFIG_DIRS_FILE), validated against this script's own looser
+    sessions/-or-projects/ check (main()'s --config-dir validation, below)
+    instead of declared_transcript_roots()'s projects/-only requirement --
+    the latter would silently drop a sessions-only root, the crashed-fresh-
+    account case this tool exists for.
+    """
+    return declared_roots_matching(
+        lambda candidate: (candidate / "sessions").is_dir() or (candidate / "projects").is_dir(),
+        warn_prefix="post-crash-sessions",
+    )
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -1100,8 +1165,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
         help=(
             "Additional Claude Code config directory to scan (repeatable). The default resolved "
-            "config dir is always scanned first. Each supplied directory must contain a sessions/ "
-            "or projects/ subdirectory, or it is rejected."
+            "config dir is always scanned first. Absent this flag, every root declared in "
+            "~/.claude/transcript-config-dirs is scanned too; passing this flag explicitly "
+            "overrides that default and scans only the directories named here. Each supplied "
+            "directory must contain a sessions/ or projects/ subdirectory, or it is rejected."
         ),
     )
     parser.add_argument(
@@ -1135,22 +1202,33 @@ def main(argv: list[str] | None = None) -> int:
 
     config_dirs = [default_config_dir]
     seen_resolved = {config_dirs[0].resolve()}
-    for raw in args.extra_config_dirs or []:
-        candidate = Path(raw)
-        if not candidate.is_dir():
-            print(f"post-crash-sessions: --config-dir {raw!r} is not a directory", file=sys.stderr)
-            return 2
-        if not ((candidate / "sessions").is_dir() or (candidate / "projects").is_dir()):
-            print(
-                f"post-crash-sessions: --config-dir {raw!r} rejected: no sessions/ or projects/ subdirectory found",
-                file=sys.stderr,
-            )
-            return 2
-        resolved = candidate.resolve()
-        if resolved in seen_resolved:
-            continue
-        seen_resolved.add(resolved)
-        config_dirs.append(candidate)
+    if args.extra_config_dirs:
+        for raw in args.extra_config_dirs:
+            candidate = Path(raw)
+            if not candidate.is_dir():
+                print(f"post-crash-sessions: --config-dir {raw!r} is not a directory", file=sys.stderr)
+                return 2
+            if not ((candidate / "sessions").is_dir() or (candidate / "projects").is_dir()):
+                print(
+                    f"post-crash-sessions: --config-dir {raw!r} rejected: no sessions/ or projects/ subdirectory found",
+                    file=sys.stderr,
+                )
+                return 2
+            resolved = candidate.resolve()
+            if resolved in seen_resolved:
+                continue
+            seen_resolved.add(resolved)
+            config_dirs.append(candidate)
+    else:
+        # No explicit --config-dir: default to every declared root too, mirroring
+        # transcript-analysis.py's _resolve_scan_roots precedence -- an explicit
+        # --config-dir overrides the declared-roots default entirely.
+        for declared_dir in _declared_config_dirs():
+            resolved = declared_dir.resolve()
+            if resolved in seen_resolved:
+                continue
+            seen_resolved.add(resolved)
+            config_dirs.append(declared_dir)
 
     find_root = Path(os.environ.get(_FIND_ROOT_ENV_VAR, str(Path.home())))
 
@@ -1169,7 +1247,9 @@ def main(argv: list[str] | None = None) -> int:
     report = build_report(
         config_dirs=config_dirs, find_root=find_root, near_boot_window_seconds=near_boot_window_seconds,
     )
-    print(render_report(report, redact=args.redact, now=time.time()))
+    print(render_report(
+        report, redact=args.redact, config_dirs_explicit=bool(args.extra_config_dirs), now=time.time(),
+    ))
     return 0
 
 

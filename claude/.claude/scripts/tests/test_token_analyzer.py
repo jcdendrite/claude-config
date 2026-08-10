@@ -350,3 +350,120 @@ def test_malformed_timestamp_record_skipped(fake_projects):
     assert len(sessions) == 1
     assert sessions[0]["out"] == 150    # bad record's 999 tokens excluded
     assert ft["opus"]["out"] == 150
+
+
+def _write_subagent_jsonl(proj: Path, session_id: str, agent_id: str, records: list[dict]) -> None:
+    """Write records to the split subagent layout: <session_id>/subagents/<agent_id>.jsonl."""
+    subdir = proj / session_id / _mod._transcript_analysis.SUBAGENT_SUBDIR
+    subdir.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(subdir / f"{agent_id}.jsonl", records)
+
+
+def test_walk_credits_subagent_dispatched_cache_tokens(fake_projects):
+    """A session's own file plus its <session>/subagents/*.jsonl split files
+    both contribute to the reported cache totals -- a raw single-file read
+    would undercount cache efficiency for any session that dispatched work
+    to a subagent."""
+    session_a, _ = fake_projects
+    _write_jsonl(
+        session_a / "with-subagent.jsonl",
+        [_make_assistant("claude-opus-4-7", inp=10, out=50, cc=0, cr=100)],
+    )
+    _write_subagent_jsonl(
+        session_a, "with-subagent", "agent1",
+        [_make_assistant("claude-opus-4-7", inp=5, out=20, cc=0, cr=500, sidechain=True)],
+    )
+
+    ft, sessions = _mod._walk()
+
+    assert ft["opus"]["cr"] == 600  # 100 (main) + 500 (subagent split file)
+    assert sessions[0]["sidechain"] is True
+
+
+def test_walk_unions_sessions_across_roots(tmp_path):
+    """_walk(roots=...) sums sessions found under every root, not just the
+    first -- the multi-root union token-analyzer's --top and per-model
+    totals depend on."""
+    root_a = tmp_path / "acct-a" / "projects"
+    proj_a = root_a / "-home-user-repo-a"
+    proj_a.mkdir(parents=True)
+    _write_jsonl(proj_a / "sess-a.jsonl", [_make_assistant("claude-opus-4-7", inp=10, out=100, cc=0, cr=0)])
+
+    root_b = tmp_path / "acct-b" / "projects"
+    proj_b = root_b / "-home-user-repo-b"
+    proj_b.mkdir(parents=True)
+    _write_jsonl(proj_b / "sess-b.jsonl", [_make_assistant("claude-sonnet-4-6", inp=10, out=200, cc=0, cr=0)])
+
+    ft, sessions = _mod._walk(roots=[root_a, root_b])
+
+    assert len(sessions) == 2
+    assert ft["opus"]["out"] == 100
+    assert ft["sonnet"]["out"] == 200
+
+
+def test_main_scans_every_declared_root(monkeypatch, tmp_path, capsys):
+    """main() threads _resolve_scan_roots' output into _walk -- a session
+    under a declared (non-active) root must appear in the CLI's own output,
+    not just be reachable via a direct _walk(roots=...) call."""
+    active = tmp_path / "active" / "projects"
+    proj_active = active / "-home-user-active-proj"
+    proj_active.mkdir(parents=True)
+    _write_jsonl(proj_active / "sess-active.jsonl",
+                 [_make_assistant("claude-opus-4-7", inp=10, out=600, cc=0, cr=0)])
+    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+
+    declared_config_dir = tmp_path / "declared-account"
+    proj_declared = declared_config_dir / "projects" / "-home-user-declared-proj"
+    proj_declared.mkdir(parents=True)
+    _write_jsonl(proj_declared / "sess-declared.jsonl",
+                 [_make_assistant("claude-opus-4-7", inp=10, out=700, cc=0, cr=0)])
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{declared_config_dir}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+    monkeypatch.setattr(sys, "argv", ["token-analyzer.py"])
+    _mod.main()
+
+    out = capsys.readouterr().out
+    # Distinctive name substrings, not numeric fields -- low collision risk today,
+    # but a future output column could coincidentally contain one of these; switch
+    # to a table-parsing assertion (see test_transcript_analysis.py's _table_cols)
+    # if that happens.
+    assert "active-proj" in out
+    assert "declared-proj" in out
+
+
+def test_main_discloses_resolved_scope_at_one_root(monkeypatch, tmp_path, capsys):
+    """main() prints the same unconditional resolved-scope disclosure line
+    transcript-analysis.py's funnel subcommands print (_resolved_scope_header),
+    even at one root with nothing declared -- without it, a single-account
+    scan and a multi-account scan read identically, silently pooling every
+    declared account's tokens with no scope signal."""
+    active = tmp_path / "active" / "projects"
+    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+
+    monkeypatch.setattr(sys, "argv", ["token-analyzer.py"])
+    _mod.main()
+
+    out = capsys.readouterr().out
+    assert "TOKEN ANALYZER SOURCES (*; 1 root (no ~/.claude/transcript-config-dirs declared))" in out
+
+
+def test_main_discloses_resolved_scope_at_two_roots(monkeypatch, tmp_path, capsys):
+    """Same header states the root count unconditionally once a second
+    account is declared via ~/.claude/transcript-config-dirs, so a
+    multi-account scan is never scope-ambiguous with a single-account one."""
+    active = tmp_path / "active" / "projects"
+    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+
+    declared_config_dir = tmp_path / "declared-account"
+    (declared_config_dir / "projects").mkdir(parents=True)
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{declared_config_dir}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+    monkeypatch.setattr(sys, "argv", ["token-analyzer.py"])
+    _mod.main()
+
+    out = capsys.readouterr().out
+    assert "TOKEN ANALYZER SOURCES (*; 2 roots)" in out

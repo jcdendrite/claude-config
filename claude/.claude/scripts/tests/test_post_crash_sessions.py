@@ -1335,6 +1335,104 @@ def test_redact_output_matches_no_structural_detector_regex(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# config_dirs_explicit -- gates the unredacted "Config directories scanned"
+# header's raw-path form on whether the extras came from a typed --config-dir
+# rather than the ~/.claude/transcript-config-dirs default
+# ---------------------------------------------------------------------------
+
+def test_render_report_declared_roots_default_shows_count_not_paths():
+    """Beyond the default, config_dirs came from the declared-roots default
+    (no --config-dir typed this run) -- the header must not print those
+    paths even unredacted, since --redact is opt-in and this leak would
+    happen before the operator ever makes that choice."""
+    report = _blank_report(config_dirs=[Path("/fake/default-account"), Path("/fake/declared-account")])
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=False)
+    assert "Config directories scanned: 2" in output
+    assert "/fake/default-account" not in output
+    assert "/fake/declared-account" not in output
+
+
+def test_render_report_explicit_config_dir_still_shows_raw_paths_unredacted():
+    """An explicit --config-dir is a path the operator already typed this
+    run -- printing it back unredacted is the pre-declared-roots-default
+    behavior, preserved when config_dirs_explicit is True."""
+    report = _blank_report(config_dirs=[Path("/fake/default-account"), Path("/fake/explicit-account")])
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=True)
+    assert "Config directories scanned: /fake/default-account, /fake/explicit-account" in output
+
+
+def test_render_report_redact_shows_count_regardless_of_config_dirs_explicit():
+    report = _blank_report(config_dirs=[Path("/fake/default-account"), Path("/fake/other-account")])
+    for explicit in (False, True):
+        output = _mod.render_report(report, redact=True, config_dirs_explicit=explicit)
+        assert "Config directories scanned: 2" in output
+        assert "/fake/default-account" not in output
+        assert "/fake/other-account" not in output
+
+
+def test_render_report_single_root_shows_raw_path_regardless_of_config_dirs_explicit():
+    """A single config dir is always just the operator's own default,
+    never a declared-roots entry -- config_dirs_explicit doesn't gate it."""
+    report = _blank_report(config_dirs=[Path("/fake/only-account")])
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=False)
+    assert "Config directories scanned: /fake/only-account" in output
+
+
+# ---------------------------------------------------------------------------
+# Per-row account-N tagging -- only once multi-root, reusing _assign_ordinal
+# ---------------------------------------------------------------------------
+
+def test_render_report_tags_rows_with_account_ordinal_when_multi_root():
+    account_a = Path("/fake/account-a")
+    account_b = Path("/fake/account-b")
+    row_a = _mod.SessionRow(
+        session_id="sess-a", classification=_mod.CLASS_RESUMABLE,
+        cwd="/tmp/proj-a", git_branch="main", last_activity=200.0,
+        detail="test detail", entry_count=1, cwd_missing=False, config_dir=account_a,
+    )
+    row_b = _mod.SessionRow(
+        session_id="sess-b", classification=_mod.CLASS_CRASHED_NO_TRANSCRIPT,
+        cwd="/tmp/proj-b", git_branch="main", last_activity=100.0,
+        detail="test detail", entry_count=1, cwd_missing=False, config_dir=account_b,
+    )
+    report = _blank_report(rows=[row_a, row_b], config_dirs=[account_a, account_b])
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=True)
+    # account-1/account-2 assignment is sorted by resolved path, not scan
+    # order -- account_a < account_b alphabetically.
+    assert "account-1, last activity" in output
+    assert "[account-2]" in output
+
+
+def test_render_report_account_ordinal_present_under_redact_too():
+    """Per-row account-N tagging is required in both redacted and
+    unredacted mode -- unlike cwd/session-id ordinals, it must not be
+    gated on --redact."""
+    account_a = Path("/fake/account-a")
+    account_b = Path("/fake/account-b")
+    row = _mod.SessionRow(
+        session_id="sess-a", classification=_mod.CLASS_RESUMABLE,
+        cwd="/tmp/proj-a", git_branch="main", last_activity=200.0,
+        detail="test detail", entry_count=1, cwd_missing=False, config_dir=account_a,
+    )
+    report = _blank_report(rows=[row], config_dirs=[account_a, account_b])
+    output = _mod.render_report(report, redact=True, config_dirs_explicit=False)
+    assert "account-1, last activity" in output
+
+
+def test_render_report_omits_account_tag_at_single_root():
+    """At a single config dir every row belongs to the only declared
+    account -- tagging it would add noise, not signal."""
+    row = _mod.SessionRow(
+        session_id="sess-a", classification=_mod.CLASS_RESUMABLE,
+        cwd="/tmp/proj-a", git_branch="main", last_activity=200.0,
+        detail="test detail", entry_count=1, cwd_missing=False, config_dir=Path("/fake/config"),
+    )
+    report = _blank_report(rows=[row])
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=False)
+    assert "account-" not in output
+
+
+# ---------------------------------------------------------------------------
 # render_report — "Possible crash" tier
 # ---------------------------------------------------------------------------
 
@@ -1547,6 +1645,92 @@ def test_render_report_legacy_pid_cleanup_command_absent_under_redact():
     assert "rm --" not in output
 
 
+def test_render_report_legacy_pid_paths_redacted_to_basename_under_declared_roots_default():
+    """These paths span declared accounts (config_dirs_explicit=False, >1
+    root) -- same account-directory-disclosure shape as the header line
+    (Finding 1), so they must not print full paths, and the rm command
+    (which needs full paths to be runnable) must be omitted rather than
+    printed half-redacted."""
+    paths = [Path("/fake/config/account-a/sessions/111"), Path("/fake/config/account-b/sessions/222")]
+    report = _blank_report(
+        config_dirs=[Path("/fake/config/account-a"), Path("/fake/config/account-b")],
+        legacy_bare_pid_dead=paths,
+    )
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=False)
+    assert "111" in output and "222" in output
+    assert "/fake/config/account-a" not in output
+    assert "/fake/config/account-b" not in output
+    assert "rm --" not in output
+
+
+def test_render_report_legacy_pid_cleanup_command_present_under_explicit_config_dir():
+    """An explicit --config-dir is a path the operator already typed --
+    printing it back, and offering a runnable rm command, is the pre-PR
+    behavior, preserved when config_dirs_explicit is True."""
+    paths = [Path("/fake/config/account-a/sessions/111"), Path("/fake/config/account-b/sessions/222")]
+    report = _blank_report(
+        config_dirs=[Path("/fake/config/account-a"), Path("/fake/config/account-b")],
+        legacy_bare_pid_dead=paths,
+    )
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=True)
+    assert "/fake/config/account-a/sessions/111" in output
+    rm_line = next(line for line in output.splitlines() if line.strip().startswith("rm --"))
+    assert "111" in rm_line and "222" in rm_line
+
+
+# ---------------------------------------------------------------------------
+# _declared_config_dirs()
+# ---------------------------------------------------------------------------
+
+def test_declared_config_dirs_returns_empty_list_when_roots_file_is_absent(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
+    assert _mod._declared_config_dirs() == []
+
+
+def test_declared_config_dirs_accepts_sessions_only_root(monkeypatch, tmp_path):
+    """The one behavior that must diverge from _config_dir.declared_transcript_roots():
+    a root with sessions/ but no projects/ is valid here."""
+    sessions_only = tmp_path / "sessions-only"
+    (sessions_only / "sessions").mkdir(parents=True)
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{sessions_only}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    assert _mod._declared_config_dirs() == [sessions_only]
+
+
+def test_declared_config_dirs_accepts_projects_only_root(monkeypatch, tmp_path):
+    projects_only = tmp_path / "projects-only"
+    (projects_only / "projects").mkdir(parents=True)
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{projects_only}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    assert _mod._declared_config_dirs() == [projects_only]
+
+
+def test_declared_config_dirs_rejects_root_with_neither_subdir_index_only_warning(monkeypatch, tmp_path, capsys):
+    bare_dir = tmp_path / "bare-account"
+    bare_dir.mkdir()
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{bare_dir}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    assert _mod._declared_config_dirs() == []
+    err = capsys.readouterr().err
+    assert "declared root 1" in err
+    assert "post-crash-sessions" in err
+    assert str(bare_dir) not in err
+
+
+def test_declared_config_dirs_dedups_by_resolved_real_path(monkeypatch, tmp_path):
+    root = tmp_path / "acct-dup"
+    (root / "sessions").mkdir(parents=True)
+    alias = tmp_path / "acct-dup-symlink"
+    alias.symlink_to(root)
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{root}\n{alias}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    assert _mod._declared_config_dirs() == [root]
+
+
 # ---------------------------------------------------------------------------
 # main() — CLI wiring, argument validation, end-to-end fixture corpus
 # ---------------------------------------------------------------------------
@@ -1621,6 +1805,76 @@ def test_main_dedupes_default_config_dir_supplied_again_explicitly(monkeypatch, 
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out.count(str(default_dir)) == 1
+
+
+def test_main_scans_declared_roots_by_default_when_no_config_dir_flag(tmp_path, monkeypatch, capsys):
+    default_dir = tmp_path / "default-config"
+    default_dir.mkdir()
+    declared_dir = tmp_path / "declared-config"
+    (declared_dir / "projects").mkdir(parents=True)
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{declared_dir}\n")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    exit_code = _mod.main([])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    # Not asserted by raw path: with no explicit --config-dir, the declared
+    # root's own path must not appear in the default (non-redacted) header
+    # -- see test_render_report_declared_roots_default_shows_count_not_paths.
+    # The count line is the proof this root was actually unioned into the scan.
+    assert "Config directories scanned: 2" in captured.out
+    assert str(declared_dir) not in captured.out
+
+
+def test_main_declared_sessions_only_root_is_not_silently_dropped(tmp_path, monkeypatch, capsys):
+    """A declared root with a sessions/ dir but no projects/ dir is the
+    crashed-fresh-account case this tool exists for -- declared_transcript_roots()'s
+    own projects/-only requirement would drop it, so main() must apply its
+    own looser sessions/-or-projects/ check instead."""
+    default_dir = tmp_path / "default-config"
+    default_dir.mkdir()
+    sessions_only_dir = tmp_path / "sessions-only-config"
+    (sessions_only_dir / "sessions").mkdir(parents=True)
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{sessions_only_dir}\n")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    exit_code = _mod.main([])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    # Not asserted by raw path -- see test_render_report_declared_roots_default_shows_count_not_paths.
+    # The count line is the proof this root wasn't dropped from the scan.
+    assert "Config directories scanned: 2" in captured.out
+    assert str(sessions_only_dir) not in captured.out
+
+
+def test_main_explicit_config_dir_overrides_declared_roots_default(tmp_path, monkeypatch, capsys):
+    """An explicit --config-dir takes precedence over the declared-roots
+    default entirely, mirroring transcript-analysis.py's _resolve_scan_roots
+    precedence -- the declared root must not also be scanned."""
+    default_dir = tmp_path / "default-config"
+    default_dir.mkdir()
+    declared_dir = tmp_path / "declared-config"
+    (declared_dir / "projects").mkdir(parents=True)
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{declared_dir}\n")
+    explicit_dir = tmp_path / "explicit-config"
+    (explicit_dir / "sessions").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    exit_code = _mod.main(["--config-dir", str(explicit_dir)])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert str(default_dir) in captured.out
+    assert str(explicit_dir) in captured.out
+    assert str(declared_dir) not in captured.out
 
 
 def test_main_end_to_end_prints_resume_command_for_crashed_session(tmp_path, monkeypatch, capsys):

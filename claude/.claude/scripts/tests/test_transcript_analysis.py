@@ -5262,19 +5262,23 @@ class TestCostResolveRoots:
         assert exc_info.value.code == 2
         assert str(bogus) in capsys.readouterr().err
 
-    def test_this_repo_and_config_dir_mutually_exclusive(
-        self, tmp_path, monkeypatch, capsys, fake_config_dir_factory
+    def test_this_repo_and_config_dir_compose_returning_both_roots(
+        self, tmp_path, monkeypatch, fake_config_dir_factory
     ):
+        """--this-repo no longer refuses an explicit --config-dir extra:
+        _iter_scoped_sessions matches slugs by basename and
+        _path_to_project_slug derives them from `git worktree list` alone,
+        both root-independent, so the refusal's own rationale ("--this-repo
+        cannot filter a foreign config dir's worktrees") didn't match the
+        mechanism. _resolve_cost_roots just returns the union of both roots;
+        --this-repo's own filtering happens downstream in
+        _resolve_project_scope."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
         monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_cost_roots(_cost_args(this_repo=True, extra_config_dirs=[str(acct_b)]))
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "--this-repo" in err
-        assert "--config-dir" in err
+        roots = _mod._resolve_cost_roots(_cost_args(this_repo=True, extra_config_dirs=[str(acct_b)]))
+        assert roots == [default_dir / "projects", acct_b / "projects"]
 
     def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
@@ -5650,18 +5654,35 @@ class TestCostMultiRootRedaction:
         assert exc_info.value.code == 2
         assert "--no-redact" in capsys.readouterr().err
 
-    def test_this_repo_refused_at_cmd_cost_when_config_dir_given(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+    def test_this_repo_end_to_end_reaches_report_with_config_dir(
+        self, tmp_path, monkeypatch, capsys, fake_config_dir_factory
+    ):
+        """--config-dir + --this-repo end-to-end through cmd_cost: distinct
+        from the _resolve_cost_roots-only allow-case above, since its own
+        value is proving no path still reaches the report bypassing the
+        (now-removed) guard."""
         default_dir = tmp_path / "default"
-        (default_dir / "projects").mkdir(parents=True)
         monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        slug = "-home-user-this-repo"
+        proj_default = default_dir / "projects" / slug
+        proj_default.mkdir(parents=True)
+        _write_jsonl(proj_default / "sess-default.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
+
         acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / slug
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [_priced("claude-sonnet-5", input=2_000_000)])  # $4.00
+
+        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
+
         args = _cost_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_cost(args)
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "--this-repo" in err
-        assert "--config-dir" in err
+        _mod.cmd_cost(args)
+
+        out = capsys.readouterr().out
+        assert "account-1/private-project-1" in out
+        assert "account-2/private-project-1" in out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "6.00"
 
 
 class TestCostByProject:
@@ -12219,11 +12240,10 @@ class TestRootsThreadingSpy:
 
 class TestThisRepoUnionsAcrossRoots:
     """--this-repo (and, at the _iter_scoped_sessions layer it shares, every
-    other slug-scoped caller) unions across every resolved root once a
-    declared-roots file makes --this-repo multi-root by default, with no
-    --config-dir flag involved -- distinct from cost's own separate refusal
-    of --this-repo combined with an explicit --config-dir, which stays
-    unaffected."""
+    other slug-scoped caller) unions across every resolved root, whether
+    those roots came from a declared-roots file or from cost's own explicit
+    --config-dir extras -- the union mechanism at this layer is the same
+    regardless of which resolver assembled `roots`."""
 
     def test_multi_root_slug_match_is_name_only_and_dedupes_across_roots(self, tmp_path):
         """Direct coverage of _iter_scoped_sessions(roots=[a, b]): the same
@@ -12274,7 +12294,42 @@ class TestThisRepoUnionsAcrossRoots:
         assert branches_seen == {"from-root-a", "from-root-b"}
         assert "foreign-branch" not in branches_seen
 
-    def test_this_repo_unions_same_slug_across_roots_end_to_end(self, tmp_path, monkeypatch, capsys):
+    def test_this_repo_slug_collision_admits_foreign_project_with_identical_slug(
+        self, tmp_path, monkeypatch
+    ):
+        """Pins a known, plan-accepted residual risk (see Step 21 of
+        .claude/plans/transcript-corpus-multi-account-scope.md: "[/.]→- is
+        not injective, so /a/b.c and /a/b/c collide"), not a bug to fix here.
+        _iter_scoped_sessions matches by basename equality alone, so it
+        cannot distinguish this repo's own project dir from a foreign
+        account's unrelated project dir that happens to collide onto the
+        same slug -- under --this-repo, both are admitted. A future change to
+        slug derivation that silently alters this posture, in either
+        direction, must fail this test."""
+        this_repo_slug = _mod._path_to_project_slug("/a/b/c")
+        foreign_path_slug = _mod._path_to_project_slug("/a/b.c")
+        assert this_repo_slug == foreign_path_slug == "-a-b-c"  # the collision this test pins
+
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / this_repo_slug
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="this-repo-session")])
+
+        root_b = tmp_path / "acct-b"
+        proj_b_colliding = root_b / foreign_path_slug
+        proj_b_colliding.mkdir(parents=True)
+        _write_jsonl(proj_b_colliding / "sess-foreign.jsonl",
+                     [_asst("claude-sonnet-4-6", branch="foreign-colliding-session")])
+
+        args = type("A", (), {"projects": "*", "this_repo": True})()
+        args._this_repo_slugs = [this_repo_slug]
+        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
+
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
+        assert branches_seen == {"this-repo-session", "foreign-colliding-session"}
+
+    def test_this_repo_unions_same_slug_across_roots(self, tmp_path, monkeypatch, capsys):
         """End-to-end: buckets --this-repo, with a declared-roots file adding
         a second root that also contains this repo's own worktree slug --
         both roots' sessions appear in one report, not just the active
