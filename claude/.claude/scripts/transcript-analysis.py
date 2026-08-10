@@ -4435,12 +4435,14 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     same defect -- that function already validated and skipped it (see its
     own docstring) rather than exiting, since a stale roots-file line must not
     break every invocation the way a bad command-line flag should.
-    --this-repo cannot filter a foreign config dir's worktrees, and
-    --no-redact on more than one root would put one client's real project
-    names into a report meant for another — both are refused here, exit 2,
-    rather than silently scoping to the wrong thing. Returns each root's
-    projects/ subdirectory, ready for _resolve_project_scope's roots
-    parameter.
+    --this-repo unions across every resolved root here, including
+    --config-dir extras: _iter_scoped_sessions matches by basename, and
+    _path_to_project_slug derives slugs from `git worktree list` alone, so
+    one checkout's slugs are root-independent. --no-redact on more than one
+    root would put one client's real project names into a report meant for
+    another — refused here, exit 2, rather than silently scoping to the
+    wrong thing. Returns each root's projects/ subdirectory, ready for
+    _resolve_project_scope's roots parameter.
 
     `subcommand` labels the printed refusal messages (default "cost", cost's
     own long-standing call sites and tests); context-distribution passes its
@@ -4448,14 +4450,6 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     invoked, not always "cost".
     """
     extra_config_dirs: list[str] = getattr(args, "extra_config_dirs", None) or []
-
-    if args.this_repo and extra_config_dirs:
-        print(
-            f"{subcommand}: --this-repo and --config-dir are mutually exclusive"
-            " (--this-repo cannot filter a foreign config dir's worktrees)",
-            file=sys.stderr,
-        )
-        sys.exit(2)
 
     config_dirs: list[Path] = []
     seen_resolved: set[Path] = set()
@@ -7550,7 +7544,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Additional Claude Code config directory to scan (repeatable). The default resolved"
             " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --this-repo or --no-redact."
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root; --no-redact is refused once this puts more than one"
+            " root in scope."
         ),
     )
     p_cost.add_argument(
@@ -7604,7 +7600,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Additional Claude Code config directory to scan (repeatable). The default resolved"
             " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --this-repo or --no-redact."
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root; --no-redact is refused once this puts more than one"
+            " root in scope."
         ),
     )
     p_context_dist.add_argument(
@@ -7636,7 +7634,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Additional Claude Code config directory to scan (repeatable). The default resolved"
             " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --this-repo or --no-redact."
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root; --no-redact is refused once this puts more than one"
+            " root in scope."
         ),
     )
     p_edit_format.add_argument(
