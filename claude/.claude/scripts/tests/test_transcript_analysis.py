@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
@@ -8523,6 +8524,556 @@ class TestCostTrend:
         assert row is not None and row["total"] == "2.00"
         # _opus()'s turn: input 50 + output 400 + cache_read 0 = 450 unpriced tokens.
         assert "1 unpriced turns / 450 tokens excluded from priced spend" in out
+
+
+# ---------------------------------------------------------------------------
+# cost-ledger
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def cost_ledger_file(tmp_path, monkeypatch):
+    """Isolated docs/cost-ledger.md: a fresh file with the canonical header/
+    separator and zero data rows, matching the real committed file's own
+    shape. _cost_ledger_path is monkeypatched so every test in this section
+    reads/writes this file, never this repo's own tracked ledger."""
+    ledger_path = tmp_path / "cost-ledger.md"
+    ledger_path.write_text(
+        "# Cost-trend ledger\n\n"
+        + _mod._COST_LEDGER_HEADER_LINE + "\n"
+        + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+    )
+    monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: ledger_path)
+    return ledger_path
+
+
+@pytest.fixture()
+def cost_ledger_enabled(tmp_path, monkeypatch):
+    """Isolated config dir carrying the cost-ledger opt-in sentinel, wired
+    the same way TestCostResolveRoots isolates config_dir() for --config-dir
+    tests."""
+    cfg_dir = tmp_path / "isolated-claude-config"
+    cfg_dir.mkdir()
+    (cfg_dir / ".cost-ledger-enabled").touch()
+    monkeypatch.setattr(_mod, "config_dir", lambda: cfg_dir)
+    return cfg_dir
+
+
+def _cost_ledger_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    record: bool = False,
+    machine_label: str | None = None,
+    force: bool = False,
+    note: str = "",
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "record": record,
+        "machine_label": machine_label,
+        "force": force,
+        "note": note,
+    })()
+
+
+def _cost_ledger_row(**overrides) -> dict:
+    """A complete, valid row dict with sensible defaults, overridden per test."""
+    row = {
+        "week": "2026-W20", "machine": "m1", "rates": "2026-08-02", "usd": 12.5,
+        "context_pct": 10.0, "opus_pct": 5.0, "ge200k_pct": 10.0,
+        "denials": 2, "reviewer_gap_pp": 3.5, "note": "baseline",
+    }
+    row.update(overrides)
+    return row
+
+
+def _reviewer_dispatch_records(
+    proj: Path, session_id: str, tool_id: str, subagent_type: str, verdict_text: str,
+    *, dispatch_ts: str, result_ts: str,
+) -> list[dict]:
+    """One reviewer-agent dispatch + its paired tool_result, at explicit
+    caller-chosen timestamps (unlike _n_cited_reviewer_dispatches, which
+    hardcodes 2026-05-19 and so can't be placed inside an arbitrary
+    cost-ledger test week). Writes the paired subagent transcript/meta.json
+    as a side effect."""
+    records = [
+        _asst("claude-opus-4-7", ts=dispatch_ts, content=[_agent_use(tool_id, subagent_type)]),
+        _user_msg([_tool_result(tool_id, "ok")], ts=result_ts),
+    ]
+    _write_subagent_dispatch(
+        proj, session_id, f"agent-{tool_id}", tool_id,
+        [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": verdict_text}])],
+        agent_type=subagent_type,
+    )
+    return records
+
+
+class TestCostLedgerReadMode:
+    def test_read_mode_lists_existing_rows_and_flags_unrecorded_live_week(
+        self, fake_projects, cost_ledger_file, capsys
+    ):
+        """Read mode prints an existing row, plus a live-corpus week with no
+        row for any machine, as a recording gap."""
+        existing = _cost_ledger_row(week="2026-W20", machine="m1")
+        cost_ledger_file.write_text(
+            cost_ledger_file.read_text() + _mod._format_cost_ledger_row(existing) + "\n"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),  # 2026-W23
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
+        out = capsys.readouterr().out
+        assert "2026-W20" in out
+        assert "m1" in out
+        assert "Weeks present in the live corpus with no ledger row yet:" in out
+        assert "2026-W23" in out
+
+    def test_read_mode_missing_ledger_file_refuses(self, fake_projects, tmp_path, monkeypatch):
+        """A missing docs/cost-ledger.md refuses rather than silently
+        reporting an empty ledger — the file is never lazily created."""
+        monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: tmp_path / "absent-cost-ledger.md")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+
+    def test_format_read_row_renders_exact_fixed_width_columns(self):
+        """_format_cost_ledger_read_row's fixed-width terminal line, checked
+        cell-by-cell against a known row -- distinct from the write-side
+        markdown line, which round-trips through the canonical parser
+        instead (there is no parser for this display-only format)."""
+        row = _cost_ledger_row(
+            week="2026-W20", machine="m1", usd=1234.56, context_pct=12.3, opus_pct=45.6,
+            ge200k_pct=12.3, denials=7, reviewer_gap_pp=-3.2, note="rolled out F3 fix",
+        )
+        assert _mod._format_cost_ledger_read_row(row) == (
+            "2026-W20   m1        2026-08-02      1,234.56     12.3%   45.6%    12.3%"
+            "        7      -3.2pp  rolled out F3 fix"
+        )
+
+
+class TestCostLedgerSerializationRoundTrip:
+    @staticmethod
+    def _table(row_line: str) -> str:
+        return (
+            _mod._COST_LEDGER_HEADER_LINE + "\n"
+            + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+            + row_line + "\n"
+        )
+
+    def test_full_row_round_trips_through_the_markdown_line_format(self):
+        """A row dict serialized to its markdown line and parsed back through
+        the canonical file parser produces the identical dict — no
+        dependence on any corpus scan."""
+        row = _cost_ledger_row(
+            week="2026-W20", machine="m1", usd=1234.56, context_pct=12.3, opus_pct=45.6,
+            ge200k_pct=12.3, denials=7, reviewer_gap_pp=-3.2, note="rolled out F3 fix",
+        )
+        line = _mod._format_cost_ledger_row(row)
+        _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
+        assert rows == [row]
+
+    def test_unmeasured_gap_and_empty_note_round_trip(self):
+        """An unmeasured reviewer_gap_pp (None) and an empty note both
+        round-trip through the markdown line format unchanged."""
+        row = _cost_ledger_row(usd=0.0, context_pct=0.0, opus_pct=0.0, ge200k_pct=0.0,
+                                denials=0, reviewer_gap_pp=None, note="")
+        line = _mod._format_cost_ledger_row(row)
+        _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
+        assert rows == [row]
+
+
+class TestCostLedgerParserHostility:
+    @staticmethod
+    def _table(row_line: str) -> str:
+        return (
+            _mod._COST_LEDGER_HEADER_LINE + "\n"
+            + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+            + row_line + "\n"
+        )
+
+    def test_wrong_column_count_rejected(self):
+        with pytest.raises(_mod._CostLedgerParseError, match="expected 10 columns"):
+            _mod._parse_cost_ledger_file_text(self._table("| 2026-W20 | m1 | too | few |"))
+
+    def test_non_iso_week_label_rejected(self):
+        row = _mod._format_cost_ledger_row(_cost_ledger_row(week="2026-W99"))
+        with pytest.raises(_mod._CostLedgerParseError, match="malformed week label"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_non_numeric_percentage_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 12.x% | 1.0% | 1.0% | 0 |  |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="non-numeric context_pct"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_percentage_missing_trailing_percent_sign_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | not-a-pct | 1.0% | 1.0% | 0 |  |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="malformed context_pct"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_pipe_inside_a_cell_rejected_as_wrong_column_count(self):
+        """A raw, unescaped '|' inside note (never a supported escape) splits
+        into an extra column, surfacing as the same wrong-column-count error
+        as any other malformed row — no separate pipe-detection code path
+        is needed."""
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 |  | rolled out | oops |"
+        with pytest.raises(_mod._CostLedgerParseError, match="expected 10 columns"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_unresolved_merge_conflict_marker_rejected(self):
+        text = (
+            _mod._COST_LEDGER_HEADER_LINE + "\n"
+            + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+            + "<<<<<<< HEAD\n"
+            + _mod._format_cost_ledger_row(_cost_ledger_row(machine="m1")) + "\n"
+            + "=======\n"
+            + _mod._format_cost_ledger_row(_cost_ledger_row(machine="m2")) + "\n"
+            + ">>>>>>> branch\n"
+        )
+        with pytest.raises(_mod._CostLedgerParseError, match="merge-conflict marker"):
+            _mod._parse_cost_ledger_file_text(text)
+
+
+class TestCostLedgerRecordParity:
+    def test_record_row_matches_the_compute_functions_independently(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
+    ):
+        """--record's row values equal what _compute_cost_trend_data,
+        _compute_deny_summary_data, and _compute_reviewer_yield_data compute
+        independently for the same week — the parity check that catches
+        drift between the recorder and the report subcommands it reuses."""
+        proj = fake_projects
+        session_id = "sess-parity"
+        records = [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+            _hook_deny("require-code-review", ts="2026-06-02T10:00:00.000Z"),
+        ]
+        records += _reviewer_dispatch_records(
+            proj, session_id, "f1", "staff-backend-engineer", "Found 1 issue in src/foo.py needing a fix",
+            dispatch_ts="2026-06-01T09:00:00.000Z", result_ts="2026-06-01T09:00:30.000Z",
+        )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:05:00.000Z",
+                              content=[_edit_use("ef1", path="src/foo.py")]))
+        records += _reviewer_dispatch_records(
+            proj, session_id, "z1", "staff-backend-engineer", "Found 0 issues in src/other.py after review",
+            dispatch_ts="2026-06-01T09:10:00.000Z", result_ts="2026-06-01T09:10:30.000Z",
+        )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:15:00.000Z",
+                              content=[_edit_use("ez1", path="src/unrelated.py")]))
+        _write_jsonl(proj / f"{session_id}.jsonl", records)
+
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        capsys.readouterr()
+
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["week"] == "2026-W23"
+
+        cost_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
+        cost_weeks, _u, _t = _mod._compute_cost_trend_data(cost_iter)
+        week_data = cost_weeks["2026-W23"]
+        assert row["usd"] == pytest.approx(week_data["total"])
+        # context_pct (context-class dollar share, GH-554 F1) and ge200k_pct
+        # (>=200k-context-bucket dollar share, cost-trend's own existing
+        # metric) are distinct fields of _compute_cost_trend_data, asserted
+        # independently -- the fixture's only turn is all input tokens (no
+        # cache_read/cache_write) but crosses the 200k-context threshold, so
+        # a regression that swaps or re-aliases the two would be caught by
+        # either assertion failing, not just one.
+        assert row["context_pct"] == pytest.approx(
+            _mod._pct_value(week_data["context_class_dollars"], week_data["total"])
+        )
+        assert row["ge200k_pct"] == pytest.approx(_mod._pct_value(week_data["context_over"], week_data["total"]))
+        assert row["context_pct"] == pytest.approx(0.0)
+        assert row["ge200k_pct"] == pytest.approx(100.0)
+        assert row["opus_pct"] == pytest.approx(_mod._pct_value(week_data["opus"], week_data["total"]))
+
+        week_start = _mod.datetime(2026, 6, 1, tzinfo=_mod.UTC).timestamp()
+        week_end = week_start + 7 * 86400
+        deny_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger")
+        deny_data = _mod._compute_deny_summary_data(deny_iter, since_ts=week_start, until_ts=week_end)
+        assert row["denials"] == sum(deny_data["hook_counts"].values())
+        assert row["denials"] == 1
+
+        reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger")
+        reviewer_data = _mod._compute_reviewer_yield_data(reviewer_iter, since_ts=week_start, until_ts=week_end)
+        assert row["reviewer_gap_pp"] == pytest.approx(_mod._reviewer_gap_pp(reviewer_data["agg2"]))
+        assert row["reviewer_gap_pp"] == pytest.approx(100.0)  # findings-found 100% edited vs. zero-finding 0%
+
+    def test_denial_at_next_weeks_monday_boundary_excluded_from_this_weeks_row(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
+    ):
+        """The per-week window is [week_start_ts, week_end_ts) -- a denial
+        timestamped exactly at this Monday's 00:00:00 UTC is the window's
+        first included instant, while one at the following Monday's own
+        00:00:00 UTC belongs to next week and must not inflate this
+        week's count."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),  # 2026-W23
+            _hook_deny("require-code-review", ts="2026-06-01T00:00:00.000Z"),  # week_start_ts: included
+            _hook_deny("require-code-review", ts="2026-06-08T00:00:00.000Z"),  # week_end_ts: excluded
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        capsys.readouterr()
+
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+        assert rows[0]["week"] == "2026-W23"
+        assert rows[0]["denials"] == 1
+
+
+class TestCostLedgerWriteFidelity:
+    def test_write_succeeds_for_a_dollar_amount_that_does_not_round_to_a_clean_value(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        """Regression test: _write_cost_ledger_file's write-verification step
+        must compare the temp file's written bytes against the intended
+        text, not re-parsed row dicts against the original row -- usd is
+        formatted to cents and percentages to one decimal, so a row's raw
+        float legitimately differs from its formatted-then-reparsed value.
+        Comparing rows directly would refuse to write almost any real
+        (non-round-number) week's figures. 350,000 input tokens at Sonnet
+        5's $2/MTok base rate prices to $0.70 (a clean total), but the
+        >=200k-bucket dollar share is 100% here — this instead exercises a
+        percentage that does not land on a clean one-decimal boundary via a
+        second turn that is priced but contributes an uneven opus share."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=333_333, ts="2026-06-01T10:00:00.000Z"),
+            _priced_opus([], out=100, ts="2026-06-01T11:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+        assert 0 < rows[0]["opus_pct"] < 100
+
+
+class TestCostLedgerRecordIdempotence:
+    def test_second_record_without_force_refused_and_file_byte_identical(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_with_force_replaces_row_leaving_other_rows_untouched(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        other_row = _cost_ledger_row(week="2026-W23", machine="other1", note="unrelated machine")
+        cost_ledger_file.write_text(
+            cost_ledger_file.read_text() + _mod._format_cost_ledger_row(other_row) + "\n"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1", note="first"), date(2026, 6, 3)
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-02T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1", force=True, note="second"), date(2026, 6, 3)
+        )
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 2
+        assert rows[0] == other_row
+        tstm1_row = next(r for r in rows if r["machine"] == "tstm1")
+        assert tstm1_row["note"] == "second"
+        assert tstm1_row["usd"] == pytest.approx(4.0)
+
+
+class TestCostLedgerDegenerateCorpora:
+    def test_empty_corpus_refuses_and_writes_nothing(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+
+    def test_current_week_all_turns_unpriced_refuses_and_writes_nothing(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400,
+                  ts="2026-06-01T10:00:00.000Z"),  # claude-opus-4-7 is deliberately unpriced
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+
+    def test_clock_skew_between_corpus_and_current_week_refuses(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        """The corpus's most recent activity landing in a later week than
+        the machine's computed 'today' refuses rather than mislabeling the
+        row under the wrong (week, machine) slot."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),  # 2026-W23
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-15T10:00:00.000Z"),  # 2026-W25
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)  # resolves to 2026-W23
+            )
+        assert exc_info.value.code != 0
+
+
+class TestCostLedgerConcurrency:
+    def test_two_racing_records_produce_exactly_one_row(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        """Two --record calls racing for the same (week, machine) key, run
+        concurrently, leave exactly one row: the second acquires the lock
+        after the first has already written and committed, sees the
+        already-recorded row under the lock, and refuses the duplicate —
+        not a double append, not a corrupted table."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        args = _cost_ledger_args(record=True, machine_label="tstm1")
+        today = date(2026, 6, 3)
+        exit_codes: list[int | None] = [None, None]
+
+        def _run(i: int) -> None:
+            try:
+                _mod._cost_ledger_report(args, today)
+                exit_codes[i] = 0
+            except SystemExit as exc:
+                exit_codes[i] = exc.code
+
+        threads = [threading.Thread(target=_run, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+        assert sorted(exit_codes) == [0, 1]
+
+
+class TestCostLedgerPublishSafety:
+    def test_record_output_and_file_carry_no_project_or_session_identifiers(
+        self, tmp_path, monkeypatch, cost_ledger_file, cost_ledger_enabled, capsys
+    ):
+        """A distinctive project/session marker present in the scanned
+        corpus must not reach the ledger file or stdout — cost-ledger's row
+        is aggregate-only by construction (no path/session/project field in
+        its schema), mirroring #601's cited-path join test shape."""
+        projects = tmp_path / "projects"
+        proj = projects / "SENTINEL-PROJECT-marker"
+        proj.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(proj / "SENTINEL-SESSION-marker.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        out = capsys.readouterr().out
+        assert "SENTINEL-PROJECT-marker" not in out
+        assert "SENTINEL-SESSION-marker" not in out
+        file_text = cost_ledger_file.read_text()
+        assert "SENTINEL-PROJECT-marker" not in file_text
+        assert "SENTINEL-SESSION-marker" not in file_text
+
+    def test_machine_label_equal_to_hostname_refused_without_echoing_it(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(_mod.socket, "gethostname", lambda: "realhost")
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="realhost"), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+        err = capsys.readouterr().err
+        assert "hostname" in err
+        assert "realhost" not in err
+
+    def test_machine_label_case_insensitive_hostname_comparison_pinned_deterministically(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, monkeypatch, capsys
+    ):
+        """A fixed, monkeypatched hostname (rather than the ambient real one)
+        pins the .lower() comparison itself: a distinct label succeeds, and a
+        same-value-different-case label is still rejected."""
+        monkeypatch.setattr(_mod.socket, "gethostname", lambda: "RealHost")
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        capsys.readouterr()
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="realhost"), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+        err = capsys.readouterr().err
+        assert "hostname" in err
+
+    def test_note_containing_pipe_refused_before_any_write(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        """A --note containing '|' is refused outright, since it would
+        corrupt the table's row format on write — exercised here with a
+        note shaped like it might carry a private project name, the
+        highest-risk column per docs/cost-ledger.md. The recorder does not
+        re-implement deny-private-project-refs.sh's own blocklist scan;
+        that hook covers the actual publish boundary, `git commit`."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1", note="acme-corp | internal rollout"),
+                date(2026, 6, 3),
+            )
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+
+
+class TestCostLedgerSentinelGate:
+    def test_record_refuses_without_sentinel(self, fake_projects, cost_ledger_file, tmp_path, monkeypatch):
+        cfg_dir = tmp_path / "isolated-claude-config-no-sentinel"
+        cfg_dir.mkdir()
+        monkeypatch.setattr(_mod, "config_dir", lambda: cfg_dir)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_refuses_without_machine_label(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+
+    def test_record_refuses_malformed_machine_label(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="Too-Long-Label"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code != 0
 
 
 # ---------------------------------------------------------------------------

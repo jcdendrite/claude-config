@@ -29,6 +29,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | What did this branch cost, as a publish-ready aggregate for a PR body? | `cost --this-repo --branches <branch> --summary` |
 | Are reviewer dispatches producing real findings, and do sessions then edit what was cited? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
+| What's this repo's durable week-over-week cost/efficiency history, beyond what live transcripts still retain? | `cost-ledger` |
 | Which client or profile does spend belong to? | `cost --by-project --config-dir <dir>` |
 | What fraction of Opus code-read turns are clearly dispatchable vs. read-then-edit loops? | `audit-routing-shape --since 35d` |
 | Pull a random sample of Opus code-read turns for delegation judgment curation | `audit-routing-samples --since 35d --sample 50 --seed 1` |
@@ -67,7 +68,7 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 - The `N failed` count is a coarse proxy: it matches any `N failed` in tool output, including pre-existing failures and intentional baseline runs. Treat the sequence view as the primary read; the aggregate rate is corroborating.
 - Subagent (`isSidechain`) turns are excluded from `fail-seq` and `struggle` — reviewer, `Explore`, and `code-writer` agents are not the debugging surface these subcommands measure.
 - Durations from `duration` are wall-clock dominated by idle gaps. Look at `Active(min)`, not `Span(min)`.
-- `pr-link` requires `gh` and network access. All other subcommands are local-only and make no writes.
+- `pr-link` requires `gh` and network access. `cost-ledger --record` writes to `docs/cost-ledger.md` and requires the opt-in sentinel `~/.claude/.cost-ledger-enabled`; every other subcommand, and `cost-ledger`'s own default read mode, is local-only and makes no writes.
 - A model-vs-model comparison is only meaningful when there are multiple all-Opus and all-Sonnet execution branches. One or two branches per model is directional, not a controlled A/B.
 - `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis, `--deny-only` to isolate sessions that hit an enforcement hook, and `--deny-summary` for a corpus-wide census by hook, by command shape, and their cross-tab, plus a friction-kind breakout — a distinct axis from denials — see `docs/transcript-analysis.md`'s `review-trace` section for the full output shape.
 - `judgment-pair` captures what the human said immediately after a review output. Tool-result turns, `isMeta` injections, and `isCompactSummary` records between the review and the user reply are automatically skipped. Use `--out` to save output to a file for offline curation.
