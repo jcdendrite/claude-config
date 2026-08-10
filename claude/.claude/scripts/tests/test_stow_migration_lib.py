@@ -6,6 +6,7 @@ sourcing pattern hooks/tests/test_marker_lib.py uses for _lib.sh.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -146,6 +147,141 @@ class TestNewestBackupSelection:
         assert (target / "p.md").read_text() == "# plans from newer backup\n", (
             "must resume from the newer, populated backup, not the older, "
             "empty one"
+        )
+
+
+def _run_newest_backup(name: str, home: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _stow_migration_lib_newest_backup "$1"',
+         "run_newest_backup", name],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home)},
+    )
+
+
+class TestNewestBackupNameBoundary:
+    """_stow_migration_lib_newest_backup shares _newest_unadopt_run's
+    unbounded-glob shape (no [0-9] boundary after the dot) -- not reachable
+    through today's only callers (plans/handoffs/briefs, none a dot-prefix
+    of another) but fixed identically per the same bug class, mirroring
+    TestNewestUnadoptRunNameBoundary above."""
+
+    def test_lookup_does_not_match_a_dot_prefixed_sibling_backup_dir(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        backup_root = home / ".claude-config-relocate-backup"
+        own_backup = backup_root / "foo.20260101000000"
+        own_backup.mkdir(parents=True)
+        (own_backup / "f.md").write_text("own\n")
+        # A newer backup for an unrelated name ("bar") that happens to be
+        # dot-prefixed with "foo" -- lexicographically sorts ahead of
+        # own_backup under `sort -r`, so an unescaped/unbounded glob would
+        # wrongly return this one instead.
+        sibling_backup = backup_root / "foo.bar.20260102000000"
+        sibling_backup.mkdir(parents=True)
+        (sibling_backup / "b.md").write_text("sibling\n")
+
+        result = _run_newest_backup("foo", home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(own_backup), (
+            f"a lookup for 'foo' must resolve to its own backup, not the "
+            f"newer dot-prefixed sibling {sibling_backup}; got {result.stdout!r}"
+        )
+
+
+def _run_newest_unadopt_run(name: str, home: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _stow_migration_lib_newest_unadopt_run "$1"',
+         "run_newest_unadopt_run", name],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home)},
+    )
+
+
+class TestNewestUnadoptRunNameBoundary:
+    """_stow_migration_lib_newest_unadopt_run's glob must not let a lookup
+    for one name consume another name's run directory just because that
+    other name is dot-prefixed with the first -- mirrors
+    TestNewestBackupSelection's construction below for the sibling
+    _stow_migration_lib_newest_backup, adapted to the "-unadopt" suffix."""
+
+    def test_lookup_does_not_match_a_dot_prefixed_sibling_run_directory(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        backup_root = home / ".claude-config-relocate-backup"
+        own_run_dir = backup_root / "foo.20260101000000-unadopt"
+        own_run_dir.mkdir(parents=True)
+        # A newer run directory for an unrelated name ("bar") that happens
+        # to be dot-prefixed with "foo" -- lexicographically sorts ahead of
+        # own_run_dir under `sort -r`, so an unescaped/unbounded glob would
+        # wrongly return this one instead.
+        sibling_run_dir = backup_root / "foo.bar.20260102000000-unadopt"
+        sibling_run_dir.mkdir(parents=True)
+
+        result = _run_newest_unadopt_run("foo", home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(own_run_dir), (
+            f"a lookup for 'foo' must resolve to its own run directory, not "
+            f"the newer dot-prefixed sibling {sibling_run_dir}; "
+            f"got {result.stdout!r}"
+        )
+
+    def test_lookup_does_not_match_a_sibling_starting_with_a_single_digit(
+        self, tmp_path: Path
+    ) -> None:
+        """A narrower collision than the dot-prefixed-sibling case above:
+        `[0-9]*` (one digit then anything) still let a lookup for "foo1"
+        cross-match "foo1.2bar.<ts>-unadopt", since "2" alone satisfies "one
+        digit" -- the exact 14-digit-width glob (_STOW_MIGRATION_LIB_TIMESTAMP_GLOB)
+        is required to close it fully."""
+        home = tmp_path / "home"
+        backup_root = home / ".claude-config-relocate-backup"
+        own_run_dir = backup_root / "foo1.20260101130000-unadopt"
+        own_run_dir.mkdir(parents=True)
+        # An unrelated name "foo1.2bar" -- its run directory starts with a
+        # single digit right after "foo1.", which satisfies a "[0-9]*" glob
+        # but not the real 14-digit timestamp width.
+        sibling_run_dir = backup_root / "foo1.2bar.20260101120000-unadopt"
+        sibling_run_dir.mkdir(parents=True)
+
+        result = _run_newest_unadopt_run("foo1", home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(own_run_dir), (
+            f"a lookup for 'foo1' must resolve to its own run directory, not "
+            f"the digit-prefixed sibling {sibling_run_dir}; got {result.stdout!r}"
+        )
+
+
+class TestNewestUnadoptRunSameNameSelection:
+    """_stow_migration_lib_newest_unadopt_run must pick the newest of
+    several genuine run directories for the SAME name -- mirrors
+    TestNewestBackupSelection's newest-of-several-candidates coverage for
+    the sibling _stow_migration_lib_newest_backup, which had no equivalent
+    for this function."""
+
+    def test_resolves_to_the_later_of_two_same_name_run_directories(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        backup_root = home / ".claude-config-relocate-backup"
+        older_run_dir = backup_root / "foo.20260101000000-unadopt"
+        older_run_dir.mkdir(parents=True)
+        newer_run_dir = backup_root / "foo.20260102000000-unadopt"
+        newer_run_dir.mkdir(parents=True)
+
+        result = _run_newest_unadopt_run("foo", home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(newer_run_dir), (
+            f"a lookup for 'foo' must resolve to the later of its two run "
+            f"directories, not {result.stdout!r}"
         )
 
 
@@ -804,3 +940,146 @@ class TestStowUntrackedPackageEntries:
 
         assert result.returncode == 0
         assert result.stdout == "" and result.stderr == ""
+
+    def test_dedicated_migration_names_are_never_reported_even_when_untracked(
+        self, tmp_path: Path
+    ) -> None:
+        """plans/, handoffs/, and briefs/ are permanently git-untracked and
+        have their own dedicated backup-before-touch migration path
+        (stow_migrate_adopted_dir) -- if this function reported them too,
+        the un-adopt loop could fall through to un-adopting one of them via
+        a bare `mv` with no such backup when the dedicated path fails before
+        unlinking the symlink."""
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        package_dir = repo / "claude" / ".claude"
+        for name in ("plans", "handoffs", "briefs"):
+            entry = package_dir / name
+            entry.mkdir(parents=True)
+            (entry / "f.md").write_text(f"# {name} fixture\n")
+        other_untracked = package_dir / "projects"
+        other_untracked.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        # Deliberately nothing `git add`ed -- reproduces the real repo's
+        # state, where these three names are never tracked at all.
+
+        result = _run_untracked_entries(repo, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        names = [n for n in result.stdout.split("\x00") if n]
+        assert names == ["projects"], (
+            f"plans/handoffs/briefs must be excluded even though they are "
+            f"physically present and untracked; got {names}"
+        )
+
+    def test_tracked_name_requiring_git_c_quoting_still_extracts_correctly(
+        self, tmp_path: Path
+    ) -> None:
+        """A tracked top-level directory name containing a literal double
+        quote is exactly the shape `git ls-files` (without -z) C-quotes --
+        the defect class the -z rewrite exists to prevent. Without -z, this
+        name would arrive as `"skills\\"weird"/example.md` and corrupt the
+        `#*/`/`%%/*` top-level-name extraction."""
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        package_dir = repo / "claude" / ".claude"
+        tracked = package_dir / 'skills"weird'
+        tracked.mkdir(parents=True)
+        (tracked / "example.md").write_text("# example\n")
+        untracked = package_dir / "projects"
+        untracked.mkdir(parents=True)
+        (untracked / "session.json").write_text("{}")
+
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "add", 'claude/.claude/skills"weird'], cwd=repo, check=True)
+
+        result = _run_untracked_entries(repo, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        names = [n for n in result.stdout.split("\x00") if n]
+        assert names == ["projects"], (
+            f"the quote-containing tracked name must still be correctly "
+            f"excluded (not misparsed into reporting 'projects' plus a "
+            f"corrupted extra entry); got {names}"
+        )
+
+
+class TestGlobEscapeAdversarial:
+    """_stow_migration_lib_glob_escape is exercised only by benign names
+    elsewhere in this module -- these pin that a name containing a literal
+    glob metacharacter resolves, via _stow_migration_lib_newest_unadopt_run,
+    to its own run directory and not a decoy sibling an unescaped glob would
+    wrongly consume."""
+
+    @pytest.mark.parametrize(
+        ("name", "decoy"),
+        [
+            ("log*name", "logXYZname"),
+            ("file?name", "fileZname"),
+            ("cache[1]", "cache1"),
+        ],
+    )
+    def test_metacharacter_in_name_does_not_glob_match_a_decoy_sibling(
+        self, tmp_path: Path, name: str, decoy: str
+    ) -> None:
+        home = tmp_path / "home"
+        backup_root = home / ".claude-config-relocate-backup"
+        exact = backup_root / f"{name}.20260101000000-unadopt"
+        exact.mkdir(parents=True)
+        # A newer decoy directory named as if the metacharacter in `name`
+        # had been left unescaped and interpreted as a wildcard -- if
+        # escaping is broken, this wins the lexicographic sort instead.
+        decoy_dir = backup_root / f"{decoy}.20260102000000-unadopt"
+        decoy_dir.mkdir(parents=True)
+
+        result = _run_newest_unadopt_run(name, home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(exact), (
+            f"an unescaped metacharacter in {name!r} would let the newer "
+            f"decoy {decoy_dir} wrongly win the lexicographic sort; "
+            f"got {result.stdout!r}"
+        )
+
+
+class TestRegexEscapeAdversarial:
+    """_stow_migration_lib_regex_escape backs install.sh's `stow --ignore`
+    pattern construction (an anchored regex embedding a filesystem-derived
+    name) -- exercised elsewhere only for literal-dot escaping. These pin
+    that a name containing a regex metacharacter, embedded in the same
+    anchored '^...$' shape install.sh builds, matches only itself and not a
+    decoy sibling the metacharacter would wrongly match if left unescaped."""
+
+    @pytest.mark.parametrize(
+        ("name", "decoy"),
+        [
+            ("a+b", "aaab"),
+            ("a|b", "a"),
+            ("(ab)", "ab"),
+        ],
+    )
+    def test_metacharacter_in_name_does_not_regex_match_a_decoy_sibling(
+        self, name: str, decoy: str
+    ) -> None:
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _stow_migration_lib_regex_escape "$1"',
+             "run_regex_escape", name],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        # subprocess.run does not strip trailing output the way bash's own
+        # `$(...)` capture does (which is what install.sh actually uses) --
+        # strip the trailing newline python3's own print() adds so it isn't
+        # embedded in the pattern below.
+        escaped = result.stdout.rstrip("\n")
+        pattern = f"^{escaped}$"
+
+        assert re.fullmatch(pattern, name), (
+            f"escaped pattern {pattern!r} must still match the exact name {name!r}"
+        )
+        assert not re.fullmatch(pattern, decoy), (
+            f"an unescaped metacharacter in {name!r} would let the escaped "
+            f"pattern also match the decoy sibling {decoy!r}"
+        )

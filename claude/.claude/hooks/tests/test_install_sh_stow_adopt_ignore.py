@@ -102,13 +102,15 @@ def _run_stow_adopt_block(pkg_root: Path, home: Path) -> subprocess.CompletedPro
 @pytest.mark.skipif(_STOW is None, reason="stow binary not on PATH")
 class TestStowAdoptIgnorePattern:
     def test_stow_invocation_does_not_use_adopt(self, tmp_path: Path) -> None:
-        """--adopt is gone, so a real non-symlink file at a *tracked*
-        package path makes stow refuse the whole invocation instead of
-        silently pulling that file into the package -- exercised
-        indirectly by the other tests here, pinned directly by this one.
-        Checked against the actual stow invocation line, not the whole
-        block -- a surrounding comment is allowed to say why --adopt is
-        gone."""
+        """A source-scan tripwire, not behavioral proof: this only confirms
+        the wiring (no --adopt flag on the actual invocation line, as
+        opposed to a surrounding comment merely saying why it's gone) --
+        it would still pass on dead code. The behavioral proof that dropping
+        --adopt actually changes what stow does with a real, pre-existing
+        entry lives in
+        test_pre_existing_file_in_an_untracked_nested_directory_is_left_untouched
+        below, which runs the real `stow` binary and asserts the entry is
+        left alone rather than pulled into the package."""
         stow_lines = [
             line for line in _extract_stow_adopt_block().splitlines()
             if line.strip().startswith("stow ")
@@ -191,4 +193,86 @@ class TestStowAdoptIgnorePattern:
             "a tracked sibling differing only at the escaped dot's position "
             f"must still be symlinked normally, not swept in by an "
             f"under-escaped pattern; stow output: {result.stderr!r}"
+        )
+
+
+def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) -> subprocess.CompletedProcess:
+    """Runs the real --ignore-arg-construction loop from the extracted
+    block, but replaces the trailing `stow -v ...` line with a printf of
+    the constructed array -- isolates the loop's own set -e/continue
+    behavior from real stow's separate, unrelated all-or-nothing conflict
+    handling (a failure on one --ignore'd name makes real stow refuse the
+    *entire* invocation, which would make "did the loop still process the
+    other names" unobservable through stow's own exit code)."""
+    block = _extract_stow_adopt_block()
+    stow_line_start = block.index("stow -v")
+    loop_only = block[:stow_line_start]
+    script = (
+        f'. "{SCRIPTS_DIR / "_stow_migration_lib.sh"}"\n'
+        "set -e\n"
+        f'cd "$1"\n'
+        + stub
+        + loop_only
+        + 'printf \'%s\\n\' "${stow_ignore_args[@]}"\n'
+    )
+    return subprocess.run(
+        ["bash", "-c", script, "run_ignore_construction", str(pkg_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "HOME": str(home), "REPO_DIR": str(pkg_root)},
+    )
+
+
+class TestIgnoreArgConstructionRegexEscapeFailure:
+    """install.sh's --ignore-arg loop wraps _stow_migration_lib_regex_escape
+    in `if ! escaped_name="$(...)"; then ... continue; fi` specifically so a
+    failure there degrades gracefully instead of hard-aborting the whole
+    script under `set -e` (a prior /code-review finding) -- pins that fix by
+    stubbing the escape function to fail for one of several untracked
+    names."""
+
+    def test_escape_failure_for_one_name_does_not_abort_the_loop(
+        self, tmp_path: Path
+    ) -> None:
+        """Uses "projects"/"sessions" rather than the fixture's default
+        "briefs": plans/handoffs/briefs are excluded from
+        stow_untracked_package_entries's output and get their --ignore args
+        seeded explicitly (a separate code path) -- they never reach this
+        loop's own _stow_migration_lib_regex_escape call at all, so stubbing
+        a failure on "briefs" would test nothing about this loop."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        failing = pkg_root / "claude" / ".claude" / "projects"
+        failing.mkdir(parents=True)
+        (failing / "session.json").write_text("{}")
+        surviving = pkg_root / "claude" / ".claude" / "sessions"
+        surviving.mkdir(parents=True)
+        (surviving / "s.json").write_text("{}")
+
+        stub = (
+            "_stow_migration_lib_regex_escape() {\n"
+            '  if [ "$1" = "projects" ]; then return 1; fi\n'
+            "  python3 -c 'import re, sys\n"
+            "print(re.escape(sys.argv[1]))' \"$1\"\n"
+            "}\n"
+        )
+
+        result = _run_ignore_arg_construction_only(pkg_root, home, stub=stub)
+
+        assert result.returncode == 0, (
+            f"a single name's escape failure must not abort the whole "
+            f"script under set -e; stderr={result.stderr!r}"
+        )
+        assert "could not regex-escape 'projects'" in result.stderr, (
+            f"the specific per-name warning must be emitted; stderr={result.stderr!r}"
+        )
+        ignore_args = result.stdout.splitlines()
+        assert "--ignore=^\\.claude/sessions$" in ignore_args, (
+            f"the other untracked name ('sessions') must still get its "
+            f"--ignore arg despite 'projects' failing to escape; got {ignore_args}"
+        )
+        assert "--ignore=^\\.claude/projects$" not in ignore_args, (
+            "the failed name must be skipped entirely, not given a "
+            f"fallback --ignore arg; got {ignore_args}"
         )

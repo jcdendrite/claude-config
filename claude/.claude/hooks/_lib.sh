@@ -1073,13 +1073,18 @@ _LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-
 # because "local" alone needs a tighter trailing boundary than the other
 # five words: "local" is both a legitimate zeroconf/mDNS TLD (printer[.]local)
 # and a ubiquitous per-machine-override filename convention (.env[.]local,
-# settings.local.json, docker-compose.local.yml), so its boundary class
-# additionally excludes "." -- without that, "settings.local.json" (this
-# repo's own documented convention) false-positives, since "local" followed
-# by another dot-segment ("json") reads as a boundary under the looser class
-# even though "local" isn't ending anything there. The other five words
-# (internal, corp, lan, intranet, private) keep the original, looser
-# boundary: real corp-internal hostnames commonly take the FQDN shape
+# settings.local.json, docker-compose.local.yml), so its boundary excludes a
+# "." *only when that dot is itself followed by another identifier
+# character* -- without that qualifier, "settings.local.json" (this repo's
+# own documented convention) false-positives, since "local" followed by
+# another dot-segment ("json") reads as a boundary under a looser class even
+# though "local" isn't ending anything there. Qualifying the exclusion this
+# way (rather than excluding every trailing dot outright) keeps a sentence-
+# final period after a real "*.local" hostname ("Deployed to host[.]local.")
+# matching: that trailing dot isn't followed by another identifier character,
+# so it still counts as a boundary. The other five words (internal, corp,
+# lan, intranet, private) keep the original, looser boundary: real
+# corp-internal hostnames commonly take the FQDN shape
 # `host[.]corp[.]<company>[.]com`, where the TLD-like word is a subdomain
 # label followed by more dot-segments, not the literal string end --
 # narrowing their boundary the same way "local" needed would stop catching
@@ -1087,7 +1092,7 @@ _LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-
 # this comment's illustrative genuinely-matching examples above, the same
 # trick the SSH-key-path detector's own comment above uses -- otherwise this
 # comment would trip the very detector it documents.
-_LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|private)([^A-Za-z0-9_-]|$)|[A-Za-z0-9.-]+\.local([^A-Za-z0-9_.-]|$)'
+_LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|private)([^A-Za-z0-9_-]|$)|[A-Za-z0-9.-]+\.local([^A-Za-z0-9_.-]|\.([^A-Za-z0-9]|$)|$)'
 
 # A `#`-prefixed lowercase-hyphenated Slack-channel shape.
 # - Excludes all-digit runs so a plain GitHub issue reference (e.g. issue

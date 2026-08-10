@@ -153,6 +153,10 @@ for name in plans handoffs briefs; do
 done
 # INSTALL_TEST_FIXTURE: stale-migration-copy-cleanup — end
 
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: un-adopt-loop — start
 # Every other name a prior `stow --adopt` pulled into claude/.claude/ (session
 # transcripts, .claude.json, plugin caches, review markers -- see this repo's
 # README "Claude multi-account setup") gets un-adopted the same way, by
@@ -194,9 +198,10 @@ else
   done < "$untracked_entries_file"
   rm -f -- "$untracked_entries_file"
   if [ ${#STOW_UNADOPT_FAILURES[@]} -gt 0 ]; then
-    echo "[install] warning: could not un-adopt the following back to ~/.claude: ${STOW_UNADOPT_FAILURES[*]} — re-run install.sh to retry; stow keeps ignoring them as real package-side content in the meantime" >&2
+    echo "[install] warning: could not un-adopt the following back to ~/.claude: ${STOW_UNADOPT_FAILURES[*]} — see the per-entry messages above; some can be fixed by re-running install.sh, others (e.g. neither side holding the content) need manual investigation first. Stow keeps ignoring them as real package-side content in the meantime." >&2
   fi
 fi
+# INSTALL_TEST_FIXTURE: un-adopt-loop — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them against a real `stow` binary. Keep both markers
@@ -218,11 +223,28 @@ fi
 # here degrades to an empty --ignore list rather than skipping the stow call
 # outright: at worst stow then refuses (a loud, safe failure), never a
 # silent one.
-stow_ignore_args=()
+#
+# plans/handoffs/briefs seeded explicitly, not derived from
+# stow_untracked_package_entries: that function deliberately never reports
+# these three (they have their own dedicated migration path above, and must
+# stay off the generic un-adopt loop's reach), but a declined-deletion or
+# not-yet-migrated package-side leftover for one of them still needs the
+# same --ignore protection every other entry gets here, or stow would walk
+# into it and adopt it file-by-file.
+stow_ignore_args=(--ignore='^\.claude/plans$' --ignore='^\.claude/handoffs$' --ignore='^\.claude/briefs$')
 if untracked_entries_file="$(mktemp)" && stow_untracked_package_entries "$REPO_DIR" > "$untracked_entries_file"; then
   while IFS= read -r -d '' name; do
     [ -n "$name" ] || continue
-    stow_ignore_args+=(--ignore="^\\.claude/$(_stow_migration_lib_regex_escape "$name")\$")
+    # Checked via `if ! var=...; then` rather than inlined into the
+    # `+=(...)` below: a compound-assignment simple command is not an
+    # if/&&/||-condition, so under `set -e` a failing command substitution
+    # inside it would abort the whole script instead of just skipping this
+    # one --ignore arg.
+    if ! escaped_name="$(_stow_migration_lib_regex_escape "$name")"; then
+      echo "[install] warning: could not regex-escape '$name' for a stow --ignore pattern -- proceeding without an --ignore for it; stow will refuse outright if it's still real, unmigrated content" >&2
+      continue
+    fi
+    stow_ignore_args+=(--ignore="^\\.claude/${escaped_name}\$")
   done < "$untracked_entries_file"
 else
   echo "[install] warning: could not determine untracked claude/.claude/ entries -- proceeding with no --ignore args; stow will refuse outright if any are still real, unmigrated content" >&2

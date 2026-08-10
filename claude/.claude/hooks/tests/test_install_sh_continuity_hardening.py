@@ -204,7 +204,9 @@ def _extract_migration_block() -> str:
     return block
 
 
-def _run_migration_block(test_home: Path, repo_dir: Path) -> subprocess.CompletedProcess:
+def _run_migration_block(
+    test_home: Path, repo_dir: Path, *, concurrency_stub: str | None = None
+) -> subprocess.CompletedProcess:
     """Run the extracted migration block with $HOME and $REPO_DIR pointed at
     isolated fixtures — REPO_DIR is normally computed earlier in install.sh
     (outside the extracted block), so the test supplies it directly.
@@ -214,13 +216,16 @@ def _run_migration_block(test_home: Path, repo_dir: Path) -> subprocess.Complete
     the real `pgrep` -- on a machine actually running Claude Code (this test
     suite's own subprocess included), that would find a real session and
     make every fixture below skip its migration. Stub it to "no session"
-    (return 1) so this block's own migration logic is what's under test, not
-    this machine's process list; test_install_sh_session_concurrency_check.py
-    covers the real function's own pgrep-driven behavior directly."""
+    (return 1) by default so this block's own migration logic is what's
+    under test, not this machine's process list;
+    test_install_sh_session_concurrency_check.py covers the real function's
+    own pgrep-driven behavior directly. concurrency_stub overrides that
+    default stub for tests that need call-by-call behavior (e.g. flipping
+    from "no session" to "session found" partway through the loop)."""
     env = dict(os.environ)
     env["HOME"] = str(test_home)
     env["REPO_DIR"] = str(repo_dir)
-    stub = "_claude_session_is_active_now() { return 1; }\n"
+    stub = concurrency_stub if concurrency_stub is not None else "_claude_session_is_active_now() { return 1; }\n"
     return subprocess.run(
         [_BASH, "-c", "set -e\n" + stub + _extract_migration_block()],
         capture_output=True,
@@ -448,3 +453,48 @@ class TestInstallShStowAdoptionMigration:
             "the per-entry symlink must be replaced by a real file"
         )
         assert repaired.read_text() == "# task a\n"
+
+    def test_per_entry_concurrency_recheck_stops_the_loop_mid_run(
+        self, tmp_path: Path
+    ) -> None:
+        """_claude_session_is_active_now is re-checked before each entry
+        specifically to narrow the concurrency race window from "once up
+        front" to "once per entry" -- no existing test proves that
+        narrowing actually stops the loop mid-run, only that the check
+        exists at all (test_install_sh_session_concurrency_check.py) or is
+        held constant across the whole run
+        (test_second_run_is_a_noop and friends above, via the default
+        constant-false stub). A stateful stub that flips from "no session"
+        to "session found" between calls proves it. The fixed plans/
+        handoffs/briefs order makes which entry the flip lands before
+        deterministic."""
+        home = tmp_path / "home"
+        home.mkdir()
+        repo = _build_fake_repo(tmp_path)
+        _adopt(repo, home, "plans", {"p.md": "# plans\n"})
+        _adopt(repo, home, "handoffs", {"h.md": "# handoffs\n"})
+        _adopt(repo, home, "briefs", {"b.md": "# briefs\n"})
+
+        stub = (
+            "_concurrency_check_calls=0\n"
+            "_claude_session_is_active_now() {\n"
+            "  _concurrency_check_calls=$((_concurrency_check_calls + 1))\n"
+            '  [ "$_concurrency_check_calls" -gt 1 ]\n'
+            "}\n"
+        )
+
+        result = _run_migration_block(home, repo, concurrency_stub=stub)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "stopping before 'handoffs'" in result.stderr, (
+            f"must stop before the second entry once the flip lands; stderr={result.stderr!r}"
+        )
+        plans_target = home / ".claude" / "plans"
+        assert plans_target.is_dir() and not plans_target.is_symlink(), (
+            "the entry checked before the flip must still be migrated"
+        )
+        for name in ("handoffs", "briefs"):
+            target = home / ".claude" / name
+            assert target.is_symlink(), (
+                f"{name} must be left untouched once the loop stops"
+            )

@@ -22,6 +22,14 @@ _STOW_MIGRATION_BACKUP_ROOT="$HOME/.claude-config-relocate-backup"
 # partway," which bare `[ -e "$target" ]` cannot distinguish.
 _STOW_MIGRATION_COMPLETE_SENTINEL=".migration-complete"
 
+# A glob matching exactly the 14 digits `date +%Y%m%d%H%M%S` produces, no
+# more and no fewer -- `[0-9]*` (one digit then anything) lets a lookup for
+# "foo" cross-match a sibling backup/run-marker directory literally named
+# "foo.2bar...", since "2" alone satisfies "one digit". Shared by both
+# _stow_migration_lib_newest_backup and _stow_migration_lib_newest_unadopt_run
+# so the exact width lives in one place.
+_STOW_MIGRATION_LIB_TIMESTAMP_GLOB='[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+
 # True iff $1 is a symlink whose canonicalized target equals $2. cd -P +
 # pwd -P canonicalizes without a readlink -f dependency, portable to macOS's
 # BSD readlink (no -f flag). Safe here because both targets are always
@@ -37,7 +45,11 @@ _stow_migration_lib_symlink_resolves_to() {
 # Print the newest non-empty backup directory for $1 (a bare name, e.g.
 # "plans") under $_STOW_MIGRATION_BACKUP_ROOT, or fail (return 1, no stdout)
 # when none exists. Lexicographic sort is correct because every backup is
-# suffixed with a fixed-width `date +%Y%m%d%H%M%S` timestamp.
+# suffixed with a fixed-width `date +%Y%m%d%H%M%S` timestamp -- matched via
+# $_STOW_MIGRATION_LIB_TIMESTAMP_GLOB's exact width so looking up "foo"
+# can't cross-match a "foo.bar.<timestamp>" sibling's backup (same collision
+# _stow_migration_lib_newest_unadopt_run's own glob was fixed against), even
+# though today's only callers (plans/handoffs/briefs) never trigger it.
 _stow_migration_lib_newest_backup() {
   local name="$1"
   [ -d "$_STOW_MIGRATION_BACKUP_ROOT" ] || return 1
@@ -47,7 +59,11 @@ _stow_migration_lib_newest_backup() {
   # Capitalized (unlike this file's other locals) so `${#Candidates[@]}`
   # doesn't read as a Slack-channel-shaped reference to this repo's own
   # redaction hook (deny-private-project-refs.sh's `#[a-z...` regex).
-  local Candidates=("$_STOW_MIGRATION_BACKUP_ROOT/$name".*)
+  local Candidates
+  # shellcheck disable=SC2206 # unquoted deliberately -- $_STOW_MIGRATION_LIB_TIMESTAMP_GLOB
+  # must stay unquoted for its [0-9] classes to glob-expand; `read -a`
+  # (shellcheck's suggested alternative) only splits, it doesn't glob-expand.
+  Candidates=("$_STOW_MIGRATION_BACKUP_ROOT/$name".$_STOW_MIGRATION_LIB_TIMESTAMP_GLOB)
   if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
   [ ${#Candidates[@]} -gt 0 ] || return 1
   local candidate
@@ -118,25 +134,24 @@ stow_migrate_adopted_dir() {
   # resume source and must not be overwritten by an empty one.
   if $is_live_symlink; then
     backup_dir="$_STOW_MIGRATION_BACKUP_ROOT/$name.$(date +%Y%m%d%H%M%S)"
-    if ! mkdir -p -- "$backup_dir"; then
+    # shellcheck disable=SC2174 # leaf-only is exactly what's wanted: -m 700
+    # applies to $backup_dir itself (the leaf mkdir -p creates), not
+    # $_STOW_MIGRATION_BACKUP_ROOT if -p also creates that as a missing
+    # parent -- narrowing the leaf at creation, rather than with a separate
+    # chmod afterward, closes the window where it would otherwise sit at the
+    # process umask (group-readable under a permissive umask like 0002)
+    # before private content is copied into it below.
+    if ! mkdir -m 700 -p -- "$backup_dir"; then
       echo "[install] could not create backup directory $backup_dir for ~/.claude/$name -- leaving it under stow management" >&2
       return 1
     fi
-    # mkdir -p leaves a freshly-created parent at the process umask; chmod it
-    # too, not only the leaf, or its entries (backup directory names) stay
-    # listable by other local accounts. Unconditional, not only on fresh
-    # creation -- this script exclusively owns this root, so re-asserting 700
-    # on a pre-existing one (left loose by a prior run or another creator) is
-    # always safe.
+    # mkdir -p -m only narrows the leaf, not a freshly-created parent; chmod
+    # $_STOW_MIGRATION_BACKUP_ROOT too, or its entries (backup directory
+    # names) stay listable by other local accounts. Unconditional, not only
+    # on fresh creation -- this script exclusively owns this root, so
+    # re-asserting 700 on a pre-existing one (left loose by a prior run or
+    # another creator) is always safe.
     chmod 700 "$_STOW_MIGRATION_BACKUP_ROOT" || echo "[install] warning: could not chmod 700 $_STOW_MIGRATION_BACKUP_ROOT" >&2
-    # Fatal, unlike the warn-only precedent this mirrors elsewhere in this
-    # repo: nothing has been written into $backup_dir yet, so aborting here
-    # costs nothing, and letting the copy below proceed regardless would put
-    # private content into a directory still at default permissions.
-    if ! chmod 700 "$backup_dir"; then
-      echo "[install] could not chmod 700 $backup_dir -- refusing to copy ~/.claude/$name content into it" >&2
-      return 1
-    fi
     if ! cp -R "$target/." "$backup_dir/" 2>/dev/null; then
       echo "[install] could not back up ~/.claude/$name (symlinked into $expected_source) -- leaving it under stow management" >&2
       return 1
@@ -234,10 +249,15 @@ _stow_migration_lib_realpath_resolves_to() {
 }
 
 # Print the newest stow_unadopt_entry run-marker directory for $1 (a bare
-# name) under $_STOW_MIGRATION_BACKUP_ROOT, matching "$1.*-unadopt", or fail
-# (return 1, no stdout) when none exists. Mirrors
-# _stow_migration_lib_newest_backup's lexicographic-sort reasoning: every run
-# directory is suffixed with a fixed-width `date +%Y%m%d%H%M%S` timestamp.
+# name) under $_STOW_MIGRATION_BACKUP_ROOT, matching "$1.<14-digit
+# timestamp>-unadopt", or fail (return 1, no stdout) when none exists.
+# Mirrors _stow_migration_lib_newest_backup's lexicographic-sort reasoning:
+# every run directory is suffixed with a fixed-width `date +%Y%m%d%H%M%S`
+# timestamp -- matched via $_STOW_MIGRATION_LIB_TIMESTAMP_GLOB's exact width
+# so looking up "foo" cannot glob-match "foo.bar.<timestamp>-unadopt" (some
+# other name "bar" that happens to be dot-prefixed with "foo"); a looser
+# "one digit then anything" glob would still let a sibling literally named
+# "foo.2bar" collide, since "2" alone satisfies "one digit".
 # Distinct name pattern (the "-unadopt" suffix) from stow_migrate_adopted_dir's
 # own backup directories, since the two functions share
 # $_STOW_MIGRATION_BACKUP_ROOT but not a directory's content shape --
@@ -254,7 +274,20 @@ _stow_migration_lib_newest_unadopt_run() {
   local nullglob_was_set=0
   if shopt -q nullglob; then nullglob_was_set=1; fi
   shopt -s nullglob
-  local Candidates=("$_STOW_MIGRATION_BACKUP_ROOT/$escaped_name".*-unadopt)
+  # $escaped_name must be unquoted below so its backslash-escapes are
+  # honored as glob escapes -- a quoted expansion makes the backslash a
+  # literal character instead, silently defeating
+  # _stow_migration_lib_glob_escape entirely. IFS= for the duration keeps
+  # that unquoting from word-splitting a name containing whitespace;
+  # $_STOW_MIGRATION_BACKUP_ROOT/ stays quoted since it needs neither
+  # escaping nor exposure to word-splitting.
+  local Candidates old_ifs="$IFS"
+  IFS=
+  # shellcheck disable=SC2206 # unquoted deliberately, per the comment above
+  # -- `read -a` (shellcheck's suggested alternative) only splits, it
+  # doesn't perform the pathname expansion this glob needs.
+  Candidates=("$_STOW_MIGRATION_BACKUP_ROOT/"$escaped_name.$_STOW_MIGRATION_LIB_TIMESTAMP_GLOB-unadopt)
+  IFS="$old_ifs"
   if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
   [ ${#Candidates[@]} -gt 0 ] || return 1
   printf '%s\n' "${Candidates[@]}" | sort -r | head -n 1
@@ -337,15 +370,23 @@ stow_unadopt_entry() {
 
   if $target_is_live_symlink; then
     run_dir="$_STOW_MIGRATION_BACKUP_ROOT/$name.$(date +%Y%m%d%H%M%S)-unadopt"
-    if ! mkdir -p -- "$run_dir"; then
+    # shellcheck disable=SC2174 # leaf-only is exactly what's wanted: -m 700
+    # applies to $run_dir itself (the leaf mkdir -p creates), not
+    # $_STOW_MIGRATION_BACKUP_ROOT if -p also creates that as a missing
+    # parent -- narrowing the leaf at creation, rather than with a separate
+    # chmod afterward, closes the window where it would otherwise sit at the
+    # process umask (group-readable under a permissive umask like 0002).
+    if ! mkdir -m 700 -p -- "$run_dir"; then
       echo "[install] could not create $run_dir -- leaving ~/.claude/$name under stow management" >&2
       return 1
     fi
+    # mkdir -p -m only narrows the leaf, not a freshly-created parent; chmod
+    # $_STOW_MIGRATION_BACKUP_ROOT too, or its entries (run marker names)
+    # stay listable by other local accounts. Unconditional, not only on
+    # fresh creation -- this script exclusively owns this root, so
+    # re-asserting 700 on a pre-existing one (left loose by a prior run or
+    # another creator) is always safe.
     chmod 700 "$_STOW_MIGRATION_BACKUP_ROOT" || echo "[install] warning: could not chmod 700 $_STOW_MIGRATION_BACKUP_ROOT" >&2
-    if ! chmod 700 "$run_dir"; then
-      echo "[install] could not chmod 700 $run_dir -- refusing to un-adopt ~/.claude/$name through it" >&2
-      return 1
-    fi
     if ! rm -f -- "$target"; then
       echo "[install] could not unlink ~/.claude/$name -- re-run install.sh to retry; run marker is at $run_dir" >&2
       return 1
@@ -383,7 +424,9 @@ stow_unadopt_entry() {
 # below install.sh's claude/, which is why its own --ignore patterns are
 # anchored differently -- see install.sh's stow-adopt-ignore comment).
 # Shared by install.sh's un-adopt loop and its --ignore-arg construction so
-# both see one derivation instead of two hardcoded name lists.
+# both see one derivation instead of two hardcoded name lists. Never reports
+# plans/, handoffs/, or briefs/, even when physically present and untracked
+# -- see the exclusion below.
 stow_untracked_package_entries() {
   local repo_dir="$1"
   local package_dir="$repo_dir/claude/.claude"
@@ -395,22 +438,62 @@ stow_untracked_package_entries() {
   # --ignore args), and an empty tracked set from a real git failure would
   # make every real, tracked package entry (skills/, scripts/, ...) look
   # untracked too.
-  local git_ls_files_output
-  if ! git_ls_files_output="$(git -C "$repo_dir" ls-files -- 'claude/.claude/*' 2>/dev/null)"; then
+  #
+  # -z (NUL-delimited paths): a tracked path containing a literal newline, or
+  # one git C-quotes (a backslash, a double quote, or -- under the default
+  # core.quotePath -- non-ASCII bytes) would otherwise corrupt the
+  # extraction below, same NUL-safety this function's own `find ... -print0`
+  # output already relies on further down. A temp file, not a `$(...)`
+  # capture, holds it: bash silently drops embedded NUL bytes from command
+  # substitution output (concatenating entries together instead of keeping
+  # them delimited), and git's own exit status -- distinguishing "git
+  # failed" from "genuinely nothing tracked" -- can't be recovered through a
+  # `while read -r -d '' ... done < <(...)` process substitution either.
+  local git_ls_files_tmp
+  if ! git_ls_files_tmp="$(mktemp)"; then
+    echo "[install] could not create a temp file -- refusing to guess which claude/.claude/ entries are untracked" >&2
+    return 1
+  fi
+  if ! git -C "$repo_dir" ls-files -z -- 'claude/.claude/*' > "$git_ls_files_tmp" 2>/dev/null; then
     echo "[install] could not list git-tracked files under $package_dir (git ls-files failed in $repo_dir) -- refusing to guess which entries are untracked" >&2
+    rm -f -- "$git_ls_files_tmp"
     return 1
   fi
 
+  # Bash parameter expansion instead of `awk -F/ '{print $3}'`: awk's record
+  # separator is a portability risk for NUL-delimited input across the BSD
+  # awk on macOS vs. GNU awk, and the double `#*/` strip below is the same
+  # "drop the first two path components" extraction without it.
   local tracked_names=()
-  local tracked_name
-  while IFS= read -r tracked_name; do
+  local tracked_path tracked_name existing already_tracked
+  while IFS= read -r -d '' tracked_path; do
+    [ -n "$tracked_path" ] || continue
+    tracked_name="${tracked_path#*/}"
+    tracked_name="${tracked_name#*/}"
+    tracked_name="${tracked_name%%/*}"
     [ -n "$tracked_name" ] || continue
-    tracked_names+=("$tracked_name")
-  done < <(printf '%s\n' "$git_ls_files_output" | awk -F/ '{print $3}' | sort -u)
+    already_tracked=false
+    for existing in "${tracked_names[@]}"; do
+      if [ "$existing" = "$tracked_name" ]; then
+        already_tracked=true
+        break
+      fi
+    done
+    $already_tracked || tracked_names+=("$tracked_name")
+  done < "$git_ls_files_tmp"
+  rm -f -- "$git_ls_files_tmp"
 
   local entry name tracked is_tracked
   while IFS= read -r -d '' entry; do
     name="$(basename "$entry")"
+    # plans/, handoffs/, and briefs/ have their own dedicated
+    # backup-before-touch migration path (stow_migrate_adopted_dir, called
+    # separately in install.sh) -- excluded here so a failure in that path
+    # before it unlinks the symlink can't fall through to this function's
+    # callers, which un-adopt via a bare `mv` with no such backup.
+    case "$name" in
+      plans | handoffs | briefs) continue ;;
+    esac
     is_tracked=false
     for tracked in "${tracked_names[@]}"; do
       if [ "$tracked" = "$name" ]; then
