@@ -1071,21 +1071,73 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     text-typed tool-result blocks (via _content_text) — non-text blocks
     (e.g. images) are not counted. Byte totals are aggregate only: no
     tool-result content, file paths, session IDs, or cwd are ever printed.
+    A second table breaks those same bytes down by the tool name that
+    produced them (Read, Bash, Agent, …), still aggregate-only and with
+    every mcp__<server>__<tool> name collapsed into one _MCP_TOOL_BUCKET_LABEL
+    row — an MCP server name is a per-account integration identifier.
+
+    --since limits both tables to records with a timestamp on or after the
+    window start; the corpus-wide spawn and sidechain-turn counters feeding
+    _warn_if_subagent_format_drift are read before this filter and are never
+    narrowed by it, so a narrow --since window cannot manufacture a false
+    format-drift warning. --config-dir (repeatable) scans additional Claude
+    Code config directories the same way cost does; under more than one root,
+    branch names are redacted (via _assign_root_scoped_redact_label, account-<K>/
+    branch-<N>) since a raw branch slug from a foreign account would
+    otherwise be printed, and _DO_NOT_PUBLISH_BANNER is stamped on stdout
+    and stderr.
     """
+    roots = _resolve_cost_roots(args, "subagents")
+    multi_root = len(roots) > 1
     branch_filter = _branch_filter(args)
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "subagents", include_subagents=True, roots=roots)
+    since_ts, _since_raw = _parse_since_nd_arg(args, "subagents")
+
+    if multi_root:
+        print(_DO_NOT_PUBLISH_BANNER)
+        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+
+    session_iter, scope_label = _resolve_project_scope(
+        args, "subagents", include_subagents=True, roots=roots
+    )
     _print_resolved_scope("subagents", scope_label, roots)
 
-    branch_data: dict[str, dict[str, dict[str, int]]] = defaultdict(
+    resolved_roots = [root.resolve() for root in roots] if multi_root else []
+    # Resolved-path-sorted, not _root_index_for_path's raw scan-order position
+    # — the same physical root must read as the same account-N here as in
+    # every other multi-root diagnostic in this file (_build_redact_map,
+    # cost's per-row key), regardless of which profile is currently active.
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(roots) if multi_root else {}
+    branch_redact_map: dict[tuple[int, str], str] = {}
+
+    # Keyed on (root_index_or_None, raw gitBranch) — root_index is always None
+    # under single-root scope (the common case, unchanged from before
+    # --config-dir existed); a real index under multi-root keeps two
+    # accounts' identically-named branch from merging into one row. This
+    # index is scan-order, purely for in-run grouping — the printed label
+    # (_branch_label, below) translates it through redact_ordinals before
+    # ever reaching output.
+    branch_data: dict[tuple[int | None, str], dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
     )
-    branch_bytes: dict[str, dict[str, int]] = defaultdict(lambda: {"main": 0, "sidechain": 0})
+    branch_bytes: dict[tuple[int | None, str], dict[str, int]] = defaultdict(
+        lambda: {"main": 0, "sidechain": 0}
+    )
+    branch_tool_bytes: dict[tuple[int | None, str], dict[str, dict[str, int]]] = defaultdict(
+        lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
+    )
     corpus_spawns = 0
     corpus_sidechain_turns = 0
 
-    for _jsonl, records in session_iter:
+    for jsonl, records in session_iter:
+        root_idx = _root_index_for_path(jsonl, resolved_roots) if multi_root else None
         corpus_spawns += _count_subagent_spawns(records)
+        # tool_use id -> tool name, built inline as records are walked in
+        # order: a tool_result always follows its own tool_use within the
+        # same file, and include_subagents=True appends each subagent file
+        # as a contiguous block after the main file, so one sequential pass
+        # (no second corpus pass) is enough to pair every tool_result seen
+        # below with the tool name that produced it.
+        tool_use_names: dict[str, str] = {}
         for rec in records:
             rec_type = rec.get("type")
             if rec_type == "assistant":
@@ -1095,16 +1147,27 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                 # not the per-branch table, so it must not be filtered.
                 if bool(rec.get("isSidechain")):
                     corpus_sidechain_turns += 1
+                for block in ((rec.get("message") or {}).get("content") or []):
+                    if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
+                        tool_use_names[block["id"]] = block.get("name") or "unknown"
                 branch = rec.get("gitBranch") or ""
                 if not branch or (branch_filter and branch not in branch_filter):
                     continue
+                if since_ts is not None:
+                    rec_ts = _parse_ts(rec.get("timestamp"))
+                    if rec_ts is None or rec_ts < since_ts:
+                        continue
                 fam = _fam((rec.get("message") or {}).get("model", ""))
                 thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
-                branch_data[branch][thread][fam] += 1
+                branch_data[(root_idx, branch)][thread][fam] += 1
             elif rec_type == "user":
                 branch = rec.get("gitBranch") or ""
                 if not branch or (branch_filter and branch not in branch_filter):
                     continue
+                if since_ts is not None:
+                    rec_ts = _parse_ts(rec.get("timestamp"))
+                    if rec_ts is None or rec_ts < since_ts:
+                        continue
                 thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
                 content = (rec.get("message") or {}).get("content") or []
                 if not isinstance(content, list):
@@ -1112,7 +1175,13 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                 for block in content:
                     if not isinstance(block, dict) or block.get("type") != "tool_result":
                         continue
-                    branch_bytes[branch][thread] += len(_content_text(block.get("content", "")).encode())
+                    key = (root_idx, branch)
+                    nbytes = len(_content_text(block.get("content", "")).encode())
+                    branch_bytes[key][thread] += nbytes
+                    tool_name = tool_use_names.get(block.get("tool_use_id") or "", "unknown")
+                    if tool_name.startswith("mcp__"):
+                        tool_name = _MCP_TOOL_BUCKET_LABEL
+                    branch_tool_bytes[key][thread][tool_name] += nbytes
 
     _warn_if_subagent_format_drift(corpus_spawns, corpus_sidechain_turns)
 
@@ -1120,24 +1189,54 @@ def cmd_subagents(args: argparse.Namespace) -> None:
         print("No data found.")
         return
 
+    def _branch_label(key: tuple[int | None, str]) -> str:
+        root_idx, branch = key
+        return (
+            _assign_root_scoped_redact_label(
+                "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map
+            )
+            if root_idx is not None
+            else branch
+        )
+
     print(
         f"{'Branch':<40} {'Thread':<10} {'Opus':>6} {'Sonnet':>7} {'Haiku':>6} {'Other':>6}"
         f" {'Bytes':>18}"
     )
     print("-" * 99)
-    for branch in sorted(set(branch_data) | set(branch_bytes)):
+    for key in sorted(set(branch_data) | set(branch_bytes)):
+        label = _branch_label(key)
         first = True
         for thread in ("main", "sidechain"):
-            d = branch_data[branch][thread]
-            bytes_total = branch_bytes[branch][thread]
+            d = branch_data[key][thread]
+            bytes_total = branch_bytes[key][thread]
             if not any(d.values()) and not bytes_total:
                 continue
-            label = branch if first else ""
+            row_label = label if first else ""
             first = False
             print(
-                f"{label:<40} {thread:<10} {d.get('opus', 0):>6} {d.get('sonnet', 0):>7} "
+                f"{row_label:<40} {thread:<10} {d.get('opus', 0):>6} {d.get('sonnet', 0):>7} "
                 f"{d.get('haiku', 0):>6} {d.get('other', 0):>6} {bytes_total:>18,}"
             )
+
+    if any(any(tb.values()) for by_thread in branch_tool_bytes.values() for tb in by_thread.values()):
+        # Header says "Side", not "Thread" (unlike the table above): several
+        # existing tests anchor _table_cols on header_contains="Thread" and
+        # require it to match exactly one printed line.
+        print(f"\n{'Branch':<40} {'Side':<10} {'Tool':<20} {'Bytes':>18}")
+        print("-" * 92)
+        for key in sorted(branch_tool_bytes):
+            label = _branch_label(key)
+            first = True
+            for thread in ("main", "sidechain"):
+                tool_bytes = branch_tool_bytes[key][thread]
+                for tool_name in sorted(tool_bytes, key=lambda t: (-tool_bytes[t], t)):
+                    nbytes = tool_bytes[tool_name]
+                    if not nbytes:
+                        continue
+                    row_label = label if first else ""
+                    first = False
+                    print(f"{row_label:<40} {thread:<10} {tool_name:<20} {nbytes:>18,}")
 
 
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
@@ -1147,6 +1246,15 @@ SUBAGENT_SUBDIR = "subagents"
 
 # Tool names that spawn a subagent in the main thread.
 _SPAWN_TOOL_NAMES = ("Agent", "Task")
+
+# subagents' tool-result byte grouping bucket for every mcp__<server>__<tool>
+# tool name — an MCP server name is a per-account integration identifier, so
+# every MCP tool call collapses into this one row instead of one row per server.
+_MCP_TOOL_BUCKET_LABEL = "mcp__*"
+
+# subagent-mix's model-mix table bucket for a dispatch whose meta.json carries
+# no "model" key at all (no explicit model was requested).
+_UNREQUESTED_MODEL_LABEL = "(none)"
 
 # Skills counted as review invocations in review-trace.
 REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
@@ -2461,12 +2569,16 @@ def _resolve_project_scope(
 
     `roots` defaults to (PROJECTS_DIR,) when a caller passes none, but every
     cmd_* entry point in this file now threads its own _resolve_scan_roots(args)
-    result through, so the default only ever fires for a caller that predates
-    that threading (this module's own single-root test fixtures). --this-repo
-    and multi-root are no longer mutually exclusive: a populated
-    ~/.claude/transcript-config-dirs makes --this-repo multi-root by default
-    with no --config-dir flag at all, so the this_repo branch below unions
-    across every root in `roots` via _iter_scoped_sessions' own basename match.
+    result through (cost, context-distribution, edit-format, subagents, and
+    subagent-mix instead thread their own _resolve_cost_roots(args) result,
+    which unions the same declared_transcript_roots() plus their own
+    repeatable --config-dir extras), so the default only ever fires for a
+    caller that predates that threading (this module's own single-root test
+    fixtures). --this-repo and multi-root are no longer mutually exclusive: a
+    populated ~/.claude/transcript-config-dirs makes --this-repo multi-root by
+    default with no --config-dir flag at all, so the this_repo branch below
+    unions across every root in `roots` via _iter_scoped_sessions' own
+    basename match.
 
     Under an explicit top-level --config-dir (a different flag from cost's
     and context-distribution's own --config-dir above — see main()), zero of
@@ -2747,17 +2859,93 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
 
 
 def cmd_subagent_mix(args: argparse.Namespace) -> None:
+    """Subagent_type spawn counts per branch, plus a second, agentType-keyed
+    table of each type's model mix: Runs (dispatches with a readable
+    meta.json + sibling .jsonl — a dangling pair is excluded from this count
+    and reported separately under Dangling), Declared (frontmatter `model:`
+    from the dispatch's own root's agents/<agentType>.md, or "built-in" with
+    no on-disk file), Requested (meta.json's own "model" key, "(none)" when
+    absent), and Observed (the modal real model ID across the dispatch's own
+    sidechain, via _fam; "mixed" when two distinct real IDs appear).
+
+    --since limits both tables to records timestamped on or after the window
+    start. --config-dir (repeatable) scans additional Claude Code config
+    directories the same way cost does; under more than one root, both
+    branch names and subagent_type values are redacted
+    (_assign_root_scoped_redact_label) — subagent_type can name a
+    project-scoped custom agent definition, the same disclosure risk
+    gitBranch carries — and the model-mix table is keyed on the redacted
+    (root, subagent_type) pair so two accounts' same-named agentType never
+    merge into one row. --per-session is refused outright under multi-root,
+    since it would otherwise join a foreign account's own session-id prefix
+    to its branch name.
+    """
+    roots = _resolve_cost_roots(args, "subagent-mix")
+    multi_root = len(roots) > 1
     branch_filter = _branch_filter(args)
     per_session: bool = bool(getattr(args, "per_session", False))
-    roots = _resolve_scan_roots(args)
+
+    if multi_root and per_session:
+        print(
+            "subagent-mix: --per-session is refused when more than one root is in"
+            " scope (--config-dir was given) — a per-session row would join a"
+            " foreign account's own session-id prefix to its branch name; drop"
+            " --per-session or scope to a single profile",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if multi_root:
+        print(_DO_NOT_PUBLISH_BANNER)
+        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+
+    since_ts, _since_raw = _parse_since_nd_arg(args, "subagent-mix")
+
     session_iter, scope_label = _resolve_project_scope(args, "subagent-mix", roots=roots)
     _print_resolved_scope("subagent-mix", scope_label, roots)
+
+    resolved_roots = [root.resolve() for root in roots] if multi_root else []
+    # Resolved-path-sorted, not _root_index_for_path's raw scan-order position
+    # — the same physical root must read as the same account-N here as in
+    # every other multi-root diagnostic in this file (_build_redact_map,
+    # cost's per-row key), regardless of which profile is currently active.
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(roots) if multi_root else {}
+    branch_redact_map: dict[tuple[int, str], str] = {}
+    # subagent_type redact map is separate from branch_redact_map so the two
+    # kinds' per-account counters (account-<K>/branch-<N> vs.
+    # account-<K>/agent-type-<N>) never share a numbering sequence.
+    subagent_type_redact_map: dict[tuple[int, str], str] = {}
+    # Each root's own agents/ directory, so a dispatch's Declared pin is read
+    # from the account it actually came from, not this process's own
+    # config_dir() — index 0 is always this process's own root (roots[0]),
+    # matching root_idx's None-under-single-root convention below.
+    agent_dirs = [root.parent / "agents" for root in roots]
 
     data: dict[str, dict] = defaultdict(
         lambda: {"sessions": 0, "spawns": defaultdict(int), "skills": defaultdict(int)}
     )
+    # (possibly redacted) agentType label -> model-mix row. Only created for
+    # a type that has at least one meta.json match (even a dangling one) —
+    # a dispatch with no matching meta.json at all is excluded entirely,
+    # matching cmd_reviewer_yield's own precedent for the same join. Under
+    # multi-root, keying on the redacted label (rather than the raw
+    # subagent_type) also root-scopes this table: two accounts' same-named
+    # agentType get distinct labels and never merge into one row.
+    model_mix: dict[str, dict] = defaultdict(lambda: {
+        "runs": 0,
+        "dangling": 0,
+        "requested": defaultdict(int),
+        "observed": defaultdict(int),
+        "declared_seen": set(),
+    })
+    declared_pin_cache: dict[tuple[Path, str], str] = {}
+    total_meta_read_errors = 0
 
     for jsonl, records in session_iter:
+        root_idx = _root_index_for_path(jsonl, resolved_roots) if multi_root else None
+        agents_dir = agent_dirs[root_idx if root_idx is not None else 0]
+        dispatch_index, session_meta_read_errors = _index_subagent_dispatches(jsonl)
+        total_meta_read_errors += session_meta_read_errors
         session_data: dict[str, dict] = defaultdict(
             lambda: {"spawns": defaultdict(int), "skills": defaultdict(int)}
         )
@@ -2767,6 +2955,10 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
             branch = rec.get("gitBranch") or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
+            if since_ts is not None:
+                rec_ts = _parse_ts(rec.get("timestamp"))
+                if rec_ts is None or rec_ts < since_ts:
+                    continue
             for block in ((rec.get("message") or {}).get("content") or []):
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
                     continue
@@ -2774,14 +2966,45 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                 inp = block.get("input") or {}
                 if name in _SPAWN_TOOL_NAMES:
                     stype = inp.get("subagent_type") or "unknown"
-                    session_data[branch]["spawns"][stype] += 1
+                    stype_label = (
+                        _assign_root_scoped_redact_label(
+                            "agent-type", redact_ordinals[resolved_roots[root_idx]],
+                            stype, subagent_type_redact_map
+                        )
+                        if root_idx is not None
+                        else stype
+                    )
+                    session_data[branch]["spawns"][stype_label] += 1
+
+                    paired = dispatch_index.get(block.get("id") or "")
+                    if paired is not None:
+                        paired_jsonl, requested_model = paired
+                        row = model_mix[stype_label]
+                        # _declared_pin reads from the on-disk agent file, so it
+                        # needs the real subagent_type (stype), never the
+                        # redacted display label (stype_label).
+                        row["declared_seen"].add(_declared_pin(stype, agents_dir, declared_pin_cache))
+                        observed = _observed_model_bucket(paired_jsonl)
+                        if observed is None:
+                            row["dangling"] += 1
+                        else:
+                            row["runs"] += 1
+                            row["requested"][requested_model or _UNREQUESTED_MODEL_LABEL] += 1
+                            row["observed"][observed] += 1
                 elif name == "Skill":
                     skill = inp.get("skill") or ""
                     if skill in REVIEW_SKILLS:
                         session_data[branch]["skills"][skill] += 1
 
         for branch, sd in session_data.items():
-            key = f"{branch} [{jsonl.stem[:8]}]" if per_session else branch
+            branch_label = (
+                _assign_root_scoped_redact_label(
+                    "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map
+                )
+                if root_idx is not None
+                else branch
+            )
+            key = f"{branch_label} [{jsonl.stem[:8]}]" if per_session else branch_label
             d = data[key]
             d["sessions"] += 1
             for stype, cnt in sd["spawns"].items():
@@ -2805,6 +3028,28 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
             f"{d['skills'].get('code-review', 0):>3} {d['skills'].get('plan-review', 0):>3} "
             f"{d['skills'].get('ready-for-review', 0):>3}  {top_str}"
         )
+
+    if model_mix:
+        print(f"\n{'AgentType':<28} {'Runs':>5} {'Dangling':>9}  {'Declared':<10} {'Requested':<30} Observed")
+        print("-" * 110)
+        for stype_label in sorted(model_mix):
+            row = model_mix[stype_label]
+            declared = "/".join(sorted(row["declared_seen"])) or _DECLARED_PIN_BUILT_IN
+            requested_str = ", ".join(
+                f"{k}({v})" for k, v in sorted(row["requested"].items(), key=lambda kv: (-kv[1], kv[0]))
+            ) or "—"
+            observed_str = ", ".join(
+                f"{k}({v})" for k, v in sorted(row["observed"].items(), key=lambda kv: (-kv[1], kv[0]))
+            ) or "—"
+            print(
+                f"{stype_label:<28} {row['runs']:>5} {row['dangling']:>9}  {declared:<10} "
+                f"{requested_str:<30} {observed_str}"
+            )
+    # Printed even when model_mix is empty (every dispatch's meta.json was
+    # malformed) -- mirrors cmd_reviewer_yield's identical diagnostic, which
+    # prints on its own early-return path for the same reason.
+    if total_meta_read_errors:
+        print(f"\n  ({total_meta_read_errors:,} meta.json files failed to parse, excluded)")
 
 
 # Reviewer-agent subagent_type additionally counted by reviewer-yield (not
@@ -2837,21 +3082,32 @@ _REVIEWER_VERDICT_UNCLASSIFIED = "unclassified"
 _REVIEWER_YIELD_ACTIVE_FLOOR = 10
 
 
-def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, Path], int]:
-    """Map each subagent dispatch's toolUseId to its paired .jsonl path, for one session.
+def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str | None]], int]:
+    """Map each subagent dispatch's toolUseId to (its paired .jsonl path,
+    requested model), for one session.
 
     Reads subagents/*.meta.json directly rather than through iter_sessions'
     include_subagents merge — that merge flattens every subagent file's
     records into one list with no per-file boundary, which cannot answer
-    "this specific dispatch's own last assistant text."
+    "this specific dispatch's own last assistant text." The requested model
+    is meta.json's own "model" key (absent when the dispatch carried no
+    explicit model request) — reading it here, alongside the toolUseId this
+    function already parses meta.json for, avoids a second per-dispatch
+    meta.json read in subagent-mix's model-mix join.
 
     Returns (index, meta_read_errors): meta_read_errors counts *.meta.json
-    files present but unusable — invalid JSON, or valid JSON missing
-    toolUseId — distinct from a dispatch with no meta.json at all (the
-    caller's own, separately-documented exclusion path).
+    files present but unusable — invalid JSON, valid JSON missing a
+    string-typed toolUseId, or valid JSON whose "model" key is present but
+    not a string — distinct from a dispatch with no meta.json at all (the
+    caller's own, separately-documented exclusion path). meta.json is
+    written by Claude Code's own harness, not by this repo, so its "model"
+    and "toolUseId" fields are external input: a non-string value for either
+    (a future harness change, or a corrupted file) is excluded here rather
+    than reaching a caller that would use it as a dict key and crash with an
+    uncaught TypeError.
     """
     subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
-    index: dict[str, Path] = {}
+    index: dict[str, tuple[Path, str | None]] = {}
     meta_read_errors = 0
     if not subagent_dir.is_dir():
         return index, meta_read_errors
@@ -2862,12 +3118,123 @@ def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, Path], int]:
             meta_read_errors += 1
             continue
         tool_use_id = meta.get("toolUseId")
-        if not tool_use_id:
+        if not isinstance(tool_use_id, str) or not tool_use_id:
+            meta_read_errors += 1
+            continue
+        requested_model = meta.get("model")
+        if requested_model is not None and not isinstance(requested_model, str):
             meta_read_errors += 1
             continue
         agent_id = meta_path.name.removesuffix(".meta.json")
-        index[tool_use_id] = meta_path.parent / f"{agent_id}.jsonl"
+        index[tool_use_id] = (meta_path.parent / f"{agent_id}.jsonl", requested_model)
     return index, meta_read_errors
+
+
+_AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
+
+
+def _agent_frontmatter_model(agent_file_text: str) -> str | None:
+    """Extract the `model:` frontmatter value from one agent file's raw text.
+
+    Scoped to the leading YAML block (between the first pair of `---` lines)
+    so a `model:` mention in the agent's prose body is never matched. Returns
+    None when the text has no frontmatter block or the block has no `model:`
+    key — the caller renders that as "built-in".
+    """
+    if not agent_file_text.startswith("---"):
+        return None
+    end = agent_file_text.find("\n---", 3)
+    if end == -1:
+        return None
+    match = _AGENT_FRONTMATTER_MODEL_RE.search(agent_file_text[3:end])
+    return match.group(1) if match else None
+
+
+_DECLARED_PIN_BUILT_IN = "built-in"
+
+# subagent_type values are harness-generated identifiers (e.g. "staff-sdet",
+# "general-purpose") -- never containing "/" or "..". _declared_pin enforces
+# this shape before building a filesystem path from one, since under
+# --config-dir that value can originate from a scanned foreign root's own
+# transcript data, not just this process's own dispatches.
+_AGENT_TYPE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _declared_pin(
+    agent_type: str, agents_dir: Path, declared_pin_cache: dict[tuple[Path, str], str]
+) -> str:
+    """Declared model pin for one subagent_type, from agents_dir/<agent_type>.md
+    frontmatter — agents_dir is the *dispatch's own* root's agents/ directory
+    (not necessarily this process's own config_dir()), since under
+    --config-dir a dispatch's declared pin must be read from the account it
+    actually came from. Cached per (agents_dir, agent_type), since the same
+    agent_type name can resolve to a different on-disk file under a
+    different root. "built-in" when no on-disk agent file exists
+    (general-purpose, claude-code-guide, Plan carry none), the file has no
+    `model:` frontmatter — Claude Code's own default, not a pin this repo
+    can assert on — or agent_type fails the on-disk agent-file naming
+    allowlist (agent_type is transcript-sourced data; without this guard, an
+    absolute-path or `../`-laden value would build a path outside
+    agents_dir via Path.__truediv__'s os.path.join semantics).
+    """
+    key = (agents_dir, agent_type)
+    if key in declared_pin_cache:
+        return declared_pin_cache[key]
+    if not _AGENT_TYPE_NAME_RE.fullmatch(agent_type):
+        pin = _DECLARED_PIN_BUILT_IN
+    else:
+        agent_file = agents_dir / f"{agent_type}.md"
+        try:
+            text = agent_file.read_text()
+        except OSError:
+            pin = _DECLARED_PIN_BUILT_IN
+        else:
+            pin = _agent_frontmatter_model(text) or _DECLARED_PIN_BUILT_IN
+    declared_pin_cache[key] = pin
+    return pin
+
+
+def _observed_model_bucket(jsonl_path: Path) -> str | None:
+    """Modal observed-model family for one subagent dispatch's own transcript.
+
+    Reads every assistant record's message.model in jsonl_path. Two or more
+    distinct real (non-"<synthetic>") model IDs report the literal bucket
+    "mixed", never collapsed into one family — an unstable dispatch should be
+    visible, not silently assigned one of its models. A single distinct real
+    model ID (regardless of how many turns used it) resolves via _fam. No
+    real model ID at all (only "<synthetic>" turns) resolves via
+    _fam("<synthetic>") -> "other".
+
+    Returns None when jsonl_path doesn't exist or can't be read — the
+    caller's own "dangling meta.json" exclusion path (a run requires a
+    readable sibling .jsonl, not just a valid meta.json).
+    """
+    if not jsonl_path.is_file():
+        return None
+    real_model_ids: set[str] = set()
+    saw_any_model = False
+    try:
+        with open(jsonl_path) as fh:
+            for raw in fh:
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "assistant":
+                    continue
+                model = (rec.get("message") or {}).get("model")
+                if not model:
+                    continue
+                saw_any_model = True
+                if model != "<synthetic>":
+                    real_model_ids.add(model)
+    except OSError:
+        return None
+    if len(real_model_ids) >= 2:
+        return "mixed"
+    if real_model_ids:
+        return _fam(next(iter(real_model_ids)))
+    return _fam("<synthetic>") if saw_any_model else "other"
 
 
 def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], list[str], str, bool]:
@@ -3283,9 +3650,10 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
                 if not _is_reviewer_subagent_type(stype):
                     continue
                 tool_use_id = block.get("id") or ""
-                paired_jsonl = dispatch_index.get(tool_use_id)
-                if paired_jsonl is None:
+                paired = dispatch_index.get(tool_use_id)
+                if paired is None:
                     continue  # no matching meta.json — excluded entirely, not "unclassified"
+                paired_jsonl, _requested_model = paired
                 last_assistant_text, write_content_blobs, write_target_paths, transcript_cwd, read_error = (
                     _scan_reviewer_transcript(paired_jsonl)
                 )
@@ -3940,6 +4308,38 @@ def _redact_session_id(session_id: str, session_redact_map: dict[str, str]) -> s
     return session_redact_map.get(session_id, _REDACT_SESSION_MISS_TOKEN)
 
 
+def _assign_root_scoped_redact_label(
+    kind: str, ordinal: int, value: str, redact_map: dict[tuple[int, str], str]
+) -> str:
+    """Assign one (root, value) pair a stable, account-namespaced opaque
+    label the first time it's seen this run, and return it.
+
+    `ordinal` must be looked up from _redaction_ordinals(roots), not a raw
+    scan-order position (_root_index_for_path) — scan order puts the active
+    profile first, so a position-based number would renumber the same
+    physical account depending on which profile produced the report, the
+    exact desync class _redaction_ordinals exists to prevent everywhere else
+    in this file (_build_redact_map, cost's per-row key, its --by-project
+    column). Generic across every value kind that needs this exact shape of
+    redaction: neither _redact_proj_label nor _assign_session_redact_label
+    covers gitBranch or subagent_type, and subagents'/subagent-mix's
+    --config-dir multi-root reports need their own primitive so two
+    accounts' identically-named value (e.g. both branch "main", or both
+    subagent_type "staff-sdet") never collapse into one label or leak a raw
+    value. Namespaced by account (account-<K>/<kind>-<N>, N restarting at 1
+    per account, tracked in `redact_map` which is scoped to one `kind` per
+    caller so branch and subagent_type numbering never share a counter)
+    rather than a single flat counter, mirroring _build_redact_map's
+    account-<K>/private-project-N convention. Like _assign_session_redact_label,
+    this label is stable only within one run, not across runs.
+    """
+    key = (ordinal, value)
+    if key not in redact_map:
+        n = sum(1 for k in redact_map if k[0] == ordinal) + 1
+        redact_map[key] = f"account-{ordinal}/{kind}-{n}"
+    return redact_map[key]
+
+
 def cmd_audit_routing(args: argparse.Namespace) -> None:
     """Per-turn Opus token breakdown by routing class across all sessions.
 
@@ -4421,6 +4821,15 @@ def _context_distribution_rows(
 
 _DO_NOT_PUBLISH_BANNER = (
     "DO NOT PUBLISH — this output contains real project names and session IDs."
+)
+
+# Subcommands that resolve their own multi-root scan via their own
+# subcommand-level --config-dir (_resolve_cost_roots) instead of the
+# top-level --config-dir main() reassigns PROJECTS_DIR from — main() refuses
+# the top-level flag outright for each of these, so the two same-named flags
+# can never validate against two different accounts.
+_SUBCOMMANDS_WITH_OWN_CONFIG_DIR = (
+    "cost", "context-distribution", "edit-format", "read-scope", "subagents", "subagent-mix"
 )
 
 
@@ -7333,22 +7742,55 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sub = sub.add_parser(
         "subagents",
-        help="isSidechain turn counts and model split per branch, plus tool-result bytes per thread.",
+        help=(
+            "isSidechain turn counts and model split per branch, plus tool-result bytes"
+            " per thread and per tool name."
+        ),
     )
     p_sub.add_argument("--branches", metavar="B1,B2,...")
     _add_project_scope_args(p_sub)
+    p_sub.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Refused together with --this-repo. Branch names are"
+            " redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than one root is in scope."
+        ),
+    )
+    p_sub.add_argument(
+        "--since", metavar="Nd",
+        help="Limit the reported tables to records with timestamp in the last N days (e.g. 35d).",
+    )
     p_sub.set_defaults(func=cmd_subagents)
 
     p_mix = sub.add_parser(
         "subagent-mix",
-        help="Subagent_type spawn counts per branch, with code/plan/ready-for-review skill invocations.",
+        help=(
+            "Subagent_type spawn counts per branch, with code/plan/ready-for-review skill"
+            " invocations, plus a per-agentType observed/requested/declared model-mix table."
+        ),
     )
     p_mix.add_argument("--branches", metavar="B1,B2,...")
     _add_project_scope_args(p_mix)
     p_mix.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Refused together with --this-repo or --per-session."
+            " Branch names are redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than"
+            " one root is in scope."
+        ),
+    )
+    p_mix.add_argument(
+        "--since", metavar="Nd",
+        help="Limit the reported tables to records with timestamp in the last N days (e.g. 35d).",
+    )
+    p_mix.add_argument(
         "--per-session",
         action="store_true",
-        help="Break out by individual session instead of aggregating per branch.",
+        help="Break out by individual session instead of aggregating per branch. Refused under --config-dir.",
     )
     p_mix.set_defaults(func=cmd_subagent_mix)
 
@@ -7796,12 +8238,12 @@ def main() -> None:
     parser = build_parser()
     parsed = parser.parse_args()
     if parsed.config_dir:
-        # cost, context-distribution, edit-format, and read-scope resolve their
-        # own scan roots via their own --config-dir (_resolve_cost_roots), never
-        # reading the reassignment below -- refuse outright rather than let
-        # the two same-named flags silently diverge (this top-level one
-        # would validate one account while the subcommand scans another).
-        if parsed.subcommand in ("cost", "context-distribution", "edit-format", "read-scope"):
+        # These subcommands resolve their own scan roots via their own
+        # --config-dir (_resolve_cost_roots), never reading the reassignment
+        # below -- refuse outright rather than let the two same-named flags
+        # silently diverge (this top-level one would validate one account
+        # while the subcommand scans another).
+        if parsed.subcommand in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR:
             print(
                 f"{parsed.subcommand}: the top-level --config-dir has no effect here, since "
                 f"this subcommand resolves its own scan roots via its own --config-dir "

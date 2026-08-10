@@ -146,20 +146,32 @@ GH-333/audit-routing-samples-subcommand        1553         112       1442      
 
 ## subagents
 
-**Purpose.** Show `isSidechain` (subagent) versus main-thread turn counts per branch, split by model family.
+**Purpose.** Show `isSidechain` (subagent) versus main-thread turn counts per branch, split by model family, plus total tool-result bytes per thread — and a second table breaking those same bytes down by the tool name that produced them.
 
 **Flags.**
 - `--branches B1,B2,...` — filter to specific branches (default: all)
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
+- `--since Nd` — limit both tables to records with timestamp in the last N days (e.g. `35d`). Never narrows the corpus-wide spawn/sidechain-turn counters that feed the format-drift warning — a narrow window can't manufacture a false warning.
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir` (see the `cost` section above): the default resolved config dir is always scanned first, each extra directory must contain its own `projects/` subdirectory, and it's refused together with `--this-repo`. Unlike `cost`, there is no `--no-redact` escape hatch here — under more than one root, branch names are always redacted (`account-<K>/branch-<N>`, stable only within one run) since nothing else in this subcommand's output identifies a root, and `DO NOT PUBLISH` prints on stdout and stderr. Every `mcp__<server>__<tool>` tool name in the byte-by-tool table collapses into one `mcp__*` row regardless of root count — an MCP server name is a per-account integration identifier, not just a multi-root concern.
+
+The top-level `--config-dir PATH` flag (placed before the subcommand name) is refused for `subagents`, the same way it already was for `cost` and `context-distribution` — use the subcommand's own repeatable `--config-dir DIR` instead. This is a breaking change for any prior invocation of the form `transcript-analysis.py --config-dir PATH subagents ...`.
 
 **Sample output.**
 ```
-Branch                                   Thread       Opus  Sonnet  Haiku  Other
------------------------------------------------------------------------------------
-GH-333/audit-routing-samples-subcommand  main           78     159      0      0
-GH-333/audit-routing-samples-subcommand  sidechain       0      78      0      0
+Branch                                   Thread       Opus  Sonnet  Haiku  Other              Bytes
+---------------------------------------------------------------------------------------------------
+GH-333/audit-routing-samples-subcommand  main           78     159      0      0            412,880
+GH-333/audit-routing-samples-subcommand  sidechain       0      78      0      0            896,120
+
+Branch                                   Side       Tool                             Bytes
+--------------------------------------------------------------------------------------------
+GH-333/audit-routing-samples-subcommand  main       Read                            301,220
+                                          sidechain  Bash                            640,004
+                                          sidechain  mcp__*                          120,050
 ```
+
+Byte totals are aggregate-only: no tool-result content, file paths, session IDs, or cwd are ever printed. There is no per-byte dollar model — this is an un-dollar-weighted signal for where verbose tool output accumulates, not a cost figure.
 
 **When to reach for it.** Understand how much work was delegated versus inline. Compare against `subagent-mix` for a breakdown of what *kind* of subagents were spawned.
 
@@ -167,24 +179,33 @@ GH-333/audit-routing-samples-subcommand  sidechain       0      78      0      0
 
 ## subagent-mix
 
-**Purpose.** Show per-branch subagent spawn type counts and code/plan/ready-for-review review-skill spawn counts.
+**Purpose.** Show per-branch subagent spawn type counts and code/plan/ready-for-review review-skill spawn counts, plus a second table breaking each `agentType`'s dispatches down by declared, requested, and observed model.
 
 **Flags.**
 - `--branches B1,B2,...` — filter to specific branches (default: all)
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
-- `--per-session` — break out by individual session instead of aggregating per branch
+- `--per-session` — break out by individual session instead of aggregating per branch. Refused when `--config-dir` puts more than one root in scope — a per-session row would join a foreign account's own session-id prefix to its branch name.
+- `--since Nd` — limit both tables to records with timestamp in the last N days (e.g. `35d`)
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `subagents`' own `--config-dir` above: refused together with `--this-repo` and with `--per-session`; branch names **and** `subagent_type` values are always redacted under more than one root (a custom `subagent_type` can name a project-scoped agent definition, the same disclosure risk a branch name carries), and `DO NOT PUBLISH` prints on stdout and stderr. The model-mix table's `Declared` column is also resolved from each dispatch's own root — not always this process's own config dir — and the table is keyed on the redacted `(root, subagent_type)` pair, so two accounts' same-named `agentType` never merge into one row.
+
+The top-level `--config-dir PATH` flag (placed before the subcommand name) is refused for `subagent-mix`, the same way it already was for `cost` and `context-distribution` — use the subcommand's own repeatable `--config-dir DIR` instead. This is a breaking change for any prior invocation of the form `transcript-analysis.py --config-dir PATH subagent-mix ...`.
 
 **Sample output.**
 ```
 Branch                                         Sess  Spawns  CR  PR  RR  Top subagent types
 ------------------------------------------------------------------------------------------------------------------------
 GH-333/audit-routing-samples-subcommand           2      11   2   1   2  staff-sdet(4), code-writer(3), check-runner(2), staff-backend-engineer(2)
+
+AgentType                    Runs  Dangling  Declared   Requested                      Observed
+--------------------------------------------------------------------------------------------------------------
+staff-sdet                      4         0  sonnet     (none)(4)                      opus(1), sonnet(3)
+code-writer                     3         0  sonnet     sonnet(3)                      sonnet(3)
 ```
 
-Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/ready-for-review` spawns.
+Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/ready-for-review` spawns. In the model-mix table, `Runs` counts dispatches with a readable `subagents/*.meta.json` **and** a readable sibling `.jsonl` — a dangling pair (meta.json present, `.jsonl` missing or unreadable) is excluded from `Runs` and counted under `Dangling` instead. `Declared` is the frontmatter `model:` pin from `config_dir()/agents/<agentType>.md`, or `built-in` when no on-disk agent file exists (e.g. `general-purpose`, `claude-code-guide`, `Plan`). `Requested` is `meta.json`'s own `model` key, bucketed under `(none)` when absent. `Observed` is the modal real model ID across the dispatch's own sidechain — two distinct real model IDs report the literal `mixed` bucket rather than collapsing to one family, and a sidechain whose only recorded model is `<synthetic>` resolves to `other`, never counted as a pin violation.
 
-**When to reach for it.** Audit which reviewer agents fired on a branch, or compare how delegation patterns differ across branches. The tool recognizes `check-runner` in historical session data — the agent is retired (2026-06-23) but historical transcript entries remain valid corpus inputs.
+**When to reach for it.** Audit which reviewer agents fired on a branch, or compare how delegation patterns differ across branches. The tool recognizes `check-runner` in historical session data — the agent is retired (2026-06-23) but historical transcript entries remain valid corpus inputs. Use the model-mix table to spot a pinned agent (e.g. `Explore`) whose `Observed` column still shows Opus despite a `sonnet` `Declared` pin.
 
 ---
 
