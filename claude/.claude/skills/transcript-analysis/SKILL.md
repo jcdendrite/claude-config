@@ -3,7 +3,11 @@ name: transcript-analysis
 description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, PR-to-branch mapping, per-session review-activity timelines (skill invocations, hook denials, reviewer spawns), a per-session narrative of typed prompts classified as initial/followup/explicit correction, or a corpus-wide census of denial/friction shapes. For token-cost, cache-efficiency, or branch/repo-scoped dollar cost use the `cost` subcommand.
 ---
 
-The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly from the shell.
+The toolkit lives at `scripts/transcript-analysis.py` under the active Claude Code config dir (`$CLAUDE_CONFIG_DIR`, or `~/.claude`). Run it directly from the shell.
+
+## Scope confirmation
+
+Before quoting a corpus-wide statistic from this toolkit's output, include the resolved-scope header line verbatim in what you report, and if that line reads "1 root (no ~/.claude/transcript-config-dirs declared)", ask the user whether other Claude accounts exist before treating the number as complete.
 
 ## Which subcommand to use
 
@@ -58,6 +62,8 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 
 ## Caveats
 
+- Every subcommand's default scope is a union across every config dir listed in `~/.claude/transcript-config-dirs` (see `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section), not just the active profile. The resolved-scope header states the root count unconditionally, even at one root with nothing declared — see "Scope confirmation" above. Redaction covers `cost`, `context-distribution`, and `audit-routing` only; every other subcommand prints raw project labels, branch names, or paths under this same union.
+- `--branches` filters records by `gitBranch` string only, never by project dir or root — under a multi-root scope it pools same-named branches across every declared account into one tally, with no per-account signal.
 - The `N failed` count is a coarse proxy: it matches any `N failed` in tool output, including pre-existing failures and intentional baseline runs. Treat the sequence view as the primary read; the aggregate rate is corroborating.
 - Subagent (`isSidechain`) turns are excluded from `fail-seq` and `struggle` — reviewer, `Explore`, and `code-writer` agents are not the debugging surface these subcommands measure.
 - Durations from `duration` are wall-clock dominated by idle gaps. Look at `Active(min)`, not `Span(min)`.
@@ -68,31 +74,31 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 - `user-input` prints raw prompt text verbatim regardless of `--redact` — that flag anonymizes project labels and session IDs only, matching every other `--redact` implementation in this file (none scrub message content). Review output before pasting it anywhere public.
 - `audit-routing --redact` remaps project names to anonymized labels for public reporting — use this flag when posting output to GitHub issues.
 - `cost` redacts project names and session IDs by default (the opposite of `audit-routing`'s opt-in `--redact`) — pass `--no-redact` only for local use, never for output headed to a public issue.
-- `cost --config-dir` unions extra account profiles into one report; `--this-repo` and `--no-redact` are refused in that mode, and redacted labels are not comparable between reports (each run prints a corpus fingerprint).
-- `--projects` defaults to `*` — every project on the machine; scope it with `--this-repo` or an explicit glob (see `docs/transcript-analysis.md`'s "Scoping to this repo" section for the derivation and its gaps). `buckets`' Date range column describes whatever the glob matched rather than a bounded window — `buckets` takes no `--since`/`--until`; use `review-trace --since/--until` for a bounded window.
-- `review-trace` output is not publish-safe under the default machine-wide scope — each event line's branch string can carry a ticket ID or project name. Run it with `--this-repo` before quoting output anywhere public.
+- `cost --config-dir` unions extra account profiles into one report on top of the declared-roots default; `--this-repo` and `--no-redact` are refused in that mode. Redacted labels (`private-project-N`, `account-N`) are comparable between two reports only when the same declared-roots file produced both — a changed root set renumbers every ordinal (each run still prints a corpus fingerprint).
+- `--projects` defaults to `*` — every project across every declared root; scope it with `--this-repo` or an explicit glob (see `docs/transcript-analysis.md`'s "Scoping to this repo" section for the derivation and its gaps). `buckets`' Date range column describes whatever the glob matched rather than a bounded window — `buckets` takes no `--since`/`--until`; use `review-trace --since/--until` for a bounded window.
+- `review-trace` output is not publish-safe under the default multi-root scope — each event line's branch string can carry a ticket ID or project name. No flag currently guarantees single-account scope on `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, or `pr-link` short of an explicit single `--config-dir` — `--this-repo` no longer implies one account, since it unions across every declared root by default. Name `--config-dir` as the one narrowing control before quoting any of these seven anywhere public.
 
 ## Example usage
 
 ```bash
 # Survey all branches
-python3 ~/.claude/scripts/transcript-analysis.py buckets
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" buckets
 
 # Check if a branch's debugging loop converged
-python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET-101
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" fail-seq --branches feat-TICKET-101
 
 # Compare two branches side by side
-python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET-101,feat-TICKET-202
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" fail-seq --branches feat-TICKET-101,feat-TICKET-202
 
 # Link branches to PRs and count one author's review comments
-python3 ~/.claude/scripts/transcript-analysis.py pr-link \
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" pr-link \
   --repo owner/repo --branches feat-TICKET-101,feat-TICKET-202 --author alice
 
 # Find sessions that hit an enforcement-hook denial
-python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --deny-only
 
 # Review activity in a date window (e.g. before vs after a skill landed)
-python3 ~/.claude/scripts/transcript-analysis.py review-trace --since 2026-01-01 --until 2026-03-31
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --since 2026-01-01 --until 2026-03-31
 ```
 
 For narrative case studies and annotated timelines built on top of these metrics, use `transcript-narrative`.

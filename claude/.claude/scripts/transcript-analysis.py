@@ -23,7 +23,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from _config_dir import config_dir
+from _config_dir import config_dir, declared_transcript_roots
 
 PROJECTS_DIR = config_dir() / "projects"
 
@@ -447,8 +447,9 @@ def _longest_fail_streak(failed_flags: list[bool]) -> int:
 
 def cmd_buckets(args: argparse.Namespace) -> None:
     branch_filter = _branch_filter(args)
-    session_iter, scope_label = _resolve_project_scope(args, "buckets")
-    _print_resolved_scope("buckets", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "buckets", roots=roots)
+    _print_resolved_scope("buckets", scope_label, roots)
 
     branch_data: dict[str, dict] = defaultdict(
         lambda: {
@@ -509,8 +510,9 @@ def cmd_fail_seq(args: argparse.Namespace) -> None:
         print("--branches is required for fail-seq", file=sys.stderr)
         sys.exit(1)
     branches: set[str] = {b for b in args.branches.split(",") if b}
-    session_iter, scope_label = _resolve_project_scope(args, "fail-seq")
-    _print_resolved_scope("fail-seq", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "fail-seq", roots=roots)
+    _print_resolved_scope("fail-seq", scope_label, roots)
 
     branch_runs: dict[str, list[tuple[str, int]]] = defaultdict(list)
 
@@ -587,8 +589,9 @@ def cmd_fail_seq(args: argparse.Namespace) -> None:
 
 def cmd_struggle(args: argparse.Namespace) -> None:
     branch_filter = _branch_filter(args)
-    session_iter, scope_label = _resolve_project_scope(args, "struggle")
-    _print_resolved_scope("struggle", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "struggle", roots=roots)
+    _print_resolved_scope("struggle", scope_label, roots)
 
     branch_data: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
@@ -947,8 +950,9 @@ def cmd_user_input(args: argparse.Namespace) -> None:
 def cmd_duration(args: argparse.Namespace) -> None:
     branch_filter = _branch_filter(args)
     gap_secs: int = (getattr(args, "gap_minutes", None) or 30) * 60
-    session_iter, scope_label = _resolve_project_scope(args, "duration")
-    _print_resolved_scope("duration", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "duration", roots=roots)
+    _print_resolved_scope("duration", scope_label, roots)
 
     branch_timestamps: dict[str, list[float]] = defaultdict(list)
 
@@ -1038,8 +1042,9 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     tool-result content, file paths, session IDs, or cwd are ever printed.
     """
     branch_filter = _branch_filter(args)
-    session_iter, scope_label = _resolve_project_scope(args, "subagents", include_subagents=True)
-    _print_resolved_scope("subagents", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "subagents", include_subagents=True, roots=roots)
+    _print_resolved_scope("subagents", scope_label, roots)
 
     branch_data: dict[str, dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
@@ -1593,7 +1598,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     deny_only: bool = bool(getattr(args, "deny_only", False))
     deny_summary: bool = bool(getattr(args, "deny_summary", False))
     skill_filter: str | None = getattr(args, "skill", None) or None
-    session_iter, scope_label = _resolve_project_scope(args, "review-trace")
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "review-trace", roots=roots)
 
     since_str: str | None = getattr(args, "since", None) or None
     until_str: str | None = getattr(args, "until", None) or None
@@ -1886,7 +1892,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         models_seen = ",".join(sorted({e["model"] for e in events}))
 
         if not scope_header_printed:
-            _print_resolved_scope("review-trace", scope_label)
+            _print_resolved_scope("review-trace", scope_label, roots)
             scope_header_printed = True
 
         print(f"\n### {jsonl}")
@@ -1917,7 +1923,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     if deny_summary:
         if sum(hook_counts.values()) or sum(friction_counts.values()):
             if not scope_header_printed:
-                _print_resolved_scope("review-trace", scope_label)
+                _print_resolved_scope("review-trace", scope_label, roots)
                 scope_header_printed = True
             _print_deny_summary(
                 hook_counts, command_shape_counts, hook_shape_counts, friction_counts,
@@ -1928,7 +1934,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
             # denial — printed explicitly so this reads distinctly from a
             # broken --branches/scope flag matching no sessions at all.
             if not scope_header_printed:
-                _print_resolved_scope("review-trace", scope_label)
+                _print_resolved_scope("review-trace", scope_label, roots)
                 scope_header_printed = True
             print("\nNo denials found in scope.")
 
@@ -1951,7 +1957,8 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
     itself happened.
     """
     branch_filter = _branch_filter(args)
-    session_iter, scope_label = _resolve_project_scope(args, "judgment-pair")
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "judgment-pair", roots=roots)
 
     since_str: str | None = getattr(args, "since", None) or None
     until_str: str | None = getattr(args, "until", None) or None
@@ -2079,7 +2086,7 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
             output_blocks.append(block)
 
     if not output_blocks:
-        _print_resolved_scope("judgment-pair", scope_label)
+        _print_resolved_scope("judgment-pair", scope_label, roots)
         print("No judgment pairs found.")
         return
 
@@ -2090,10 +2097,10 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
         # only the file written. The scope header is still prepended to the
         # file's content so a saved/curated file stays self-documenting about
         # its scope even if pasted elsewhere without the terminal output.
-        header = _resolved_scope_header("judgment-pair", scope_label)
+        header = _resolved_scope_header("judgment-pair", scope_label, roots)
         Path(out_path).write_text(header + "\n" + output_text + "\n")
     else:
-        _print_resolved_scope("judgment-pair", scope_label)
+        _print_resolved_scope("judgment-pair", scope_label, roots)
         print(output_text)
 
 
@@ -2282,15 +2289,43 @@ def _iter_scoped_sessions(
     worktrees. Visiting each directory at most once (by resolved real path,
     spanning every root — covers a root nested inside another, not just two
     identical roots) also makes double-counting impossible.
+
+    A root that raises OSError while being listed (an unreadable directory,
+    not merely a missing one — `root.is_dir()` above only requires the
+    *parent* to be searchable) is reported to stderr and skipped, not
+    propagated: this function has no `redact` parameter of its own (unlike
+    cost's per-root diagnostic), so the reported detail always omits the raw
+    path — an OSError's `strerror` (e.g. "Permission denied"), never
+    `str(exc)`, which embeds the offending path.
     """
     if roots is None:
         roots = (PROJECTS_DIR,)
     wanted = set(slugs)
     visited_dirs: set[Path] = set()
+    multi_root = len(roots) > 1
+    # Ordinal, not scan-order index: the same physical root must read as the
+    # same account-N here as in every other multi-root diagnostic in this
+    # file (_cost_report's per-root summary, --by-project's account column).
+    ordinals = _redaction_ordinals(roots) if multi_root else {}
     for root in roots:
+        if multi_root:
+            # No path in this line: neither function knows whether its caller
+            # is a --redact context (cost's own per-root diagnostic handles
+            # that separately) -- an unconditional raw config-dir path here
+            # would leak account/client identity a redacted run must not print.
+            print(f"scanning root {ordinals[root.resolve()]}/{len(roots)}...", file=sys.stderr)
         if not root.is_dir():
             continue
-        candidates = (p for p in sorted(root.iterdir()) if p.name in wanted)
+        try:
+            candidates = [p for p in sorted(root.iterdir()) if p.name in wanted]
+        except OSError as exc:
+            root_label = f"account-{ordinals[root.resolve()]}" if multi_root else "the scope root"
+            print(
+                f"_iter_scoped_sessions: cannot scan {root_label}"
+                f" ({exc.strerror or 'permission denied'}) — skipping",
+                file=sys.stderr,
+            )
+            continue
         for project_dir in _dedup_new_project_dirs(candidates, visited_dirs):
             for jsonl in sorted(project_dir.glob("*.jsonl")):
                 records = _read_session_file(jsonl, include_subagents)
@@ -2312,12 +2347,60 @@ def _iter_glob_scoped_sessions(
     the CLI boundary).
     """
     visited_dirs: set[Path] = set()
+    multi_root = len(roots) > 1
+    # Ordinal, not scan-order index: the same physical root must read as the
+    # same account-N here as in every other multi-root diagnostic in this
+    # file (_cost_report's per-root summary, --by-project's account column).
+    ordinals = _redaction_ordinals(roots) if multi_root else {}
     for root in roots:
+        if multi_root:
+            # No path in this line: neither function knows whether its caller
+            # is a --redact context (cost's own per-root diagnostic handles
+            # that separately) -- an unconditional raw config-dir path here
+            # would leak account/client identity a redacted run must not print.
+            print(f"scanning root {ordinals[root.resolve()]}/{len(roots)}...", file=sys.stderr)
         for project_dir in _dedup_new_project_dirs(sorted(root.glob(projects_glob)), visited_dirs):
             for jsonl in sorted(project_dir.glob("*.jsonl")):
                 records = _read_session_file(jsonl, include_subagents)
                 if records:
                     yield jsonl, records
+
+
+def _resolve_scan_roots(parsed: argparse.Namespace) -> list[Path]:
+    """Resolve one invocation's scan roots -- the single funnel every
+    _resolve_project_scope caller threads `roots` through, replacing the
+    default single-root PROJECTS_DIR scope everywhere except cost and
+    context-distribution's own --config-dir extras (_resolve_cost_roots).
+
+    An explicit top-level --config-dir overrides everything else, returning
+    that one directory's projects/ subdirectory alone. Absent that, the base
+    is PROJECTS_DIR (the module global -- still config_dir()/"projects" at
+    import, still reassignable via monkeypatch.setattr(_mod, "PROJECTS_DIR",
+    ...)) plus each of declared_transcript_roots()'s own projects/
+    subdirectory, deduped by resolved real path. PROJECTS_DIR is listed
+    first, so the active profile is always scanned first -- the "active
+    profile first" convention analyze-context.py's session lookup also
+    relies on.
+
+    config_dir is read via getattr, not attribute access, matching
+    _resolve_project_scope's own rationale below: this file's many
+    hand-built test `args` fixtures predate the top-level --config-dir flag,
+    so its absence means "not passed," not a wiring bug.
+    """
+    config_dir_arg = getattr(parsed, "config_dir", None)
+    if config_dir_arg:
+        return [Path(config_dir_arg) / "projects"]
+
+    roots = [PROJECTS_DIR]
+    seen_resolved = {PROJECTS_DIR.resolve()}
+    for declared_root in declared_transcript_roots():
+        candidate = declared_root / "projects"
+        resolved = candidate.resolve()
+        if resolved in seen_resolved:
+            continue
+        seen_resolved.add(resolved)
+        roots.append(candidate)
+    return roots
 
 
 def _resolve_project_scope(
@@ -2345,40 +2428,44 @@ def _resolve_project_scope(
     silently reuse the first's resolved slugs instead of re-resolving for the
     second.
 
-    `roots` defaults to (PROJECTS_DIR,), so a caller that never passes
-    --config-dir is unaffected — currently cost and context-distribution are
-    the only subcommands that accept it. --this-repo and multi-root are
-    mutually exclusive (enforced at each such subcommand's CLI boundary), so
-    the this_repo branch always has a single root in practice; it still
-    threads `roots` through for signature parity.
+    `roots` defaults to (PROJECTS_DIR,) when a caller passes none, but every
+    cmd_* entry point in this file now threads its own _resolve_scan_roots(args)
+    result through, so the default only ever fires for a caller that predates
+    that threading (this module's own single-root test fixtures). --this-repo
+    and multi-root are no longer mutually exclusive: a populated
+    ~/.claude/transcript-config-dirs makes --this-repo multi-root by default
+    with no --config-dir flag at all, so the this_repo branch below unions
+    across every root in `roots` via _iter_scoped_sessions' own basename match.
 
     Under an explicit top-level --config-dir (a different flag from cost's
     and context-distribution's own --config-dir above — see main()), zero of
-    the resolved slugs matching an actual directory fails closed
-    (sys.exit(1)) instead of returning an iterator that silently yields
-    nothing — this is the original reported symptom (declaring no sessions
-    exist for a container that has them), so an empty --this-repo scope here
-    is far more likely a wrong --config-dir than a genuinely session-less
-    repo. Without --config-dir, an empty scope stays silent, matching every
-    other subcommand's long-standing behavior. config_dir is read via
-    getattr (unlike this_repo above): it's a top-level parser flag rather
-    than something _add_project_scope_args wires per subparser, and this
-    file's many hand-built test `args` fixtures predate it, so its absence
-    means "not passed" (the real default), not a wiring bug. This check
-    reads the reassigned PROJECTS_DIR global (set in main()); main() refuses
-    the top-level --config-dir outright for both cost and
-    context-distribution before dispatch, so PROJECTS_DIR and `roots` can
-    never diverge here -- config_dir_arg being truthy guarantees `roots` is
-    None (those two subcommands are the only callers that ever pass a
-    non-None roots).
+    the resolved slugs matching an actual directory under ANY resolved root
+    fails closed (sys.exit(1)) instead of returning an iterator that silently
+    yields nothing — this is the original reported symptom (declaring no
+    sessions exist for a container that has them), so an empty --this-repo
+    scope here is far more likely a wrong --config-dir than a genuinely
+    session-less repo. Without --config-dir, an empty scope stays silent,
+    matching every other subcommand's long-standing behavior. config_dir is
+    read via getattr (unlike this_repo above): it's a top-level parser flag
+    rather than something _add_project_scope_args wires per subparser, and
+    this file's many hand-built test `args` fixtures predate it, so its
+    absence means "not passed" (the real default), not a wiring bug. Under
+    _resolve_scan_roots' own precedence (an explicit top-level --config-dir
+    overrides declared roots entirely), that flag makes `roots` a
+    single-element list equal to the reassigned PROJECTS_DIR, so this check
+    checking every root in `roots` rather than PROJECTS_DIR alone is a
+    robustness improvement against a future precedence change, not a fix for
+    a divergence reachable today.
     """
+    if roots is None:
+        roots = (PROJECTS_DIR,)
     if args.this_repo:
         slugs = getattr(args, "_this_repo_slugs", None)
         if slugs is None:
             slugs = _repo_scoped_project_slugs(subcommand)
             args._this_repo_slugs = slugs
         config_dir_arg = getattr(args, "config_dir", None)
-        if config_dir_arg and not any((PROJECTS_DIR / slug).is_dir() for slug in slugs):
+        if config_dir_arg and not any((root / slug).is_dir() for root in roots for slug in slugs):
             print(
                 f"{subcommand}: --this-repo matched zero project directories under "
                 f"--config-dir {config_dir_arg} (checked {len(slugs)} candidate worktree "
@@ -2392,21 +2479,40 @@ def _resolve_project_scope(
             f"this repo ({len(slugs)} project dirs)",
         )
     glob = _projects_glob(args)
-    if roots is None:
-        roots = (PROJECTS_DIR,)
     if len(roots) == 1:
         return iter_sessions(roots[0], glob, include_subagents=include_subagents), glob
     return _iter_glob_scoped_sessions(roots, glob, include_subagents), glob
 
 
-def _resolved_scope_header(subcommand: str, scope_label: str) -> str:
+# The file _resolve_scan_roots reads via declared_transcript_roots() -- named
+# here once so the header text and any prose referencing it stay in sync.
+_TRANSCRIPT_CONFIG_DIRS_LABEL = "~/.claude/transcript-config-dirs"
+
+
+def _resolved_scope_header(subcommand: str, scope_label: str, roots: Sequence[Path]) -> str:
     """Build the one-line resolved-scope header text, shared by _print_resolved_scope
     and any caller (e.g. judgment-pair's --out file) that needs the header written
-    somewhere other than a live print call."""
-    return f"{subcommand.upper().replace('-', ' ')} SOURCES ({scope_label})"
+    somewhere other than a live print call.
+
+    `roots` is required, not defaulted: a call site that forgets to pass it is a
+    TypeError at implementation and test time, not a silently-wrong "1 root" line
+    printed while the subcommand actually scanned N. The root count is stated
+    unconditionally -- even at one root -- so the header discloses scope in the
+    exact zero-declared-roots state that produced the corpus-undercount this
+    exists to prevent, not only once an operator has already declared a second
+    account. A root skipped by index (a stale declared-roots line) is not named
+    here; that detail is a separate stderr warning from declared_transcript_roots()
+    itself, keeping this return value the single line judgment-pair's --out file
+    contract requires.
+    """
+    root_count_desc = (
+        f"1 root (no {_TRANSCRIPT_CONFIG_DIRS_LABEL} declared)" if len(roots) == 1
+        else f"{len(roots)} roots"
+    )
+    return f"{subcommand.upper().replace('-', ' ')} SOURCES ({scope_label}; {root_count_desc})"
 
 
-def _print_resolved_scope(subcommand: str, scope_label: str, *, file=None) -> None:
+def _print_resolved_scope(subcommand: str, scope_label: str, roots: Sequence[Path], *, file=None) -> None:
     """Print the one-line resolved-scope header cmd_skill_invocation already uses,
     so machine-wide vs. --this-repo output is never scope-ambiguous. `file` defaults
     to stdout (resolved at call time, not import time — a `sys.stdout` default
@@ -2414,7 +2520,7 @@ def _print_resolved_scope(subcommand: str, scope_label: str, *, file=None) -> No
     capture and any later reassignment); audit-routing-samples routes it to stderr
     instead, since its stdout is a JSON (or curation-markdown) data stream a header
     line would corrupt."""
-    print(_resolved_scope_header(subcommand, scope_label), file=file or sys.stdout)
+    print(_resolved_scope_header(subcommand, scope_label, roots), file=file or sys.stdout)
 
 
 def cmd_skill_invocation(args: argparse.Namespace) -> None:
@@ -2461,11 +2567,16 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
     # which holds absolute paths even for in-scope sessions); and
     # _normalize_skill_name collapses this repo's own worktree-qualified spellings
     # for row-hygiene. Neither is the security boundary — scoping is.
+    roots = _resolve_scan_roots(args)
+
     projects_arg = getattr(args, "projects", None)
     if projects_arg:
-        session_iter = iter_sessions(PROJECTS_DIR, projects_arg, include_subagents=include_subagents)
+        if len(roots) > 1:
+            session_iter = _iter_glob_scoped_sessions(roots, projects_arg, include_subagents)
+        else:
+            session_iter = iter_sessions(roots[0], projects_arg, include_subagents=include_subagents)
     else:
-        session_iter = _iter_scoped_sessions(_repo_scoped_project_slugs(), include_subagents)
+        session_iter = _iter_scoped_sessions(_repo_scoped_project_slugs(), include_subagents, roots=roots)
 
     # Counters are keyed by (skill, thread). Without --include-subagents every
     # thread is "main", which keeps the default output shape unchanged.
@@ -2528,7 +2639,7 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
     ]
     if branch_filter:
         scope_parts.append(f"branches: {','.join(sorted(branch_filter))}")
-    print(f"SKILL INVOCATION SOURCES ({'; '.join(scope_parts)})")
+    _print_resolved_scope("skill-invocation", "; ".join(scope_parts), roots)
 
     if include_subagents:
         header = (
@@ -2607,8 +2718,9 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
 def cmd_subagent_mix(args: argparse.Namespace) -> None:
     branch_filter = _branch_filter(args)
     per_session: bool = bool(getattr(args, "per_session", False))
-    session_iter, scope_label = _resolve_project_scope(args, "subagent-mix")
-    _print_resolved_scope("subagent-mix", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "subagent-mix", roots=roots)
+    _print_resolved_scope("subagent-mix", scope_label, roots)
 
     data: dict[str, dict] = defaultdict(
         lambda: {"sessions": 0, "spawns": defaultdict(int), "skills": defaultdict(int)}
@@ -3099,8 +3211,9 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     since_ts, since_raw = _parse_since_nd_arg(args, "reviewer-yield")
     since_label = since_raw or ""
 
-    session_iter, scope_label = _resolve_project_scope(args, "reviewer-yield")
-    _print_resolved_scope("reviewer-yield", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "reviewer-yield", roots=roots)
+    _print_resolved_scope("reviewer-yield", scope_label, roots)
 
     # agent_type -> {dispatches, findings_found, zero_finding, unclassified, total_findings}
     agg: dict[str, dict[str, int]] = defaultdict(
@@ -3246,8 +3359,9 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
     follower: str = args.follower
     exclude_glob: str | None = getattr(args, "exclude_projects", None)
     branch_filter = _branch_filter(args)
-    session_iter, scope_label = _resolve_project_scope(args, "skill-pair", include_subagents=True)
-    _print_resolved_scope("skill-pair", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "skill-pair", include_subagents=True, roots=roots)
+    _print_resolved_scope("skill-pair", scope_label, roots)
 
     # bin_str -> {leader_sessions, follower_main, follower_sidechain_only}
     data: dict[str, dict[str, int]] = defaultdict(
@@ -3337,7 +3451,8 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
     branches: list[str] = [b.strip() for b in args.branches.split(",") if b.strip()]
     repo: str = args.repo
     author: str = getattr(args, "author", None) or ""
-    session_iter, scope_label = _resolve_project_scope(args, "pr-link")
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "pr-link", roots=roots)
 
     branch_models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for _jsonl, records in session_iter:
@@ -3348,7 +3463,7 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
             fam = _fam((rec.get("message") or {}).get("model", ""))
             branch_models[branch][fam] += 1
 
-    _print_resolved_scope("pr-link", scope_label)
+    _print_resolved_scope("pr-link", scope_label, roots)
     print(f"{'Branch':<35} {'PR':>5} {'Opus':>6} {'Sonnet':>7} {'IssueCmt':>9} {'ReviewCmt':>10}")
     print("-" * 80)
 
@@ -3406,8 +3521,9 @@ def cmd_commit_gate(args: argparse.Namespace) -> None:
     by_mode: bool = bool(getattr(args, "by_permission_mode", False))
     branch_filter = _branch_filter(args)
     exclude_glob: str | None = getattr(args, "exclude_projects", None) or None
-    session_iter, scope_label = _resolve_project_scope(args, "commit-gate")
-    _print_resolved_scope("commit-gate", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "commit-gate", roots=roots)
+    _print_resolved_scope("commit-gate", scope_label, roots)
 
     # bin_mode_key -> aggregated counts
     data: dict[tuple[str, str], dict] = defaultdict(lambda: {
@@ -3680,6 +3796,23 @@ def _sorted_distinct_proj_labels(root: Path) -> list[str]:
     return labels
 
 
+def _redaction_ordinals(roots: Sequence[Path]) -> dict[Path, int]:
+    """Assign each root a stable 1-based ordinal ("account-N"), sorted by
+    resolved path once here rather than by each caller's own list order.
+
+    _resolve_scan_roots' scan order puts the active profile first, so a
+    position-based ordinal (each caller enumerating `roots` itself) would
+    renumber every other declared root depending on which profile produced
+    the report. Sorting once, here, and having every ordinal-assigning site
+    -- _build_redact_map, cost's per-row redact key, and its --by-project
+    account column -- look up the same dict keeps the same physical root at
+    the same account-N regardless of scan order, and keeps all three sites
+    from independently deriving (and risking desyncing) the same number.
+    """
+    resolved = sorted({root.resolve() for root in roots})
+    return {resolved_root: ordinal for ordinal, resolved_root in enumerate(resolved, start=1)}
+
+
 def _build_redact_map(roots: Sequence[Path] | None = None) -> dict[_RedactMapKey, str]:
     """Build the project-label -> opaque-token map shared by every --redact caller.
 
@@ -3702,14 +3835,17 @@ def _build_redact_map(roots: Sequence[Path] | None = None) -> dict[_RedactMapKey
 
     roots defaults to (PROJECTS_DIR,) — a single root (the default, or any
     caller passing exactly one, e.g. cmd_audit_routing) gets the original flat
-    private-project-N map, unnamespaced by account. More than one root (cost's
-    --config-dir) namespaces every label account-<K>/private-project-N, where
-    <K> is the root's 1-based position in `roots` (scan order) — never the
-    config-dir path or its basename, which would leak the account/client
-    identifier the directory name encodes. <N> restarts at 1 within each
-    account's own scan. Labels (and the corpus fingerprint derived from this
-    map) are not comparable across two separate report runs, single- or
-    multi-root: a changed corpus can renumber every ordinal.
+    private-project-N map, unnamespaced by account. More than one root
+    namespaces every label account-<K>/private-project-N, where <K> is the
+    root's ordinal from _redaction_ordinals (resolved-path-sorted, stable
+    across which profile is active) — never the config-dir path or its
+    basename, which would leak the account/client identifier the directory
+    name encodes. <N> restarts at 1 within each account's own scan. Labels
+    (and the corpus fingerprint derived from this map) are not comparable
+    across two report runs built from different declared-roots files: a
+    changed root set can renumber every ordinal. Two runs from the *same*
+    declared-roots file, differing only in which profile was active, assign
+    the same ordinal to the same physical root and so remain comparable.
     """
     if roots is None:
         roots = (PROJECTS_DIR,)
@@ -3727,11 +3863,13 @@ def _build_redact_map(roots: Sequence[Path] | None = None) -> dict[_RedactMapKey
                 num_index += 1
         return redact_map
 
-    for root_idx, root in enumerate(roots):
-        account_label = f"account-{root_idx + 1}"
+    ordinals = _redaction_ordinals(roots)
+    for root in roots:
+        ordinal = ordinals[root.resolve()]
+        account_label = f"account-{ordinal}"
         num_index = 1
         for label in _sorted_distinct_proj_labels(root):
-            key = (root_idx, label)
+            key = (ordinal, label)
             if label == "claude-config":
                 redact_map[key] = label
             else:
@@ -3785,14 +3923,23 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     since_ts, since_raw = _parse_since_nd_arg(args, "audit-routing")
     since_label = since_raw or ""
 
+    roots = _resolve_scan_roots(args)
+    multi_root = len(roots) > 1
+
     # _resolve_project_scope's fail-closed --this-repo check runs before
     # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
     # exits without paying for that scan.
-    session_iter, scope_label = _resolve_project_scope(args, "audit-routing")
-    _print_resolved_scope("audit-routing", scope_label)
+    session_iter, scope_label = _resolve_project_scope(args, "audit-routing", roots=roots)
+    _print_resolved_scope("audit-routing", scope_label, roots)
 
-    redact_map: dict[str, str] = _build_redact_map() if redact else {}
+    redact_map: dict[_RedactMapKey, str] = _build_redact_map(roots) if redact else {}
     session_redact_map: dict[str, str] = {}
+    # Only computed under multi-root redaction: _root_index_for_path needs
+    # already-resolved roots, and _redaction_ordinals is the same
+    # resolved-path-sorted mapping _build_redact_map's keys and cost's own
+    # per-row lookup share, so a row's ordinal always agrees with the map's.
+    resolved_roots = [r.resolve() for r in roots] if (redact and multi_root) else []
+    redact_ordinals = _redaction_ordinals(roots) if (redact and multi_root) else {}
 
     # Per-session accumulators: session_key → {class → {out, cr, dollars}}
     session_rows: list[dict] = []
@@ -3809,6 +3956,11 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
         session_id = jsonl.stem[:12]
         if redact:
             _assign_session_redact_label(session_id, session_redact_map)
+        if redact and multi_root:
+            root_position = _root_index_for_path(jsonl, resolved_roots)
+            redact_key: _RedactMapKey = (redact_ordinals[resolved_roots[root_position]], proj_label)
+        else:
+            redact_key = proj_label
 
         # Per-session class token accumulators
         session_class_tokens: dict[str, dict[str, float]] = {
@@ -3906,6 +4058,7 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
         session_rows.append({
             "session_id": session_id,
             "proj_label": proj_label,
+            "redact_key": redact_key,
             "classes": session_class_tokens,
             "total_out": session_total_out,
         })
@@ -3930,7 +4083,7 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     sorted_rows = sorted(session_rows, key=lambda r: r["total_out"], reverse=True)
     for row in sorted_rows[:top_n]:
         sid = _redact_session_id(row["session_id"], session_redact_map) if redact else row["session_id"]
-        proj = _redact_proj_label(row["proj_label"], redact_map) if redact else row["proj_label"]
+        proj = _redact_proj_label(row["redact_key"], redact_map) if redact else row["proj_label"]
         cls = row["classes"]
         total_cr = sum(v["cr"] for v in cls.values())
         print(
@@ -4225,11 +4378,16 @@ _DO_NOT_PUBLISH_BANNER = (
 
 
 def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> list[Path]:
-    """Assemble a subcommand's scan roots from the default config dir plus any
-    --config-dir extras, in argument order, deduped by resolved path.
+    """Assemble a subcommand's scan roots from the default config dir, every
+    declared_transcript_roots() entry, and any --config-dir extras, in that
+    order, deduped by resolved path.
 
     Mirrors post-crash-sessions.py:1067-1111's --config-dir contract: exit 2
-    on a root that is not a directory or lacks a projects/ subdirectory.
+    on a --config-dir extra that is not a directory or lacks a projects/
+    subdirectory. A declared_transcript_roots() entry never exits 2 on the
+    same defect -- that function already validated and skipped it (see its
+    own docstring) rather than exiting, since a stale roots-file line must not
+    break every invocation the way a bad command-line flag should.
     --this-repo cannot filter a foreign config dir's worktrees, and
     --no-redact on more than one root would put one client's real project
     names into a report meant for another — both are refused here, exit 2,
@@ -4252,9 +4410,14 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
         )
         sys.exit(2)
 
-    default_dir = config_dir()
-    config_dirs = [default_dir]
-    seen_resolved = {default_dir.resolve()}
+    config_dirs: list[Path] = []
+    seen_resolved: set[Path] = set()
+    for candidate in (config_dir(), *declared_transcript_roots()):
+        resolved = candidate.resolve()
+        if resolved in seen_resolved:
+            continue
+        seen_resolved.add(resolved)
+        config_dirs.append(candidate)
     for raw in extra_config_dirs:
         candidate = Path(raw)
         if not candidate.is_dir():
@@ -4535,6 +4698,18 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # runs once per priced session, and re-resolving every root on every call
     # would be a per-element filesystem stat inside that loop.
     resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
+    # redact_ordinals is the resolved-path-sorted mapping _build_redact_map's
+    # keys, the per-row/--by-project lookups, and the per-root scan-diagnostic
+    # loop below all share, so the same physical root reads as the same
+    # account-N everywhere regardless of scan order. Computed unconditionally
+    # (not gated on multi_root) -- the diagnostic loop runs at single root too
+    # (roots is not None whenever cmd_cost's CLI path is reached, even with
+    # zero declared extras), and _redaction_ordinals is correct and cheap on a
+    # single-element list. root_by_ordinal is its inverse, needed only for the
+    # (unreachable when multi_root, since --no-redact is refused above)
+    # non-redact display path.
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
+    root_by_ordinal: dict[int, Path] = {redact_ordinals[root.resolve()]: root for root in scan_roots}
 
     total_transcripts_scanned = 0
     if roots is not None:
@@ -4543,8 +4718,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         # _resolve_project_scope above; passing them keeps this diagnostic
         # scan repo-scoped instead of falling back to _projects_glob's "*".
         this_repo_slugs = getattr(args, "_this_repo_slugs", None) if args.this_repo else None
-        for idx, root in enumerate(scan_roots):
-            root_label = f"account-{idx + 1}" if redact else str(root.parent)
+        for root in scan_roots:
+            # Looked up via redact_ordinals, not enumerate()'s scan-order index —
+            # the same physical root must read as the same account-N here as in
+            # the report below, regardless of which order scan_roots iterates in.
+            root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(root.parent)
             try:
                 scanned, skipped = _scan_root_transcripts(root, glob, slugs=this_repo_slugs)
             except PermissionError as exc:
@@ -4574,7 +4752,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 f"Corpus fingerprint: {_corpus_fingerprint(redact_map)}"
                 "  (private-project labels are not comparable across a different fingerprint)"
             )
-        _print_resolved_scope("cost", scope_label)
+        _print_resolved_scope("cost", scope_label, scan_roots)
 
     session_redact_map: dict[str, str] = {}
     by_project: bool = bool(getattr(args, "by_project", False))
@@ -4656,7 +4834,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             priced_session_count += 1
             if not summary_mode:
                 if multi_root:
-                    scoped_label: _RedactMapKey = (_root_index_for_path(jsonl, resolved_scan_roots), raw_proj_label)
+                    root_position = _root_index_for_path(jsonl, resolved_scan_roots)
+                    scoped_label: _RedactMapKey = (redact_ordinals[resolved_scan_roots[root_position]], raw_proj_label)
                 else:
                     scoped_label = raw_proj_label
                 if redact:
@@ -4666,11 +4845,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                         # exception handler, so this message would otherwise reach
                         # stderr uncaught — re-leaking the exact client-identifying
                         # string --redact exists to hide. A short hash (like
-                        # _corpus_fingerprint's) and the root index are enough to
+                        # _corpus_fingerprint's) and the root ordinal are enough to
                         # debug a desync without exposing the plaintext label.
-                        root_idx = scoped_label[0] if isinstance(scoped_label, tuple) else None
+                        root_ordinal = scoped_label[0] if isinstance(scoped_label, tuple) else None
                         label_hash = hashlib.sha256(raw_proj_label.encode()).hexdigest()[:12]
-                        root_desc = f"root {root_idx}" if root_idx is not None else "the single scan root"
+                        root_desc = f"root {root_ordinal}" if root_ordinal is not None else "the single scan root"
                         raise AssertionError(
                             f"cost: redact map has no entry for a project label under {root_desc}"
                             f" (label hash {label_hash}) — the redact map's roots are out of sync"
@@ -4799,9 +4978,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             print("(no priced turns in range)")
         elif multi_root:
             print(f"{'Account':<12} {'Project':<24} {'$':>14} {'Share':>7}")
-            for (root_idx, family), val in sorted(project_totals.items(), key=lambda kv: kv[1], reverse=True):
-                account_col = f"account-{root_idx + 1}" if redact else str(scan_roots[root_idx].parent)
-                repr_label = project_repr_label[(root_idx, family)]
+            for (ordinal, family), val in sorted(project_totals.items(), key=lambda kv: kv[1], reverse=True):
+                account_col = f"account-{ordinal}" if redact else str(root_by_ordinal[ordinal].parent)
+                repr_label = project_repr_label[(ordinal, family)]
                 # The redact map's multi-root value is "account-K/private-
                 # project-N" (see _build_redact_map) — strip the account
                 # prefix here since it's already the Account column above;
@@ -4902,7 +5081,47 @@ def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path]
     session_iter, scope_label = _resolve_project_scope(
         args, "context-distribution", include_subagents=True, roots=roots
     )
-    _print_resolved_scope("context-distribution", scope_label)
+
+    if roots is not None:
+        # Mirrors cmd_cost's own per-root scan diagnostic (_scan_root_transcripts)
+        # -- without it, a multi-root run matching nothing under every declared
+        # root would print an empty report with no signal of which root(s) came
+        # up empty, now that this subcommand scans multiple roots by default.
+        glob = _projects_glob(args)
+        this_repo_slugs = getattr(args, "_this_repo_slugs", None) if args.this_repo else None
+        # Resolved-path-sorted, like _cost_report's own copy -- the same
+        # physical root must read as the same account-N here regardless of
+        # scan_roots' iteration order (active profile first). Computed
+        # unconditionally, not gated on multi_root: this loop runs at single
+        # root too whenever roots is not None, and _redaction_ordinals is
+        # correct and cheap on a single-element list.
+        redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
+        for root in scan_roots:
+            root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(root.parent)
+            try:
+                scanned, skipped = _scan_root_transcripts(root, glob, slugs=this_repo_slugs)
+            except PermissionError as exc:
+                # str(exc) on a PermissionError typically embeds the offending
+                # path — suppressed under default redaction so a permission
+                # failure can't leak the raw config-dir path it's reporting on.
+                detail = str(exc) if not redact else "permission denied"
+                print(
+                    f"context-distribution: {root_label}: cannot scan ({detail})"
+                    " — treating as 0 transcripts",
+                    file=sys.stderr,
+                )
+                scanned, skipped = 0, 0
+            print(
+                f"context-distribution: {root_label}: scanned {scanned:,} transcripts,"
+                f" {skipped:,} skipped (unreadable)"
+            )
+            if scanned == 0:
+                print(
+                    f"WARNING: context-distribution: {root_label}: no transcripts found for this scope"
+                    " — check the config dir and --projects/--this-repo filter."
+                )
+
+    _print_resolved_scope("context-distribution", scope_label, scan_roots)
 
     title_since = f"last {since_label}" if since_label else "all time"
     print(f"\n## Context distribution report ({title_since})\n")
@@ -5262,7 +5481,7 @@ def _edit_format_report(args: argparse.Namespace, roots: Sequence[Path] | None =
         print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
 
     session_iter, scope_label = _resolve_project_scope(args, "edit-format", include_subagents=True, roots=roots)
-    _print_resolved_scope("edit-format", scope_label)
+    _print_resolved_scope("edit-format", scope_label, scan_roots)
 
     # Resolved once, outside the per-session loop below, mirroring cost's own
     # _root_index_for_path usage — re-resolving every root on every session
@@ -5395,8 +5614,9 @@ def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
     cmd_audit_routing's unpriced-turns convention) so they don't silently
     vanish from the reported spend.
     """
-    session_iter, scope_label = _resolve_project_scope(args, "cost-trend", include_subagents=True)
-    _print_resolved_scope("cost-trend", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "cost-trend", include_subagents=True, roots=roots)
+    _print_resolved_scope("cost-trend", scope_label, roots)
 
     # week_str -> {"total": $, "opus": $, "context_over": $}
     data: dict[str, dict[str, float]] = defaultdict(lambda: {"total": 0.0, "opus": 0.0, "context_over": 0.0})
@@ -5468,8 +5688,9 @@ def cmd_handoff_ratio(args: argparse.Namespace) -> None:
     since_str: str | None = getattr(args, "since", None) or None
     since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
     debug_detector: bool = bool(getattr(args, "debug_detector", False))
-    session_iter, scope_label = _resolve_project_scope(args, "handoff-ratio")
-    _print_resolved_scope("handoff-ratio", scope_label)
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "handoff-ratio", roots=roots)
+    _print_resolved_scope("handoff-ratio", scope_label, roots)
 
     # week_str -> {"handoffs": int, "compactions": int}
     data: dict[str, dict[str, int]] = defaultdict(lambda: {"handoffs": 0, "compactions": 0})
@@ -5633,7 +5854,8 @@ def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
     since_ts, since_raw = _parse_since_nd_arg(args, "audit-routing-shape")
     since_label = since_raw or ""
 
-    session_iter, scope_label = _resolve_project_scope(args, "audit-routing-shape")
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "audit-routing-shape", roots=roots)
 
     # D1: file-count bucket → {turns, out}
     d1_turns: dict[str, int] = {b: 0 for b in _D1_BUCKETS}
@@ -5663,7 +5885,7 @@ def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
     # plus user-turn separators are recorded so D2 streaks and D3 lookahead work correctly.
     # User-turn separators break D2 streaks but are skipped in D3's 3-turn Opus window.
 
-    _print_resolved_scope("audit-routing-shape", scope_label)
+    _print_resolved_scope("audit-routing-shape", scope_label, roots)
 
     for _jsonl, records in session_iter:
         session_turns: list[dict] = []
@@ -5888,9 +6110,10 @@ def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
 
     sample_n: int = getattr(args, "sample", 30) or 30
     seed: int | None = getattr(args, "seed", None)
-    session_iter, scope_label = _resolve_project_scope(args, "audit-routing-samples")
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "audit-routing-samples", roots=roots)
     # stderr, not stdout: stdout is this subcommand's JSON/markdown data stream.
-    _print_resolved_scope("audit-routing-samples", scope_label, file=sys.stderr)
+    _print_resolved_scope("audit-routing-samples", scope_label, roots, file=sys.stderr)
 
     candidates: list[dict] = []
 
@@ -6304,6 +6527,43 @@ def _emit_friction_result(signals: dict[str, int], *, as_json: bool) -> None:
         print(json.dumps(signals))
     else:
         print(signals["composite"])
+
+
+def cmd_sessions(args: argparse.Namespace) -> None:
+    """Emit transcript file paths for the resolved scope, one absolute path per line.
+
+    --paths is required: it names the one action this subcommand supports today,
+    leaving room for a second sessions action later without a bare `sessions`
+    invocation silently doing nothing. Sourced from _resolve_scan_roots plus
+    _resolve_project_scope (not a flat glob), so a main session file only reaches
+    this repo's own worktrees under --this-repo the same way every other
+    subcommand does. --include-subagents additionally emits each split subagent
+    file's own path, found the same way _read_session_file (:394-407) locates
+    them for its own record merge -- <session>/subagents/*.jsonl under the main
+    file's own directory -- rather than a flat glob across the whole scope, so a
+    caller that reads only the emitted paths gets exactly the same file set
+    _read_session_file(include_subagents=True) would have merged, split back out
+    into individually readable files. The resolved-scope header goes to stderr,
+    matching audit-routing-samples' convention — stdout here is meant to be
+    piped to xargs/Read, not mixed with a header line.
+    """
+    if not bool(getattr(args, "paths", False)):
+        print("sessions: --paths is required (no other sessions action exists yet)", file=sys.stderr)
+        sys.exit(2)
+
+    include_subagents = bool(getattr(args, "include_subagents", False))
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(
+        args, "sessions", include_subagents=include_subagents, roots=roots
+    )
+    _print_resolved_scope("sessions", scope_label, roots, file=sys.stderr)
+    for jsonl, _records in session_iter:
+        print(jsonl)
+        if include_subagents:
+            subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
+            if subagent_dir.is_dir():
+                for sub_jsonl in sorted(subagent_dir.glob("*.jsonl")):
+                    print(sub_jsonl)
 
 
 def cmd_friction_count(args: argparse.Namespace) -> None:
@@ -6828,6 +7088,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_audit_samples.set_defaults(func=cmd_audit_routing_samples)
 
+    p_sessions = sub.add_parser(
+        "sessions",
+        help="Emit transcript file paths for the resolved scope, one absolute path per line.",
+    )
+    _add_project_scope_args(p_sessions)
+    p_sessions.add_argument(
+        "--paths", action="store_true",
+        help="Print one absolute transcript path per line (the only sessions action today; required).",
+    )
+    p_sessions.add_argument(
+        "--include-subagents", action="store_true",
+        help="Also emit split subagent transcript paths under <session>/subagents/*.jsonl.",
+    )
+    p_sessions.set_defaults(func=cmd_sessions)
+
     p_friction = sub.add_parser(
         "friction-count",
         help=(
@@ -6877,6 +7152,10 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
+        # Every other subcommand's scan roots funnel through _resolve_scan_roots,
+        # which reads parsed.config_dir directly for its override branch rather
+        # than through this reassignment -- so this can no longer diverge from
+        # a subcommand's actual scan roots the way it could before.
         global PROJECTS_DIR
         PROJECTS_DIR = Path(parsed.config_dir) / "projects"
     parsed.func(parsed)

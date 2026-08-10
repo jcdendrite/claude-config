@@ -2,11 +2,9 @@
 
 Every test that reaches build_report()/main() passes an explicit find_root
 (or sets POST_CRASH_SESSIONS_FIND_ROOT) pointed at a tmp_path — the bounded
-`find` sweep (source B) never walks the real $HOME. One exception reads real
-config-dir state on purpose:
-test_main_smoke_against_live_environment_no_traceback leaves CLAUDE_CONFIG_DIR
-unset, so it exercises sources A/C against whatever sessions/projects state
-actually exists on the machine running the suite.
+`find` sweep (source B) never walks the real $HOME. CLAUDE_CONFIG_DIR is
+likewise pinned to an isolated tmp dir for every test in this suite (see
+conftest.py's autouse fixture), so no test here reads real config-dir state.
 """
 from __future__ import annotations
 
@@ -1672,11 +1670,12 @@ def test_main_end_to_end_prints_resume_command_for_crashed_session(tmp_path, mon
 
 
 def test_main_smoke_against_live_environment_no_traceback(tmp_path, monkeypatch, capsys):
-    """No hardcoded numeric expectations against live machine state — only
-    that a real run completes cleanly. find_root is still redirected to an
-    empty tmp dir so the bounded `find` sweep never walks the real $HOME, but
-    CLAUDE_CONFIG_DIR is intentionally left unset, so this does read whatever
-    real sessions/projects state exists under ~/.claude."""
+    """No hardcoded numeric expectations — only that a real run completes
+    cleanly. find_root is redirected to an empty tmp dir so the bounded
+    `find` sweep never walks the real $HOME, and CLAUDE_CONFIG_DIR is pinned
+    to an isolated tmp config dir by conftest.py's autouse fixture like every
+    other test in this suite, so this run has no real config-dir state to
+    read; it verifies only a clean, traceback-free exit."""
     monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
     exit_code = _mod.main([])
     captured = capsys.readouterr()

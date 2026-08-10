@@ -334,34 +334,34 @@ class TestConfigDirFlag:
     def test_top_level_config_dir_refused_for_subcommands_with_their_own(
         self, monkeypatch, tmp_path, capsys, subcommand
     ):
-        """cost and context-distribution both resolve their own scan roots
-        via their own --config-dir (_resolve_cost_roots), never reading the
-        module-global PROJECTS_DIR this top-level flag reassigns -- the two
-        same-named flags must not be allowed to silently diverge (one
-        validating an account, the other scanning a different one). The
-        refusal is unconditional on subcommand alone, checked before
-        args.this_repo is ever read, so a bare subcommand invocation (no
-        --this-repo) is the correct, strictly-scoped regression pin -- a
-        --this-repo variant would hit the identical check with no new
-        branch coverage."""
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", _mod.PROJECTS_DIR)
-        config_dir = tmp_path / "other-account"
-        (config_dir / "projects").mkdir(parents=True)
+        """cost and context-distribution resolve their own scan roots via
+        their own --config-dir (_resolve_cost_roots -> config_dir() +
+        declared_transcript_roots()), never reading the module-global
+        PROJECTS_DIR this top-level flag reassigns. Letting the top-level
+        flag through silently would reassign an unused global while the
+        actual scan root stays whatever config_dir() resolves to -- an
+        operator typing --config-dir /other-account cost would see no error
+        and would silently scan their own default account instead. main()
+        refuses the combination outright, matching every other subcommand's
+        actually-effective top-level --config-dir."""
+        other_account = tmp_path / "other-account"
+        (other_account / "projects").mkdir(parents=True)
+        active_config_dir = tmp_path / "active-account"
+        (active_config_dir / "projects").mkdir(parents=True)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(active_config_dir))
 
         monkeypatch.setattr(
             sys, "argv",
-            ["transcript-analysis.py", "--config-dir", str(config_dir), subcommand],
+            ["transcript-analysis.py", "--config-dir", str(other_account), subcommand],
         )
         with pytest.raises(SystemExit) as exc_info:
             _mod.main()
-        assert exc_info.value.code == 2
 
+        assert exc_info.value.code == 2
+        assert other_account / "projects" != _mod.PROJECTS_DIR  # refusal happens before reassignment
         err = capsys.readouterr().err
-        assert subcommand in err
         assert "--config-dir" in err
-        assert config_dir / "projects" != _mod.PROJECTS_DIR, (
-            "refusal must happen before the reassignment, not after"
-        )
+        assert subcommand in err
 
 
 # ---------------------------------------------------------------------------
@@ -5098,7 +5098,10 @@ class TestCost:
 
         _mod._cost_report(_cost_args(this_repo=True), date(2026, 8, 2))
         out = capsys.readouterr().out
-        assert "COST SOURCES (this repo (1 project dirs))" in out
+        assert (
+            "COST SOURCES (this repo (1 project dirs); "
+            "1 root (no ~/.claude/transcript-config-dirs declared))"
+        ) in out
         cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
         assert cols["$"] == "2.00"
 
@@ -5363,15 +5366,17 @@ class TestCostMultiRootReport:
     def test_empty_state_zero_transcripts_opened_warns_per_root_not_masked(self, tmp_path, capsys):
         """State (a)/(b): a root with no *.jsonl at all fires its own warning,
         not masked by a sibling root's non-zero scan — the original silent-
-        zero bug wearing a per-root hat."""
+        zero bug wearing a per-root hat. account-N is assigned by resolved-path
+        sort (_redaction_ordinals), not by roots= list order — "acct-b" sorts
+        before "acct-empty", so root_b is account-1 despite being passed second."""
         empty_root = tmp_path / "acct-empty"
         empty_root.mkdir(parents=True)  # exists, but holds no project dirs at all
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[empty_root, root_b])
         out = capsys.readouterr().out
-        assert "WARNING: cost: account-1: no transcripts found for this scope" in out
-        assert "WARNING: cost: account-2" not in out
+        assert "WARNING: cost: account-2: no transcripts found for this scope" in out
+        assert "WARNING: cost: account-1" not in out
 
     def test_empty_state_project_dir_with_no_jsonl_also_warns(self, tmp_path, capsys):
         """State (b) specifically: a root whose project dir exists but holds
@@ -9491,11 +9496,14 @@ class TestResolveProjectScope:
 
         _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
         out_repo = capsys.readouterr().out
-        assert "BUCKETS SOURCES (this repo (1 project dirs))" in out_repo
+        assert (
+            "BUCKETS SOURCES (this repo (1 project dirs); "
+            "1 root (no ~/.claude/transcript-config-dirs declared))"
+        ) in out_repo
 
         _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
         out_glob = capsys.readouterr().out
-        assert "BUCKETS SOURCES (*)" in out_glob
+        assert "BUCKETS SOURCES (*; 1 root (no ~/.claude/transcript-config-dirs declared))" in out_glob
 
 
 class TestBuildParser:
@@ -10277,7 +10285,10 @@ class TestJudgmentPair:
         out_stdout = capsys.readouterr().out
         assert out_stdout == ""  # nothing printed to stdout
         file_content = out_file.read_text()
-        assert file_content.splitlines()[0] == "JUDGMENT PAIR SOURCES (*)"
+        assert (
+            file_content.splitlines()[0]
+            == "JUDGMENT PAIR SOURCES (*; 1 root (no ~/.claude/transcript-config-dirs declared))"
+        )
         assert "Logic error in retry loop." in file_content
         assert "Will fix the retry logic." in file_content
 
@@ -11186,3 +11197,719 @@ class TestDenialHookLabelEnumerationRealHooks:
         )
         assert message is not None
         assert _mod._denial_hook_label("", message) == "Skill length"
+
+
+# ---------------------------------------------------------------------------
+# Multi-account scope (transcript-corpus-multi-account-scope plan) —
+# cross-subcommand resolved-scope-header and roots-threading coverage.
+# ---------------------------------------------------------------------------
+
+
+def _fake_gh_pr_list_run(cmd, *a, **k):
+    """A no-op `gh` double for subcommands (pr-link) whose branch-iteration
+    loop shells out regardless of session content."""
+    if cmd[:2] == ["gh", "pr"]:
+        return subprocess.CompletedProcess(cmd, 0, "[]", "")
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
+# (cli_name, header_name, cmd_func, zero-arg args factory) for the 18
+# subcommands whose resolved-scope header prints unconditionally, even over
+# an empty scope — the 19th and 20th funnel sites (review-trace,
+# skill-invocation) defer their header print until something is found, so
+# they get their own seeded-session tests below instead.
+_UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
+    ("buckets", "BUCKETS", _mod.cmd_buckets,
+     lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
+    ("fail-seq", "FAIL SEQ", _mod.cmd_fail_seq,
+     lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": "main"})()),
+    ("struggle", "STRUGGLE", _mod.cmd_struggle,
+     lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
+    ("duration", "DURATION", _mod.cmd_duration,
+     lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
+    ("subagents", "SUBAGENTS", _mod.cmd_subagents, _subagents_args),
+    ("subagent-mix", "SUBAGENT MIX", _mod.cmd_subagent_mix,
+     lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None, "per_session": False})()),
+    ("reviewer-yield", "REVIEWER YIELD", _mod.cmd_reviewer_yield, _reviewer_yield_args),
+    ("skill-pair", "SKILL PAIR", _mod.cmd_skill_pair, _skill_pair_args),
+    ("pr-link", "PR LINK", _mod.cmd_pr_link,
+     lambda: type("A", (), {
+         "projects": "*", "this_repo": False, "branches": "main",
+         "repo": "owner/repo", "author": None,
+     })()),
+    ("commit-gate", "COMMIT GATE", _mod.cmd_commit_gate, lambda: _gate_args("code-review")),
+    ("audit-routing", "AUDIT ROUTING", _mod.cmd_audit_routing, _audit_routing_args),
+    ("cost", "COST", _mod.cmd_cost, _cost_args),
+    ("context-distribution", "CONTEXT DISTRIBUTION", _mod.cmd_context_distribution, _context_distribution_args),
+    ("cost-trend", "COST TREND", _mod.cmd_cost_trend, _cost_trend_args),
+    ("handoff-ratio", "HANDOFF RATIO", _mod.cmd_handoff_ratio, _handoff_args),
+    ("audit-routing-shape", "AUDIT ROUTING SHAPE", _mod.cmd_audit_routing_shape, _audit_routing_shape_args),
+    ("audit-routing-samples", "AUDIT ROUTING SAMPLES", _mod.cmd_audit_routing_samples, _audit_routing_samples_args),
+    ("judgment-pair", "JUDGMENT PAIR", _mod.cmd_judgment_pair, _judgment_pair_args),
+]
+
+
+class TestAllSubcommandsSingleRootHeader:
+    """Across every funnel subcommand, the resolved-scope header states the
+    root count unconditionally — even at one root with nothing declared, the
+    exact state that produced the original corpus undercount — and no
+    per-root stderr progress line prints at one root (that line is gated on
+    len(roots) > 1)."""
+
+    _HEADER_SUFFIX = "1 root (no ~/.claude/transcript-config-dirs declared))"
+
+    @pytest.mark.parametrize("subcommand,header_name,cmd_func,args_factory", _UNCONDITIONAL_HEADER_CASES)
+    def test_header_states_one_root_and_no_progress_line_prints(
+        self, fake_projects, monkeypatch, capsys, subcommand, header_name, cmd_func, args_factory
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_gh_pr_list_run)
+        cmd_func(args_factory())
+        out, err = capsys.readouterr()
+        combined = out + err
+        assert f"{header_name} SOURCES (" in combined, f"{subcommand}: no resolved-scope header printed"
+        assert self._HEADER_SUFFIX in combined, f"{subcommand}: header missing the unconditional root-count suffix"
+        assert "scanning root" not in combined, f"{subcommand}: a single-root run must not print a per-root progress line"
+
+    def test_review_trace_header_states_one_root_once_a_session_matches(self, fake_projects, capsys):
+        """review-trace defers its header print until the first emitted event
+        block, so an empty scope prints nothing at all (unchanged, long-
+        standing behavior) — seed one qualifying session to reach the header."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out, err = capsys.readouterr()
+        combined = out + err
+        assert "REVIEW TRACE SOURCES (" in combined
+        assert self._HEADER_SUFFIX in combined
+        assert "scanning root" not in combined
+
+    def test_skill_invocation_header_states_one_root_once_a_skill_matches(self, fake_projects, capsys):
+        """skill-invocation also defers its header print until at least one
+        skill invocation is found (pre-existing behavior, unchanged here)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_skill_invocation(_skill_inv_args())
+        out, err = capsys.readouterr()
+        combined = out + err
+        assert "SKILL INVOCATION SOURCES (" in combined
+        assert self._HEADER_SUFFIX in combined
+        assert "scanning root" not in combined
+
+
+def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
+    """Active profile (acct-a) plus one declared root (acct-b, via
+    TRANSCRIPT_CONFIG_DIRS_FILE) -- the minimal multi-root setup where a call
+    site that forgot to thread `roots` is distinguishable from one that
+    threaded it correctly (both look identical at one root, since
+    _resolve_project_scope's own internal default is also (PROJECTS_DIR,)).
+    Pins both PROJECTS_DIR (_resolve_scan_roots' base, used by 18 of the 19
+    funnel subcommands) and CLAUDE_CONFIG_DIR (config_dir(), which
+    _resolve_cost_roots reads independently for cost/context-distribution) at
+    the same acct-a, so every subcommand agrees on the same two-root list."""
+    acct_a = tmp_path / "acct-a"
+    (acct_a / "projects").mkdir(parents=True)
+    acct_b = tmp_path / "acct-b"
+    (acct_b / "projects").mkdir(parents=True)
+    monkeypatch.setattr(_mod, "PROJECTS_DIR", acct_a / "projects")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{acct_b}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    return [acct_a / "projects", acct_b / "projects"]
+
+
+class TestRootsThreadingSpy:
+    """Every _resolve_project_scope call site threads the SAME `roots` list
+    to both scope resolution and the header call —
+    format-independent, catches a subcommand whose roots list isn't threaded
+    identically to both call sites, regardless of what it prints. Wraps (not
+    replaces) the real functions, so each subcommand's normal behavior and
+    assertions from the header test above still apply; only the call
+    arguments are additionally recorded."""
+
+    @pytest.mark.parametrize("subcommand,header_name,cmd_func,args_factory", _UNCONDITIONAL_HEADER_CASES)
+    def test_resolve_project_scope_and_header_receive_identical_multi_root_list(
+        self, tmp_path, monkeypatch, subcommand, header_name, cmd_func, args_factory
+    ):
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        scope_calls: list[list] = []
+        header_calls: list[list] = []
+        real_resolve = _mod._resolve_project_scope
+        real_print = _mod._print_resolved_scope
+
+        def spy_resolve(*a, **k):
+            scope_calls.append(list(k["roots"]) if k.get("roots") is not None else None)
+            return real_resolve(*a, **k)
+
+        def spy_print(*a, **k):
+            roots = a[2] if len(a) > 2 else k.get("roots")
+            header_calls.append(list(roots))
+            return real_print(*a, **k)
+
+        monkeypatch.setattr(_mod, "_resolve_project_scope", spy_resolve)
+        monkeypatch.setattr(_mod, "_print_resolved_scope", spy_print)
+        monkeypatch.setattr(subprocess, "run", _fake_gh_pr_list_run)
+
+        cmd_func(args_factory())
+
+        assert scope_calls, f"{subcommand}: _resolve_project_scope was never called"
+        assert header_calls, f"{subcommand}: _print_resolved_scope was never called"
+        assert scope_calls[-1] == expected_roots, (
+            f"{subcommand}: scope resolution did not receive the multi-root list — {scope_calls[-1]!r}"
+        )
+        assert header_calls[-1] == expected_roots, (
+            f"{subcommand}: header did not receive the multi-root list — {header_calls[-1]!r}"
+        )
+
+    def test_review_trace_scope_and_header_receive_identical_multi_root_list(self, tmp_path, monkeypatch):
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj = expected_roots[0] / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        scope_calls: list[list] = []
+        header_calls: list[list] = []
+        real_resolve = _mod._resolve_project_scope
+        real_print = _mod._print_resolved_scope
+
+        def spy_resolve(*a, **k):
+            scope_calls.append(list(k["roots"]) if k.get("roots") is not None else None)
+            return real_resolve(*a, **k)
+
+        def spy_print(*a, **k):
+            roots = a[2] if len(a) > 2 else k.get("roots")
+            header_calls.append(list(roots))
+            return real_print(*a, **k)
+
+        monkeypatch.setattr(_mod, "_resolve_project_scope", spy_resolve)
+        monkeypatch.setattr(_mod, "_print_resolved_scope", spy_print)
+
+        _mod.cmd_review_trace(_review_trace_args())
+
+        assert scope_calls[-1] == expected_roots
+        assert header_calls[-1] == expected_roots
+
+    def test_skill_invocation_glob_scope_receives_the_multi_root_list_as_is(self, tmp_path, monkeypatch):
+        """cmd_skill_invocation never calls _resolve_project_scope — its two
+        call sites (:2146, :2148 in the plan's line numbering) route through
+        _iter_glob_scoped_sessions/_iter_scoped_sessions directly. Above one
+        root, the --projects branch takes the _iter_glob_scoped_sessions path
+        with the full roots list (not iter_sessions' single-Path shape)."""
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        calls: list[list] = []
+        real_glob_scoped = _mod._iter_glob_scoped_sessions
+
+        def spy_glob_scoped(roots, *a, **k):
+            calls.append(list(roots))
+            return real_glob_scoped(roots, *a, **k)
+
+        monkeypatch.setattr(_mod, "_iter_glob_scoped_sessions", spy_glob_scoped)
+
+        _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*" -- the explicit-glob branch
+
+        assert calls, "_iter_glob_scoped_sessions was never called"
+        assert calls[-1] == expected_roots
+
+    def test_skill_invocation_repo_scoped_call_receives_the_multi_root_list(self, tmp_path, monkeypatch):
+        """The --this-repo-equivalent default branch (--projects unset) threads
+        roots=roots into _iter_scoped_sessions rather than defaulting."""
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        calls: list[list | None] = []
+        real_scoped = _mod._iter_scoped_sessions
+
+        def spy_scoped(slugs, include_subagents, roots=None):
+            calls.append(list(roots) if roots is not None else None)
+            return real_scoped(slugs, include_subagents, roots=roots)
+
+        monkeypatch.setattr(_mod, "_iter_scoped_sessions", spy_scoped)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_git_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_git_run)
+
+        _mod.cmd_skill_invocation(_skill_inv_args(projects=None))  # unset -- the repo-scoped default branch
+
+        assert calls, "_iter_scoped_sessions was never called"
+        assert calls[-1] == expected_roots
+
+    def test_single_root_skill_invocation_glob_call_passes_a_bare_path_not_a_list(self, fake_projects, monkeypatch):
+        """At one root, cmd_skill_invocation's --projects branch keeps calling
+        iter_sessions(roots[0], ...) directly (a single Path, not a list) —
+        iter_sessions' documented flat-sort-over-full-paths ordering guarantee
+        is unaffected by this plan at single root."""
+        calls: list[Path] = []
+        real_iter_sessions = _mod.iter_sessions
+
+        def spy_iter_sessions(projects_dir, *a, **k):
+            calls.append(projects_dir)
+            return real_iter_sessions(projects_dir, *a, **k)
+
+        monkeypatch.setattr(_mod, "iter_sessions", spy_iter_sessions)
+
+        _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*", single root (fake_projects' PROJECTS_DIR)
+
+        assert calls == [_mod.PROJECTS_DIR]
+
+
+class TestThisRepoUnionsAcrossRoots:
+    """--this-repo (and, at the _iter_scoped_sessions layer it shares, every
+    other slug-scoped caller) unions across every resolved root once a
+    declared-roots file makes --this-repo multi-root by default, with no
+    --config-dir flag involved -- distinct from cost's own separate refusal
+    of --this-repo combined with an explicit --config-dir, which stays
+    unaffected."""
+
+    def test_multi_root_slug_match_is_name_only_and_dedupes_across_roots(self, tmp_path):
+        """Direct coverage of _iter_scoped_sessions(roots=[a, b]): the same
+        slug present under two roots unions both sessions, and a third root
+        that's a symlink alias to one of the first two contributes no
+        duplicate (dedup spans every root, not just identical-path roots)."""
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-main"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-root-a")])
+
+        root_b = tmp_path / "acct-b"
+        proj_b = root_b / "-repo-main"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [_asst("claude-sonnet-4-6", branch="from-root-b")])
+
+        root_c_alias = tmp_path / "acct-a-alias"
+        root_c_alias.symlink_to(root_a)
+
+        sessions = list(_mod._iter_scoped_sessions(
+            ["-repo-main"], False, roots=[root_a, root_b, root_c_alias],
+        ))
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-root-a", "from-root-b"}
+        assert len(sessions) == 2  # root_c_alias contributes no duplicate of root_a's session
+
+    def test_this_repo_excludes_foreign_project_dirs_under_extra_root(self, tmp_path):
+        """The minimization guard that replaces the (out-of-scope-here)
+        refusal on cost's --this-repo + --config-dir combination — must not
+        be skipped: a directory under a declared
+        root that isn't one of the resolved worktree slugs stays excluded,
+        proving the union doesn't widen matching to every project on that root."""
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-main"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-root-a")])
+
+        root_b = tmp_path / "acct-b"
+        proj_b_matching = root_b / "-repo-main"
+        proj_b_matching.mkdir(parents=True)
+        _write_jsonl(proj_b_matching / "sess-b.jsonl", [_asst("claude-sonnet-4-6", branch="from-root-b")])
+        proj_b_foreign = root_b / "-home-user-unrelated-secret-clientname"
+        proj_b_foreign.mkdir(parents=True)
+        _write_jsonl(proj_b_foreign / "sess-foreign.jsonl", [_asst("claude-sonnet-4-6", branch="foreign-branch")])
+
+        sessions = list(_mod._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-root-a", "from-root-b"}
+        assert "foreign-branch" not in branches_seen
+
+    def test_this_repo_unions_same_slug_across_roots_end_to_end(self, tmp_path, monkeypatch, capsys):
+        """End-to-end: buckets --this-repo, with a declared-roots file adding
+        a second root that also contains this repo's own worktree slug --
+        both roots' sessions appear in one report, not just the active
+        profile's."""
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-main"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="feat-in-root-a")])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", root_a)
+
+        root_b = tmp_path / "acct-b-config"
+        proj_b = root_b / "projects" / "-repo-main"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [_asst("claude-sonnet-4-6", branch="feat-in-root-b")])
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
+        out = capsys.readouterr().out
+        assert "feat-in-root-a" in out
+        assert "feat-in-root-b" in out
+        assert "2 roots" in out
+
+    def test_this_repo_fail_closed_across_all_roots(self, tmp_path):
+        """The :2061-equivalent deny case: zero slug matches under EVERY
+        resolved root still exits 1 — direct unit coverage of `any(...
+        for root in roots for slug in slugs)` iterating every root, not just
+        roots[0]. Calls _resolve_project_scope directly with a hand-built
+        multi-element `roots` list (unreachable through the real CLI today,
+        since an explicit top-level --config-dir always collapses `roots` to
+        one element — see _resolve_scan_roots) as a robustness pin against a
+        future precedence change, per the plan's own framing."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        args = argparse.Namespace(this_repo=True, projects="*", config_dir=str(root_a), _this_repo_slugs=["-repo-main"])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        assert exc_info.value.code == 1
+
+    def test_this_repo_allow_case_when_only_a_non_first_root_matches(self, tmp_path):
+        """Companion allow-case to the deny test above: a match under the
+        SECOND resolved root (not roots[0]) must not fail closed — proves the
+        `any(...)` genuinely iterates every root rather than short-circuiting
+        on the first."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = tmp_path / "acct-b"
+        (root_b / "-repo-main").mkdir(parents=True)
+        args = argparse.Namespace(this_repo=True, projects="*", config_dir=str(root_a), _this_repo_slugs=["-repo-main"])
+        session_iter, scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        assert list(session_iter) == []  # no sessions written, but no SystemExit either
+        assert scope_label == "this repo (1 project dirs)"
+
+
+class TestIterScopedSessionsUnreadableRoot:
+    """Security regression: root.iterdir() raises PermissionError on an
+    unreadable root with no exception handling in the pre-fix code -- an
+    uncaught traceback that prints the raw path, bypassing --redact
+    entirely. Reachable via --this-repo (now multi-root by default) on any
+    subcommand funneling through _iter_scoped_sessions. Must be caught,
+    reported to stderr without the raw path, and the scan must continue
+    across the remaining roots rather than crash."""
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_root_is_skipped_without_crash_or_path_leak(self, tmp_path, capsys):
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-main"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-readable-root")])
+
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        os.chmod(root_b, 0o000)
+        try:
+            sessions = list(_mod._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
+        finally:
+            os.chmod(root_b, 0o755)  # restore before tmp_path teardown
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-readable-root"}  # root_a's session still found -- no crash
+
+        err = capsys.readouterr().err
+        assert str(root_b) not in err  # the raw unreadable path is never printed
+        assert "skipping" in err
+
+
+class TestPoisonedProjectsDirGlobal:
+    """PROJECTS_DIR pointed at a nonexistent path, with one real root
+    declared via TRANSCRIPT_CONFIG_DIRS_FILE — sessions are still found
+    through the declared root, proving no funnel site still reads
+    PROJECTS_DIR as an unthreaded, single-root default."""
+
+    def test_sessions_found_via_declared_root_despite_nonexistent_projects_dir(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "nonexistent-active-profile" / "projects")
+        real_root = tmp_path / "real-account"
+        proj = real_root / "projects" / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-declared-root")])
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{real_root}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
+        out = capsys.readouterr().out
+        assert "feat-declared-root" in out
+        assert "2 roots" in out
+
+
+class TestMultiRootFormatOutliers:
+    """End-to-end multi-root output tests for the three format-outlier
+    subcommands (judgment-pair writes --out,
+    audit-routing-samples is a JSON stream with the header on stderr, cost
+    redacts by default) — each reached through the declared-roots file (the
+    default union _resolve_scan_roots builds from declared_transcript_roots()),
+    not cost's own --config-dir extra (already covered by
+    TestCostMultiRootRedaction)."""
+
+    def test_cost_redacted_totals_sum_across_declared_roots(self, tmp_path, monkeypatch, capsys):
+        default_config = tmp_path / "default-account"
+        default_proj = default_config / "projects" / "-home-user-repo-a"
+        default_proj.mkdir(parents=True)
+        _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_config)
+
+        declared_config = tmp_path / "declared-account"
+        declared_proj = declared_config / "projects" / "-home-user-repo-b"
+        declared_proj.mkdir(parents=True)
+        _write_jsonl(declared_proj / "sess-b.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{declared_config}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod.cmd_cost(_cost_args())
+        out = capsys.readouterr().out
+        assert "account-1/private-project-1" in out
+        assert "account-2/private-project-1" in out
+        assert _extract_grand_total(out) == pytest.approx(4.0)
+
+    def test_audit_routing_samples_stdout_still_parses_as_json_across_declared_roots(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for idx, root in enumerate(roots):
+            proj = root / f"-home-user-repo-{idx}"
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [_opus([_read_use("r1", "/a.py")], out=100)])
+
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        out, err = capsys.readouterr()
+        assert "2 roots" in err  # header routed to stderr, matching audit-routing-samples' convention
+        # The per-root progress line is gated on len(roots) > 1, so above one
+        # root (unlike TestAllSubcommandsSingleRootHeader's assertions) it must print.
+        assert "scanning root 1/2..." in err
+        assert "scanning root 2/2..." in err
+        records = json.loads(out)
+        assert {rec["session_id"] for rec in records} == {"sess-0", "sess-1"}
+
+    def test_judgment_pair_out_file_still_one_header_line_across_declared_roots(
+        self, tmp_path, monkeypatch
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for idx, root in enumerate(roots):
+            proj = root / f"-home-user-repo-{idx}"
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [
+                _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+                _review_asst("Logic error in retry loop.", "2026-05-20T10:01:00.000Z"),
+                _user_reply("Will fix the retry logic."),
+            ])
+        out_file = roots[0].parent / "out.txt"
+
+        _mod.cmd_judgment_pair(_judgment_pair_args(out=str(out_file)))
+        content = out_file.read_text()
+        lines = content.splitlines()
+        assert lines[0] == "JUDGMENT PAIR SOURCES (*; 2 roots)"
+        header_lines = [ln for ln in lines if ln.startswith("JUDGMENT PAIR SOURCES")]
+        assert len(header_lines) == 1
+        assert content.count("Logic error in retry loop.") == 2  # one block per root's session
+
+
+class TestAuditRoutingMultiRootRedaction:
+    """audit-routing's --redact must look up each row's label via the shared
+    _redaction_ordinals mapping, not a flat string key — proven by seeding
+    the same raw project label under two declared roots and asserting both
+    rows resolve to distinct account-N tokens instead of one colliding with
+    (or being missed by) the other."""
+
+    def test_same_raw_label_under_two_roots_resolves_to_distinct_account_tokens(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root in roots:
+            proj = root / "-home-user-repo"
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / "sess.jsonl", [_opus([_agent_use("a1", "code-writer")], out=100)])
+
+        _mod.cmd_audit_routing(_audit_routing_args(redact=True))
+        out = capsys.readouterr().out
+        assert _mod._REDACT_MAP_MISS_TOKEN not in out
+        assert "account-1/private-project-1" in out
+        assert "account-2/private-project-1" in out
+        assert "-home-user-repo" not in out
+
+
+class TestResolveScanRoots:
+    """_resolve_scan_roots as a directly callable, unit-testable function --
+    the explicit top-level --config-dir precedence over a populated
+    declared-roots file, and getattr-based tolerance of a hand-built `args`
+    Namespace that predates the config_dir attribute entirely (this file's
+    many such fixtures)."""
+
+    def test_no_config_dir_no_declared_roots_returns_projects_dir_alone(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        args = argparse.Namespace(config_dir=None)
+        assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
+
+    def test_no_config_dir_with_declared_roots_unions_both(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        declared = tmp_path / "declared-account"
+        (declared / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{declared}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        args = argparse.Namespace(config_dir=None)
+        assert _mod._resolve_scan_roots(args) == [
+            tmp_path / "active" / "projects", declared / "projects",
+        ]
+
+    def test_explicit_top_level_config_dir_overrides_populated_declared_roots_file(
+        self, monkeypatch, tmp_path
+    ):
+        """The flagship precedence rule: an explicit --config-dir wins outright,
+        returning that one directory's projects/ subdirectory alone — the
+        declared-roots file's entries are not unioned in on top of it."""
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        declared = tmp_path / "declared-account"
+        (declared / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{declared}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        override_dir = tmp_path / "explicit-override"
+        args = argparse.Namespace(config_dir=str(override_dir))
+        assert _mod._resolve_scan_roots(args) == [override_dir / "projects"]
+
+    def test_config_dir_attribute_absent_from_parsed_does_not_raise(self, monkeypatch, tmp_path):
+        """A hand-built test `args` Namespace that predates the top-level
+        --config-dir flag (this file's many such fixtures) must not raise
+        AttributeError -- its absence means "not passed," the real default."""
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        args = type("A", (), {})()  # no config_dir attribute at all
+        assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
+
+    def test_declared_root_matching_active_profile_is_deduped_not_double_listed(
+        self, monkeypatch, tmp_path
+    ):
+        """PROJECTS_DIR is pre-seeded into seen_resolved before iterating
+        declared roots, so a declared root that IS (or symlink-aliases) the
+        active profile is deduped, not double-listed."""
+        active_config = tmp_path / "active-account"
+        (active_config / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", active_config / "projects")
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{active_config}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        args = argparse.Namespace(config_dir=None)
+        assert _mod._resolve_scan_roots(args) == [active_config / "projects"]
+
+
+class TestRedactionOrdinalStability:
+    """_redaction_ordinals assigns the same ordinal to the same physical
+    root regardless of which profile is active (list order) -- guards
+    against the bug a local-sort-inside-_build_redact_map approach would
+    reintroduce."""
+
+    def test_same_two_roots_different_scan_order_yield_identical_ordinals(self, tmp_path):
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+
+        ordinals_a_first = _mod._redaction_ordinals([root_a, root_b])
+        ordinals_b_first = _mod._redaction_ordinals([root_b, root_a])
+
+        assert ordinals_a_first == ordinals_b_first
+        assert ordinals_a_first[root_a.resolve()] == ordinals_b_first[root_a.resolve()]
+        assert ordinals_a_first[root_b.resolve()] == ordinals_b_first[root_b.resolve()]
+
+    def test_cost_report_assigns_same_account_label_regardless_of_which_profile_is_active(
+        self, tmp_path, capsys
+    ):
+        """End-to-end version of the ordinal-stability fix: the same physical
+        root reads as the same account-N whether it's scanned as the active
+        profile (scanned first) or as a declared extra (scanned second)."""
+        root_alpha = _write_cost_root(tmp_path, "acct-alpha", "-home-user-repo-alpha", "sess-alpha",
+                                       [_priced("claude-sonnet-5", input=1_000_000)])
+        root_zulu = _write_cost_root(tmp_path, "acct-zulu", "-home-user-repo-zulu", "sess-zulu",
+                                      [_priced("claude-sonnet-5", input=1_000_000)])
+
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_alpha, root_zulu])
+        out_alpha_active = capsys.readouterr().out
+
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_zulu, root_alpha])
+        out_zulu_active = capsys.readouterr().out
+
+        # root_alpha resolves alphabetically first, so it holds account-1 in both
+        # runs regardless of which one was scanned first (which is active).
+        assert "account-1/private-project-1" in out_alpha_active
+        assert "account-2/private-project-1" in out_alpha_active
+        assert "account-1/private-project-1" in out_zulu_active
+        assert "account-2/private-project-1" in out_zulu_active
+
+
+class TestCorpusFingerprintRootRemovalLimits:
+    """_corpus_fingerprint hashes the raw-label SET, not root count --
+    removing a root whose labels are a strict subset of a surviving root's
+    own labels is invisible to the fingerprint, by design, not by bug."""
+
+    def test_fingerprint_unchanged_when_removed_roots_labels_are_a_subset_of_a_surviving_root(self):
+        two_root_map = {
+            (0, "shared-label"): "account-1/private-project-1",
+            (1, "shared-label"): "account-2/private-project-1",
+        }
+        one_root_map = {"shared-label": "private-project-1"}
+        # Root 2's only label ("shared-label") is a strict subset of root 1's
+        # own label set, so dropping root 2 does not change the label SET —
+        # the fingerprint is identical even though the account count changed.
+        assert _mod._corpus_fingerprint(two_root_map) == _mod._corpus_fingerprint(one_root_map)
+
+
+class TestResolvedScopeHeaderDirectUnit:
+    """Direct unit coverage of _resolved_scope_header's pure string
+    formatting — the many end-to-end subcommand tests exercise this function
+    only through a full report run; these pin its exact return value at each
+    root-count branch."""
+
+    def test_one_root_states_no_declared_roots_file(self, tmp_path):
+        header = _mod._resolved_scope_header("buckets", "*", [tmp_path / "acct-a" / "projects"])
+        assert header == (
+            "BUCKETS SOURCES (*; 1 root (no ~/.claude/transcript-config-dirs declared))"
+        )
+
+    def test_n_roots_states_the_count(self, tmp_path):
+        roots = [
+            tmp_path / "acct-a" / "projects",
+            tmp_path / "acct-b" / "projects",
+            tmp_path / "acct-c" / "projects",
+        ]
+        header = _mod._resolved_scope_header("cost", "this repo (2 project dirs)", roots)
+        assert header == "COST SOURCES (this repo (2 project dirs); 3 roots)"
+
+
+class TestBuildRedactMapDirectUnit:
+    """Direct unit coverage of _build_redact_map's multi-root ordinal-
+    assignment math — the many end-to-end subcommand tests exercise this
+    function only through a full report run; this pins its returned dict's
+    keys/values directly when the same raw project label collides across two
+    declared roots."""
+
+    def test_two_roots_with_colliding_raw_label_map_to_distinct_account_scoped_keys(self, tmp_path):
+        root_a = tmp_path / "acct-a" / "projects"
+        proj_a = root_a / "-home-user-testrepo"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-a")])
+
+        root_b = tmp_path / "acct-b" / "projects"
+        proj_b = root_b / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [_asst("claude-sonnet-4-6", branch="from-b")])
+
+        ordinals = _mod._redaction_ordinals([root_a, root_b])
+        ordinal_a, ordinal_b = ordinals[root_a.resolve()], ordinals[root_b.resolve()]
+
+        redact_map = _mod._build_redact_map([root_a, root_b])
+
+        assert redact_map == {
+            (ordinal_a, "testrepo"): f"account-{ordinal_a}/private-project-1",
+            (ordinal_b, "testrepo"): f"account-{ordinal_b}/private-project-1",
+        }

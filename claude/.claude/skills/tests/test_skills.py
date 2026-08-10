@@ -2058,3 +2058,55 @@ class TestStep4TripwireProvenanceParity:
             "Step 4 tripwire(s) with no 'tripwire (name)' citation under "
             f"{_FOUNDATION_RULES_HEADING!r} in REFERENCES.md: {missing}"
         )
+
+
+# Scoped to the three SKILL.md files the transcript-corpus multi-account-scope
+# plan touches, by name -- not a repo-wide grep. ready-for-review/SKILL.md
+# also contains the stale interpreter path and is deliberately out of scope
+# for that plan, so a repo-wide contract would red-fail on it for an
+# unrelated reason.
+_TRANSCRIPT_TOOLKIT_SKILLS: tuple[str, ...] = (
+    "transcript-narrative",
+    "transcript-analysis",
+    "error-mode-analysis",
+)
+
+# Pinned verbatim: transcript-analysis/SKILL.md's "Scope confirmation"
+# section sentence. A prose caveat with no enforcement is the same failure
+# class as the transcript-config-dirs-unaware caveat that preceded it -- this
+# sentence must appear in the skill body exactly, not merely in spirit.
+_SCOPE_CONFIRMATION_SENTENCE = (
+    "Before quoting a corpus-wide statistic from this toolkit's output, include "
+    "the resolved-scope header line verbatim in what you report, and if that "
+    "line reads \"1 root (no ~/.claude/transcript-config-dirs declared)\", ask "
+    "the user whether other Claude accounts exist before treating the number "
+    "as complete."
+)
+
+
+class TestTranscriptToolkitInterpreterPathContract:
+    """transcript-analysis.py's interpreter path is wrong under a relocated
+    config dir (CLAUDE_CONFIG_DIR pointed somewhere other than ~/.claude) --
+    every one of the three skills this plan touches must resolve it via
+    ${CLAUDE_CONFIG_DIR:-$HOME/.claude}, never a hardcoded ~/.claude/scripts/
+    literal."""
+
+    @pytest.mark.parametrize("skill_name", _TRANSCRIPT_TOOLKIT_SKILLS)
+    def test_skill_body_contains_no_hardcoded_claude_scripts_path(self, skill_name):
+        body = _skill_body(skill_name)
+        assert "~/.claude/scripts/" not in body, (
+            f"{skill_name}/SKILL.md still contains the hardcoded interpreter path; "
+            'use "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" instead'
+        )
+
+
+class TestTranscriptAnalysisScopeConfirmationContract:
+    """transcript-analysis/SKILL.md must carry its "Scope confirmation"
+    section's pinned sentence verbatim -- see _SCOPE_CONFIRMATION_SENTENCE."""
+
+    def test_pinned_scope_confirmation_sentence_present_verbatim(self):
+        body = _skill_body("transcript-analysis")
+        assert _SCOPE_CONFIRMATION_SENTENCE in body, (
+            "transcript-analysis/SKILL.md is missing its pinned scope-"
+            f"confirmation sentence verbatim:\n{_SCOPE_CONFIRMATION_SENTENCE!r}"
+        )

@@ -118,13 +118,17 @@ corpus statistic from the original failure, would stay single-root even after
 every other step in this plan lands. `--config-dir` extras (cost's own
 repeatable flag) still append after the declared-roots entries, unaffected.
 
-Delete the refusal at `:5471-5485` — it existed only to keep the global and
-`_resolve_cost_roots` from diverging, and `_resolve_scan_roots` is now the one
-place that can diverge. Keep the top-level `--config-dir` reassignment of
-`PROJECTS_DIR` in `main()` (`:5486-5487`) — it remains meaningful, since
-`_resolve_scan_roots` reads `PROJECTS_DIR` as its base at call time, so
-reassigning it still changes every subcommand's single-root default exactly as
-today. Update the now-partially-false docstring invariant at `:2044-2052` to
+Keep the refusal at `:5471-5485` — `cost`/`context-distribution` resolve their
+roots via `_resolve_cost_roots` (`config_dir()` + `declared_transcript_roots()`
+directly), never through `_resolve_scan_roots`, so the top-level `--config-dir`
+reassignment still cannot reach them; letting it through silently would
+reassign an unused global while the actual scan stayed at the operator's
+default account, with no error. Keep the top-level `--config-dir`
+reassignment of `PROJECTS_DIR` in `main()` (`:5486-5487`) for every other
+subcommand — it remains meaningful, since `_resolve_scan_roots` reads
+`PROJECTS_DIR` as its base at call time, so reassigning it still changes every
+other subcommand's single-root default exactly as today. Update the
+now-partially-false docstring invariant at `:2044-2052` to
 describe the new precedence instead of removing it.
 
 **Ordinal stability, from one shared source, not a local sort inside
