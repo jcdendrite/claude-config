@@ -7,9 +7,10 @@ refused by the Bash tool whenever it runs from a worktree-isolated session —
 which, in this repo, is every session, since worktree discipline is active
 (`.claude/worktree-required`). A prior session hit this, misdiagnosed it as
 a repo-contamination risk from the stow-symlinked log target, and skipped
-the step rather than working around it. The fix restructures the recipe
-into a shape the Bash tool accepts unconditionally, and tightens the
-CLAUDE.md rule that contributed to the misdiagnosis.
+the step rather than working around it. The fix restructures the recipe so
+the Bash tool accepts it in the common case (fully solving the reported
+failure), with a documented, best-effort fallback for the rest, and tightens
+the CLAUDE.md rule that contributed to the misdiagnosis.
 
 ## Approach
 
@@ -36,15 +37,27 @@ verbatim, then bisected it by re-running variants as single Bash tool calls:
 |---|---|
 | `CONFIG_DIR=...`; `SESSION_ID=$(head -n1 ...)`; `[ -n "$SESSION_ID" ] && printf ... >> "$CONFIG_DIR/..."` (the skill's current recipe, verbatim) | refused |
 | `VAR=$(echo hi)` then a second statement using `$VAR`, redirect target literal (not a variable) | refused |
-| `head -n1 "$CONFIG_DIR/sessions/$PPID" 2>/dev/null` alone (single statement, no assignment) | succeeded |
+| `head -n1 "$HOME/.claude/sessions/$PPID" 2>/dev/null` alone (single statement, no assignment) | succeeded |
 | `printf 'text\n' >> "$HOME/.claude/.handoff-nudge.log"` alone (single statement, no `$(...)`) | succeeded |
 | `test -n "x" && printf 'text\n' >> file` (single statement, conditional, no `$(...)`) | succeeded |
+| `MY_TEST_VAR="probe"; echo "$MY_TEST_VAR"` (multi-statement, local literal assignment, no `$(...)`) | succeeded |
+| `echo "$CLAUDE_CONFIG_DIR"` alone — bare reference, no assignment, no `$(...)`, no redirect | **refused** |
+| `head -n1 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$PPID" 2>/dev/null` alone | **refused** |
+| `printf 'x\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.handoff-nudge.log"` alone | **refused** |
 
-The trigger is a `$(...)` command substitution assigned to a variable,
-combined with a later statement in the *same* Bash tool call — not the
-conditional, not the redirect alone, not the stow-symlinked target. A
-single command using `$(...)` with no further statement, or a multi-statement
-command with no such assignment, both pass.
+Two independent triggers, not one:
+
+- **Trigger A** — a `$(...)` command substitution assigned to a variable,
+  combined with a later statement in the same call. A local, literal
+  (non-`$(...)`) assignment followed by a later statement is fine (row 6).
+- **Trigger B** — any reference to `$CLAUDE_CONFIG_DIR` specifically,
+  regardless of how simple the rest of the command is — even a bare,
+  read-only `echo`. `$HOME` and `$PPID` are unaffected (rows 3-4, 6); only
+  `$CLAUDE_CONFIG_DIR` triggers this. I found Trigger B only after the plan
+  below had already been through one `/plan-review` pass and one commit —
+  the originally-approved fix used `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` in
+  both replacement commands, which Trigger B refuses outright. This
+  revision corrects that (see Fix, below) before implementation starts.
 
 I also confirmed the prior session's stated risk (repo contamination) was
 never real for this specific target: `claude/.claude/.handoff-nudge.log` is
@@ -54,27 +67,64 @@ git-tracked stow-symlink targets, not this one.
 
 ### Fix
 
-Split the recipe into two separate, single-statement Bash fences: read the
-session id (no assignment, no later statement in the same call), then —
-only if that printed something — append a literal-inlined line (no `$(...)`
-in that call at all). Neither half matches the refused shape; both were
-verified directly this session (table above).
+Split the recipe into two separate, single-statement Bash fences (fixes
+Trigger A: read the session id with no assignment and no later statement in
+the same call, then — only if that printed something — append a
+literal-inlined line with no `$(...)` in that call at all). For Trigger B,
+try the `$CLAUDE_CONFIG_DIR`-aware form of each command first; if the Bash
+tool refuses it citing worktree isolation, retry the same step with the
+plain `$HOME/.claude` fallback in place of `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`.
+This fully fixes the reported failure for the common case (`CLAUDE_CONFIG_DIR`
+unset, which includes this session's own environment and is the default for
+most stow users) and accepts one narrower residual gap: a session with
+`CLAUDE_CONFIG_DIR` set to a non-default location, running inside a
+worktree-isolated repo, still can't record the signal to its custom log
+location — best-effort telemetry degrading to a no-op in a narrow
+intersection, not a regression from today's fully-broken state.
 
 **Alternatives considered and rejected:**
 - Drop the `[ -n "$SESSION_ID" ]` guard but keep one fence — still combines
   the assignment with a later statement, which the bisection above shows is
-  the actual trigger, independent of the conditional. Doesn't fix it.
+  Trigger A, independent of the conditional. Doesn't fix Trigger A, and
+  doesn't touch Trigger B at all.
 - Nest the append inside the substitution itself (e.g. pipe through `xargs`
   into `printf ... >>`) — a more exotic single-call shape with no
-  session-time way to confirm it avoids the guard, trading a demonstrated
-  fix for an unverified guess.
+  session-time way to confirm it avoids Trigger A, trading a demonstrated
+  fix for an unverified guess; also still references `$CLAUDE_CONFIG_DIR`
+  directly, so Trigger B would still refuse it.
+- Hardcode `$HOME/.claude` everywhere and drop `$CLAUDE_CONFIG_DIR` support
+  from this recipe entirely — simpler, and sidesteps Trigger B completely,
+  but silently misdirects the signal for any `CLAUDE_CONFIG_DIR` user
+  *outside* a worktree-isolated repo too (the common case where Trigger B
+  isn't even active and the `$CLAUDE_CONFIG_DIR`-aware form would have
+  worked fine). `nudge-handoff-near-context-cap.sh` itself resolves its log
+  path via `_lib_config_dir()` (honoring `$CLAUDE_CONFIG_DIR`), so a
+  hardcoded fallback would send this recipe's `handoff session=` line to a
+  different file than the `nudged` lines it exists to pair with for any such
+  user — breaking the join this section's own stated purpose depends on,
+  not just narrowing an edge case.
+- Move the whole recipe into a new dedicated script (mirroring how
+  `marker.sh`'s `_walk_session` resolves the Bash-tool's `$PPID`-depth
+  difference and keeps all `$CLAUDE_CONFIG_DIR` handling inside the script
+  file, invisible to the harness guard) — this would close the residual gap
+  completely with no fallback branching. Rejected as heavier than this
+  best-effort, non-gating, three-line step warrants: it either duplicates
+  `marker.sh`'s process-ancestor-walk logic in a new file (a second copy of
+  logic this repo already has once, drifting under its own maintenance) or
+  couples a telemetry-log script to `marker.sh`'s review-gate-marker
+  internals, which isn't its documented purpose. The fallback-prose fix
+  above resolves the actually-reported failure at a fraction of the
+  maintenance surface; revisit with a dedicated script only if the residual
+  `CLAUDE_CONFIG_DIR`-plus-worktree-isolation gap turns out to matter in
+  practice.
 
 ### Assumption ledger
 
 **Root problem:** the handoff skill's conversion-signal recipe is refused by
 the Bash tool's worktree-isolation guard when a session is anchored in a
-worktree, because the recipe combines a `$(...)`-assigned variable with a
-later statement in one call.
+worktree, for either of two independent reasons: the recipe combines a
+`$(...)`-assigned variable with a later statement in one call (Trigger A),
+or it references `$CLAUDE_CONFIG_DIR` at all, however simply (Trigger B).
 
 **Givens:**
 - G1. The refusal originates in the Claude Code harness's own Bash-tool
@@ -94,9 +144,11 @@ later statement in one call.
   this repo, via the plan's clarifying questions]
 
 **Per mechanism:**
-1. Split `handoff/SKILL.md`'s recipe into two single-statement fences.
-   anchors: root. [verified: session reproduction table above — the exact
-   original recipe fails; each half, run standalone, succeeds]
+1. Split `handoff/SKILL.md`'s recipe into two single-statement fences, each
+   with a `$CLAUDE_CONFIG_DIR`-aware primary form and a plain-`$HOME/.claude`
+   fallback. anchors: root. [verified: session reproduction table above —
+   the exact original recipe fails on both Trigger A and Trigger B; each
+   fallback form, run standalone, succeeds]
 2. Add a cross-skill regression test in `test_skills.py` flagging any
    SKILL.md fenced bash block that assigns a variable via `$(...)` and uses
    it in a later statement in the same fence. anchors: row1.
@@ -107,7 +159,12 @@ later statement in one call.
    *effective cwd* across cd/-C chains, a materially harder problem than
    flagging one narrow assignment-then-use shape; a line-based regex
    heuristic is sufficient here and cheap to special-case if it ever
-   false-positives.
+   false-positives. **Scoped to Trigger A only, deliberately** — a test
+   flagging any `$CLAUDE_CONFIG_DIR` reference in a skill fence would
+   false-positive on this very fix's own primary form (and on every other
+   skill's legitimate, correct use of `$CLAUDE_CONFIG_DIR` outside a
+   worktree-isolated session, which is the common case); Trigger B has no
+   syntactic shape to flag that doesn't also flag correct code.
 3. Tighten the stow-symlink footgun rule in repo-root `CLAUDE.md` to scope
    its "silently stages changes to the public repo" warning to git-tracked
    targets. anchors: root. [verified: `.gitignore:114` lists
@@ -117,30 +174,53 @@ later statement in one call.
    expansion in the plan's clarifying questions]
 
 **Other assumptions:**
-- A1. No other skill currently contains this bug shape. [verified: a
-  `general-purpose` subagent this session swept every fenced bash/sh block
-  under `claude/.claude/skills/`, `claude/.claude/CLAUDE.md`,
+- A1. No other skill currently contains Trigger A's bug shape.
+  [verified: a `general-purpose` subagent this session swept every fenced
+  bash/sh block under `claude/.claude/skills/`, `claude/.claude/CLAUDE.md`,
   `claude/.claude/rules/`, and `docs/` for the three-part shape (command
   substitution + file redirect + multi-statement/conditional); the only
   match beyond handoff's known recipe is a human-run maintenance recipe in
   `docs/permission-prompt-tracking.md:39-48` that an agent session never
-  executes as part of a skill flow — out of scope, noted below]
-- A2. The two-step split reliably avoids the refusal against future harness
-  versions. [unverified] — inferred from one session's empirical testing
-  against the current harness build; if the underlying guard heuristic
-  changes, this could regress silently since no test in this repo can
-  invoke the harness's own Bash-tool classifier. The regression test (row 2)
-  guards against the *shape* reappearing, not against the harness redefining
-  what shape it refuses.
+  executes as part of a skill flow — out of scope, noted below]. Separately,
+  no other skill's `SKILL.md` body references `$CLAUDE_CONFIG_DIR` or
+  `sessions/$PPID` at all (Trigger B's shape): [verified: `grep -rn
+  "sessions/\$PPID\|CLAUDE_CONFIG_DIR" claude/.claude/skills/*/SKILL.md`
+  matches only `handoff/SKILL.md:153` — `respond-pr`, the other skill that
+  needs this session's id, resolves it via `~/.claude/scripts/marker.sh
+  activate respond-pr` instead of inline Bash, so it never exposes either
+  token to the harness guard in the first place].
+- A2. The two-step split with `$CLAUDE_CONFIG_DIR`-aware-then-`$HOME`-fallback
+  forms reliably avoids the refusal against future harness versions.
+  [unverified] — inferred from one session's empirical testing against the
+  current harness build; if the underlying guard heuristic changes, this
+  could regress silently since no test in this repo can invoke the harness's
+  own Bash-tool classifier. The regression test (row 2) guards against
+  Trigger A's *shape* reappearing, not against the harness redefining
+  what shape it refuses, and does not (and, per row 2's note, should not)
+  guard against Trigger B at all.
+- A3. The residual gap (a `CLAUDE_CONFIG_DIR`-customized session running
+  inside a worktree-isolated repo still can't record the signal) is
+  acceptable to ship rather than close. [assumed — flagged to the user
+  alongside this revision, not yet explicitly confirmed] — this is a
+  narrower intersection than "worktree-isolated" alone (today's
+  fully-broken condition), degrades to the pre-existing silent-skip
+  behavior rather than a new failure mode, and the step is documented as
+  best-effort telemetry, not a gate. If the user wants the gap closed
+  instead, the dedicated-script alternative in the Fix section's rejected
+  list is the fallback design.
 
 ## Critical files
 
 - `claude/.claude/skills/handoff/SKILL.md` — replace the single compound
   recipe in "After writing: record the conversion signal" (current lines
-  145-160) with two single-statement fences: one to read the session id,
-  one to append a literal-inlined line. Drafted replacement (reviewed via
-  `skill-management:skill-review` against this exact text this session —
-  clean, no findings):
+  145-160) with two single-statement steps, each with a `$CLAUDE_CONFIG_DIR`-
+  aware primary form and a plain-`$HOME/.claude` fallback for when the
+  harness's worktree-isolation guard refuses the primary form. Drafted
+  replacement (**revised** after this plan's first `/plan-review` pass and
+  commit — see Approach's Trigger B finding; the version below, not the
+  originally-committed one, is what implementation should build; re-review
+  via `skill-management:skill-review` still pending as of this revision,
+  see Verification):
 
   ````
   ## After writing: record the conversion signal
@@ -148,9 +228,10 @@ later statement in one call.
   Once the handoff file is written and verified, append one line recording this session's id to
   `nudge-handoff-near-context-cap.sh`'s own log — pairing it with that hook's `nudged` lines lets a
   future report count how often a nudge fire is followed by a handoff in the same session, without
-  joining to transcript content. Run this as two separate, single-purpose Bash calls, not one
-  combined script: a worktree-isolated session's Bash tool refuses a command that both assigns a
-  `$(...)` result to a variable and acts on it in the same call.
+  joining to transcript content. Run each step below as its own single-purpose Bash call, not a
+  combined script: a worktree-isolated session's Bash tool refuses any command that assigns a
+  `$(...)` result to a variable and acts on it in the same call, and separately refuses any command
+  that references `$CLAUDE_CONFIG_DIR` at all — even a bare, read-only reference.
 
   Read the session id:
 
@@ -158,15 +239,28 @@ later statement in one call.
   head -n1 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$PPID" 2>/dev/null
   ```
 
-  If that printed a session id, append it as a literal (substitute the printed value for
-  `<session-id>` — do not capture it into a shell variable first):
+  If the Bash tool refuses that command citing worktree isolation, retry with the plain fallback
+  (only the default `$HOME/.claude` location is reachable from a worktree-isolated session — accept
+  the narrower gap for a `CLAUDE_CONFIG_DIR`-customized setup):
+
+  ```bash
+  head -n1 "$HOME/.claude/sessions/$PPID" 2>/dev/null
+  ```
+
+  If either form printed a session id, append it as a literal (substitute the printed value for
+  `<session-id>` — do not capture it into a shell variable first), using whichever config-dir form
+  the read step above actually succeeded with:
 
   ```bash
   printf 'handoff session=<session-id>\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.handoff-nudge.log"
   ```
+  or, if the fallback read was needed:
+  ```bash
+  printf 'handoff session=<session-id>\n' >> "$HOME/.claude/.handoff-nudge.log"
+  ```
 
   Best-effort: `sessions/$PPID` is the session-id lookup file `capture-session-id.sh` writes at
-  session start; if the first command printed nothing, skip the second — this is a conversion
+  session start; if neither read attempt printed anything, skip the append — this is a conversion
   metric, not a gate.
   ````
 
@@ -206,17 +300,24 @@ later statement in one call.
   fail if the old compound recipe is pasted back in.
 - `../../../.venv/bin/ruff check claude/.claude/` — lint, unaffected by this
   change but part of the repo's standard check.
-- Re-run both halves of the new recipe as literal, separate Bash tool calls
-  from within this worktree-isolated session to confirm neither is refused
-  — already done this session as part of root-cause verification (see the
-  reproduction table above); re-run once more against the final fenced-block
-  wording in the committed `SKILL.md` to catch any transcription drift
-  between the plan's prose and the actual file.
+- Re-run all four command forms (primary + fallback, for both the read and
+  the append step) as literal, separate Bash tool calls from within this
+  worktree-isolated session to confirm each behaves as the reproduction
+  table predicts — the primary (`$CLAUDE_CONFIG_DIR`-aware) forms already
+  confirmed refused, the fallback (`$HOME/.claude`-only) forms already
+  confirmed to succeed, both this session (see the reproduction table
+  above); re-run once more against the final fenced-block wording in the
+  committed `SKILL.md` to catch any transcription drift between the plan's
+  prose and the actual file.
 - `/skill-review` on the `handoff/SKILL.md` diff (this repo's
   `skill-and-agent-self-review` rule requires it before staging any skill
   edit) and `/code-review` before commit, which routes to `/skill-review`
   automatically for the SKILL.md change and to
-  `ai-instruction-and-memory-files` for the CLAUDE.md change.
+  `ai-instruction-and-memory-files` for the CLAUDE.md change. **Note:** the
+  `skill-review` pass already run against this section's drafted text
+  (recorded in Critical files) covered the pre-revision, `$(...)`-fallback-
+  free version — it must run again against the fallback-form text above
+  before implementation is treated as reviewed.
 
 ## Out of scope
 
