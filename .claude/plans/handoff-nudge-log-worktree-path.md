@@ -328,3 +328,22 @@ or it references `$CLAUDE_CONFIG_DIR` at all, however simply (Trigger B).
   which shares the refused shape but is documentation for a human operator
   running it manually, not a step any agent session executes as part of a
   skill flow.
+
+## Postscript: the recipe-restructuring fix in this plan was reverted
+
+Before finalizing implementation, re-testing the exact original recipe (and
+the simplest Trigger A/B cases) in the implementing session found the
+refusal no longer reproduces. The Claude Code changelog confirms why:
+2.1.224 (shipped after this plan's bisection, before the PR opened) fixed
+"worktree-isolated sessions and their subagents being able to run
+destructive git commands against the main checkout; isolation now applies
+to file edits and Bash in every session type" — the buggy, overly-broad
+check this plan's Trigger A/B bisection actually hit. The shipped diff
+reverts the recipe restructuring in `handoff/SKILL.md`,
+`ready-for-review/SKILL.md`, and `pr-description/SKILL.md` back to this
+plan's pre-fix originals, replacing it with a one-sentence historical note
+in each. The `CLAUDE.md` footgun-rule scoping (mechanism 3) is independent
+of the Bash-tool refusal and still shipped as designed. The bisection
+table and root-cause analysis above remain an accurate record of what was
+investigated and found at the time — only the fix that followed from it
+didn't hold up once the platform bug it targeted was found already fixed.

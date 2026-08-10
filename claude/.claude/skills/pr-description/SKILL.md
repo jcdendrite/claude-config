@@ -87,7 +87,7 @@ mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
 [ "$mode" = "dollars" ]
 ```
 
-Resolve the branch immediately before the call and pass it as a quoted, opaque literal — never string-interpolated unquoted (ref names can carry shell metacharacters):
+Resolve the branch immediately before the call and pass it as a quoted, opaque literal — never string-interpolated unquoted (ref names can carry shell metacharacters). (Claude Code ≤2.1.223 could refuse this exact shape via a buggy worktree-isolation Bash-tool check, fixed in 2.1.224 — if it recurs, resolve the branch via a temp file and `read` rather than a `$(...)`-assigned variable.)
 
 ```bash
 branch="$(git rev-parse --abbrev-ref HEAD)"
