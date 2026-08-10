@@ -290,6 +290,68 @@ def _wrapper_chain(tmp_path: Path, depth: int, final_argv: list[str]) -> list[st
     return argv
 
 
+def _fake_claude_chain(
+    tmp_path: Path,
+    final_argv: list[str],
+    entry_text: str | None = None,
+    below: bool = False,
+) -> tuple[list[str], Path]:
+    """Build an ancestor whose `ps -o comm=` basename is `claude`.
+
+    A symlink to bash reports the symlink's own path, so the process running
+    the script below is named `claude`; a shebang script named `claude` reports
+    the interpreter on macOS and the script on Linux, which is why the symlink
+    is what makes this portable. The script must not `exec` final_argv — the
+    claude-named process has to survive as its ancestor.
+
+    entry_text: None writes no sessions entry for the fake claude; "" writes an
+    empty one; the sentinel "seed" writes the real two-line entry using
+    capture-session-id.sh's own pinned `TZ=UTC LC_ALL=C ps -o lstart=` recipe
+    (the PID cannot be known before the process exists, so this cannot be
+    seeded from Python). below: run final_argv through one plain bash wrapper
+    so the entry, when written, sits below the claude ancestor rather than on
+    it.
+
+    Returns the argv to invoke and the path the fake claude records its own
+    `ps -o comm=` to, for the simulation precondition assertion.
+    """
+    assert entry_text in (None, "", "seed"), f"unknown entry_text: {entry_text!r}"
+    comm_file = tmp_path / "fake-claude-comm"
+    lines = ["#!/bin/bash", f'ps -o comm= -p $$ > {shlex.quote(str(comm_file))}']
+    if entry_text is not None:
+        sessions_dir = tmp_path / ".claude" / "sessions"
+        target = f'{shlex.quote(str(sessions_dir))}/$$'
+        if entry_text == "seed":
+            lines.append(f'mkdir -p {shlex.quote(str(sessions_dir))}')
+            lines.append(
+                f"printf '%s\\n%s\\n' {shlex.quote(SESSION_ID)} "
+                f'"$(TZ=UTC LC_ALL=C ps -o lstart= -p $$)" > {target}'
+            )
+        else:
+            lines.append(f'mkdir -p {shlex.quote(str(sessions_dir))}')
+            lines.append(f'printf "" > {target}')
+    inner = _wrapper_chain(tmp_path, 1, final_argv) if below else final_argv
+    lines.append(" ".join(shlex.quote(part) for part in inner))
+    script = tmp_path / "fake-claude-body.sh"
+    script.write_text("\n".join(lines) + "\n")
+    script.chmod(0o755)
+    fake_claude = tmp_path / "claude"
+    fake_claude.symlink_to(shutil.which("bash"))
+    return [str(fake_claude), str(script)], comm_file
+
+
+def _assert_simulated_claude(comm_file: Path) -> None:
+    """Fail loudly if the symlink trick did not produce a claude-named process.
+
+    Without this the hook assertions below would still pass on a platform where
+    `ps -o comm=` reports something else — testing nothing rather than failing.
+    """
+    assert comm_file.exists(), "the fake claude never ran"
+    comm = comm_file.read_text().strip()
+    basename = comm.lstrip("-").rpartition("/")[2]
+    assert basename == "claude", f"simulation did not report as claude: {comm!r}"
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -1025,7 +1087,12 @@ class TestCheckMode:
         fast refusal, not a hang — so both sides of it are pinned. N wrappers
         put the entry at hop N+1, so N = cap-1 is the last resolvable depth and
         N = cap is one past it. An off-by-one in the loop bound moves one of
-        these two without moving the other."""
+        these two without moving the other.
+
+        The one-past-cap arm is also the sole owner of `session-id-unresolved`:
+        every `bash` hop fails the walk's claude-name check, so exhausting the
+        cap is the only way to reach the post-loop refusal.
+        """
         self._seeded(tmp_path, total=ABOVE_LARGE)
         argv = _wrapper_chain(tmp_path, wrappers, [str(NUDGE_HOOK), "--check"])
         result = subprocess.run(
@@ -1035,16 +1102,96 @@ class TestCheckMode:
         assert payload["status"] == expected_status
         if expected_status == "cannot-resolve":
             assert payload["reason"] == "session-id-unresolved"
+            assert "estimate" not in payload
 
-    def test_refuses_when_session_id_unresolved(self, tmp_path):
-        """No sessions entry anywhere in the walk means no session to report."""
+    # -- stopping at the claude ancestor ------------------------------------
+
+    def test_claude_ancestor_with_its_own_entry_resolves(self, tmp_path):
+        """A claude ancestor carrying its own entry still resolves.
+
+        Not coverage of the stop rule: when the entry exists the walk's
+        `[ -f "$entry" ]` break fires before the name check runs. This pins
+        that the added check did not disturb the ordinary resolution path.
+        """
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_transcript(config_dir, [_record_totalling(LARGE_THRESHOLD - 1)])
+        argv, comm_file = _fake_claude_chain(
+            tmp_path, [str(NUDGE_HOOK), "--check"], entry_text="seed"
+        )
+        result = subprocess.run(
+            argv, capture_output=True, text=True, env=_check_env(tmp_path), check=False
+        )
+        _assert_simulated_claude(comm_file)
+        payload = _check_json(result)
+        assert payload["status"] == "ok"
+        assert payload["session_id"] == SESSION_ID
+        # No entry was seeded at the pytest PID, so the resolution came from
+        # the claude ancestor's own entry rather than from a grandparent.
+        assert not (config_dir / "sessions" / str(os.getpid())).exists()
+
+    def test_claude_ancestor_without_entry_refuses_instead_of_using_parents(
+        self, tmp_path
+    ):
+        """The regression test: a nested session must not inherit its parent's.
+
+        The fake claude has no entry; the pytest PID above it has a valid one.
+        Before the walk stopped at claude this returned "ok" carrying that
+        grandparent's session id and token estimate.
+        """
+        config_dir = self._seeded(tmp_path, total=ABOVE_LARGE)
+        argv, comm_file = _fake_claude_chain(tmp_path, [str(NUDGE_HOOK), "--check"])
+        result = subprocess.run(
+            argv, capture_output=True, text=True, env=_check_env(tmp_path), check=False
+        )
+        _assert_simulated_claude(comm_file)
+        payload = _check_json(result)
+        assert payload["status"] == "cannot-resolve"
+        assert payload["reason"] == "session-id-missing-at-claude"
+        assert "estimate" not in payload
+        assert payload.get("session_id") != SESSION_ID
+        assert (config_dir / "sessions" / str(os.getpid())).exists()
+
+    def test_entry_below_the_claude_ancestor_still_resolves(self, tmp_path):
+        """Stopping at claude is inclusive: entries under it still resolve.
+
+        This is the sole behavioural difference from refusing the moment the
+        walk reaches claude, and is otherwise only asserted in prose.
+        """
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_transcript(config_dir, [_record_totalling(LARGE_THRESHOLD - 1)])
+        argv, comm_file = _fake_claude_chain(
+            tmp_path, [str(NUDGE_HOOK), "--check"], entry_text="seed", below=True
+        )
+        result = subprocess.run(
+            argv, capture_output=True, text=True, env=_check_env(tmp_path), check=False
+        )
+        _assert_simulated_claude(comm_file)
+        payload = _check_json(result)
+        assert payload["status"] == "ok"
+        assert payload["session_id"] == SESSION_ID
+
+    def test_empty_entry_at_claude_ancestor_reports_unresolved(self, tmp_path):
+        """An entry that exists but is empty is not the missing-entry case.
+
+        The walk breaks on entry existence, not validity, so the name check
+        never runs and the post-loop guard owns the refusal. Pins that at the
+        one hop where the new code and the malformed-entry path can interact.
+        """
         config_dir = _default_config_dir(tmp_path)
         config_dir.mkdir(parents=True, exist_ok=True)
         _seed_transcript(config_dir, [_record_totalling(ABOVE_LARGE)])
-        payload = _check_json(_run_check(tmp_path))
+        argv, comm_file = _fake_claude_chain(
+            tmp_path, [str(NUDGE_HOOK), "--check"], entry_text=""
+        )
+        result = subprocess.run(
+            argv, capture_output=True, text=True, env=_check_env(tmp_path), check=False
+        )
+        _assert_simulated_claude(comm_file)
+        payload = _check_json(result)
         assert payload["status"] == "cannot-resolve"
         assert payload["reason"] == "session-id-unresolved"
-        assert "estimate" not in payload
 
     def test_refuses_on_stale_pid(self, tmp_path):
         """A stored start time that disagrees with the live process means the

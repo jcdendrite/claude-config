@@ -51,8 +51,8 @@
 #     silently miss firing if its real window sits below the cap, with no log
 #     signal at all.
 #   - --check's number is advisory: its PID-reuse guard compares whole-second
-#     start times and it does not verify the resolved process is claude — see
-#     docs/handoff-nudge.md.
+#     start times and it does not re-verify the process identity of the entry
+#     it resolves — see docs/handoff-nudge.md.
 
 # --check is detected before the stdin read below, which is unconditional:
 # invoked from a Bash tool call with no redirect, that `cat` reads inherited
@@ -190,6 +190,7 @@ run_check_mode() {
   # The harness gives hooks their session_id on stdin, but a manual run gets
   # nothing, so walk ancestors for the claude PID's sessions/<pid> entry.
   local pid=$PPID hop=0 session_id="" stored_start="" entry
+  local ps_line ancestor_ppid ancestor_comm
   while [ "$hop" -lt "$CHECK_MAX_ANCESTOR_HOPS" ]; do
     hop=$(( hop + 1 ))
     case "$pid" in ''|*[!0-9]*) break ;; esac
@@ -200,7 +201,20 @@ run_check_mode() {
       stored_start=$(sed -n '2p' "$entry" 2>/dev/null)
       break
     fi
-    pid=$(_lib_capped ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    # comm rides along with the parent PID so the walk stays at one ps per hop.
+    ps_line=$(_lib_capped ps -o ppid=,comm= -p "$pid" 2>/dev/null)
+    # Bare `read`, not the conventional `IFS= read`: field splitting is the
+    # point here, and IFS= would put the whole line in the first name.
+    read -r ancestor_ppid ancestor_comm <<<"$ps_line"
+    # A session missing its own entry must refuse rather than inherit its
+    # parent session's, so the walk stops here instead of climbing past claude.
+    # Each arm is a real rendering: GNU ps reports a bare name, BSD an absolute
+    # path, and either prefixes a hyphen when argv[0] does. No `-*/claude` arm —
+    # `*/claude` already matches that, and shellcheck rejects it as unreachable.
+    case "$ancestor_comm" in
+      claude|*/claude|-claude) check_refuse "session-id-missing-at-claude" ;;
+    esac
+    pid=$ancestor_ppid
   done
 
   [ -n "$session_id" ] || check_refuse "session-id-unresolved"
