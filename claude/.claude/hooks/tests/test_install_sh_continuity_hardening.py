@@ -207,12 +207,22 @@ def _extract_migration_block() -> str:
 def _run_migration_block(test_home: Path, repo_dir: Path) -> subprocess.CompletedProcess:
     """Run the extracted migration block with $HOME and $REPO_DIR pointed at
     isolated fixtures — REPO_DIR is normally computed earlier in install.sh
-    (outside the extracted block), so the test supplies it directly."""
+    (outside the extracted block), so the test supplies it directly.
+
+    _claude_session_is_active_now is normally defined in install.sh's
+    separate session-concurrency-check block (not extracted here) and calls
+    the real `pgrep` -- on a machine actually running Claude Code (this test
+    suite's own subprocess included), that would find a real session and
+    make every fixture below skip its migration. Stub it to "no session"
+    (return 1) so this block's own migration logic is what's under test, not
+    this machine's process list; test_install_sh_session_concurrency_check.py
+    covers the real function's own pgrep-driven behavior directly."""
     env = dict(os.environ)
     env["HOME"] = str(test_home)
     env["REPO_DIR"] = str(repo_dir)
+    stub = "_claude_session_is_active_now() { return 1; }\n"
     return subprocess.run(
-        [_BASH, "-c", "set -e\n" + _extract_migration_block()],
+        [_BASH, "-c", "set -e\n" + stub + _extract_migration_block()],
         capture_output=True,
         text=True,
         check=False,

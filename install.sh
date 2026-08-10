@@ -29,6 +29,40 @@ mkdir -p "$HOME/.local/bin"
 mkdir -p "$HOME/.claude"
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME with a stubbed `pgrep`
+# on PATH. Keep both markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: session-concurrency-check — start
+# Computed once, before any migration below touches ~/.claude: the CLI
+# writes projects/, history.jsonl, .claude.json, and this migration's own
+# plans/handoffs/briefs targets continuously while a session is live, so
+# every migration that mutates those paths gates on this one check rather
+# than each re-checking independently. Deliberately outside every OTHER
+# INSTALL_TEST_FIXTURE block below: the hook test suite extracts and runs
+# those in isolation, on this very machine, where a real `claude` process is
+# almost always running (this session's own) -- a pgrep check inside one of
+# those blocks would see that real process and wrongly skip the migration
+# under test. Left unset (empty, not exported) when a test runs one of those
+# other blocks standalone, which never sets this, so an unset value means
+# "proceed" and matches those tests' existing fixtures; real installs always
+# compute it fresh right here, before any block runs.
+CLAUDE_SESSION_MAY_BE_ACTIVE=""
+if ! command -v pgrep >/dev/null 2>&1; then
+  CLAUDE_SESSION_MAY_BE_ACTIVE="pgrep not found -- cannot verify no Claude Code session is running"
+elif pgrep -u "$(id -u)" -x claude >/dev/null 2>&1; then
+  CLAUDE_SESSION_MAY_BE_ACTIVE="a Claude Code session is currently running for this user"
+fi
+
+# True iff a `claude` process is running for this user right now. Used to
+# re-check immediately before each entry a migration loop below mutates, not
+# only once before the whole loop -- $CLAUDE_SESSION_MAY_BE_ACTIVE above
+# already gates entry into any such loop on pgrep being available at all, so
+# this doesn't re-handle the pgrep-missing case.
+_claude_session_is_active_now() {
+  pgrep -u "$(id -u)" -x claude >/dev/null 2>&1
+}
+# INSTALL_TEST_FIXTURE: session-concurrency-check — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: stow-adoption-migration — start
@@ -47,29 +81,154 @@ mkdir -p "$HOME/.claude"
 . "$REPO_DIR/claude/.claude/scripts/_stow_migration_lib.sh"
 
 STOW_MIGRATION_FAILURES=()
-for name in plans handoffs briefs; do
-  if ! stow_migrate_adopted_dir "$REPO_DIR" "$name"; then
-    STOW_MIGRATION_FAILURES+=("$name")
+if [ -n "$CLAUDE_SESSION_MAY_BE_ACTIVE" ]; then
+  echo "[install] warning: $CLAUDE_SESSION_MAY_BE_ACTIVE -- skipping the plans/handoffs/briefs migration below to avoid racing its writes to ~/.claude. Quit every Claude Code session and re-run install.sh." >&2
+else
+  for name in plans handoffs briefs; do
+    # Re-checked per entry, not only once above: narrows the window a
+    # session starting mid-loop has to race this specific entry's
+    # unlink/copy, down from the whole loop to roughly one entry's worth.
+    if _claude_session_is_active_now; then
+      echo "[install] warning: a Claude Code session started during this migration -- stopping before '$name' and the rest; re-run install.sh once no session is running." >&2
+      break
+    fi
+    if ! stow_migrate_adopted_dir "$REPO_DIR" "$name"; then
+      STOW_MIGRATION_FAILURES+=("$name")
+    fi
+    # Repairs a prior run's per-entry adoption regardless of the migration
+    # outcome above -- see stow_repair_nested_adoption's own comment.
+    stow_repair_nested_adoption "$REPO_DIR" "$name"
+  done
+  if [ ${#STOW_MIGRATION_FAILURES[@]} -gt 0 ]; then
+    echo "[install] warning: could not migrate the following off stow management: ${STOW_MIGRATION_FAILURES[*]} — re-run install.sh to retry; stow keeps managing them as symlinks in the meantime" >&2
   fi
-  # Repairs a prior run's per-entry adoption regardless of the migration
-  # outcome above -- see stow_repair_nested_adoption's own comment.
-  stow_repair_nested_adoption "$REPO_DIR" "$name"
-done
-if [ ${#STOW_MIGRATION_FAILURES[@]} -gt 0 ]; then
-  echo "[install] warning: could not migrate the following off stow management: ${STOW_MIGRATION_FAILURES[*]} — re-run install.sh to retry; stow keeps managing them as symlinks in the meantime" >&2
 fi
 # INSTALL_TEST_FIXTURE: stow-adoption-migration — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: stale-migration-copy-cleanup — start
+# Caller must check `[ -t 0 ]` before invoking this -- it has no TTY guard of
+# its own, the same contract this file's own later _prompt_sentinel_opt_in
+# uses. Confined to rm -rf-ing only a path already confirmed real and
+# non-symlink by _report_and_clean_stale_migration_copy below.
+_prompt_delete_stale_migration_copy() {
+  local stale_path="$1" target="$2"
+  local answer
+  read -r -p "  delete $stale_path now that $target holds the real copy? [y/N] " answer || answer=""
+  case "$answer" in
+    [Yy]*) rm -rf -- "$stale_path" && echo "  → deleted $stale_path" ;;
+    *) echo "  ✓ leaving $stale_path in place" ;;
+  esac
+}
+
+# stow_migrate_adopted_dir above backs up ~/.claude/<name>'s content before
+# restoring it as a real directory, but never removes the package-side
+# original it copied from -- that original still physically sits inside this
+# checkout at claude/.claude/<name>, gitignored but otherwise unprotected
+# from a `git add -f`, `git clean -x`, or an archived checkout (the same
+# exposure the un-adopt loop below closes for everything else). Report each
+# one and offer to delete it now that ~/.claude/<name> holds its own real,
+# *complete* copy -- stow_migration_is_complete, not bare existence, decides
+# that: a real but only partially-restored $target (an interrupted
+# stow_migrate_adopted_dir run) is indistinguishable from a complete one by
+# existence alone, and offering deletion in that state would delete the only
+# remaining copy of whatever the partial restore left out.
+_report_and_clean_stale_migration_copy() {
+  local repo_dir="$1" name="$2"
+  local stale_path="$repo_dir/claude/.claude/$name"
+  local target="$HOME/.claude/$name"
+  [ -e "$stale_path" ] && [ ! -L "$stale_path" ] || return 0
+  stow_migration_is_complete "$name" || return 0
+  echo "[install] $stale_path still holds a real copy left behind by migrating ~/.claude/$name off stow management." >&2
+  if [ -t 0 ]; then
+    _prompt_delete_stale_migration_copy "$stale_path" "$target"
+  else
+    echo "[install]   not an interactive terminal -- leaving it in place; re-run install.sh from a terminal to be offered deletion." >&2
+  fi
+}
+for name in plans handoffs briefs; do
+  _report_and_clean_stale_migration_copy "$REPO_DIR" "$name"
+done
+# INSTALL_TEST_FIXTURE: stale-migration-copy-cleanup — end
+
+# Every other name a prior `stow --adopt` pulled into claude/.claude/ (session
+# transcripts, .claude.json, plugin caches, review markers -- see this repo's
+# README "Claude multi-account setup") gets un-adopted the same way, by
+# rename rather than copy: there are too many such names, and too much
+# content behind them, to hardcode a list the way plans/handoffs/briefs are
+# above. Gates on the same $CLAUDE_SESSION_MAY_BE_ACTIVE check the
+# plans/handoffs/briefs migration above does, for the identical reason: a
+# concurrent write racing stow_unadopt_entry's own unlink-then-rename on the
+# same path could silently clobber either side.
+#
+# stow_untracked_package_entries's NUL-delimited output can't round-trip
+# through a plain `$(...)` capture (bash mangles embedded NULs), and its exit
+# status -- distinguishing "git failed" from "genuinely nothing untracked" --
+# can't be recovered through a `while read -r -d '' ... done < <(...)`
+# process substitution. A temp file gets both: the function's own exit
+# status via a normal `if cmd > file; then`, and NUL-safe iteration via
+# `read -r -d ''` against the file afterward.
+if [ -n "$CLAUDE_SESSION_MAY_BE_ACTIVE" ]; then
+  echo "[install] warning: $CLAUDE_SESSION_MAY_BE_ACTIVE -- skipping the un-adopt loop below to avoid racing its writes to ~/.claude. Quit every Claude Code session and re-run install.sh." >&2
+elif ! untracked_entries_file="$(mktemp)"; then
+  echo "[install] warning: could not create a temp file -- skipping the un-adopt loop below" >&2
+elif ! stow_untracked_package_entries "$REPO_DIR" > "$untracked_entries_file"; then
+  echo "[install] warning: could not determine untracked claude/.claude/ entries -- skipping the un-adopt loop below" >&2
+  rm -f -- "$untracked_entries_file"
+else
+  STOW_UNADOPT_FAILURES=()
+  while IFS= read -r -d '' name; do
+    [ -n "$name" ] || continue
+    # Re-checked per entry, not only once above: narrows the window a
+    # session starting mid-loop has to race this specific entry's
+    # unlink/rename, down from the whole loop to roughly one entry's worth.
+    if _claude_session_is_active_now; then
+      echo "[install] warning: a Claude Code session started during the un-adopt loop -- stopping before '$name' and the rest; re-run install.sh once no session is running." >&2
+      break
+    fi
+    if ! stow_unadopt_entry "$REPO_DIR" "$name"; then
+      STOW_UNADOPT_FAILURES+=("$name")
+    fi
+  done < "$untracked_entries_file"
+  rm -f -- "$untracked_entries_file"
+  if [ ${#STOW_UNADOPT_FAILURES[@]} -gt 0 ]; then
+    echo "[install] warning: could not un-adopt the following back to ~/.claude: ${STOW_UNADOPT_FAILURES[*]} — re-run install.sh to retry; stow keeps ignoring them as real package-side content in the meantime" >&2
+  fi
+fi
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them against a real `stow` binary. Keep both markers
 # on their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: stow-adopt-ignore — start
+# stow_untracked_package_entries and _stow_migration_lib_regex_escape below
+# come from _stow_migration_lib.sh, already sourced above; the hook test
+# suite's extraction of this block sources it again itself rather than
+# repeating that line here, which confuses shellcheck's forward-reference
+# analysis for the calls above.
 # --ignore values are anchored Perl regexes matched against each item's path
 # relative to the package root (claude/), not its basename — '^plans$' never
 # matches '.claude/plans' and silently fails to protect it once '.claude'
-# itself is unfolded (forced real by the mkdir -p above), so stow adopts
-# every file inside individually instead of leaving the directory alone.
-stow -v --adopt --ignore='^\.claude/plans$' --ignore='^\.claude/handoffs$' --ignore='^\.claude/briefs$' -t "$HOME" claude
+# itself is unfolded (forced real by the mkdir -p above). No --adopt here any
+# more: without it, stow refuses the whole invocation outright if a tracked
+# package path collides with a real, non-symlink file at the target, so these
+# --ignore args exist only to keep a not-yet-migrated (or declined-deletion)
+# entry from aborting stow for every other package entry too. A git failure
+# here degrades to an empty --ignore list rather than skipping the stow call
+# outright: at worst stow then refuses (a loud, safe failure), never a
+# silent one.
+stow_ignore_args=()
+if untracked_entries_file="$(mktemp)" && stow_untracked_package_entries "$REPO_DIR" > "$untracked_entries_file"; then
+  while IFS= read -r -d '' name; do
+    [ -n "$name" ] || continue
+    stow_ignore_args+=(--ignore="^\\.claude/$(_stow_migration_lib_regex_escape "$name")\$")
+  done < "$untracked_entries_file"
+else
+  echo "[install] warning: could not determine untracked claude/.claude/ entries -- proceeding with no --ignore args; stow will refuse outright if any are still real, unmigrated content" >&2
+fi
+rm -f -- "$untracked_entries_file"
+stow -v "${stow_ignore_args[@]}" -t "$HOME" claude
 # INSTALL_TEST_FIXTURE: stow-adopt-ignore — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE

@@ -168,6 +168,22 @@ stow_migrate_adopted_dir() {
   return 0
 }
 
+# stow_migration_is_complete NAME
+# True iff stow_migrate_adopted_dir's most recent backup for NAME carries its
+# completion sentinel -- the same signal that function itself trusts to tell
+# "fully restored" apart from "partially restored, retry pending." Public so
+# a caller deciding whether NAME's package-side original is safe to delete
+# (not just present) can reuse this rather than inferring completeness from
+# bare $HOME/.claude/NAME existence, which is exactly the ambiguity the
+# sentinel exists to resolve -- and which a real, non-symlink but only
+# partially-restored $target cannot be told apart from by existence alone.
+stow_migration_is_complete() {
+  local name="$1"
+  local backup_dir
+  backup_dir=$(_stow_migration_lib_newest_backup "$name") || return 1
+  [ -f "$backup_dir/$_STOW_MIGRATION_COMPLETE_SENTINEL" ]
+}
+
 # Print the canonicalized realpath of $1, or nothing if it cannot be
 # resolved. Delegates to Python rather than hand-rolling a symlink-chain
 # walker, since BSD readlink (macOS) has no -f flag; python3 is already a
@@ -175,6 +191,235 @@ stow_migrate_adopted_dir() {
 _stow_migration_lib_realpath() {
   python3 -c 'import os, sys
 print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null
+}
+
+# Print $1 with every Perl-regex metacharacter escaped, for embedding a
+# filesystem-derived name (not a fixed, reviewed literal) into a `stow
+# --ignore` pattern. Delegates to Python's re.escape rather than a
+# hand-rolled chain of parameter-expansion substitutions -- easy to under-
+# escape by hand (this file's own first attempt escaped only literal dots)
+# and python3 is already a required install.sh dependency.
+_stow_migration_lib_regex_escape() {
+  python3 -c 'import re, sys
+print(re.escape(sys.argv[1]))' "$1" 2>/dev/null
+}
+
+# Print $1 with the bash glob metacharacters * ? [ escaped, for embedding a
+# filesystem-derived name into a glob pattern (as
+# _stow_migration_lib_newest_unadopt_run does below). Hand-rolled rather than
+# delegating to Python like the regex escaper above: bash glob syntax has
+# only these three special characters (no extglob is enabled anywhere in
+# this file), so enumerating them directly is not the under-escaping risk a
+# full regex dialect is.
+_stow_migration_lib_glob_escape() {
+  local s="$1"
+  s="${s//\[/\\[}"
+  s="${s//\*/\\*}"
+  s="${s//\?/\\?}"
+  printf '%s' "$s"
+}
+
+# True iff $1 is a symlink whose canonicalized realpath equals $2's. Built on
+# _stow_migration_lib_realpath rather than _stow_migration_lib_symlink_resolves_to's
+# `cd -P`, which requires $1 to be a directory -- stow_unadopt_entry's targets
+# include plain files.
+_stow_migration_lib_realpath_resolves_to() {
+  local link="$1" expected="$2" resolved expected_resolved
+  [ -L "$link" ] || return 1
+  resolved="$(_stow_migration_lib_realpath "$link")"
+  [ -n "$resolved" ] || return 1
+  expected_resolved="$(_stow_migration_lib_realpath "$expected")"
+  [ -n "$expected_resolved" ] || return 1
+  [ "$resolved" = "$expected_resolved" ]
+}
+
+# Print the newest stow_unadopt_entry run-marker directory for $1 (a bare
+# name) under $_STOW_MIGRATION_BACKUP_ROOT, matching "$1.*-unadopt", or fail
+# (return 1, no stdout) when none exists. Mirrors
+# _stow_migration_lib_newest_backup's lexicographic-sort reasoning: every run
+# directory is suffixed with a fixed-width `date +%Y%m%d%H%M%S` timestamp.
+# Distinct name pattern (the "-unadopt" suffix) from stow_migrate_adopted_dir's
+# own backup directories, since the two functions share
+# $_STOW_MIGRATION_BACKUP_ROOT but not a directory's content shape --
+# deliberately unlike its sibling, this does not skip empty candidates: a run
+# directory here is legitimately empty for its entire resumable window (it
+# only ever holds the completion sentinel, and only once done), so porting
+# the sibling's empty-candidate filter would make an in-progress run
+# invisible to itself and break resumability.
+_stow_migration_lib_newest_unadopt_run() {
+  local name="$1"
+  [ -d "$_STOW_MIGRATION_BACKUP_ROOT" ] || return 1
+  local escaped_name
+  escaped_name="$(_stow_migration_lib_glob_escape "$name")"
+  local nullglob_was_set=0
+  if shopt -q nullglob; then nullglob_was_set=1; fi
+  shopt -s nullglob
+  local Candidates=("$_STOW_MIGRATION_BACKUP_ROOT/$escaped_name".*-unadopt)
+  if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
+  [ ${#Candidates[@]} -gt 0 ] || return 1
+  printf '%s\n' "${Candidates[@]}" | sort -r | head -n 1
+}
+
+# stow_unadopt_entry REPO_DIR NAME
+# Un-adopt $HOME/.claude/NAME -- currently a symlink resolving into
+# REPO_DIR/claude/.claude/NAME -- back to a plain real file or directory, by
+# renaming the package-side content over the unlinked target. A rename on
+# the same filesystem is a single atomic, instant operation, unlike
+# stow_migrate_adopted_dir's copy-then-restore -- this assumes $HOME and
+# REPO_DIR share a filesystem (true wherever this has been verified; not
+# checked here). On a cross-filesystem setup, `mv` transparently falls back
+# to a non-atomic copy-then-delete, and this function's resumability model
+# (built for "either the rename ran or it didn't") is not designed for a
+# partially-copied $target that fallback can leave behind. Works uniformly
+# on files and directories: no shape-specific step, unlike the copy-based
+# function this one does not replace.
+#
+# No-op (return 0, silent) when NAME is neither a live symlink into the
+# package nor a resumable interrupted rename of NAME specifically (a run
+# directory this function itself created, not yet marked complete) -- a
+# real, non-symlink package-side entry with no such run directory is left
+# untouched, since this function never adopted it in the first place and a
+# blind rename could clobber unrelated real content already at $target (see
+# stow_migrate_adopted_dir's own package-side leftovers, which this
+# function's callers must not treat as theirs to migrate). Also refuses
+# (return 1) rather than silently overwriting if $target has independently
+# reacquired real content since being unlinked -- see the check immediately
+# before the rename below.
+stow_unadopt_entry() {
+  local repo_dir="$1" name="$2"
+  local target="$HOME/.claude/$name"
+  local expected_source="$repo_dir/claude/.claude/$name"
+
+  # Refuse a pre-planted symlink at the fixed, predictable
+  # $_STOW_MIGRATION_BACKUP_ROOT path before any lookup beneath it -- mirrors
+  # stow_migrate_adopted_dir's own guard for this identical shared path, and
+  # runs first for the same reason that function's does:
+  # _stow_migration_lib_newest_unadopt_run below would otherwise glob-match
+  # through a hijacked symlink before this check is ever reached.
+  if [ -L "$_STOW_MIGRATION_BACKUP_ROOT" ]; then
+    echo "[install] $_STOW_MIGRATION_BACKUP_ROOT already exists as a symlink -- refusing to un-adopt ~/.claude/$name through it. Remove it or replace it with a real directory first." >&2
+    return 1
+  fi
+
+  local target_is_live_symlink=false
+  if _stow_migration_lib_realpath_resolves_to "$target" "$expected_source"; then
+    target_is_live_symlink=true
+  fi
+
+  local run_dir=""
+  if ! $target_is_live_symlink; then
+    run_dir=$(_stow_migration_lib_newest_unadopt_run "$name") || return 0
+    if [ -f "$run_dir/$_STOW_MIGRATION_COMPLETE_SENTINEL" ]; then
+      return 0
+    fi
+    # A run directory exists for $name, unmarked, and $target is not
+    # currently a live symlink. Two states produce this combination: (1)
+    # this function's own prior run unlinked $target but was interrupted
+    # before the rename -- resumable; or (2) the rename already succeeded
+    # and only the sentinel touch afterward failed -- already done, just
+    # unmarked. Tell them apart by whether $expected_source (the rename's
+    # source) still exists: only (1) leaves it in place.
+    if [ ! -e "$expected_source" ]; then
+      if [ -e "$target" ]; then
+        # (2): self-heal the missing sentinel rather than re-attempting a
+        # rename whose source is already gone -- that retry would fail
+        # forever with a misleading "package-side entry is untouched"
+        # message, even though the rename in fact already succeeded.
+        touch -- "$run_dir/$_STOW_MIGRATION_COMPLETE_SENTINEL" || echo "[install] warning: could not mark $run_dir complete" >&2
+        return 0
+      fi
+      echo "[install] ~/.claude/$name is unlinked and $expected_source is gone, but ~/.claude/$name is missing too -- neither the rename's source nor its destination has the content; investigate $run_dir manually" >&2
+      return 1
+    fi
+    # $expected_source is still real: the rename in (1) hasn't happened yet.
+    # Fall through and complete it.
+  fi
+
+  if $target_is_live_symlink; then
+    run_dir="$_STOW_MIGRATION_BACKUP_ROOT/$name.$(date +%Y%m%d%H%M%S)-unadopt"
+    if ! mkdir -p -- "$run_dir"; then
+      echo "[install] could not create $run_dir -- leaving ~/.claude/$name under stow management" >&2
+      return 1
+    fi
+    chmod 700 "$_STOW_MIGRATION_BACKUP_ROOT" || echo "[install] warning: could not chmod 700 $_STOW_MIGRATION_BACKUP_ROOT" >&2
+    if ! chmod 700 "$run_dir"; then
+      echo "[install] could not chmod 700 $run_dir -- refusing to un-adopt ~/.claude/$name through it" >&2
+      return 1
+    fi
+    if ! rm -f -- "$target"; then
+      echo "[install] could not unlink ~/.claude/$name -- re-run install.sh to retry; run marker is at $run_dir" >&2
+      return 1
+    fi
+  fi
+
+  # $target must still be exactly what an unlink (this function's own, just
+  # now, or an earlier interrupted run's) left behind: absent. Something else
+  # can independently repopulate it during the window between an interrupted
+  # run and its resume -- Claude Code itself recreates files like
+  # .claude.json on next launch when they're missing. Refuse rather than
+  # silently overwrite unrelated real content with the stale package-side
+  # copy.
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    echo "[install] ~/.claude/$name has real content again since being unlinked -- refusing to overwrite it with the package-side copy at $expected_source. Investigate manually; $expected_source is untouched, and its run marker is at $run_dir." >&2
+    return 1
+  fi
+
+  if ! mv -- "$expected_source" "$target"; then
+    echo "[install] could not rename $expected_source to ~/.claude/$name -- re-run install.sh to retry (the package-side entry is untouched)" >&2
+    return 1
+  fi
+  touch -- "$run_dir/$_STOW_MIGRATION_COMPLETE_SENTINEL" || echo "[install] warning: could not mark $run_dir complete" >&2
+
+  echo "[install] un-adopted ~/.claude/$name from stow management to a real entry"
+  return 0
+}
+
+# stow_untracked_package_entries REPO_DIR
+# Print, NUL-separated, the top-level names under REPO_DIR/claude/.claude
+# that are physically present but not tracked by git -- the entries a prior
+# `stow --adopt` pulled into the package that this repo's own manifest never
+# claimed. Ported from setup-claude-accounts.sh's git-ls-files/find set
+# difference (that script's package root is claude/.claude itself, one level
+# below install.sh's claude/, which is why its own --ignore patterns are
+# anchored differently -- see install.sh's stow-adopt-ignore comment).
+# Shared by install.sh's un-adopt loop and its --ignore-arg construction so
+# both see one derivation instead of two hardcoded name lists.
+stow_untracked_package_entries() {
+  local repo_dir="$1"
+  local package_dir="$repo_dir/claude/.claude"
+  [ -d "$package_dir" ] || return 0
+
+  # Fail loudly (no stdout) rather than silently treating a git failure as
+  # "nothing is tracked" -- both callers act on this function's output
+  # destructively (renaming entries out of the package, or building
+  # --ignore args), and an empty tracked set from a real git failure would
+  # make every real, tracked package entry (skills/, scripts/, ...) look
+  # untracked too.
+  local git_ls_files_output
+  if ! git_ls_files_output="$(git -C "$repo_dir" ls-files -- 'claude/.claude/*' 2>/dev/null)"; then
+    echo "[install] could not list git-tracked files under $package_dir (git ls-files failed in $repo_dir) -- refusing to guess which entries are untracked" >&2
+    return 1
+  fi
+
+  local tracked_names=()
+  local tracked_name
+  while IFS= read -r tracked_name; do
+    [ -n "$tracked_name" ] || continue
+    tracked_names+=("$tracked_name")
+  done < <(printf '%s\n' "$git_ls_files_output" | awk -F/ '{print $3}' | sort -u)
+
+  local entry name tracked is_tracked
+  while IFS= read -r -d '' entry; do
+    name="$(basename "$entry")"
+    is_tracked=false
+    for tracked in "${tracked_names[@]}"; do
+      if [ "$tracked" = "$name" ]; then
+        is_tracked=true
+        break
+      fi
+    done
+    $is_tracked || printf '%s\0' "$name"
+  done < <(find "$package_dir" -mindepth 1 -maxdepth 1 -print0)
 }
 
 # stow_repair_nested_adoption REPO_DIR NAME

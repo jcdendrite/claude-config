@@ -40,6 +40,16 @@ def _run_repair(repo_dir: Path, name: str, home: Path) -> subprocess.CompletedPr
     )
 
 
+def _run_unadopt(repo_dir: Path, name: str, home: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; stow_unadopt_entry "$1" "$2"',
+         "run_unadopt", str(repo_dir), name],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home)},
+    )
+
+
 class TestPartialStepCCopyResumability:
     """A step (c) cp -R that fails partway (one unreadable backup entry)
     leaves $target existing but only partially populated. Bare
@@ -422,3 +432,375 @@ class TestRepairNestedAdoption:
         assert (target / "task-a.md").is_symlink(), (
             "the original symlink must be left in place when mktemp fails"
         )
+
+
+class TestStowUnadoptEntry:
+    """Tests for stow_unadopt_entry, the rename-based un-adopt function that
+    replaces a copy for the ~36 names stow --adopt pulled in with no
+    migration of their own -- unlike stow_migrate_adopted_dir above, it
+    works on plain files as well as directories, and there is no
+    partially-populated-target state to disambiguate: a rename on the same
+    filesystem either has run or hasn't."""
+
+    def test_directory_shape_happy_path_renames_into_place(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        source = repo / "claude" / ".claude" / "projects"
+        source.mkdir(parents=True)
+        (source / "p.md").write_text("# projects fixture\n")
+        target = home / ".claude" / "projects"
+        target.symlink_to(source)
+
+        result = _run_unadopt(repo, "projects", home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert target.is_dir() and not target.is_symlink()
+        assert (target / "p.md").read_text() == "# projects fixture\n"
+        assert not source.exists(), (
+            "a rename must leave nothing behind at the package-side source"
+        )
+
+    def test_plain_file_shape_happy_path_renames_into_place(self, tmp_path: Path) -> None:
+        """No existing test anywhere in this module exercises a file-shaped
+        entry -- stow_migrate_adopted_dir's `cd -P` (via
+        _stow_migration_lib_symlink_resolves_to) cannot even resolve one,
+        which is exactly why this function exists."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        (repo / "claude" / ".claude").mkdir(parents=True)
+        source = repo / "claude" / ".claude" / ".claude.json"
+        source.write_text('{"fixture": true}')
+        target = home / ".claude" / ".claude.json"
+        target.symlink_to(source)
+
+        result = _run_unadopt(repo, ".claude.json", home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert target.is_file() and not target.is_symlink()
+        assert target.read_text() == '{"fixture": true}'
+        assert not source.exists()
+
+    def test_interrupted_between_unlink_and_rename_resumes_a_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """A prior run can fail after unlinking the symlink but before the
+        rename, leaving ~/.claude/<name> absent entirely with a run
+        directory it created but never marked complete. A later run must
+        detect this as resumable and complete the rename from the
+        package-side source -- not treat a missing target as nothing to
+        migrate."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        source = repo / "claude" / ".claude" / "projects"
+        source.mkdir(parents=True)
+        (source / "p.md").write_text("# projects fixture\n")
+        run_dir = home / ".claude-config-relocate-backup" / "projects.20260101000000-unadopt"
+        run_dir.mkdir(parents=True)
+
+        result = _run_unadopt(repo, "projects", home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        target = home / ".claude" / "projects"
+        assert target.is_dir() and not target.is_symlink()
+        assert (target / "p.md").read_text() == "# projects fixture\n"
+        assert not source.exists()
+        assert (run_dir / MIGRATION_COMPLETE_SENTINEL).exists()
+
+    def test_interrupted_between_unlink_and_rename_resumes_a_plain_file(
+        self, tmp_path: Path
+    ) -> None:
+        """Same resume window as the directory case above, for a
+        file-shaped entry -- the two shapes take the same code path in
+        stow_unadopt_entry, but nothing else in this module proves that for
+        the resume branch specifically."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        (repo / "claude" / ".claude").mkdir(parents=True)
+        source = repo / "claude" / ".claude" / ".claude.json"
+        source.write_text('{"fixture": true}')
+        run_dir = home / ".claude-config-relocate-backup" / ".claude.json.20260101000000-unadopt"
+        run_dir.mkdir(parents=True)
+
+        result = _run_unadopt(repo, ".claude.json", home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        target = home / ".claude" / ".claude.json"
+        assert target.is_file() and not target.is_symlink()
+        assert target.read_text() == '{"fixture": true}'
+        assert not source.exists()
+        assert (run_dir / MIGRATION_COMPLETE_SENTINEL).exists()
+
+    def test_second_call_after_completion_is_a_silent_noop(self, tmp_path: Path) -> None:
+        """Mirrors TestPartialStepCCopyResumability's empty-stdout/stderr
+        assertion for stow_migrate_adopted_dir's own idempotent no-op."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        source = repo / "claude" / ".claude" / "projects"
+        source.mkdir(parents=True)
+        (source / "p.md").write_text("# projects fixture\n")
+        target = home / ".claude" / "projects"
+        target.symlink_to(source)
+
+        first = _run_unadopt(repo, "projects", home)
+        assert first.returncode == 0, first.stderr
+
+        second = _run_unadopt(repo, "projects", home)
+
+        assert second.returncode == 0
+        assert second.stdout == "" and second.stderr == "", (
+            f"a no-op second run must be silent; stdout={second.stdout!r} "
+            f"stderr={second.stderr!r}"
+        )
+        assert (target / "p.md").read_text() == "# projects fixture\n"
+
+    def test_preplanted_backup_root_symlink_refuses_rather_than_writes_through_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Reproduces TestBackupRootSymlinkGuard's repro against
+        stow_unadopt_entry specifically -- the guard code is unchanged, but
+        that doesn't prove this function calls it before its own unlink
+        step."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        source = repo / "claude" / ".claude" / "projects"
+        source.mkdir(parents=True)
+        (source / "secret.md").write_text("secret\n")
+        target = home / ".claude" / "projects"
+        target.symlink_to(source)
+
+        elsewhere = tmp_path / "attacker-owned"
+        elsewhere.mkdir()
+        (home / ".claude-config-relocate-backup").symlink_to(elsewhere)
+
+        result = _run_unadopt(repo, "projects", home)
+
+        assert result.returncode == 1
+        assert "already exists as a symlink" in result.stderr
+        assert list(elsewhere.iterdir()) == [], (
+            "un-adopt must not write through a pre-planted symlink at the "
+            "shared backup root"
+        )
+        assert target.is_symlink(), "refusal must happen before the target is unlinked"
+        assert source.exists(), (
+            "refusal must happen before the package-side source is renamed away"
+        )
+
+    def test_backup_root_symlink_guard_runs_before_any_lookup_beneath_it(
+        self, tmp_path: Path
+    ) -> None:
+        """The guard must refuse before _stow_migration_lib_newest_unadopt_run
+        ever globs through a hijacked backup-root -- a planted run directory
+        with a fake completion sentinel there must not let the function
+        silently report "nothing to do" instead of refusing."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        (repo / "claude" / ".claude").mkdir(parents=True)
+        elsewhere = tmp_path / "attacker-owned"
+        fake_run_dir = elsewhere / "plans.99999999999999-unadopt"
+        fake_run_dir.mkdir(parents=True)
+        (fake_run_dir / MIGRATION_COMPLETE_SENTINEL).touch()
+        (home / ".claude-config-relocate-backup").symlink_to(elsewhere)
+
+        result = _run_unadopt(repo, "plans", home)
+
+        assert result.returncode == 1, (
+            "a hijacked backup-root symlink must be refused, not silently "
+            f"treated as a legitimate completed run; stdout={result.stdout!r} "
+            f"stderr={result.stderr!r}"
+        )
+        assert "already exists as a symlink" in result.stderr
+
+    def test_real_target_with_no_run_dir_is_left_untouched(self, tmp_path: Path) -> None:
+        """The documented no-op contract: a real, non-symlink $target this
+        function never adopted (no run directory of its own) must not be
+        touched, even though it happens to share a name with a package-side
+        entry -- see stow_migrate_adopted_dir's own package-side leftovers
+        for exactly this case in practice."""
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        (repo / "claude" / ".claude").mkdir(parents=True)
+        target = home / ".claude" / "plans"
+        target.mkdir(parents=True)
+        (target / "p.md").write_text("# already migrated by the other mechanism\n")
+
+        result = _run_unadopt(repo, "plans", home)
+
+        assert result.returncode == 0
+        assert result.stdout == "" and result.stderr == ""
+        assert (target / "p.md").read_text() == "# already migrated by the other mechanism\n"
+
+    def test_mv_failure_reports_and_leaves_target_unlinked(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        (repo / "claude" / ".claude").mkdir(parents=True)
+        # Deliberately never created: the symlink resolves (both sides'
+        # realpath match, since realpath doesn't require existence), so
+        # target_is_live_symlink is true and the function proceeds to
+        # unlink $target and then attempt the mv, which fails with ENOENT.
+        source = repo / "claude" / ".claude" / "projects"
+        target = home / ".claude" / "projects"
+        target.symlink_to(source)
+
+        result = _run_unadopt(repo, "projects", home)
+
+        assert result.returncode == 1
+        assert "could not rename" in result.stderr
+        assert not target.exists() and not target.is_symlink(), (
+            "target must be left unlinked, not a partial state"
+        )
+
+    def test_resumed_rename_refuses_to_clobber_content_that_reappeared_since_interruption(
+        self, tmp_path: Path
+    ) -> None:
+        """The clobber this function must not commit: something else (Claude
+        Code itself, on next launch, recreating a missing .claude.json)
+        repopulates $target with independent real content during the window
+        between an interrupted run and its resume. The resumed rename must
+        refuse, not silently overwrite live content with the stale
+        package-side copy."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        (repo / "claude" / ".claude").mkdir(parents=True)
+        source = repo / "claude" / ".claude" / ".claude.json"
+        source.write_text('{"stale": true}')
+        run_dir = home / ".claude-config-relocate-backup" / ".claude.json.20260101000000-unadopt"
+        run_dir.mkdir(parents=True)
+        target = home / ".claude" / ".claude.json"
+        target.write_text('{"live": true}')
+
+        result = _run_unadopt(repo, ".claude.json", home)
+
+        assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert "refusing to overwrite" in result.stderr
+        assert target.read_text() == '{"live": true}', (
+            "must not clobber independently-recreated content"
+        )
+        assert source.read_text() == '{"stale": true}', (
+            "package-side copy must remain untouched"
+        )
+        assert not (run_dir / MIGRATION_COMPLETE_SENTINEL).exists()
+
+    def test_resume_after_successful_rename_with_failed_sentinel_touch_self_heals(
+        self, tmp_path: Path
+    ) -> None:
+        """A prior run's mv can succeed while the subsequent completion-
+        sentinel touch fails (disk full, permissions). Without
+        disambiguation, a naive resume would retry the mv against a source
+        that's already gone, failing forever with a misleading "package-side
+        entry is untouched" message even though the un-adopt already fully
+        succeeded."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        (repo / "claude" / ".claude").mkdir(parents=True)
+        # expected_source already gone (the rename succeeded); target
+        # already real (the rename succeeded); run_dir exists but was never
+        # marked complete (the touch after mv failed).
+        target = home / ".claude" / "projects"
+        target.mkdir(parents=True)
+        (target / "p.md").write_text("# already migrated\n")
+        run_dir = home / ".claude-config-relocate-backup" / "projects.20260101000000-unadopt"
+        run_dir.mkdir(parents=True)
+
+        result = _run_unadopt(repo, "projects", home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert (run_dir / MIGRATION_COMPLETE_SENTINEL).exists(), (
+            "must self-heal the missing sentinel rather than retry a rename "
+            "whose source is already gone"
+        )
+        assert (target / "p.md").read_text() == "# already migrated\n"
+
+    def test_neither_target_nor_source_present_after_interrupted_run_fails_loudly(
+        self, tmp_path: Path
+    ) -> None:
+        """A state stow_unadopt_entry's own two-step unlink-then-rename
+        should never produce on its own, but must not silently succeed or
+        silently no-op if reached some other way -- both the rename's
+        source and its destination are missing."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        (repo / "claude" / ".claude").mkdir(parents=True)
+        run_dir = home / ".claude-config-relocate-backup" / "projects.20260101000000-unadopt"
+        run_dir.mkdir(parents=True)
+
+        result = _run_unadopt(repo, "projects", home)
+
+        assert result.returncode == 1
+        assert "investigate" in result.stderr.lower()
+        assert not (run_dir / MIGRATION_COMPLETE_SENTINEL).exists()
+
+
+def _run_untracked_entries(repo_dir: Path, home: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; stow_untracked_package_entries "$1"',
+         "run_untracked_entries", str(repo_dir)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home)},
+    )
+
+
+class TestStowUntrackedPackageEntries:
+    """Tests for stow_untracked_package_entries, the git-ls-files-vs-find set
+    difference shared by install.sh's un-adopt loop and its --ignore-arg
+    construction."""
+
+    def test_diffs_git_tracked_from_physically_present(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        package_dir = repo / "claude" / ".claude"
+        tracked = package_dir / "skills"
+        tracked.mkdir(parents=True)
+        (tracked / "example.md").write_text("# example\n")
+        untracked = package_dir / "projects"
+        untracked.mkdir(parents=True)
+        (untracked / "session.json").write_text("{}")
+
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "add", "claude/.claude/skills"], cwd=repo, check=True)
+
+        result = _run_untracked_entries(repo, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        names = [n for n in result.stdout.split("\x00") if n]
+        assert names == ["projects"], (
+            "must report the untracked entry and exclude the tracked one"
+        )
+
+    def test_git_failure_fails_loudly_instead_of_reporting_nothing_tracked(
+        self, tmp_path: Path
+    ) -> None:
+        """Confirmed production risk: a git failure silently treated as
+        "nothing tracked" would make the un-adopt loop rename real tracked
+        package content (skills/, scripts/, ...) out of the checkout, and
+        would make the --ignore construction ignore literally everything."""
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"  # deliberately not a git repository
+        (repo / "claude" / ".claude" / "skills").mkdir(parents=True)
+
+        result = _run_untracked_entries(repo, home)
+
+        assert result.returncode == 1
+        assert result.stdout == "", "must not report any entries on a git failure"
+        assert "could not list git-tracked files" in result.stderr
+
+    def test_absent_package_dir_is_a_silent_noop(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"  # claude/.claude doesn't exist at all
+        repo.mkdir(parents=True)
+
+        result = _run_untracked_entries(repo, home)
+
+        assert result.returncode == 0
+        assert result.stdout == "" and result.stderr == ""
