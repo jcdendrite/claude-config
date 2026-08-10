@@ -64,6 +64,7 @@ claude/.claude/.commit-stall-block-disabled
 claude/.claude/.handoff-nudge-disabled
 claude/.claude/.consume-durable-continuity-disabled
 claude/.claude/.session-title-disabled
+claude/.claude/pr-cost-disclosure
 
 # Review-gate marker state is per-machine session bookkeeping written by
 # ~/.claude/scripts/marker.sh, never content that ships with the package.

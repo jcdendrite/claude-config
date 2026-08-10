@@ -667,13 +667,13 @@ class TestPrDescriptionExternalStateCheck:
 class TestPrDescriptionCostSectionWiring:
     """Wiring tripwire, not a behavioral test: pr-description has no
     behavioral test suite in this repo (its tests/ doesn't exist), so the
-    `## Cost` section's actual runtime behavior -- sentinel absent -> no
-    section; present + matching -> sync regenerates; gh failure -> existing
-    block left untouched; detached HEAD -> section omitted -- is validated
-    by manual runtime observation only.
+    `## Cost` section's actual runtime behavior -- sentinel absent or mode
+    not "dollars" -> block deleted if present; mode "dollars" -> sync
+    regenerates; detached HEAD -> section omitted -- is validated by manual
+    runtime observation only.
 
-    This only proves the delimiters and the content-addressed gate check
-    are present in the source text, not that they execute correctly.
+    This only proves the delimiters and the account-scoped mode-grammar
+    gate are present in the source text, not that they execute correctly.
     """
 
     def _body(self):
@@ -684,8 +684,39 @@ class TestPrDescriptionCostSectionWiring:
         assert "<!-- pr-cost:start -->" in body
         assert "<!-- pr-cost:end -->" in body
 
-    def test_declares_content_addressed_gate_check(self):
-        assert "gh repo view --json nameWithOwner --jq .nameWithOwner" in self._body()
+    def test_declares_account_scoped_mode_gate(self):
+        body = self._body()
+        assert "pr-cost-disclosure" in body
+        assert "CLAUDE_CONFIG_DIR" in body
+
+    def test_declares_anchored_dollars_compare(self):
+        """Pins the exact comparison shape this skill body prescribes. Only
+        this side is checked: install.sh's own _report_account_sentinel gets
+        full behavioral coverage in test_install_sh_sentinel_inventory.py
+        (real subprocess execution), so a second literal-text match against
+        install.sh's source would be redundant with that behavioral suite
+        and brittle to a cosmetic install.sh syntax change that doesn't
+        alter behavior. This skill body has no such behavioral harness --
+        it's prose an agent follows, not code a test can execute -- so a
+        source tripwire is the only available check that the spec still
+        names the anchored form, one of the three fail-open shapes this
+        grammar exists to exclude."""
+        assert '[ "$mode" = "dollars" ]' in self._body()
+
+    def test_declares_config_dir_resolution_snippet(self):
+        """Pins the exact resolution shape this skill body prescribes,
+        mirroring test_declares_anchored_dollars_compare's treatment of the
+        mode-compare snippet: resolution decides which file even gets read,
+        so a prose-only description here (with no snippet to diverge from)
+        is the same drift risk the mode-compare snippet was pinned to
+        close. install.sh's own case statement gets behavioral coverage in
+        test_install_sh_sentinel_inventory.py (test_account_sentinel_resolves_against_claude_config_dir_when_set,
+        test_account_sentinel_does_not_union_with_home_claude,
+        test_account_sentinel_relative_claude_config_dir_reports_disabled),
+        so only the skill body's prescribed snippet is checked here."""
+        body = self._body()
+        assert '/*) config_dir="${CLAUDE_CONFIG_DIR%/}" ;;' in body
+        assert '*) config_dir="$HOME/.claude" ;;' in body
 
 
 class TestRespondPrPromiseRedemption:

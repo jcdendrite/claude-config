@@ -336,15 +336,13 @@ See [`docs/commit-stall-block.md`](docs/commit-stall-block.md) for the fire pred
 
 ### PR cost disclosure
 
-`pr-description` can embed a `## Cost` section — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary` — directly into a PR body. Off by default; gated by a **content-addressed** sentinel, not a content-free flag like `worktree-required` above.
+`pr-description` can embed a `## Cost` section — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary` — directly into a PR body. Off by default; gated by a mode read from a sentinel scoped to the Claude account, not to the repo.
 
 ```bash
-gh repo view --json nameWithOwner --jq .nameWithOwner > .claude/pr-cost-disclosure
-git add .claude/pr-cost-disclosure
-git commit -m "Enable PR cost disclosure"
+echo dollars > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-cost-disclosure"
 ```
 
-Content-addressing matters because `claude/.claude/skills/` is this repo's own stow package, and copying `.claude/` wholesale into a new repo — the documented way people adopt config from a repo like this one — is exactly how an inert presence-only flag would travel silently into a repo that never opted in. `.claude/pr-cost-disclosure`'s content must equal the repo's own `owner/repo` string, checked live against `gh repo view` at gate time — a copied file still names the *origin* repo and fails the match anywhere else. It does not, and is not meant to, distinguish between two different clones of this same repo's own origin: a non-fork contributor working directly against this repo's origin has a sentinel that correctly matches, because they are, in fact, working in the repo it names.
+Cost is an organizational fact, not a per-repo one — each Claude account is its own billing entity, and this machine may run several isolated accounts under separate `CLAUDE_CONFIG_DIR` values. The sentinel resolves to exactly one path (`$CLAUDE_CONFIG_DIR` when set and absolute, else `$HOME/.claude` — never both) and its content selects a mode rather than proving a repo identity: exactly `dollars` enables the section, and absent, empty, or any other value disables it. That resolve-one-path rule is what keeps one account's opt-in from activating disclosure under another.
 
 The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
 
