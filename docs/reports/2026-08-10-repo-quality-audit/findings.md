@@ -1,12 +1,18 @@
 # Repo quality audit — findings
 
 **Date:** 2026-08-10
-**Audit baseline:** `914ccc9` (merge-base with `main`). Every `file:line` below
+**Audit baseline:** `eb5eae2` (merge-base with `main`). Every `file:line` below
 refers to that commit. Line anchors drift as the backlog lands — check the SHA
 before treating a citation as stale.
-**Repo state at baseline:** 453 tracked files, 516 commits since 2026-03-11,
+**Repo state at baseline:** 456 tracked files, 519 commits since 2026-03-11,
 39 hooks, 27 global skills + 7 plugin skills, 11 agents, 15 scripts, 5 plugins,
-135 committed plan files.
+138 committed plan files.
+
+The sweep itself ran against `914ccc9`; three commits landed on `main` during the
+audit and the branch was rebased onto them. Every citation in a file those commits
+touched was re-verified at `eb5eae2` — `nudge-handoff-near-context-cap.sh` had
+grown and its line anchors moved, which is exactly the drift this pin exists to
+make visible.
 
 ## Why this audit ran
 
@@ -89,11 +95,11 @@ call sites into it — otherwise the fix inherits a narrower probe than the code
 replaces.
 
 **Scope boundary.** The 13 sites above are the `hook-class: gate` population,
-where the consequence is a gate not firing. Three further unguarded sites sit in
-`informational` hooks — `nudge-error-mode-analysis.sh:152`,
-`nudge-handoff-near-context-cap.sh:104,199` — where the consequence is a lost
-advisory rather than a bypassed control. Worth fixing in the same pass; not part
-of the HIGH severity claim.
+where the consequence is a gate not firing. Six further unguarded sites sit in
+`informational` hooks — `nudge-error-mode-analysis.sh:152` and
+`nudge-handoff-near-context-cap.sh:146,178,253,275,398` — where the consequence is
+a lost advisory rather than a bypassed control. Worth fixing in the same pass; not
+part of the HIGH severity claim.
 
 Two sites match the selector "gate hook with an unguarded `timeout`" without
 sharing the bug, and are excluded deliberately:
@@ -247,7 +253,7 @@ into.
   Output-format sections File-based-then-Inline; the other eight reviewer agents
   use Inline-then-File-based. The 31-line File-based block is otherwise
   byte-identical across all of them.
-- **Instruction-surface duplication.** `CLAUDE.md:143-148` restates
+- **Instruction-surface duplication.** `CLAUDE.md:147-151` restates
   `claude/.claude/CLAUDE.md:93`'s secrets rule rather than deferring to it (no
   drift yet, but the single-source rule applies). `claude/.claude/CLAUDE.md:75`
   and `:78` state the same model-resolution fact twice.
@@ -260,7 +266,7 @@ into.
 
 - **`.claude/plans/` accumulation is deliberate.** `.gitignore:9-11` states the
   directory is intentionally tracked because plan files ship with their PR. A
-  "supersede, never delete" policy exists — but only inside one of the 135 files
+  "supersede, never delete" policy exists — but only inside one of the 138 files
   it governs, which is why it reads as undiscoverable rather than decided.
   Promoting that line to `docs/design-decisions.md` or `CONTRIBUTING.md` is the
   fix; pruning is not.
@@ -352,5 +358,5 @@ describing present-tense behavior.
 - Whether the model actually respects the DO-NOT-TRIGGER handoffs between
   similarly-scoped skill pairs at dispatch time was not measured; only the
   description text was checked for conflicts.
-- The 135 plan files were not each read in full; the "sequential, not duplicate"
+- The 138 plan files were not each read in full; the "sequential, not duplicate"
   reading of filename clusters rests on sampled cross-references.

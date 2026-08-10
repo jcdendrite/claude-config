@@ -6,7 +6,7 @@
 document, plus a phased backlog that sequences the cleanup work — without
 refactoring anything in this PR.**
 
-The repo has grown to 453 tracked files over 516 commits in five months, almost
+The repo has grown to 456 tracked files over 519 commits in five months, almost
 entirely through PRs that fixed a bug or added a feature. That growth pattern
 produces a characteristic debt shape: each PR was locally correct and reviewed,
 but nobody has since asked whether the *population* of hooks, skills, agents,
@@ -146,7 +146,7 @@ The engineer's answer floated pruning merged plan files, possibly via
 `cleanup-merged-branches.sh`. The repo already documents the opposite policy:
 `.gitignore:9-11` states `.claude/plans/` is *intentionally tracked* because
 plan files ship with their PR, and a "supersede, never delete" rule is written
-down — but only inside one of the 135 plan files it governs, which is why it
+down — but only inside one of the 138 plan files it governs, which is why it
 reads as undiscoverable rather than decided.
 
 The plan therefore does **not** propose pruning. It proposes promoting the
@@ -250,10 +250,11 @@ call sites, three new parity test categories), and a GitHub PR merges atomically
   machine `_lib_capped` runs uncapped where that sibling caps correctly. Add the
   `gtimeout` fallback to `_lib_capped` before routing more call sites into it, and
   fold `check-branch-divergence.sh`'s local wrapper into it afterwards.
-- **Also in 2(a), at lower severity:** three unguarded sites in `informational`
-  hooks — `nudge-error-mode-analysis.sh:152`,
-  `nudge-handoff-near-context-cap.sh:104,199`. A lost advisory, not a bypassed
-  control, but the same one-line fix.
+- **Also in 2(a), at lower severity:** six unguarded sites in `informational`
+  hooks — `nudge-error-mode-analysis.sh:152` and
+  `nudge-handoff-near-context-cap.sh:146,178,253,275,398`. A lost advisory, not a
+  bypassed control, but the same one-line fix. (These anchors moved when #612
+  landed mid-audit; re-verified after the rebase.)
 - **2(b), the helper extraction.** Add `_lib_repo_root` to `_lib.sh` with the guard
   built in, and land it across the 12 `show-toplevel` call sites. **Reuse:**
   `nudge-worktree-anchor.sh:103` is the existing template. Sequenced after 2(a).
@@ -315,7 +316,7 @@ call sites, three new parity test categories), and a GitHub PR merges atomically
   `plugins/lovable-cloud/hooks/validate-migration-filename.sh`, `consume-migration-token.sh`.
 - `claude/.claude/agents/staff-backend-engineer.md:80,112` — Output-format sections
   in reverse order vs. the other 8 reviewer agents.
-- `CLAUDE.md:143-148` — restates `claude/.claude/CLAUDE.md:93`'s secrets rule
+- `CLAUDE.md:147-151` — restates `claude/.claude/CLAUDE.md:93`'s secrets rule
   instead of deferring to it (no drift yet; the SSOT rule still applies).
 - `claude/.claude/CLAUDE.md:75,78` — the same "resolution is measured unreliable"
   fact stated twice in Model Routing.
