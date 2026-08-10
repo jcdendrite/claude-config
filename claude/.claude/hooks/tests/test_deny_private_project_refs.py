@@ -130,6 +130,7 @@ class TestDenyPrivateProjectRefs:
             "Fix JDK-12345",
             "Upstream LLVM-123",
             "GCC-456 workaround",
+            "Compare against GPT-5 in the benchmark table",
             "Require SHA-256",
             "Deprecate MD-5",
             "Support HTTP-2",
@@ -139,7 +140,7 @@ class TestDenyPrivateProjectRefs:
         ],
         ids=[
             "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf",
-            "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc",
+            "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc", "gpt",
             "sha", "md", "http", "tls",
             "proj_placeholder", "ticket_placeholder",
         ],
@@ -147,6 +148,20 @@ class TestDenyPrivateProjectRefs:
     def test_allowlisted_references_allowed(self, claude_config_repo, message):
         assert (
             run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(f"git commit -m '{message}'"), cwd=claude_config_repo)
+            == "allow"
+        )
+
+    def test_gpt_allowlist_accepts_unbounded_digits_by_design(self, claude_config_repo):
+        """GPT is allowlisted by prefix, not by an enumerated set of real
+        model names — an implausible generation number is still allowed,
+        matching the same unbounded-digit tradeoff GH/BUG/JDK already
+        accept. Documents the tradeoff rather than leaving it unasserted."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Compare against GPT-99999999 in the benchmark table'"),
+                cwd=claude_config_repo,
+            )
             == "allow"
         )
 

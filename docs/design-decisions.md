@@ -233,3 +233,7 @@ That `chmod 600` is a one-time repair, not a control that needs reapplying. Curr
 The `handoff`/`brief` skill bodies therefore only `mkdir -p` their target directory — they chmod nothing, and do not pre-create the file they are about to write with the `Write` tool. Both skills stay correct standing alone (`mkdir -p` is idempotent and harmless without the install-time hardening), but the owner-only guarantee for their output depends on `install.sh` having run — a stow user who skips it inherits the umask-derived, group/world-traversable default instead.
 
 The accepted cost is that protection is now single-layer. Files under `~/.claude` keep their umask-derived modes, so anything that later loosens the directory — a manual `chmod -R` across `$HOME`, a backup-restore that recreates the tree, a filesystem interop layer that drops POSIX bits — exposes every file inside at once, with no per-file mode as a backstop. The per-directory recipe it replaces provided that backstop for exactly two of the roughly thirty directories under `~/.claude`, which is what made it the worse trade.
+
+## 20. Hashline edit format declined (2026-08-08)
+
+Evaluated replacing Claude Code's built-in `Edit`/`Write` with Stencil's "hashline" content-hashed-line edit format and declined it — the empirical record, the measurement subcommand, and the redaction-defect disposition are in the [hashline edit format case study](case-studies/hashline-edit-format.md).
