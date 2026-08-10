@@ -90,7 +90,7 @@ artifact currently records where.
 | 5 | Test coverage is near-complete, so cleanup can lean on the suite as a regression net. | `[verified: every hook has a dedicated test file; every script except register-marketplace.sh does; 4,868 tests collect with 0 errors]` |
 | 6 | `shellcheck` and `ruff` are clean repo-wide, so remaining defects are structural rather than mechanical. | `[verified: run live by three independent agents; ruff selects only E,F,B,I,UP,SIM per pyproject.toml:6 — no ANN/C901/S, so "clean" is narrower than it sounds]` |
 | 7 | The unguarded `timeout` call sites are latent on the owner's machine but live for stow consumers on stock macOS. | `[verified: command -v timeout → /usr/local/bin/timeout here, a Homebrew coreutils symlink, not a system binary]` |
-| 8 | Those two hooks fail **open** on missing `timeout`, not closed — a silent gate bypass, not a noisy failure. | `[verified: guard-settings-session-keys.sh:66-68 and require-worktree-for-git-writes.sh:115-118 both exit 0 on empty REPO_ROOT]` |
+| 8 | Four gate hooks fail **open** on missing `timeout`, not closed — a silent gate bypass, not a noisy failure. | `[verified: guard-settings-session-keys.sh:66-68 and require-worktree-for-git-writes.sh:115-118 exit 0 on empty REPO_ROOT; check-claude-md-length.sh:72-73 and check-skill-length.sh:73-74 read 0 lines from awk and never trip the cap]` |
 | 9 | CI cannot catch the missing-`timeout` defect class at all. | `[verified: .github/workflows/tests.yml:25 runs ubuntu-24.04 only, single job, no matrix]` |
 | 10 | A **new file** under `claude/.claude/hooks/` is not materialized for existing stow users by `git pull` alone — only `./install.sh` creates the symlink. | `[verified: install.sh:72 stows entry-by-entry; README.md:102 documents this exact counter-case for claude/.local/bin/ wrappers]` |
 
@@ -156,19 +156,31 @@ documented policy, that is a deliberate reversal to make explicitly.
 
 ### The one place "zero behavior change" needs an explicit carve-out
 
-`guard-settings-session-keys.sh` defines a local `git_capped()` (:29, called at
-:66, :74, :80, :81, :84) and `require-worktree-for-git-writes.sh` makes four bare
-`timeout 5` calls (:115, :135, :177, :283) — none with the `command -v timeout`
-guard `_lib_capped` provides.
+Thirteen call sites across **four** `hook-class: gate` hooks call `timeout`
+without the `command -v timeout` guard `_lib_capped` provides:
+`guard-settings-session-keys.sh` via a local `git_capped()` (:29, called at :66,
+:74, :80, :81, :84); `require-worktree-for-git-writes.sh` (:115, :135, :177, :283);
+`check-claude-md-length.sh` (:72, :73); and `check-skill-length.sh` (:73, :74).
+An earlier draft named only the first two — the two length hooks are structural
+siblings with the identical bug shape, surfaced by auditing the population rather
+than the symptom.
 
-This is worse than a robustness gap. On a box without `timeout`, the call exits
-127, the command substitution captures nothing, `REPO_ROOT` is empty, and both
-hooks `exit 0` — **the gate silently does not fire**. For
+This is worse than a robustness gap. On a box without `timeout` the call exits 127
+and each hook reaches a path that declines to act: the first two capture an empty
+`REPO_ROOT` and `exit 0`, while the two length hooks pipe no stdout into
+`awk 'END{print NR}'`, read `0`, and never trip the growth check — so a `CLAUDE.md`
+or `SKILL.md` can exceed its cap unenforced. For
 `require-worktree-for-git-writes.sh` this directly contradicts its own stated
-design intent at :38-40 ("a gate must fail closed on its own tooling"), and
-because the check runs first it neutralizes the fail-closed logic further down at
-:177 and :283. No warning is emitted, so the bypass is indistinguishable from a
-legitimate not-in-a-repo case.
+design intent at :38-40 ("a gate must fail closed on its own tooling"), and because
+the check runs first it neutralizes the fail-closed logic further down at :177 and
+:283. No warning is emitted in any of the four.
+
+Two sites match the selector without sharing the bug and stay excluded:
+`require-ready-for-review.sh:187-191` (comment documents deliberate
+fail-open-on-network-failure so a hanging `gh` cannot stall the tool call), and
+`plugins/skill-management/hooks/require-skill-review.sh:202` (inside a block the
+file marks "Non-blocking — exits 0 regardless; hard enforcement is in pytest/CI"
+at `:180`, with `|| true` on the call).
 
 Fixing it changes behavior only on a platform where the gate is already bypassed,
 and only from "silently off" to "on." This is the single deviation from the
@@ -176,17 +188,23 @@ zero-behavior-change constraint, called out here for the engineer to sanction.
 
 ### Release sequencing (binding on the report PR)
 
-**Phase 2 must merge before `findings.md` does.** This repo is public, and the
-paragraph above describes a currently-live gate bypass in enough detail to save a
-reader the trouble of deriving it from the source. The threat model is narrow —
-these are local developer-workflow guardrails on the engineer's own machine, not a
-network-reachable service, and the vulnerable shell is already public and grep-able
-in this same repo — so this is a disclosure-hygiene constraint, not an embargo.
+**Phase 2(a) must merge before `findings.md` does** — and 2(a) means all 13 sites,
+not a subset. Merging only the `_lib_repo_root` extraction would touch two of them
+while the published report claims the gap is closed; whoever lands 2(a) should
+diff its changed lines against the 13 before releasing the report. Keeping 2(a) in
+its own PR is what makes that diff checkable in one place.
 
-The cost is one ordering decision rather than a content rewrite: land the
-`_lib_repo_root` fix, then publish the report describing the gap in the past tense
-with the fix commit SHA. If Phase 2 cannot land first, the report must reference
-the tracked fix instead of describing the live bypass in the present tense.
+This repo is public, and the section above describes a currently-live gate bypass
+in enough detail to save a reader the trouble of deriving it from the source. The
+threat model is narrow — these are local developer-workflow guardrails on the
+engineer's own machine, not a network-reachable service, and the vulnerable shell
+is already public and grep-able in this same repo — so this is a disclosure-hygiene
+constraint, not an embargo.
+
+The cost is one ordering decision rather than a content rewrite: land 2(a), then
+publish the report describing the gap in the past tense with the fix commit SHA.
+If 2(a) cannot land first, the report must reference the tracked fix instead of
+describing the live bypass in the present tense.
 
 This constraint binds `findings.md`, not this plan file — a plan is a working
 document, and its "Out of scope" section deliberately records the state the work
@@ -199,7 +217,11 @@ starts from.
 - `docs/reports/2026-08-10-repo-quality-audit/findings.md` — the audit, pinned to a commit SHA
 - `docs/reports/README.md` — index covering this report and the 2026-05 one
 
-**Referenced by the report (not modified in this PR).** Grouped by backlog phase:
+**Referenced by the report (not modified in this PR).** Grouped by phase *label*
+below, which is not the execution order — the backlog table in `findings.md` is
+the single authority on sequencing, and it runs 1a → 2a → 2b → 6 → 3 → 5 → 4a →
+4b. Phase 6 in particular sits fourth there, not last: a CI gap that lets a live
+gate's tests go unrun is worth closing before any refactor leans on that CI.
 
 *Phase 1a — independent, ships immediately:*
 - `claude/.claude/scripts/register-marketplace.sh:29` — replace inline
@@ -208,18 +230,45 @@ starts from.
   `marker.sh:8,178` already does exactly this. Add `test_register_marketplace.py`
   with the fix — this is the only script in the repo with no test file.
 
-*Phase 2 — `_lib_repo_root` extraction, absorbing the `timeout` fix as its first commit:*
-- `claude/.claude/hooks/_lib.sh` — add `_lib_repo_root`, with the `_lib_capped`
-  guard built in. **Reuse:** `nudge-worktree-anchor.sh:103` is the existing template.
-- Land it across the 12 `show-toplevel` call sites, which subsumes
-  `guard-settings-session-keys.sh`'s `git_capped()` and
-  `require-worktree-for-git-writes.sh`'s bare `timeout` calls in one pass rather
-  than touching those lines twice across two PRs.
+*Phase 2 — two separate PRs, 2(a) first.* They are split rather than combined
+because the publication constraint binds only on 2(a): sharing a PR would make the
+small security fix hostage to 2(b)'s larger review (a new `_lib.sh` function, 12
+call sites, three new parity test categories), and a GitHub PR merges atomically.
+2(a) also stays a self-contained, bisectable diff that can be checked against the
+13 sites without accounting for 2(b)'s edits.
+- **2(a), the security fix.** Route all 13 unguarded `timeout` sites through
+  `_lib_capped`: `guard-settings-session-keys.sh:66,74,80,81,84` (deleting the local
+  `git_capped()` at `:29`), `require-worktree-for-git-writes.sh:115,135,177,283`,
+  `check-claude-md-length.sh:72,73`, and `check-skill-length.sh:73,74`. Only one of
+  those is repo-root resolution — the rest are `git diff --cached`, `git show`, and a
+  `python3` parser call — so 2(b) does **not** subsume this, and an earlier draft
+  wrongly claimed it did. Leave `require-ready-for-review.sh:191` alone: its comment
+  documents deliberate fail-open-on-network-failure.
+- **2(a) must also strengthen `_lib_capped` itself.** `_lib.sh:30` probes only for
+  `timeout`, while `check-branch-divergence.sh:61-71` probes `timeout` then
+  `gtimeout`. Homebrew installs GNU coreutils `g`-prefixed by default, so on such a
+  machine `_lib_capped` runs uncapped where that sibling caps correctly. Add the
+  `gtimeout` fallback to `_lib_capped` before routing more call sites into it, and
+  fold `check-branch-divergence.sh`'s local wrapper into it afterwards.
+- **Also in 2(a), at lower severity:** three unguarded sites in `informational`
+  hooks — `nudge-error-mode-analysis.sh:152`,
+  `nudge-handoff-near-context-cap.sh:104,199`. A lost advisory, not a bypassed
+  control, but the same one-line fix.
+- **2(b), the helper extraction.** Add `_lib_repo_root` to `_lib.sh` with the guard
+  built in, and land it across the 12 `show-toplevel` call sites. **Reuse:**
+  `nudge-worktree-anchor.sh:103` is the existing template. Sequenced after 2(a).
+  It re-touches exactly two lines 2(a) already fixed —
+  `guard-settings-session-keys.sh:66` and `require-worktree-for-git-writes.sh:115`,
+  the only repo-root calls in their respective sets. That re-touch is expected;
+  note it in the PR body so a reviewer diffing 2(b) alone does not read it as scope
+  creep. 2(b) also picks up `check-claude-md-length.sh:58` and
+  `check-skill-length.sh:57`, which today have no `timeout` wrapper at all and
+  gain one for free from the helper.
 - **Required new tests:** a unit test for `_lib_repo_root` in `test_lib.py`
-  following the `_lib_config_dir` pattern (:976-1030), covering in-repo, in-linked-worktree,
-  and outside-any-repo; plus a missing-`timeout` regression test for both affected
-  hooks, following the python3-absent precedent at
-  `test_require_worktree_for_git_writes.py:665-692`. Neither hook has one today.
+  following the `_lib_config_dir` pattern (:976-1030), covering in-repo,
+  in-linked-worktree, and outside-any-repo; plus a missing-`timeout` regression test
+  for each of the four affected hooks, following the python3-absent precedent at
+  `test_require_worktree_for_git_writes.py:665-692`. None of the four has one today.
 
 *Phase 3 — `_lib.sh` cohesion, in-file only:*
 - `claude/.claude/hooks/_lib.sh` (1,232 lines) — its header comment describes one
@@ -287,7 +336,13 @@ starts from.
 - `.github/workflows/tests.yml:38` — `actions/checkout` without
   `persist-credentials: false`, which this repo's own
   `claude/.claude/rules/github-actions-workflows.md:31` requires. No later step
-  performs authenticated git.
+  performs authenticated git (verified: no `git push`, `git commit`, or
+  `GITHUB_TOKEN` use anywhere in the workflow).
+- **Land this as a draft PR and let CI run once before merging.** `pytest plugins/`
+  passes 33/33 and `ruff check plugins/` is clean locally, but the local venv is
+  Python 3.14 while CI's `setup-python` pins 3.12 — an untested combination. The
+  risk is low (plain subprocess and tempfile assertions, no version-sensitive
+  syntax) but a local pass is not evidence about the pinned interpreter.
 
 **Headroom constraint for Phase 5:** `check-claude-md-length.sh` enforces a hard
 200-line cap. Root `CLAUDE.md` is at 164; `claude/.claude/CLAUDE.md` at 124. Phase 5
