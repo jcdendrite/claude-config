@@ -12,6 +12,10 @@ directory is not guaranteed to exist yet.
 mkdir -p ~/.claude/handoffs
 ```
 
+## Before writing: is a handoff warranted?
+
+A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. Below `nudge-handoff-near-context-cap.sh`'s threshold, a handoff written *only* to shed context usually costs more than continuing. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant one without a cost argument. Treat the nudge as a floor rather than the only signal — it fires once, is globally disableable, and per `docs/handoff-nudge.md` can stay silent on an unrecognized model or a schema-drifted transcript.
+
 ## Verify the handoff file with Bash, never Read
 
 A `Read` of any `~/.claude/handoffs/*-handoff.md` path consumes the file — verify with a Bash
