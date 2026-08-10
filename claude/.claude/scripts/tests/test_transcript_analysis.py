@@ -8683,6 +8683,16 @@ class TestCostLedgerSerializationRoundTrip:
         _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
         assert rows == [row]
 
+    def test_note_with_isolated_brackets_round_trips(self):
+        """A '[' and ']' pair with no immediately-following '(...)' is not
+        markdown link/image syntax and must round-trip unchanged -- pins the
+        markdown-link regex's negative boundary, not just its positive
+        matches."""
+        row = _cost_ledger_row(note="fix [WIP] rollout")
+        line = _mod._format_cost_ledger_row(row)
+        _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
+        assert rows == [row]
+
 
 class TestCostLedgerParserHostility:
     @staticmethod
@@ -8719,6 +8729,32 @@ class TestCostLedgerParserHostility:
         is needed."""
         row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 |  | rolled out | oops |"
         with pytest.raises(_mod._CostLedgerParseError, match="expected 10 columns"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_note_with_ansi_escape_byte_rejected(self):
+        """A non-printable-ASCII byte in note (e.g. an ANSI/OSC terminal
+        escape sequence) is rejected by the canonical parser itself, not
+        only by --record-time validation -- a hand-edited or PR-introduced
+        row must be held to the same contract."""
+        row = _mod._format_cost_ledger_row(_cost_ledger_row(note="\x1b]0;PWNED\x07\x1b[2J\x1b[H"))
+        with pytest.raises(_mod._CostLedgerParseError, match="malformed note"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_note_with_markdown_image_syntax_rejected(self):
+        """A markdown image reference in note is rejected by the canonical
+        parser -- docs/cost-ledger.md is rendered by GitHub, so an image
+        reference would beacon an external server on every view."""
+        row = _mod._format_cost_ledger_row(_cost_ledger_row(note="![](https://example.com/t.png)"))
+        with pytest.raises(_mod._CostLedgerParseError, match="malformed note"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_note_with_markdown_link_syntax_rejected(self):
+        """A plain markdown link (no leading '!') in note is rejected by the
+        canonical parser -- docs/cost-ledger.md is rendered by GitHub, so a
+        link would beacon an external server on every view just as an image
+        reference would."""
+        row = _mod._format_cost_ledger_row(_cost_ledger_row(note="[click here](https://example.com/t)"))
+        with pytest.raises(_mod._CostLedgerParseError, match="malformed note"):
             _mod._parse_cost_ledger_file_text(self._table(row))
 
     def test_unresolved_merge_conflict_marker_rejected(self):
@@ -9042,6 +9078,61 @@ class TestCostLedgerPublishSafety:
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
+    def test_note_containing_ansi_escape_byte_refused_before_any_write(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        """A --note carrying an ANSI/OSC terminal escape sequence is
+        refused outright -- cost-ledger's read mode interpolates note
+        unescaped into terminal output, and this is the default (no
+        sentinel/opt-in) subcommand."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1", note="\x1b]0;PWNED\x07\x1b[2J\x1b[H"),
+                date(2026, 6, 3),
+            )
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+
+    def test_note_containing_markdown_image_syntax_refused_before_any_write(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        """A --note carrying markdown image syntax is refused outright --
+        docs/cost-ledger.md is rendered by GitHub, so an image reference
+        would beacon an external server on every view."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1", note="![](https://example.com/t.png)"),
+                date(2026, 6, 3),
+            )
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+
+    def test_note_containing_markdown_link_syntax_refused_before_any_write(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled
+    ):
+        """A --note carrying a plain markdown link (no leading '!') is
+        refused outright -- docs/cost-ledger.md is rendered by GitHub, so a
+        link would beacon an external server on every view."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1", note="[click here](https://example.com/t)"),
+                date(2026, 6, 3),
+            )
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+
 
 class TestCostLedgerSentinelGate:
     def test_record_refuses_without_sentinel(self, fake_projects, cost_ledger_file, tmp_path, monkeypatch):
@@ -9074,6 +9165,29 @@ class TestCostLedgerSentinelGate:
                 _cost_ledger_args(record=True, machine_label="Too-Long-Label"), date(2026, 6, 3)
             )
         assert exc_info.value.code != 0
+
+    def test_record_refuses_machine_label_with_trailing_newline(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
+    ):
+        """Python's `$` (without re.MULTILINE) matches immediately before a
+        trailing '\\n' as well as end-of-string, so a naive ^...$ pattern
+        would let "tstm1\\n" slip past _MACHINE_LABEL_RE. Asserts the
+        rejection happens at this CLI validation boundary itself (its own
+        "must match" error text) rather than passing validation and only
+        being caught downstream by _write_cost_ledger_file's
+        write-verification backstop."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1\n"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+        err = capsys.readouterr().err
+        assert "must match" in err
 
 
 # ---------------------------------------------------------------------------

@@ -6858,8 +6858,13 @@ _COST_LEDGER_CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
 _COST_LEDGER_ISO_WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
 # Short, lowercase-alphanumeric, no spaces or unicode -- wide enough for
 # "m1"/"laptop2", narrow enough that a hostname or username can't be
-# expressed in it (see docs/cost-ledger.md).
-_MACHINE_LABEL_RE = re.compile(r"^[a-z0-9]{1,8}$")
+# expressed in it (see docs/cost-ledger.md). \Z (not $) so a trailing
+# newline doesn't slip past the anchor.
+_MACHINE_LABEL_RE = re.compile(r"^[a-z0-9]{1,8}\Z")
+# A note is a rendered markdown table cell (docs/cost-ledger.md, viewed on
+# GitHub) and a terminal string (cost-ledger's own read mode) -- printable
+# ASCII only blocks both raw control/escape bytes and non-ASCII lookalikes.
+_COST_LEDGER_NOTE_MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\([^)]*\)")
 # Local-lock convenience bound, not a protocol-grounded value -- this guards
 # an interactive CLI's own read-check-write window against another local
 # --record, not a network call, so no vendor timeout spec applies. 30s
@@ -6919,6 +6924,26 @@ def _parse_cost_ledger_pct_cell(label: str, cell: str) -> float:
     return value
 
 
+def _cost_ledger_note_violation(note: str) -> str | None:
+    """Return a human-readable reason `note` is rejected, or None if it's
+    valid. Shared between --record-time validation and the canonical row
+    parser, so a hand-edited or PR-introduced row is held to the same
+    contract as one written by --record: a raw '|' or newline would corrupt
+    the table's row format, a non-printable-ASCII byte (e.g. an ANSI/OSC
+    terminal escape sequence) would be interpolated unescaped into
+    cost-ledger's terminal read-mode output, and markdown link/image syntax
+    would beacon an external server on every GitHub render of
+    docs/cost-ledger.md.
+    """
+    if "|" in note or "\n" in note or "\r" in note:
+        return "must not contain '|' or a newline -- either would corrupt the table's row format"
+    if not all(32 <= ord(c) <= 126 for c in note):
+        return "must contain only printable ASCII -- control and terminal-escape characters are rejected"
+    if _COST_LEDGER_NOTE_MARKDOWN_LINK_RE.search(note):
+        return "must not contain markdown link/image syntax ('[text](url)' or '![alt](url)')"
+    return None
+
+
 def _parse_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     """Validate and coerce one already-split, already-stripped data row's
     cells into a typed row dict. Raises _CostLedgerParseError naming the
@@ -6930,6 +6955,10 @@ def _parse_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
             " (a stray '|' inside a cell produces this same error)"
         )
     week, machine, rates, usd_s, context_s, opus_s, ge200k_s, denials_s, gap_s, note = cells
+
+    note_violation = _cost_ledger_note_violation(note)
+    if note_violation is not None:
+        raise _CostLedgerParseError(f"line {line_no}: malformed note {note!r} ({note_violation})")
 
     try:
         _parse_cost_ledger_iso_week(week)
@@ -7283,11 +7312,9 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
             file=sys.stderr,
         )
         sys.exit(1)
-    if "|" in note or "\n" in note or "\r" in note:
-        print(
-            "cost-ledger: --note must not contain '|' or a newline -- either would corrupt the table's row format",
-            file=sys.stderr,
-        )
+    note_violation = _cost_ledger_note_violation(note)
+    if note_violation is not None:
+        print(f"cost-ledger: --note {note_violation}", file=sys.stderr)
         sys.exit(1)
 
     iso = today.isocalendar()

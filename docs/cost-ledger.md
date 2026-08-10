@@ -23,7 +23,7 @@ left out.
 | `ge200k_pct` | `cost-trend` (`context_over`) | Dollar share of turns whose context crossed the >=200k bucket — cost-trend's own existing "Context%" column, a distinct metric from `context_pct` |
 | `denials` | `review-trace --deny-summary` | Gate friction, raw count |
 | `reviewer_gap_pp` | `reviewer-yield` | Percentage-point gap between the findings-found and zero-finding cited-path edit rates |
-| `note` | operator-supplied `--note` | What changed in the workflow that week |
+| `note` | operator-supplied `--note` | What changed in the workflow that week -- must be printable ASCII (no em dashes, curly quotes, or accented characters) and must not contain markdown link/image syntax |
 
 `denials` and `reviewer_gap_pp` are scoped to the same Monday 00:00:00 UTC
 through the following Monday 00:00:00 UTC (exclusive) ISO-week window as the
