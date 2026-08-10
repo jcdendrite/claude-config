@@ -123,6 +123,23 @@ def _require_shellcheck() -> str:
     return binary
 
 
+def _xargs_invokes_command_on_empty_input() -> bool:
+    """True when `xargs -0 <cmd>` on empty stdin still invokes <cmd> once.
+
+    GNU xargs does this by default; BSD/macOS xargs does not (see
+    `xargs -r`/`--no-run-if-empty` in the FreeBSD/macOS man page). Probes
+    with `false`, not the real shellcheck binary, so this decision never
+    depends on shellcheck being installed — that's `_require_shellcheck()`'s
+    job, and it runs independently. May raise `OSError` or
+    `subprocess.SubprocessError` if `xargs` itself isn't resolvable; callers
+    distinguish that from a negative result rather than conflating the two.
+    """
+    result = subprocess.run(
+        ["xargs", "-0", "false"], input="", capture_output=True, text=True
+    )
+    return result.returncode != 0
+
+
 class TestDiscovery:
     """scripts/list-shell-files.sh must return every tracked shell script."""
 
@@ -358,6 +375,21 @@ class TestGateActuallyBites:
         `--no-run-if-empty` is absent — a composition the bare-binary test
         above cannot observe.
         """
+        try:
+            invokes_on_empty = _xargs_invokes_command_on_empty_input()
+        except (OSError, subprocess.SubprocessError) as exc:
+            invokes_on_empty = False
+            reason = f"could not run the xargs probe used to gate this test: {exc}"
+        else:
+            reason = (
+                "local xargs does not invoke the command on empty input "
+                "(BSD/macOS default); CI's ubuntu-24.04 runner uses GNU "
+                "xargs, where this guarantee holds"
+            )
+        if not invokes_on_empty:
+            if os.environ.get("CI"):
+                pytest.fail(reason)
+            pytest.skip(reason)
         binary = _require_shellcheck()
         result = subprocess.run(
             ["xargs", "-0", binary],
