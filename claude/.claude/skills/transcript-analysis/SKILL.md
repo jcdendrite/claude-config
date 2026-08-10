@@ -23,7 +23,7 @@ The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | Which lever costs the most in actual dollars — cache read/write, output, or input? | `cost --since 30d` |
 | What did this branch cost, as a publish-ready aggregate for a PR body? | `cost --this-repo --branches <branch> --summary` |
-| Are reviewer dispatches producing real findings or mostly zero-finding passes? | `reviewer-yield --since 30d --redact` |
+| Are reviewer dispatches producing real findings, and do sessions then edit what was cited? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
 | Which client or profile does spend belong to? | `cost --by-project --config-dir <dir>` |
 | What fraction of Opus code-read turns are clearly dispatchable vs. read-then-edit loops? | `audit-routing-shape --since 35d` |
