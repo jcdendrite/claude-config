@@ -194,6 +194,19 @@ def _extract_grand_total(out: str) -> float:
     return float(match.group(1).replace(",", ""))
 
 
+def _extract_account_totals(out: str) -> dict[int, float]:
+    """Map account ordinal -> that account's own token-class 'total' row
+    dollar figure, by splitting cost's '## Cost by account' section on its
+    own '### account-N' sub-headers."""
+    totals: dict[int, float] = {}
+    for block in out.split("### account-")[1:]:
+        ordinal_str, _, rest = block.partition("\n")
+        match = re.search(r"^total\s+([\d,]+\.\d\d)\s*$", rest, re.MULTILINE)
+        assert match is not None, f"no total row found for account-{ordinal_str.strip()}"
+        totals[int(ordinal_str.strip())] = float(match.group(1).replace(",", ""))
+    return totals
+
+
 def _extract_summary_unpriced(out: str) -> tuple[int, int]:
     """Read --summary's dedicated 'Unpriced tokens: N tokens across M model IDs'
     line as (N, M) — distinct from the full report's own
@@ -404,7 +417,7 @@ class TestConfigDirFlag:
         assert "buckets" in err
 
     @pytest.mark.parametrize(
-        "subcommand", ["cost", "context-distribution", "read-scope", "subagents", "subagent-mix"]
+        "subcommand", ["cost", "context-distribution", "read-scope", "subagents", "subagent-mix", "cost-trend"]
     )
     def test_top_level_config_dir_refused_for_subcommands_with_their_own(
         self, monkeypatch, tmp_path, capsys, subcommand
@@ -6371,7 +6384,9 @@ class TestCostMultiRootReport:
         assert str(root_a) not in err
         assert "cost: account-1: scanned 0 transcripts, 0 skipped (unreadable)" in out
         assert "WARNING: cost: account-1: no transcripts found for this scope" in out
-        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        # occurrence=1: the global section, not one of the new per-account
+        # "## Cost by account" sections this multi-root fixture also emits.
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=1)
         assert cols["$"] == "2.00"
 
     def test_empty_state_zero_transcripts_opened_warns_per_root_not_masked(self, tmp_path, capsys):
@@ -6451,7 +6466,9 @@ class TestCostMultiRootReport:
                                    [_priced("claude-sonnet-5", input=2_000_000)])   # $4.00
         _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        # occurrence=1: the global section, not one of the new per-account
+        # "## Cost by account" sections this multi-root fixture also emits.
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=1)
         assert cols["$"] == "6.00"
 
     def test_nested_root_alias_does_not_double_count(self, tmp_path, capsys):
@@ -6465,7 +6482,9 @@ class TestCostMultiRootReport:
         nested_alias.symlink_to(root_a)
         _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, nested_alias])
         out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        # occurrence=1: the global section, not the new per-account "## Cost
+        # by account" section this multi-root fixture also emits.
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=1)
         assert cols["$"] == "2.00"
 
 
@@ -6688,7 +6707,9 @@ class TestCostMultiRootRedaction:
         out = capsys.readouterr().out
         assert "account-1/private-project-1" in out
         assert "account-2/private-project-1" in out
-        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        # occurrence=1: the global section, not one of the new per-account
+        # "## Cost by account" sections this multi-root fixture also emits.
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=1)
         assert cols["$"] == "6.00"
 
 
@@ -6875,6 +6896,161 @@ class TestCostByProject:
         # even though they are two genuinely unrelated project directories.
         assert len(data_rows) == 1
         assert float(data_rows[0].split()[-2].replace(",", "")) == pytest.approx(3.00)
+
+
+class TestCostByAccount:
+    """'## Cost by account': per-account token-class/model-ID breakdown,
+    auto-shown under multi_root with no new flag (edit-format's own
+    precedent), plus the third cross-check assertion guarding it."""
+
+    def test_per_account_totals_sum_to_grand_total_across_multi_root_fixture(self, tmp_path, capsys):
+        """Three sessions across two --config-dir roots: per-account
+        token-class totals sum to the report's own grand total, hand-computed
+        -- exercises the new per-account cross-check assertion's normal pass
+        case, mirroring TestCostByProject's own sum-to-grand-total test."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a1",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
+        _write_jsonl(root_a / "-home-user-repo-a" / "sess-a2.jsonl", [
+            _priced("claude-sonnet-5", input=1_500_000),  # $3.00
+        ])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b1",
+                                   [_priced("claude-sonnet-5", input=2_000_000)])  # $4.00
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        grand_total = _extract_grand_total(out)
+        assert grand_total == pytest.approx(9.00)  # 2.00 + 3.00 + 4.00, hand-computed
+
+        account_totals = _extract_account_totals(out)
+        assert len(account_totals) == 2
+        assert sum(account_totals.values()) == pytest.approx(grand_total)
+        assert account_totals[1] == pytest.approx(5.00)  # account-1 = acct-a: 2.00 + 3.00
+        assert account_totals[2] == pytest.approx(4.00)  # account-2 = acct-b
+
+    def test_per_account_specific_values_hand_computed(self, tmp_path, capsys):
+        """Per-account class/model $ figures match a hand-computed value tied
+        to that account's own fixture data -- not just that the two accounts'
+        rows sum to the grand total, which would still pass even if the two
+        accounts' dollars were swapped under the wrong ordinal."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00, all "input"
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-opus-5", input=500_000)])      # $2.50, all "input"
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        acct1_class = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=2)
+        assert acct1_class["$"] == "2.00"
+        acct2_class = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=3)
+        assert acct2_class["$"] == "2.50"
+
+        acct1_model = _table_cols(out, header_contains="Model", row_contains="claude-sonnet-5", occurrence=2)
+        assert acct1_model["$"] == "2.00"
+        acct2_model = _table_cols(out, header_contains="Model", row_contains="claude-opus-5", occurrence=3)
+        assert acct2_model["$"] == "2.50"
+
+    def test_per_account_missing_turn_raises_cross_check_assertion(self, tmp_path, monkeypatch):
+        """Fault injection: skip the per-account accumulation for one turn
+        while the global accumulators still see it -- proves the new
+        per-account cross-check assertion actually fires, not just that it
+        passes on correct code (mirrors the untested gap in the two
+        pre-existing cross-checks, which also have no such test today)."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+
+        original = _mod._accumulate_per_account_turn
+        calls = {"n": 0}
+
+        def flaky_accumulate(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return  # drop the first turn's per-account contribution
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(_mod, "_accumulate_per_account_turn", flaky_accumulate)
+
+        with pytest.raises(AssertionError, match="per-account"):
+            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+
+    def test_cost_by_account_section_absent_at_single_root(self, fake_projects, capsys):
+        """No --config-dir (single root): the '## Cost by account' section
+        must not appear at all -- promoted from the plan's manual
+        verification check into an automated regression pin."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "## Cost by account" not in out
+
+    def test_per_account_zero_priced_account_renders_clean_zero_state(self, tmp_path, capsys):
+        """One of two --config-dir roots has zero priced turns -- its own
+        per-account section renders a clean $0.00/0.0% zero state, not a
+        crash or malformed 0/0-share row -- mirrors edit-format's own
+        up-front per_account initialization for every ordinal."""
+        root_full = _write_cost_root(tmp_path, "acct-full", "-home-user-repo-a", "sess-a",
+                                      [_priced("claude-sonnet-5", input=1_000_000)])
+        root_zero = tmp_path / "acct-zero"
+        (root_zero / "-home-user-repo-b").mkdir(parents=True)  # exists, no *.jsonl
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_full, root_zero])
+        out = capsys.readouterr().out
+
+        zero_class = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=3)
+        assert zero_class["$"] == "0.00"
+        assert zero_class["Share"] == "0.0%"
+
+    def test_cost_by_account_negative_content_no_raw_project_labels(self, tmp_path, capsys):
+        """The full multi-root report's stdout contains no raw project-label
+        or config-dir-path substrings from the fixture roots. Also asserts
+        the new '## Cost by account' section actually rendered -- a prior
+        version of this test asserted only the negative and still passed
+        with that entire section removed, since neither of its printers ever
+        takes a project-label/path argument to begin with; pinning the
+        section's presence ties the absence-of-leak claim to the code path
+        it's meant to guard."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-secret-clientname-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-secret-clientname-b", "sess-b",
+                                   [_priced("claude-opus-5", input=500_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert "## Cost by account" in out
+        assert "### account-1" in out
+        assert "### account-2" in out
+        assert "-home-user-secret-clientname-a" not in out
+        assert "-home-user-secret-clientname-b" not in out
+        assert str(root_a) not in out
+        assert str(root_b) not in out
+
+    def test_permission_error_while_scanning_root_caught_and_reported_per_account_section(
+        self, tmp_path, capsys
+    ):
+        """A real unreadable root among a multi-root scan must not leak its
+        path via the new per-account section's presence/rendering, mirroring
+        TestCostMultiRootReport's own chmod-based PermissionError test for
+        the pre-existing global tables -- os.access's real permission check,
+        not a mock, since pathlib.Path.glob silently swallows OSError while
+        walking an unreadable directory rather than propagating it."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        os.chmod(root_a, 0o000)
+        try:
+            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        finally:
+            os.chmod(root_a, 0o755)  # restore before tmp_path teardown
+
+        captured = capsys.readouterr()
+        out, err = captured.out, captured.err
+
+        assert "cannot scan" in err
+        assert str(root_a) not in err
+        assert "## Cost by account" in out
+        assert "### account-1" in out
+        assert "### account-2" in out
+        zero_class = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=2)
+        assert zero_class["$"] == "0.00"
 
 
 class TestCostThreadSplit:
@@ -9047,8 +9223,12 @@ class TestScanReadScopeSession:
 # ---------------------------------------------------------------------------
 
 
-def _cost_trend_args(*, projects: str = "*", this_repo: bool = False) -> object:
-    return type("A", (), {"projects": projects, "this_repo": this_repo})()
+def _cost_trend_args(
+    *, projects: str = "*", this_repo: bool = False, extra_config_dirs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects, "this_repo": this_repo, "extra_config_dirs": extra_config_dirs,
+    })()
 
 
 def _extract_cost_trend_row(out: str, week_label: str) -> dict[str, str] | None:
@@ -9163,6 +9343,222 @@ class TestCostTrend:
         # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
         # not $6.00 for pricing the group's usage three times over.
         assert row is not None and row["total"] == "2.00"
+
+
+class TestCostTrendConfigDir:
+    """cost-trend --config-dir: mirrors TestCostResolveRoots/TestCostMultiRootReport's
+    shape for cost-trend's own wiring through _resolve_cost_roots."""
+
+    def test_default_root_alone_when_no_extra_config_dirs(self, tmp_path, monkeypatch):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        roots = _mod._resolve_cost_roots(_cost_trend_args(), subcommand="cost-trend")
+        assert roots == [default_dir / "projects"]
+
+    def test_multiple_extra_config_dirs_appended_in_argument_order(
+        self, tmp_path, monkeypatch, fake_config_dir_factory
+    ):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        acct_c = fake_config_dir_factory("acct-c")
+        roots = _mod._resolve_cost_roots(
+            _cost_trend_args(extra_config_dirs=[str(acct_b), str(acct_c)]), subcommand="cost-trend"
+        )
+        assert roots == [default_dir / "projects", acct_b / "projects", acct_c / "projects"]
+
+    def test_duplicate_root_deduped_by_resolve_not_string_equality(
+        self, tmp_path, monkeypatch, fake_config_dir_factory
+    ):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        roots = _mod._resolve_cost_roots(
+            _cost_trend_args(extra_config_dirs=[str(acct_b), str(acct_b) + "/."]), subcommand="cost-trend"
+        )
+        assert roots == [default_dir / "projects", acct_b / "projects"]
+
+    def test_nonexistent_root_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        missing = tmp_path / "does-not-exist"
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_cost_roots(_cost_trend_args(extra_config_dirs=[str(missing)]), subcommand="cost-trend")
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert str(missing) in err
+        # Subcommand label composes correctly -- distinct from _resolve_cost_roots'
+        # own default "cost" label, which every TestCostResolveRoots case exercises.
+        assert "cost-trend:" in err
+
+    def test_root_without_projects_subdir_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        bogus = tmp_path / "bogus"
+        bogus.mkdir()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_cost_roots(_cost_trend_args(extra_config_dirs=[str(bogus)]), subcommand="cost-trend")
+        assert exc_info.value.code == 2
+        assert "cost-trend:" in capsys.readouterr().err
+
+    def test_this_repo_and_config_dir_compose_end_to_end(
+        self, tmp_path, monkeypatch, capsys, fake_config_dir_factory
+    ):
+        """--config-dir + --this-repo end-to-end through cmd_cost_trend,
+        mirroring TestCostMultiRootRedaction's own this-repo-composition test."""
+        default_dir = tmp_path / "default"
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        slug = "-home-user-this-repo"
+        proj_default = default_dir / "projects" / slug
+        proj_default.mkdir(parents=True)
+        _write_jsonl(proj_default / "sess-default.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),  # $2.00
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / slug
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=2_000_000, ts="2026-06-01T10:00:00.000Z"),  # $4.00
+        ])
+        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
+
+        args = _cost_trend_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        _mod.cmd_cost_trend(args)
+        out = capsys.readouterr().out
+        row = _extract_cost_trend_row(out, "2026-W23")
+        assert row is not None and row["total"] == "6.00"
+
+    def test_redaction_label_shape_account_prefix_no_raw_config_dir_path(
+        self, tmp_path, monkeypatch, capsys, fake_config_dir_factory
+    ):
+        """The new per-root scan diagnostic labels each root account-N (not
+        the raw config-dir path), matching cost's own labeling convention."""
+        default_dir = tmp_path / "default"
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        proj_default = default_dir / "projects" / "-home-user-repo-a"
+        proj_default.mkdir(parents=True)
+        _write_jsonl(proj_default / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
+        out = capsys.readouterr().out
+        assert "cost-trend: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
+        assert "cost-trend: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
+        assert str(default_dir) not in out
+        assert str(acct_b) not in out
+
+    def test_per_root_empty_window_warns(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+        """One of two --config-dir roots holds no transcripts at all -- its
+        own WARNING fires, not masked by the other root's non-empty scan
+        (Mechanism 2 step 4's new per-root diagnostic, cost-trend's own
+        counterpart to cost's own per-root-empty-state coverage)."""
+        default_dir = tmp_path / "default"
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        (default_dir / "projects").mkdir(parents=True)  # exists, holds no project dirs
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
+        out = capsys.readouterr().out
+        # account-N is assigned by resolved-path sort (_redaction_ordinals),
+        # not by scan order -- "acct-b" sorts before "default", so the empty
+        # default root is account-2 despite being scanned first.
+        assert "WARNING: cost-trend: account-2: no transcripts found for this scope" in out
+        assert "WARNING: cost-trend: account-1" not in out
+
+    def test_negative_content_no_raw_project_labels_in_stdout(
+        self, tmp_path, monkeypatch, capsys, fake_config_dir_factory
+    ):
+        """Also asserts the new per-root scan-diagnostic lines actually
+        printed -- a prior version of this test asserted only the negative
+        and still passed with that entire diagnostic block removed, since it
+        is the only new code in cost-trend capable of interpolating a path;
+        pinning the diagnostic's presence ties the absence-of-leak claim to
+        the code path it's meant to guard."""
+        default_dir = tmp_path / "default"
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        proj_default = default_dir / "projects" / "-home-user-secret-clientname-a"
+        proj_default.mkdir(parents=True)
+        _write_jsonl(proj_default / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-secret-clientname-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
+        out = capsys.readouterr().out
+        assert "cost-trend: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
+        assert "cost-trend: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
+        assert "-home-user-secret-clientname-a" not in out
+        assert "-home-user-secret-clientname-b" not in out
+        assert str(default_dir) not in out
+        assert str(acct_b) not in out
+
+    def test_permission_error_while_scanning_root_reported_without_raw_path(
+        self, tmp_path, monkeypatch, capsys, fake_config_dir_factory
+    ):
+        """A real unreadable --config-dir root's diagnostic goes to stderr
+        without the raw path -- cost-trend's own counterpart to cost's
+        chmod-based PermissionError test. This is the one place in this
+        diff's cost-trend code capable of interpolating a raw path (the
+        `detail = str(exc) if not redact else ...` branch), and it had zero
+        fixture coverage (positive or negative) before this test -- the
+        prior negative-content test's fixtures never triggered a
+        PermissionError, so the redact-suppression logic here was analyzed
+        but never actually exercised."""
+        default_dir = tmp_path / "default"
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        (default_dir / "projects").mkdir(parents=True)
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        os.chmod(default_dir / "projects", 0o000)
+        try:
+            _mod.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
+        finally:
+            os.chmod(default_dir / "projects", 0o755)  # restore before tmp_path teardown
+
+        captured = capsys.readouterr()
+        out, err = captured.out, captured.err
+        assert "cannot scan" in err
+        assert str(default_dir) not in err
+        # account-N is assigned by resolved-path sort (_redaction_ordinals):
+        # "acct-b" sorts before "default" under the same tmp_path parent, so
+        # acct_b is account-1 despite default_dir being scanned first.
+        assert "cost-trend: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
+
+    def test_no_redact_flag_not_registered(self, capsys):
+        """Pins that cost-trend has no --no-redact argparse entry today, so
+        `redact` in _cost_trend_report's diagnostic can never actually be
+        False -- the raw-path branches it guards are dead code, not a live
+        leak. This test exists so that adding --no-redact to cost-trend
+        later (without deliberately revisiting that redaction logic) fails
+        loudly here first, instead of silently reactivating a branch nothing
+        else currently protects."""
+        with pytest.raises(SystemExit):
+            _mod.build_parser().parse_args(["cost-trend", "--no-redact"])
+        err = capsys.readouterr().err
+        assert "unrecognized arguments" in err
 
 
 # ---------------------------------------------------------------------------

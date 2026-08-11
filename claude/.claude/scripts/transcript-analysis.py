@@ -5225,7 +5225,7 @@ _DO_NOT_PUBLISH_BANNER = (
 # the top-level flag outright for each of these, so the two same-named flags
 # can never validate against two different accounts.
 _SUBCOMMANDS_WITH_OWN_CONFIG_DIR = (
-    "cost", "context-distribution", "edit-format", "read-scope", "subagents", "subagent-mix"
+    "cost", "context-distribution", "edit-format", "read-scope", "subagents", "subagent-mix", "cost-trend"
 )
 
 
@@ -5347,8 +5347,8 @@ def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
 
     `resolved_roots` must already be resolved (real, symlink-free) paths —
     callers resolve the roots list once, outside cost's per-session loop,
-    since this runs once per priced session and re-resolving every root on
-    every call would be a per-element filesystem stat inside that loop.
+    since this runs once per session and re-resolving every root on every
+    call would be a per-element filesystem stat inside that loop.
     `jsonl` is always a file path, so a root can only ever be one of its
     ancestors, never equal to it — `resolved.parents` alone covers every case.
 
@@ -5461,6 +5461,39 @@ def cmd_cost(args: argparse.Namespace) -> None:
     _cost_report(args, datetime.now(UTC).date(), roots)
 
 
+def _accumulate_per_account_turn(
+    account_totals: dict, dollars_by_class: dict[str, float], token_counts: dict[str, int],
+    turn_total: float, model: str,
+) -> None:
+    """Add one priced turn's per-class dollars/tokens and per-model dollars
+    into one account's per_account entry -- the identical increments
+    class_totals/class_token_totals/model_totals receive globally, just
+    scoped to a single redact_ordinals ordinal."""
+    for cls in _TOKEN_CLASSES:
+        account_totals["class_totals"][cls] += dollars_by_class[cls]
+        account_totals["class_token_totals"][cls] += token_counts[cls]
+    account_totals["model_totals"][model] += turn_total
+
+
+def _print_token_class_table(
+    class_totals: dict[str, float], class_token_totals: dict[str, int], grand_total: float
+) -> None:
+    print("## Cost by token class\n")
+    print(f"{'Class':<16} {'$':>14} {'Share':>7} {'Tokens':>14}")
+    for cls in _TOKEN_CLASSES:
+        val = class_totals[cls]
+        tok = class_token_totals[cls]
+        print(f"{cls:<16} {val:>14,.2f} {_pct_of(val, grand_total):>7} {tok:>14,}")
+    print(f"{'total':<16} {grand_total:>14,.2f}")
+
+
+def _print_model_id_table(model_totals: dict[str, float], grand_total: float) -> None:
+    print("\n## Cost by model ID\n")
+    print(f"{'Model':<28} {'$':>14} {'Share':>7}")
+    for model, val in sorted(model_totals.items(), key=lambda kv: kv[1], reverse=True):
+        print(f"{model:<28} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+
+
 def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | None = None) -> None:
     """Corpus-wide dollar-cost report by token class, model ID, and context-at-turn bucket.
 
@@ -5541,8 +5574,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     session_iter, scope_label = _resolve_project_scope(args, "cost", include_subagents=True, roots=roots)
 
     # Resolved once, outside the per-session loop below — _root_index_for_path
-    # runs once per priced session, and re-resolving every root on every call
-    # would be a per-element filesystem stat inside that loop.
+    # runs once per session (per-account ordinal resolution needs it even for
+    # unpriced sessions), and re-resolving every root on every call would be
+    # a per-element filesystem stat inside that loop.
     resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
     # redact_ordinals is the resolved-path-sorted mapping _build_redact_map's
     # keys, the per-row/--by-project lookups, and the per-root scan-diagnostic
@@ -5606,6 +5640,22 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     class_totals: dict[str, float] = dict.fromkeys(_TOKEN_CLASSES, 0.0)
     class_token_totals: dict[str, int] = dict.fromkeys(_TOKEN_CLASSES, 0)
     model_totals: dict[str, float] = defaultdict(float)
+    # One class_totals/class_token_totals/model_totals triple per
+    # redact_ordinals ordinal, mirroring edit-format's own per_account shape.
+    # Initialized up front for every ordinal so a zero-spend account still
+    # renders a clean zero-state row instead of a missing key.
+    per_account: dict[int, dict] = (
+        {
+            ordinal: {
+                "class_totals": dict.fromkeys(_TOKEN_CLASSES, 0.0),
+                "class_token_totals": dict.fromkeys(_TOKEN_CLASSES, 0),
+                "model_totals": defaultdict(float),
+            }
+            for ordinal in redact_ordinals.values()
+        }
+        if multi_root
+        else {}
+    )
     unpriced_tokens: dict[str, int] = defaultdict(int)
     bucket_totals: dict[str, float] = defaultdict(float)
     session_rows: list[dict] = []
@@ -5629,6 +5679,14 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         if redact and not summary_mode:
             _assign_session_redact_label(session_id, session_redact_map)
         session_total = 0.0
+
+        # Hoisted out of the by_project-only block below so the per-account
+        # accumulator (turn loop, further down) has this session's ordinal
+        # regardless of --by-project.
+        account_ordinal: int | None = None
+        if multi_root:
+            root_position = _root_index_for_path(jsonl, resolved_scan_roots)
+            account_ordinal = redact_ordinals[resolved_scan_roots[root_position]]
 
         # Only needed when --branches is active — the carry-forward source
         # _attributed_branch resolves each worktree-agent-* record against.
@@ -5669,6 +5727,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 class_token_totals[cls] += token_counts[cls]
                 turn_total += dollars_by_class[cls]
             model_totals[model] += turn_total
+            # multi_root and summary_mode can never co-occur here -- --summary
+            # refuses --config-dir above, so this accumulator is unreachable
+            # (not merely unused) under --summary.
+            if multi_root:
+                _accumulate_per_account_turn(per_account[account_ordinal], dollars_by_class, token_counts, turn_total, model)
             bucket_totals[_context_bucket(context_at_turn)] += turn_total
             session_total += turn_total
             priced_turn_count += 1
@@ -5681,8 +5744,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             priced_session_count += 1
             if not summary_mode:
                 if multi_root:
-                    root_position = _root_index_for_path(jsonl, resolved_scan_roots)
-                    scoped_label: _RedactMapKey = (redact_ordinals[resolved_scan_roots[root_position]], raw_proj_label)
+                    scoped_label: _RedactMapKey = (account_ordinal, raw_proj_label)
                 else:
                     scoped_label = raw_proj_label
                 if redact:
@@ -5722,15 +5784,15 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     grand_total = sum(class_totals.values())
 
-    # Both invariants below sum the same per-turn dollar increments (the same
-    # dollars_by_class value feeds class_totals, main/subagent, and
-    # project_totals in the same loop iteration) through a different
-    # accumulator split — they guard the partition/bucketing logic (a branch
-    # that double-counts, drops, or misroutes a turn), not _price_turn's
-    # dollar math itself, since a wrong per-turn price would move both sides
-    # of either comparison together. Any gap beyond float64 summation noise
-    # (well under a millionth of a dollar here) still means a real bucketing
-    # bug, not rounding.
+    # The three invariants below sum the same per-turn dollar increments (the
+    # same dollars_by_class value feeds class_totals, main/subagent,
+    # project_totals, and per_account in the same loop iteration) through a
+    # different accumulator split — they guard the partition/bucketing logic
+    # (a branch that double-counts, drops, or misroutes a turn), not
+    # _price_turn's dollar math itself, since a wrong per-turn price would
+    # move both sides of any comparison together. Any gap beyond float64
+    # summation noise (well under a millionth of a dollar here) still means a
+    # real bucketing bug, not rounding.
     if abs(main_total + subagent_total - grand_total) > 1e-6:
         raise AssertionError(
             f"cost: main ({main_total:.6f}) + subagent ({subagent_total:.6f}) spend"
@@ -5745,6 +5807,17 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 f"cost: --by-project rows sum to {project_grand_total:.6f} but the grand"
                 f" total is {grand_total:.6f} — per-project aggregation is out of sync"
                 " with the token-class totals"
+            )
+
+    if multi_root:
+        per_account_class_total = sum(sum(acct["class_totals"].values()) for acct in per_account.values())
+        per_account_model_total = sum(sum(acct["model_totals"].values()) for acct in per_account.values())
+        if abs(per_account_class_total - grand_total) > 1e-6 or abs(per_account_model_total - grand_total) > 1e-6:
+            raise AssertionError(
+                f"cost: per-account totals (class {per_account_class_total:.6f}, model"
+                f" {per_account_model_total:.6f}) do not both equal the grand total"
+                f" ({grand_total:.6f}) — the per-account accumulator is out of sync with"
+                " the global token-class/model totals"
             )
 
     title_since = f"last {since_label}" if since_label else "all time"
@@ -5778,18 +5851,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             + "\n"
         )
 
-    print("## Cost by token class\n")
-    print(f"{'Class':<16} {'$':>14} {'Share':>7} {'Tokens':>14}")
-    for cls in _TOKEN_CLASSES:
-        val = class_totals[cls]
-        tok = class_token_totals[cls]
-        print(f"{cls:<16} {val:>14,.2f} {_pct_of(val, grand_total):>7} {tok:>14,}")
-    print(f"{'total':<16} {grand_total:>14,.2f}")
-
-    print("\n## Cost by model ID\n")
-    print(f"{'Model':<28} {'$':>14} {'Share':>7}")
-    for model, val in sorted(model_totals.items(), key=lambda kv: kv[1], reverse=True):
-        print(f"{model:<28} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+    _print_token_class_table(class_totals, class_token_totals, grand_total)
+    _print_model_id_table(model_totals, grand_total)
     total_unpriced_tokens = sum(unpriced_tokens.values())
     if summary_mode:
         # A dedicated, always-present line rather than the full report's
@@ -5818,6 +5881,17 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     if summary_mode:
         return
+
+    if multi_root:
+        print("\n## Cost by account\n")
+        for ordinal in sorted(per_account):
+            account_totals = per_account[ordinal]
+            account_grand_total = sum(account_totals["class_totals"].values())
+            print(f"\n### account-{ordinal}\n")
+            _print_token_class_table(
+                account_totals["class_totals"], account_totals["class_token_totals"], account_grand_total
+            )
+            _print_model_id_table(account_totals["model_totals"], account_grand_total)
 
     if by_project:
         print("\n## Cost by project\n")
@@ -7106,9 +7180,39 @@ def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
     from every week's totals and counted corpus-wide (mirrors
     cmd_audit_routing's unpriced-turns convention) so they don't silently
     vanish from the reported spend.
+
+    Roots resolve via _resolve_cost_roots (cost's own --config-dir contract),
+    not the generic _resolve_scan_roots -- this is the one funnel that
+    understands a repeatable --config-dir/extra_config_dirs.
     """
-    roots = _resolve_scan_roots(args)
+    redact: bool = not bool(getattr(args, "no_redact", False))
+    roots = _resolve_cost_roots(args, subcommand="cost-trend")
     session_iter, scope_label = _resolve_project_scope(args, "cost-trend", include_subagents=True, roots=roots)
+
+    # Mirrors cost's/context-distribution's own per-root scan diagnostic --
+    # without it, a stale or misconfigured --config-dir root silently
+    # contributes nothing to the weekly trend with no signal.
+    glob = _projects_glob(args)
+    this_repo_slugs = getattr(args, "_this_repo_slugs", None) if args.this_repo else None
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(roots)
+    for root in roots:
+        root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(root.parent)
+        try:
+            scanned, skipped = _scan_root_transcripts(root, glob, slugs=this_repo_slugs)
+        except PermissionError as exc:
+            # str(exc) on a PermissionError typically embeds the offending
+            # path — suppressed under default redaction so a permission
+            # failure can't leak the raw config-dir path it's reporting on.
+            detail = str(exc) if not redact else "permission denied"
+            print(f"cost-trend: {root_label}: cannot scan ({detail}) — treating as 0 transcripts", file=sys.stderr)
+            scanned, skipped = 0, 0
+        print(f"cost-trend: {root_label}: scanned {scanned:,} transcripts, {skipped:,} skipped (unreadable)")
+        if scanned == 0:
+            print(
+                f"WARNING: cost-trend: {root_label}: no transcripts found for this scope"
+                " — check the config dir and --projects/--this-repo filter."
+            )
+
     _print_resolved_scope("cost-trend", scope_label, roots)
 
     data, unpriced_turns, unpriced_tokens = _compute_cost_trend_data(session_iter)
@@ -9160,6 +9264,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.",
     )
     _add_project_scope_args(p_cost_trend)
+    p_cost_trend.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root."
+        ),
+    )
     p_cost_trend.set_defaults(func=cmd_cost_trend)
 
     p_cost_ledger = sub.add_parser(
