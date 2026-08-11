@@ -132,6 +132,36 @@ def _write_transcript(path: Path, records: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
 
+def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
+    """Build a PATH with only the binaries this hook's fire path invokes
+    (`cat`/`jq` for the payload/output JSON, `dirname` to locate _lib.sh,
+    `tail` for read_latest_usage, `mkdir`/`find`/`touch` for the marker
+    dir), omitting both timeout(1) and gtimeout(1). Skips (does not
+    silently under-symlink) when a needed real binary is itself absent
+    from the test machine."""
+    for tool in ("cat", "dirname", "find", "jq", "mkdir", "tail", "touch"):
+        real = shutil.which(tool)
+        if not real:
+            pytest.skip(f"{tool} not found in PATH")
+        (fake_bin / tool).symlink_to(real)
+    return str(fake_bin)
+
+
+def _check_mode_path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
+    """Build a PATH with only the binaries run_check_mode's --check path
+    invokes (`dirname` to locate _lib.sh, `jq` for the reported JSON,
+    `ps`/`head`/`sed`/`tr` for the ancestor walk, `env` for the pinned-locale
+    live-start read, `tail` for read_latest_usage), omitting both timeout(1)
+    and gtimeout(1). Skips when a needed real binary is itself absent from
+    the test machine."""
+    for tool in ("dirname", "env", "head", "jq", "ps", "sed", "tail", "tr"):
+        real = shutil.which(tool)
+        if not real:
+            pytest.skip(f"{tool} not found in PATH")
+        (fake_bin / tool).symlink_to(real)
+    return str(fake_bin)
+
+
 def _run_hook(
     payload: dict, tmp_path: Path, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
@@ -389,6 +419,29 @@ class TestNudgeHandoffNearContextCap:
         assert "nudged" in log_text
         assert f"est={ABOVE_LARGE}" in log_text
         assert f"event={hook_event_name}" in log_text
+
+    def test_fires_nudge_when_neither_timeout_nor_gtimeout_present(self, tmp_path):
+        """Fail-open regression: with neither binary present, _lib_capped_for
+        runs the tail/jq fire-path calls uncapped (see _lib.sh) rather than
+        silently degrading — the nudge must still fire above threshold under
+        this PATH."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [_assistant_record(cache_read=580000, cache_create=20000, input_tok=30000, output_tok=20000)],
+        )
+        fake_bin = tmp_path / "fakebin-no-timeout-no-gtimeout"
+        fake_bin.mkdir()
+        restricted_path = _path_without_timeout_or_gtimeout(fake_bin)
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        payload = json.loads(result.stdout)
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        assert "handoff" in ctx.lower() or "/handoff" in ctx
+        assert _marker_path(tmp_path).exists()
 
     def test_already_fired_is_silent(self, tmp_path):
         """When the per-session marker already exists, subsequent calls produce no stdout."""
@@ -1015,6 +1068,19 @@ class TestCheckMode:
         assert not _marker_path(tmp_path, config_dir=config_dir).exists()
         assert not _drift_marker_path(tmp_path, config_dir=config_dir).exists()
         assert not _log_path(tmp_path, config_dir=config_dir).exists()
+
+    def test_reports_status_when_neither_timeout_nor_gtimeout_present(self, tmp_path):
+        """Fail-open regression for --check's own _lib_capped_for call sites
+        (check_refuse, the schema-drift build, and the final status:ok build):
+        with neither binary present, run_check_mode must still return a
+        status field rather than a silent/empty result."""
+        self._seeded(tmp_path, total=ABOVE_LARGE)
+        fake_bin = tmp_path / "fakebin-no-timeout-no-gtimeout"
+        fake_bin.mkdir()
+        restricted_path = _check_mode_path_without_timeout_or_gtimeout(fake_bin)
+        payload = _check_json(_run_check(tmp_path, extra_env={"PATH": restricted_path}))
+        assert payload["status"] == "ok"
+        assert payload["over_threshold"] is True
 
     def test_does_not_read_stdin(self, tmp_path):
         """The dispatch must precede the hook's unconditional `cat`.
