@@ -33,6 +33,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | Which client or profile does spend belong to? | `cost --by-project --config-dir <dir>` |
 | What fraction of Opus code-read turns are clearly dispatchable vs. read-then-edit loops? | `audit-routing-shape --since 35d` |
 | Pull a random sample of Opus code-read turns for delegation judgment curation | `audit-routing-samples --since 35d --sample 50 --seed 1` |
+| What did a specific subagent type actually cost over a date range, and what would it have cost at another model? | `subagent-mix --since-date <date> --until-date <date> --reprice-as <model-id>` |
 
 ## Reading fail-seq output
 

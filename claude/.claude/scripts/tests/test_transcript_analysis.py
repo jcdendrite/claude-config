@@ -247,6 +247,24 @@ def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", pr
     }
 
 
+def _priced_sidechain_asst(
+    model: str, *, input_tokens: int = 0, output_tokens: int = 0, cache_read_tokens: int = 0,
+    ts: str | None = None, branch: str = "main",
+) -> dict:
+    """Build a sidechain assistant record with explicit, flat-priced usage
+    fields, for subagent-mix's Actual $/Counterfactual $ dollar-column tests
+    -- a sidechain counterpart to TestCost's own _priced (cache-write-split
+    fidelity is irrelevant to these tests' hand-computed input-token math)."""
+    rec = _asst(model, branch=branch, sidechain=True, ts=ts, content=[])
+    rec["message"]["usage"] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read_tokens,
+        "cache_creation_input_tokens": 0,
+    }
+    return rec
+
+
 def _skill_use(tool_id: str, skill: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
 
@@ -849,6 +867,9 @@ def _subagent_mix_args(
     branches: str | None = None,
     per_session: bool = False,
     since: str | None = None,
+    since_date: str | None = None,
+    until_date: str | None = None,
+    reprice_as: str | None = None,
     extra_config_dirs: list[str] | None = None,
 ) -> object:
     return type("A", (), {
@@ -857,6 +878,9 @@ def _subagent_mix_args(
         "branches": branches,
         "per_session": per_session,
         "since": since,
+        "since_date": since_date,
+        "until_date": until_date,
+        "reprice_as": reprice_as,
         "extra_config_dirs": extra_config_dirs,
     })()
 
@@ -1147,6 +1171,284 @@ class TestSubagentMixModelMix:
         _mod.cmd_subagent_mix(_subagent_mix_args())  # must not raise TypeError
         out = capsys.readouterr().out
         assert "(1 meta.json files failed to parse, excluded)" in out
+
+
+class TestSubagentMixDollars:
+    """The model-mix table's Actual$/Counterfactual$/Delta columns
+    (_dispatch_usage_summary), including --since-date/--until-date's
+    per-record (not per-dispatch) window and --reprice-as's counterfactual
+    pricing."""
+
+    def test_actual_dollars_match_hand_computed_usage(self, fake_projects, capsys):
+        """1,000,000 input tokens at claude-sonnet-4-6's $3.00/MTok base rate
+        prices to exactly $3.00, with every other usage field at zero."""
+        session_id = "sess-actual"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Actual$"] == "$3.00"
+
+    def test_reprice_as_delta_arithmetic(self, fake_projects, capsys):
+        """The same 1,000,000-input-token dispatch re-priced at
+        claude-haiku-4-5-20251001's $1.00/MTok rate: Actual $3.00,
+        Counterfactual $1.00, Delta (Actual − Counterfactual) $2.00."""
+        session_id = "sess-reprice"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-haiku-4-5-20251001"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
+        assert cols["Actual$"] == "$3.00"
+        assert cols["Counterfactual$"] == "$1.00"
+        assert cols["Delta"] == "$2.00"
+
+    def test_reprice_as_same_model_yields_zero_delta(self, fake_projects, capsys):
+        """--reprice-as set to the dispatch's own real model must not diverge
+        from the actual-dollars path -- Delta is exactly $0.00, not merely
+        close to it, since both columns price the identical usage at the
+        identical model ID."""
+        session_id = "sess-reprice-same"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000, output_tokens=500)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-sonnet-4-6"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
+        assert cols["Actual$"] == cols["Counterfactual$"]
+        assert cols["Delta"] == "$0.00"
+
+    def test_invalid_reprice_as_value_exits_nonzero_listing_valid_ids(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_subagent_mix(_subagent_mix_args(reprice_as="not-a-real-model"))
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "subagent-mix: --reprice-as" in err
+        assert "not-a-real-model" in err
+        assert "claude-opus-5" in err  # one of _MODEL_BASE_INPUT_RATES' listed valid IDs
+
+    def test_since_date_boundary_is_inclusive(self, fake_projects, capsys):
+        """A sidechain record timestamped exactly at --since-date's own
+        day-start instant is included, not excluded -- the [since_ts, ...)
+        lower bound is inclusive."""
+        session_id = "sess-since-boundary"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst(
+                "claude-sonnet-4-6", input_tokens=1_000_000, ts="2026-07-01T00:00:00.000Z",
+            )],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args(since_date="2026-07-01"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Actual$"] == "$3.00"
+
+    def test_until_date_boundary_is_exclusive(self, fake_projects, capsys):
+        """A sidechain record timestamped exactly at --until-date's own
+        day-after instant (the [..., until_ts) upper bound) is excluded, not
+        included -- the dispatch itself still counts as a Run since window
+        filtering scopes only the dollar columns, not Runs/Observed."""
+        session_id = "sess-until-boundary"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst(
+                "claude-sonnet-4-6", input_tokens=1_000_000, ts="2026-07-02T00:00:00.000Z",
+            )],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args(until_date="2026-07-01"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Runs"] == "1"
+        assert cols["Actual$"] == "$0.00"
+
+    def test_boundary_straddling_dispatch_prices_only_in_window_records(self, fake_projects, capsys):
+        """A single dispatch's own sidechain straddles --until-date: one
+        record before the cutoff, one after. Only the before-cutoff record's
+        usage may be priced into Actual $ -- a per-dispatch (rather than
+        per-record) filter would either price the whole $12.00 sidechain or
+        none of it, never the correct $3.00 in-window slice. Direct
+        regression test for _dispatch_usage_summary's per-record filtering."""
+        session_id = "sess-straddle"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [
+                _priced_sidechain_asst(
+                    "claude-sonnet-4-6", input_tokens=1_000_000, ts="2026-07-01T00:00:00.000Z",
+                ),
+                _priced_sidechain_asst(
+                    "claude-sonnet-4-6", input_tokens=3_000_000, ts="2026-07-02T00:00:00.000Z",
+                ),
+            ],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args(until_date="2026-07-01"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Actual$"] == "$3.00"
+
+    def test_synthetic_only_sidechain_renders_zero_dollars(self, fake_projects, capsys):
+        """A sidechain whose only recorded model is the literal "<synthetic>"
+        has no priced usage at all -- Actual $ renders "$0.00", never a crash
+        or a bare "None"."""
+        session_id = "sess-synthetic-dollars"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_asst("<synthetic>", branch="main", sidechain=True)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())  # must not raise
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Actual$"] == "$0.00"
+
+    def test_dollar_totals_not_merged_across_roots_under_multi_root_redaction(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """The model-mix table is keyed on the redacted (root, subagent_type)
+        label -- two accounts' same-named "staff-sdet" dispatches must each
+        keep their own Actual $ total, never summed into one merged row that
+        blends two accounts' dollar figures."""
+        session_id = "sess-a"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-other-repo"
+        proj_b.mkdir(parents=True)
+        session_id_b = "sess-b"
+        _write_jsonl(proj_b / f"{session_id_b}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            proj_b, session_id_b, "agent-b1", "b1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=2_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
+        out = capsys.readouterr().out
+        # _redaction_ordinals sorts by resolved path, not scan/insertion order,
+        # so which physical root lands on account-1 vs account-2 isn't asserted
+        # here -- only that the two accounts' dollar totals stay distinct
+        # (never summed into one merged $9.00 row).
+        cols_a = _table_cols(
+            out, header_contains="Actual$", row_contains="account-1/agent-type-1",
+            row_startswith=True, max_labels=5,
+        )
+        cols_b = _table_cols(
+            out, header_contains="Actual$", row_contains="account-2/agent-type-1",
+            row_startswith=True, max_labels=5,
+        )
+        assert {cols_a["Actual$"], cols_b["Actual$"]} == {"$3.00", "$6.00"}
+
+    def test_reprice_as_more_expensive_model_yields_negative_delta(self, fake_projects, capsys):
+        """--reprice-as a model *pricier* than the dispatch's own real model
+        (a realistic use case: "what would this have cost on Opus?") must
+        render Delta with the conventional -$N.NN form, not $-N.NN -- covers
+        _fmt_usd's negative branch, which every other reprice test in this
+        class leaves unexercised since they all reprice to something
+        cheaper or identical."""
+        session_id = "sess-reprice-pricier"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-opus-5"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
+        assert cols["Actual$"] == "$3.00"
+        assert cols["Counterfactual$"] == "$5.00"
+        assert cols["Delta"] == "-$2.00"
+
+    def test_actual_dollars_sum_across_multiple_dispatches_of_same_agent_type(self, fake_projects, capsys):
+        """Two separate dispatches of the same agent_type under one root must
+        accumulate into one row's Actual$ total (row["actual_dollars"] +=),
+        not overwrite or double-count -- the multi-root test above never
+        exercises this since it keeps exactly one dispatch per account."""
+        session_id = "sess-multi-dispatch"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-sdet"), _agent_use("a2", "staff-sdet"),
+            ]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "a2",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=2_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Runs"] == "2"
+        assert cols["Actual$"] == "$9.00"
+
+    def test_unpriced_turn_surfaced_not_silently_zero(self, fake_projects, capsys):
+        """A turn whose model ID isn't in _MODEL_BASE_INPUT_RATES must not
+        silently read as a genuinely zero-cost dispatch -- matches cost's own
+        "(N unpriced turns / M tokens excluded ...)" convention. Before this
+        fix, _dispatch_usage_summary discarded _price_turn's unpriced-tokens
+        return value entirely."""
+        session_id = "sess-unpriced"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst(
+                "claude-unreleased-model", input_tokens=1_000_000, output_tokens=500,
+            )],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Actual$"] == "$0.00"
+        assert "1 unpriced turns / 1,000,500 tokens excluded" in out
 
 
 class TestDeclaredPinPathSafety:
