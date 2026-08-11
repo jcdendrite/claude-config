@@ -1069,8 +1069,30 @@ _LIB_HOME_ROOTED_PATH_REGEX='(/Users/[A-Za-z0-9_.-]+|/home/[A-Za-z0-9_.-]+)'
 # A 32+ contiguous hex-char run, or a UUID-shaped (8-4-4-4-12) hex sequence.
 _LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'
 
-# A hostname ending in a non-public-suffix TLD.
-_LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|local|lan|intranet|private)([^A-Za-z0-9_-]|$)'
+# A hostname ending in a non-public-suffix TLD. Two alternatives, not one,
+# because "local" alone needs a tighter trailing boundary than the other
+# five words: "local" is both a legitimate zeroconf/mDNS TLD (printer[.]local)
+# and a ubiquitous per-machine-override filename convention (.env[.]local,
+# settings.local.json, docker-compose.local.yml), so its boundary excludes a
+# "." *only when that dot is itself followed by another identifier
+# character* -- without that qualifier, "settings.local.json" (this repo's
+# own documented convention) false-positives, since "local" followed by
+# another dot-segment ("json") reads as a boundary under a looser class even
+# though "local" isn't ending anything there. Qualifying the exclusion this
+# way (rather than excluding every trailing dot outright) keeps a sentence-
+# final period after a real "*.local" hostname ("Deployed to host[.]local.")
+# matching: that trailing dot isn't followed by another identifier character,
+# so it still counts as a boundary. The other five words (internal, corp,
+# lan, intranet, private) keep the original, looser boundary: real
+# corp-internal hostnames commonly take the FQDN shape
+# `host[.]corp[.]<company>[.]com`, where the TLD-like word is a subdomain
+# label followed by more dot-segments, not the literal string end --
+# narrowing their boundary the same way "local" needed would stop catching
+# exactly that shape. Bracket-expression dots (`[.]`), not literal ones, in
+# this comment's illustrative genuinely-matching examples above, the same
+# trick the SSH-key-path detector's own comment above uses -- otherwise this
+# comment would trip the very detector it documents.
+_LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|private)([^A-Za-z0-9_-]|$)|[A-Za-z0-9.-]+\.local([^A-Za-z0-9_.-]|\.([^A-Za-z0-9]|$)|$)'
 
 # A `#`-prefixed lowercase-hyphenated Slack-channel shape.
 # - Excludes all-digit runs so a plain GitHub issue reference (e.g. issue

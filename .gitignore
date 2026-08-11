@@ -12,6 +12,21 @@ __pycache__/
 .claude/settings.local.json
 .claude/worktrees/
 
+# The two paths above, again, but at their package-relative shadow under
+# claude/.claude/ -- the root-anchored entries don't cover this path. A
+# prior `stow --adopt` run can leave ~/.claude/worktrees and
+# ~/.claude/settings.local.json physically resolving here instead of at repo
+# root, until install.sh's un-adopt migration moves them back out.
+claude/.claude/settings.local.json
+claude/.claude/worktrees/
+
+# ~/.claude/tmp/ is Claude Code's own runtime scratch directory (no known
+# writer in this repo's own scripts, unlike the entries above) -- protected
+# here for the same reason as the "Claude Code CLI-managed runtime state"
+# block below, once install.sh's un-adopt migration has moved it out from
+# under claude/.claude/tmp/ and back to a real ~/.claude/tmp/.
+claude/.claude/tmp/
+
 # Stow package path for plan files. .claude/plans/ above is root-anchored and
 # does not cover this path. Without this entry, stow --adopt could re-track
 # scratch plan files written into ~/.claude/plans/ via the package symlink.

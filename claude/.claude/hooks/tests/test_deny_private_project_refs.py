@@ -2124,6 +2124,78 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
+    def test_structural_internal_hostname_local_filename_continuation_not_flagged_allowed(
+        self, claude_config_repo
+    ):
+        """'local' immediately followed by another dot-segment
+        ('settings.local.json') must not match — 'local' is both a
+        legitimate zeroconf TLD and a ubiquitous per-machine-override
+        filename convention (.env.local, settings.local.json), so its
+        boundary excludes a following dot only when that dot is itself
+        followed by another identifier character. Without this, this repo's
+        own settings.local.json convention (documented in CLAUDE.md)
+        false-positives on every commit that mentions it."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Track claude/.claude/settings.local.json in .gitignore'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_internal_hostname_local_sentence_final_period_denied(
+        self, claude_config_repo
+    ):
+        """A real '.local' hostname immediately followed by a sentence-final
+        period ('myhost.local.') must still match — the filename-
+        continuation exclusion above only excludes a trailing dot when
+        another identifier character follows it, not a bare trailing dot at
+        the very end of the message. Without this qualifier, narrowing the
+        boundary to fix settings.local.json (see the test above) would also
+        stop catching this real hostname shape."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Reachable at myhost.local.'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_internal_hostname_local_mid_sentence_trailing_period_denied(
+        self, claude_config_repo
+    ):
+        """Same as the sentence-final case above, but with trailing prose
+        after the period ('Deployed to host.local. Verify DNS next') -- pins
+        that the boundary also treats a dot followed by a space as a
+        boundary, not only end-of-string."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Deployed to host.local. Verify DNS next'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_internal_hostname_fqdn_shape_still_denied(self, claude_config_repo):
+        """The other five TLD words (not 'local') keep the original,
+        looser trailing boundary: a real corp-internal hostname commonly
+        takes the FQDN shape 'host.corp.<company>.com', where the TLD-like
+        word is a subdomain label followed by more dot-segments, not the
+        literal string end. Narrowing their boundary the same way 'local'
+        needed would stop catching exactly this shape -- pin that it
+        doesn't."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'admin.corp.example.com is the real host'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
     # Slack-channel shape
 
     def test_structural_slack_channel_no_reference_allowed(self, claude_config_repo):
