@@ -6787,6 +6787,24 @@ class TestDedupTurnsByRequestId:
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(4.00)
 
+    def test_shared_request_id_merges_across_main_and_sidechain_records(self):
+        """A requestId shared by a main-thread record and a sidechain record
+        merges into one turn — the merge condition checks requestId equality
+        alone, not isSidechain, relying on requestId's global uniqueness (see
+        this function's own docstring). include_subagents=True concatenates a
+        session's main file with its subagent files into one records list
+        before dedup runs, so this boundary is reachable in that concatenated
+        list even though it never occurs within a single raw JSONL file."""
+        main_rec = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}],
+                          request_id="req-1", sidechain=False)
+        side_rec = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}],
+                          request_id="req-1", sidechain=True)
+        result = _mod._dedup_turns_by_request_id([main_rec, side_rec])
+        assert len(result) == 1
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
+        ]
+
 
 class TestCostBranchFilter:
     """--branches: per-record (not per-session) gitBranch filtering."""
