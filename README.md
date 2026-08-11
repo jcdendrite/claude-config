@@ -357,6 +357,30 @@ touch ~/.claude/track-permission-prompts
 
 See [`docs/permission-prompt-tracking.md`](docs/permission-prompt-tracking.md) for the log location/format, redaction coverage, and known limitations.
 
+### Error-mode analysis nudge
+
+`nudge-error-mode-analysis.sh` (a `UserPromptSubmit` hook) watches the current session's transcript for a repeated-failure pattern — hook denials, failed test runs, and user-correction phrases — and, once that composite crosses a threshold, suggests offering to run `/error-mode-analysis` if the current work looks close to delivered. It's off by default for every contributor.
+
+`./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
+
+```bash
+touch ~/.claude/.error-mode-nudge-enabled
+```
+
+See [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) for the fire predicate, log location, and known limitations.
+
+### Cost ledger recording
+
+`transcript-analysis.py cost-ledger --record` appends this repo's current-week cost and efficiency figures to `docs/cost-ledger.md`, a durable row this repo keeps once Claude Code's rolling transcript cleanup deletes the source data it was computed from. Off by default; a week not recorded while its transcripts are still on disk can't be recovered later.
+
+`./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
+
+```bash
+touch ~/.claude/.cost-ledger-enabled
+```
+
+See [`docs/cost-ledger.md`](docs/cost-ledger.md) for the schema and recording mechanics.
+
 ### Repo relocation
 
 Moving or renaming this checkout (`mv ~/current-location/claude-config ~/somewhere-else`) breaks every stow symlink under `~/.claude/` and `~/.local/bin/` at once — the symlinks stow created encode the checkout's location, and since `~/.claude/hooks/`, `~/.claude/skills/`, and the `~/.local/bin/*` wrappers are themselves part of what breaks, nothing is left running inside the checkout that could detect or explain the failure. Two guardrails address this:
