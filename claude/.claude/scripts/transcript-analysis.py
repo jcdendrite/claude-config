@@ -1138,6 +1138,7 @@ def cmd_subagents(args: argparse.Namespace) -> None:
 
     for jsonl, records in session_iter:
         root_idx = _root_index_for_path(jsonl, resolved_roots) if multi_root else None
+        records = _dedup_turns_by_request_id(records)
         corpus_spawns += _count_subagent_spawns(records)
         # tool_use id -> tool name, built inline as records are walked in
         # order: a tool_result always follows its own tool_use within the
@@ -4637,6 +4638,11 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     unpriced_tokens = 0
 
     for jsonl, records in session_iter:
+        # One API call = one turn: dedup merges a requestId run's content
+        # blocks into one union list, so the classification and judgment-span
+        # tracking below see every block (e.g. a Skill/ExitPlanMode tool_use
+        # on a later block), while the run's dollars are attributed once.
+        records = _dedup_turns_by_request_id(records)
         proj_label = _derive_proj_label(jsonl)
         session_id = jsonl.stem[:12]
         if redact:
@@ -4953,6 +4959,135 @@ def _context_at_turn(usage: dict) -> int:
 
 def _context_bucket(context_at_turn: int) -> str:
     return _CONTEXT_BUCKET_OVER if context_at_turn >= _CONTEXT_BUCKET_THRESHOLD else _CONTEXT_BUCKET_UNDER
+
+
+def _dedup_turns_by_request_id(records: Sequence[dict]) -> list[dict]:
+    """Collapse consecutive same-requestId assistant records into one turn each.
+
+    Claude Code writes one JSONL record per assistant content block (thinking /
+    text / tool_use); every record from one API call shares one requestId.
+    Measured across 150 transcripts / 15,653 multi-record runs: input_tokens,
+    cache_creation_input_tokens, and cache_read_input_tokens are identical
+    across every record in a run, but output_tokens ascends within the run
+    and completes only on the run's last record (see _warn_if_run_usage_drift
+    for the runtime check on the input/cache invariant), so pricing or
+    counting per raw record inflates dollars and turn counts by however many
+    blocks the response split into, and taking usage from the run's first
+    record undercounts output tokens. This merges each run of consecutive
+    assistant records sharing one non-empty requestId into a single record:
+    message.content becomes the concatenation of the run's own content blocks
+    in original order (so a caller that classifies on content sees every
+    block, not just one); every other field is taken from the run's first
+    record except message.usage, which is taken from the run's last record.
+    A missing/null/empty requestId never merges with another missing one:
+    each such record stays its own one-record turn, since real transcripts
+    carry requestId-less records (synthetic all-zero-usage API-error
+    records) that must not
+    collapse into each other. Non-assistant records pass through unchanged
+    and end any run in progress. Callers must never concatenate records from
+    different sessions before calling this: requestId is unique per API call
+    and a run's own records are always contiguous, so concatenating one
+    session's main transcript with its own subagent transcripts is safe, but
+    mixing in another session's records is not. A run continues on
+    requestId equality alone (not also isSidechain/type), relying on
+    requestId uniqueness. Merging shifts --since semantics: a merged turn's
+    timestamp is its first block's, so "since" now means the turn started
+    after the cutoff, not that some block of it landed after the cutoff.
+    """
+    turns: list[dict] = []
+    run: list[dict] = []
+    run_key: str | None = None
+
+    for rec in records:
+        is_assistant = rec.get("type") == "assistant"
+        request_id = rec.get("requestId") if is_assistant else None
+        continues_run = is_assistant and request_id and request_id == run_key
+
+        if not continues_run and run:
+            turns.append(run[0] if len(run) == 1 else _merge_assistant_run(run))
+            run = []
+
+        if is_assistant:
+            run.append(rec)
+            run_key = request_id
+        else:
+            turns.append(rec)
+            run_key = None
+
+    if run:
+        turns.append(run[0] if len(run) == 1 else _merge_assistant_run(run))
+
+    return turns
+
+
+def _merge_assistant_run(run: list[dict]) -> dict:
+    """Merge one requestId run of assistant records into a single synthetic record.
+
+    message.content is the concatenation of every record's own content blocks,
+    in original order. Every other field (uuid, parentUuid, timestamp) is
+    taken from the run's first record -- the documented --since semantics
+    depend on the first block's timestamp. message.usage is taken from the
+    run's LAST record instead: input_tokens and the cache_* classes are
+    identical across a run, but output_tokens ascends within the run and
+    only reaches its billed value on the last record (measured across 150
+    transcripts / 15,653 multi-record runs -- see _warn_if_run_usage_drift).
+    """
+    _warn_if_run_usage_drift(run)
+    merged = dict(run[0])
+    merged_message = dict(merged.get("message") or {})
+    merged_content: list = []
+    for rec in run:
+        merged_content.extend((rec.get("message") or {}).get("content") or [])
+    merged_message["content"] = merged_content
+    merged_message["usage"] = (run[-1].get("message") or {}).get("usage")
+    merged["message"] = merged_message
+    return merged
+
+
+# Names the usage keys _warn_if_run_usage_drift treats as required-invariant
+# across a requestId run: measured identical in 15,653/15,653 multi-record
+# runs (see _dedup_turns_by_request_id's docstring). output_tokens is
+# deliberately excluded -- it ascends within a run by design, completing on
+# the last record, so divergence there is the documented norm, not drift.
+# cache_creation's nested ephemeral_1h/5m_input_tokens need no separate entry:
+# both measured invariant across the same 15,653 runs, and every run's first
+# and last record alike carried a cache_creation block.
+_USAGE_DRIFT_INVARIANT_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+# Rate-limits _warn_if_run_usage_drift to one line per process, mirroring
+# _warn_if_subagent_format_drift's pattern -- a whole-corpus scan should
+# surface one signal that the format changed, not one per occurrence.
+_usage_drift_warned = False
+
+
+def _warn_if_run_usage_drift(run: list[dict]) -> None:
+    """Emit one stderr warning per process when a requestId run's records
+    disagree on an input/cache usage class that's measured invariant across
+    a run (see _USAGE_DRIFT_INVARIANT_KEYS).
+
+    _merge_assistant_run relies on these classes being identical across every
+    record of one API call to price a merged turn correctly regardless of
+    which record's value it reads; this is the runtime canary for that
+    assumption. A warning rather than a raise, so one malformed session
+    doesn't abort a whole-corpus scan.
+    """
+    global _usage_drift_warned
+    if _usage_drift_warned:
+        return
+    first_usage = (run[0].get("message") or {}).get("usage") or {}
+    for rec in run[1:]:
+        rec_usage = (rec.get("message") or {}).get("usage") or {}
+        if any(rec_usage.get(key) != first_usage.get(key) for key in _USAGE_DRIFT_INVARIANT_KEYS):
+            print(
+                f"WARNING: requestId {run[0].get('requestId')!r} has non-identical "
+                "input/cache usage across its own records — _merge_assistant_run's "
+                "invariant-usage assumption may no longer hold (further occurrences "
+                "this run of the CLI are suppressed). The Claude Code transcript "
+                "format may have changed.",
+                file=sys.stderr,
+            )
+            _usage_drift_warned = True
+            return
 
 
 def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, int]:
@@ -5488,6 +5623,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     project_repr_label: dict[tuple[int | None, str], _RedactMapKey] = {}
 
     for jsonl, records in session_iter:
+        records = _dedup_turns_by_request_id(records)
         raw_proj_label = _derive_proj_label(jsonl)
         session_id = jsonl.stem[:12]
         if redact and not summary_mode:
@@ -5843,6 +5979,7 @@ def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path]
     total_dollars = 0.0
 
     for _jsonl, records in session_iter:
+        records = _dedup_turns_by_request_id(records)
         main_thread_turns: list[tuple[int, int, int]] = []
         session_total = 0.0
 
@@ -6081,6 +6218,11 @@ def _scan_edit_format_session(records: list[dict]) -> dict:
     # deferred to a second pass below rather than run inline as each failure
     # is seen -- an inline lookup could only ever see edits already scanned.
     pending_notfound: list[tuple[str, str]] = []  # (tool_use_id, err_text)
+
+    # One API call = one turn: dedup merges a requestId run's usage into a
+    # single record, so output_tokens below is summed once per turn, not
+    # once per content block.
+    records = _dedup_turns_by_request_id(records)
 
     for rec in records:
         msg = rec.get("message") or {}
@@ -6917,6 +7059,7 @@ def _compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]],
     unpriced_tokens = 0
 
     for _jsonl, records in session_iter:
+        records = _dedup_turns_by_request_id(records)
         for rec in records:
             if rec.get("type") != "assistant":
                 continue
@@ -7772,6 +7915,11 @@ def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
     _print_resolved_scope("audit-routing-shape", scope_label, roots)
 
     for _jsonl, records in session_iter:
+        # One API call = one turn: dedup merges a requestId run's content
+        # blocks into one union list, so classification and file-count
+        # counting below see every block, while the run's output tokens are
+        # attributed once. Mirrors cmd_audit_routing's own dedup call.
+        records = _dedup_turns_by_request_id(records)
         session_turns: list[dict] = []
 
         # Judgment span state machine — duplicated from cmd_audit_routing intentionally.
@@ -8003,6 +8151,12 @@ def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
 
     for jsonl, records in session_iter:
         session_id = jsonl.stem
+        # One API call = one turn: dedup merges a requestId run's content
+        # blocks into one union list, so classification below sees every
+        # block (e.g. the first tool_use block promised by this function's
+        # own docstring may land on a later raw record). Mirrors
+        # cmd_audit_routing's own dedup call.
+        records = _dedup_turns_by_request_id(records)
 
         # Build per-session records list with kind classification.
         # Judgment span state machine — duplicated from cmd_audit_routing intentionally.
