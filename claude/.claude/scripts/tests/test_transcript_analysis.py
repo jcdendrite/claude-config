@@ -5256,6 +5256,7 @@ def _priced(
     ts: str = "2026-05-19T10:00:00.000Z",
     branch: str = "main",
     request_id: str | None = None,
+    content: list | None = None,
 ) -> dict:
     """Build an assistant record with explicit priced usage fields for cost tests.
 
@@ -5265,9 +5266,12 @@ def _priced(
     two always agree. flat_cache_creation=N omits the nested block entirely and
     emits only the flat field (the pre-nested-block fallback shape), ignoring
     ephemeral_1h/ephemeral_5m. branch="main" by default so every pre-existing
-    call site (predating --branches) is unaffected.
+    call site (predating --branches) is unaffected. content=None (the default)
+    keeps every pre-existing call site's empty-content shape; rearm-backtest's
+    boundary-detection tests pass real tool_use/tool_result blocks instead,
+    needing both a realistic content shape and known, priced usage in one record.
     """
-    rec = _asst(model, branch=branch, ts=ts, content=[], request_id=request_id)
+    rec = _asst(model, branch=branch, ts=ts, content=content if content is not None else [], request_id=request_id)
     usage: dict = {
         "input_tokens": input,
         "output_tokens": output,
@@ -15358,3 +15362,505 @@ class TestBuildRedactMapDirectUnit:
             (ordinal_a, "testrepo"): f"account-{ordinal_a}/private-project-1",
             (ordinal_b, "testrepo"): f"account-{ordinal_b}/private-project-1",
         }
+
+
+# ---------------------------------------------------------------------------
+# rearm-backtest
+# ---------------------------------------------------------------------------
+
+
+def _rearm_backtest_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    branches: str | None = None,
+    no_redact: bool = False,
+    extra_config_dirs: list[str] | None = None,
+    spacings: str | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "branches": branches,
+        "no_redact": no_redact,
+        "extra_config_dirs": extra_config_dirs,
+        "spacings": spacings,
+    })()
+
+
+def _tool_use_asst(model: str, tool_id: str, *, output: int = 100, ts: str = "2026-05-19T10:00:00.000Z") -> dict:
+    """A priced main-thread assistant turn carrying a real Bash tool_use block
+    -- _priced's content=[] default can't exercise _hook_observable_boundaries,
+    which needs a tool_use/tool_result content shape (not just known usage) to
+    tell a tool-call-only stretch apart from a genuine user message."""
+    return _priced(model, output=output, ts=ts, content=[_bash_use(tool_id, "echo hi")])
+
+
+def _ramp_curve_from_records(*sessions_records: list[dict]) -> tuple[dict[str, dict[str, float]], int]:
+    """Build _ramp_curve_from_corpus's own input the way _rearm_backtest_report
+    does -- one _extract_rearm_session_turns call per session's raw records --
+    for TestRampCurveFromCorpus's synthetic-records tests."""
+    return _mod._ramp_curve_from_corpus(_mod._extract_rearm_session_turns(recs) for recs in sessions_records)
+
+
+class TestHookEffectiveFireThreshold:
+    def test_200k_window_model_fires_at_40pct_not_the_abs_cap(self):
+        """A 200k-context-window model's real fire point is 80,000 (40% of
+        its own window) -- well under the 1M-window arm's 360,000 cap, so
+        using the cap uniformly for every session would understate how early
+        such sessions actually get nudged today."""
+        assert _mod._hook_effective_fire_threshold("claude-sonnet-4-5") == 80_000
+
+    def test_1m_window_model_fires_at_the_abs_cap_not_40pct(self):
+        """A 1M-context-window model's 40% figure (400,000) exceeds
+        _HANDOFF_NUDGE_ABS_CAP, so the cap governs instead."""
+        assert _mod._hook_effective_fire_threshold("claude-sonnet-5") == 360_000
+
+
+class TestHookObservableBoundaries:
+    def test_tool_call_only_stretch_produces_no_mid_stretch_boundary(self):
+        """Three tool_use turns chained by tool_result-bearing user records,
+        then one genuine user message, contribute exactly one internal
+        boundary -- at position 3 (after the third turn), not one per turn --
+        since Stop only fires once the agent yields back to the user."""
+        records = [
+            _tool_use_asst("claude-sonnet-5", "t1"),
+            _user_msg([_tool_result("t1", "ok")]),
+            _tool_use_asst("claude-sonnet-5", "t2"),
+            _user_msg([_tool_result("t2", "ok")]),
+            _tool_use_asst("claude-sonnet-5", "t3"),
+            _user_msg("please continue"),
+        ]
+        assert _mod._hook_observable_boundaries(records) == [0, 3]
+
+    def test_genuine_multi_turn_conversation_produces_one_boundary_per_turn(self):
+        """Each turn immediately followed by a genuine user message
+        contributes its own boundary."""
+        records = [
+            _priced("claude-sonnet-5", output=100), _user_msg("go on"),
+            _priced("claude-sonnet-5", output=100), _user_msg("go on"),
+            _priced("claude-sonnet-5", output=100), _user_msg("go on"),
+        ]
+        assert _mod._hook_observable_boundaries(records) == [0, 1, 2, 3]
+
+    def test_session_end_with_no_trailing_user_message_still_surfaces_boundary(self):
+        """A session whose last record is an assistant turn with no further
+        user message still gets a boundary at session end -- the case
+        nudge-handoff-near-context-cap.sh's own Stop registration exists to
+        cover (docs/handoff-nudge.md: "registered on both events so a session
+        that crosses the threshold on its final turn... still gets warned")."""
+        records = [
+            _user_msg("go"),
+            _priced("claude-sonnet-5", output=100),
+            _priced("claude-sonnet-5", output=100),
+        ]
+        assert _mod._hook_observable_boundaries(records) == [0, 2]
+
+
+class TestRampCurveFromCorpus:
+    def test_turn_index_bucket_edges_match_pr605_bands_including_the_gap(self):
+        """PR #605's own table never labeled turn index 10-19 (its bands jump
+        from "5-10" to "20-40"); the cascading less-than lookup this reuses
+        from _EDIT_OLD_STRING_SIZE_BUCKETS' own convention folds that range
+        into "20-40" rather than leaving it unbucketed."""
+        cases = {
+            0: "0-5", 4: "0-5",
+            5: "5-10", 9: "5-10",
+            10: "20-40", 19: "20-40", 39: "20-40",
+            40: "40-80", 79: "40-80",
+            80: "80-150", 149: "80-150",
+            150: "150-300", 299: "150-300",
+            300: "300+", 1000: "300+",
+        }
+        for turn_index, expected_label in cases.items():
+            assert _mod._ramp_curve_turn_index_bucket(turn_index) == expected_label, turn_index
+
+    def test_sane_rate_and_mean_context_on_synthetic_corpus_with_known_growth(self):
+        """A two-turn session with known input/output/context, both turns
+        landing in the '0-5' bucket, produces a hand-computed $/1k-output
+        rate and output-token-weighted mean context -- not a bounds check."""
+        recs = [
+            _priced("claude-sonnet-5", input=100_000, output=1000, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=200_000, output=3000, ts="2026-05-19T10:01:00.000Z"),
+        ]
+        curve, total_output_tokens = _ramp_curve_from_records(recs)
+        rates = _mod._model_rates("claude-sonnet-5")
+        turn1_dollars = 100_000 / 1_000_000 * rates["input"] + 1000 / 1_000_000 * rates["output"]
+        turn2_dollars = 200_000 / 1_000_000 * rates["input"] + 3000 / 1_000_000 * rates["output"]
+        expected_rate = (turn1_dollars + turn2_dollars) / ((1000 + 3000) / 1000)
+        expected_mean_context = (100_000 * 1000 + 200_000 * 3000) / (1000 + 3000)
+        assert curve["0-5"]["rate"] == pytest.approx(expected_rate)
+        assert curve["0-5"]["mean_context"] == pytest.approx(expected_mean_context)
+        assert total_output_tokens == 1000 + 3000
+
+    def test_bucket_with_zero_turns_falls_back_to_corpus_wide_rate_not_nan(self):
+        """A corpus with data only in the '0-5' bucket still returns a
+        defined, non-NaN rate/mean_context for a bucket with zero turns
+        (e.g. '300+'), equal to the corpus-wide rate/context since '0-5' is
+        the only contributing bucket -- not a division-by-zero or NaN
+        propagating into _simulate_rearm_spacing."""
+        recs = [_priced("claude-sonnet-5", input=100_000, output=1000)]
+        curve, _total_output_tokens = _ramp_curve_from_records(recs)
+        assert curve["300+"]["rate"] == pytest.approx(curve["0-5"]["rate"])
+        assert curve["300+"]["mean_context"] == pytest.approx(curve["0-5"]["mean_context"])
+
+    def test_whole_corpus_unpriced_reports_zero_total_output_tokens(self):
+        """A corpus whose only turns are on an unpriced model can't compute
+        a real ramp curve at all -- total_output_tokens is 0, letting a
+        caller (_rearm_backtest_report) tell "genuinely cheap ramp" apart
+        from "curve couldn't be computed", which every bucket's own
+        rate/mean_context (both silently 0.0 here) can't distinguish."""
+        recs = [_priced("claude-opus-4-7", input=100_000, output=1000)]  # unpriced model
+        curve, total_output_tokens = _ramp_curve_from_records(recs)
+        assert total_output_tokens == 0
+        assert curve["0-5"]["rate"] == 0.0
+
+
+class TestSimulateRearmSpacing:
+    def test_hand_computed_dollar_total_with_a_single_split(self):
+        """One band crossing splits the session into an actual-priced prefix
+        and a ramp-priced remainder -- hand-computed against a synthetic ramp
+        curve, not a bounds check against baseline or a naive reprice."""
+        ramp_curve = {label: {"rate": 1.0, "mean_context": 0.0} for label in _mod._RAMP_CURVE_BUCKET_LABELS}
+        ramp_curve["0-5"] = {"rate": 2.0, "mean_context": 100.0}
+        turns = [
+            (0, 50, 5.0),
+            (50, 60, 6.0),      # abs=110 >= threshold(100) at boundary 2 -> split after this turn
+            (110, 10, 999.0),   # post-split turn 0: priced at ramp rate, not the (unreachable) actual 999.0
+        ]
+        boundaries = [0, 1, 2, 3]
+        total, _ctx_weighted, weight = _mod._simulate_rearm_spacing(
+            turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100,
+        )
+        assert total == pytest.approx(5.0 + 6.0 + (10 / 1000 * 2.0))
+        assert weight == 50 + 60 + 10
+
+    def test_two_sequential_rearms_within_one_session(self):
+        """A remainder that itself crosses a second band splits again -- the
+        compounding re-arm this feature exists to model, distinct from a
+        one-shot baseline that only ever splits once."""
+        ramp_curve = {label: {"rate": 1.0, "mean_context": 0.0} for label in _mod._RAMP_CURVE_BUCKET_LABELS}
+        turns = [
+            (0, 50, 5.0),
+            (50, 60, 6.0),       # split 1 after this turn (abs=110 >= 100)
+            (110, 10, 999.0),    # ramp-priced, turns-since-restart 0
+            (120, 200, 999.0),   # abs=320 >= 150 (100 + 1*50) -> split 2 after this turn
+            (320, 5, 999.0),     # ramp-priced again, turns-since-restart 0 (post split 2)
+        ]
+        boundaries = [0, 1, 2, 3, 4, 5]
+        total, _ctx_weighted, weight = _mod._simulate_rearm_spacing(
+            turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100,
+        )
+        expected = 5.0 + 6.0 + (10 / 1000 * 1.0) + (200 / 1000 * 1.0) + (5 / 1000 * 1.0)
+        assert total == pytest.approx(expected)
+        assert weight == 50 + 60 + 10 + 200 + 5
+
+    def test_response_lag_delays_the_split_point(self):
+        """response_lag_tokens shifts a band's trigger point later -- the
+        compliance-realistic model's operator-response-lag correction."""
+        ramp_curve = {label: {"rate": 5.0, "mean_context": 0.0} for label in _mod._RAMP_CURVE_BUCKET_LABELS}
+        turns = [
+            (0, 50, 5.0),
+            (50, 60, 6.0),
+            (110, 20, 7.0),
+        ]
+        boundaries = [0, 1, 2, 3]
+        total_no_lag, _c1, _w1 = _mod._simulate_rearm_spacing(
+            turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100, response_lag_tokens=0,
+        )
+        total_with_lag, _c2, _w2 = _mod._simulate_rearm_spacing(
+            turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100, response_lag_tokens=20,
+        )
+        # No lag: the crossing fires after turn index 1 (abs=110 >= 100), so
+        # turn index 2's dollars are ramp-priced (20/1000*5.0=0.1) instead of actual (7.0).
+        assert total_no_lag == pytest.approx(5.0 + 6.0 + 0.1)
+        # With a 20-token lag, that same crossing isn't detectable until
+        # abs>=120, which only happens after turn index 2 -- too late for any
+        # turn to be re-priced, so every turn keeps its actual dollars.
+        assert total_with_lag == pytest.approx(5.0 + 6.0 + 7.0)
+        assert total_with_lag > total_no_lag
+
+
+class TestParseNudgeLogEntries:
+    def test_all_three_line_shapes_are_parsed(self, tmp_path):
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc123 est=400000 model=claude-opus-5 window=1000000 event=Stop\n"
+            "schema-drift session=def456 event=UserPromptSubmit\n"
+            "handoff session=abc123\n"
+        )
+        assert _mod._parse_nudge_log_entries(log_path) == [
+            {"kind": "nudged", "session": "abc123", "est": 400000, "model": "claude-opus-5",
+             "window": 1000000, "event": "Stop"},
+            {"kind": "schema-drift", "session": "def456", "event": "UserPromptSubmit"},
+            {"kind": "handoff", "session": "abc123"},
+        ]
+
+    def test_malformed_lines_are_skipped_without_raising(self, tmp_path):
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "not a recognized line at all\n"
+            "nudged session=abc est=not-an-int model=x window=1000000 event=Stop\n"
+            "nudged session=abc est=400000 model=x window=1000000\n"  # missing event=
+            "nudged session=abc bare-token-no-equals est=400000 model=x window=1000000 event=Stop\n"
+            "nudged session=abc est=400000 model=x window=1000000 event=Stop\n"  # valid
+        )
+        assert _mod._parse_nudge_log_entries(log_path) == [
+            {"kind": "nudged", "session": "abc", "est": 400000, "model": "x", "window": 1000000, "event": "Stop"},
+        ]
+
+    def test_missing_log_file_returns_empty_list(self, tmp_path):
+        assert _mod._parse_nudge_log_entries(tmp_path / "does-not-exist.log") == []
+
+
+class TestOperatorResponseLagFromLog:
+    def test_exact_match_join_measures_lag_past_the_fire_point(self):
+        session_traces = {"abc": [100, 200, 405_000, 410_000]}
+        log_entries = [
+            {"kind": "nudged", "session": "abc", "est": 405_000, "model": "x", "window": 1_000_000, "event": "Stop"},
+        ]
+        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
+        assert lags == [410_000 - 405_000]
+        assert excluded == 0
+
+    def test_no_match_is_excluded_and_counted_not_silently_dropped(self):
+        session_traces = {"abc": [100, 200]}
+        log_entries = [
+            {"kind": "nudged", "session": "does-not-exist", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+        ]
+        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
+        assert lags == []
+        assert excluded == 1
+
+    def test_first_value_at_or_above_est_is_picked_over_an_earlier_below_est_value(self):
+        """A nudged line carries no timestamp, only est= -- the join skips
+        300 (below est=400, however close) and picks 500 (index 2), the
+        trace's first value that actually reaches est. This fixture's peak-
+        from-fire-point-onward happens to land on the same lag either way a
+        fire index is chosen here (the suffix's max value dominates
+        regardless of start point), so it does not by itself distinguish
+        first-crossing from a nearest-value join -- see
+        test_post_compaction_dip_does_not_mis_join_to_a_later_closer_looking_turn
+        for the fixture that actually pins that distinction, since a
+        same-lag result requires the higher peak to be reachable from every
+        candidate start point, which a monotonically non-decreasing trace
+        (like this one) always satisfies."""
+        session_traces = {"s": [100, 300, 500]}
+        log_entries = [{"kind": "nudged", "session": "s", "est": 400, "model": "x", "window": 1, "event": "Stop"}]
+        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
+        # First value >= est is 500 (index 2); peak at or after it is 500,
+        # so lag = 500 - 400 = 100.
+        assert lags == [100]
+        assert excluded == 0
+
+    def test_no_trace_value_reaches_est_is_excluded_not_crashing(self):
+        """A trace that never reaches the logged est (e.g. a truncated or
+        mismatched transcript) can't identify a fire turn -- excluded and
+        counted, not a false join to whichever value happens to be closest."""
+        session_traces = {"s": [100, 200, 300]}
+        log_entries = [{"kind": "nudged", "session": "s", "est": 400, "model": "x", "window": 1, "event": "Stop"}]
+        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
+        assert lags == []
+        assert excluded == 1
+
+    def test_post_compaction_dip_does_not_mis_join_to_a_later_closer_looking_turn(self):
+        """A mid-session isCompactSummary drop can produce a later turn
+        whose abs-token value is numerically closer to est than the true,
+        earlier first-crossing turn -- the join must still land on the first
+        turn that actually reaches est, not the nearest-looking one after
+        the dip."""
+        session_traces = {"abc": [100, 450_000, 900_000, 60_000, 200_000, 449_000]}
+        log_entries = [
+            {"kind": "nudged", "session": "abc", "est": 400_000, "model": "x", "window": 1, "event": "Stop"},
+        ]
+        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
+        # True first crossing is index 1 (450_000 >= est); the peak at or
+        # after it is 900_000, so lag = 900_000 - 400_000 = 500_000. A
+        # nearest-est join would instead pick index 5 (449_000, closer to
+        # est than 450_000 is) and understate the lag to 49_000.
+        assert lags == [500_000]
+        assert excluded == 0
+
+
+class TestParseRearmSpacingsArg:
+    def test_default_value_when_spacings_is_unset(self):
+        """--spacings absent falls back to _REARM_BACKTEST_DEFAULT_SPACINGS."""
+        assert _mod._parse_rearm_spacings_arg(argparse.Namespace(spacings=None)) == list(
+            _mod._REARM_BACKTEST_DEFAULT_SPACINGS
+        )
+
+    def test_non_integer_token_exits_2(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._parse_rearm_spacings_arg(argparse.Namespace(spacings="40000,not-a-number"))
+        assert exc_info.value.code == 2
+        assert "expected comma-separated integers" in capsys.readouterr().err
+
+    def test_non_positive_value_exits_2(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._parse_rearm_spacings_arg(argparse.Namespace(spacings="40000,0"))
+        assert exc_info.value.code == 2
+        assert "values must be positive" in capsys.readouterr().err
+
+    def test_whitespace_only_value_exits_2_at_least_one_required(self, capsys):
+        """A --spacings value that's non-empty but strips to nothing on
+        every comma-separated token (all whitespace) leaves the parsed list
+        empty -- the same "at least one required" exit as an entirely blank
+        flag, not a silent empty result."""
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._parse_rearm_spacings_arg(argparse.Namespace(spacings="   "))
+        assert exc_info.value.code == 2
+        assert "at least one spacing value is required" in capsys.readouterr().err
+
+
+class TestSessionMatchesRearmScope:
+    """--since and --branches scope whole sessions here (unlike `cost`'s
+    per-record --branches filter) -- see _session_matches_rearm_scope's own
+    docstring for why."""
+
+    def test_session_excluded_when_first_timestamp_is_before_since_cutoff(self):
+        since_ts = _mod._parse_ts("2026-05-10T00:00:00.000Z")
+        records = [_asst("claude-sonnet-5", ts="2026-05-01T00:00:00.000Z")]
+        assert _mod._session_matches_rearm_scope(records, since_ts, None) is False
+
+    def test_session_included_when_first_timestamp_is_exactly_at_the_since_boundary(self):
+        since_ts = _mod._parse_ts("2026-05-10T00:00:00.000Z")
+        records = [_asst("claude-sonnet-5", ts="2026-05-10T00:00:00.000Z")]
+        assert _mod._session_matches_rearm_scope(records, since_ts, None) is True
+
+    def test_session_excluded_when_no_main_thread_turn_matches_branches(self):
+        records = [_asst("claude-sonnet-5", branch="other")]
+        assert _mod._session_matches_rearm_scope(records, None, {"main"}) is False
+
+    def test_session_excluded_when_only_a_sidechain_turn_matches_the_branch_filter(self):
+        """A sidechain turn sharing the target branch name must not count --
+        --branches scopes to main-thread turns only, matching the
+        `not bool(r.get("isSidechain"))` guard."""
+        records = [_asst("claude-sonnet-5", branch="main", sidechain=True)]
+        assert _mod._session_matches_rearm_scope(records, None, {"main"}) is False
+
+    def test_session_included_when_branch_changes_mid_session_and_only_some_turns_match(self):
+        records = [
+            _asst("claude-sonnet-5", branch="other"),
+            _asst("claude-sonnet-5", branch="main"),
+        ]
+        assert _mod._session_matches_rearm_scope(records, None, {"main"}) is True
+
+
+class TestRearmBacktestReport:
+    """End-to-end coverage against .claude/plans/handoff-nudge-rearm-backtest.md's
+    Verification section -- items 2, 4, and 5, encoded as pytests against a
+    shared fixture corpus rather than a one-time manual run."""
+
+    def test_baseline_dollars_match_cost_reports_own_total(self, fake_projects, capsys):
+        """Verification item 2: the baseline row (today's real recorded
+        totals, no re-arm simulation) must equal _cost_report's own total for
+        the same fixture scope -- an independent, already-verified code path
+        computing the same real, non-counterfactual dollars over the same
+        corpus should agree."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:01:00.000Z"),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost_total = _extract_grand_total(capsys.readouterr().out)
+
+        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Spacing", row_contains="baseline")
+        baseline_total = float(cols["$"].replace(",", ""))
+        assert baseline_total == pytest.approx(cost_total)
+
+    def test_prints_fixed_threshold_and_model_routing_disclosure(self, fake_projects, capsys):
+        """Verification item 5: the report explicitly states that model
+        routing and the fixed fire threshold are not backtested."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "Model routing and each session's own fire threshold" in out
+        assert "NOT backtested" in out
+
+    def test_excluded_operator_lag_count_is_reported(self, fake_projects, tmp_path, capsys):
+        """Verification item 4: a nudged log line that can't be joined to any
+        session in scope is counted in the excluded figure, not silently
+        dropped."""
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=not-in-scope est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "1 excluded" in out
+
+    def test_200k_window_session_re_arms_off_its_own_80k_threshold(self, fake_projects, capsys):
+        """A session on a 200k-context-window model crosses its own real fire
+        point (80,000) well under _HANDOFF_NUDGE_ABS_CAP (360,000) -- a
+        report that used the cap uniformly for every session would never
+        simulate a split for this session at all, understating the re-arm
+        benefit on the 200k-window arm entirely."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-4-5", input=70_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-sonnet-4-5", input=80_000, output=5_000, ts="2026-05-19T10:01:00.000Z"),
+            _user_msg("continue", ts="2026-05-19T10:02:00.000Z"),
+            _priced("claude-sonnet-4-5", input=90_000, output=5_000, ts="2026-05-19T10:03:00.000Z"),
+        ])
+        _mod._rearm_backtest_report(_rearm_backtest_args(spacings="40000"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Spacing", row_contains=["40,000", "perfect"])
+        assert cols["DeltaUSD"] != "-0.00", "40k-spacing row must diverge from baseline once the 80k threshold fires"
+
+    def test_warns_when_no_priced_output_tokens_are_in_scope_for_the_ramp_curve(self, fake_projects, capsys):
+        """A corpus with only unpriced-model turns can't derive a real ramp
+        curve -- every re-armed remainder would otherwise be silently priced
+        at $0 with nothing distinguishing "genuinely cheap ramp" from "curve
+        couldn't be computed at all"."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-opus-4-7", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "ramp curve could not be computed" in out
+
+    def test_synthetic_no_usage_record_does_not_desync_boundaries_from_main_thread_turns(
+        self, fake_projects, capsys
+    ):
+        """A main-thread assistant record with no usage block (a synthetic
+        error record) sits between two real, priced turns -- if it were to
+        advance _hook_observable_boundaries' own turn-count position (as it
+        would if that function's usage-block guard were ever lost), the
+        crossing right after the first real turn would never line up with
+        any boundary this report's own main_thread_turns list can use, and
+        the second turn would silently keep its actual (unrepriced) dollars.
+        Runs the real pipeline end to end and checks a hand-computed dollar
+        total, not merely a nonzero delta, so an index mismatch between the
+        two functions actually fails the test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-5", ts="2026-05-19T10:00:00.000Z"),  # no usage block
+            _priced("claude-sonnet-5", input=355_000, output=5_000, ts="2026-05-19T10:00:01.000Z"),
+            _user_msg("continue", ts="2026-05-19T10:00:02.000Z"),
+            _priced("claude-sonnet-5", input=500, output=2_000, ts="2026-05-19T10:00:03.000Z"),
+        ])
+        _mod._rearm_backtest_report(_rearm_backtest_args(spacings="40000"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Spacing", row_contains=["40,000", "perfect"])
+        total = float(cols["$"].replace(",", ""))
+
+        rates = _mod._model_rates("claude-sonnet-5")
+        turn0_dollars = 355_000 / 1_000_000 * rates["input"] + 5_000 / 1_000_000 * rates["output"]
+        turn1_dollars = 500 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
+        # Turn 0's own abs-tokens (360,000) crosses the model's 360,000
+        # threshold (its 1M-window 40% figure exceeds _HANDOFF_NUDGE_ABS_CAP,
+        # so the cap governs), so turn 1 is ramp-priced at the "0-5" bucket's
+        # rate -- which, since both turns land in that bucket, is their own
+        # blended $/1k-output rate.
+        ramp_rate = (turn0_dollars + turn1_dollars) / ((5_000 + 2_000) / 1000)
+        expected_total = turn0_dollars + (2_000 / 1000) * ramp_rate
+        # abs= accounts for the table's own 2-decimal-place rounding
+        # ($X,XXX.XX), not slack in the expected computation itself.
+        assert total == pytest.approx(expected_total, abs=0.005)
