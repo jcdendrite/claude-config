@@ -60,6 +60,10 @@
 #   - No cap on the size of the command string handed to the parser —
 #     bounded in practice by the 5s parser timeout, not by an explicit
 #     size check.
+#   - The four _lib_capped-wrapped git/python3 calls in this file run
+#     uncapped on a machine lacking both timeout(1) and gtimeout(1), so a
+#     stalled call (locked index, network mount) hangs this gate rather than
+#     degrading gracefully.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
@@ -112,7 +116,7 @@ if ! [[ "$COMMAND" =~ (^|[^[:alnum:]])git([^[:alnum:]]|$) ]]; then
 fi
 
 # Find the repo. Outside a git repo, nothing to enforce.
-REPO_ROOT=$(cd "$CWD" 2>/dev/null && timeout 5 git rev-parse --show-toplevel 2>/dev/null)
+REPO_ROOT=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
@@ -132,7 +136,7 @@ _lib_worktree_enforcement_active "$REPO_ROOT" || exit 0
 {
   read -r SESSION_GIT_DIR_ABS
   read -r REPO_GIT_COMMON_DIR
-} < <(cd "$CWD" 2>/dev/null && timeout 5 git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
+} < <(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
 if [ -z "${SESSION_GIT_DIR_ABS:-}" ] || [ -z "${REPO_GIT_COMMON_DIR:-}" ]; then
   emit_deny "Blocked by worktree-enforcement hook: could not determine git state for the session working directory. Refusing to evaluate git discipline under unresolvable git state."
   exit 0
@@ -174,7 +178,7 @@ fi
 # command string is a pure in-memory operation with no I/O, so this leaves
 # ample headroom; a timeout here (exit 124) is treated as a parser failure
 # and denies, same as any other non-zero exit.
-RECORDS=$(printf '%s' "$COMMAND" | timeout 5 python3 "$PARSER" 2>/dev/null)
+RECORDS=$(printf '%s' "$COMMAND" | _lib_capped python3 "$PARSER" 2>/dev/null)
 PARSER_EXIT=$?
 if [ "$PARSER_EXIT" -ne 0 ]; then
   emit_deny "Blocked by worktree-enforcement hook: the command parser exited abnormally (exit $PARSER_EXIT) or timed out. Refusing to evaluate git discipline under an unparseable command. If this persists, check that claude/.claude/hooks/parse-git-command.py is present and executable with python3."
@@ -280,7 +284,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
       {
         read -r eff_git_dir
         read -r eff_common_dir
-      } < <(cd "$effective_cwd" 2>/dev/null && timeout 5 git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
+      } < <(cd "$effective_cwd" 2>/dev/null && _lib_capped git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
       if [ -z "$eff_git_dir" ] || [ -z "$eff_common_dir" ] || [ "$eff_common_dir" != "$REPO_GIT_COMMON_DIR" ]; then
         emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' targets a working directory outside this repository (or its git state could not be determined), so it cannot be confirmed safe. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
         exit 0

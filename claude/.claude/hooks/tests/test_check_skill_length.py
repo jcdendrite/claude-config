@@ -1,6 +1,7 @@
 """Tests for check-skill-length.sh."""
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,25 @@ from helpers import (
 
 CHECK_SKILL_LENGTH_HOOK = HOOKS_DIR / "check-skill-length.sh"
 SKILL_PATH = "claude/.claude/skills/my-skill/SKILL.md"
+
+
+def stub_bin_without_timeout(tmp_path: Path) -> Path:
+    """Stub PATH with only the binaries this hook's code path invokes
+    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
+    `grep` for the git-commit/path-filter matches, `awk` for the line
+    count, `git` for the _lib_capped-wrapped show calls), omitting both
+    timeout(1) and gtimeout(1). Mirrors
+    test_require_worktree_for_git_writes.py's test_python3_absent_denies
+    shape; skips (does not silently under-symlink) when a needed real
+    binary is itself absent from the test machine."""
+    stub_bin = tmp_path / "_stub_bin"
+    stub_bin.mkdir()
+    for tool in ("awk", "cat", "dirname", "git", "grep", "jq"):
+        real_path = shutil.which(tool)
+        if not real_path:
+            pytest.skip(f"{tool} not found in PATH")
+        (stub_bin / tool).symlink_to(real_path)
+    return stub_bin
 
 
 def make_skill_content(n: int, prefix: str = "line") -> str:
@@ -344,4 +364,45 @@ class TestCheckSkillLength:
                 cwd=subdir,
             )
             == "deny"
+        )
+
+    # --- Fail-open regression: neither timeout(1) nor gtimeout(1) present ---
+
+    def test_growing_over_limit_denies_when_neither_timeout_nor_gtimeout_present(
+        self, isolated_home, skill_repo, tmp_path
+    ):
+        """Fail-open regression: with neither binary present, _lib_capped
+        runs the git show calls uncapped (see _lib.sh) rather than silently
+        skipping — the gate must still catch a growing over-limit SKILL.md."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        stub_bin = stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "deny"
+        )
+
+    def test_at_limit_allows_when_neither_timeout_nor_gtimeout_present(
+        self, isolated_home, skill_repo, tmp_path
+    ):
+        """Companion allow case for the deny above: under the same PATH, a
+        SKILL.md at the limit (not growing past it) must still pass —
+        without this, a fallback branch that always returns nonzero would
+        masquerade as a working gate."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(200))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        stub_bin = stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "allow"
         )

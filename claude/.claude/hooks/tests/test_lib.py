@@ -46,6 +46,18 @@ def _run_harness(stdin_text: str, env: dict | None = None) -> subprocess.Complet
     )
 
 
+def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
+    """Source _lib.sh, then run one statement that calls a helper directly."""
+    harness = f". {_LIB_SH}; {call}"
+    return subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
 def test_valid_bash_payload_returns_ok() -> None:
     """Valid Bash PreToolUse payload → OK with TOOL_NAME=Bash and COMMAND set."""
     result = _run_harness('{"tool_name":"Bash","tool_input":{"command":"ls -la"}}')
@@ -177,6 +189,123 @@ def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> Non
     result = _run_harness('{"tool_name":"Bash","tool_input":{"command":"ls"}}', env=env)
     assert result.returncode == 0
     assert result.stdout.startswith("OK:Bash:ls"), repr(result.stdout)
+
+
+def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> None:
+    """timeout(1) on PATH, no gtimeout: _lib_capped_for kills a hung command at the given cap, exit 124."""
+    import shutil
+
+    timeout_path = shutil.which("timeout")
+    if not timeout_path:
+        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    sleep_path = shutil.which("sleep")
+    if not sleep_path:
+        pytest.skip("sleep not found in PATH")
+
+    (tmp_path / "timeout").symlink_to(timeout_path)
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "sleep").symlink_to(sleep_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    start = time.monotonic()
+    result = _run_lib_call("_lib_capped_for 1 sleep 5", env=env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 124, repr(result)
+    assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the timeout branch did not fire"
+
+
+def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: Path) -> None:
+    """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): _lib_capped_for still enforces the cap."""
+    import shutil
+
+    timeout_path = shutil.which("timeout")
+    if not timeout_path:
+        pytest.skip("timeout(1) not available to alias as gtimeout — BSD/macOS without coreutils")
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    sleep_path = shutil.which("sleep")
+    if not sleep_path:
+        pytest.skip("sleep not found in PATH")
+
+    # Alias the real timeout binary under the gtimeout name and omit timeout
+    # from PATH entirely, simulating a Homebrew-coreutils-only machine.
+    (tmp_path / "gtimeout").symlink_to(timeout_path)
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "sleep").symlink_to(sleep_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    start = time.monotonic()
+    result = _run_lib_call("_lib_capped_for 1 sleep 5", env=env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 124, repr(result)
+    assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the gtimeout branch did not fire"
+
+
+def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
+    tmp_path: Path,
+) -> None:
+    """Neither timeout(1) nor gtimeout(1) on PATH: _lib_capped_for runs the command uncapped, not denied."""
+    import shutil
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    sleep_path = shutil.which("sleep")
+    if not sleep_path:
+        pytest.skip("sleep not found in PATH")
+
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "sleep").symlink_to(sleep_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    start = time.monotonic()
+    # seconds (0.2) is well under the sleep duration (0.6) — a real cap would
+    # kill this early, so completing at the full duration proves it ran uncapped.
+    result = _run_lib_call("_lib_capped_for 0.2 sleep 0.6", env=env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0, repr(result)
+    assert elapsed >= 0.6, f"sleep finished in {elapsed:.2f}s — a cap fired despite neither binary being present"
+
+
+def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path: Path) -> None:
+    """Both timeout(1) and gtimeout(1) on PATH: _lib_capped_for dispatches to the real timeout(1) first.
+
+    A fake gtimeout stands in for a swapped probe order — if _lib_capped_for
+    ever checked gtimeout before timeout, this test would observe the fake's
+    distinct output instead of the real command's.
+    """
+    import shutil
+
+    timeout_path = shutil.which("timeout")
+    if not timeout_path:
+        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    printf_path = shutil.which("printf")
+    if not printf_path:
+        pytest.skip("printf not found in PATH")
+
+    (tmp_path / "timeout").symlink_to(timeout_path)
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "printf").symlink_to(printf_path)
+
+    fake_gtimeout = tmp_path / "gtimeout"
+    fake_gtimeout.write_text("#!/bin/bash\nprintf 'GTIMEOUT_WAS_USED'\nexit 99\n")
+    fake_gtimeout.chmod(0o755)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    result = _run_lib_call("_lib_capped_for 1 printf real-timeout-path", env=env)
+
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == "real-timeout-path", repr(result.stdout)
 
 
 def test_missing_emit_deny_loud_fail() -> None:
