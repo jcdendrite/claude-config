@@ -371,6 +371,10 @@ def _fmt_date(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%d")
 
 
+def _fmt_usd(amount: float) -> str:
+    return f"-${-amount:,.2f}" if amount < 0 else f"${amount:,.2f}"
+
+
 def _parse_jsonl_records(jsonl: Path) -> list[dict] | None:
     """Parse one .jsonl file into records, skipping malformed lines.
 
@@ -2928,10 +2932,18 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     from the dispatch's own root's agents/<agentType>.md, or "built-in" with
     no on-disk file), Requested (meta.json's own "model" key, "(none)" when
     absent), and Observed (the modal real model ID across the dispatch's own
-    sidechain, via _fam; "mixed" when two distinct real IDs appear).
+    sidechain, via _fam; "mixed" when two distinct real IDs appear), plus
+    Actual $ (and, when --reprice-as is given, Counterfactual $ and Delta).
 
     --since limits both tables to records timestamped on or after the window
-    start. --config-dir (repeatable) scans additional Claude Code config
+    start. --since-date/--until-date instead bound only the Actual $ /
+    Counterfactual $ columns, and do so per sidechain assistant record (not
+    per dispatch) — a dispatch straddling the window edge must not attribute
+    its whole sidechain's dollars to the window just because it started
+    inside it. --reprice-as re-prices that same in-window usage at an
+    alternate model ID (validated against _MODEL_BASE_INPUT_RATES's keys),
+    adding the Counterfactual $ and Delta (Actual − Counterfactual) columns.
+    --config-dir (repeatable) scans additional Claude Code config
     directories the same way cost does; under more than one root, both
     branch names and subagent_type values are redacted
     (_assign_root_scoped_redact_label) — subagent_type can name a
@@ -2957,11 +2969,42 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
+    reprice_as: str | None = getattr(args, "reprice_as", None) or None
+    if reprice_as is not None and reprice_as not in _MODEL_BASE_INPUT_RATES:
+        valid = ", ".join(sorted(_MODEL_BASE_INPUT_RATES))
+        print(
+            f"subagent-mix: --reprice-as: unknown model ID {reprice_as!r}; valid values: {valid}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if multi_root:
         print(_DO_NOT_PUBLISH_BANNER)
         print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
 
     since_ts, _since_raw = _parse_since_nd_arg(args, "subagent-mix")
+
+    # Bounds the Actual $ / Counterfactual $ columns only, per sidechain
+    # assistant record (see _dispatch_usage_summary) -- independent of
+    # since_ts above, which keeps its existing dispatch-level scope over
+    # every other column in this table.
+    since_date_str: str | None = getattr(args, "since_date", None) or None
+    until_date_str: str | None = getattr(args, "until_date", None) or None
+    dollar_since_ts: float | None = _parse_ts(f"{since_date_str}T00:00:00Z") if since_date_str else None
+    dollar_until_ts: float | None = None
+    if until_date_str:
+        day_start = _parse_ts(f"{until_date_str}T00:00:00Z")
+        if day_start is not None:
+            dollar_until_ts = day_start + 86400
+
+    # Read once, matching cost's own "never read the clock inside the
+    # per-record loop" rationale -- kept as a plain wall-clock read here
+    # (rather than cost's separate entry/report split) since no existing or
+    # new test in this file asserts on stale-pricing output for subagent-mix.
+    today = datetime.now(UTC).date()
+    total_unpriced_turns = 0
+    total_unpriced_tokens = 0
+    all_stale_models: set[str] = set()
 
     session_iter, scope_label = _resolve_project_scope(args, "subagent-mix", roots=roots)
     _print_resolved_scope("subagent-mix", scope_label, roots)
@@ -2999,6 +3042,8 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         "requested": defaultdict(int),
         "observed": defaultdict(int),
         "declared_seen": set(),
+        "actual_dollars": 0.0,
+        "counterfactual_dollars": 0.0,
     })
     declared_pin_cache: dict[tuple[Path, str], str] = {}
     total_meta_read_errors = 0
@@ -3046,13 +3091,24 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                         # needs the real subagent_type (stype), never the
                         # redacted display label (stype_label).
                         row["declared_seen"].add(_declared_pin(stype, agents_dir, declared_pin_cache))
-                        observed = _observed_model_bucket(paired_jsonl)
+                        (
+                            observed, actual_dollars, _dollars_by_class, counterfactual_dollars,
+                            dispatch_unpriced_turns, dispatch_unpriced_tokens, dispatch_stale_models,
+                        ) = _dispatch_usage_summary(
+                            paired_jsonl, dollar_since_ts, dollar_until_ts, reprice_as, today
+                        )
+                        total_unpriced_turns += dispatch_unpriced_turns
+                        total_unpriced_tokens += dispatch_unpriced_tokens
+                        all_stale_models |= dispatch_stale_models
                         if observed is None:
                             row["dangling"] += 1
                         else:
                             row["runs"] += 1
                             row["requested"][requested_model or _UNREQUESTED_MODEL_LABEL] += 1
                             row["observed"][observed] += 1
+                            row["actual_dollars"] += actual_dollars
+                            if reprice_as:
+                                row["counterfactual_dollars"] += counterfactual_dollars or 0.0
                 elif name == "Skill":
                     skill = inp.get("skill") or ""
                     if skill in REVIEW_SKILLS:
@@ -3092,8 +3148,12 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         )
 
     if model_mix:
-        print(f"\n{'AgentType':<28} {'Runs':>5} {'Dangling':>9}  {'Declared':<10} {'Requested':<30} Observed")
-        print("-" * 110)
+        header = f"{'AgentType':<28} {'Runs':>5} {'Dangling':>9}  {'Declared':<10} {'Actual$':>12}"
+        if reprice_as:
+            header += f" {'Counterfactual$':>18} {'Delta':>12}"
+        header += f" {'Requested':<30} Observed"
+        print(f"\n{header}")
+        print("-" * len(header))
         for stype_label in sorted(model_mix):
             row = model_mix[stype_label]
             declared = "/".join(sorted(row["declared_seen"])) or _DECLARED_PIN_BUILT_IN
@@ -3103,9 +3163,31 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
             observed_str = ", ".join(
                 f"{k}({v})" for k, v in sorted(row["observed"].items(), key=lambda kv: (-kv[1], kv[0]))
             ) or "—"
-            print(
+            line = (
                 f"{stype_label:<28} {row['runs']:>5} {row['dangling']:>9}  {declared:<10} "
-                f"{requested_str:<30} {observed_str}"
+                f"{_fmt_usd(row['actual_dollars']):>12}"
+            )
+            if reprice_as:
+                delta = row["actual_dollars"] - row["counterfactual_dollars"]
+                line += f" {_fmt_usd(row['counterfactual_dollars']):>18} {_fmt_usd(delta):>12}"
+            line += f" {requested_str:<30} {observed_str}"
+            print(line)
+        # Matches cost's own "(N unpriced turns / M tokens excluded from
+        # priced spend)" convention verbatim -- an unknown model ID would
+        # otherwise silently read as a genuinely zero-cost dispatch.
+        if total_unpriced_turns:
+            print(
+                f"  ({total_unpriced_turns:,} unpriced turns / {total_unpriced_tokens:,}"
+                " tokens excluded from priced spend)"
+            )
+        # Matches cost's own STALE PRICING banner (_MODEL_RATE_EXPIRES),
+        # simplified to the model list -- this table has no single "the
+        # figures below" scope to point a successor-rate hint at.
+        if all_stale_models:
+            print(
+                "STALE PRICING — today is past the re-verify-by date for: "
+                + ", ".join(sorted(all_stale_models))
+                + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing this table's dollar figures."
             )
     # Printed even when model_mix is empty (every dispatch's meta.json was
     # malformed) -- mirrors cmd_reviewer_yield's identical diagnostic, which
@@ -3256,8 +3338,15 @@ def _declared_pin(
     return pin
 
 
-def _observed_model_bucket(jsonl_path: Path) -> str | None:
-    """Modal observed-model family for one subagent dispatch's own transcript.
+def _dispatch_usage_summary(
+    jsonl_path: Path,
+    since_ts: float | None,
+    until_ts: float | None,
+    reprice_as: str | None,
+    today: date,
+) -> tuple[str | None, float, dict[str, float], float | None, int, int, set[str]]:
+    """Modal observed-model family plus priced dollar totals for one subagent
+    dispatch's own transcript.
 
     Reads every assistant record's message.model in jsonl_path. Two or more
     distinct real (non-"<synthetic>") model IDs report the literal bucket
@@ -3265,16 +3354,42 @@ def _observed_model_bucket(jsonl_path: Path) -> str | None:
     visible, not silently assigned one of its models. A single distinct real
     model ID (regardless of how many turns used it) resolves via _fam. No
     real model ID at all (only "<synthetic>" turns) resolves via
-    _fam("<synthetic>") -> "other".
+    _fam("<synthetic>") -> "other". This bucket is computed over every
+    assistant record in the file, regardless of since_ts/until_ts — a
+    dispatch's model identity isn't scoped to a reporting window.
 
-    Returns None when jsonl_path doesn't exist or can't be read — the
-    caller's own "dangling meta.json" exclusion path (a run requires a
-    readable sibling .jsonl, not just a valid meta.json).
+    actual_dollars/dollars_by_class price (via _price_turn) only the
+    assistant records whose own timestamp falls in [since_ts, until_ts) —
+    filtered per record, not by the dispatch's own start time, since a
+    dispatch's sidechain can straddle a window edge and a start-time-only
+    filter would attribute post-cutoff spend to an "in-window" total.
+    counterfactual_dollars re-prices that same in-window usage at
+    reprice_as, or is None when reprice_as is not given.
+
+    unpriced_turns/unpriced_tokens count in-window turns _price_turn couldn't
+    price (unknown model ID) — matches cost's own convention of surfacing
+    this rather than letting it silently read as zero-cost spend.
+    stale_models collects any priced model past its _MODEL_RATE_EXPIRES
+    re-verify-by date, evaluated against the caller-supplied today (never
+    read from the wall clock here, so a caller can hold this deterministic
+    for tests) — mirrors cost's own staleness check.
+
+    Returns (observed_bucket, actual_dollars, dollars_by_class,
+    counterfactual_dollars, unpriced_turns, unpriced_tokens, stale_models).
+    observed_bucket is None, and every other value is 0/0.0/{}/None/empty,
+    when jsonl_path doesn't exist or can't be read — the caller's own
+    "dangling meta.json" exclusion path (a run requires a readable sibling
+    .jsonl, not just a valid meta.json).
     """
     if not jsonl_path.is_file():
-        return None
+        return None, 0.0, {}, None, 0, 0, set()
     real_model_ids: set[str] = set()
     saw_any_model = False
+    dollars_by_class: dict[str, float] = defaultdict(float)
+    counterfactual_total = 0.0
+    unpriced_turns = 0
+    unpriced_tokens = 0
+    stale_models: set[str] = set()
     try:
         with open(jsonl_path) as fh:
             for raw in fh:
@@ -3284,19 +3399,54 @@ def _observed_model_bucket(jsonl_path: Path) -> str | None:
                     continue
                 if rec.get("type") != "assistant":
                     continue
-                model = (rec.get("message") or {}).get("model")
+                msg = rec.get("message") or {}
+                model = msg.get("model")
                 if not model:
                     continue
                 saw_any_model = True
                 if model != "<synthetic>":
                     real_model_ids.add(model)
+
+                usage = msg.get("usage")
+                if not usage:
+                    continue
+                if since_ts is not None or until_ts is not None:
+                    rec_ts = _parse_ts(rec.get("timestamp"))
+                    if rec_ts is None:
+                        continue
+                    if since_ts is not None and rec_ts < since_ts:
+                        continue
+                    if until_ts is not None and rec_ts >= until_ts:
+                        continue
+                turn_dollars, _ctx, turn_unpriced_tokens = _price_turn(model, usage)
+                if turn_dollars is None:
+                    unpriced_turns += 1
+                    unpriced_tokens += turn_unpriced_tokens
+                else:
+                    for cls, amount in turn_dollars.items():
+                        dollars_by_class[cls] += amount
+                    if today > _MODEL_RATE_EXPIRES[model]:
+                        stale_models.add(model)
+                if reprice_as:
+                    cf_dollars, _cf_ctx, _cf_unpriced = _price_turn(reprice_as, usage)
+                    if cf_dollars is not None:
+                        counterfactual_total += sum(cf_dollars.values())
     except OSError:
-        return None
+        return None, 0.0, {}, None, 0, 0, set()
+
     if len(real_model_ids) >= 2:
-        return "mixed"
-    if real_model_ids:
-        return _fam(next(iter(real_model_ids)))
-    return _fam("<synthetic>") if saw_any_model else "other"
+        observed = "mixed"
+    elif real_model_ids:
+        observed = _fam(next(iter(real_model_ids)))
+    else:
+        observed = _fam("<synthetic>") if saw_any_model else "other"
+
+    actual_dollars = sum(dollars_by_class.values())
+    counterfactual_dollars = counterfactual_total if reprice_as else None
+    return (
+        observed, actual_dollars, dict(dollars_by_class), counterfactual_dollars,
+        unpriced_turns, unpriced_tokens, stale_models,
+    )
 
 
 def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], list[str], str, bool]:
@@ -4432,7 +4582,10 @@ def _assign_root_scoped_redact_label(
     caller so branch and subagent_type numbering never share a counter)
     rather than a single flat counter, mirroring _build_redact_map's
     account-<K>/private-project-N convention. Like _assign_session_redact_label,
-    this label is stable only within one run, not across runs.
+    this label is stable only within one run, not across runs. subagent-mix's
+    exact-cent Actual $/Counterfactual $ columns are a stronger cross-run
+    correlation key against this label than the integer spawn counts already
+    printed alongside it, though only within an already-DO_NOT_PUBLISH report.
     """
     key = (ordinal, value)
     if key not in redact_map:
@@ -8494,6 +8647,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--per-session",
         action="store_true",
         help="Break out by individual session instead of aggregating per branch. Refused under --config-dir.",
+    )
+    p_mix.add_argument(
+        "--since-date", metavar="DATE", type=_iso_date,
+        help=(
+            "Inclusive start date (YYYY-MM-DD) for the Actual $ / Counterfactual $ columns only,"
+            " filtered per sidechain record — independent of --since Nd, which keeps its existing"
+            " dispatch-level scope over every other column."
+        ),
+    )
+    p_mix.add_argument(
+        "--until-date", metavar="DATE", type=_iso_date,
+        help="Inclusive end date (YYYY-MM-DD) for the Actual $ / Counterfactual $ columns only — see --since-date.",
+    )
+    p_mix.add_argument(
+        "--reprice-as", metavar="MODEL_ID",
+        help=(
+            "Re-price each in-window dispatch's dollars at this model ID instead of its own real"
+            " model, adding Counterfactual $ and Delta columns. Must be a key in"
+            " _MODEL_BASE_INPUT_RATES; an unknown value is rejected listing the valid IDs."
+        ),
     )
     p_mix.set_defaults(func=cmd_subagent_mix)
 
