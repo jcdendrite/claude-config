@@ -505,6 +505,32 @@ class TestNudgeErrorModeAnalysis:
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 
+    def test_friction_count_completes_when_slower_than_a_2s_cap(self, tmp_path):
+        """A python3 shim that takes ~3.5s to produce output still fires the
+        nudge -- proving this call site's 10s _lib_capped_for cap has not
+        collapsed to something far shorter, like the 2s used at
+        nudge-handoff-near-context-cap.sh's call sites. Paired with
+        test_friction_count_timeout_is_silent above (a 15s shim is killed) for
+        the upper bound."""
+        transcript = tmp_path / "t.jsonl"
+        _write_denial_transcript(transcript, FRICTION_THRESHOLD)
+        fake_bin = _fake_bin_dir(tmp_path, "slow-but-under-cap")
+        shim_path = _fake_python3(
+            fake_bin,
+            f'#!/bin/bash\n[ "$1" = "-c" ] && exit 0\nsleep 3.5\necho {FRICTION_THRESHOLD}\n',
+        )
+        start = time.perf_counter()
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
+        elapsed = time.perf_counter() - start
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", (
+            "hook stayed silent for a python3 shim that finishes in 3.5s -- "
+            "the 10s cap may have collapsed to something far shorter"
+        )
+        payload = json.loads(result.stdout)
+        assert "/error-mode-analysis" in payload["hookSpecificOutput"]["additionalContext"]
+        assert elapsed >= 3.5, f"hook returned in {elapsed:.1f}s -- faster than the shim's own 3.5s sleep"
+
     def test_malformed_jsonl_is_silent(self, tmp_path):
         """Transcript file with invalid JSON lines exits silently without crashing."""
         transcript = tmp_path / "t.jsonl"

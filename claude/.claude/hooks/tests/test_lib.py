@@ -308,6 +308,28 @@ def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path
     assert result.stdout == "real-timeout-path", repr(result.stdout)
 
 
+def test_lib_capped_for_aborts_on_unset_seconds_argument() -> None:
+    """An empty or unset SECONDS -- e.g. _lib_capped_for "$UNSET_VAR" cmd --
+    hard-aborts the sourcing script via bash's ${1:?msg} rather than falling
+    through to run the command uncapped, per _lib_capped_for's own header
+    comment in _lib.sh."""
+    harness = (
+        f'. {_LIB_SH}; '
+        '_lib_capped_for "$UNSET_VAR" echo should-not-run; '
+        'echo SHOULD_NOT_REACH'
+    )
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, repr(result)
+    assert "SHOULD_NOT_REACH" not in result.stdout, repr(result.stdout)
+    assert "should-not-run" not in result.stdout, repr(result.stdout)
+    assert "_lib_capped_for requires a seconds argument" in result.stderr, repr(result.stderr)
+
+
 def test_missing_emit_deny_loud_fail() -> None:
     """Source _lib.sh WITHOUT defining emit_deny, call helper on empty stdin.
 
