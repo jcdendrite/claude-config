@@ -7022,6 +7022,7 @@ class TestCostByAccount:
         assert str(root_a) not in out
         assert str(root_b) not in out
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_permission_error_while_scanning_root_caught_and_reported_per_account_section(
         self, tmp_path, capsys
     ):
@@ -9511,6 +9512,7 @@ class TestCostTrendConfigDir:
         assert str(default_dir) not in out
         assert str(acct_b) not in out
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_permission_error_while_scanning_root_reported_without_raw_path(
         self, tmp_path, monkeypatch, capsys, fake_config_dir_factory
     ):
