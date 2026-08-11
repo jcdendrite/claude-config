@@ -143,7 +143,7 @@ compute_threshold() {
 read_latest_usage() {
   local transcript_path="$1"
   local usage_block
-  usage_block=$(timeout 2 tail -n 200 "$transcript_path" 2>/dev/null \
+  usage_block=$(_lib_capped_for 2 tail -n 200 "$transcript_path" 2>/dev/null \
     | jq -s 'map(select(.message? and .message.usage)) | last // empty' 2>/dev/null)
   [ -n "$usage_block" ] || return 1
   ESTIMATE=""
@@ -174,8 +174,8 @@ CHECK_MAX_ANCESTOR_HOPS=6
 # ASCII, so it needs no encoding and stays correct when jq is what failed.
 check_refuse() {
   local out
-  # shellcheck disable=SC2016 # single-quoted on purpose: $reason is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it. Bare `jq` suppresses this itself, but wrapping in `timeout` is opaque to shellcheck's jq awareness.
-  out=$(timeout 2 jq -n --arg reason "$1" '{status:"cannot-resolve",reason:$reason}' 2>/dev/null)
+  # shellcheck disable=SC2016 # single-quoted on purpose: $reason is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
+  out=$(_lib_capped_for 2 jq -n --arg reason "$1" '{status:"cannot-resolve",reason:$reason}' 2>/dev/null)
   if [ -n "$out" ]; then
     printf '%s\n' "$out"
   else
@@ -263,8 +263,8 @@ run_check_mode() {
   # the marker and log write.
   if [ "$ESTIMATE" -eq 0 ] 2>/dev/null; then
     local drift_out
-    # shellcheck disable=SC2016 # single-quoted on purpose: $session is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it. Bare `jq` suppresses this itself, but wrapping in `timeout` is opaque to shellcheck's jq awareness.
-    drift_out=$(timeout 2 jq -n --arg session "$session_id" \
+    # shellcheck disable=SC2016 # single-quoted on purpose: $session is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
+    drift_out=$(_lib_capped_for 2 jq -n --arg session "$session_id" \
       '{status:"schema-drift",session_id:$session}' 2>/dev/null)
     if [ -n "$drift_out" ]; then
       printf '%s\n' "$drift_out"
@@ -285,8 +285,8 @@ run_check_mode() {
   [ -f "$CONFIG_DIR/.handoff-nudge-fired.d/$session_id" ] && already_fired=true
 
   local out
-  # shellcheck disable=SC2016 # single-quoted on purpose: every $-prefixed name below is a jq --arg/--argjson binding, not a shell variable; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but wrapping in `timeout` is opaque to shellcheck's jq awareness.
-  out=$(timeout 2 jq -n \
+  # shellcheck disable=SC2016 # single-quoted on purpose: every $-prefixed name below is a jq --arg/--argjson binding, not a shell variable; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
+  out=$(_lib_capped_for 2 jq -n \
     --arg session "$session_id" \
     --arg model "$MODEL" \
     --argjson estimate "$ESTIMATE" \
@@ -408,8 +408,8 @@ fi
 # actually produced output — jq -n … 2>/dev/null below would otherwise
 # swallow a jq failure while the marker/log writes had already burned the
 # session's one shot. timeout 2 matches the tail | jq -s call above.
-# shellcheck disable=SC2016 # single-quoted on purpose: $hookEventName/$threshold are jq --arg/--argjson bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but wrapping in `timeout` is opaque to shellcheck's jq awareness.
-OUTPUT=$(timeout 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson threshold "$THRESHOLD" '{
+# shellcheck disable=SC2016 # single-quoted on purpose: $hookEventName/$threshold are jq --arg/--argjson bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
+OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson threshold "$THRESHOLD" '{
   hookSpecificOutput: {
     hookEventName: $hookEventName,
     additionalContext: ("Context is past this session'\''s handoff-nudge threshold (" + ($threshold|tostring) + " tokens). If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish.")

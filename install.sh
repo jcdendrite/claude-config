@@ -769,7 +769,7 @@ ensure_local_bin_on_path() {
 }
 # INSTALL_TEST_FIXTURE: local-bin-path — end
 
-if ! command -v timeout >/dev/null 2>&1; then
+if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
   # shellcheck disable=SC2016 # single-quoted for literal display text — the
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in either message.

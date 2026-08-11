@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -156,6 +157,23 @@ def _restricted_path_without_python3(fake_bin: Path) -> str:
     return str(fake_bin)
 
 
+def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
+    """Build a PATH with only the binaries this hook's code path invokes
+    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
+    `mkdir`/`find` for the checkpoint dir, `python3` for
+    transcript-analysis.py, `touch` for the enabled-marker fixture),
+    omitting both timeout(1) and gtimeout(1). Mirrors
+    _restricted_path_without_python3's stub-of-symlinks shape; skips (does
+    not silently under-symlink) when a needed real binary is itself absent
+    from the test machine."""
+    for tool in ("cat", "dirname", "find", "jq", "mkdir", "python3", "touch"):
+        real = shutil.which(tool)
+        if not real:
+            pytest.skip(f"{tool} not found in PATH")
+        (fake_bin / tool).symlink_to(real)
+    return str(fake_bin)
+
+
 def _fake_python3(fake_bin: Path, script_body: str) -> str:
     """Write a fake `python3` shim into fake_bin and return a PATH that finds
     it ahead of the real python3."""
@@ -196,6 +214,22 @@ class TestNudgeErrorModeAnalysis:
         log = _log_path(tmp_path)
         assert "nudged" in log.read_text()
         assert f"friction={FRICTION_THRESHOLD}" in log.read_text()
+
+    def test_fires_nudge_when_neither_timeout_nor_gtimeout_present(self, tmp_path):
+        """Fail-open regression: with neither binary present, _lib_capped_for
+        runs friction-count uncapped (see _lib.sh) rather than silently
+        degrading — the nudge must still fire at threshold under this PATH."""
+        transcript = tmp_path / "t.jsonl"
+        _write_denial_transcript(transcript, FRICTION_THRESHOLD)
+        fake_bin = _fake_bin_dir(tmp_path, "no-timeout-no-gtimeout")
+        restricted_path = _path_without_timeout_or_gtimeout(fake_bin)
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        payload = json.loads(result.stdout)
+        assert "/error-mode-analysis" in payload["hookSpecificOutput"]["additionalContext"]
 
     def test_honors_claude_config_dir_for_markers_log_and_script_invocation(self, tmp_path):
         """CLAUDE_CONFIG_DIR set to a directory outside $HOME/.claude: the
@@ -470,6 +504,32 @@ class TestNudgeErrorModeAnalysis:
         result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
         assert result.returncode == 0
         assert result.stdout.strip() == ""
+
+    def test_friction_count_completes_when_slower_than_a_2s_cap(self, tmp_path):
+        """A python3 shim that takes ~3.5s to produce output still fires the
+        nudge -- proving this call site's 10s _lib_capped_for cap has not
+        collapsed to something far shorter, like the 2s used at
+        nudge-handoff-near-context-cap.sh's call sites. Paired with
+        test_friction_count_timeout_is_silent above (a 15s shim is killed) for
+        the upper bound."""
+        transcript = tmp_path / "t.jsonl"
+        _write_denial_transcript(transcript, FRICTION_THRESHOLD)
+        fake_bin = _fake_bin_dir(tmp_path, "slow-but-under-cap")
+        shim_path = _fake_python3(
+            fake_bin,
+            f'#!/bin/bash\n[ "$1" = "-c" ] && exit 0\nsleep 3.5\necho {FRICTION_THRESHOLD}\n',
+        )
+        start = time.perf_counter()
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
+        elapsed = time.perf_counter() - start
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", (
+            "hook stayed silent for a python3 shim that finishes in 3.5s -- "
+            "the 10s cap may have collapsed to something far shorter"
+        )
+        payload = json.loads(result.stdout)
+        assert "/error-mode-analysis" in payload["hookSpecificOutput"]["additionalContext"]
+        assert elapsed >= 3.5, f"hook returned in {elapsed:.1f}s -- faster than the shim's own 3.5s sleep"
 
     def test_malformed_jsonl_is_silent(self, tmp_path):
         """Transcript file with invalid JSON lines exits silently without crashing."""

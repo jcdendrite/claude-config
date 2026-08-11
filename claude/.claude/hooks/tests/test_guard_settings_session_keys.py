@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 
 import pytest
@@ -407,6 +408,66 @@ class TestGuardSettingsSessionKeys:
                 GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m foo"),
                 cwd=repo,
+            )
+            == "allow"
+        )
+
+    def _stub_bin_without_timeout(self, tmp_path):
+        """Stub PATH with only the binaries this hook's code path invokes
+        (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
+        `grep` for the git-commit/staged-file matches, `git` for the
+        _lib_capped-wrapped diff/show calls), omitting both timeout(1) and
+        gtimeout(1). Mirrors test_require_worktree_for_git_writes.py's
+        test_python3_absent_denies shape; skips (does not silently
+        under-symlink) when a needed real binary is itself absent."""
+        stub_bin = tmp_path / "_stub_bin"
+        stub_bin.mkdir()
+        for tool in ("cat", "dirname", "git", "grep", "jq"):
+            real_path = shutil.which(tool)
+            if not real_path:
+                pytest.skip(f"{tool} not found in PATH")
+            (stub_bin / tool).symlink_to(real_path)
+        return stub_bin
+
+    def test_guarded_key_change_denies_when_neither_timeout_nor_gtimeout_present(
+        self, settings_repo, tmp_path
+    ):
+        """Fail-open regression: with neither binary present, _lib_capped
+        runs git uncapped (see _lib.sh) rather than silently skipping — the
+        gate must still catch a guarded-key change under this PATH."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        stub_bin = self._stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'update settings'"),
+                cwd=repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "deny"
+        )
+
+    def test_unrelated_settings_change_allows_when_neither_timeout_nor_gtimeout_present(
+        self, settings_repo, tmp_path
+    ):
+        """Companion allow case for the deny above: under the same PATH, a
+        non-guarded change must still pass — without this, a fallback branch
+        that always returns nonzero would masquerade as a working gate."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "unrelatedTestKey": "value"}\n',
+        )
+        stub_bin = self._stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add unrelated key'"),
+                cwd=repo,
+                extra_env={"PATH": str(stub_bin)},
             )
             == "allow"
         )

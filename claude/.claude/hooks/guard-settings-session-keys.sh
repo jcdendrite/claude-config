@@ -21,14 +21,10 @@
 
 set -uo pipefail
 
-# Cap every git call at 5s so a pathologically slow git (huge repo, slow
-# disk, stuck index lock) can't hang the commit this PreToolUse hook
-# gates. The cap is per-call: worst case is 5s times the number of git
-# calls below — bounded, but not instant. On timeout the call fails like
-# any other git error and the hook falls through to its no-opinion exit.
-git_capped() {
-  timeout 5 git "$@"
-}
+# Every git call below is capped via _lib_capped — see _lib.sh for the cap and its fallback behavior.
+# On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs
+# these git calls uncapped, so a stalled git (locked index, network mount)
+# hangs this gate rather than degrading gracefully.
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
@@ -63,7 +59,7 @@ if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)';
 fi
 
 # Only proceed if inside a git repo.
-REPO_ROOT=$(git_capped rev-parse --show-toplevel 2>/dev/null)
+REPO_ROOT=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
@@ -71,17 +67,17 @@ fi
 SETTINGS_REPO_PATH="claude/.claude/settings.json"
 
 # Check whether settings.json is staged at all.
-if ! git_capped diff --cached --name-only 2>/dev/null | grep -qF "$SETTINGS_REPO_PATH"; then
+if ! _lib_capped git diff --cached --name-only 2>/dev/null | grep -qF "$SETTINGS_REPO_PATH"; then
   exit 0
 fi
 
 # Diff the staged version against main. If main doesn't have the file yet
 # (unlikely but possible on a brand-new branch), diff against /dev/null.
-STAGED_CONTENT=$(git_capped show :"$SETTINGS_REPO_PATH" 2>/dev/null)
-if ! git_capped show "main:$SETTINGS_REPO_PATH" >/dev/null 2>&1; then
+STAGED_CONTENT=$(_lib_capped git show :"$SETTINGS_REPO_PATH" 2>/dev/null)
+if ! _lib_capped git show "main:$SETTINGS_REPO_PATH" >/dev/null 2>&1; then
   MAIN_CONTENT=""
 else
-  MAIN_CONTENT=$(git_capped show "main:$SETTINGS_REPO_PATH" 2>/dev/null)
+  MAIN_CONTENT=$(_lib_capped git show "main:$SETTINGS_REPO_PATH" 2>/dev/null)
 fi
 
 # The keys holding one machine's own state, which must never ship as the
@@ -99,7 +95,7 @@ GUARDED_KEYS_JSON='[
 # - One jq call, not one per key: hooks fire on every matching tool call, so a
 #   spawn-per-key loop would not hold the per-fire latency budget.
 # - _lib_jq, not bare jq: a wedged jq would otherwise hang the gated commit
-#   indefinitely, the same risk git_capped covers for git above.
+#   indefinitely, the same risk _lib_capped covers for git above.
 # - Each value is wrapped as [value] when the key is present and [] when it is
 #   absent, so an explicit false or null stays distinguishable from no key at
 #   all; jq's own != then compares structurally, which is type-strict on

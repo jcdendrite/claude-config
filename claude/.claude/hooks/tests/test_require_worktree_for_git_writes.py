@@ -55,6 +55,23 @@ class TestRequireWorktreeForGitWrites:
         # of whether the hint fired, so that alone wouldn't prove the hint ran.
         assert "present but untracked" in reason
 
+    def test_stray_untracked_marker_hint_survives_neither_timeout_nor_gtimeout_present(
+        self, stray_marker_repo, tmp_path
+    ):
+        """Fail-open regression for _lib_stray_marker_hint's own _lib_capped
+        git ls-files call: with neither binary present, the untracked-marker
+        hint must still reach the deny reason rather than silently dropping
+        out (see _stub_bin_without_timeout below for the PATH shape)."""
+        stub_bin = self._stub_bin_without_timeout(tmp_path)
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=stray_marker_repo,
+            extra_env={"PATH": str(stub_bin)},
+        )
+        assert reason is not None
+        assert "present but untracked" in reason
+
     def test_committed_marker_deny_omits_stray_hint(self, opted_in_repo):
         """The hint is GH-427-specific noise for the normal opted-in case —
         a committed marker must not trigger it."""
@@ -690,6 +707,66 @@ class TestRequireWorktreeForGitWrites:
         )
         assert reason is not None
         assert "python3" in reason
+
+    def _stub_bin_without_timeout(self, tmp_path):
+        """Stub PATH with only the binaries this hook's code path invokes
+        (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate
+        _lib.sh/the parser, `git`, `python3` for the command parser),
+        omitting both timeout(1) and gtimeout(1). Mirrors
+        test_python3_absent_denies's shape; skips (does not silently
+        under-symlink) when a needed real binary is itself absent."""
+        stub_bin = tmp_path / "_stub_bin"
+        stub_bin.mkdir()
+        for tool in ("cat", "dirname", "git", "jq", "python3"):
+            real_path = shutil.which(tool)
+            if not real_path:
+                pytest.skip(f"{tool} not found in PATH")
+            (stub_bin / tool).symlink_to(real_path)
+        return stub_bin
+
+    def test_main_tree_write_denies_when_neither_timeout_nor_gtimeout_present(
+        self, opted_in_repo, tmp_path
+    ):
+        """Fail-open regression: with neither binary present, _lib_capped
+        runs the git/python3 calls uncapped (see _lib.sh) rather than
+        silently skipping — the gate must still catch a main-tree write."""
+        stub_bin = self._stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=opted_in_repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "deny"
+        )
+
+    def test_worktree_write_allowed_when_neither_timeout_nor_gtimeout_present(
+        self, opted_in_repo, tmp_path
+    ):
+        """Companion allow case for the deny above: under the same PATH, a
+        write that legitimately resolves to a linked worktree must still
+        pass — without this, a fallback branch that always returns nonzero
+        would masquerade as a working gate. Exercises the full parser path
+        (cd resolution, python3 parse, effective-cwd rev-parse), unlike the
+        deny case above which returns before the parser ever runs."""
+        worktree = tmp_path / "feature-tree"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree), "-b", "feature-flip"],
+            cwd=opted_in_repo,
+            check=True,
+            capture_output=True,
+        )
+        stub_bin = self._stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"cd {worktree} && git commit -m foo"),
+                cwd=opted_in_repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "allow"
+        )
 
     # -- Worktree-cwd bypass: chained cd to main tree from worktree session --
     # Regression: a session whose persisted cwd is a linked worktree could run

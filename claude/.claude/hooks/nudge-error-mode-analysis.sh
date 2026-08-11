@@ -149,7 +149,7 @@ CHECKPOINT_DIR="$CONFIG_DIR/.error-mode-nudge-checkpoint.d"
 CHECKPOINT_FILE="${CHECKPOINT_DIR}/${SESSION_ID}"
 mkdir -p "$CHECKPOINT_DIR" 2>/dev/null || true
 find "$CHECKPOINT_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
-FRICTION_COUNT=$(timeout 10 python3 "$CONFIG_DIR/scripts/transcript-analysis.py" \
+FRICTION_COUNT=$(_lib_capped_for 10 python3 "$CONFIG_DIR/scripts/transcript-analysis.py" \
   friction-count --transcript "$TRANSCRIPT_PATH" --checkpoint "$CHECKPOINT_FILE" 2>/dev/null)
 if ! [[ "$FRICTION_COUNT" =~ ^[0-9]+$ ]]; then
   exit 0

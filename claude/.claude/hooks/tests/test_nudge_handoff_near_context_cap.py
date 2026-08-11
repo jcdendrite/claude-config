@@ -132,6 +132,36 @@ def _write_transcript(path: Path, records: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
 
+def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
+    """Build a PATH with only the binaries this hook's fire path invokes
+    (`cat`/`jq` for the payload/output JSON, `dirname` to locate _lib.sh,
+    `tail` for read_latest_usage, `mkdir`/`find`/`touch` for the marker
+    dir), omitting both timeout(1) and gtimeout(1). Skips (does not
+    silently under-symlink) when a needed real binary is itself absent
+    from the test machine."""
+    for tool in ("cat", "dirname", "find", "jq", "mkdir", "tail", "touch"):
+        real = shutil.which(tool)
+        if not real:
+            pytest.skip(f"{tool} not found in PATH")
+        (fake_bin / tool).symlink_to(real)
+    return str(fake_bin)
+
+
+def _check_mode_path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
+    """Build a PATH with only the binaries run_check_mode's --check path
+    invokes (`dirname` to locate _lib.sh, `jq` for the reported JSON,
+    `ps`/`head`/`sed`/`tr` for the ancestor walk, `env` for the pinned-locale
+    live-start read, `tail` for read_latest_usage), omitting both timeout(1)
+    and gtimeout(1). Skips when a needed real binary is itself absent from
+    the test machine."""
+    for tool in ("dirname", "env", "head", "jq", "ps", "sed", "tail", "tr"):
+        real = shutil.which(tool)
+        if not real:
+            pytest.skip(f"{tool} not found in PATH")
+        (fake_bin / tool).symlink_to(real)
+    return str(fake_bin)
+
+
 def _run_hook(
     payload: dict, tmp_path: Path, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
@@ -389,6 +419,116 @@ class TestNudgeHandoffNearContextCap:
         assert "nudged" in log_text
         assert f"est={ABOVE_LARGE}" in log_text
         assert f"event={hook_event_name}" in log_text
+
+    def test_fires_nudge_when_neither_timeout_nor_gtimeout_present(self, tmp_path):
+        """Fail-open regression: with neither binary present, _lib_capped_for
+        runs the tail/jq fire-path calls uncapped (see _lib.sh) rather than
+        silently degrading — the nudge must still fire above threshold under
+        this PATH."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [_assistant_record(cache_read=580000, cache_create=20000, input_tok=30000, output_tok=20000)],
+        )
+        fake_bin = tmp_path / "fakebin-no-timeout-no-gtimeout"
+        fake_bin.mkdir()
+        restricted_path = _path_without_timeout_or_gtimeout(fake_bin)
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        payload = json.loads(result.stdout)
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        assert "handoff" in ctx.lower() or "/handoff" in ctx
+        assert _marker_path(tmp_path).exists()
+
+    # The two tests below each distinguish a real 2s cap firing from the cap
+    # silently widening to _lib_capped's 5s default, at one specific call
+    # site each: read_latest_usage's `tail` call and the fire path's final
+    # `jq` call. run_check_mode's three `_lib_capped_for` jq calls
+    # (check_refuse, schema-drift, status:"ok") are reachable only through
+    # --check mode and still lack duration-distinguishing coverage.
+
+    def test_read_latest_usage_tail_killed_by_2s_cap_not_5s_default(self, tmp_path):
+        """A `tail` shim that takes ~3.5s to produce output would complete
+        fine under _lib_capped's 5s default, but must be killed under the 2s
+        cap read_latest_usage's `_lib_capped_for 2 tail ...` call actually
+        uses -- distinguishing the two rather than passing either way, the
+        way a shim slower than any plausible cap would."""
+        real_tail = shutil.which("tail")
+        if not real_tail:
+            pytest.skip("tail not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — cap cannot fire at all")
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [_assistant_record(cache_read=580000, cache_create=20000, input_tok=30000, output_tok=20000)],
+        )
+        fake_bin = tmp_path / "fakebin-slow-tail"
+        fake_bin.mkdir()
+        slow_tail = fake_bin / "tail"
+        slow_tail.write_text(f"#!/bin/bash\nsleep 3.5\nexec {real_tail} \"$@\"\n")
+        slow_tail.chmod(0o755)
+
+        start = time.perf_counter()
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"}
+        )
+        elapsed = time.perf_counter() - start
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == "", (
+            f"hook fired despite the slow tail call being expected to time out at the "
+            f"2s cap (took {elapsed:.1f}s) -- the cap may have collapsed to the 5s "
+            "_lib_capped default"
+        )
+
+    def test_fire_path_jq_killed_by_2s_cap_not_5s_default(self, tmp_path):
+        """A `jq` shim that takes ~3.5s on the fire path's final call
+        (`_lib_capped_for 2 jq -n ... hookSpecificOutput ...`) would
+        complete fine under _lib_capped's 5s default, but must be killed
+        under the 2s cap this call site actually uses -- distinguishing the
+        two the same way as the tail test above. The shim only slows the
+        invocation whose filter contains "hookSpecificOutput" so
+        read_latest_usage's own jq calls still complete fast enough for the
+        hook to reach the fire path at all."""
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — cap cannot fire at all")
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(
+            transcript,
+            [_assistant_record(cache_read=580000, cache_create=20000, input_tok=30000, output_tok=20000)],
+        )
+        fake_bin = tmp_path / "fakebin-slow-jq"
+        fake_bin.mkdir()
+        slow_jq = fake_bin / "jq"
+        slow_jq.write_text(
+            "#!/bin/bash\n"
+            'case "$*" in\n'
+            "  *hookSpecificOutput*) sleep 3.5 ;;\n"
+            "esac\n"
+            f'exec {real_jq} "$@"\n'
+        )
+        slow_jq.chmod(0o755)
+
+        start = time.perf_counter()
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"}
+        )
+        elapsed = time.perf_counter() - start
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == "", (
+            f"hook fired despite the slow fire-path jq call being expected to time out "
+            f"at the 2s cap (took {elapsed:.1f}s) -- the cap may have collapsed to the "
+            "5s _lib_capped default"
+        )
+        assert not _marker_path(tmp_path).exists()
 
     def test_already_fired_is_silent(self, tmp_path):
         """When the per-session marker already exists, subsequent calls produce no stdout."""
@@ -1015,6 +1155,19 @@ class TestCheckMode:
         assert not _marker_path(tmp_path, config_dir=config_dir).exists()
         assert not _drift_marker_path(tmp_path, config_dir=config_dir).exists()
         assert not _log_path(tmp_path, config_dir=config_dir).exists()
+
+    def test_reports_status_when_neither_timeout_nor_gtimeout_present(self, tmp_path):
+        """Fail-open regression for --check's own _lib_capped_for call sites
+        (check_refuse, the schema-drift build, and the final status:ok build):
+        with neither binary present, run_check_mode must still return a
+        status field rather than a silent/empty result."""
+        self._seeded(tmp_path, total=ABOVE_LARGE)
+        fake_bin = tmp_path / "fakebin-no-timeout-no-gtimeout"
+        fake_bin.mkdir()
+        restricted_path = _check_mode_path_without_timeout_or_gtimeout(fake_bin)
+        payload = _check_json(_run_check(tmp_path, extra_env={"PATH": restricted_path}))
+        assert payload["status"] == "ok"
+        assert payload["over_threshold"] is True
 
     def test_does_not_read_stdin(self, tmp_path):
         """The dispatch must precede the hook's unconditional `cat`.

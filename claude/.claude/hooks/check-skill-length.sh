@@ -19,6 +19,10 @@
 #
 # The "if" field in settings.json is unreliable — the internal grep is the
 # actual gate. See require-code-review.sh for the same pattern and rationale.
+#
+# On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs the
+# git calls below uncapped, so a stalled git (locked index, network mount)
+# hangs this gate rather than degrading gracefully.
 
 set -uo pipefail
 
@@ -70,8 +74,8 @@ limit_for() {
 FAIL=0
 MESSAGES=""
 while IFS= read -r f; do
-  new=$(timeout 5 git show ":$f" 2>/dev/null | awk 'END{print NR}')
-  old=$(timeout 5 git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
+  new=$(_lib_capped git show ":$f" 2>/dev/null | awk 'END{print NR}')
+  old=$(_lib_capped git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
   limit=$(limit_for "$f")
   if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
     MESSAGES="${MESSAGES}  $f: $new lines (was $old, limit $limit)\n"

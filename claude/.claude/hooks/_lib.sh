@@ -5,21 +5,19 @@
 # (marker.sh). Source it; do not invoke it directly.
 
 # Backstop against a hung jq (~5s, not a per-fire latency budget).
-# Cites guard-settings-session-keys.sh's git_capped 5s precedent.
-# Fallback to bare jq when timeout(1) is absent (BSD/macOS default).
-# install.sh warns about missing timeout at onboarding time.
-# Security implication: on BSD/macOS without coreutils, a stalled or
+# Cites guard-settings-session-keys.sh's _lib_capped 5s precedent.
+# Probes timeout(1) then gtimeout(1) (Homebrew coreutils' g-prefixed name),
+# falling back to bare jq only when neither is on PATH (stock macOS with no
+# coreutils installed). install.sh warns about missing timeout at onboarding
+# time.
+# Security implication: on a machine with neither binary, a stalled or
 # replaced jq binary can hold a gate hook open indefinitely. The harness's
 # own hook timeout (if any) then governs — not this wrapper.
 _lib_jq() {
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 5 jq "$@"
-  else
-    jq "$@"
-  fi
+  _lib_capped_for 5 jq "$@"
 }
 
-# Same 5s backstop and same BSD/macOS fallback as _lib_jq, for any other
+# Same backstop and same probe-then-fallback as _lib_jq, for any other
 # command that reads the filesystem and can stall on it (git against a
 # locked .git/index, sha256sum against a dead NFS mount). Callers MUST check
 # the exit status: a bare `timeout 5 git ...` is not just uncapped when
@@ -27,8 +25,23 @@ _lib_jq() {
 # yields empty output on stock macOS.
 # Usage: out=$(_lib_capped git -C "$root" ls-files ...) || <fail closed>
 _lib_capped() {
+  _lib_capped_for 5 "$@"
+}
+
+# _lib_capped_for SECONDS CMD [ARGS...]
+# Shared probe-then-run logic behind _lib_capped and _lib_jq: probes
+# timeout(1), then gtimeout(1) (Homebrew coreutils' g-prefixed name), and
+# runs CMD uncapped only when neither is on PATH. Callers MUST check the
+# exit status — see _lib_capped's usage note above, which applies here too.
+# SECONDS must be a literal or a value guaranteed non-empty -- an empty or
+# unset value hard-aborts the sourcing script instead of failing this call.
+_lib_capped_for() {
+  local seconds="${1:?_lib_capped_for requires a seconds argument}"
+  shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout 5 "$@"
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
   else
     "$@"
   fi
@@ -803,19 +816,14 @@ _lib_first_live_linked_worktree() {
 # and tracked (the normal opted-in case) — no noise on the common path.
 # Deny-path only: callers interpolate this into an already-decided deny
 # message, so the `git ls-files` call here never runs on the allow path.
-# 5s timeout backstop mirrors _lib_jq (line 14): a stalled `git ls-files`
-# (e.g. NFS-mounted repo root) would otherwise hold the deny message open
-# indefinitely. Falls back to bare git when timeout(1) is absent (BSD/macOS).
+# _lib_capped's 5s timeout backstop: a stalled `git ls-files` (e.g.
+# NFS-mounted repo root) would otherwise hold the deny message open
+# indefinitely.
 _lib_stray_marker_hint() {
   local repo_root="$1"
   [ -f "$repo_root/.claude/worktree-required" ] || return 0
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 5 git -C "$repo_root" ls-files --error-unmatch .claude/worktree-required \
-      >/dev/null 2>&1 && return 0
-  else
-    git -C "$repo_root" ls-files --error-unmatch .claude/worktree-required \
-      >/dev/null 2>&1 && return 0
-  fi
+  _lib_capped git -C "$repo_root" ls-files --error-unmatch .claude/worktree-required \
+    >/dev/null 2>&1 && return 0
   printf '%s' " Note: .claude/worktree-required is present but untracked — an accidental stray copy activates enforcement exactly like a committed one. Commit it if intentional, or remove it if it was created by accident."
 }
 
