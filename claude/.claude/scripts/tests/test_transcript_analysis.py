@@ -211,6 +211,7 @@ def _asst(
     sidechain: bool = False,
     ts: str | None = None,
     content: list | None = None,
+    request_id: str | None = None,
 ) -> dict:
     rec: dict = {
         "type": "assistant",
@@ -220,6 +221,8 @@ def _asst(
     }
     if ts:
         rec["timestamp"] = ts
+    if request_id is not None:
+        rec["requestId"] = request_id
     return rec
 
 
@@ -4888,13 +4891,17 @@ class TestReviewTrace:
 # ---------------------------------------------------------------------------
 
 
-def _opus(content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T10:00:00.000Z") -> dict:
+def _opus(
+    content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T10:00:00.000Z",
+    request_id: str | None = None,
+) -> dict:
     """Build an Opus assistant record with explicit usage values for audit-routing tests."""
     rec = _asst(
         "claude-opus-4-7",
         branch="main",
         ts=ts,
         content=content,
+        request_id=request_id,
     )
     rec["message"]["usage"] = {
         "input_tokens": 50,
@@ -4907,12 +4914,12 @@ def _opus(content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T1
 
 def _priced_opus(
     content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T10:00:00.000Z",
-    model: str = "claude-opus-5",
+    model: str = "claude-opus-5", request_id: str | None = None,
 ) -> dict:
     """Build a priced-Opus assistant record (default claude-opus-5, in
     _MODEL_BASE_INPUT_RATES) for audit-routing's dollar-headline tests —
     _opus()'s claude-opus-4-7 is deliberately unpriced."""
-    rec = _asst(model, branch="main", ts=ts, content=content)
+    rec = _asst(model, branch="main", ts=ts, content=content, request_id=request_id)
     rec["message"]["usage"] = {
         "input_tokens": 50,
         "output_tokens": out,
@@ -4933,6 +4940,7 @@ def _priced(
     flat_cache_creation: int | None = None,
     ts: str = "2026-05-19T10:00:00.000Z",
     branch: str = "main",
+    request_id: str | None = None,
 ) -> dict:
     """Build an assistant record with explicit priced usage fields for cost tests.
 
@@ -4944,7 +4952,7 @@ def _priced(
     ephemeral_1h/ephemeral_5m. branch="main" by default so every pre-existing
     call site (predating --branches) is unaffected.
     """
-    rec = _asst(model, branch=branch, ts=ts, content=[])
+    rec = _asst(model, branch=branch, ts=ts, content=[], request_id=request_id)
     usage: dict = {
         "input_tokens": input,
         "output_tokens": output,
@@ -5354,6 +5362,57 @@ class TestAuditRouting:
         # Turn with no timestamp is excluded by the --since filter
         assert _extract_corpus_class_tokens(out, "code-write") == 0
 
+    def test_request_id_group_later_block_skill_invocation_still_opens_judgment_span(
+        self, fake_projects, capsys
+    ):
+        """A requestId group whose Skill tool_use block is not the group's
+        first content block still opens a judgment span for that turn and the
+        one after it — dedup merges every block in the group in order, so a
+        later block's signal is never dropped the way keeping only the
+        group's first record would drop it."""
+        ts = "2026-05-19T10:00:00.000Z"
+        rec_a = _opus([_thinking_block()], out=20, ts=ts, request_id="req-1")
+        rec_b = _opus([_skill_use("s1", "code-review")], out=20, ts=ts, request_id="req-1")
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            rec_a, rec_b,
+            # Next turn, still inside the span the merged group's Skill block opened.
+            _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=30),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        # Merged group (20, byte-identical usage priced/counted once) + the
+        # next turn still in-span (30) = 50 judgment output tokens. A dedup
+        # that kept only the group's first record would drop the Skill block,
+        # classify the group as pure-thinking, never open the span, and
+        # misclassify the next Read turn as code-read instead.
+        assert _extract_corpus_class_tokens(out, "judgment") == 50
+        assert _extract_corpus_class_tokens(out, "code-read") == 0
+
+    def test_request_id_group_later_block_exit_plan_mode_clears_plan_mode_for_next_turn(
+        self, fake_projects, capsys
+    ):
+        """A requestId group whose ExitPlanMode tool_use is not the group's
+        first content block still clears plan-mode for the turn after it —
+        dedup merges every block in the group in order, so a dedup that kept
+        only the group's first record would drop the ExitPlanMode block,
+        leave plan-mode stuck active, and misclassify the next turn as
+        judgment instead of code-write."""
+        rec_a = _opus([_thinking_block()], out=75, request_id="req-1")
+        rec_b = _opus([_exit_plan_mode("epm1")], out=75, request_id="req-1")
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _user_msg([{"type": "text", "text": "Plan mode is active"}], branch="main"),
+            rec_a, rec_b,
+            # Turn after the merged group, only code-write if plan-mode was
+            # actually cleared by the group's (later-block) ExitPlanMode.
+            _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=90),
+        ])
+        _mod.cmd_audit_routing(_audit_routing_args())
+        out = capsys.readouterr().out
+        # Merged group (75, byte-identical usage priced/counted once) is
+        # still judgment (plan-mode was active during its own classification).
+        assert _extract_corpus_class_tokens(out, "judgment") == 75
+        assert _extract_corpus_class_tokens(out, "code-write") == 90
+
     def test_since_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
         """A malformed --since value fails closed with the audit-routing-specific error prefix."""
         with pytest.raises(SystemExit):
@@ -5543,6 +5602,74 @@ class TestCost:
         _mod._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert cols["$"] == "4.00"
+
+    def test_multi_record_request_id_group_priced_exactly_once(self, tmp_path, monkeypatch, capsys):
+        """Three assistant records sharing one requestId (one JSONL record per
+        content block, as Claude Code writes for a single API call) carry a
+        byte-identical usage dict — cost prices the group's usage once, not
+        once per record, and counts it as one priced turn, not three.
+
+        Uses --summary (rather than this class's usual fake_projects fixture)
+        since priced_turn_count is only rendered in --summary's output, and
+        --summary requires --this-repo -- hence the git-worktree-list/getcwd
+        mocks, mirroring TestCostSummary's own fixture pattern.
+        """
+        projects = tmp_path / "projects"
+        (projects / "-repo-main").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        usage = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_input_tokens": 0}
+        recs = [
+            _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1"),
+            _asst("claude-sonnet-5", content=[{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
+                  request_id="req-1"),
+            _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1"),
+        ]
+        for rec in recs:
+            rec["message"]["usage"] = dict(usage)
+        _write_jsonl(projects / "-repo-main" / "sess.jsonl", recs)
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
+        # not $6.00 for pricing the group's usage three times over.
+        assert _extract_grand_total(out) == pytest.approx(2.00)
+        # Three content-block records collapse into one priced turn, not three.
+        assert "1 priced turns" in out
+
+    def test_sidechain_multi_record_request_id_group_composes_with_sidechain_dedup(
+        self, fake_projects, capsys
+    ):
+        """A sidechain (subagent-file) request split into two content-block
+        records shares one requestId and is priced once for its own group —
+        this composes with, but is a different mechanism from,
+        test_sidechain_turns_priced_exactly_once's invariant above (dedup of
+        subagent *files* vs. the main file, not requestId dedup)."""
+        session_id = "sess-side-multi"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000),  # main thread: $2.00
+        ])
+        side_usage = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_input_tokens": 0}
+        side_a = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}],
+                        request_id="req-side", sidechain=True)
+        side_a["message"]["usage"] = dict(side_usage)
+        side_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}],
+                        request_id="req-side", sidechain=True)
+        side_b["message"]["usage"] = dict(side_usage)
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [side_a, side_b])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        # main $2.00 + sidechain $2.00 (priced once despite 2 content-block records) = $4.00.
         assert cols["$"] == "4.00"
 
     def test_redact_proj_label_map_miss_returns_opaque_token_not_raw_name(self):
@@ -6528,6 +6655,139 @@ class TestPriceTurnArity:
         assert context_at_turn == 100 + 50 + 10 + 5
 
 
+class TestDedupTurnsByRequestId:
+    """Direct tests for _dedup_turns_by_request_id, the shared turn iterator
+    cmd_audit_routing, _cost_report, _context_distribution_report,
+    _cost_trend_report, and cmd_subagents all apply to their own per-session
+    records before their per-record loops -- Claude Code writes one JSONL
+    record per assistant content block, and every record from one API call
+    shares a requestId. input_tokens and the cache_* classes are identical
+    across a run's records; output_tokens ascends within the run and
+    completes only on the last record."""
+
+    def test_single_record_request_is_a_no_op(self):
+        """A lone assistant record (no run to merge) is returned unchanged."""
+        rec = _priced("claude-sonnet-5", input=100, request_id="req-1")
+        assert _mod._dedup_turns_by_request_id([rec]) == [rec]
+
+    def test_multi_record_run_merges_content_in_order_and_keeps_last_usage(self):
+        """Three records sharing one requestId collapse into one turn whose
+        content is the concatenation of all three blocks in original order,
+        and whose usage is the run's LAST record's usage -- so a caller
+        pricing the merged record prices the run's final (billed) usage,
+        not an earlier record's."""
+        block_a = {"type": "thinking", "thinking": "..."}
+        block_b = {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}
+        block_c = {"type": "text", "text": "done"}
+        recs = [
+            _asst("claude-sonnet-5", content=[block_a], request_id="req-1"),
+            _asst("claude-sonnet-5", content=[block_b], request_id="req-1"),
+            _asst("claude-sonnet-5", content=[block_c], request_id="req-1"),
+        ]
+        recs[0]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
+        recs[1]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
+        recs[2]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        result = _mod._dedup_turns_by_request_id(recs)
+        assert len(result) == 1
+        assert result[0]["message"]["content"] == [block_a, block_b, block_c]
+        assert result[0]["message"]["usage"] == {"input_tokens": 100, "output_tokens": 50}
+
+    def test_ascending_output_tokens_within_run_prices_using_last_record(self):
+        """The run's output_tokens ascends record-to-record and completes on
+        the last one (measured across 15,653 multi-record runs, 100% of
+        which peak on the last record) -- a merged turn's usage must reflect
+        that final, billed value. Taking the first record's stub value here
+        would undercount output tokens, the regression this test guards."""
+        recs = [
+            _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1"),
+            _asst("claude-sonnet-5", content=[{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
+                  request_id="req-1"),
+            _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1"),
+        ]
+        recs[0]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
+        recs[1]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
+        recs[2]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3111}
+        result = _mod._dedup_turns_by_request_id(recs)
+        assert result[0]["message"]["usage"]["output_tokens"] == 3111
+
+    def test_non_identical_input_usage_within_run_emits_stderr_warning(self, monkeypatch, capsys):
+        """A future transcript format emitting non-identical input_tokens
+        within one requestId run is a silent-mispricing risk with no signal
+        today -- this canary fires a stderr WARNING when
+        _merge_assistant_run's input/cache-invariant-usage assumption is
+        violated, mirroring _warn_if_subagent_format_drift's pattern.
+        _usage_drift_warned is reset here since the canary is rate-limited to
+        one warning per process (see _warn_if_run_usage_drift) and other
+        tests in this module-scoped process may have already tripped it."""
+        monkeypatch.setattr(_mod, "_usage_drift_warned", False)
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
+        rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
+        rec2["message"]["usage"] = {"input_tokens": 999, "output_tokens": 50}
+        _mod._dedup_turns_by_request_id([rec1, rec2])
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_ascending_output_tokens_within_run_emits_no_warning(self, monkeypatch, capsys):
+        """The normal case -- output_tokens ascends within a run while
+        input_tokens and the cache_* classes stay identical -- never fires
+        the drift canary; an ascending output_tokens is the documented norm,
+        not drift."""
+        monkeypatch.setattr(_mod, "_usage_drift_warned", False)
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
+        rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
+        rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        _mod._dedup_turns_by_request_id([rec1, rec2])
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_missing_request_id_records_each_count_separately(self):
+        """Two assistant records with no requestId key at all never merge
+        with each other — each is returned as its own one-record turn."""
+        rec1 = _priced("claude-sonnet-5", input=100)
+        rec2 = _priced("claude-sonnet-5", input=200)
+        assert "requestId" not in rec1
+        assert "requestId" not in rec2
+        assert _mod._dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
+
+    def test_null_and_empty_request_id_records_each_count_separately(self):
+        """A null requestId and an empty-string requestId are both treated as
+        'missing' — neither merges with the other or with a truly absent
+        requestId, matching the never-merge-two-missing-ids requirement."""
+        rec1 = _priced("claude-sonnet-5", input=100)
+        rec1["requestId"] = None
+        rec2 = _priced("claude-sonnet-5", input=200)
+        rec2["requestId"] = ""
+        assert _mod._dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
+
+    def test_user_record_between_same_request_id_records_prevents_merge(self):
+        """Grouping only merges *consecutive* assistant records — an
+        intervening user record ends any run in progress and passes through
+        unchanged in its original position."""
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        user = _user_msg("continue")
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        assert result == [rec1, user, rec2]
+
+    def test_request_id_does_not_merge_across_session_files(self, fake_projects, capsys):
+        """The same requestId string appearing in two separate session files
+        prices as two separate turns, not one merged turn — the dedup helper
+        is applied fresh to each session's own records list, so a requestId
+        collision across sessions (however unlikely with real UUIDs) can't
+        collapse them."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, request_id="shared-req"),  # $2.00
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, request_id="shared-req"),  # $2.00
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(4.00)
+
+
 class TestCostBranchFilter:
     """--branches: per-record (not per-session) gitBranch filtering."""
 
@@ -7037,6 +7297,27 @@ class TestContextDistribution:
         # $1.80 (sidechain, 900k input) = $2.00 — a bug that coupled the
         # sidechain exclusion to the dollar total too (instead of only the
         # peak) would silently drop the sidechain's $1.80 here.
+        assert "Total priced dollars: 2.00" in out
+
+    def test_multi_record_request_id_group_priced_exactly_once(self, fake_projects, capsys):
+        """Three assistant records sharing one requestId (one JSONL record per
+        content block, as Claude Code writes for a single API call) carry a
+        byte-identical usage dict — context-distribution prices the group's
+        usage once, not once per record."""
+        usage = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_input_tokens": 0}
+        recs = [
+            _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1"),
+            _asst("claude-sonnet-5", content=[{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
+                  request_id="req-1"),
+            _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1"),
+        ]
+        for rec in recs:
+            rec["message"]["usage"] = dict(usage)
+        _write_jsonl(fake_projects / "sess.jsonl", recs)
+        _mod._context_distribution_report(_context_distribution_args())
+        out = capsys.readouterr().out
+        # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
+        # not $6.00 for pricing the group's usage three times over.
         assert "Total priced dollars: 2.00" in out
 
     def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
@@ -7700,6 +7981,20 @@ class TestScanEditFormatSession:
         stats = _mod._scan_edit_format_session(records)
         assert stats["old_string_size_hist"]["0-99"] == 2
         assert stats["old_string_size_hist"]["100-299"] == 1
+
+    def test_multi_record_request_id_group_sums_output_tokens_once(self):
+        """A requestId group's output_tokens is taken once from the merged
+        turn's last record, not summed once per raw content-block record —
+        without dedup, stats["output_tokens"] would inflate by however many
+        blocks the response split into."""
+        records = [
+            _opus([_thinking_block()], out=3, request_id="req-1"),
+            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=3, request_id="req-1"),
+            _opus([], out=3111, request_id="req-1"),
+        ]
+        stats = _mod._scan_edit_format_session(records)
+        assert stats["output_tokens"] == 3111
+        assert stats["calls"] == {"Edit": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -8524,6 +8819,30 @@ class TestCostTrend:
         assert row is not None and row["total"] == "2.00"
         # _opus()'s turn: input 50 + output 400 + cache_read 0 = 450 unpriced tokens.
         assert "1 unpriced turns / 450 tokens excluded from priced spend" in out
+
+    def test_multi_record_request_id_group_priced_exactly_once(self, fake_projects, capsys):
+        """Three assistant records sharing one requestId (one JSONL record per
+        content block, as Claude Code writes for a single API call) carry a
+        byte-identical usage dict — cost-trend prices the group's usage once,
+        not once per record."""
+        usage = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_input_tokens": 0}
+        recs = [
+            _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}],
+                  ts="2026-06-01T10:00:00.000Z", request_id="req-1"),
+            _asst("claude-sonnet-5", content=[{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
+                  ts="2026-06-01T10:00:00.000Z", request_id="req-1"),
+            _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}],
+                  ts="2026-06-01T10:00:00.000Z", request_id="req-1"),
+        ]
+        for rec in recs:
+            rec["message"]["usage"] = dict(usage)
+        _write_jsonl(fake_projects / "sess.jsonl", recs)
+        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        out = capsys.readouterr().out
+        row = _extract_cost_trend_row(out, "2026-W23")
+        # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
+        # not $6.00 for pricing the group's usage three times over.
+        assert row is not None and row["total"] == "2.00"
 
 
 # ---------------------------------------------------------------------------
@@ -9721,6 +10040,19 @@ class TestAuditRoutingShape:
             _mod.cmd_audit_routing_shape(_audit_routing_shape_args(since="not-a-window"))
         assert "audit-routing-shape: --since: expected Nd like '35d'" in capsys.readouterr().err
 
+    def test_request_id_group_reads_split_across_records_bucketed_by_union(self, fake_projects, capsys):
+        """A requestId group whose 2 Read tool_use blocks land on separate
+        raw records is bucketed as one code-read turn with D1='2-3' (the
+        union of both blocks), not as two separate D1='1' turns — dedup
+        merges the group's content before _count_read_file_paths sees it."""
+        rec_a = _opus([_read_use("r1", "/a.txt")], out=20, request_id="req-1")
+        rec_b = _opus([_read_use("r2", "/b.txt")], out=20, request_id="req-1")
+        _write_jsonl(fake_projects / "sess.jsonl", [rec_a, rec_b])
+        _mod.cmd_audit_routing_shape(_audit_routing_shape_args())
+        out = capsys.readouterr().out
+        assert _extract_shape_d1(out, "2-3") == (1, 20)
+        assert _extract_shape_d1(out, "1") == (0, 0)
+
 
 # ---------------------------------------------------------------------------
 # audit-routing-samples
@@ -10321,6 +10653,25 @@ class TestAuditRoutingSamples:
         with pytest.raises(SystemExit):
             _mod.cmd_audit_routing_samples(_audit_routing_samples_args(since="not-a-window"))
         assert "audit-routing-samples: --since: expected Nd like '35d'" in capsys.readouterr().err
+
+    def test_request_id_group_tool_use_on_later_record_still_one_turn_at_index_zero(
+        self, fake_projects, capsys
+    ):
+        """A requestId group whose Read tool_use lands on the second raw
+        record (the first record is thinking-only) still emits exactly one
+        code-read candidate at turn_index 0 with assistant_tool_call set from
+        the merged content's own tool_use block — without dedup the
+        thinking-only first record becomes its own phantom pure-thinking
+        turn, pushing the real turn to index 1."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_thinking_block()], out=20, request_id="req-1"),
+            _opus([_read_use("r1", "/a.py")], out=20, request_id="req-1"),
+        ])
+        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        records = json.loads(capsys.readouterr().out)
+        assert len(records) == 1
+        assert records[0]["turn_index"] == 0
+        assert records[0]["assistant_tool_call"] == {"name": "Read", "input": {"file_path": "/a.py"}}
 
 
 # ---------------------------------------------------------------------------
@@ -11745,6 +12096,25 @@ class TestSubagents:
         out = capsys.readouterr().out
         assert "branch-a" in out
         assert "branch-b" not in out
+
+    def test_multi_record_request_id_group_counts_as_one_turn(self, fake_projects, capsys):
+        """Three assistant records sharing one requestId (one per content
+        block, as Claude Code writes for a single API call) count as one
+        turn in the per-branch table, not three."""
+        recs = [
+            _asst("claude-opus-4-7", branch="test-branch",
+                  content=[{"type": "thinking", "thinking": "..."}], request_id="req-1"),
+            _asst("claude-opus-4-7", branch="test-branch",
+                  content=[{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
+                  request_id="req-1"),
+            _asst("claude-opus-4-7", branch="test-branch",
+                  content=[{"type": "text", "text": "done"}], request_id="req-1"),
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", recs)
+        _mod.cmd_subagents(_subagents_args(branches="test-branch"))
+        out = capsys.readouterr().out
+        main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert main_cols["Opus"] == "1", "three content-block records for one API call count as one turn"
 
 
 class TestSubagentsToolResultBytes:
