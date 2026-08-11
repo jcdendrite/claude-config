@@ -6,6 +6,9 @@
 #   - ~/.claude/worktree-required       (machine-level personal default)
 #   - <repo>/.claude/worktree-optout    (per-repo opt-out of machine default only)
 # Companion to require-worktree-for-git-writes.sh, which blocks git write ops.
+# Also denies a write into a linked worktree already claimed by a different
+# live session via _lib_worktree_collision_guard (_lib.sh) — see that
+# function's header for the full design and known gaps.
 #
 # Known exclusion: paths under $HOME/.claude/ are always exempt —
 # they are Claude Code harness/skill infrastructure, never project work.
@@ -139,8 +142,16 @@ if [ -z "$GIT_DIR_ABS" ] || [ -z "$GIT_COMMON_DIR" ]; then
   exit 0
 fi
 
-# Already in a linked worktree: allow.
-[ "$GIT_DIR_ABS" != "$GIT_COMMON_DIR" ] && exit 0
+# Already in a linked worktree: check for a same-worktree collision with
+# another live session before allowing. See require-worktree-for-git-writes.sh
+# and _lib_worktree_collision_guard (_lib.sh) for the full design.
+if [ "$GIT_DIR_ABS" != "$GIT_COMMON_DIR" ]; then
+  COLLISION_REASON=$(_lib_worktree_collision_guard "$lookup_dir" "$GIT_COMMON_DIR") || {
+    emit_deny "Blocked by worktree-enforcement hook (file-writes): $TOOL_NAME targets '$FILE_PATH' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
+    exit 0
+  }
+  exit 0
+fi
 
 # In the main working tree: deny.
 REL_PATH="${FILE_PATH#"$REPO_ROOT"/}"

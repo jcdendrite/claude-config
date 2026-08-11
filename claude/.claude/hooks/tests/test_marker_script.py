@@ -1284,3 +1284,37 @@ class TestMarkerScriptPlanModeSibling:
         result = _run(["activate", "plan-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert not self._sibling_path(isolated_home, sid).exists()
+
+
+class TestWalkSessionDelegatesToLib:
+    """_walk_session must actually call _lib.sh's _lib_resolve_claude_pid,
+    not just reproduce its output via a second, independent ancestor walk —
+    matching output alone (every other test in this file) doesn't prove
+    that. Proven by overriding _lib_resolve_claude_pid in the exact _lib.sh
+    copy marker.sh's own `dirname "$0"`-relative sourcing resolves, and
+    observing that `resolve-session-id`'s output changes to the override's
+    sentinel — output a real ancestor walk could never independently
+    produce."""
+
+    def test_resolve_session_id_reflects_lib_resolve_claude_pid_override(self, tmp_path, isolated_home):
+        scripts_dir = tmp_path / "scripts"
+        hooks_dir = tmp_path / "hooks"
+        scripts_dir.mkdir()
+        hooks_dir.mkdir()
+        (scripts_dir / "marker.sh").symlink_to(MARKER_SCRIPT)
+        instrumented_lib = (HOOKS_DIR / "_lib.sh").read_text() + (
+            "\n_lib_resolve_claude_pid() {\n"
+            '  printf "spy-session-id spy-pid"\n'
+            "  return 0\n"
+            "}\n"
+        )
+        (hooks_dir / "_lib.sh").write_text(instrumented_lib)
+
+        result = subprocess.run(
+            ["bash", str(scripts_dir / "marker.sh"), "resolve-session-id"],
+            env={**os.environ, "HOME": str(isolated_home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "spy-session-id"

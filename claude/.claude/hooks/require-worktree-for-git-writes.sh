@@ -9,7 +9,12 @@
 # Motivation: concurrent Claude Code sessions on the same working tree can
 # race — e.g. one session's `git reset --hard` silently wipes another's
 # uncommitted edits. Working in linked worktrees (`git worktree add`)
-# isolates each session's state.
+# isolates each session's state — but only if each session gets its own
+# worktree. A write that resolves into a linked worktree also passes through
+# `_lib_worktree_collision_guard` (see _lib.sh), which denies when a
+# *different* live session already holds that same worktree path, closing
+# the gap where two sessions independently anchor into the identical
+# worktree with no isolation between them at all.
 #
 # Threat model: this is a developer-machine guardrail against *accidental*
 # main-tree writes, not an adversarial boundary — the agent is cooperative,
@@ -64,6 +69,29 @@
 #     uncapped on a machine lacking both timeout(1) and gtimeout(1), so a
 #     stalled call (locked index, network mount) hangs this gate rather than
 #     degrading gracefully.
+#   - The collision guard's liveness check (`kill -0` on a stored PID) can
+#     rarely false-deny if that PID is reused by an unrelated process after
+#     the original session exited; bounded and self-clearing once whatever
+#     now holds that PID number exits, not closed outright.
+#   - A dead-PID lock the collision guard detects is never auto-cleared —
+#     `git worktree unlock` has no ownership check, so an in-hook
+#     evict-then-relock would itself be racy. The deny message names the
+#     manual `git worktree unlock <path>` remedy instead.
+#   - The collision guard's liveness check can't distinguish a dead PID from
+#     one owned by a different user on a shared machine — out of scope for
+#     this guardrail's single-developer-machine threat model.
+#   - A `git worktree lock` failure caused by something other than
+#     contention (an old git without worktree-lock support, a permission
+#     error) is diagnosed the same as a transient race and told to "retry",
+#     which is permanently wrong advice in that case.
+#   - The collision guard now makes "already in a linked worktree" a
+#     conditional allow instead of an unconditional one: it depends on
+#     _lib_resolve_claude_pid resolving this session's own live pid, which
+#     in turn depends on capture-session-id.sh's SessionStart hook having
+#     already written a session file. SessionStart necessarily precedes any
+#     PreToolUse in the same session, so this holds by construction; noted
+#     here because that ordering guarantee is now load-bearing for a write
+#     path that was previously allow-unconditionally.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
@@ -161,6 +189,10 @@ if $SESSION_IS_WORKTREE; then
      && [[ "$COMMAND" != *'-C'* ]] \
      && [[ "$COMMAND" != *'('* ]] \
      && [[ "$COMMAND" != *'`'* ]]; then
+    COLLISION_REASON=$(_lib_worktree_collision_guard "$CWD" "$REPO_GIT_COMMON_DIR") || {
+      emit_deny "Blocked by worktree-enforcement hook: $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
+      exit 0
+    }
     exit 0
   fi
 fi
@@ -291,7 +323,12 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
       fi
 
       if [ "$eff_git_dir" != "$eff_common_dir" ]; then
-        # Linked worktree of this repo — allow.
+        # Linked worktree of this repo — check for a same-worktree
+        # collision with another live session before allowing.
+        COLLISION_REASON=$(_lib_worktree_collision_guard "$effective_cwd" "$REPO_GIT_COMMON_DIR") || {
+          emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
+          exit 0
+        }
         continue
       fi
 

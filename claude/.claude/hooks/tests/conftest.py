@@ -43,6 +43,56 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 
 
+def _dead_pid() -> int:
+    """Return a pid that is guaranteed not to be running. Mirrors
+    scripts/tests/conftest.py's helper of the same name (separate pytest
+    rootdir, so not importable directly) — spawns and reaps a real process
+    so the returned pid is a genuine, just-exited one rather than a guessed
+    high number that might collide with something still alive."""
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
+
+
+@pytest.fixture
+def live_pid():
+    """Yield the pid of a real process this fixture owns for the test's
+    duration, terminated on teardown. A safe stand-in for "some other live
+    session" in a foreign-live-lock test — unlike os.getppid(), it doesn't
+    depend on this test process's own ancestry staying stable for the
+    assertion window, which a detached or reparented test-runner process
+    supervision setup can't guarantee (see _dead_pid's analogous
+    genuine-process-over-guessed-number rationale)."""
+    proc = subprocess.Popen(["sleep", "3600"])
+    try:
+        yield proc.pid
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+def _worktree_lock_reason(worktree: Path) -> str | None:
+    """Return the `locked <reason>` porcelain line for `worktree`, or None
+    when it is unlocked. Test-only companion to _lib_worktree_lock_pid
+    (_lib.sh), which parses the same `git worktree list --porcelain` text
+    inside the hook; kept independent (not shelling out to the library
+    function) so a test using this to assert lock state isn't checking the
+    function under test against itself."""
+    porcelain = subprocess.run(
+        ["git", "-C", str(worktree), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    in_target = False
+    for line in porcelain.splitlines():
+        if line.startswith("worktree "):
+            in_target = line[len("worktree "):] == str(worktree)
+        elif line.startswith("locked") and in_target:
+            return line
+    return None
+
+
 @pytest.fixture(autouse=True)
 def _clear_claude_pid_env(monkeypatch):
     """capture-session-id.sh accepts $CLAUDE_PID from its own environment. A
@@ -185,14 +235,17 @@ def repo_with_optout(tmp_path):
 
 
 @pytest.fixture
-def opted_in_with_worktree(opted_in_repo, tmp_path):
+def opted_in_with_worktree(opted_in_repo, tmp_path, isolated_home):
     """Opted-in repo with a linked worktree at a path that does NOT contain
     '/worktrees/' — verifies the hook's worktree check reads git-dir rather
-    than pattern-matching the working-tree path."""
+    than pattern-matching the working-tree path. Seeds a session file so
+    _lib_worktree_collision_guard (which every allow-into-a-worktree path now
+    runs through) can resolve this test process's own PID as the lock owner."""
     wt_path = tmp_path / "feature-tree"
     subprocess.run(
         ["git", "worktree", "add", "-b", "feature", str(wt_path)],
         cwd=opted_in_repo,
         check=True,
     )
+    _seed_session(isolated_home, "opted-in-with-worktree-session")
     return opted_in_repo, wt_path
