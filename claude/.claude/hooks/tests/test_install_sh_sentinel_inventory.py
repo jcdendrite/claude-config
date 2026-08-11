@@ -130,7 +130,15 @@ class TestSentinelInventoryArray:
         together by the sentinel-inventory marker block -- install.sh runs
         without `set -u`, so a block missing either half would silently
         iterate zero times rather than erroring. This pins the array itself
-        is non-empty in the extracted text."""
+        is non-empty in the extracted text.
+
+        Also asserts empty stderr: every row is a double-quoted bash string
+        literal, so an unescaped backtick or `$(...)` in a field is live
+        command substitution, not inert text, and a failed substitution
+        under `set -e` aborts the array assignment itself. The count and
+        field-shape checks in this class still pass in that case -- bash
+        still populates the array before continuing -- so stderr is the
+        only signal that would catch it."""
         home = tmp_path / "home"
         home.mkdir()
         repo = tmp_path / "repo"
@@ -148,6 +156,11 @@ class TestSentinelInventoryArray:
             env=_base_env(home, repo),
         )
         assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stderr == "", (
+            f"sourcing SENTINEL_INVENTORY produced stderr -- likely an "
+            f"unescaped backtick or $(...) in a row's field triggering "
+            f"command substitution: {result.stderr!r}"
+        )
         count = int(result.stdout.strip())
         assert count > 0, "SENTINEL_INVENTORY must not be empty"
 

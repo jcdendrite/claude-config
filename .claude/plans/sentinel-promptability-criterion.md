@@ -180,15 +180,29 @@ to serve.
    `_prompt_sentinel_opt_in`, so it has no test in this class). Those two
    existing tests call `_prompt_sentinel_opt_in` directly with a synthetic
    `description` argument, bypassing the real array's field-3 text
-   entirely — match that same direct-call shape for the two new pinning
-   tests. Additionally, add one end-to-end test that sources the real,
-   post-reclassification `SENTINEL_INVENTORY` array and drives
+   entirely. Match that same direct-call shape for the two new pinning
+   tests, but pass each row's *real* field-3 text (via a new
+   `_real_prompt_description(path_template)` helper that parses it out of
+   the `SENTINEL_INVENTORY` block, same marker-delimited extraction
+   convention as the sibling test file) rather than a synthetic
+   placeholder — this is what actually exercises the real description text
+   through the real prompting function, since the full interactive-loop
+   test below turned out to be infeasible.
+
+   The plan-review round's [FYI] suggestion of an additional end-to-end
+   test — sourcing the real array and driving
    `configure_machine_level_opt_ins`'s real interactive loop with all 5
-   `machine-promptable` rows answered in sequence via stdin, asserting each
-   of the 5 real sentinel paths lands in the expected state — this is what
-   actually exercises the real field-3 text (not a synthetic placeholder)
-   through the real prompting loop, closing the same seam that let the
-   backtick hazard slip past every existing test.
+   `machine-promptable` rows answered via stdin — turned out to be
+   infeasible with this suite's existing test harness, discovered during
+   implementation: `configure_machine_level_opt_ins`'s `[ -t 0 ]` TTY gate
+   always short-circuits under a `subprocess.run(input=...)` pipe (verified
+   empirically — piped stdin never registers as a TTY), and no test in this
+   suite allocates a pty. This doesn't reopen the gap the suggestion was
+   meant to close: that gap (a field-3 value breaking the array's own
+   sourcing via command substitution) is fully closed by the stderr-safety
+   assertion in `test_nonzero_entry_count` (Critical files item 3) — that
+   check fires at array-sourcing time, before any prompting logic runs,
+   independent of TTY state.
 
 5. **`docs/error-mode-nudge.md`**, **`docs/cost-ledger.md`** — read-only;
    both already document how to enable the sentinel and don't need content
@@ -197,10 +211,10 @@ to serve.
 ## Verification
 
 - `pytest claude/.claude/hooks/tests/test_install_sh_sentinel_inventory.py claude/.claude/hooks/tests/test_install_sh_machine_level_opt_ins.py -q` —
-  confirms the schema check picks up both reclassified rows, the new
-  stderr-safety test passes (proving the new descriptions are
-  command-substitution-safe), the two new pinning tests pass, and the new
-  end-to-end 5-row prompting test passes.
+  confirms the schema check picks up both reclassified rows, the extended
+  `test_nonzero_entry_count` stderr assertion passes (proving the new
+  descriptions are command-substitution-safe), and the two new
+  real-description pinning tests pass.
 - Full suite: `pytest claude/.claude/ -q` (run from `../../../.venv/bin/pytest`
   per this repo's worktree convention).
 - `ruff check claude/.claude/`.

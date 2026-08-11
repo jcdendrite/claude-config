@@ -11,6 +11,35 @@ _BASH = shutil.which("bash") or "/bin/bash"
 
 _FIXTURE_START = "# INSTALL_TEST_FIXTURE: machine-level-opt-ins — start\n"
 _FIXTURE_END = "# INSTALL_TEST_FIXTURE: machine-level-opt-ins — end"
+_INVENTORY_START = "# INSTALL_TEST_FIXTURE: sentinel-inventory — start\n"
+_INVENTORY_END = "# INSTALL_TEST_FIXTURE: sentinel-inventory — end"
+
+
+def _real_prompt_description(path_template: str) -> str:
+    """Field-3 text for the SENTINEL_INVENTORY row whose field-1
+    path-template matches exactly. Lets a `TestRealSentinelPaths` test pass
+    the row's actual description through `_prompt_sentinel_opt_in`, instead
+    of a synthetic placeholder — the only way any test exercises the real
+    field-3 text through the real prompting function, since
+    configure_machine_level_opt_ins's own TTY gate can't be driven from a
+    subprocess pipe. This doesn't cover configure_machine_level_opt_ins's
+    own field-routing loop (untested end-to-end, same TTY-gate limitation);
+    test_install_sh_sentinel_inventory.py's
+    TestSentinelInventoryArray.test_nonzero_entry_count covers a different,
+    narrower seam — command substitution at array-sourcing time, not the
+    loop's runtime field order."""
+    install_text = _INSTALL_SH.read_text()
+    start = install_text.find(_INVENTORY_START)
+    assert start != -1, f"{_INVENTORY_START!r} not found in {_INSTALL_SH}"
+    end = install_text.find(_INVENTORY_END, start)
+    assert end != -1, f"{_INVENTORY_END!r} not found after start marker in {_INSTALL_SH}"
+    block = install_text[start:end]
+    rows = [line.strip()[1:-1] for line in block.splitlines() if line.strip().startswith('"')]
+    matches = [r for r in rows if r.split("|")[0] == path_template]
+    assert len(matches) == 1, (
+        f"expected exactly one SENTINEL_INVENTORY row for {path_template!r}, found {len(matches)}"
+    )
+    return matches[0].split("|")[3]
 
 
 def _extract_opt_ins_block() -> str:
@@ -246,6 +275,32 @@ class TestRealSentinelPaths:
         sentinel = tmp_path / "home" / ".claude" / "autonomous-shipping-required"
         result = _run_prompt_sentinel_opt_in(
             sentinel, "y\n", "Autonomous shipping", "test description"
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert sentinel.is_file()
+
+    def test_error_mode_nudge_enabled_sentinel_created_on_y(self, tmp_path: Path) -> None:
+        """Passes the row's real field-3 text (not a synthetic placeholder
+        like the two tests above) — see _real_prompt_description."""
+        sentinel = tmp_path / "home" / ".claude" / ".error-mode-nudge-enabled"
+        result = _run_prompt_sentinel_opt_in(
+            sentinel,
+            "y\n",
+            "Error-mode analysis nudge",
+            _real_prompt_description(".error-mode-nudge-enabled"),
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert sentinel.is_file()
+
+    def test_cost_ledger_enabled_sentinel_created_on_y(self, tmp_path: Path) -> None:
+        """Passes the row's real field-3 text (not a synthetic placeholder
+        like the two tests above) — see _real_prompt_description."""
+        sentinel = tmp_path / "home" / ".claude" / ".cost-ledger-enabled"
+        result = _run_prompt_sentinel_opt_in(
+            sentinel,
+            "y\n",
+            "Cost ledger recording",
+            _real_prompt_description(".cost-ledger-enabled"),
         )
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert sentinel.is_file()

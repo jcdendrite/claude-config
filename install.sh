@@ -395,12 +395,14 @@ configure_machine_level_opt_ins() {
 # the feature it suppresses, so presence still reads as that suppression
 # being "enabled"), while the account row's state comes from the file's
 # content instead — see _report_account_sentinel.
+# Promotion criterion, machine -> machine-promptable: boolean file-presence
+# state plus an opt-into-new-capability semantic — see docs/design-decisions.md #23.
 SENTINEL_INVENTORY=(
   "worktree-required|machine-promptable|Worktree enforcement|Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'.|disabled|README.md § Worktree enforcement"
   "autonomous-shipping-required|machine-promptable|Autonomous shipping|Lets Claude Code commit, push, and open PRs without asking first, on every repo without a per-repo .claude/autonomous-shipping-optout. A repo cannot enable this by committing anything — only this machine-level file can. See README 'Autonomous shipping'.|disabled|README.md § Autonomous shipping"
   "track-permission-prompts|machine-promptable|Permission-prompt tracking|Logs each interactive permission-prompt Notification (credential-shaped values redacted) to ~/.claude/.permission-prompt-log.jsonl, so you can see which commands still trigger a prompt under auto permission mode. No per-repo opt-out.|disabled|docs/permission-prompt-tracking.md"
-  ".error-mode-nudge-enabled|machine|Error-mode analysis nudge||disabled|docs/error-mode-nudge.md"
-  ".cost-ledger-enabled|machine|Cost ledger recording||disabled|docs/cost-ledger.md"
+  ".error-mode-nudge-enabled|machine-promptable|Error-mode analysis nudge|Nudges you to run /error-mode-analysis after a repeated-failure sequence in a session, so a stuck debugging loop gets flagged instead of continuing silently. See docs/error-mode-nudge.md.|disabled|docs/error-mode-nudge.md"
+  ".cost-ledger-enabled|machine-promptable|Cost ledger recording|Lets cost-ledger --record append this repo's weekly cost/efficiency figures to docs/cost-ledger.md — durable once the source transcripts age out and get deleted. See docs/cost-ledger.md.|disabled|docs/cost-ledger.md"
   ".handoff-nudge-disabled|machine|Handoff-near-cap nudge suppression||disabled|docs/handoff-nudge.md"
   ".consume-durable-continuity-disabled|machine|Durable-continuity auto-consume suppression||disabled|docs/hooks.md § Utility hooks"
   ".commit-stall-block-disabled|machine|Commit-stall auto-advance suppression||disabled|docs/commit-stall-block.md"
