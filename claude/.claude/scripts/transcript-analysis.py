@@ -7,13 +7,17 @@ judgment-pair --out writes a file; all other subcommands are read-only.
 import argparse
 import contextlib
 import errno
+import fcntl
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import random
 import re
 import shlex
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1704,6 +1708,314 @@ def _print_deny_summary(
     )
 
 
+def _review_trace_session_events(
+    records: list[dict],
+    since_ts: float | None,
+    until_epoch: float | None,
+    branch_filter: set[str] | None,
+    skill_filter: str | None = None,
+) -> tuple[list[dict], dict[str, str], int]:
+    """Detect cmd_review_trace's four per-session event kinds (skill, denial,
+    friction, reviewer-spawn) from one session's records.
+
+    Shared by cmd_review_trace's timeline printer and _compute_deny_summary_data
+    so the denial/friction detection and dedup rules exist in one place rather
+    than two copies kept in sync by hand. The third return value, a count of
+    errored tool results predating toolDenialKind's introduction, is always
+    computed (cheap) even though only --deny-summary reports it — see
+    _print_deny_summary's own explanation of what it means.
+    """
+    events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
+    # Tracks tool_use_ids already emitted as a denial. A legacy denial
+    # appears as both an attachment record and an is_error tool_result
+    # sharing one tool_use_id; this set collapses the pair to one event.
+    seen_denial_ids: set[str] = set()
+
+    # Friction events dedup against their own set, never seen_denial_ids
+    # above — sharing it would let a friction event suppress a later
+    # legitimate denial sharing a tool_use_id.
+    seen_friction_ids: set[str] = set()
+
+    # tool_use_id -> attempted command, for --deny-summary's by-command-shape
+    # grouping. Indexed from every assistant tool_use block on the main
+    # thread — review-trace's session_iter doesn't request subagent
+    # records, so sidechain tool_use blocks are never present to index.
+    # Independent of the --since/--until window, since a denial's own
+    # event already applies it.
+    tool_use_commands: dict[str, str] = {}
+
+    # Carry-forward trackers, updated on every main-thread record before the
+    # date filter below — the branch/model attributed to a denial (which
+    # carries no message.model of its own) is whatever a prior main-thread
+    # record last set, including one outside the --since/--until window.
+    last_branch = ""
+    last_model = ""
+    pre_regime_tool_result_count = 0
+
+    for line_no, rec in enumerate(records, start=1):
+        if not bool(rec.get("isSidechain")):
+            b = rec.get("gitBranch") or ""
+            if b:
+                last_branch = b
+            if rec.get("type") == "assistant":
+                m = (rec.get("message") or {}).get("model") or ""
+                if m:
+                    last_model = m
+
+        if rec.get("type") == "assistant":
+            for block in ((rec.get("message") or {}).get("content") or []):
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                tid = block.get("id")
+                if tid:
+                    tool_use_commands[tid] = (block.get("input") or {}).get("command", "")
+
+        rec_ts_str: str | None = rec.get("timestamp")
+        rec_ts: float | None = _parse_ts(rec_ts_str)
+
+        # Apply date filter: records with no parseable timestamp are excluded when
+        # a date boundary is active.
+        if (since_ts is not None or until_epoch is not None):
+            if rec_ts is None:
+                continue
+            if since_ts is not None and rec_ts < since_ts:
+                continue
+            if until_epoch is not None and rec_ts >= until_epoch:
+                continue
+
+        rec_type = rec.get("type", "")
+        evt_branch = last_branch or "?"
+        evt_model = _fam(last_model) if last_model else "?"
+
+        # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
+        # Both are main-thread assistant tool_use blocks; a single pass over
+        # content dispatches on tool name to avoid iterating the list twice.
+        if rec_type == "assistant" and not bool(rec.get("isSidechain")):
+            for block in ((rec.get("message") or {}).get("content") or []):
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                block_name = block.get("name")
+                if block_name == "Skill":
+                    skill_name = (block.get("input") or {}).get("skill") or ""
+                    if skill_name not in REVIEW_TRACE_SKILLS:
+                        continue
+                    if skill_filter and skill_name != skill_filter:
+                        continue
+                    events.append({
+                        "kind": "skill",
+                        "skill": skill_name,
+                        "ts": rec_ts_str,
+                        "line_no": line_no,
+                        "branch": evt_branch,
+                        "model": evt_model,
+                    })
+                elif block_name in ("Agent", "Task"):
+                    stype = (block.get("input") or {}).get("subagent_type") or ""
+                    if not (stype.startswith(_REVIEWER_PREFIX) or stype == _REVIEWER_EXACT):
+                        continue
+                    events.append({
+                        "kind": "reviewer-spawn",
+                        "subagent_type": stype,
+                        "ts": rec_ts_str,
+                        "line_no": line_no,
+                        "branch": evt_branch,
+                        "model": evt_model,
+                    })
+
+        # --- Signal 2a: hook denials, legacy shape (attachment record) ---
+        if rec_type == "attachment":
+            denial = hook_denial_key(rec)
+            if denial is None:
+                continue
+            tool_use_id, att = denial
+            if tool_use_id and tool_use_id in seen_denial_ids:
+                continue
+            raw_error = att.get("blockingError")
+            normalized = _normalize_blocking_error(raw_error)
+            hook_name = att.get("hookName") or ""
+            if isinstance(normalized, dict):
+                # Real transcripts nest the human-readable text in a "blockingError"
+                # key alongside a "command" key; fall back to "message" then repr.
+                message = (
+                    normalized.get("blockingError")
+                    or normalized.get("message")
+                    or str(normalized)
+                )
+            else:
+                message = str(normalized) if normalized else ""
+            if tool_use_id:
+                seen_denial_ids.add(tool_use_id)
+            events.append({
+                "kind": "denial",
+                "hook_name": hook_name,
+                "tool_use_id": tool_use_id,
+                "message": message,
+                "ts": rec_ts_str,
+                "line_no": line_no,
+                "branch": evt_branch,
+                "model": evt_model,
+            })
+
+        # --- Signal 2b: hook denials, current shape (is_error tool_result) ---
+        # Claude Code stopped emitting the hook_blocking_error attachment
+        # record; current transcripts surface a denial only as an is_error
+        # tool_result, identified by the hook-denial message signature.
+        #
+        # --- Signal 2c: non-gate friction, current shape (toolDenialKind) ---
+        # toolDenialKind lives on this same `user` record, not on the
+        # tool_result block — read once, but classification below still
+        # requires the individual block's own is_error, since a parallel
+        # tool call can carry an unrelated successful block alongside it.
+        if rec_type == "user":
+            tool_denial_kind = rec.get("toolDenialKind") or ""
+            # A falsy tool_denial_kind this far before the regime start
+            # means the field structurally could not exist yet, not that
+            # this record measured zero friction. Scoped to the same
+            # is_error-and-non-gate-signature population
+            # _is_nongate_friction_kind would classify below, so the
+            # count reflects records that could plausibly have been
+            # friction, not every tool_result in the era (which would
+            # count ordinary successful tool calls too) — tallied
+            # separately and reported apart from the friction-kind
+            # breakdown.
+            pre_regime = (
+                not tool_denial_kind
+                and rec_ts is not None
+                and _TOOL_DENIAL_KIND_REGIME_START_TS is not None
+                and rec_ts < _TOOL_DENIAL_KIND_REGIME_START_TS
+                and (not branch_filter or evt_branch in branch_filter)
+            )
+            for block in ((rec.get("message") or {}).get("content") or []):
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                denial = hook_denial_key(block)
+                already_gate_denied = denial is not None
+                if denial is not None:
+                    tool_use_id, message = denial
+                    if not (tool_use_id and tool_use_id in seen_denial_ids):
+                        if tool_use_id:
+                            seen_denial_ids.add(tool_use_id)
+                        events.append({
+                            "kind": "denial",
+                            "hook_name": "",
+                            "tool_use_id": tool_use_id,
+                            "message": message,
+                            "ts": rec_ts_str,
+                            "line_no": line_no,
+                            "branch": evt_branch,
+                            "model": evt_model,
+                        })
+
+                if block.get("is_error") and _is_nongate_friction_kind(tool_denial_kind, already_gate_denied):
+                    friction_tool_use_id = block.get("tool_use_id") or ""
+                    if not (friction_tool_use_id and friction_tool_use_id in seen_friction_ids):
+                        if friction_tool_use_id:
+                            seen_friction_ids.add(friction_tool_use_id)
+                        events.append({
+                            "kind": "friction",
+                            "friction_kind": tool_denial_kind,
+                            "tool_use_id": friction_tool_use_id,
+                            "message": _content_text(block.get("content")),
+                            "ts": rec_ts_str,
+                            "line_no": line_no,
+                            "branch": evt_branch,
+                            "model": evt_model,
+                        })
+                elif pre_regime and not already_gate_denied and block.get("is_error"):
+                    pre_regime_tool_result_count += 1
+
+    # Branch filtering happens after dedup (seen_denial_ids was populated
+    # above over every event, unconditionally) so a duplicate-id denial on
+    # a differently-branched record is suppressed, not re-emitted as a
+    # distinct in-scope event.
+    if branch_filter:
+        events = [e for e in events if e["branch"] in branch_filter]
+
+    return events, tool_use_commands, pre_regime_tool_result_count
+
+
+def _compute_deny_summary_data(
+    session_iter,
+    since_ts: float | None = None,
+    until_ts: float | None = None,
+    branch_filter: set[str] | None = None,
+    deny_only: bool = False,
+) -> dict:
+    """Corpus-wide --deny-summary accumulation, extracted so cost-ledger's
+    per-week denial count and cmd_review_trace's own report share one pass
+    over session_iter instead of two implementations kept in sync by hand.
+
+    since_ts/until_ts are explicit epoch-second boundaries (until_ts
+    exclusive, the same convention as cmd_review_trace's own until_epoch)
+    rather than the CLI's date-string args, so a caller can pass exact week
+    boundaries the CLI itself has no flag to reach.
+    """
+    hook_counts: dict[str, int] = defaultdict(int)
+    command_shape_counts: dict[str, int] = defaultdict(int)
+    hook_shape_counts: Counter[tuple[str, str]] = Counter()
+    friction_counts: dict[str, int] = defaultdict(int)
+    corpus_min_ts: float | None = None
+    corpus_max_ts: float | None = None
+    pre_regime_tool_result_count = 0
+    any_session_matched = False
+
+    for _jsonl, records in session_iter:
+        events, tool_use_commands, session_pre_regime = _review_trace_session_events(
+            records, since_ts, until_ts, branch_filter
+        )
+        if not events:
+            continue
+        any_session_matched = True
+        pre_regime_tool_result_count += session_pre_regime
+
+        # Corpus window reads the full branch-filtered per-session events list
+        # before the deny_only skip below, same as the friction tally below —
+        # so the reported window matches whatever --branches/--since/--until
+        # actually put in scope, not the pre-branch-filter raw record range.
+        for evt in events:
+            evt_ts = _parse_ts(evt.get("ts"))
+            if evt_ts is None:
+                continue
+            if corpus_min_ts is None or evt_ts < corpus_min_ts:
+                corpus_min_ts = evt_ts
+            if corpus_max_ts is None or evt_ts > corpus_max_ts:
+                corpus_max_ts = evt_ts
+
+        has_denial = any(e["kind"] == "denial" for e in events)
+
+        # Friction tally reads the full per-session events list before the
+        # deny_only skip below, so a friction-only session (has_denial False)
+        # still contributes when --deny-only and --deny-summary run together.
+        # deny_only's own session-selection stays denial-kind-only, unchanged.
+        for evt in events:
+            if evt["kind"] == "friction":
+                friction_counts[_friction_kind_label(evt["friction_kind"])] += 1
+
+        if deny_only and not has_denial:
+            continue
+
+        for evt in events:
+            if evt["kind"] != "denial":
+                continue
+            hook_label = _denial_hook_label(evt["hook_name"], evt["message"])
+            command = tool_use_commands.get(evt["tool_use_id"], "")
+            command_shape = _denial_command_shape(command)
+            hook_counts[hook_label] += 1
+            command_shape_counts[command_shape] += 1
+            hook_shape_counts[(hook_label, command_shape)] += 1
+
+    return {
+        "hook_counts": hook_counts,
+        "command_shape_counts": command_shape_counts,
+        "hook_shape_counts": hook_shape_counts,
+        "friction_counts": friction_counts,
+        "corpus_min_ts": corpus_min_ts,
+        "corpus_max_ts": corpus_max_ts,
+        "pre_regime_tool_result_count": pre_regime_tool_result_count,
+        "any_session_matched": any_session_matched,
+    }
+
+
 def cmd_review_trace(args: argparse.Namespace) -> None:
     """Emit an ordered review-event timeline per session.
 
@@ -1732,6 +2044,11 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     every event with whatever the session started on. An event whose branch or
     model cannot be resolved renders '?'. --branches filters the emitted event
     list by this per-event value, not by a single session-wide branch.
+
+    --deny-summary delegates its entire accumulation to
+    _compute_deny_summary_data instead of running its own pass over
+    session_iter, so the corpus-wide grouped-count report and cost-ledger's
+    per-week denial count can never drift apart.
     """
     branch_filter = _branch_filter(args)
     deny_only: bool = bool(getattr(args, "deny_only", False))
@@ -1751,277 +2068,40 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         if day_start is not None:
             until_epoch = day_start + 86400
 
+    if deny_summary:
+        data = _compute_deny_summary_data(
+            session_iter, since_ts=since_ts, until_ts=until_epoch,
+            branch_filter=branch_filter, deny_only=deny_only,
+        )
+        if sum(data["hook_counts"].values()) or sum(data["friction_counts"].values()):
+            _print_resolved_scope("review-trace", scope_label, roots)
+            _print_deny_summary(
+                data["hook_counts"], data["command_shape_counts"], data["hook_shape_counts"],
+                data["friction_counts"], data["pre_regime_tool_result_count"],
+                data["corpus_min_ts"], data["corpus_max_ts"],
+            )
+        elif data["any_session_matched"]:
+            # Scope resolved and had matching sessions, but none carried a
+            # denial — printed explicitly so this reads distinctly from a
+            # broken --branches/scope flag matching no sessions at all.
+            _print_resolved_scope("review-trace", scope_label, roots)
+            print("\nNo denials found in scope.")
+        return
+
     # The scope header prints lazily, on the first emitted block — not
     # unconditionally up front — so a run that matches no session still
     # produces byte-for-byte empty output, as it always has.
     scope_header_printed = False
 
-    # --deny-summary's corpus-wide accumulators: hook/gate name -> count,
-    # attempted-command shape -> count, (hook, shape) pair -> count (the
-    # cross-tab a marginal count alone can't express), friction kind -> count.
-    # Populated below in place of the normal per-session printing when
-    # --deny-summary is set.
-    hook_counts: dict[str, int] = defaultdict(int)
-    command_shape_counts: dict[str, int] = defaultdict(int)
-    hook_shape_counts: Counter[tuple[str, str]] = Counter()
-    friction_counts: dict[str, int] = defaultdict(int)
-    # Earliest/latest in-scope record timestamp, and a count of errored,
-    # non-gate tool results timestamped before toolDenialKind existed — both
-    # --deny-summary only, so the flag's off-path pays no extra bookkeeping.
-    corpus_min_ts: float | None = None
-    corpus_max_ts: float | None = None
-    pre_regime_tool_result_count = 0
-    any_session_matched = False
-
     for jsonl, records in session_iter:
-        events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
-        # Tracks tool_use_ids already emitted as a denial. A legacy denial
-        # appears as both an attachment record and an is_error tool_result
-        # sharing one tool_use_id; this set collapses the pair to one event.
-        seen_denial_ids: set[str] = set()
-
-        # Friction events dedup against their own set, never seen_denial_ids
-        # above — sharing it would let a friction event suppress a later
-        # legitimate denial sharing a tool_use_id.
-        seen_friction_ids: set[str] = set()
-
-        # tool_use_id -> attempted command, for --deny-summary's by-command-shape
-        # grouping. Indexed from every assistant tool_use block on the main
-        # thread — review-trace's session_iter doesn't request subagent
-        # records, so sidechain tool_use blocks are never present to index.
-        # Independent of the --since/--until window, since a denial's own
-        # event already applies it.
-        tool_use_commands: dict[str, str] = {}
-
-        # Carry-forward trackers, updated on every main-thread record before the
-        # date filter below — the branch/model attributed to a denial (which
-        # carries no message.model of its own) is whatever a prior main-thread
-        # record last set, including one outside the --since/--until window.
-        last_branch = ""
-        last_model = ""
-
-        for line_no, rec in enumerate(records, start=1):
-            if not bool(rec.get("isSidechain")):
-                b = rec.get("gitBranch") or ""
-                if b:
-                    last_branch = b
-                if rec.get("type") == "assistant":
-                    m = (rec.get("message") or {}).get("model") or ""
-                    if m:
-                        last_model = m
-
-            if rec.get("type") == "assistant":
-                for block in ((rec.get("message") or {}).get("content") or []):
-                    if not isinstance(block, dict) or block.get("type") != "tool_use":
-                        continue
-                    tid = block.get("id")
-                    if tid:
-                        tool_use_commands[tid] = (block.get("input") or {}).get("command", "")
-
-            rec_ts_str: str | None = rec.get("timestamp")
-            rec_ts: float | None = _parse_ts(rec_ts_str)
-
-            # Apply date filter: records with no parseable timestamp are excluded when
-            # a date boundary is active.
-            if (since_ts is not None or until_epoch is not None):
-                if rec_ts is None:
-                    continue
-                if since_ts is not None and rec_ts < since_ts:
-                    continue
-                if until_epoch is not None and rec_ts >= until_epoch:
-                    continue
-
-            rec_type = rec.get("type", "")
-            evt_branch = last_branch or "?"
-            evt_model = _fam(last_model) if last_model else "?"
-
-            # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
-            # Both are main-thread assistant tool_use blocks; a single pass over
-            # content dispatches on tool name to avoid iterating the list twice.
-            if rec_type == "assistant" and not bool(rec.get("isSidechain")):
-                for block in ((rec.get("message") or {}).get("content") or []):
-                    if not isinstance(block, dict) or block.get("type") != "tool_use":
-                        continue
-                    block_name = block.get("name")
-                    if block_name == "Skill":
-                        skill_name = (block.get("input") or {}).get("skill") or ""
-                        if skill_name not in REVIEW_TRACE_SKILLS:
-                            continue
-                        if skill_filter and skill_name != skill_filter:
-                            continue
-                        events.append({
-                            "kind": "skill",
-                            "skill": skill_name,
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                        })
-                    elif block_name in ("Agent", "Task"):
-                        stype = (block.get("input") or {}).get("subagent_type") or ""
-                        if not (stype.startswith(_REVIEWER_PREFIX) or stype == _REVIEWER_EXACT):
-                            continue
-                        events.append({
-                            "kind": "reviewer-spawn",
-                            "subagent_type": stype,
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                        })
-
-            # --- Signal 2a: hook denials, legacy shape (attachment record) ---
-            if rec_type == "attachment":
-                denial = hook_denial_key(rec)
-                if denial is None:
-                    continue
-                tool_use_id, att = denial
-                if tool_use_id and tool_use_id in seen_denial_ids:
-                    continue
-                raw_error = att.get("blockingError")
-                normalized = _normalize_blocking_error(raw_error)
-                hook_name = att.get("hookName") or ""
-                if isinstance(normalized, dict):
-                    # Real transcripts nest the human-readable text in a "blockingError"
-                    # key alongside a "command" key; fall back to "message" then repr.
-                    message = (
-                        normalized.get("blockingError")
-                        or normalized.get("message")
-                        or str(normalized)
-                    )
-                else:
-                    message = str(normalized) if normalized else ""
-                if tool_use_id:
-                    seen_denial_ids.add(tool_use_id)
-                events.append({
-                    "kind": "denial",
-                    "hook_name": hook_name,
-                    "tool_use_id": tool_use_id,
-                    "message": message,
-                    "ts": rec_ts_str,
-                    "line_no": line_no,
-                    "branch": evt_branch,
-                    "model": evt_model,
-                })
-
-            # --- Signal 2b: hook denials, current shape (is_error tool_result) ---
-            # Claude Code stopped emitting the hook_blocking_error attachment
-            # record; current transcripts surface a denial only as an is_error
-            # tool_result, identified by the hook-denial message signature.
-            #
-            # --- Signal 2c: non-gate friction, current shape (toolDenialKind) ---
-            # toolDenialKind lives on this same `user` record, not on the
-            # tool_result block — read once, but classification below still
-            # requires the individual block's own is_error, since a parallel
-            # tool call can carry an unrelated successful block alongside it.
-            if rec_type == "user":
-                tool_denial_kind = rec.get("toolDenialKind") or ""
-                # A falsy tool_denial_kind this far before the regime start
-                # means the field structurally could not exist yet, not that
-                # this record measured zero friction. Scoped to the same
-                # is_error-and-non-gate-signature population
-                # _is_nongate_friction_kind would classify below, so the
-                # count reflects records that could plausibly have been
-                # friction, not every tool_result in the era (which would
-                # count ordinary successful tool calls too) — tallied
-                # separately and reported apart from the friction-kind
-                # breakdown.
-                pre_regime = (
-                    deny_summary
-                    and not tool_denial_kind
-                    and rec_ts is not None
-                    and _TOOL_DENIAL_KIND_REGIME_START_TS is not None
-                    and rec_ts < _TOOL_DENIAL_KIND_REGIME_START_TS
-                    and (not branch_filter or evt_branch in branch_filter)
-                )
-                for block in ((rec.get("message") or {}).get("content") or []):
-                    if not isinstance(block, dict) or block.get("type") != "tool_result":
-                        continue
-                    denial = hook_denial_key(block)
-                    already_gate_denied = denial is not None
-                    if denial is not None:
-                        tool_use_id, message = denial
-                        if not (tool_use_id and tool_use_id in seen_denial_ids):
-                            if tool_use_id:
-                                seen_denial_ids.add(tool_use_id)
-                            events.append({
-                                "kind": "denial",
-                                "hook_name": "",
-                                "tool_use_id": tool_use_id,
-                                "message": message,
-                                "ts": rec_ts_str,
-                                "line_no": line_no,
-                                "branch": evt_branch,
-                                "model": evt_model,
-                            })
-
-                    if block.get("is_error") and _is_nongate_friction_kind(tool_denial_kind, already_gate_denied):
-                        friction_tool_use_id = block.get("tool_use_id") or ""
-                        if not (friction_tool_use_id and friction_tool_use_id in seen_friction_ids):
-                            if friction_tool_use_id:
-                                seen_friction_ids.add(friction_tool_use_id)
-                            events.append({
-                                "kind": "friction",
-                                "friction_kind": tool_denial_kind,
-                                "tool_use_id": friction_tool_use_id,
-                                "message": _content_text(block.get("content")),
-                                "ts": rec_ts_str,
-                                "line_no": line_no,
-                                "branch": evt_branch,
-                                "model": evt_model,
-                            })
-                    elif pre_regime and not already_gate_denied and block.get("is_error"):
-                        pre_regime_tool_result_count += 1
-
-        # Branch filtering happens after dedup (seen_denial_ids was populated
-        # above over every event, unconditionally) so a duplicate-id denial on
-        # a differently-branched record is suppressed, not re-emitted as a
-        # distinct in-scope event.
-        if branch_filter:
-            events = [e for e in events if e["branch"] in branch_filter]
-
+        events, tool_use_commands, _pre_regime = _review_trace_session_events(
+            records, since_ts, until_epoch, branch_filter, skill_filter=skill_filter
+        )
         if not events:
             continue
-        any_session_matched = True
-
-        # Corpus window reads the full branch-filtered per-session events list
-        # before the deny_only skip below, same as the friction tally above —
-        # so the reported window matches whatever --branches/--since/--until
-        # actually put in scope, not the pre-branch-filter raw record range.
-        if deny_summary:
-            for evt in events:
-                evt_ts = _parse_ts(evt.get("ts"))
-                if evt_ts is None:
-                    continue
-                if corpus_min_ts is None or evt_ts < corpus_min_ts:
-                    corpus_min_ts = evt_ts
-                if corpus_max_ts is None or evt_ts > corpus_max_ts:
-                    corpus_max_ts = evt_ts
 
         has_denial = any(e["kind"] == "denial" for e in events)
-
-        # Friction tally reads the full per-session events list before the
-        # deny_only skip below, so a friction-only session (has_denial False)
-        # still contributes when --deny-only and --deny-summary run together.
-        # deny_only's own session-selection stays denial-kind-only, unchanged.
-        if deny_summary:
-            for evt in events:
-                if evt["kind"] == "friction":
-                    friction_counts[_friction_kind_label(evt["friction_kind"])] += 1
-
         if deny_only and not has_denial:
-            continue
-
-        if deny_summary:
-            for evt in events:
-                if evt["kind"] != "denial":
-                    continue
-                hook_label = _denial_hook_label(evt["hook_name"], evt["message"])
-                command = tool_use_commands.get(evt["tool_use_id"], "")
-                command_shape = _denial_command_shape(command)
-                hook_counts[hook_label] += 1
-                command_shape_counts[command_shape] += 1
-                hook_shape_counts[(hook_label, command_shape)] += 1
             continue
 
         skill_count = sum(1 for e in events if e["kind"] == "skill")
@@ -2058,24 +2138,6 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}  msg={msg!r}{suffix}")
             elif kind == "reviewer-spawn":
                 print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
-
-    if deny_summary:
-        if sum(hook_counts.values()) or sum(friction_counts.values()):
-            if not scope_header_printed:
-                _print_resolved_scope("review-trace", scope_label, roots)
-                scope_header_printed = True
-            _print_deny_summary(
-                hook_counts, command_shape_counts, hook_shape_counts, friction_counts,
-                pre_regime_tool_result_count, corpus_min_ts, corpus_max_ts,
-            )
-        elif any_session_matched:
-            # Scope resolved and had matching sessions, but none carried a
-            # denial — printed explicitly so this reads distinctly from a
-            # broken --branches/scope flag matching no sessions at all.
-            if not scope_header_printed:
-                _print_resolved_scope("review-trace", scope_label, roots)
-                scope_header_printed = True
-            print("\nNo denials found in scope.")
 
 
 def cmd_judgment_pair(args: argparse.Namespace) -> None:
@@ -3560,59 +3622,23 @@ def _reviewer_yield_cited_keys(
     return keys
 
 
-def cmd_reviewer_yield(args: argparse.Namespace) -> None:
-    """Per-reviewer-agent-type dispatch-to-verdict yield, plus cited-path edit overlap.
+def _compute_reviewer_yield_data(
+    session_iter,
+    since_ts: float | None = None,
+    until_ts: float | None = None,
+) -> dict:
+    """Corpus-wide reviewer-dispatch accumulation behind both
+    cmd_reviewer_yield's own report and cost-ledger's per-week
+    reviewer_gap_pp, extracted so the two share one pass over session_iter
+    instead of two implementations kept in sync by hand.
 
-    Joins each main-thread reviewer-agent dispatch (Agent/Task tool_use with
-    subagent_type in the reviewer set — review-trace's _REVIEWER_PREFIX/
-    _REVIEWER_EXACT plus skill-fidelity-reviewer) to its own subagent
-    transcript via subagents/<id>.meta.json's toolUseId field, then
-    classifies that transcript's last assistant text block as findings-found,
-    zero-finding, or unclassified. A dispatch with no matching meta.json is
-    excluded entirely (not counted as unclassified) — meta.json is the only
-    signal that a subagent transcript for this dispatch exists at all. A
-    second, distinct exclusion path is a meta.json file that exists but is
-    unreadable (invalid JSON) or missing toolUseId — also excluded entirely,
-    and corpus-wide counted in the printed meta-read-errors line.
-
-    A "findings-found" verdict comes from either a numeric "Found <N>
-    issues" verdict (contributes N to the Findings column) or a bulleted
-    "Approve with concerns"/"Request changes" verdict with no derivable
-    count (contributes 0) — the printed Findings total is therefore a lower
-    bound on actual findings, not an exact count.
-
-    A second table reports, per (agent type, bucket), whether the dispatch's
-    own cited paths were later edited: Cited (>=1 extracted citation after
-    excluding the dispatch's own self-referenced/plan-file candidates),
-    Active (of those, the session recorded ANY code edit afterward, the null
-    control for "was the session still working at all"), and Edited (of the
-    Active ones, a cited path itself was among the edited paths). Rate =
-    Edited / Active, so it cannot exceed 100%. Active/Edited currently
-    reflect parent-main-thread edits only — subagent-transcript edit reads
-    were measured against Verification 7(a)'s cost gate (delta ~16.2s over
-    the inherited 13.5s baseline) and excluded under the gate's own
-    pre-committed fallback, so this undercounts real fix work whenever it
-    happened inside a code-writer dispatch, which this repo's own CLAUDE.md
-    mandates for implementation work. The unclassified
-    bucket is not scored (prints "excluded" for Cited/Active/Edited/Rate) —
-    an unreadable subagent transcript lands there via its empty verdict text
-    and is separately counted in the printed read-error line, never entered
-    as a legitimate zero-citation dispatch.
-
-    --redact is accepted for CLI parity with cost/audit-routing. Cited-path
-    candidates are held only as sha256 digests (_normalize_cited_path), never
-    as raw paths, so no path can reach this subcommand's aggregate-only
-    output by construction — this does not cover the pre-existing
-    --projects scope-header line (_print_resolved_scope), a separate,
-    unfixed channel shared by every subcommand.
+    since_ts/until_ts are explicit epoch-second boundaries (until_ts
+    exclusive) rather than _parse_since_nd_arg's relative-day CLI parsing,
+    which has no until concept, so a caller can bound an exact week. Only
+    the reviewer-dispatch detection loop applies until_ts — the paired
+    tool_result/edit-index helpers below it stay since_ts-only, matching
+    cmd_reviewer_yield's own pre-existing (unwindowed) use of them.
     """
-    since_ts, since_raw = _parse_since_nd_arg(args, "reviewer-yield")
-    since_label = since_raw or ""
-
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "reviewer-yield", roots=roots)
-    _print_resolved_scope("reviewer-yield", scope_label, roots)
-
     # agent_type -> {dispatches, findings_found, zero_finding, unclassified, total_findings}
     agg: dict[str, dict[str, int]] = defaultdict(
         lambda: {"dispatches": 0, "findings_found": 0, "zero_finding": 0, "unclassified": 0, "total_findings": 0}
@@ -3636,9 +3662,13 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
         for rec in records:
             if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
                 continue
-            if since_ts is not None:
+            if since_ts is not None or until_ts is not None:
                 rec_ts = _parse_ts(rec.get("timestamp"))
-                if rec_ts is None or rec_ts < since_ts:
+                if rec_ts is None:
+                    continue
+                if since_ts is not None and rec_ts < since_ts:
+                    continue
+                if until_ts is not None and rec_ts >= until_ts:
                     continue
             for block in ((rec.get("message") or {}).get("content") or []):
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
@@ -3690,6 +3720,77 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
                 row2["active"] += 1
                 if any(edit_index.get(k, float("-inf")) > threshold for k in cited_keys):
                     row2["edited"] += 1
+
+    return {
+        "agg": agg,
+        "agg2": agg2,
+        "meta_read_errors": meta_read_errors,
+        "transcript_read_errors": transcript_read_errors,
+    }
+
+
+def cmd_reviewer_yield(args: argparse.Namespace) -> None:
+    """Per-reviewer-agent-type dispatch-to-verdict yield, plus cited-path edit overlap.
+
+    Joins each main-thread reviewer-agent dispatch (Agent/Task tool_use with
+    subagent_type in the reviewer set — review-trace's _REVIEWER_PREFIX/
+    _REVIEWER_EXACT plus skill-fidelity-reviewer) to its own subagent
+    transcript via subagents/<id>.meta.json's toolUseId field, then
+    classifies that transcript's last assistant text block as findings-found,
+    zero-finding, or unclassified. A dispatch with no matching meta.json is
+    excluded entirely (not counted as unclassified) — meta.json is the only
+    signal that a subagent transcript for this dispatch exists at all. A
+    second, distinct exclusion path is a meta.json file that exists but is
+    unreadable (invalid JSON) or missing toolUseId — also excluded entirely,
+    and corpus-wide counted in the printed meta-read-errors line.
+
+    A "findings-found" verdict comes from either a numeric "Found <N>
+    issues" verdict (contributes N to the Findings column) or a bulleted
+    "Approve with concerns"/"Request changes" verdict with no derivable
+    count (contributes 0) — the printed Findings total is therefore a lower
+    bound on actual findings, not an exact count.
+
+    A second table reports, per (agent type, bucket), whether the dispatch's
+    own cited paths were later edited: Cited (>=1 extracted citation after
+    excluding the dispatch's own self-referenced/plan-file candidates),
+    Active (of those, the session recorded ANY code edit afterward, the null
+    control for "was the session still working at all"), and Edited (of the
+    Active ones, a cited path itself was among the edited paths). Rate =
+    Edited / Active, so it cannot exceed 100%. Active/Edited currently
+    reflect parent-main-thread edits only — subagent-transcript edit reads
+    were measured against Verification 7(a)'s cost gate (delta ~16.2s over
+    the inherited 13.5s baseline) and excluded under the gate's own
+    pre-committed fallback, so this undercounts real fix work whenever it
+    happened inside a code-writer dispatch, which this repo's own CLAUDE.md
+    mandates for implementation work. The unclassified
+    bucket is not scored (prints "excluded" for Cited/Active/Edited/Rate) —
+    an unreadable subagent transcript lands there via its empty verdict text
+    and is separately counted in the printed read-error line, never entered
+    as a legitimate zero-citation dispatch.
+
+    --redact is accepted for CLI parity with cost/audit-routing. Cited-path
+    candidates are held only as sha256 digests (_normalize_cited_path), never
+    as raw paths, so no path can reach this subcommand's aggregate-only
+    output by construction — this does not cover the pre-existing
+    --projects scope-header line (_print_resolved_scope), a separate,
+    unfixed channel shared by every subcommand.
+
+    Delegates its entire accumulation to _compute_reviewer_yield_data instead
+    of running its own pass over session_iter, so this report and
+    cost-ledger's per-week reviewer_gap_pp can never drift apart.
+    """
+    since_ts, since_raw = _parse_since_nd_arg(args, "reviewer-yield")
+    since_label = since_raw or ""
+
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "reviewer-yield", roots=roots)
+    _print_resolved_scope("reviewer-yield", scope_label, roots)
+
+    data = _compute_reviewer_yield_data(session_iter, since_ts=since_ts)
+    agg = data["agg"]
+    agg2 = data["agg2"]
+    meta_read_errors = data["meta_read_errors"]
+    transcript_read_errors = data["transcript_read_errors"]
 
     title_since = f"last {since_label}" if since_label else "all time"
     print(f"\n## Reviewer-agent yield ({title_since})\n")
@@ -4790,6 +4891,13 @@ def _session_peak_context(main_thread_turns: Sequence[tuple[int, int, int]]) -> 
 def _pct_of(value: float, total: float) -> str:
     """value/total as a percentage string; 0.0% (not an undefined dash) when total is zero."""
     return f"{100 * value / total:.1f}%" if total else "0.0%"
+
+
+def _pct_value(value: float, total: float) -> float:
+    """value/total as a percentage float, matching _pct_of's 0.0-when-zero
+    convention -- for a caller (cost-ledger) that stores the number rather
+    than printing it."""
+    return 100 * value / total if total else 0.0
 
 
 def _context_distribution_rows(
@@ -6627,27 +6735,31 @@ def cmd_cost_trend(args: argparse.Namespace) -> None:
     _cost_trend_report(args, datetime.now(UTC).date())
 
 
-def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
-    """Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.
+def _compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]], int, int]:
+    """Per-ISO-week $/opus-share/>=200k-context-share accumulation behind
+    both cost-trend's own report and cost-ledger's per-week row, extracted
+    so the two share one scan instead of two implementations kept in sync
+    by hand.
 
-    Reuses _price_turn's per-turn pricing (same as cost) and cmd_handoff_ratio's
-    ISO-week bucketing. Sidechain turns are included (include_subagents=True)
-    for the same reason _cost_report includes them — most dispatched spend
-    would otherwise be silently excluded. The most recent bucket is very
-    likely a partial week; it is labeled "(partial)" rather than presented as
-    a complete week's total, since a corpus only a few weeks deep would
-    otherwise misread a partial trailing week as a real week-over-week drop.
-    Turns whose model ID has no _MODEL_BASE_INPUT_RATES entry are excluded
-    from every week's totals and counted corpus-wide (mirrors
-    cmd_audit_routing's unpriced-turns convention) so they don't silently
-    vanish from the reported spend.
+    Returns (week_str -> {"total": $, "opus": $, "context_over": $,
+    "context_class_dollars": $}, unpriced_turns, unpriced_tokens). A week
+    with zero priced turns is simply absent as a key, not present with
+    zeros — cost-ledger's own "no row for this week yet" gap detection
+    relies on that absence.
+
+    context_over and context_class_dollars are two distinct metrics, not
+    two names for one: context_over is the dollar share of turns whose
+    context crossed the >=200k bucket (_context_bucket, what cost-trend's
+    own printed "Context%" column has always been); context_class_dollars
+    is the dollar share attributable to context-class token usage
+    (cache_read + both cache_write tiers, i.e. every _price_turn class
+    except output) regardless of bucket — GH-554 F1's "context is ~88% of
+    the bill" thesis. cost-ledger is the only consumer of
+    context_class_dollars; _cost_trend_report's printed table is unchanged.
     """
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "cost-trend", include_subagents=True, roots=roots)
-    _print_resolved_scope("cost-trend", scope_label, roots)
-
-    # week_str -> {"total": $, "opus": $, "context_over": $}
-    data: dict[str, dict[str, float]] = defaultdict(lambda: {"total": 0.0, "opus": 0.0, "context_over": 0.0})
+    data: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"total": 0.0, "opus": 0.0, "context_over": 0.0, "context_class_dollars": 0.0}
+    )
     unpriced_turns = 0
     unpriced_tokens = 0
 
@@ -6677,6 +6789,33 @@ def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
                 d["opus"] += turn_total
             if _context_bucket(context_at_turn) == _CONTEXT_BUCKET_OVER:
                 d["context_over"] += turn_total
+            d["context_class_dollars"] += (
+                dollars_by_class["cache_read"] + dollars_by_class["cache_write_1h"] + dollars_by_class["cache_write_5m"]
+            )
+
+    return dict(data), unpriced_turns, unpriced_tokens
+
+
+def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
+    """Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.
+
+    Reuses _price_turn's per-turn pricing (same as cost) and cmd_handoff_ratio's
+    ISO-week bucketing. Sidechain turns are included (include_subagents=True)
+    for the same reason _cost_report includes them — most dispatched spend
+    would otherwise be silently excluded. The most recent bucket is very
+    likely a partial week; it is labeled "(partial)" rather than presented as
+    a complete week's total, since a corpus only a few weeks deep would
+    otherwise misread a partial trailing week as a real week-over-week drop.
+    Turns whose model ID has no _MODEL_BASE_INPUT_RATES entry are excluded
+    from every week's totals and counted corpus-wide (mirrors
+    cmd_audit_routing's unpriced-turns convention) so they don't silently
+    vanish from the reported spend.
+    """
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "cost-trend", include_subagents=True, roots=roots)
+    _print_resolved_scope("cost-trend", scope_label, roots)
+
+    data, unpriced_turns, unpriced_tokens = _compute_cost_trend_data(session_iter)
 
     if not data:
         print("No priced turns found.")
@@ -6699,6 +6838,570 @@ def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
         )
     if unpriced_turns:
         print(f"\n  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
+
+
+# --- cost-ledger: docs/cost-ledger.md read/append -------------------------
+#
+# See docs/cost-ledger.md for the schema and .claude/plans/cost-trend-ledger.md
+# for the design rationale (why each column exists, what got dropped, and the
+# error-path contracts implemented below).
+
+_COST_LEDGER_COLUMNS = (
+    "week", "machine", "rates", "usd", "context_pct", "opus_pct",
+    "ge200k_pct", "denials", "reviewer_gap_pp", "note",
+)
+_COST_LEDGER_HEADER_LINE = "| " + " | ".join(_COST_LEDGER_COLUMNS) + " |"
+_COST_LEDGER_SEPARATOR_LINE = "|" + "|".join(["---"] * len(_COST_LEDGER_COLUMNS)) + "|"
+# Real git conflict markers are exactly these 7-character prefixes (each
+# followed by a ref name on <<<<<<</>>>>>>> or nothing on =======).
+_COST_LEDGER_CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
+_COST_LEDGER_ISO_WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
+# Short, lowercase-alphanumeric, no spaces or unicode -- wide enough for
+# "m1"/"laptop2", narrow enough that a hostname or username can't be
+# expressed in it (see docs/cost-ledger.md). \Z (not $) so a trailing
+# newline doesn't slip past the anchor.
+_MACHINE_LABEL_RE = re.compile(r"^[a-z0-9]{1,8}\Z")
+# A note is a rendered markdown table cell (docs/cost-ledger.md, viewed on
+# GitHub) and a terminal string (cost-ledger's own read mode) -- printable
+# ASCII only blocks both raw control/escape bytes and non-ASCII lookalikes.
+_COST_LEDGER_NOTE_MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\([^)]*\)")
+# Local-lock convenience bound, not a protocol-grounded value -- this guards
+# an interactive CLI's own read-check-write window against another local
+# --record, not a network call, so no vendor timeout spec applies. 30s
+# comfortably exceeds a single --record's read-check-write step (parse,
+# upsert, temp-write, atomic rename) while still surfacing a wedged or
+# long-running concurrent recorder within one interactive command.
+_COST_LEDGER_LOCK_TIMEOUT_S = 30.0
+_COST_LEDGER_LOCK_POLL_INTERVAL_S = 0.1
+
+
+class _CostLedgerParseError(Exception):
+    """Raised by _parse_cost_ledger_file_text on any malformed ledger content
+    -- the canonical parser fails loud rather than mis-parsing a hand-edited
+    or merge-conflicted row."""
+
+
+def _cost_ledger_path() -> Path:
+    """Resolve docs/cost-ledger.md from this script's own on-disk location,
+    not the process cwd -- --record must find this repo's ledger file even
+    when invoked from an unrelated repo's working directory (stow installs
+    this script at ~/.claude/scripts/, itself a symlink into the
+    claude-config checkout). transcript-analysis.py lives at
+    claude/.claude/scripts/transcript-analysis.py, three directories under
+    the repo root.
+    """
+    return Path(__file__).resolve().parents[3] / "docs" / "cost-ledger.md"
+
+
+def _parse_cost_ledger_iso_week(week_str: str) -> None:
+    """Raise _CostLedgerParseError unless week_str is a genuine ISO week
+    label -- both the YYYY-Www shape and a week number the given year
+    actually has (year 2025 has no W53, for instance)."""
+    m = _COST_LEDGER_ISO_WEEK_RE.match(week_str)
+    if not m:
+        raise _CostLedgerParseError(f"malformed week label {week_str!r} (expected YYYY-Www)")
+    year, week = int(m.group(1)), int(m.group(2))
+    try:
+        date.fromisocalendar(year, week, 1)
+    except ValueError as exc:
+        raise _CostLedgerParseError(f"malformed week label {week_str!r}: {exc}") from None
+
+
+def _parse_cost_ledger_pct_cell(label: str, cell: str) -> float:
+    """Parse a "N.N%"-shaped percentage cell, raising _CostLedgerParseError
+    on anything else (missing '%', a non-numeric value in front of it, or a
+    non-finite float -- float() itself accepts "nan"/"inf"/"-infinity" with
+    no error, which a percentage column must reject the same as any other
+    malformed cell)."""
+    if not cell.endswith("%"):
+        raise _CostLedgerParseError(f"malformed {label} {cell!r} (expected a trailing '%')")
+    try:
+        value = float(cell[:-1])
+    except ValueError:
+        raise _CostLedgerParseError(f"non-numeric {label} {cell!r}") from None
+    if math.isnan(value) or math.isinf(value):
+        raise _CostLedgerParseError(f"non-finite {label} {cell!r}")
+    return value
+
+
+def _cost_ledger_note_violation(note: str) -> str | None:
+    """Return a human-readable reason `note` is rejected, or None if it's
+    valid. Shared between --record-time validation and the canonical row
+    parser, so a hand-edited or PR-introduced row is held to the same
+    contract as one written by --record: a raw '|' or newline would corrupt
+    the table's row format, a non-printable-ASCII byte (e.g. an ANSI/OSC
+    terminal escape sequence) would be interpolated unescaped into
+    cost-ledger's terminal read-mode output, and markdown link/image syntax
+    would beacon an external server on every GitHub render of
+    docs/cost-ledger.md.
+    """
+    if "|" in note or "\n" in note or "\r" in note:
+        return "must not contain '|' or a newline -- either would corrupt the table's row format"
+    if not all(32 <= ord(c) <= 126 for c in note):
+        return "must contain only printable ASCII -- control and terminal-escape characters are rejected"
+    if _COST_LEDGER_NOTE_MARKDOWN_LINK_RE.search(note):
+        return "must not contain markdown link/image syntax ('[text](url)' or '![alt](url)')"
+    return None
+
+
+def _parse_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
+    """Validate and coerce one already-split, already-stripped data row's
+    cells into a typed row dict. Raises _CostLedgerParseError naming the
+    offending line on any field that doesn't match its column's contract.
+    """
+    if len(cells) != len(_COST_LEDGER_COLUMNS):
+        raise _CostLedgerParseError(
+            f"line {line_no}: expected {len(_COST_LEDGER_COLUMNS)} columns, got {len(cells)}"
+            " (a stray '|' inside a cell produces this same error)"
+        )
+    week, machine, rates, usd_s, context_s, opus_s, ge200k_s, denials_s, gap_s, note = cells
+
+    note_violation = _cost_ledger_note_violation(note)
+    if note_violation is not None:
+        raise _CostLedgerParseError(f"line {line_no}: malformed note {note!r} ({note_violation})")
+
+    try:
+        _parse_cost_ledger_iso_week(week)
+    except _CostLedgerParseError as exc:
+        raise _CostLedgerParseError(f"line {line_no}: {exc}") from None
+
+    if not _MACHINE_LABEL_RE.match(machine):
+        raise _CostLedgerParseError(f"line {line_no}: malformed machine label {machine!r}")
+
+    try:
+        datetime.strptime(rates, "%Y-%m-%d")
+    except ValueError:
+        raise _CostLedgerParseError(f"line {line_no}: malformed rates date {rates!r}") from None
+
+    try:
+        usd = float(usd_s)
+    except ValueError:
+        raise _CostLedgerParseError(f"line {line_no}: non-numeric usd {usd_s!r}") from None
+    if math.isnan(usd) or math.isinf(usd):
+        raise _CostLedgerParseError(f"line {line_no}: non-finite usd {usd_s!r}")
+
+    try:
+        context_pct = _parse_cost_ledger_pct_cell("context_pct", context_s)
+        opus_pct = _parse_cost_ledger_pct_cell("opus_pct", opus_s)
+        ge200k_pct = _parse_cost_ledger_pct_cell("ge200k_pct", ge200k_s)
+    except _CostLedgerParseError as exc:
+        raise _CostLedgerParseError(f"line {line_no}: {exc}") from None
+
+    try:
+        denials = int(denials_s)
+    except ValueError:
+        raise _CostLedgerParseError(f"line {line_no}: non-numeric denials {denials_s!r}") from None
+
+    reviewer_gap_pp: float | None = None
+    if gap_s:
+        if not gap_s.endswith("pp"):
+            raise _CostLedgerParseError(
+                f"line {line_no}: malformed reviewer_gap_pp {gap_s!r} (expected a trailing 'pp')"
+            )
+        try:
+            reviewer_gap_pp = float(gap_s[:-2])
+        except ValueError:
+            raise _CostLedgerParseError(f"line {line_no}: non-numeric reviewer_gap_pp {gap_s!r}") from None
+        if math.isnan(reviewer_gap_pp) or math.isinf(reviewer_gap_pp):
+            raise _CostLedgerParseError(f"line {line_no}: non-finite reviewer_gap_pp {gap_s!r}")
+
+    return {
+        "week": week, "machine": machine, "rates": rates, "usd": usd,
+        "context_pct": context_pct, "opus_pct": opus_pct, "ge200k_pct": ge200k_pct,
+        "denials": denials, "reviewer_gap_pp": reviewer_gap_pp, "note": note,
+    }
+
+
+def _parse_cost_ledger_file_text(text: str) -> tuple[str, list[dict]]:
+    """Canonical parser for docs/cost-ledger.md's full content.
+
+    Returns (preamble, rows): preamble is everything up to and including the
+    table's header and separator rows, verbatim, so a re-render (preamble +
+    one rendered line per row) is a byte-identical round trip for an
+    already-canonical file. Fails loud (_CostLedgerParseError) on an
+    unresolved git merge-conflict marker anywhere in the file, a missing or
+    malformed header/separator pair, a data row not wrapped in '|...|', a
+    wrong column count (a stray '|' inside a cell surfaces this same error),
+    a non-ISO week label, or a non-numeric numeric/percentage cell -- never
+    silently misparses a malformed row.
+    """
+    lines = text.splitlines()
+    for marker in _COST_LEDGER_CONFLICT_MARKERS:
+        for line_no, line in enumerate(lines, start=1):
+            if line.startswith(marker):
+                raise _CostLedgerParseError(f"line {line_no}: unresolved merge-conflict marker {marker!r}")
+
+    header_idx = None
+    for i, line in enumerate(lines):
+        if line.strip() == _COST_LEDGER_HEADER_LINE:
+            header_idx = i
+            break
+    if header_idx is None:
+        raise _CostLedgerParseError("could not find the cost-ledger table header row")
+    if header_idx + 1 >= len(lines) or lines[header_idx + 1].strip() != _COST_LEDGER_SEPARATOR_LINE:
+        raise _CostLedgerParseError("cost-ledger table header is not followed by its separator row")
+
+    rows: list[dict] = []
+    for line_no, line in enumerate(lines[header_idx + 2:], start=header_idx + 3):
+        if not line.strip():
+            continue
+        stripped = line.strip()
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            raise _CostLedgerParseError(f"line {line_no}: malformed table row {line!r}")
+        cells = [c.strip() for c in stripped[1:-1].split("|")]
+        rows.append(_parse_cost_ledger_row_cells(cells, line_no))
+
+    preamble = "\n".join(lines[: header_idx + 2]) + "\n"
+    return preamble, rows
+
+
+def _format_cost_ledger_row(row: dict) -> str:
+    """Render one row dict as its markdown table line -- the exact inverse
+    of _parse_cost_ledger_row_cells."""
+    gap = row["reviewer_gap_pp"]
+    gap_s = "" if gap is None else f"{gap:+.1f}pp"
+    cells = [
+        row["week"], row["machine"], row["rates"],
+        f"{row['usd']:.2f}", f"{row['context_pct']:.1f}%", f"{row['opus_pct']:.1f}%",
+        f"{row['ge200k_pct']:.1f}%", str(row["denials"]), gap_s, row["note"],
+    ]
+    return "| " + " | ".join(cells) + " |"
+
+
+def _upsert_cost_ledger_row(existing_rows: list[dict], new_row: dict, force: bool) -> list[dict]:
+    """Insert new_row into existing_rows, keyed by (week, machine).
+
+    Refuses (raises ValueError) when a row for that key already exists and
+    force is False -- a week's numbers change as the week fills, and
+    silently rewriting history is how a ledger stops being one. With force,
+    replaces that row in place; every other row's order and content is
+    untouched.
+    """
+    key = (new_row["week"], new_row["machine"])
+    for i, row in enumerate(existing_rows):
+        if (row["week"], row["machine"]) == key:
+            if not force:
+                raise ValueError(
+                    f"a row for week={new_row['week']} machine={new_row['machine']} already exists"
+                    " -- pass --force to overwrite it"
+                )
+            return [*existing_rows[:i], new_row, *existing_rows[i + 1:]]
+    return [*existing_rows, new_row]
+
+
+def _write_cost_ledger_file(ledger_path: Path, preamble: str, rows: list[dict]) -> None:
+    """Crash-safe write: render to a temp file in the ledger's own directory,
+    read it back to confirm the write landed intact and parses on the
+    canonical parser, then atomically replace the ledger file -- a killed
+    process leaves either the old file intact or an orphaned temp file,
+    never a half-written row the next run's duplicate check could misread.
+
+    The read-back is a byte-equality check against the text just written,
+    not a round trip through row dicts: _format_cost_ledger_row rounds usd
+    to cents and percentages to one decimal, so a row's raw float and its
+    formatted-then-reparsed value legitimately differ -- that is expected
+    precision loss, not a serialization bug, and comparing rows would
+    refuse almost every real (non-round-number) row.
+
+    The temp file is chmod'd to the existing ledger file's permission bits
+    before the replace -- tempfile.mkstemp creates it 0600, and os.replace
+    swaps that mode in along with the content, silently downgrading
+    docs/cost-ledger.md's git-checkout permissions on every --record
+    otherwise. ledger_path is confirmed to exist by _cost_ledger_report's
+    own check before this function is ever called.
+    """
+    new_text = preamble + "\n".join(_format_cost_ledger_row(r) for r in rows) + ("\n" if rows else "")
+    fd, tmp_name = tempfile.mkstemp(dir=str(ledger_path.parent), prefix=".cost-ledger-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(new_text)
+        written_text = Path(tmp_name).read_text()
+        if written_text != new_text:
+            raise _CostLedgerParseError("write verification mismatch -- refusing to publish")
+        _parse_cost_ledger_file_text(written_text)  # fails loud on the canonical parser before publishing
+        os.chmod(tmp_name, stat.S_IMODE(ledger_path.stat().st_mode))
+        os.replace(tmp_name, ledger_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+
+
+def _reviewer_gap_pp(agg2: dict[tuple[str, str], dict[str, int]]) -> float | None:
+    """Percentage-point gap between the findings-found and zero-finding
+    cited-path edit rates, aggregated across every reviewer agent type --
+    cost-ledger's reviewer_gap_pp column. None (left empty in the row) when
+    either side's Active denominator is zero, rather than dividing by zero
+    or silently substituting 0%.
+    """
+    findings_active = sum(
+        v["active"] for (_stype, bucket), v in agg2.items() if bucket == _REVIEWER_VERDICT_FINDINGS_FOUND
+    )
+    findings_edited = sum(
+        v["edited"] for (_stype, bucket), v in agg2.items() if bucket == _REVIEWER_VERDICT_FINDINGS_FOUND
+    )
+    zero_active = sum(
+        v["active"] for (_stype, bucket), v in agg2.items() if bucket == _REVIEWER_VERDICT_ZERO_FINDING
+    )
+    zero_edited = sum(
+        v["edited"] for (_stype, bucket), v in agg2.items() if bucket == _REVIEWER_VERDICT_ZERO_FINDING
+    )
+    if findings_active == 0 or zero_active == 0:
+        return None
+    return 100 * (findings_edited / findings_active - zero_edited / zero_active)
+
+
+_COST_LEDGER_READ_HEADER = (
+    f"{'Week':<10} {'Machine':<9} {'Rates':<11} {'$':>12} {'Context%':>9} "
+    f"{'Opus%':>7} {'>=200k%':>8} {'Denials':>8} {'GapPP':>11}  Note"
+)
+
+
+def _format_cost_ledger_read_row(row: dict) -> str:
+    """Render one row dict as a fixed-width terminal line for read mode --
+    distinct from _format_cost_ledger_row, which renders the file's own
+    markdown-pipe format. Empty reviewer_gap_pp prints as the literal token
+    "unmeasured" (never a blank cell) so every column stays a single
+    whitespace-delimited token."""
+    gap = row["reviewer_gap_pp"]
+    gap_s = "unmeasured" if gap is None else f"{gap:+.1f}pp"
+    note = row["note"] or "-"
+    return (
+        f"{row['week']:<10} {row['machine']:<9} {row['rates']:<11} {row['usd']:>12,.2f} "
+        f"{row['context_pct']:>8.1f}% {row['opus_pct']:>6.1f}% {row['ge200k_pct']:>7.1f}% "
+        f"{row['denials']:>8} {gap_s:>11}  {note}"
+    )
+
+
+def _print_cost_ledger_read(existing_rows: list[dict], args: argparse.Namespace, roots: Sequence[Path]) -> None:
+    """Read-mode output: every existing ledger row, then any ISO week present
+    in the live corpus that no row (for any machine) has captured yet -- the
+    gap between "recorded" and "still recoverable" this ledger exists to close.
+    """
+    session_iter, scope_label = _resolve_project_scope(args, "cost-ledger", include_subagents=True, roots=roots)
+    _print_resolved_scope("cost-ledger", scope_label, roots)
+
+    if not existing_rows:
+        print("\nNo rows recorded yet.")
+    else:
+        print()
+        print(_COST_LEDGER_READ_HEADER)
+        print("-" * len(_COST_LEDGER_READ_HEADER))
+        for row in existing_rows:
+            print(_format_cost_ledger_read_row(row))
+
+    cost_weeks, _unpriced_turns, _unpriced_tokens = _compute_cost_trend_data(session_iter)
+    recorded_weeks = {row["week"] for row in existing_rows}
+    missing_weeks = sorted(w for w in cost_weeks if w not in recorded_weeks)
+    if missing_weeks:
+        print("\nWeeks present in the live corpus with no ledger row yet:")
+        for week_str in missing_weeks:
+            print(f"  {week_str}")
+
+
+def _acquire_cost_ledger_lock(lock_f) -> None:
+    """Acquire an exclusive, non-blocking lock on lock_f, retrying at
+    _COST_LEDGER_LOCK_POLL_INTERVAL_S intervals until
+    _COST_LEDGER_LOCK_TIMEOUT_S elapses. Exits non-zero with a clear message
+    rather than blocking indefinitely (fcntl.flock's plain LOCK_EX) on a
+    wedged or long-running concurrent --record.
+    """
+    deadline = time.monotonic() + _COST_LEDGER_LOCK_TIMEOUT_S
+    while True:
+        try:
+            fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                raise
+            if time.monotonic() >= deadline:
+                print(
+                    "cost-ledger: another cost-ledger --record appears to be running"
+                    " (lock held on docs/cost-ledger.md.lock) -- timed out after"
+                    f" {_COST_LEDGER_LOCK_TIMEOUT_S:.0f}s",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            time.sleep(_COST_LEDGER_LOCK_POLL_INTERVAL_S)
+
+
+def cmd_cost_ledger(args: argparse.Namespace) -> None:
+    """CLI entry point for the cost-ledger subcommand.
+
+    Reads the wall-clock date exactly once, here, then delegates to
+    _cost_ledger_report, which takes `today` as an explicit parameter — the
+    same split cmd_cost/cmd_cost_trend use so week-boundary logic is
+    deterministic under test.
+    """
+    roots = _resolve_scan_roots(args)
+    _cost_ledger_report(args, datetime.now(UTC).date(), roots)
+
+
+def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | None = None) -> None:
+    """Read (default) or append (--record) one row of docs/cost-ledger.md.
+
+    --record's row reuses _compute_cost_trend_data for usd/context_pct/
+    opus_pct/ge200k_pct, and windows _compute_deny_summary_data/
+    _compute_reviewer_yield_data to the current ISO week's Monday-through-
+    next-Monday UTC boundary for denials/reviewer_gap_pp — see
+    docs/cost-ledger.md for why those two are per-week rather than
+    corpus-lifetime figures. The corpus scan that computes the row runs
+    unlocked; only the final read-check-write step (re-read the ledger,
+    check for an existing (week, machine) row, write) holds an exclusive
+    lock on a sibling .lock file (never the ledger file itself, so lock
+    identity survives the atomic replace in _write_cost_ledger_file), so two
+    racing recorders can't both pass the duplicate-row check.
+    _acquire_cost_ledger_lock bounds the wait rather than blocking
+    indefinitely on a wedged concurrent recorder.
+    """
+    record: bool = bool(getattr(args, "record", False))
+    force: bool = bool(getattr(args, "force", False))
+    machine_label: str | None = getattr(args, "machine_label", None) or None
+    note: str = getattr(args, "note", None) or ""
+
+    ledger_path = _cost_ledger_path()
+    if not ledger_path.exists():
+        # Prints the canonical repo-relative path, never the resolved
+        # absolute Path -- the latter is home-rooted and this repo's own
+        # redaction convention treats home-rooted paths as always-sensitive
+        # (command output here routinely gets pasted into public issues).
+        print(
+            "cost-ledger: ledger file not found at docs/cost-ledger.md -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if roots is None:
+        roots = _resolve_scan_roots(args)
+
+    if not record:
+        try:
+            _preamble, existing_rows = _parse_cost_ledger_file_text(ledger_path.read_text())
+        except _CostLedgerParseError as exc:
+            print(f"cost-ledger: {exc}", file=sys.stderr)
+            sys.exit(1)
+        _print_cost_ledger_read(existing_rows, args, roots)
+        return
+
+    sentinel_path = config_dir() / ".cost-ledger-enabled"
+    if not sentinel_path.exists():
+        # Canonical path, not the resolved absolute one -- see the same
+        # rationale on the ledger-file-missing message above.
+        print(
+            "cost-ledger: --record requires the opt-in sentinel ~/.claude/.cost-ledger-enabled"
+            " -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not machine_label:
+        print("cost-ledger: --record requires --machine-label", file=sys.stderr)
+        sys.exit(1)
+    if not _MACHINE_LABEL_RE.match(machine_label):
+        print(f"cost-ledger: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
+        sys.exit(1)
+    # Rejection names the rule, never the compared hostname value -- echoing
+    # it would persist recon-value data into the session transcript, the same
+    # discipline deny-private-project-refs.sh applies to its own matches.
+    # Covers the POSIX hostname only, not macOS's separate ComputerName
+    # (`scutil --get ComputerName`) -- see docs/cost-ledger.md.
+    if machine_label.lower() == socket.gethostname().lower():
+        print(
+            "cost-ledger: --machine-label must not equal this machine's hostname"
+            " -- publishing a hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    note_violation = _cost_ledger_note_violation(note)
+    if note_violation is not None:
+        print(f"cost-ledger: --note {note_violation}", file=sys.stderr)
+        sys.exit(1)
+
+    iso = today.isocalendar()
+    week_str = f"{iso.year}-W{iso.week:02d}"
+    monday = date.fromisocalendar(iso.year, iso.week, 1)
+    week_start_ts = datetime(monday.year, monday.month, monday.day, tzinfo=UTC).timestamp()
+    week_end_ts = week_start_ts + 7 * 86400
+
+    cost_session_iter, scope_label = _resolve_project_scope(args, "cost-ledger", include_subagents=True, roots=roots)
+    deny_session_iter, _scope_label2 = _resolve_project_scope(args, "cost-ledger", roots=roots)
+    reviewer_session_iter, _scope_label3 = _resolve_project_scope(args, "cost-ledger", roots=roots)
+    _print_resolved_scope("cost-ledger", scope_label, roots)
+
+    cost_weeks, _unpriced_turns, _unpriced_tokens = _compute_cost_trend_data(cost_session_iter)
+
+    if week_str not in cost_weeks:
+        print(
+            f"cost-ledger: no priced turns found for the current week ({week_str});"
+            " refusing to record a blank/zero row",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    max_observed_week = max(cost_weeks)
+    if max_observed_week != week_str:
+        print(
+            f"cost-ledger: clock skew detected -- the corpus's most recent activity is dated"
+            f" {max_observed_week}, but this machine's clock resolves the current week as"
+            f" {week_str}; refusing to record under a possibly-wrong week label",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    week_data = cost_weeks[week_str]
+    # Two distinct metrics: context_pct is the context-class (cache_read +
+    # both cache_write tiers) dollar share of the week's total, GH-554 F1's
+    # "context is ~88% of the bill" thesis; ge200k_pct is cost-trend's own
+    # existing >=200k-context-bucket dollar share (_context_bucket) -- a
+    # different corpus slice, not a second name for the same number.
+    context_share = _pct_value(week_data["context_class_dollars"], week_data["total"])
+    ge200k_share = _pct_value(week_data["context_over"], week_data["total"])
+    opus_share = _pct_value(week_data["opus"], week_data["total"])
+
+    deny_data = _compute_deny_summary_data(deny_session_iter, since_ts=week_start_ts, until_ts=week_end_ts)
+    denials = sum(deny_data["hook_counts"].values())
+
+    reviewer_data = _compute_reviewer_yield_data(reviewer_session_iter, since_ts=week_start_ts, until_ts=week_end_ts)
+    reviewer_gap_pp = _reviewer_gap_pp(reviewer_data["agg2"])
+
+    new_row = {
+        "week": week_str,
+        "machine": machine_label,
+        "rates": _PRICING_FETCH_DATE.isoformat(),
+        "usd": week_data["total"],
+        "context_pct": context_share,
+        "opus_pct": opus_share,
+        "ge200k_pct": ge200k_share,
+        "denials": denials,
+        "reviewer_gap_pp": reviewer_gap_pp,
+        "note": note,
+    }
+
+    lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+    with open(lock_path, "w") as lock_f:
+        _acquire_cost_ledger_lock(lock_f)
+        try:
+            try:
+                preamble, existing_rows = _parse_cost_ledger_file_text(ledger_path.read_text())
+            except _CostLedgerParseError as exc:
+                print(f"cost-ledger: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            try:
+                new_rows = _upsert_cost_ledger_row(existing_rows, new_row, force)
+            except ValueError as exc:
+                print(f"cost-ledger: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            try:
+                _write_cost_ledger_file(ledger_path, preamble, new_rows)
+            except _CostLedgerParseError as exc:
+                print(f"cost-ledger: {exc}", file=sys.stderr)
+                sys.exit(1)
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+    print(f"cost-ledger: recorded {week_str} / {machine_label}")
 
 
 def cmd_handoff_ratio(args: argparse.Namespace) -> None:
@@ -8131,6 +8834,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_project_scope_args(p_cost_trend)
     p_cost_trend.set_defaults(func=cmd_cost_trend)
+
+    p_cost_ledger = sub.add_parser(
+        "cost-ledger",
+        help=(
+            "Read or append docs/cost-ledger.md, this repo's durable per-week cost/efficiency"
+            " ledger. Default: print existing rows plus any live-corpus weeks not yet recorded."
+        ),
+    )
+    _add_project_scope_args(p_cost_ledger)
+    p_cost_ledger.add_argument(
+        "--record", action="store_true",
+        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled and --machine-label.",
+    )
+    p_cost_ledger.add_argument(
+        "--machine-label", metavar="LABEL",
+        help="Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this machine's hostname.",
+    )
+    p_cost_ledger.add_argument(
+        "--force", action="store_true",
+        help="With --record, overwrite an existing row for the same (week, machine) instead of refusing.",
+    )
+    p_cost_ledger.add_argument(
+        "--note", metavar="TEXT", default="",
+        help="Free-text note for --record's row: what changed in the workflow this week.",
+    )
+    p_cost_ledger.set_defaults(func=cmd_cost_ledger)
 
     p_handoff_ratio = sub.add_parser(
         "handoff-ratio",
