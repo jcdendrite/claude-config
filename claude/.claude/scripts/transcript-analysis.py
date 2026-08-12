@@ -7899,20 +7899,30 @@ def cmd_handoff_ratio(args: argparse.Namespace) -> None:
     _print_nudge_log_diagnostic()
 
 
+_NUDGE_LOG_MAX_READ = 2 * 1024 * 1024  # 2 MB
+
+
+def _read_bounded_log_lines(log_path: Path) -> list[str]:
+    """Read an append-only log file's lines, tail-truncated to the last
+    _NUDGE_LOG_MAX_READ bytes so an unbounded log can't be pulled fully into
+    memory. Returns [] when the file is absent or unreadable -- shared by
+    _print_nudge_log_diagnostic and _parse_nudge_log_entries so both read
+    ~/.claude/.handoff-nudge.log the same bounded way."""
+    if not log_path.exists():
+        return []
+    try:
+        if log_path.stat().st_size > _NUDGE_LOG_MAX_READ:
+            raw = log_path.read_bytes()[-_NUDGE_LOG_MAX_READ:]
+            return raw.decode(errors="ignore").splitlines()
+        return log_path.read_text().splitlines()
+    except OSError:
+        return []
+
+
 def _print_nudge_log_diagnostic() -> None:
     """Read ~/.claude/.handoff-nudge.log and report schema-drift count if present."""
     log_path = config_dir() / ".handoff-nudge.log"
-    if not log_path.exists():
-        return
-    try:
-        MAX_LOG_READ = 2 * 1024 * 1024  # 2 MB
-        if log_path.stat().st_size > MAX_LOG_READ:
-            raw = log_path.read_bytes()[-MAX_LOG_READ:]
-            lines = raw.decode(errors="ignore").splitlines()
-        else:
-            lines = log_path.read_text().splitlines()
-    except OSError:
-        return
+    lines = _read_bounded_log_lines(log_path)
     drift_count = sum(1 for ln in lines if ln.startswith("schema-drift"))
     if drift_count:
         print(f"\nDiagnostic: {drift_count} schema-drift line(s) in {log_path}")
@@ -8774,6 +8784,652 @@ def cmd_friction_count(args: argparse.Namespace) -> None:
     _emit_friction_result(signals, as_json=getattr(args, "json", False))
 
 
+# --- rearm-backtest: backtest candidate re-arm band spacings for the
+# handoff nudge's one-shot fire against the recorded corpus. See
+# .claude/plans/handoff-nudge-rearm-backtest.md for the full design.
+
+# Mirrors nudge-handoff-near-context-cap.sh's own HANDOFF_NUDGE_ABS_CAP
+# default (docs/handoff-nudge.md's "Why this cap" section). Duplicated
+# rather than imported -- there is no mechanism to share a constant between
+# a bash hook and a Python script, the same cross-language duplication
+# _context_window_for_model's docstring already documents. Not a CLI flag:
+# .claude/plans/token-cost-reduction.md's Phase 3 keeps this fixed, and a
+# flag would invite a future run to quietly retune it through this tool.
+_HANDOFF_NUDGE_ABS_CAP = 360_000
+
+# Mirrors the hook's own `PCT_THRESHOLD=$(( CONTEXT_WINDOW * 40 / 100 ))` --
+# the hook fires at the LESSER of 40% of the active model's context window
+# and _HANDOFF_NUDGE_ABS_CAP, so a 200k-window model's real fire point
+# (80,000) is well under the 1M-window arm's cap-governed 360,000. Neither
+# this fraction nor _HANDOFF_NUDGE_ABS_CAP is backtested -- only re-arm
+# spacing past whichever of the two governs a given session is.
+_HANDOFF_NUDGE_PCT_THRESHOLD = 0.40
+
+# PR #605's own turn-index bands (.claude/plans/handoff-boundary-decision-rule.md),
+# reused here for comparability with that point-in-time measurement -- the
+# dollar/context figures themselves are re-derived from the current corpus on
+# every run, never hardcoded. Follows _EDIT_OLD_STRING_SIZE_BUCKETS' own
+# cascading less-than convention: a turn index is tested against each bound
+# in order and takes the first label whose bound it's under, so an index
+# PR #605's own table never explicitly labeled (10-19, between "5-10" and
+# "20-40") falls through to "20-40" rather than going unbucketed.
+_RAMP_CURVE_TURN_INDEX_BUCKETS: tuple[tuple[int, str], ...] = (
+    (5, "0-5"),
+    (10, "5-10"),
+    (40, "20-40"),
+    (80, "40-80"),
+    (150, "80-150"),
+    (300, "150-300"),
+)
+_RAMP_CURVE_TURN_INDEX_OVERFLOW_LABEL = "300+"
+_RAMP_CURVE_BUCKET_LABELS: tuple[str, ...] = tuple(
+    label for _, label in _RAMP_CURVE_TURN_INDEX_BUCKETS
+) + (_RAMP_CURVE_TURN_INDEX_OVERFLOW_LABEL,)
+
+_REARM_BACKTEST_DEFAULT_SPACINGS: tuple[int, ...] = (40_000, 80_000, 120_000)
+
+# The three line shapes _parse_nudge_log_entries recognizes: "nudged" and
+# "schema-drift" are written by nudge-handoff-near-context-cap.sh itself
+# (docs/handoff-nudge.md's "Log location" table); "handoff" is appended by
+# the handoff skill's own conversion-signal step
+# (claude/.claude/skills/handoff/SKILL.md, "After writing: record the
+# conversion signal").
+_NUDGE_LOG_LINE_KINDS = ("nudged", "schema-drift", "handoff")
+
+
+def _ramp_curve_turn_index_bucket(turn_index: int) -> str:
+    """Bucket a 0-indexed main-thread turn position (turns since a real or
+    simulated fresh session start) into one of PR #605's seven turn-index
+    bands, via the cascading less-than lookup _RAMP_CURVE_TURN_INDEX_BUCKETS'
+    own docstring explains."""
+    for bound, label in _RAMP_CURVE_TURN_INDEX_BUCKETS:
+        if turn_index < bound:
+            return label
+    return _RAMP_CURVE_TURN_INDEX_OVERFLOW_LABEL
+
+
+def _hook_effective_fire_threshold(model: str) -> int:
+    """The real hook's own fire threshold for one model: the lesser of 40% of
+    that model's context window (_context_window_for_model, mirroring the
+    bash hook's own CONTEXT_WINDOW case statement) and _HANDOFF_NUDGE_ABS_CAP.
+    A 200k-window model's real threshold (80,000) is well under a 1M-window
+    model's cap-governed one (360,000) -- using _HANDOFF_NUDGE_ABS_CAP alone
+    for every session would overstate how early such sessions actually get
+    nudged today."""
+    pct_threshold = int(_context_window_for_model(model) * _HANDOFF_NUDGE_PCT_THRESHOLD)
+    return min(pct_threshold, _HANDOFF_NUDGE_ABS_CAP)
+
+
+def _hook_observable_boundaries(records: Sequence[dict]) -> list[int]:
+    """Turn-count positions (0..N, where N is the session's own main-thread
+    turn count) at which nudge-handoff-near-context-cap.sh could observe this
+    session's growing context. `records` must already be
+    _dedup_turns_by_request_id's output -- the same records a caller builds
+    its own main_thread_turns list from -- so a returned boundary is directly
+    usable as a slice/turn-count index into that list.
+
+    UserPromptSubmit and Stop both check the transcript's latest recorded
+    main-thread assistant usage (docs/handoff-nudge.md), so the two fire at
+    the same observable point: right after a run of tool-call-only turns
+    yields back to a genuine user message. Reusing _is_fresh_user_prompt for
+    that user-message half (see its own docstring for what it filters) marks
+    every INTERNAL boundary -- one per genuine user message, not one per
+    turn, so a multi-tool-call stretch between two user messages contributes
+    no boundary of its own. Session start (0, before any turn) and session
+    end (N, the full turn count) are the two boundaries no user message can
+    supply on their own, and both are always included: the hook's own header
+    comment states it is "registered on both events so a session that
+    crosses the threshold on its final turn, with no further user prompt,
+    still gets warned" -- a boundary set with no session-end entry would make
+    a last-turn crossing invisible to the simulation.
+
+    A turn only counts toward the position (and thus toward a boundary) when
+    it carries a usage block, matching exactly the predicate a caller uses to
+    build main_thread_turns -- a main-thread assistant record with no usage
+    block (a synthetic error record, see _dedup_turns_by_request_id's
+    docstring) must not desync the two lists' shared indexing.
+    """
+    boundaries: list[int] = [0]
+    main_turn_count = 0
+    for rec in records:
+        if rec.get("type") == "assistant" and not bool(rec.get("isSidechain")):
+            if (rec.get("message") or {}).get("usage"):
+                main_turn_count += 1
+            continue
+        if main_turn_count > 0 and _is_fresh_user_prompt(rec) and boundaries[-1] != main_turn_count:
+            boundaries.append(main_turn_count)
+    if boundaries[-1] != main_turn_count:
+        boundaries.append(main_turn_count)
+    return boundaries
+
+
+def _extract_rearm_session_turns(records: Sequence[dict]) -> dict:
+    """Single dedup+price pass over one session's raw records, shared by
+    _ramp_curve_from_corpus and _rearm_backtest_report so each session's
+    records are decoded/deduped/priced exactly once per report run instead
+    of twice -- every sibling subcommand in this file (`cost`,
+    `context-distribution`, etc.) does a single streaming pass over its
+    corpus, not two.
+
+    Returns a dict with:
+    - "deduped": _dedup_turns_by_request_id's output, for a caller building
+      _hook_observable_boundaries from the same records.
+    - "main_thread_turns": one (context_at_turn, output_tokens, actual_dollars)
+      tuple per main-thread assistant turn carrying a usage block
+      (actual_dollars is 0.0 when the turn's model is unpriced), in
+      _simulate_rearm_spacing's own input shape.
+    - "main_thread_priced": one bool per entry in main_thread_turns, parallel
+      to it, True when that turn's model was priced -- _ramp_curve_from_corpus
+      only buckets priced turns.
+    - "sidechain_dollars_total": summed actual dollars across this session's
+      priced sidechain turns.
+    - "unpriced_turns" / "unpriced_tokens": counts across both main-thread and
+      sidechain turns whose model has no price-table entry.
+    - "session_threshold": _hook_effective_fire_threshold for this session's
+      first main-thread turn's model (None if the session has no main-thread
+      turn with a usage block).
+    """
+    deduped = _dedup_turns_by_request_id(records)
+    main_thread_turns: list[tuple[int, int, float]] = []
+    main_thread_priced: list[bool] = []
+    sidechain_dollars_total = 0.0
+    unpriced_turns = 0
+    unpriced_tokens = 0
+    session_threshold: int | None = None
+
+    for rec in deduped:
+        if rec.get("type") != "assistant":
+            continue
+        msg = rec.get("message") or {}
+        usage = msg.get("usage")
+        if not usage:
+            continue
+        model = msg.get("model", "")
+        dollars_by_class, context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
+        output_tokens = int(usage.get("output_tokens", 0))
+        if bool(rec.get("isSidechain")):
+            if dollars_by_class is not None:
+                sidechain_dollars_total += sum(dollars_by_class.values())
+            else:
+                unpriced_turns += 1
+                unpriced_tokens += turn_unpriced_tokens
+            continue
+        if dollars_by_class is None:
+            unpriced_turns += 1
+            unpriced_tokens += turn_unpriced_tokens
+            actual_dollars = 0.0
+        else:
+            actual_dollars = sum(dollars_by_class.values())
+        if session_threshold is None:
+            session_threshold = _hook_effective_fire_threshold(model)
+        main_thread_turns.append((context_at_turn, output_tokens, actual_dollars))
+        main_thread_priced.append(dollars_by_class is not None)
+
+    return {
+        "deduped": deduped,
+        "main_thread_turns": main_thread_turns,
+        "main_thread_priced": main_thread_priced,
+        "sidechain_dollars_total": sidechain_dollars_total,
+        "unpriced_turns": unpriced_turns,
+        "unpriced_tokens": unpriced_tokens,
+        "session_threshold": session_threshold,
+    }
+
+
+def _ramp_curve_from_corpus(sessions: Iterable[dict]) -> tuple[dict[str, dict[str, float]], int]:
+    """Re-derive PR #605's fresh-session rebuild ramp from the current corpus
+    instead of citing that PR's own table: its source document
+    (.claude/plans/handoff-boundary-decision-rule.md) calls the table
+    "a point-in-time measurement, not a reproducible report," so this
+    subcommand recomputes it every run against whatever corpus is in scope.
+
+    `sessions` is _extract_rearm_session_turns' own output, one dict per
+    session -- this function does no I/O or dedup/pricing of its own, only
+    the bucket aggregation, so a caller extracts each session's turns
+    exactly once and fans the result out to both this function and its own
+    main_thread_turns/session_traces bookkeeping.
+
+    Buckets main-thread turns only (no sidechain/subagent turns -- a
+    subagent dispatch pays its own prefix from scratch and never represents
+    a "turns since a fresh session start" position) by
+    _ramp_curve_turn_index_bucket. Each bucket's "rate" is $/1k output
+    tokens (dollars / (output_tokens/1000), the same normalize-by-work
+    convention PR #605's own table used) and "mean_context" is the
+    output-token-weighted mean context_at_turn for turns in that bucket --
+    both needed by _simulate_rearm_spacing to price and to estimate the
+    context depth of a counterfactually-repriced turn.
+
+    A bucket with zero output tokens in the resolved corpus falls back to the
+    corpus-wide rate/mean_context (also 0.0 when the whole corpus has zero
+    output tokens) rather than a division-by-zero or NaN -- a corpus that
+    doesn't happen to have a session long enough to populate the "300+"
+    bucket must still return a usable, defined number for that bucket.
+
+    Returns (curve, total_output_tokens): total_output_tokens is the whole
+    resolved corpus's own priced output-token count, letting a caller detect
+    the corpus-wide-zero case (every bucket's rate/mean_context silently 0.0,
+    with nothing in curve itself distinguishing that from a genuinely cheap
+    ramp) distinctly from a normal, populated curve.
+    """
+    bucket_dollars: dict[str, float] = defaultdict(float)
+    bucket_output_tokens: dict[str, int] = defaultdict(int)
+    bucket_context_weighted: dict[str, float] = defaultdict(float)
+    total_dollars = 0.0
+    total_output_tokens = 0
+    total_context_weighted = 0.0
+
+    for session in sessions:
+        turns = session["main_thread_turns"]
+        for turn_index, is_priced in enumerate(session["main_thread_priced"]):
+            if not is_priced:
+                continue
+            context_at_turn, output_tokens, turn_dollars = turns[turn_index]
+            label = _ramp_curve_turn_index_bucket(turn_index)
+            bucket_dollars[label] += turn_dollars
+            bucket_output_tokens[label] += output_tokens
+            bucket_context_weighted[label] += context_at_turn * output_tokens
+            total_dollars += turn_dollars
+            total_output_tokens += output_tokens
+            total_context_weighted += context_at_turn * output_tokens
+
+    fallback_rate = (total_dollars / (total_output_tokens / 1000)) if total_output_tokens else 0.0
+    fallback_context = (total_context_weighted / total_output_tokens) if total_output_tokens else 0.0
+
+    curve: dict[str, dict[str, float]] = {}
+    for label in _RAMP_CURVE_BUCKET_LABELS:
+        out_tok = bucket_output_tokens.get(label, 0)
+        if out_tok:
+            curve[label] = {
+                "rate": bucket_dollars[label] / (out_tok / 1000),
+                "mean_context": bucket_context_weighted[label] / out_tok,
+            }
+        else:
+            curve[label] = {"rate": fallback_rate, "mean_context": fallback_context}
+    return curve, total_output_tokens
+
+
+def _parse_nudge_log_entries(log_path: Path) -> list[dict]:
+    """Parse ~/.claude/.handoff-nudge.log into one dict per recognized line
+    (see _NUDGE_LOG_LINE_KINDS), reusing _read_bounded_log_lines' bounded
+    2MB tail-read rather than a fresh read implementation. A line that
+    doesn't start with a recognized kind, or whose fields don't parse (a
+    missing required key, or a non-integer est/window), is silently skipped
+    -- this is a best-effort append-only operational log, not a format this
+    tool controls.
+
+    Each returned dict carries "kind" plus that kind's own fields:
+    - nudged: session, est (int), model, window (int), event
+    - schema-drift: session, event
+    - handoff: session
+    """
+    entries: list[dict] = []
+    for line in _read_bounded_log_lines(log_path):
+        tokens = line.split()
+        if not tokens or tokens[0] not in _NUDGE_LOG_LINE_KINDS:
+            continue
+        kind = tokens[0]
+        fields: dict[str, str] = {}
+        malformed = False
+        for tok in tokens[1:]:
+            if "=" not in tok:
+                malformed = True
+                break
+            key, _, value = tok.partition("=")
+            fields[key] = value
+        if malformed:
+            continue
+
+        if kind == "nudged":
+            if not {"session", "est", "model", "window", "event"} <= fields.keys():
+                continue
+            try:
+                est = int(fields["est"])
+                window = int(fields["window"])
+            except ValueError:
+                continue
+            entries.append({
+                "kind": "nudged", "session": fields["session"], "est": est,
+                "model": fields["model"], "window": window, "event": fields["event"],
+            })
+        elif kind == "schema-drift":
+            if not {"session", "event"} <= fields.keys():
+                continue
+            entries.append({"kind": "schema-drift", "session": fields["session"], "event": fields["event"]})
+        else:  # handoff
+            if "session" not in fields:
+                continue
+            entries.append({"kind": "handoff", "session": fields["session"]})
+    return entries
+
+
+def _operator_response_lag_from_log(
+    session_traces: dict[str, list[int]], log_entries: list[dict]
+) -> tuple[list[int], int]:
+    """Measure how far past each logged nudge's fire point sessions in scope
+    actually kept running, for the compliance-realistic backtest model.
+
+    session_traces maps a full session id (jsonl.stem, matching the hook's
+    own SESSION_ID) to that session's ordered per-main-thread-turn abs-token
+    values (context_at_turn + output_tokens -- the hook's own ESTIMATE unit).
+    A `nudged` log line carries no timestamp (docs/handoff-nudge.md's "Log
+    location" table: session=/est=/model=/window=/event= only), so the join
+    key is session_id plus a first-crossing rule: the fire turn is the
+    trace's first value >= est, matching the real hook's own semantics -- it
+    fires once, at the first crossing, never later. A nearest-value join
+    would instead risk landing on a turn *after* a mid-session compaction
+    (isCompactSummary) dip whose abs-token value happens to be closer to est
+    than the true, earlier first-crossing turn, silently corrupting the
+    measured lag with no error and no other signal.
+
+    Returns (lags, excluded_count): lags is one non-negative token delta
+    (peak abs-tokens reached at or after the identified fire turn, minus est)
+    per successfully joined `nudged` line. A `nudged` line whose session_id
+    has no entry in session_traces (a since-deleted transcript, or a session
+    from an account/root outside the resolved scope), or whose trace never
+    reaches est at all, is excluded and counted rather than silently dropped.
+    """
+    lags: list[int] = []
+    excluded = 0
+    for entry in log_entries:
+        if entry.get("kind") != "nudged":
+            continue
+        trace = session_traces.get(entry["session"])
+        if not trace:
+            excluded += 1
+            continue
+        est = entry["est"]
+        fire_idx = next((i for i, value in enumerate(trace) if value >= est), None)
+        if fire_idx is None:
+            excluded += 1
+            continue
+        lags.append(max(trace[fire_idx:]) - est)
+    return lags, excluded
+
+
+def _simulate_rearm_spacing(
+    main_thread_turns: Sequence[tuple[int, int, float]],
+    boundaries: Sequence[int],
+    spacing: int,
+    ramp_curve: dict[str, dict[str, float]],
+    threshold: int,
+    *,
+    response_lag_tokens: float = 0.0,
+) -> tuple[float, float, float]:
+    """Replay one session's main-thread turns under one candidate re-arm spacing.
+
+    main_thread_turns is a (context_at_turn, output_tokens, actual_dollars)
+    tuple per turn, in order; boundaries is _hook_observable_boundaries'
+    output for the same session. Real context/output growth is replayed
+    unmodified throughout -- band crossings are detected against the
+    session's *actual* recorded trajectory, never a counterfactually-reset
+    one. Turns before the first detected crossing keep their actual recorded
+    dollars and context. Each crossing "splits" the session: turns from that
+    point until the next crossing (or session end) are re-priced by mapping
+    their distance from the split to a turns-since-a-fresh-restart position
+    and applying ramp_curve's rate/mean_context at that position to the
+    turn's own real output-token volume -- work stays constant, only the
+    context-depth-driven rate changes, modeling what a fresh session would
+    have billed for the same work rather than what the real, ever-growing
+    prefix actually cost.
+
+    A crossing is only detectable at a boundary in `boundaries`.
+    response_lag_tokens (0.0 for the perfect-compliance model) shifts each
+    band's trigger point later by that many tokens, modeling the empirically
+    measured gap (_operator_response_lag_from_log) between a nudge firing and
+    the operator actually acting on it, for the compliance-realistic model.
+
+    Returns (total_dollars, context_weighted_sum, output_token_weight): the
+    last two let a caller aggregate an output-token-weighted mean context
+    ("C_bar", `cost ~= N x C_bar x rate` in .claude/plans/token-cost-reduction.md)
+    across many sessions without re-deriving per-turn context outside this
+    function.
+    """
+    boundary_set = set(boundaries)
+    total = 0.0
+    context_weighted = 0.0
+    weight = 0.0
+    fired_bands = 0
+    turns_since_restart = 0
+    in_actual_epoch = True
+
+    for i, (context_at_turn, output_tokens, actual_dollars) in enumerate(main_thread_turns):
+        if in_actual_epoch:
+            total += actual_dollars
+            context_weighted += context_at_turn * output_tokens
+        else:
+            label = _ramp_curve_turn_index_bucket(turns_since_restart)
+            bucket = ramp_curve.get(label, {"rate": 0.0, "mean_context": 0.0})
+            total += (output_tokens / 1000) * bucket["rate"]
+            context_weighted += bucket["mean_context"] * output_tokens
+            turns_since_restart += 1
+        weight += output_tokens
+
+        abs_tokens = context_at_turn + output_tokens
+        band_trigger = threshold + fired_bands * spacing + response_lag_tokens
+        if abs_tokens >= band_trigger and (i + 1) in boundary_set:
+            fired_bands += 1
+            in_actual_epoch = False
+            turns_since_restart = 0
+
+    return total, context_weighted, weight
+
+
+def _parse_rearm_spacings_arg(args: argparse.Namespace) -> list[int]:
+    """Parse --spacings' comma-separated token list into a list of positive
+    ints, defaulting to _REARM_BACKTEST_DEFAULT_SPACINGS. Exits 2 on a
+    non-integer or non-positive value."""
+    raw: str = getattr(args, "spacings", None) or ",".join(str(s) for s in _REARM_BACKTEST_DEFAULT_SPACINGS)
+    spacings: list[int] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            value = int(token)
+        except ValueError:
+            print(
+                f"rearm-backtest: --spacings: expected comma-separated integers, got {token!r} in {raw!r}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if value <= 0:
+            print(f"rearm-backtest: --spacings: values must be positive, got {value}", file=sys.stderr)
+            sys.exit(2)
+        spacings.append(value)
+    if not spacings:
+        print("rearm-backtest: --spacings: at least one spacing value is required", file=sys.stderr)
+        sys.exit(2)
+    return spacings
+
+
+def _session_matches_rearm_scope(
+    records: Sequence[dict], since_ts: float | None, branch_filter: set[str] | None
+) -> bool:
+    """Whether a whole session belongs in a rearm-backtest run's scope.
+
+    --since and --branches scope entire sessions here, not individual turns
+    within one -- unlike `cost`'s per-record --branches filter, a re-arm
+    simulation's turns-since-restart positioning depends on a session's own
+    turn sequence staying intact, so silently dropping turns mid-session
+    would desync _hook_observable_boundaries' turn-count boundaries from
+    whatever's left of main_thread_turns.
+    """
+    if since_ts is not None:
+        first_ts = next((ts for r in records if (ts := _parse_ts(r.get("timestamp"))) is not None), None)
+        if first_ts is not None and first_ts < since_ts:
+            return False
+    return branch_filter is None or any(
+        r.get("type") == "assistant" and not bool(r.get("isSidechain")) and r.get("gitBranch") in branch_filter
+        for r in records
+    )
+
+
+def cmd_rearm_backtest(args: argparse.Namespace) -> None:
+    """CLI entry point for the rearm-backtest subcommand.
+
+    Root resolution happens here, at the CLI boundary, rather than inside
+    _rearm_backtest_report, mirroring cmd_cost -- --config-dir validation
+    exits before any scan work. The wall-clock date is read exactly once,
+    here, mirroring cmd_cost_trend's own split.
+    """
+    roots = _resolve_cost_roots(args, subcommand="rearm-backtest")
+    _rearm_backtest_report(args, datetime.now(UTC).date(), roots)
+
+
+def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | None = None) -> None:
+    """Backtest candidate re-arm band spacings against the recorded corpus.
+
+    One row per candidate spacing (--spacings, default
+    _REARM_BACKTEST_DEFAULT_SPACINGS) plus an unmodified baseline row
+    (today's real recorded one-shot totals, i.e. spacing = never re-arm),
+    each under both the perfect-compliance and compliance-realistic models
+    (see _simulate_rearm_spacing's response_lag_tokens). Each session's first
+    fire point is its own effective threshold (_hook_effective_fire_threshold,
+    from that session's own model) -- unchanged from today's real hook
+    behavior -- and only re-arm spacing PAST that point varies; model routing
+    and the threshold computation itself are held fixed and printed as such,
+    so a reader can't mistake "spacing-only" for "everything."
+    """
+    redact: bool = not bool(getattr(args, "no_redact", False))
+    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    multi_root = len(scan_roots) > 1
+
+    if not redact and multi_root:
+        print(
+            "rearm-backtest: --no-redact is refused when more than one root is in scope"
+            " (--config-dir was given); drop --no-redact or scope to a single profile",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if not redact:
+        print(_DO_NOT_PUBLISH_BANNER)
+        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+
+    spacings = _parse_rearm_spacings_arg(args)
+    since_ts, since_raw = _parse_since_nd_arg(args, "rearm-backtest")
+    branch_filter = _branch_filter(args)
+
+    session_iter, scope_label = _resolve_project_scope(args, "rearm-backtest", roots=roots)
+    _print_resolved_scope("rearm-backtest", scope_label, scan_roots)
+    # Each in-scope session's records are deduped and priced exactly once,
+    # via _extract_rearm_session_turns, and the same extraction dict feeds
+    # both _ramp_curve_from_corpus and this function's own
+    # sessions_data/session_traces bookkeeping below -- a single pass over
+    # the corpus, matching every sibling subcommand in this file (`cost`,
+    # `context-distribution`, etc.).
+    scoped_sessions = [
+        (jsonl, _extract_rearm_session_turns(records)) for jsonl, records in session_iter
+        if _session_matches_rearm_scope(records, since_ts, branch_filter)
+    ]
+
+    ramp_curve, ramp_curve_output_tokens = _ramp_curve_from_corpus(data for _jsonl, data in scoped_sessions)
+
+    sessions_data: list[dict] = []
+    session_traces: dict[str, list[int]] = {}
+    sidechain_dollars_total = 0.0
+    unpriced_turns = 0
+    unpriced_tokens = 0
+
+    for jsonl, data in scoped_sessions:
+        sidechain_dollars_total += data["sidechain_dollars_total"]
+        unpriced_turns += data["unpriced_turns"]
+        unpriced_tokens += data["unpriced_tokens"]
+        main_thread_turns = data["main_thread_turns"]
+        if not main_thread_turns:
+            continue
+
+        session_id = jsonl.stem
+        sessions_data.append({
+            "session_id": session_id,
+            "main_thread_turns": main_thread_turns,
+            "boundaries": _hook_observable_boundaries(data["deduped"]),
+            # The real hook resolves its threshold from whichever model is
+            # active when it checks (_hook_effective_fire_threshold); a
+            # session almost always stays on one model family, so
+            # session_threshold (from its first main-thread turn's model)
+            # approximates that check well enough for a single per-session
+            # scalar -- exactly what _simulate_rearm_spacing's `threshold`
+            # param takes.
+            "threshold": data["session_threshold"],
+        })
+        session_traces[session_id] = [c + o for c, o, _d in main_thread_turns]
+
+    if not sessions_data:
+        print("No priced main-thread turns found in scope.")
+        if unpriced_turns:
+            print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
+        return
+
+    log_entries = _parse_nudge_log_entries(config_dir() / ".handoff-nudge.log")
+    lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
+    if lags:
+        sorted_lags = sorted(lags)
+        mid = len(sorted_lags) // 2
+        median_lag = float(sorted_lags[mid]) if len(sorted_lags) % 2 else (sorted_lags[mid - 1] + sorted_lags[mid]) / 2
+    else:
+        median_lag = 0.0
+
+    # Baseline: today's real recorded totals, no counterfactual repricing at all.
+    baseline_main_dollars = sum(d for s in sessions_data for _c, _o, d in s["main_thread_turns"])
+    baseline_context_weighted = sum(c * o for s in sessions_data for c, o, _d in s["main_thread_turns"])
+    baseline_output_tokens = sum(o for s in sessions_data for _c, o, _d in s["main_thread_turns"])
+    baseline_total = baseline_main_dollars + sidechain_dollars_total
+    baseline_c_bar = (baseline_context_weighted / baseline_output_tokens) if baseline_output_tokens else 0.0
+
+    title_since = f"last {since_raw}" if since_raw else "all time"
+    print(f"\n## Re-arm spacing backtest ({title_since}, generated {today.isoformat()})\n")
+    print(f"Sessions in scope: {len(sessions_data):,}")
+    if unpriced_turns:
+        print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
+    print(
+        f"Operator-response-lag sample: {len(lags)} joined 'nudged' log line(s)"
+        f" ({excluded_count} excluded -- no matching session in scope), median lag"
+        f" {median_lag:,.0f} tokens past the fire point"
+    )
+    print(
+        "\nModel routing and each session's own fire threshold (the lesser of 40% of its model's"
+        " context window and the fixed 360,000-token _HANDOFF_NUDGE_ABS_CAP -- mirroring the hook's"
+        " real behavior) are held fixed and are NOT backtested by this report -- only re-arm spacing"
+        " past the first fire varies."
+    )
+    if ramp_curve_output_tokens == 0:
+        print(
+            "\nWARNING: no priced output tokens found anywhere in scope, so the re-arm ramp curve"
+            " could not be computed -- every re-armed remainder below is priced at $0.00/1k, not a"
+            " genuinely cheap ramp."
+        )
+
+    header = f"{'Spacing':>10} {'Model':>12} {'$':>14} {'DeltaUSD':>10} {'C_bar':>10} {'DeltaCbar':>12}"
+    print(f"\n{header}")
+    print("-" * len(header))
+    print(
+        f"{'baseline':>10} {'actual':>12} {baseline_total:>14,.2f} {'--':>10}"
+        f" {baseline_c_bar:>10,.0f} {'--':>12}"
+    )
+
+    for spacing in spacings:
+        for compliance_label, lag in (("perfect", 0.0), ("realistic", median_lag)):
+            main_dollars = 0.0
+            context_weighted = 0.0
+            weight = 0.0
+            for s in sessions_data:
+                dollars, c_weighted, w = _simulate_rearm_spacing(
+                    s["main_thread_turns"], s["boundaries"], spacing, ramp_curve,
+                    s["threshold"], response_lag_tokens=lag,
+                )
+                main_dollars += dollars
+                context_weighted += c_weighted
+                weight += w
+            total = main_dollars + sidechain_dollars_total
+            c_bar = (context_weighted / weight) if weight else 0.0
+            delta = total - baseline_total
+            delta_c_bar = c_bar - baseline_c_bar
+            print(
+                f"{spacing:>10,} {compliance_label:>12} {total:>14,.2f} {delta:>+10,.2f}"
+                f" {c_bar:>10,.0f} {delta_c_bar:>+12,.0f}"
+            )
+
+
 def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
     """Add the shared --projects/--this-repo scope flags to a subparser.
 
@@ -9316,6 +9972,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print candidate compaction records for inspection (useful when schema is uncertain).",
     )
     p_handoff_ratio.set_defaults(func=cmd_handoff_ratio)
+
+    p_rearm_backtest = sub.add_parser(
+        "rearm-backtest",
+        help=(
+            "Backtest candidate re-arm band spacings for the handoff nudge's one-shot fire"
+            " against the recorded corpus: predicted total $ and C_bar per spacing, under both"
+            " perfect-compliance and compliance-realistic operator-response models."
+            " Redacted by default."
+        ),
+    )
+    _add_project_scope_args(p_rearm_backtest)
+    p_rearm_backtest.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root; --no-redact is refused once this puts more than one"
+            " root in scope."
+        ),
+    )
+    p_rearm_backtest.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to sessions with a first timestamp in the last N days (e.g. 35d); whole-session scope.",
+    )
+    p_rearm_backtest.add_argument(
+        "--branches", metavar="B1,B2,...",
+        help="Whole-session branch filter: a session with no matching main-thread turn is excluded (default: all).",
+    )
+    p_rearm_backtest.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "This report's output is aggregate-only (no project names or session IDs), so"
+            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
+            " banner and enforces the same multi-root refusal as cost, for CLI parity."
+            " Refused when --config-dir puts more than one root in scope."
+        ),
+    )
+    p_rearm_backtest.add_argument(
+        "--spacings", metavar="N1,N2,...", default="40000,80000,120000",
+        help="Comma-separated candidate re-arm spacings in tokens past the first fire (default: 40000,80000,120000).",
+    )
+    p_rearm_backtest.set_defaults(func=cmd_rearm_backtest)
 
     p_audit_shape = sub.add_parser(
         "audit-routing-shape",
