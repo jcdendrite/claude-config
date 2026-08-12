@@ -623,6 +623,16 @@ check_private_projects_file() {
   fi
 }
 
+check_output_preferences_file() {
+  local file="$HOME/.claude/output-preferences.md"
+  if [ ! -e "$file" ]; then
+    echo ""
+    echo "TIP: Create ~/.claude/output-preferences.md to customize response tone,"
+    echo "     formatting, and communication style. It's loaded automatically at"
+    echo "     session start. See README section 'Output preferences'."
+  fi
+}
+
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.
@@ -787,6 +797,7 @@ if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1
 fi
 
 check_private_projects_file
+check_output_preferences_file
 check_transcript_config_dirs
 ensure_local_bin_on_path
 
