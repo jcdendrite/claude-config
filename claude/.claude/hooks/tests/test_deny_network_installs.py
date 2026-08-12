@@ -129,6 +129,52 @@ class TestDenyNetworkInstalls:
             == "deny"
         )
 
+    def test_redirection_glued_to_restore_allowed_is_a_regression_pin(self, isolated_home):
+        """`_lib_split_fragments` never splits on `>`/`<`, so shell
+        redirection glued to a bare restore (e.g. `pnpm install 2>&1 |
+        tail -30`) reached the leftover-token scan as an ordinary word and
+        denied like a real package."""
+        for command in (
+            "pnpm install 2>&1",
+            "pnpm install 2>&1 | tail -30",
+            "npm install > out.log 2>&1",
+            "yarn install &>/dev/null",
+        ):
+            assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "allow", command
+
+    def test_redirection_recognition_does_not_swallow_a_real_leftover_token(self, isolated_home):
+        """Redirection recognition must not mask a real package-name token
+        elsewhere in the fragment, spaced or glued directly to the operator
+        with no space — the adversarial shape a start-anchored regex must
+        reject, since the operator prefix never appears mid-word for a real
+        package name."""
+        for command in (
+            "pnpm install evil-package 2>&1",
+            "npm install left-pad > out.log",
+            "npm install evil-package>out.log",
+            "pnpm install foo&>bar",
+            "yarn install left-pad2>&1",
+        ):
+            assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "deny", command
+
+    def test_leftover_token_glued_after_a_dup_redirect_digit_denies_is_a_regression_pin(self, isolated_home):
+        """`redirect_glued_re`'s bare `>`/`<` alternative originally matched
+        `2>&1evil-package`, treating `&1evil-package` as an ordinary glued
+        target and letting the real leftover token through — a shape real
+        bash itself rejects as an ambiguous redirect (`2>&1evil-package`:
+        `bash: 1evil-package: ambiguous redirect`), so this was never a live
+        bypass, but the classifier's own claim to deny it was false."""
+        for command in ("npm install 2>&1evil-package", "npm install 1>&2evil-package"):
+            assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "deny", command
+
+    def test_redirection_generality_across_fd_numbers_and_multiple_redirects_allowed(self, isolated_home):
+        """The redirect regexes use `[0-9]*` generically rather than a
+        literal `2`, so any fd number and more than one redirect per
+        fragment must restore-allow, not just the fd-2/single-redirect
+        shapes the other regression-pin tests happen to use."""
+        for command in ("npm install 3>&1", "npm install 2>&1 1>&2"):
+            assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "allow", command
+
     @pytest.mark.parametrize(
         "command",
         [

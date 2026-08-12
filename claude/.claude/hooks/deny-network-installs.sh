@@ -23,6 +23,14 @@
 #   - A `timeout` flag preceding its duration (e.g. `timeout --foreground
 #     30s npm install`) denies a legitimate restore: the numeric-skip guard
 #     only inspects the single token immediately after `timeout`.
+#   - A heredoc/here-string redirect (`<<`/`<<<`) glued to a bare install
+#     denies: its target is a multi-line delimited body, not a simple next
+#     word, and none of the redirection branches below recognize it.
+#   - A quoted argument that becomes redirect-shaped after this hook's own
+#     quote-stripping (e.g. `npm install ">pkg"` becomes the bare word
+#     `>pkg`) allows: neither npm's nor PyPI's package-name grammar permits
+#     a literal `>`/`<` character, so nothing this shape can resolve to a
+#     real package.
 #
 # Fail-closed on unparseable hook input.
 
@@ -69,6 +77,18 @@ _install_has_leftover_token() {
   local word verb_pending=true
   local skip_next_value=false skip_next_if_numeric=false
   local leftover=false
+  # _lib_split_fragments doesn't split on `>`/`<`, so a bare install with
+  # glued redirection (`2>&1`, `> out.log`) reads as a leftover token unless
+  # recognized here; all three regexes are start-anchored so a real
+  # leftover token glued to an operator (`evil-package>out.log`) still denies.
+  local redirect_dup_re='^[0-9]*(>&[0-9-]+|<&[0-9-]+)$'
+  local redirect_op_re='^([0-9]*(>>|>\||<>|>|<)|&>>|&>)$'
+  # A bare `>`/`<` glued target must not start with `&`: that shape belongs
+  # to redirect_dup_re (`2>&1`), and when it doesn't fully match there the
+  # `&`-prefixed remainder is not a valid target either -- real bash rejects
+  # it as an ambiguous redirect, so it must fall through to leftover=true
+  # rather than being swallowed as a glued filename here.
+  local redirect_glued_re='^([0-9]*(>>|>\||<>)|&>>|&>)[^[:space:]]+$|^[0-9]*(>|<)[^[:space:]&][^[:space:]]*$'
   for word in $fragment; do
     if $skip_next_value; then
       skip_next_value=false
@@ -102,6 +122,16 @@ _install_has_leftover_token() {
       sudo|doas|env|command|time|nice|nohup) continue ;;
       timeout) skip_next_if_numeric=true; continue ;;
     esac
+    if [[ "$word" =~ $redirect_dup_re ]]; then
+      continue
+    fi
+    if [[ "$word" =~ $redirect_op_re ]]; then
+      skip_next_value=true
+      continue
+    fi
+    if [[ "$word" =~ $redirect_glued_re ]]; then
+      continue
+    fi
     case "$word" in
       -*)
         case " $_INSTALL_VALUE_TAKING_MARKERS " in
