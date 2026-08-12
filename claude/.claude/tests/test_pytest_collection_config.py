@@ -26,10 +26,9 @@ class TestNestedWorktreeExcludedFromCollection:
     evals/fixtures/temp-project/tests/test_calculator.py."""
 
     def test_seeded_nested_worktree_contributes_no_collected_tests(self):
-        # No -n0 here: pytest-xdist isn't a dependency yet, and this subprocess
-        # invocation would fail with "unrecognized arguments: -n0". Once xdist
-        # lands and addopts carries -n auto, add -n0 so this collect-only run
-        # doesn't spawn workers of its own.
+        # No -n0 here: xdist's own pytest_configure() unconditionally skips
+        # itself on --collect-only regardless of -n, so this collect-only
+        # run was never going to spawn workers even with -n auto in addopts.
         #
         # pid-suffixed so concurrent `pytest claude/.claude/` invocations
         # against this checkout (routine in this repo's multi-worktree
@@ -113,3 +112,105 @@ class TestNorecursedirsDefaultsPreserved:
             f"default must be restated alongside any repo-specific addition"
         )
         assert "worktrees" in configured, "norecursedirs no longer excludes nested worktree checkouts"
+
+
+class TestAddoptsConfiguresXdistAndStrictMarkers:
+    """Pins that pyproject.toml's addopts actually carries -n auto and
+    --strict-markers, and that --strict-markers really enforces what it's
+    there for — a typo'd marker name failing collection."""
+
+    def test_addopts_contains_xdist_auto_and_strict_markers(self):
+        import tomllib
+
+        with (REPO_ROOT / "pyproject.toml").open("rb") as f:
+            config = tomllib.load(f)
+        addopts = config["tool"]["pytest"]["ini_options"]["addopts"]
+
+        assert "-n" in addopts, "addopts dropped -n — pytest-xdist parallelization is no longer configured"
+        assert "auto" in addopts, "addopts dropped auto — -n is no longer paired with an auto-detected worker count"
+        assert "--strict-markers" in addopts, (
+            "addopts dropped --strict-markers — a typo'd marker name would silently "
+            "collect unfiltered instead of failing collection"
+        )
+
+    def test_strict_markers_rejects_unregistered_marker(self, tmp_path: Path):
+        bogus_marker_test = tmp_path / "test_bogus_marker.py"
+        bogus_marker_test.write_text(
+            "import pytest\n\n\n"
+            "@pytest.mark.definitely_not_a_real_marker\n"
+            "def test_x():\n"
+            "    assert True\n"
+        )
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "pytest", str(bogus_marker_test),
+                "--collect-only", "-q",
+                # -c forces the repo's own pyproject.toml to load — --rootdir alone
+                # doesn't, since config-file discovery walks up from the common
+                # ancestor of cwd and the test path, which excludes REPO_ROOT here.
+                "-c", str(REPO_ROOT / "pyproject.toml"),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode != 0, (
+            f"expected --strict-markers to fail collection on an unregistered marker, "
+            f"but exit was 0:\n{result.stdout}\n{result.stderr}"
+        )
+        # Matches just the marker name, not pytest's full diagnostic wording —
+        # that wording is an internal message, not a documented API, and isn't
+        # guaranteed stable across the pytest==8.* pin range.
+        assert "definitely_not_a_real_marker" in result.stdout, (
+            f"expected pytest's --strict-markers error message to name the bogus marker, "
+            f"got:\n{result.stdout}\n{result.stderr}"
+        )
+
+
+class TestTimingMarkerCoverageParity:
+    """Pins that `-m "not timing"` and `-m timing` are a complementary
+    partition of the full collected suite: neither invocation errors out
+    (returncode asserted below) and pytest's own mark-filtering isn't
+    silently broken. This does NOT catch a test losing its `timing` marker
+    — `not timing` and `timing` are complementary by construction, so a
+    test moving between the two buckets leaves their sum unchanged
+    regardless."""
+
+    @staticmethod
+    def _collected_node_ids(marker_expr: str | None) -> tuple[list[str], subprocess.CompletedProcess]:
+        # -n0: unnecessary defensive redundancy, not a requirement — xdist's
+        # own pytest_configure() unconditionally skips itself on
+        # --collect-only regardless of -n, so this collect-only run was
+        # never going to spawn workers even without it.
+        args = [
+            sys.executable, "-m", "pytest", "claude/.claude/",
+            "--collect-only", "-q", "-n0", "--rootdir", str(REPO_ROOT),
+        ]
+        if marker_expr is not None:
+            args += ["-m", marker_expr]
+        result = subprocess.run(
+            args,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        node_ids = [line for line in result.stdout.splitlines() if "::" in line]
+        return node_ids, result
+
+    def test_not_timing_plus_timing_selection_equals_unfiltered_total(self):
+        not_timing_ids, not_timing_result = self._collected_node_ids("not timing")
+        timing_ids, timing_result = self._collected_node_ids("timing")
+        all_ids, all_result = self._collected_node_ids(None)
+
+        for result in (not_timing_result, timing_result, all_result):
+            assert result.returncode == 0, (
+                f"collection failed (exit {result.returncode}):\n{result.stdout}\n{result.stderr}"
+            )
+
+        assert len(not_timing_ids) + len(timing_ids) == len(all_ids), (
+            f'-m "not timing" selected {len(not_timing_ids)}, -m timing selected '
+            f"{len(timing_ids)}, but the unfiltered run collected {len(all_ids)} — "
+            "pytest's mark-filtering disagrees with itself across these three invocations"
+        )

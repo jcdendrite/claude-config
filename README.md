@@ -89,7 +89,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **Operating system:** Linux, macOS, or WSL2. Native Windows (PowerShell / cmd.exe) is not supported — every hook is a bash script and `install.sh` uses GNU `stow` with symlinks. If you're on Windows, install inside [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) instead.
 - **Shell:** `bash`. Hooks and `install.sh` use `#!/bin/bash`.
 - **Tools:** `stow`, `git`, `gh`, `jq`, `sha256sum`, and the `claude` CLI. `install.sh` verifies they exist and exits early if any are missing.
-- **Optional:** `pytest` for running the test suite (`pytest claude/.claude/`).
+- **Optional:** `pytest` for running the test suite (`pytest claude/.claude/`; add `-n0` to run serially for `-s` / `--pdb` / `-x` debugging).
 
 **macOS:** `sha256sum` ships in GNU `coreutils`. Install with `brew install coreutils`, then add the gnubin directory to PATH so the unprefixed name resolves: `export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"`.
 
@@ -481,6 +481,8 @@ ShellCheck takes no flags on the command line — they live in the repo-root
 `.shellcheckrc`, so CI, the command above, and any editor integration agree.
 
 The `.venv` lives only in the main worktree root. Linked worktrees live at `.claude/worktrees/<branch>/` — exactly three levels deep — so from inside a worktree invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
+
+The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run serially for `-s` / `--pdb` / `-x` debugging.
 
 CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`.
 

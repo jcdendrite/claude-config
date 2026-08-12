@@ -591,6 +591,7 @@ class TestParseSinceNdArg:
     """The shared --since Nd parser behind cmd_audit_routing, _cost_report,
     cmd_audit_routing_shape, and cmd_audit_routing_samples."""
 
+    @pytest.mark.timing
     def test_valid_nd_value_returns_timestamp_and_raw_string(self):
         since_ts, since_raw = _mod._parse_since_nd_arg(
             argparse.Namespace(since="1d"), "cost"

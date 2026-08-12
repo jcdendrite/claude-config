@@ -622,6 +622,7 @@ def test_ready_for_review_allows_when_gh_absent(tmp_path: Path, _path_without) -
     assert not result.stdout.strip(), f"expected silent allow, got stdout={result.stdout!r}"
 
 
+@pytest.mark.timing
 def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
     """GH-480: a jq that hangs (never returns) must not hold the gate open
     indefinitely. Every gate calls _lib_jq twice on a hung binary: once
