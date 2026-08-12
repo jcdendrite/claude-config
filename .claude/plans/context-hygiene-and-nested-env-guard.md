@@ -182,7 +182,7 @@ historical record.
 | --- | --- |
 | `claude/.claude/CLAUDE.md` | Phase 4. Two new bullets under `## Working Style`, text above. |
 | `claude/.claude/hooks/guard-settings-session-keys.sh` | Phase 5a. Restructure `guarded_value` for path traversal; append the two nested keys to `GUARDED_KEYS_JSON`. |
-| `claude/.claude/hooks/tests/test_guard_settings_session_keys.py` | Phase 5a. Add the nine cases above to the existing `TestGuardSettingsSessionKeys` class; reuse `settings_repo`/`stage_settings`/`run_hook`, no new fixtures needed. |
+| `claude/.claude/hooks/tests/test_guard_settings_session_keys.py` | Phase 5a. Add the eight new cases above to the existing `TestGuardSettingsSessionKeys` class (the ninth bullet is the existing-tests regression check, not a new test); reuse `settings_repo`/`stage_settings`/`run_hook`, no new fixtures needed. |
 | `docs/hooks.md` | Phase 5a. One-sentence update to this hook's existing description line (`:25`) noting the nested `env.*` forms are also guarded. |
 
 **Reuse:** the existing `settings_repo` fixture and `stage_settings`/

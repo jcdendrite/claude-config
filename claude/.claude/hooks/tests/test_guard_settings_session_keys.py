@@ -20,8 +20,11 @@ GUARD_SETTINGS_SESSION_KEYS_HOOK = HOOKS_DIR / "guard-settings-session-keys.sh"
 # The deny reason is prose, and the key list is the only structured thing in
 # it, so pull that segment out and compare as a set — asserting on the raw
 # sentence would fail on a reworded message or a reordered GUARDED_KEYS_JSON
-# without the hook's behavior having changed.
-_CHANGED_KEYS_SEGMENT = re.compile(r"differs from main on: ([^.]*)\.")
+# without the hook's behavior having changed. Matches up to the literal
+# ". These keys" that follows the list, not the first bare "." — a nested
+# guarded key's own dotted path (e.g. "env.CLAUDE_CODE_EFFORT_LEVEL")
+# contains a "." that a naive "stop at first period" pattern would truncate on.
+_CHANGED_KEYS_SEGMENT = re.compile(r"differs from main on: (.*?)\. These keys")
 
 
 def names_changed_keys(reason: str | None) -> set[str]:
@@ -331,6 +334,42 @@ class TestGuardSettingsSessionKeys:
         )
         assert names_changed_keys(reason) == {"model", "tui"}
 
+    def test_deny_message_names_nested_key_by_its_dotted_path(self, settings_repo):
+        """Nested mirror of test_deny_message_names_only_the_changed_keys:
+        the message names the guarded key by its full dotted path, not just
+        the leaf or the `env` parent."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}\n',
+        )
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'nested effort level'"),
+            cwd=repo,
+        )
+        assert names_changed_keys(reason) == {"env.CLAUDE_CODE_EFFORT_LEVEL"}
+
+    def test_deny_message_names_both_nested_keys(self, settings_repo):
+        """Nested mirror of test_deny_message_names_multiple_changed_keys."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high", "ANTHROPIC_MODEL": "opus"}}\n',
+        )
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'nested routing override'"),
+            cwd=repo,
+        )
+        assert names_changed_keys(reason) == {
+            "env.CLAUDE_CODE_EFFORT_LEVEL", "env.ANTHROPIC_MODEL",
+        }
+
     def test_object_valued_guarded_key_ignores_key_order(self, settings_repo):
         """Reordering an object-valued guarded key's own keys is not a change.
 
@@ -468,6 +507,230 @@ class TestGuardSettingsSessionKeys:
                 bash_input("git commit -m 'add unrelated key'"),
                 cwd=repo,
                 extra_env={"PATH": str(stub_bin)},
+            )
+            == "allow"
+        )
+
+    def test_nested_effort_level_added_where_env_absent_denies(self, settings_repo):
+        """The realistic shape: a fresh `env` block written by `/effort`,
+        with no `env` key on main at all."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'nested effort level'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_nested_effort_level_changed_denies(self, settings_repo):
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with nested env"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "low"}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'change nested effort level'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_nested_anthropic_model_added_denies(self, settings_repo):
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"ANTHROPIC_MODEL": "opus"}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'nested model override'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_nested_keys_both_changed_denies(self, settings_repo):
+        """Both nested keys changed against pre-existing values in one
+        commit — the production shape (`/effort` and a model override both
+        landing on top of an existing `env` block), not just both added."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high", "ANTHROPIC_MODEL": "opus"}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with both nested keys"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "low", "ANTHROPIC_MODEL": "sonnet"}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'change both nested keys'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_nested_effort_level_null_against_leaf_absent_denies(self, settings_repo):
+        """Nested mirror of test_guarded_key_set_to_null_against_absent_denies:
+        an explicit null leaf must not read as equal to the leaf being absent
+        from an `env` object that otherwise exists."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "env": {}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with empty env"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": null}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'explicit null leaf'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_nested_effort_level_false_against_leaf_absent_denies(self, settings_repo):
+        """Nested mirror of test_guarded_key_set_to_false_against_absent_denies:
+        completes the false/null-vs-absent parity the guarded_value header
+        comment claims holds at every path depth, not just the top level."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "env": {}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with empty env"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": false}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'explicit false leaf'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_env_staged_as_non_object_against_real_value_denies(self, settings_repo):
+        """A corrupted `env` (staged as a non-object) must fall through to
+        "leaf absent" rather than erroring the whole jq program — and must
+        still deny here, since main's side has a real guarded value."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with real nested value"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "env": "corrupted"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'corrupt env'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_unrelated_nested_env_key_change_allows_existing_env_object(self, settings_repo):
+        """Must not over-guard the whole `env` block — only the two named
+        leaves. Shape: `env` already exists on main."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "env": {}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with empty env"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"SOME_OTHER_VAR": "value"}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add unrelated env var'"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_unrelated_nested_env_key_change_allows_fresh_env_object(self, settings_repo):
+        """Companion to the above: `env` does not exist on main at all, and
+        the staged commit creates it solely for an unrelated var."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"SOME_OTHER_VAR": "value"}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add unrelated env var'"),
+                cwd=repo,
             )
             == "allow"
         )
