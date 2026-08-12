@@ -1379,6 +1379,97 @@ def test_render_report_single_root_shows_raw_path_regardless_of_config_dirs_expl
 
 
 # ---------------------------------------------------------------------------
+# Roots-file-state note on the "Config directories scanned" line -- N alone
+# can't distinguish absent / declared-nothing / --config-dir override, so the
+# note is checked in both the raw-paths (--redact off) and count (--redact on)
+# forms of show_raw_config_dirs. The populated-and-contributing case is
+# already covered by test_render_report_declared_roots_default_shows_count_not_paths
+# and test_render_report_redact_shows_count_regardless_of_config_dirs_explicit
+# above: with config_dirs_explicit=False and more than one root, only the
+# count branch is ever reachable (show_raw_config_dirs requires explicit or
+# a single root), and root_count != 1 already suppresses the note.
+# ---------------------------------------------------------------------------
+
+def test_render_report_notes_absent_roots_file_unredacted_raw_path_branch(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
+    report = _blank_report(config_dirs=[Path("/fake/only-account")])
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=False)
+    assert "no ~/.claude/transcript-config-dirs declared" in output
+
+
+def test_render_report_notes_absent_roots_file_redacted_count_branch(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
+    report = _blank_report(config_dirs=[Path("/fake/only-account")])
+    output = _mod.render_report(report, redact=True, config_dirs_explicit=False)
+    assert "Config directories scanned: 1" in output
+    assert "no ~/.claude/transcript-config-dirs declared" in output
+
+
+def test_render_report_comments_only_roots_file_distinct_from_absent_unredacted(monkeypatch, tmp_path):
+    """A file that exists but declares nothing usable must not read as
+    identical to no file at all, in the raw-paths (--redact off) branch."""
+    roots_file = tmp_path / "roots"
+    roots_file.write_text("# nothing declared yet\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    report = _blank_report(config_dirs=[Path("/fake/only-account")])
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=False)
+    assert "declared; contributed no additional directories" in output
+    assert "no ~/.claude/transcript-config-dirs declared" not in output
+
+
+def test_render_report_comments_only_roots_file_distinct_from_absent_redacted(monkeypatch, tmp_path):
+    """Same distinction, in the count (--redact on) branch."""
+    roots_file = tmp_path / "roots"
+    roots_file.write_text("# nothing declared yet\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    report = _blank_report(config_dirs=[Path("/fake/only-account")])
+    output = _mod.render_report(report, redact=True, config_dirs_explicit=False)
+    assert "Config directories scanned: 1" in output
+    assert "declared; contributed no additional directories" in output
+    assert "no ~/.claude/transcript-config-dirs declared" not in output
+
+
+def test_render_report_notes_unreadable_roots_file(monkeypatch, tmp_path):
+    """A directory at the roots-file path raises IsADirectoryError (an
+    OSError subclass) on read_text() -- simulates an unreadable file without
+    chmod, which silently degrades under a root-executing test runner (see
+    test__config_dir.py's test_file_state_is_unreadable_when_read_raises_oserror
+    for the same rationale)."""
+    roots_file_as_dir = tmp_path / "roots-is-a-directory"
+    roots_file_as_dir.mkdir()
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file_as_dir))
+    report = _blank_report(config_dirs=[Path("/fake/only-account")])
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=False)
+    assert "present but unreadable" in output
+
+
+def test_main_config_dir_explicit_notes_override_not_roots_file_state(tmp_path, monkeypatch, capsys):
+    """--config-dir passed explicitly is a different provenance from the
+    declared-roots-file default: the note must reflect the override, not the
+    (here populated) roots file's own state, even though it never got read
+    this run. Driven through main(), since the provenance distinction lives
+    in argument parsing, not render_report."""
+    default_dir = tmp_path / "default-config"
+    default_dir.mkdir()
+    declared_dir = tmp_path / "declared-config"
+    (declared_dir / "projects").mkdir(parents=True)
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{declared_dir}\n")
+    explicit_dir = tmp_path / "explicit-config"
+    (explicit_dir / "sessions").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    exit_code = _mod.main(["--config-dir", str(explicit_dir)])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "--config-dir passed explicitly" in captured.out
+    assert "declared; contributed no additional directories" not in captured.out
+    assert "no ~/.claude/transcript-config-dirs declared" not in captured.out
+
+
+# ---------------------------------------------------------------------------
 # Per-row account-N tagging -- only once multi-root, reusing _assign_ordinal
 # ---------------------------------------------------------------------------
 

@@ -27,7 +27,12 @@ from collections.abc import Iterable, Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from _config_dir import config_dir, declared_transcript_roots
+from _config_dir import (
+    TRANSCRIPT_CONFIG_DIRS_LABEL,
+    config_dir,
+    declared_roots_file_state,
+    declared_transcript_roots,
+)
 
 PROJECTS_DIR = config_dir() / "projects"
 
@@ -2694,9 +2699,29 @@ def _resolve_project_scope(
     return _iter_glob_scoped_sessions(roots, glob, include_subagents), glob
 
 
-# The file _resolve_scan_roots reads via declared_transcript_roots() -- named
-# here once so the header text and any prose referencing it stay in sync.
-_TRANSCRIPT_CONFIG_DIRS_LABEL = "~/.claude/transcript-config-dirs"
+def _root_count_desc(roots: Sequence[Path]) -> str:
+    """Render the root-count clause of the resolved-scope header (e.g. "1 root
+    (no ~/.claude/transcript-config-dirs declared)" or "3 roots").
+
+    At one root, the wording branches on declared_roots_file_state(): "absent"
+    is the only state where "no ... declared" is accurate. "unreadable" (a
+    permissions problem, not a missing file) gets its own wording rather than
+    folding into "present" -- collapsing the two would claim a failed read
+    "declared" a root, masking exactly the problem the tri-state exists to
+    surface. "present" (the file contributed a root, or contributed nothing
+    because every entry failed validation) says "declared but contributed no
+    additional root" -- claiming "no ... declared" about a file that exists
+    would misrepresent it. The >1-root branch never names the file: extra
+    roots may come from --config-dir, not only a declared-roots file.
+    """
+    if len(roots) != 1:
+        return f"{len(roots)} roots"
+    state = declared_roots_file_state()
+    if state == "absent":
+        return f"1 root (no {TRANSCRIPT_CONFIG_DIRS_LABEL} declared)"
+    if state == "unreadable":
+        return f"1 root ({TRANSCRIPT_CONFIG_DIRS_LABEL} present but unreadable)"
+    return f"1 root ({TRANSCRIPT_CONFIG_DIRS_LABEL} declared but contributed no additional root)"
 
 
 def _resolved_scope_header(subcommand: str, scope_label: str, roots: Sequence[Path]) -> str:
@@ -2715,11 +2740,7 @@ def _resolved_scope_header(subcommand: str, scope_label: str, roots: Sequence[Pa
     itself, keeping this return value the single line judgment-pair's --out file
     contract requires.
     """
-    root_count_desc = (
-        f"1 root (no {_TRANSCRIPT_CONFIG_DIRS_LABEL} declared)" if len(roots) == 1
-        else f"{len(roots)} roots"
-    )
-    return f"{subcommand.upper().replace('-', ' ')} SOURCES ({scope_label}; {root_count_desc})"
+    return f"{subcommand.upper().replace('-', ' ')} SOURCES ({scope_label}; {_root_count_desc(roots)})"
 
 
 def _print_resolved_scope(subcommand: str, scope_label: str, roots: Sequence[Path], *, file=None) -> None:
@@ -5253,7 +5274,20 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     own long-standing call sites and tests); context-distribution passes its
     own name so a refusal is attributed to the subcommand the caller actually
     invoked, not always "cost".
+
+    When `subcommand == "cost"` and args.summary is set, this returns
+    [config_dir() / "projects"] alone, skipping the declared-roots union
+    entirely -- --summary is a single-account, aggregate-only mode, and
+    unioning declared_transcript_roots() here would publish another
+    account's spend inside a PR authored under this one. Gated on
+    `subcommand` too, not just the flag: this function is shared by every
+    entry in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR, and only cost's argparser
+    defines --summary today, so a bare summary check would silently narrow
+    a future subcommand that happens to add a same-named flag.
     """
+    if subcommand == "cost" and bool(getattr(args, "summary", False)):
+        return [config_dir() / "projects"]
+
     extra_config_dirs: list[str] = getattr(args, "extra_config_dirs", None) or []
 
     config_dirs: list[Path] = []
@@ -5546,6 +5580,18 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 file=sys.stderr,
             )
             sys.exit(2)
+        if multi_root:
+            # Defense-in-depth: _resolve_cost_roots is the CLI-level
+            # enforcement point for --summary's single-account scope, but
+            # every direct caller of _cost_report (including this module's
+            # own tests) bypasses that boundary — same rationale as the
+            # --no-redact guard below.
+            print(
+                "cost: --summary resolved to more than one root — refusing to"
+                " report a multi-account total",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement point
     # for this refusal, but every direct caller of _cost_report (including
@@ -5621,9 +5667,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 )
 
     # --summary skips the redact map and the per-project-dir-count scope
-    # header — nothing it prints is identity-keyed; its own scope line below
-    # reports total_transcripts_scanned, the scan step's post-existence-check
-    # count, instead.
+    # header ("this repo (N project dirs)") -- that count comes from `git
+    # worktree list` (this repo's own local worktrees), not account
+    # identity; the input that IS identity-keyed under --summary, a raw
+    # --projects value, is already refused above. Its own scope line below
+    # reports total_transcripts_scanned instead.
     redact_map: dict[_RedactMapKey, str] = {}
     if not summary_mode:
         redact_map = _build_redact_map(roots) if redact else {}
@@ -5824,8 +5872,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     if summary_mode:
         print(f"\n## Cost summary ({title_since})\n")
         print(
-            f"Scope: {total_transcripts_scanned:,} transcripts scanned, "
-            f"{priced_session_count:,} priced sessions, {priced_turn_count:,} priced turns"
+            f"Scope: this account only ({total_transcripts_scanned:,} transcripts scanned, "
+            f"{priced_session_count:,} priced sessions, {priced_turn_count:,} priced turns)"
+            " — dropping --summary reports every declared account too"
         )
     else:
         print(f"\n## Cost report ({title_since})\n")
@@ -7700,6 +7749,21 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     if not _MACHINE_LABEL_RE.match(machine_label):
         print(f"cost-ledger: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
         sys.exit(1)
+    if len(roots) > 1:
+        # Defense-in-depth against install.sh's TIP nudging a diverged
+        # profile to populate the roots file: --record commits its figure to
+        # docs/cost-ledger.md, a git-tracked file in this public repo, so
+        # unioning more than one declared account into that commit is
+        # refused until the ledger's storage location is redesigned (see
+        # docs/cost-ledger.md) -- non-record reads are unaffected and keep
+        # returning the union.
+        print(
+            "cost-ledger: --record is refused when more than one root is in"
+            " scope; scope to a single account (--config-dir, or a roots"
+            " file declaring only this account) or drop --record",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     # Rejection names the rule, never the compared hostname value -- echoing
     # it would persist recon-value data into the session transcript, the same
     # discipline deny-private-project-refs.sh applies to its own matches.

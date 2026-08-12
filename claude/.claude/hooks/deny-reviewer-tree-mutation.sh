@@ -1,7 +1,8 @@
 #!/bin/bash
 # hook-class: gate
 # Gate: review-only agents (the eight staff-*/ciso-reviewer personas, the
-# skill-fidelity-reviewer, plus the harness built-ins Explore/Plan — see
+# non-specialist reviewers skill-fidelity-reviewer and
+# comment-discipline-reviewer, plus the harness built-ins Explore/Plan — see
 # _lib.sh's _LIB_REVIEW_ONLY_AGENTS) must never mutate the tree they are
 # reviewing. Their sole sanctioned
 # writes are the findings file (agent-reviews/<agent>-<epoch>-<slug>.md,
@@ -68,7 +69,8 @@
 #     (`printf '...' > agent-reviews/x.md`) or rewrite the target repo's own
 #     ignore state (`printf 'agent-reviews/\n' >> .git/info/exclude`) with
 #     zero mechanical enforcement — verified live against this hook. Every
-#     reviewer agent except skill-fidelity-reviewer carries Bash. The
+#     reviewer agent except skill-fidelity-reviewer and
+#     comment-discipline-reviewer carries Bash. The
 #     mechanical guarantee this hook adds therefore holds only when a
 #     reviewer's findings-file write goes through Write/Edit/MultiEdit, which
 #     every reviewer agent's own Output-format instructions require — an

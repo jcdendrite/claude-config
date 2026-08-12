@@ -632,9 +632,10 @@ check_private_projects_file() {
 # a profile whose CLAUDE_CONFIG_DIR diverges from ~/.claude has no other way
 # to declare itself there.
 check_transcript_config_dirs() {
-  local _resolved_config_dir _resolved_default_dir
+  local _resolved_config_dir _resolved_default_dir roots_file
   _resolved_config_dir="$(cd "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" 2>/dev/null && pwd -P)" || _resolved_config_dir=""
   _resolved_default_dir="$(cd "$HOME/.claude" 2>/dev/null && pwd -P)" || _resolved_default_dir=""
+  roots_file="$HOME/.claude/transcript-config-dirs"
   if [ -n "$_resolved_config_dir" ] && [ "$_resolved_config_dir" != "$_resolved_default_dir" ]; then
     echo ""
     echo "TIP: this profile's CLAUDE_CONFIG_DIR ($_resolved_config_dir) differs from"
@@ -644,6 +645,12 @@ check_transcript_config_dirs() {
     echo "     config dir — add this profile there, from the default profile, to"
     echo "     include it in the union. See docs/transcript-analysis.md's 'Corpus"
     echo "     scope: the declared-roots file' section."
+    # Only a diverged profile has something to add to the roots file; a
+    # non-diverged (default) profile gets no nudge here even when the file is
+    # also absent there, since a single-account machine has nothing to add.
+    if [ ! -e "$roots_file" ]; then
+      echo "     ~/.claude/transcript-config-dirs doesn't exist on this machine yet."
+    fi
   fi
 
   if [ -L "$HOME/.claude" ]; then
@@ -653,7 +660,6 @@ check_transcript_config_dirs() {
     echo "     not a separate directory."
   fi
 
-  local roots_file="$HOME/.claude/transcript-config-dirs"
   if [ -e "$roots_file" ] && ! grep -Evq '^[[:space:]]*(#|$)' "$roots_file" 2>/dev/null; then
     echo ""
     echo "WARNING: ~/.claude/transcript-config-dirs exists but contains no usable"

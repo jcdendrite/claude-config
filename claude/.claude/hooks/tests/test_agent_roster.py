@@ -40,10 +40,14 @@ REVIEWER_AGENTS = [
 # REVIEWER_AGENTS: the stack specialists PLUS other reviewers that write
 # findings_path output but are not part of the counted stack-specialist roster.
 # skill-fidelity-reviewer is spawned by /ready-for-review (not the two
-# dispatchers) and is not a domain specialist, so it enforces the canary here
-# without inflating the specialist-roster doc counts. Kept sorted so
-# CANARY_AGENTS[0] is a stable canonical anchor for the byte-equivalence test.
-CANARY_AGENTS = sorted(REVIEWER_AGENTS + ["skill-fidelity-reviewer.md"])
+# dispatchers) and comment-discipline-reviewer is spawned off /code-review's
+# Change-type table rather than a domain match; neither is a stack specialist,
+# so both enforce the canary here without inflating the specialist-roster doc
+# counts. Kept sorted so CANARY_AGENTS[0] is a stable canonical anchor for the
+# byte-equivalence test.
+CANARY_AGENTS = sorted(
+    REVIEWER_AGENTS + ["comment-discipline-reviewer.md", "skill-fidelity-reviewer.md"]
+)
 
 # Agents that exist in the directory but are not code-review dispatched
 # reviewers — they do not receive findings_path and do not need the canary.

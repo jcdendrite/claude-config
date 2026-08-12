@@ -1176,13 +1176,16 @@ _lib_readonly_git_subcmds() {
 
 # Single source of truth for review-only agent identities: the eight
 # staff-*/ciso-reviewer personas dispatched by /plan-review and /code-review,
-# the skill-fidelity-reviewer dispatched by /ready-for-review, plus the harness
+# skill-fidelity-reviewer (dispatched by /ready-for-review) and
+# comment-discipline-reviewer (dispatched by /code-review's Change-type
+# table) as non-specialist reviewers outside that roster, plus the harness
 # built-ins Explore and Plan. Sourced by deny-reviewer-tree-mutation.sh. Closed
 # enumeration, same discipline as _LIB_READONLY_GIT_SUBCMDS above — new entries
 # are added deliberately (a persona proven review-only, never dispatched to
 # write project files), not accreted via "etc./like".
 _LIB_REVIEW_ONLY_AGENTS=(
   ciso-reviewer
+  comment-discipline-reviewer
   skill-fidelity-reviewer
   staff-analytics-engineer
   staff-backend-engineer

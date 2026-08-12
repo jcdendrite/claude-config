@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from _config_dir import config_dir, declared_transcript_roots  # noqa: E402
+from _config_dir import (  # noqa: E402
+    TRANSCRIPT_CONFIG_DIRS_LABEL,
+    config_dir,
+    declared_roots_file,
+    declared_roots_file_state,
+    declared_transcript_roots,
+)
 
 
 def test_returns_claude_config_dir_when_set_absolute(tmp_path, monkeypatch):
@@ -226,3 +232,64 @@ def test_reads_default_path_derived_from_home_when_env_var_unset(monkeypatch, tm
     (home / ".claude").mkdir(parents=True)
     (home / ".claude" / "transcript-config-dirs").write_text(f"{root}\n")
     assert declared_transcript_roots() == [root]
+
+
+# ---------------------------------------------------------------------------
+# declared_roots_file() / declared_roots_file_state() / TRANSCRIPT_CONFIG_DIRS_LABEL
+# ---------------------------------------------------------------------------
+
+
+def test_declared_roots_file_honors_seam_when_set(monkeypatch, tmp_path):
+    seam_path = tmp_path / "seam-roots-file"
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(seam_path))
+    assert declared_roots_file() == seam_path
+
+
+def test_declared_roots_file_falls_back_to_home_claude_path_when_seam_unset(monkeypatch, tmp_path):
+    monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    assert declared_roots_file() == home / ".claude" / "transcript-config-dirs"
+
+
+def test_label_stays_fixed_literal_when_seam_points_elsewhere(monkeypatch, tmp_path):
+    """TRANSCRIPT_CONFIG_DIRS_LABEL names where an operator would declare a
+    root -- it must not reflect a test's TRANSCRIPT_CONFIG_DIRS_FILE
+    redirection, unlike declared_roots_file() above."""
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "elsewhere-entirely"))
+    assert TRANSCRIPT_CONFIG_DIRS_LABEL == "~/.claude/transcript-config-dirs"
+
+
+def test_file_state_is_absent_when_roots_file_does_not_exist(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
+    assert declared_roots_file_state() == "absent"
+
+
+def test_file_state_is_unreadable_when_read_raises_oserror(monkeypatch, tmp_path):
+    """A directory at the roots-file path exists but raises IsADirectoryError
+    (an OSError subclass) on read_text() -- simulates an unreadable file
+    without chmod, which silently degrades under a root-executing test
+    runner (see test_unreadable_root_raises_oserror_during_validation_and_is_skipped
+    above for the same rationale)."""
+    roots_file_as_dir = tmp_path / "roots-is-a-directory"
+    roots_file_as_dir.mkdir()
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file_as_dir))
+    assert declared_roots_file_state() == "unreadable"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "acct-a\n",
+        "",
+        "# just a comment\n\n   \n",
+    ],
+    ids=["valid-content", "empty-file", "comments-only"],
+)
+def test_file_state_is_present_regardless_of_content(monkeypatch, tmp_path, content):
+    """The "present" state means the file was read successfully -- it says
+    nothing about whether that content later parses into any usable root."""
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(content)
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    assert declared_roots_file_state() == "present"
