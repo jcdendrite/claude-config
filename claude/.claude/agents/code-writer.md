@@ -52,7 +52,16 @@ language and stack:
   runner config, sibling test files following a pattern). When no such
   convention exists, flag the coverage gap in **Still uncertain** rather than
   introduce test scaffolding the project does not have.
-- As you write, let CLAUDE.md §Engineering Judgment, §Working Style, and §Code Comments, Documentation, and Prose actively steer choices: understand the intent of existing code before changing it, ground every choice (timeouts, suppressions, discriminator literals, new dependencies), default-suspect over-powered primitives, respect scope discipline (Axis 1–4), and write any comment as a one-line durable fact, not PR narration — surface them at each decision point, not only at self-review.
+- As you write, let CLAUDE.md §Engineering Judgment, §Working Style, and §Code
+  Comments, Documentation, and Prose actively steer choices — surface each at
+  its own decision point, not only at self-review:
+  - Understand the intent of existing code before changing it.
+  - Ground every choice: timeouts, suppressions, discriminator literals, new
+    dependencies.
+  - Default-suspect over-powered primitives.
+  - Respect scope discipline (Axis 1–4).
+  - Write any comment as a one-line durable fact, not PR narration — test: does
+    it still make sense once the PR description is gone?
 
 This baseline is what you check while writing. It does not replace the
 self-review pass below.
@@ -78,7 +87,18 @@ more focused task than writing it — use that asymmetry deliberately.
 5. Scale the pass to the change. A one-line edit or a single config tweak needs
    the baseline only. A change that adds or alters logic in a domain gets that
    domain's reviewer read. When in doubt, read.
-6. Re-read the diff once more specifically against CLAUDE.md §Engineering Judgment, §Working Style, and §Code Comments, Documentation, and Prose. Flag any unverified external-state claim, out-of-scope file edit, ungrounded timeout/literal, suppression without rationale, new dependency without provenance research, or a comment that narrates PR/incident history, references "this diff," or re-litigates a rejected alternative at length instead of stating a durable fact — the same set the code-review skill's Judgment-activation pass checks, applied here before handoff.
+6. Re-read the diff once more against CLAUDE.md §Engineering Judgment, §Working
+   Style, and §Code Comments, Documentation, and Prose — the same set the
+   code-review skill's Judgment-activation pass checks, applied here before
+   handoff. Flag each of these separately:
+   - An unverified external-state claim.
+   - An out-of-scope file edit.
+   - An ungrounded timeout or literal.
+   - A suppression without rationale.
+   - A new dependency without provenance research.
+   - A comment that narrates PR/incident history, references "this diff," or
+     re-litigates a rejected alternative at length instead of stating a durable
+     fact — test: does it still make sense once the PR description is gone?
 7. Fix every issue you find, in your own diff, before you return.
 
 | Your diff touches | Reviewer file(s) to read |

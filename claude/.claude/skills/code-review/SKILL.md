@@ -51,7 +51,7 @@ Evaluate the diff against CLAUDE.md §Engineering Judgment, §Working Style, and
 - **Unverified external-state claim** — the diff or its commit message asserts state the author cannot observe (which env vars or secrets exist, CI/config contents, whether a migration was already applied, git blame or authorship, that a referenced file exists on `main`) without tool output or an explicit "unverified" flag. Default to flag — the model cannot observe external state by reading source files.
 - **Out-of-scope file edits** — files changed that the stated task did not require, especially copy, comment, or cosmetic edits on unrelated files. Distinct from item 14 (don't *fix* unchanged code): this is having *edited* what was out of scope.
 - **Preserved-record edits** — edits to already-applied migrations, changelog or incident records, or anchor fixtures.
-- **Non-durable comment** — a new or modified comment that narrates PR/incident history, references "this diff," or re-litigates a rejected alternative at length, rather than stating a durable fact about the code.
+- **Non-durable comment** — a new or modified comment that narrates PR/incident history, references "this diff," or re-litigates a rejected alternative at length, rather than stating a durable fact about the code. This check always runs inline, regardless of whether `comment-discipline-reviewer` (checklist item 12a) is spawned for exhaustive enumeration.
 
 ## Base checklist
 
@@ -104,6 +104,8 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 11. **Misleading names** — Do function or variable names promise more or less than they deliver? A `validateUser` that only checks one field, an `allItems` that holds a filtered subset.
 
 12. **Stripped WHY comments** — In modified files, were comments documenting a non-obvious constraint, subtle invariant, bug workaround, or surprising behavior deleted? Stripping these regresses documentation that the original author judged worth keeping. A preference for minimal comments governs whether to *add* one; it does not authorize bulk removal during unrelated edits. Apply the same WHY test to existing comments: keep if it meets the standard, remove only if it restates WHAT the code does. Check `git diff` for deleted comment lines in changed hunks.
+
+12a. **Comment/prose discipline on added or modified text** — Does a new or modified comment or durable-doc paragraph violate CLAUDE.md §Code Comments, Documentation, and Prose: comment verbosity (a multi-paragraph rationale where one line suffices), prose at the wrong altitude for its reader, PR-defined terminology, "used to be X" framing, or durable-doc content that fails the survives-the-PR-being-merged self-test? Distinct from item 12, which covers comment *deletion*. Step 1.5's "Non-durable comment" tripwire runs this check inline on every review; `comment-discipline-reviewer` (Ripple effect triage) provides exhaustive enumeration when spawned.
 
 ### Security
 
@@ -243,6 +245,7 @@ The Change type column keys on what the change *does* for an operator or consume
 | Adds or changes warehouse models / dbt transformations / semantic-layer files | `staff-analytics-engineer` (modeling, transformation correctness, materialization, test coverage) |
 | Adds or changes CDC / change-stream / ETL/ELT pipeline / warehouse ingestion connector | `staff-data-engineer` (transport, schema-drift, observability) + `staff-platform-engineer` (operational footprint) |
 | Modifies CI/CD pipelines or deploy config | `staff-platform-engineer` + `staff-backend-engineer` — verify pipelines and environment consistency |
+| Adds or modifies a comment or durable-doc prose beyond a hygiene tweak (code comments, docstrings, `REFERENCES.md`, doc files, README sections, skill/agent bodies) | `comment-discipline-reviewer` — enumerate every site violating CLAUDE.md §Code Comments, Documentation, and Prose (comment verbosity, wrong-altitude prose, PR-defined terminology, "used to be X" framing, durable-doc self-test failures); Step 1.5's inline "Non-durable comment" tripwire still runs unconditionally regardless of this spawn |
 | Adds or modifies a skill, agent, instruction-file rule, or hook | **Invoke** (via the Skill tool — these are skills, not agents; do not spawn them) `skill-review`, `agent-review`, `ai-instruction-and-memory-files`, or `claude-hook-review`, per the dispatcher (Domain: Claude Code config). **Separately, spawn** a `staff-*` agent only when the edit demonstrably changes the *output* or *decision* that lane's specialist would review — not merely because the lane's name appears in the edited rule (e.g., a rule change that alters when `staff-backend-engineer` is consulted → spawn `staff-backend-engineer`; a typo or formatting fix in the same rule → do not spawn). For substantive routing-table edits specifically, defer to the *Reshapes reviewer ownership* row below, which has the precise pre/post-edit-union spawn rule. |
 | Changes runtime config (env vars, secrets, feature flags) | `staff-platform-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
 | Reshapes reviewer ownership (substantive edits to plan-review/code-review skill routing tables, or scope language in `agents/*.md`) | Spawn every persona named in the pre- or post-edit table — each evaluates whether their row (or its removal) is accurate, scoped, and not bleeding into another lane. The pre/post union ensures a row deletion still spawns the affected persona. For an `agents/*.md` edit, spawn the edited persona plus their Item-ownership co-owners. Skip whitespace / typo / copy-edit-only diffs. |
@@ -353,6 +356,7 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
 | **12. Stripped WHY comments** | judgment (any reviewer) | — |
+| **12a. Comment/prose discipline on added or modified text** | `comment-discipline-reviewer` (when spawned) | judgment (any reviewer, via Step 1.5's inline tripwire) |
 | **13. Test adequacy for security controls** | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
 | **14. Pre-existing issues in unchanged code** | judgment (any reviewer) | — |
 | **14a. Config-file change without stated intent** | judgment (any reviewer) | `staff-platform-engineer` (build/CI/IaC configs) |

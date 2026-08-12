@@ -769,7 +769,7 @@ class TestFullRoster:
         """Every member of _LIB_REVIEW_ONLY_AGENTS must deny a representative
         mutation — catches an untested member and future array drift."""
         roster = _review_only_roster()
-        assert len(roster) == 11, f"roster changed: {roster}"
+        assert len(roster) == 12, f"roster changed: {roster}"
         for agent in roster:
             decision = run_hook(HOOK, bash_input("sed -i s/a/b/ src/x.ts", agent_type=agent))
             assert decision == "deny", f"{agent} did not deny a mutation"
