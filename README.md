@@ -253,6 +253,8 @@ Configuration options spanning machine-local, project-local, and user-local sett
 
 The race it prevents: concurrent Claude Code sessions sharing a working tree can step on each other — one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
 
+Worktrees only isolate each session's state if each session gets its own — two sessions that independently anchor into the *same* linked worktree are back to that same race. Both hooks close that gap too: a write into a worktree a live session already holds (tracked via `git worktree lock`) is denied for a second session, naming the holder's pid; a worktree whose holder has since exited is diagnosed as such, with a manual `git worktree unlock <path>` remedy rather than an automatic one.
+
 #### Activating enforcement on a repo
 
 The sentinel coexists with any existing `.claude/` content — `mkdir -p` is a no-op if the directory is already there, and the sentinel is an inert marker file alongside whatever project-level plans, `settings.local.json`, or untracked worktree dirs the repo already holds.

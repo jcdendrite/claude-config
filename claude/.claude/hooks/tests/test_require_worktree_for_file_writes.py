@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 import pytest
+from conftest import _dead_pid, _worktree_lock_reason
 from helpers import (
     HOOKS_DIR,
     bash_input,
@@ -314,3 +316,115 @@ class TestMachineLevelMarker:
         # user_marker_home is the sandboxed HOME; write to something under it
         path = str(user_marker_home / ".claude" / "some-file.txt")
         assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
+
+
+def _lock_worktree(worktree, reason: str) -> None:
+    """Fabricate a `git worktree lock` state on `worktree` with an arbitrary
+    reason string, standing in for a lock a different (real or fictitious)
+    session already holds — the collision-guard tests below need this state
+    to exist BEFORE the hook under test ever runs."""
+    subprocess.run(
+        ["git", "-C", str(worktree), "worktree", "lock", str(worktree), "--reason", reason],
+        check=True,
+    )
+
+
+class TestWorktreeCollisionGuard:
+    """Coverage for _lib_worktree_collision_guard (_lib.sh), called by this
+    hook at its 'already in a linked worktree' allow point. See
+    .claude/plans/worktree-collision-guard.md 'Critical files' for the case
+    list this class covers.
+
+    Two branches of the guard cannot be forced deterministically from a
+    full-hook, black-box subprocess invocation: the re-read-shows-unlocked
+    race (the lock must clear in the narrow window between the guard's own
+    failed `lock` attempt and its diagnosis re-read) and a pruned/missing
+    worktree root (the guard's own worktree-root resolution would have to
+    fail right after this hook's identical-shaped resolution, moments
+    earlier, already succeeded against the same path). Both require a live
+    race or a git-mocking seam that isn't available here; both are covered
+    directly at the function level instead, in
+    test_lib_worktree_collision_guard.py, where the target state can be set
+    up before the single call under test.
+    """
+
+    def test_base_case_acquires_lock_and_allows(self, isolated_home, opted_in_with_worktree):
+        """First write into a virgin (never-locked) worktree acquires the
+        lock and allows; the lock's reason names this session's own
+        resolved pid — the value _lib_resolve_claude_pid found by walking
+        up from the hook's own PPID, which for a hook run as a subprocess
+        of this test is this test process itself."""
+        _, worktree = opted_in_with_worktree
+        path = str(worktree / "file.txt")
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
+        reason = _worktree_lock_reason(worktree)
+        assert reason is not None
+        assert f"pid {os.getpid()}" in reason
+
+    def test_self_lock_reentry_is_idempotent(self, isolated_home, opted_in_with_worktree):
+        """A second write in the same session reads the lock this session
+        already holds and allows without re-locking. Whether a second `git
+        worktree lock` call was even attempted isn't observable without
+        mocking git on PATH; an unchanged lock reason across both writes is
+        the closest black-box signal that the guard took the read-only
+        self-lock branch rather than releasing and re-acquiring."""
+        _, worktree = opted_in_with_worktree
+        path = str(worktree / "file.txt")
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
+        reason_after_first_write = _worktree_lock_reason(worktree)
+        assert reason_after_first_write is not None
+
+        assert run_hook(FILE_WRITES_HOOK, write_input(str(worktree / "other.txt"))) == "allow"
+        assert _worktree_lock_reason(worktree) == reason_after_first_write
+
+    def test_foreign_live_lock_denies_naming_pid(self, isolated_home, opted_in_with_worktree, live_pid):
+        """A worktree already locked by a different live process denies,
+        naming that process's pid. live_pid (a real process this fixture
+        owns and terminates on teardown) stands in for "some other live
+        session" — distinct from os.getpid(), which opted_in_with_worktree
+        already registered as this session's own identity, so it can't
+        double as the foreign pid without the guard reading it back as a
+        self-lock instead."""
+        _, worktree = opted_in_with_worktree
+        foreign_pid = live_pid
+        _lock_worktree(worktree, f"claude-code pid {foreign_pid}")
+
+        path = str(worktree / "file.txt")
+        reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
+        assert reason is not None
+        assert str(foreign_pid) in reason
+        assert "live" in reason
+
+    def test_foreign_dead_lock_denies_with_manual_remedy(self, isolated_home, opted_in_with_worktree):
+        """A lock naming a pid that is no longer running denies, naming that
+        pid and pointing at the manual `git worktree unlock` remedy — and
+        the worktree is still locked afterward, confirming the hook itself
+        never ran that unlock (no auto-eviction)."""
+        _, worktree = opted_in_with_worktree
+        dead_pid = _dead_pid()
+        _lock_worktree(worktree, f"claude-code pid {dead_pid}")
+
+        path = str(worktree / "file.txt")
+        reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
+        assert reason is not None
+        assert str(dead_pid) in reason
+        assert "no longer running" in reason
+        assert "git worktree unlock" in reason
+        assert _worktree_lock_reason(worktree) is not None, (
+            "hook must not auto-evict a dead-pid lock"
+        )
+
+    def test_unparseable_reason_lock_denies_with_manual_remedy(self, isolated_home, opted_in_with_worktree):
+        """A lock reason with no parseable pid (e.g. a human ran `git
+        worktree lock` by hand for an unrelated reason) denies with the same
+        manual-unlock remedy, since there is no pid to diagnose."""
+        _, worktree = opted_in_with_worktree
+        _lock_worktree(worktree, "reviewing")
+
+        path = str(worktree / "file.txt")
+        reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
+        assert reason is not None
+        assert "git worktree unlock" in reason
+        assert _worktree_lock_reason(worktree) is not None, (
+            "hook must not auto-evict an unparseable-reason lock"
+        )

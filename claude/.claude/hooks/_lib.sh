@@ -827,6 +827,221 @@ _lib_stray_marker_hint() {
   printf '%s' " Note: .claude/worktree-required is present but untracked — an accidental stray copy activates enforcement exactly like a committed one. Commit it if intentional, or remove it if it was created by accident."
 }
 
+# _lib_resolve_claude_pid
+# Prints "<session_id> <pid>" for the live Claude Code main-process PID that
+# is an ancestor of the calling process, and returns 0. Returns 2 with no
+# stdout when no ancestor carries a live, start-time-validated session file.
+# Moved here from marker.sh's private _walk_session (which now delegates to
+# this) so a hook — which cannot safely source marker.sh, since it dispatches
+# on $1 at file scope — can resolve its own session's live PID directly, with
+# no subprocess spawn.
+#
+# Walk up the process ancestor chain looking for a session file written by
+# capture-session-id.sh at $CONFIG_DIR/sessions/<pid>. Direct hook invocation
+# resolves in one step ($PPID = Claude Code PID); a Bash-tool script
+# invocation resolves in two steps ($PPID = Bash tool shell, grandparent =
+# Claude Code PID). The loop handles any depth. A recorded start time that
+# doesn't match the live process's current start time — including an entry
+# with no recorded start time at all — means the PID was reused since the
+# entry was written, so it is untrusted and treated as if the file were
+# absent. `lstart`'s one-second resolution leaves a residual false-positive
+# window: a reused PID whose new process starts within the same wall-clock
+# second as the stale entry's process still compares equal.
+_lib_resolve_claude_pid() {
+  local config_dir pid
+  config_dir=$(_lib_config_dir) || return 2
+  pid=$PPID
+  while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
+    local sid recorded_start current_start
+    sid=""
+    if [ -r "$config_dir/sessions/$pid" ]; then
+      {
+        IFS= read -r sid
+        IFS= read -r recorded_start
+      } < "$config_dir/sessions/$pid" 2>/dev/null
+      if [ -n "$sid" ] && [ -n "$recorded_start" ]; then
+        current_start=$(TZ=UTC LC_ALL=C _lib_capped ps -o lstart= -p "$pid" 2>/dev/null)
+        [ "$current_start" = "$recorded_start" ] || sid=""
+      else
+        sid=""
+      fi
+    fi
+    if [ -n "$sid" ]; then
+      printf '%s %s' "$sid" "$pid"
+      return 0
+    fi
+    pid=$(_lib_capped ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' \t')
+  done
+  return 2
+}
+
+# _lib_worktree_lock_pid WORKTREE_ROOT PORCELAIN_TEXT
+# Parses a captured `git worktree list --porcelain` text for WORKTREE_ROOT's
+# lock state. Prints the numeric PID from a `locked claude-code pid <N>`
+# reason (the exact string _lib_worktree_collision_guard writes) and returns
+# 0; prints nothing and returns 1 when WORKTREE_ROOT has no `locked` line in
+# this capture (unlocked, or the capture is stale and no longer lists it at
+# all); prints nothing and returns 2 when locked but the reason isn't that
+# exact shape (e.g. a human-authored reason for an unrelated purpose) —
+# matched on the full reason, not a loose `pid <N>` substring search, so an
+# unrelated reason that happens to mention "pid" can't be misread as a
+# Claude-session lock. The `worktree <path>` line is always the first line of
+# each porcelain record, so unlike a branch-name match (which can appear
+# after several other lines), the target record is known immediately with no
+# deferred-commit buffering.
+_lib_worktree_lock_pid() {
+  local worktree_root="$1" porcelain="$2"
+  local line path in_target=0 locked=0 pid=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*)
+        path="${line#"worktree "}"
+        if [ "$path" = "$worktree_root" ]; then
+          in_target=1
+        else
+          in_target=0
+        fi
+        locked=0
+        pid=""
+        ;;
+      "locked"*)
+        if [ "$in_target" -eq 1 ]; then
+          locked=1
+          if [[ "$line" =~ ^locked\ claude-code\ pid\ ([0-9]+)$ ]]; then
+            pid="${BASH_REMATCH[1]}"
+          fi
+        fi
+        ;;
+    esac
+  done <<< "$porcelain"
+  if [ "$locked" -eq 0 ]; then
+    return 1
+  fi
+  if [ -z "$pid" ]; then
+    return 2
+  fi
+  printf '%s' "$pid"
+  return 0
+}
+
+# _lib_worktree_collision_guard TARGET_PATH REPO_GIT_COMMON_DIR
+# Enforces that at most one live session holds write access to a given
+# linked worktree at a time. TARGET_PATH is any path inside the worktree to
+# protect; REPO_GIT_COMMON_DIR is the caller's already-verified common-dir
+# for the enforced repo, cross-checked here against TARGET_PATH's own
+# resolution as a defense against the target having changed underneath the
+# caller between its own check and this call. On success, prints nothing and
+# returns 0. On failure, prints a human-readable reason to stdout (for the
+# caller to fold into its own deny message) and returns 1.
+#
+# Reads lock state before writing: if TARGET_PATH's worktree is already
+# locked with our own live PID (from an earlier write this session), this
+# returns 0 with no `git worktree lock` call at all — the common case once a
+# session is anchored in a worktree costs one read, not a write attempt
+# expected to fail.
+#
+# Otherwise attempts `git worktree lock`. This write is the sole exclusion
+# point for the contended case: two sessions that both read "unlocked" and
+# both then call `lock` are resolved by the lock file write itself being
+# exclusive-create (verified empirically — a second concurrent `lock` call
+# against an already-locked worktree fails "already locked" every time, in a
+# 20-way concurrent-process race with exactly one winner; see
+# .claude/plans/worktree-collision-guard.md), not by anything this function
+# does. A failed lock re-reads porcelain to diagnose who holds it and denies
+# unconditionally — this function never calls `git worktree unlock`: that
+# command has no ownership check (verified empirically — it unconditionally
+# removes whatever lock exists, regardless of who set it or when), so an
+# in-function evict-then-relock would itself be racy against a second
+# evictor in exactly the way this guard exists to prevent. A dead-PID lock
+# is diagnosed as such in the deny message with a one-line manual remedy
+# (`git worktree unlock <path>`) instead.
+#
+# Known gaps: the liveness check (`kill -0`) can't distinguish a genuinely
+# dead PID from one owned by a different user on a shared machine — out of
+# scope for this guard's single-developer-machine threat model. A `git
+# worktree lock` failure caused by something other than contention (an old
+# git without worktree-lock support, a permission error) is diagnosed the
+# same as a transient race and told to "retry", which is permanently wrong
+# advice in that case.
+_lib_worktree_collision_guard() {
+  local target_path="$1" repo_git_common_dir="$2"
+  local worktree_root
+  worktree_root=$(_lib_capped git -C "$target_path" rev-parse --show-toplevel 2>/dev/null) || {
+    printf 'could not resolve the worktree root for %s' "$target_path"
+    return 1
+  }
+
+  local wt_common_dir
+  wt_common_dir=$(_lib_capped git -C "$worktree_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
+    printf 'could not confirm %s belongs to this repository' "$worktree_root"
+    return 1
+  }
+  if [ "$wt_common_dir" != "$repo_git_common_dir" ]; then
+    printf '%s does not belong to this repository — refusing to evaluate its lock state' "$worktree_root"
+    return 1
+  fi
+
+  local my_pid_pair my_pid
+  my_pid_pair=$(_lib_resolve_claude_pid) || {
+    printf "could not resolve this session's own process identity to check the worktree lock"
+    return 1
+  }
+  my_pid="${my_pid_pair##* }"
+
+  local porcelain locked_pid state
+  porcelain=$(_lib_capped git -C "$worktree_root" worktree list --porcelain 2>/dev/null) || {
+    printf 'could not read worktree lock state for %s' "$worktree_root"
+    return 1
+  }
+  # `locked_pid=$(fn) || state=$?` (not a bare `locked_pid=$(fn); state=$?`):
+  # _lib_worktree_lock_pid's ordinary "unlocked" outcome is exit 1, and under
+  # a caller's `set -e` a plain assignment aborts the script at that line
+  # before `$?` is ever read — this file's own _lib_config_dir header
+  # documents the same hazard. The `||` puts the assignment inside a
+  # compound list, which `-e` does not abort on.
+  locked_pid=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
+  if [ "$state" -eq 0 ] && [ "$locked_pid" = "$my_pid" ]; then
+    return 0
+  fi
+
+  if _lib_capped git -C "$worktree_root" worktree lock "$worktree_root" --reason "claude-code pid $my_pid" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  porcelain=$(_lib_capped git -C "$worktree_root" worktree list --porcelain 2>/dev/null) || {
+    printf 'could not confirm the worktree lock holder for %s' "$worktree_root"
+    return 1
+  }
+  locked_pid=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
+  # A concurrent self-race (e.g. two parallel subagents both writing into
+  # this worktree with no `isolation: worktree` between them, per this
+  # repo's own Agent Briefing) can land here after losing the lock attempt
+  # above to an earlier call from this SAME live pid — not a different
+  # session. Treat that identically to the first read's self-lock check
+  # rather than misreporting the caller's own pid as a foreign collision.
+  if [ "$state" -eq 0 ] && [ "$locked_pid" = "$my_pid" ]; then
+    return 0
+  fi
+  case "$state" in
+    1)
+      printf 'this worktree was locked at the moment of the write attempt but is already clear again — retry'
+      ;;
+    2)
+      # shellcheck disable=SC2016 # single-quoted on purpose: the backticks are literal markdown-style code formatting in the deny message, not command substitution.
+      printf 'this worktree is locked, but the lock reason does not name a process — if this was set deliberately for another purpose, resolve manually; otherwise run `git worktree unlock %s`' "$worktree_root"
+      ;;
+    0)
+      if kill -0 "$locked_pid" 2>/dev/null; then
+        printf 'this worktree is already in use by a live Claude Code session (pid %s) — wait for it to finish, or work in a different worktree' "$locked_pid"
+      else
+        # shellcheck disable=SC2016 # single-quoted on purpose: the backticks are literal markdown-style code formatting in the deny message, not command substitution.
+        printf 'this worktree is locked by pid %s, which is no longer running; if confirmed, clear it with `git worktree unlock %s` and retry' "$locked_pid" "$worktree_root"
+      fi
+      ;;
+  esac
+  return 1
+}
+
 # Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
 _LIB_SIZE_THRESHOLD_BYTES=5242880
 
