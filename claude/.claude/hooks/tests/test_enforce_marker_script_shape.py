@@ -1023,6 +1023,7 @@ class TestGateReleaseAuthorityFileWrites:
             == "deny"
         )
 
+    @pytest.mark.timing
     def test_large_write_cost_stays_near_the_parse_floor(self, marker_home):
         """A multi-MB Write must not cost much more than parsing it already does.
 

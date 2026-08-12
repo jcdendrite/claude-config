@@ -450,6 +450,7 @@ class TestNudgeHandoffNearContextCap:
     # (check_refuse, schema-drift, status:"ok") are reachable only through
     # --check mode and still lack duration-distinguishing coverage.
 
+    @pytest.mark.timing
     def test_read_latest_usage_tail_killed_by_2s_cap_not_5s_default(self, tmp_path):
         """A `tail` shim that takes ~3.5s to produce output would complete
         fine under _lib_capped's 5s default, but must be killed under the 2s
@@ -485,6 +486,7 @@ class TestNudgeHandoffNearContextCap:
             "_lib_capped default"
         )
 
+    @pytest.mark.timing
     def test_fire_path_jq_killed_by_2s_cap_not_5s_default(self, tmp_path):
         """A `jq` shim that takes ~3.5s on the fire path's final call
         (`_lib_capped_for 2 jq -n ... hookSpecificOutput ...`) would
@@ -715,6 +717,7 @@ class TestNudgeHandoffNearContextCap:
             "a traversal session_id must not create a file outside .handoff-nudge-fired.d/"
         )
 
+    @pytest.mark.timing
     def test_latency_under_500ms(self, tmp_path):
         """Hook completes in under 500ms even with a ~10 MB transcript (10000 valid JSONL lines).
 

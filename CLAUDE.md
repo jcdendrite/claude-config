@@ -17,6 +17,10 @@ scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # lint (shell, all 
 ShellCheck flags live in the repo-root `.shellcheckrc`, not on the command
 line — CI, this command, and any editor integration all read them from there.
 
+The test suite runs under `pytest-xdist` (`-n auto` via `pyproject.toml`'s
+`addopts`) by default; pass `-n0` to run serially when debugging with `-s`,
+`--pdb`, or `-x`.
+
 ## Working in this repo
 
 **Repo layout:** `claude/` is the stow package — `claude/.claude/` maps 1:1 to `~/.claude/`. Skills, hooks, and reviewer agents live under `claude/.claude/skills/`, `claude/.claude/hooks/`, and `claude/.claude/agents/` respectively.

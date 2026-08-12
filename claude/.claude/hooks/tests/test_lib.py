@@ -124,6 +124,7 @@ def test_non_bash_tool_with_file_path_returns_ok_empty_command() -> None:
     assert result.stdout.startswith("OK:Edit:"), repr(result.stdout)
 
 
+@pytest.mark.timing
 def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     """Hung jq (sleeping >5s) → DENY via timeout exit=124, within 6s.
 
@@ -191,6 +192,7 @@ def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> Non
     assert result.stdout.startswith("OK:Bash:ls"), repr(result.stdout)
 
 
+@pytest.mark.timing
 def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> None:
     """timeout(1) on PATH, no gtimeout: _lib_capped_for kills a hung command at the given cap, exit 124."""
     import shutil
@@ -218,6 +220,7 @@ def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> Non
     assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the timeout branch did not fire"
 
 
+@pytest.mark.timing
 def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: Path) -> None:
     """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): _lib_capped_for still enforces the cap."""
     import shutil
