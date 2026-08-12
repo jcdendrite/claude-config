@@ -1077,3 +1077,80 @@ class TestWorktreeCollisionGuard:
         assert _worktree_lock_reason(worktree) is not None, (
             "hook must not auto-evict an unparseable-reason lock"
         )
+
+    def test_foreign_live_lock_still_allows_read_via_fast_path(
+        self, isolated_home, opted_in_with_worktree, live_pid, tmp_path
+    ):
+        """A worktree collision-locked by a different live session must not
+        block a read-only command on the fast path -- the guard exists to
+        gate writes, not reads. A `git` wrapper counts `worktree list
+        --porcelain` calls, proving the guard was actually invoked and fell
+        through to the parser's read exemption rather than being bypassed
+        entirely -- a bare allow assertion on hook stdout can't distinguish
+        that from the rejected simpler design (drop the guard from the
+        fast path altogether), which would produce the same allow verdict
+        with zero guard invocations."""
+        _, worktree = opted_in_with_worktree
+        foreign_pid = live_pid
+        _lock_worktree(worktree, f"claude-code pid {foreign_pid}")
+
+        real_git = shutil.which("git")
+        assert real_git is not None, "git must be on PATH to build the wrapper"
+        fake_bin = tmp_path / "_fake_bin"
+        fake_bin.mkdir()
+        counter_file = tmp_path / "_porcelain_read_count"
+        counter_file.write_text("0")
+        wrapper = fake_bin / "git"
+        wrapper.write_text(f"""#!/bin/bash
+if [ "$1" = "-C" ] && [ "$2" = "{worktree}" ] && [ "$3" = "worktree" ] && [ "$4" = "list" ] && [ "$5" = "--porcelain" ]; then
+  count=$(cat "{counter_file}")
+  count=$((count + 1))
+  printf '%s' "$count" > "{counter_file}"
+fi
+exec "{real_git}" "$@"
+""")
+        wrapper.chmod(0o755)
+
+        result = run_hook(
+            WORKTREE_HOOK, bash_input("git status"), cwd=worktree, home=isolated_home,
+            extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        )
+        assert result == "allow"
+        assert int(counter_file.read_text()) == 2, (
+            "the guard makes exactly two `worktree list --porcelain` calls "
+            "for this scenario (self-lock check, then the post-failed-lock "
+            "diagnosis re-read -- see test_reread_shows_unlocked_still_denies "
+            "in test_lib_worktree_collision_guard.py for the same count "
+            "pinned at the function level); a different count means either "
+            "the guard was bypassed (0) or invoked extra times by a "
+            "regression in the fallthrough"
+        )
+
+    def test_foreign_dead_lock_still_allows_read_via_fast_path(self, isolated_home, opted_in_with_worktree):
+        """Same as above for a dead-pid foreign lock -- a read must be
+        allowed regardless of which deny branch the guard would have taken
+        for a write."""
+        _, worktree = opted_in_with_worktree
+        dead_pid = _dead_pid()
+        _lock_worktree(worktree, f"claude-code pid {dead_pid}")
+
+        assert run_hook(WORKTREE_HOOK, bash_input("git status"), cwd=worktree) == "allow"
+
+    def test_read_in_freshly_unlocked_worktree_still_acquires_lock(self, isolated_home, opted_in_with_worktree):
+        """Pre-existing, unchanged-by-this-diff side effect made explicit:
+        the fast path calls the collision guard unconditionally, even for a
+        read, so a read against a virgin (never-locked) worktree still
+        claims the exclusive `git worktree lock` as a byproduct of the
+        guard diagnosing "unlocked" and acquiring it -- the guard has no
+        way to know in advance that the caller only intends a read. The
+        "reads are always allowed" invariant this fix restores is about the
+        allow/deny decision, not about the guard's own lock-acquisition
+        side effect, which this diff does not change."""
+        _, worktree = opted_in_with_worktree
+        assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
+
+        assert run_hook(WORKTREE_HOOK, bash_input("git status"), cwd=worktree) == "allow"
+
+        reason = _worktree_lock_reason(worktree)
+        assert reason is not None, "the guard's own unconditional call is expected to lock the worktree"
+        assert f"pid {os.getpid()}" in reason
