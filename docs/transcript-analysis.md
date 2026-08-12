@@ -730,6 +730,51 @@ Total             22          141   13.5%
 
 ---
 
+## rearm-backtest
+
+**Purpose.** Backtest candidate re-arm band spacings for `nudge-handoff-near-context-cap.sh`'s one-shot nudge against the recorded corpus, before shipping a spacing value on guesswork. Each session's own real first-fire point (the lesser of 40% of its model's context window and the fixed 360,000-token `_HANDOFF_NUDGE_ABS_CAP` — mirroring the hook's actual behavior for both the 200k- and 1M-context-window arms) is held fixed; only re-arm spacing *past* that point is backtested. Model routing is likewise not replay-testable from session JSONL alone. The report states both exclusions explicitly rather than silently omitting them. See `.claude/plans/handoff-nudge-rearm-backtest.md` for the full design.
+
+Each candidate spacing is replayed against every in-scope session's own recorded turn sequence: real context/output growth is never altered, only the dollars charged after a simulated re-arm point are re-priced. That re-pricing uses a fresh-session rebuild ramp — $/1k-output-tokens bucketed by turn-index-since-a-fresh-start, re-derived from the current corpus every run (PR #605's own turn-index bands are reused for comparability, but the multipliers are never hardcoded — that PR's own table is a one-off, non-reproducible measurement). Two figures are reported per spacing:
+
+- **perfect** — the session splits at the first *hook-observable boundary* at or after a band crossing (`UserPromptSubmit`/`Stop`'s own sampling points, reconstructed from the transcript). This is a ceiling: it assumes the operator acts on the nudge the instant it's technically visible.
+- **realistic** — the same boundary detection, plus an empirically measured operator-response lag: how far past each historical nudge's fire point (`~/.claude/.handoff-nudge.log`'s own `nudged` lines) sessions in this corpus actually kept running.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir`. Refused together with `--no-redact` once more than one root is in scope.
+- `--since Nd` — limit to sessions with a first timestamp in the last N days (e.g. `30d`). Scopes whole sessions, not individual turns within one — a re-arm simulation's turns-since-restart positioning depends on a session's own turn sequence staying intact.
+- `--branches B1,B2,...` — whole-session branch filter: a session with no matching main-thread turn is excluded entirely (default: all)
+- `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
+- `--spacings N1,N2,...` — comma-separated candidate re-arm spacings in tokens past the first fire (default: `40000,80000,120000`)
+
+**Sample output.**
+```
+## Re-arm spacing backtest (last 60d, generated 2026-08-11)
+
+Sessions in scope: 214
+Operator-response-lag sample: 4 joined 'nudged' log line(s) (0 excluded -- no matching session in scope), median lag 98,540 tokens past the fire point
+
+Model routing and each session's own fire threshold (the lesser of 40% of its model's context window and the fixed 360,000-token _HANDOFF_NUDGE_ABS_CAP -- mirroring the hook's real behavior) are held fixed and are NOT backtested by this report -- only re-arm spacing past the first fire varies.
+
+   Spacing        Model              $   DeltaUSD      C_bar    DeltaCbar
+-------------------------------------------------------------------------
+  baseline       actual       5,905.00         --    248,000           --
+    40,000      perfect       4,930.10     -974.90    189,400      -58,600
+    40,000    realistic       5,410.55     -494.45    212,900      -35,100
+    80,000      perfect       5,080.75     -824.25    198,700      -49,300
+    80,000    realistic       5,455.30     -449.70    215,600      -32,400
+   120,000      perfect       5,220.40     -684.60    206,500      -41,500
+   120,000    realistic       5,510.85     -394.15    218,800      -29,200
+```
+
+`C_bar` is an output-token-weighted mean context depth across the scoped corpus (`cost ~= N x C_bar x rate`, `.claude/plans/token-cost-reduction.md`'s own framing): turns before a session's first simulated split use their real recorded `context_at_turn`; turns after a split use the ramp curve's own bucket mean-context, since the counterfactual model never reconstructs a full context trajectory for the "what if this had been a fresh session" branch.
+
+A `nudged` log line whose session id has no match in the resolved scope (a since-deleted transcript, or a session from an account/root outside `--projects`/`--this-repo`/`--config-dir`) is excluded from the operator-response-lag sample and the excluded count is reported, not silently dropped — a near-100% exclusion rate signals a broken join, not sparse data.
+
+**When to reach for it.** Pick a re-arm spacing for `nudge-handoff-near-context-cap.sh`'s Phase 3 rollout against measured dollars and `C_bar`, instead of shipping one of the three candidate values on the parent plan's own `[unverified]` assumption.
+
+---
+
 ## audit-routing-shape
 
 **Purpose.** Turn-shape distributions for Opus code-read turns across three dimensions: files-Read per turn (D1), code-read streak lengths (D2), and read-then-edit ratio (D3).
