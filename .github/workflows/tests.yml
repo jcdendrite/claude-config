@@ -23,19 +23,31 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-24.04
-    # pytest itself measures at ~4m7s (PR #611's CI run,
-    # https://github.com/jcdendrite/claude-config/actions/runs/31421062875/job/93561720972).
-    # One hung-jq test can additionally take up to ~12s
-    # (claude/.claude/hooks/tests/test_hook_alignment.py, "elapsed < 12").
-    # claude/.claude/hooks/tests/test_deny_pii_in_commits.py adds four more
-    # sleep-based git-timeout tests (each blocking up to ~9.5s while the 5s
-    # _lib_capped cap fires), up to ~38s more in the worst case; the
-    # shellcheck step adds ~10s; apt-get update + install stow adds another
-    # ~10-20s on a typical runner, more on a stale package-index cache.
-    # 10 minutes gives roughly double the current measured worst-case total
-    # (~5 min) so continued organic test-suite growth doesn't require
-    # another bump on every PR that happens to add the next test.
+    # pytest now runs as two passes (see the "Run tests" steps below): a
+    # parallel pass under -n auto covering everything not marked `timing`,
+    # and a serial (-n0) pass covering only the wall-clock-sensitive `timing`
+    # tests, which would flake under sibling-worker load. Each pass pays its
+    # own full collection; the timing pass also carries the suite's
+    # deliberate timeout-blocking tests one at a time (e.g.
+    # claude/.claude/hooks/tests/test_hook_alignment.py's "elapsed < 12" and
+    # claude/.claude/hooks/tests/test_deny_pii_in_commits.py's four
+    # "elapsed < 9.5" git-timeout tests). A single-invocation run (pre-split)
+    # measured ~4m7s (PR #611's CI run,
+    # https://github.com/jcdendrite/claude-config/actions/runs/31421062875/job/93561720972);
+    # the two-pass split trades that one number for parallel-pass wall time
+    # plus a mostly-serial timing pass, not yet re-measured end to end here.
+    # Add to that the shellcheck step (~10s) and apt-get update + install
+    # stow (~10-20s on a typical runner, more on a stale package-index
+    # cache). 10 minutes gives headroom above the two-pass total so
+    # continued organic test-suite growth doesn't require another bump on
+    # every PR that happens to add the next test.
     timeout-minutes: 10
+    env:
+      # Dial CI parallelism from the repo Variables settings page (e.g.
+      # during a flake incident) without a PR. Unset/empty falls through to
+      # xdist's own auto-detection (psutil physical-core count if psutil is
+      # importable, else os.cpu_count() logical cores).
+      PYTEST_XDIST_AUTO_NUM_WORKERS: ${{ vars.PYTEST_XDIST_AUTO_NUM_WORKERS }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -139,9 +151,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y stow
 
-      - name: Run tests
+      - name: Report runner core count
         if: steps.detect.outputs.changed == 'true'
-        run: pytest claude/.claude/ plugins/ -v
+        run: nproc
+
+      - name: Run tests (parallel)
+        if: steps.detect.outputs.changed == 'true'
+        run: pytest claude/.claude/ plugins/ -v -m "not timing"
+
+      # !cancelled() (not bare `if:`) so a parallel-pass failure above doesn't
+      # suppress this step's own report in the same run.
+      - name: Run tests (timing, serial)
+        if: ${{ !cancelled() && steps.detect.outputs.changed == 'true' }}
+        run: pytest claude/.claude/ plugins/ -v -m timing -n0
 
       - name: Lint
         if: steps.detect.outputs.changed == 'true'

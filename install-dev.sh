@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-dev.sh — contributor dev-environment setup (not for end users)
-# Creates .venv and installs requirements-dev.txt (pytest, ruff, pyyaml, shellcheck-py).
+# Creates .venv and installs requirements-dev.txt (pytest, pytest-xdist, ruff, pyyaml, shellcheck-py).
 # Run from the main worktree root; the .venv lives there only.
 set -euo pipefail
 
@@ -53,7 +53,7 @@ fi
 # the final verification. Both sites call this function — one definition.
 check_venv_healthy() {
   [ -x .venv/bin/python ] \
-    && .venv/bin/python -c "import yaml, pytest" 2>/dev/null \
+    && .venv/bin/python -c "import yaml, pytest, xdist" 2>/dev/null \
     && .venv/bin/ruff --version >/dev/null 2>&1 \
     && .venv/bin/shellcheck --version >/dev/null 2>&1
 }

@@ -1494,6 +1494,8 @@ def _time_hook(repo, home) -> float:
 
 
 class TestRequirePlanReviewLatency:
+    pytestmark = pytest.mark.timing
+
     def test_marker_count_does_not_drive_read_cost(self, tmp_path, plan_review_home):
         """Tier 1 (current repo-hash prefix) stays ~flat as markers accumulate."""
         main = _init_repo_with_plan(tmp_path / "main-repo")
@@ -1718,6 +1720,7 @@ class TestRequirePlanReviewPlanMode:
             plan_mode_file.chmod(0o644)
         assert result == "deny"
 
+    @pytest.mark.timing
     def test_planfilepath_target_read_timeout_denies_within_budget(
         self, plan_review_repo, plan_review_home, tmp_path
     ):

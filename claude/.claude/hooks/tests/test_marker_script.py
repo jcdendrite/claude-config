@@ -1187,6 +1187,7 @@ class TestMarkerScriptPlanModeSibling:
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"an aborted write must not write a marker: {stray}"
 
+    @pytest.mark.timing
     def test_sibling_target_read_timeout_aborts_within_budget(
         self, isolated_home, git_repo, tmp_path
     ):

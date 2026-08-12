@@ -7,6 +7,15 @@ select = ["E", "F", "B", "I", "UP", "SIM"]
 
 [tool.pytest.ini_options]
 pythonpath = ["claude/.claude/tests", "evals", "plugins/skill-management/scripts", "plugins/lovable-cloud/tests"]
+# -n auto parallelizes the documented `pytest claude/.claude/` command itself
+# (not the command string, which is an exact-match permission grant in two
+# settings.json files) — pass -n0 on the CLI to debug serially (-s / --pdb / -x),
+# which overrides this cleanly. --strict-markers makes a typo'd marker name a
+# collection error instead of a silently-unfiltered test.
+addopts = ["-n", "auto", "--strict-markers"]
+markers = [
+  "timing: asserts a wall-clock bound; run serially (-m timing -n0) to avoid parallel-load flakiness — see claude/.claude/tests/test_pytest_collection_config.py",
+]
 # Setting norecursedirs replaces pytest's built-in default list rather than
 # extending it, so all nine defaults are restated here alongside "worktrees" —
 # dropping any of them (".*" especially) would silently re-expose hidden

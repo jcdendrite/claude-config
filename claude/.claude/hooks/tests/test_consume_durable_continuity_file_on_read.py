@@ -292,6 +292,7 @@ class TestConsumeDurableContinuityFileOnRead:
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
         assert run_hook_advisory(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home) == "allow"
 
+    @pytest.mark.timing
     def test_timeout_bounds_a_hung_resume_context(self, isolated_home):
         """The one property the timeout wrapper exists to guarantee — an SDET
         review round found it had no test, since there was no seam to inject

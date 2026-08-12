@@ -214,6 +214,7 @@ class TestDenyPiiInCommits:
             cwd=git_repo,
         ) == "deny"
 
+    @pytest.mark.timing
     def test_staged_diff_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
         """Required regression test for a High-severity finding: `git diff
         --cached`'s _lib_capped exit status previously went unchecked, so a
@@ -240,6 +241,7 @@ class TestDenyPiiInCommits:
         assert decision == "deny"
         assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
+    @pytest.mark.timing
     def test_work_tree_check_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
         """Required regression test: `git rev-parse --is-inside-work-tree`'s
         _lib_capped exit status must also fail closed on timeout (exit 124)
@@ -266,6 +268,7 @@ class TestDenyPiiInCommits:
         assert decision == "deny"
         assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
+    @pytest.mark.timing
     def test_head_rev_parse_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
         """Required regression test: `git rev-parse HEAD`'s _lib_capped exit
         status must fail closed on timeout, distinct from the legitimate
@@ -292,6 +295,7 @@ class TestDenyPiiInCommits:
         assert decision == "deny"
         assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
+    @pytest.mark.timing
     def test_head_diff_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
         """Required regression test: `git diff HEAD`'s _lib_capped exit
         status must fail closed on timeout, mirroring the STAGED_DIFF fix

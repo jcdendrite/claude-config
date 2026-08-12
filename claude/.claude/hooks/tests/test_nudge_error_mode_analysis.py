@@ -490,6 +490,7 @@ class TestNudgeErrorModeAnalysis:
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 
+    @pytest.mark.timing
     def test_friction_count_timeout_is_silent(self, tmp_path):
         """friction-count hanging past the timeout wrapper: hook exits 0 with
         no stdout. Uses a python3 shim that sleeps past the hook's 10s
@@ -648,6 +649,7 @@ class TestNudgeErrorModeAnalysis:
             "python3 must not be spawned for a path-traversal session_id"
         )
 
+    @pytest.mark.timing
     def test_latency_under_2s_for_realistic_transcript(self, tmp_path):
         """Hook completes well under the 10s timeout wrapper for a transcript far
         larger than any real one measured on the implementing machine (see the
