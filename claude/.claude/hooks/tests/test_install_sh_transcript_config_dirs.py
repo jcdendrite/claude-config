@@ -66,7 +66,8 @@ def _run(test_home: Path, config_dir: str | None) -> subprocess.CompletedProcess
 class TestInstallShTranscriptConfigDirs:
     def test_diverged_config_dir_prints_tip(self, tmp_path: Path) -> None:
         """CLAUDE_CONFIG_DIR resolving to a different real path than the
-        default ~/.claude prints a TIP naming both resolved paths."""
+        default ~/.claude prints a TIP naming both resolved paths, plus the
+        roots-file-absent line since no roots file exists in this fixture."""
         test_home = tmp_path / "home"
         (test_home / ".claude").mkdir(parents=True)
         other_profile_dir = tmp_path / "other-profile" / ".claude"
@@ -77,6 +78,7 @@ class TestInstallShTranscriptConfigDirs:
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert "TIP" in result.stdout
         assert os.path.realpath(other_profile_dir) in result.stdout
+        assert "transcript-config-dirs doesn't exist on this machine yet" in result.stdout
 
     def test_config_dir_resolving_to_same_path_is_silent(self, tmp_path: Path) -> None:
         """CLAUDE_CONFIG_DIR set but naming the same path as ~/.claude prints
@@ -92,7 +94,12 @@ class TestInstallShTranscriptConfigDirs:
         assert result.stderr == ""
 
     def test_unset_config_dir_is_silent(self, tmp_path: Path) -> None:
-        """CLAUDE_CONFIG_DIR unset (the common case) prints nothing."""
+        """CLAUDE_CONFIG_DIR unset (the common case) prints nothing -- this
+        fixture also has no roots file, so it doubles as proof that a
+        non-diverged profile gets no roots-file-absent nudge either: that
+        miss is accepted, since a non-diverged profile has no divergence TIP
+        to attach the nudge to and a single-account machine has nothing to
+        add."""
         test_home = tmp_path / "home"
         (test_home / ".claude").mkdir(parents=True)
 

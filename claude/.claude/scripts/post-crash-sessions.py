@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 from pathlib import Path
 
-from _config_dir import config_dir, declared_roots_matching
+from _config_dir import TRANSCRIPT_CONFIG_DIRS_LABEL, config_dir, declared_roots_file_state, declared_roots_matching
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -963,6 +963,30 @@ def _account_ordinal_map(config_dirs: list[Path]) -> dict[str, str]:
     return ordinal_map
 
 
+def _config_dirs_scanned_note(*, config_dirs_explicit: bool, root_count: int) -> str:
+    """Qualify the "Config directories scanned" line so its count alone never
+    has to stand in for provenance: an explicit --config-dir override, an
+    absent roots file, and a roots file that declares nothing usable all
+    otherwise render identically at one root. Never names the roots file's
+    resolved path, only its display label.
+
+    Beyond one root the raw-paths/count already shows the roots file
+    contributed, so no note is needed there; and an explicit override is
+    noted regardless of root_count, since the roots file plays no part in
+    that run either way.
+    """
+    if config_dirs_explicit:
+        return f" (--config-dir passed explicitly; {TRANSCRIPT_CONFIG_DIRS_LABEL} not consulted)"
+    if root_count != 1:
+        return ""
+    state = declared_roots_file_state()
+    if state == "absent":
+        return f" (no {TRANSCRIPT_CONFIG_DIRS_LABEL} declared)"
+    if state == "unreadable":
+        return f" ({TRANSCRIPT_CONFIG_DIRS_LABEL} present but unreadable)"
+    return f" ({TRANSCRIPT_CONFIG_DIRS_LABEL} declared; contributed no additional directories)"
+
+
 def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = False, now: float | None = None) -> str:
     lines: list[str] = ["# Post-crash session recovery report", ""]
 
@@ -970,10 +994,13 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
     # --config-dir themselves -- the declared-roots-file default must never
     # disclose paths they didn't type this run.
     show_raw_config_dirs = not redact and (config_dirs_explicit or len(report.config_dirs) == 1)
+    scanned_dirs_note = _config_dirs_scanned_note(
+        config_dirs_explicit=config_dirs_explicit, root_count=len(report.config_dirs),
+    )
     if show_raw_config_dirs:
-        lines.append(f"Config directories scanned: {', '.join(str(d) for d in report.config_dirs)}")
+        lines.append(f"Config directories scanned: {', '.join(str(d) for d in report.config_dirs)}{scanned_dirs_note}")
     else:
-        lines.append(f"Config directories scanned: {len(report.config_dirs)}")
+        lines.append(f"Config directories scanned: {len(report.config_dirs)}{scanned_dirs_note}")
     lines.append(
         "Freshness: a dead pid in the registry is only crash evidence until that pid is reused — "
         "run this before starting new Claude Code sessions after a reboot, since a fresh session can "

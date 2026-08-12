@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, run_hook_reason
+from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
@@ -6322,6 +6322,39 @@ class TestCostResolveRoots:
         roots = _mod._resolve_cost_roots(_cost_args(no_redact=True))
         assert roots == [default_dir / "projects"]
 
+    def test_summary_narrows_to_active_root_only_ignoring_declared_and_config_dir(
+        self, tmp_path, monkeypatch, fake_config_dir_factory
+    ):
+        """Mechanism 1a: --summary resolves to config_dir()/projects alone,
+        skipping both declared_transcript_roots() and --config-dir extras
+        entirely -- --summary already refuses --config-dir in combination at
+        _cost_report, so this only has to prove the union itself never
+        forms."""
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod, "declared_transcript_roots", lambda: [tmp_path / "declared-account"])
+        acct_b = fake_config_dir_factory("acct-b")
+        roots = _mod._resolve_cost_roots(_cost_args(summary=True, extra_config_dirs=[str(acct_b)]))
+        assert roots == [default_dir / "projects"]
+
+    def test_declared_roots_union_unaffected_for_non_cost_subcommand(self, tmp_path, monkeypatch):
+        """Mechanism 1 narrows _resolve_cost_roots only for subcommand ==
+        "cost" -- a populated declared-roots file still unions for every
+        other _SUBCOMMANDS_WITH_OWN_CONFIG_DIR caller, since only cost's
+        argparser defines --summary today and the gate is on `subcommand`,
+        not on a bare summary_mode check."""
+        active = tmp_path / "acct-a"
+        (active / "projects").mkdir(parents=True)
+        other = tmp_path / "acct-b"
+        (other / "projects").mkdir(parents=True)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(active))
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{other}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+        roots = _mod._resolve_cost_roots(_context_distribution_args(), subcommand="context-distribution")
+        assert roots == [active / "projects", other / "projects"]
+
 
 class TestCostMultiRootReport:
     """_cost_report's roots parameter: per-root scan diagnostics, the three
@@ -7381,6 +7414,44 @@ class TestCostTokensColumn:
         assert int(input_cols["Tokens"].replace(",", "")) == 100_000  # not 1,100,000
 
 
+def _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:
+    """Active profile (config_dir() via CLAUDE_CONFIG_DIR) plus one declared
+    root (via TRANSCRIPT_CONFIG_DIRS_FILE), each holding a matching --this-repo
+    project dir ("-repo-main") with a nonzero-cost transcript on branch
+    "main" -- the minimal fixture mechanism 1's --summary narrowing test and
+    its non-summary union counterpart share. Mocks `git worktree list` /
+    `git rev-parse --show-toplevel` the same way every other --this-repo
+    TestCostSummary fixture does."""
+    active = tmp_path / "acct-active"
+    other = tmp_path / "acct-other"
+    (active / "projects").mkdir(parents=True)
+    (other / "projects").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(active))
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{other}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+    slug = "-repo-main"
+    proj_active = active / "projects" / slug
+    proj_active.mkdir(parents=True)
+    _write_jsonl(proj_active / "sess-active.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
+    proj_other = other / "projects" / slug
+    proj_other.mkdir(parents=True)
+    _write_jsonl(proj_other / "sess-other.jsonl", [_priced("claude-sonnet-5", input=5_000_000)])  # $10.00
+
+    monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+    def fake_run(cmd, *a, **k):
+        if cmd[:3] == ["git", "worktree", "list"]:
+            porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/main\n"
+            return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+        assert cmd == ["git", "rev-parse", "--show-toplevel"]
+        return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    return active / "projects", other / "projects"
+
+
 class TestCostSummary:
     """--summary: a structurally scoped, aggregate-only rendering branch."""
 
@@ -7522,6 +7593,7 @@ class TestCostSummary:
         assert "## Top" not in out
         assert "## Cost by project" not in out
         assert "## Cost by context-at-turn bucket" not in out
+        assert "## Cost by account" not in out
         assert "1 priced sessions" in out
         assert "1 priced turns" in out
 
@@ -7616,6 +7688,140 @@ class TestCostSummary:
         _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "STALE PRICING" not in out
+
+    def test_summary_totals_equal_active_root_only_when_second_account_declared(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mechanism 1's core guarantee, driven through cmd_cost (not
+        _cost_report directly) so _resolve_cost_roots' own narrowing is
+        actually exercised: with two declared roots and a matching,
+        nonzero-cost --this-repo project dir under each, cost --this-repo
+        --branches main --summary's total equals the active root's total
+        exactly -- the other declared account's $10.00 is excluded, not just
+        unlabeled -- and the per-root scan line appears exactly once."""
+        _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
+        _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(2.00)  # not 12.00 -- other account excluded
+        assert out.count("cost: account-1: scanned") == 1
+
+    def test_without_summary_the_same_fixture_still_unions_both_accounts(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Allow-path counterpart: the identical two-declared-root fixture,
+        the same command minus --summary, still unions both accounts' totals
+        -- proves mechanism 1's narrowing is --summary-specific, not a
+        blanket regression on --this-repo plus a declared root."""
+        _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
+        _mod.cmd_cost(_cost_args(this_repo=True, branches="main"))
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(12.00)
+
+    def test_summary_scope_line_states_single_account_and_that_dropping_flag_widens_it(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """1c: the Scope: line must make it legible to a reader that dropping
+        --summary from the printed command returns a different, larger
+        total, not just state a transcript count."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        assert (
+            "Scope: this account only (1 transcripts scanned, 1 priced sessions, 1 priced turns)"
+            " — dropping --summary reports every declared account too"
+        ) in out
+
+    def test_direct_cost_report_call_refuses_more_than_one_root_under_summary(
+        self, tmp_path, capsys
+    ):
+        """Defense-in-depth (1b): _cost_report itself refuses summary_mode
+        with more than one resolved root, since every direct caller
+        (including this module's own tests) bypasses _resolve_cost_roots'
+        CLI-level narrowing. The fixture clears both of _cost_report's
+        earlier summary-mode exit-2 paths (this_repo=True, projects left at
+        the accepted default "*", no by_project/no_redact/extra_config_dirs)
+        so the new guard is the one that actually fires; asserting only the
+        exit code would pass even with the new guard unimplemented, since
+        either earlier refusal also exits 2 -- the guard's own distinct
+        message is what proves it fired."""
+        root_a = tmp_path / "acct-a" / "projects"
+        root_a.mkdir(parents=True)
+        root_b = tmp_path / "acct-b" / "projects"
+        root_b.mkdir(parents=True)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_report(
+                _cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[root_a, root_b],
+            )
+        assert exc_info.value.code == 2
+        assert "refusing to report a multi-account total" in capsys.readouterr().err
+
+    def test_summary_stdout_with_priced_data_never_leaks_a_home_rooted_path(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Shape-level redaction guard over the FULL --summary stdout: no
+        /Users/, /home/, or the tmp_path fixture's own substring may appear
+        -- a denylist of specific known strings wouldn't catch a new line
+        added to this path later."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        assert "/Users/" not in out
+        assert "/home/" not in out
+        assert str(tmp_path) not in out
+
+    def test_summary_stdout_never_leaks_a_home_rooted_path_in_the_zero_transcripts_warning(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Same shape-level guard, exercising the WARNING: cost: account-N:
+        no transcripts found ... line specifically -- it also reaches
+        stdout (not stderr) under --summary and must pass the same guard,
+        so this repo's own slug dir is left with zero transcripts."""
+        projects = tmp_path / "projects"
+        (projects / "-repo-main").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        assert "WARNING: cost: account-1: no transcripts found" in out
+        assert "/Users/" not in out
+        assert "/home/" not in out
+        assert str(tmp_path) not in out
 
 
 class TestCostWorktreeAgentBranchCarryForward:
@@ -9693,6 +9899,27 @@ class TestCostLedgerReadMode:
             "        7      -3.2pp  rolled out F3 fix"
         )
 
+    def test_read_mode_still_returns_union_with_two_declared_roots(
+        self, fake_projects, cost_ledger_file, monkeypatch, tmp_path, capsys
+    ):
+        """Mechanism 8 refuses only --record; a plain read with two declared
+        roots must still return the union unchanged -- pins that mechanism 8
+        does not touch read-mode semantics."""
+        other = tmp_path / "acct-other"
+        other_proj = other / "projects" / "-repo-main"
+        other_proj.mkdir(parents=True)
+        _write_jsonl(other_proj / "sess-other.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{other}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
+        out = capsys.readouterr().out
+        assert "COST LEDGER SOURCES (" in out
+        assert "2 roots" in out
+
 
 class TestCostLedgerSerializationRoundTrip:
     @staticmethod
@@ -10229,6 +10456,32 @@ class TestCostLedgerSentinelGate:
         assert cost_ledger_file.read_text() == before
         err = capsys.readouterr().err
         assert "must match" in err
+
+    def test_record_refuses_when_more_than_one_root_in_scope(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """Mechanism 8: --record refuses when a second account is in scope
+        via the declared-roots file, appending no row -- refusing this call
+        shape is what keeps mechanism 7's install.sh nudge from arming a
+        union commit to docs/cost-ledger.md, a public git-tracked file,
+        before the ledger's storage location is redesigned."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert "more than one root is in scope" in capsys.readouterr().err
+        assert cost_ledger_file.read_text() == before
 
 
 # ---------------------------------------------------------------------------
@@ -14581,9 +14834,9 @@ def _fake_gh_pr_list_run(cmd, *a, **k):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
-# (cli_name, header_name, cmd_func, zero-arg args factory) for the 18
+# (cli_name, header_name, cmd_func, zero-arg args factory) for the 22
 # subcommands whose resolved-scope header prints unconditionally, even over
-# an empty scope — the 19th and 20th funnel sites (review-trace,
+# an empty scope — the 23rd and 24th funnel sites (review-trace,
 # skill-invocation) defer their header print until something is found, so
 # they get their own seeded-session tests below instead.
 _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
@@ -14614,6 +14867,15 @@ _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("audit-routing-shape", "AUDIT ROUTING SHAPE", _mod.cmd_audit_routing_shape, _audit_routing_shape_args),
     ("audit-routing-samples", "AUDIT ROUTING SAMPLES", _mod.cmd_audit_routing_samples, _audit_routing_samples_args),
     ("judgment-pair", "JUDGMENT PAIR", _mod.cmd_judgment_pair, _judgment_pair_args),
+    ("edit-format", "EDIT FORMAT", _mod.cmd_edit_format,
+     lambda: type("A", (), {"projects": "*", "this_repo": False, "no_redact": False, "extra_config_dirs": None})()),
+    ("read-scope", "READ SCOPE", _mod.cmd_read_scope,
+     lambda: type("A", (), {"projects": "*", "this_repo": False, "no_redact": False, "extra_config_dirs": None})()),
+    ("cost-ledger", "COST LEDGER", _mod.cmd_cost_ledger, _cost_ledger_args),
+    ("sessions", "SESSIONS", _mod.cmd_sessions,
+     lambda: type("A", (), {
+         "projects": "*", "this_repo": False, "paths": True, "include_subagents": False,
+     })()),
 ]
 
 
@@ -14628,7 +14890,7 @@ class TestAllSubcommandsSingleRootHeader:
 
     @pytest.mark.parametrize("subcommand,header_name,cmd_func,args_factory", _UNCONDITIONAL_HEADER_CASES)
     def test_header_states_one_root_and_no_progress_line_prints(
-        self, fake_projects, monkeypatch, capsys, subcommand, header_name, cmd_func, args_factory
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys, subcommand, header_name, cmd_func, args_factory
     ):
         monkeypatch.setattr(subprocess, "run", _fake_gh_pr_list_run)
         cmd_func(args_factory())
@@ -14699,7 +14961,7 @@ class TestRootsThreadingSpy:
 
     @pytest.mark.parametrize("subcommand,header_name,cmd_func,args_factory", _UNCONDITIONAL_HEADER_CASES)
     def test_resolve_project_scope_and_header_receive_identical_multi_root_list(
-        self, tmp_path, monkeypatch, subcommand, header_name, cmd_func, args_factory
+        self, tmp_path, cost_ledger_file, monkeypatch, subcommand, header_name, cmd_func, args_factory
     ):
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         scope_calls: list[list] = []
@@ -15333,6 +15595,105 @@ class TestResolvedScopeHeaderDirectUnit:
         ]
         header = _mod._resolved_scope_header("cost", "this repo (2 project dirs)", roots)
         assert header == "COST SOURCES (this repo (2 project dirs); 3 roots)"
+
+
+class TestRootCountDescDirectUnit:
+    """Mechanism 2: _root_count_desc's one-root branch must distinguish the
+    roots file being absent from it being present but contributing no
+    additional root -- claiming "no ... declared" about a file that exists
+    would misrepresent it."""
+
+    def test_one_root_absent_roots_file_states_no_declared_roots_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
+        assert _mod._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+            "1 root (no ~/.claude/transcript-config-dirs declared)"
+        )
+
+    def test_one_root_present_but_additive_nothing_does_not_claim_undeclared(self, tmp_path, monkeypatch):
+        """The populated-but-additive-nothing case: the roots file exists
+        (comments-only, here) but every line was skipped, so exactly one
+        root is in scope -- the text must not claim the file is undeclared."""
+        roots_file = tmp_path / "roots"
+        roots_file.write_text("# just a comment\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+        desc = _mod._root_count_desc([tmp_path / "acct-a" / "projects"])
+        assert "no ~/.claude/transcript-config-dirs declared" not in desc
+        assert "~/.claude/transcript-config-dirs" in desc
+
+    def test_one_root_unreadable_roots_file_states_unreadable_not_declared(self, tmp_path, monkeypatch):
+        """A directory at the roots-file path raises OSError on read --
+        "unreadable", not "absent", and distinct from "present" (a failed
+        read never honored any declarations, so wording it as "declared"
+        would misrepresent the read that never happened); see
+        declared_roots_file_state()'s own docstring for why a directory (not
+        chmod) simulates this without silently degrading under a
+        root-executing test runner."""
+        roots_file_as_dir = tmp_path / "roots-is-a-directory"
+        roots_file_as_dir.mkdir()
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file_as_dir))
+        assert _mod._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+            "1 root (~/.claude/transcript-config-dirs present but unreadable)"
+        )
+
+    def test_multi_root_never_names_the_roots_file(self, tmp_path, monkeypatch):
+        """Extra roots may come from --config-dir, not only a declared-roots
+        file, so the >1-root branch must not name the file at all."""
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
+        roots = [tmp_path / "acct-a" / "projects", tmp_path / "acct-b" / "projects"]
+        assert _mod._root_count_desc(roots) == "2 roots"
+        assert "transcript-config-dirs" not in _mod._root_count_desc(roots)
+
+    def test_absent_state_literal_appears_in_both_skill_files(self, tmp_path, monkeypatch):
+        """Contract test, a tripwire not a full guarantee: derives
+        _root_count_desc()'s absent-state literal and asserts it appears in
+        both transcript-analysis/SKILL.md and transcript-narrative/SKILL.md
+        source text. This only catches the rendered literal drifting out of
+        sync with what the skills quote verbatim -- each skill's own
+        verbatim positive pin on its own scope-confirmation sentence (see
+        each skill's dedicated tests) is the real contract."""
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
+        literal = _mod._root_count_desc([tmp_path / "acct-a" / "projects"])
+        for skill_name in ("transcript-analysis", "transcript-narrative"):
+            skill_text = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
+            assert literal in skill_text, f"{skill_name}/SKILL.md does not quote _root_count_desc()'s literal"
+
+
+class TestSkillFilesReportObservedScopeNotUnionGuarantee:
+    """Mechanism 6: transcript-narrative/SKILL.md and transcript-analysis/SKILL.md
+    must instruct the reader to record the *observed* scope rather than assert
+    a multi-account union/unconditional-header guarantee that --summary makes
+    false. Each positive pin is the real contract (source-scanning a SKILL.md
+    is acceptable here -- it has no executable form to run, unlike the .py
+    files this module tests elsewhere). Each negative-grep pin is a tripwire
+    only: it catches the exact old sentence being re-added verbatim, not a
+    reworded regression that reintroduces the same false claim in different
+    words."""
+
+    def test_transcript_narrative_names_the_sessions_sources_line_to_record(self):
+        skill_text = (SKILLS_DIR / "transcript-narrative" / "SKILL.md").read_text()
+        assert (
+            "`sessions --paths` prints its resolved-scope header (`SESSIONS SOURCES (...)`) to stderr"
+            " — record that line."
+        ) in skill_text
+
+    def test_transcript_narrative_no_longer_asserts_every_declared_account_union(self):
+        skill_text = (SKILLS_DIR / "transcript-narrative" / "SKILL.md").read_text()
+        assert "every declared account, not just the active one — and read only those files" not in skill_text
+        assert "resolved against every declared account (`~/.claude/transcript-config-dirs`)" not in skill_text
+
+    def test_transcript_analysis_names_the_summary_scope_line_as_the_carrier(self):
+        skill_text = (SKILLS_DIR / "transcript-analysis" / "SKILL.md").read_text()
+        assert (
+            "`cost --summary` prints no resolved-scope header — it is always scoped to the active"
+            " account only, and states so on its own `Scope: this account only (...)` line instead"
+        ) in skill_text
+
+    def test_transcript_analysis_no_longer_claims_the_header_is_unconditional_for_every_subcommand(self):
+        skill_text = (SKILLS_DIR / "transcript-analysis" / "SKILL.md").read_text()
+        assert (
+            "not just the active profile. The resolved-scope header states the root count unconditionally,"
+            " even at one root with nothing declared — see \"Scope confirmation\" above."
+        ) not in skill_text
 
 
 class TestBuildRedactMapDirectUnit:

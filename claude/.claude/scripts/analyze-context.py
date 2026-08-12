@@ -211,14 +211,16 @@ def _session_meta_dir_for_root(root: Path) -> Path:
 
 
 def show_top(count: int, roots: Sequence[Path]) -> None:
-    _transcript_analysis._print_resolved_scope("top", "*", roots)
     meta_dirs = [_session_meta_dir_for_root(root) for root in roots]
     if not any(d.exists() for d in meta_dirs):
+        # stderr, not stdout: this is a failure exit, unlike the header print below it.
+        _transcript_analysis._print_resolved_scope("top", "*", roots, file=sys.stderr)
         print(
             f"Session metadata directory not found in any of {len(roots)} scanned roots",
             file=sys.stderr,
         )
         sys.exit(1)
+    _transcript_analysis._print_resolved_scope("top", "*", roots)
 
     sessions = []
     for meta_dir in meta_dirs:
@@ -287,6 +289,7 @@ examples:
     if args.session_id:
         jsonl = find_session_jsonl(args.session_id, roots)
         if jsonl is None:
+            _transcript_analysis._print_resolved_scope("session", args.session_id, roots, file=sys.stderr)
             print(f"Session not found: {args.session_id}", file=sys.stderr)
             sys.exit(1)
         analyze_session(args.session_id, jsonl, roots)
@@ -295,6 +298,7 @@ examples:
     project_key = cwd_to_project_key(Path.cwd())
     result = latest_session_jsonl(project_key, roots)
     if result is None:
+        _transcript_analysis._print_resolved_scope("session", project_key, roots, file=sys.stderr)
         print(
             f"No sessions found for project directory: {Path.cwd()}\n"
             "Run from the project root, or pass a session ID explicitly.",
