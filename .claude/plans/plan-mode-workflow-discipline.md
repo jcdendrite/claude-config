@@ -49,44 +49,28 @@ where `model:` pins hold — the 178/178 result is direct evidence that they do.
 C fixes nothing about the escalation and is not claimed to: no model setting
 can, because the override is keyed to `permissionMode`.
 
-What C fixes instead is a config that stops being true once A and B land.
-`opusplan` means Opus *in plan mode*, Sonnet during execution. With plan mode
-closed to the agent, its Opus half is reachable only through the one path the
-repo now tells agents not to take — so the prescribed workflow (`plan-it`
-outside plan mode) runs planning on Sonnet while the default advertises Opus
-planning. Flipping to `sonnet` makes the config honest about what is already
-happening, and moves the Opus decision into the open as an explicit choice.
+`opusplan` means Opus *in plan mode*; once A and B close that path to the
+agent, the default advertises a planning tier the prescribed workflow never
+uses — flipping to `sonnet` makes the config match what already happens, and
+moves the Opus decision into the open as an explicit choice.
 
-**The escalation path is a real workflow, not a consolation.** Start the
-session with `--model opus` and run `plan-it`: the parent's planning turns get
-Opus, and because `plan-it` no longer enters plan mode, the discovery fan-out
-resolves to Sonnet as pinned. This is the exact configuration the falsification
-test established for Opus-anchored, non-plan-mode parents: 178/178 dispatches
-resolved to Sonnet, honoring the pin. That corpus was reviewer-agent
-dispatches rather than `plan-it`'s own fan-out, so this rests on the mechanism
-generalizing across agent types — which is how the case study frames it — not
-on a measurement of this exact workflow. On that basis it is better than what
-`opusplan` plus plan mode produced, where the fan-out was the part on Opus.
+**The prescribed escalation path.** `--model opus` plus `plan-it` gets Opus
+parent turns with Sonnet fan-out — the configuration the falsification test
+validated (178/178), though that corpus was reviewer-agent dispatches rather
+than `plan-it`'s own fan-out, so this rests on the mechanism generalizing
+across agent types rather than a dispatch-for-dispatch measurement.
 
-Two things this plan does **not** claim about C, because neither survives the
-evidence. It is not a cost win on the common path: in a default session that
-never enters plan mode, `opusplan` and `sonnet` are the same thing, so the flip
-changes nothing there. And it is not a quality regression: under `opusplan`
-with A and B in place, the prescribed path was *already* running planning on
-Sonnet. The flip changes what the config says, not what the common path does.
-Its only behavioral delta is that a human who enters plan mode by hand gets
-Sonnet parent turns rather than Opus — subagents in that session still escalate
-either way.
+C is not a cost win on the common path: outside plan mode, `opusplan` and
+`sonnet` are identical, so the flip changes nothing there. It is not a quality
+regression either — with A and B in place, the prescribed path was already
+running planning on Sonnet under `opusplan`. Its only behavioral delta is that
+manual plan-mode entry now gets Sonnet parent turns instead of Opus.
 
-Two prior entries bear on C, and neither is contradicted here.
-`docs/cost-levers-considered.md:79` is this exact flip, dropped after four
-revisions on operational grounds — the settings-guard collision, the doc
-sweep, the escalation path — all of which this plan re-solves rather than
-disputes. `:27` is a broader "reduce Opus usage" lever closed on the grounds
-that Opus's 15.7% spend share was already acceptable; it is cited here only
-to note that the case for C is not a cost case and so does not reopen it. The
-appended follow-up must distinguish the two rather than implying either
-verdict was wrong.
+Two prior cost-lever entries touch this flip: `docs/cost-levers-considered.md:79`
+(this exact flip, dropped on now-resolved operational grounds) and `:27` (a
+broader Opus-usage lever, orthogonal since C is not a cost case). Neither is
+contradicted; the appended follow-up must distinguish the two rather than imply
+either verdict was wrong.
 
 ### Lever C — flip the session default
 
@@ -145,15 +129,10 @@ level rather than by convention. Per
 [the permission-modes doc](https://code.claude.com/docs/en/permission-modes):
 "Plan mode tells Claude to research and propose changes without making them.
 Claude reads files, runs shell commands to explore, and writes a plan, but
-does not edit your source." So the guarantee being given up is *no source
-edits* — not "no side effects," since shell commands still run. The substitute
-Lever A points at, `require-plan-review.sh`, gates Edit/Write/ExitPlanMode
-only once an uncommitted plan file already exists; it does not stop an agent
-skipping plan-file creation and going straight to code, and it does not cover
-Bash at all. This plan accepts that trade — the lost guarantee is narrower
-than it first appears, and the escalation it prevents is measured — but it is
-a trade, and it lands hardest on unattended sessions where no human is present
-to enter plan mode by hand.
+does not edit your source." The guarantee lost is therefore *no source edits*,
+not *no side effects* — shell still runs. `require-plan-review.sh` only gates
+once a plan file exists and never covers Bash, so the trade lands hardest on
+unattended sessions with no human to enter plan mode by hand.
 
 ### Lever A — advisory bullet in `claude/.claude/CLAUDE.md`
 
@@ -229,9 +208,10 @@ honor their `model: sonnet` pin, so `--model opus` plus `plan-it` yields Opus
 planning turns with Sonnet fan-out [verified: the mechanism the 178/178 result
 establishes — that corpus was `staff-*`/`ciso-reviewer` dispatches from
 Opus-anchored non-plan-mode parents, not `plan-it`'s own discovery fan-out, so
-this row rests on the mechanism generalizing across agent types as the case
-study frames it, not on a dispatch-for-dispatch match] — anchors: row1 — the
-escalation path is grounded, but its exact configuration is untested.
+this row rests on the mechanism generalizing across agent types as
+`docs/case-studies/plan-mode-model-resolution.md` frames it, not on a
+dispatch-for-dispatch match] — anchors: row1 — the escalation path is
+grounded, but its exact configuration is untested.
 Row 2b [mechanism]: flip `model` from `opusplan` to `sonnet` — anchors: row1 —
 once row1 closes plan mode to the agent, `opusplan`'s Opus half is reachable
 only through the path the agent is told not to take, so the default advertises
@@ -258,8 +238,8 @@ with no re-install, because install.sh stows settings.json as a symlink
 [verified: install.sh's `stow -t "$HOME" claude` invocation; CLAUDE.md
 "Changes under `claude/.claude/**` go live on `git pull`"] — anchors: row2b
 Row 6 [mechanism]: bare-name `"EnterPlanMode"` in `permissions.deny` —
-anchors: root — blocks autonomous plan-mode entry for the sessions row1
-cannot reach, namely those started with an explicit `--model opus`.
+anchors: root — blocks autonomous plan-mode entry in the case advisory prose
+alone cannot reach: an agent that ignores the bullet.
 Row 7 [assumption]: a bare tool name in `permissions.deny` removes that tool
 from the session's tool list [verified: measured this session — denying
 `WebSearch` dropped the init-event tool count 88→87; denying `EnterWorktree`
