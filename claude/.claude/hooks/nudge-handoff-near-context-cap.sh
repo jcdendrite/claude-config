@@ -1,6 +1,6 @@
 #!/bin/bash
 # hook-class: informational
-# UserPromptSubmit and Stop hook: injects a one-shot context-window nudge
+# UserPromptSubmit and Stop hook: injects a context-window nudge
 # when the estimated token count crosses the lesser of 40% of the model's
 # context window or an absolute-token cap (HANDOFF_NUDGE_ABS_CAP, default
 # 360000 — see docs/handoff-nudge.md for why cost tracks absolute tokens,
@@ -9,9 +9,11 @@
 # session that crosses the threshold on its final turn, with no further
 # user prompt, still gets warned.
 #
-# Nudge is one-shot per session: a marker file under
-# ~/.claude/.handoff-nudge-fired.d/<session_id> is written on first fire and
-# prevents repeated nudges in the same session.
+# Nudge re-arms at escalating token bands: a marker file under
+# ~/.claude/.handoff-nudge-fired.d/<session_id> holds the estimate that
+# triggered the most recent fire, and the hook fires again once the current
+# estimate reaches that value plus HANDOFF_NUDGE_REARM_SPACING (default
+# 80000 — see docs/handoff-nudge.md "Why this spacing").
 #
 # Kill-switch: touching ~/.claude/.handoff-nudge-disabled suppresses all
 # nudges globally (useful when running automated pipelines).
@@ -44,7 +46,8 @@
 #
 # Known limitations:
 #   - claude -p one-shot runs do not fire SessionEnd, so nudge-fired markers from
-#     those sessions accumulate without being cleaned up. Files are zero-byte.
+#     those sessions accumulate without being cleaned up. Files hold the
+#     triggering estimate from first fire onward, not zero bytes.
 #   - Model→window resolution below is a hardcoded, dated table — see docs/handoff-nudge.md.
 #   - An unrecognized model ID defaults to the 1M window, whose effective threshold
 #     is bounded by HANDOFF_NUDGE_ABS_CAP; a future smaller-window model can still
@@ -117,11 +120,11 @@ resolve_context_window() {
 # the same rule fire 5x later in dollar terms on a 1M-window model than a
 # 200k one; ABS_CAP bounds the pct arm — see docs/handoff-nudge.md "Why this
 # cap" for the grounding. HANDOFF_NUDGE_ABS_CAP overrides the cap; a
-# malformed value (empty, non-digit, zero-padded — an invalid octal literal
-# in bash arithmetic — or 10+ digits, which risks wrapping negative in bash's
-# signed 64-bit arithmetic) falls back to the default rather than letting
-# THRESHOLD degrade toward 0/unset or negative, either of which fires on
-# every session.
+# malformed value (empty, a literal zero, non-digit, zero-padded — an invalid
+# octal literal in bash arithmetic — or 10+ digits, which risks wrapping
+# negative in bash's signed 64-bit arithmetic) falls back to the default
+# rather than letting THRESHOLD degrade toward 0/unset or negative, either of
+# which fires on every session.
 # CONTEXT_WINDOW and PCT_THRESHOLD keep those exact names against the `local`
 # convention in claude/.claude/rules/shell-script-conventions.md:
 # test_doc_counts.py source-scans this file for the literal
@@ -129,10 +132,22 @@ resolve_context_window() {
 compute_threshold() {
   PCT_THRESHOLD=$(( CONTEXT_WINDOW * 40 / 100 ))
   case "$HANDOFF_NUDGE_ABS_CAP" in
-    ''|*[!0-9]*|0[0-9]*|?????????*) ABS_CAP=360000 ;;
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) ABS_CAP=360000 ;;
     *) ABS_CAP=$HANDOFF_NUDGE_ABS_CAP ;;
   esac
   THRESHOLD=$(( PCT_THRESHOLD < ABS_CAP ? PCT_THRESHOLD : ABS_CAP ))
+}
+
+# Re-arm spacing between nudges past the first fire — see
+# docs/handoff-nudge.md "Why this spacing" for the grounding.
+# HANDOFF_NUDGE_REARM_SPACING overrides it; same malformed-value guard as
+# HANDOFF_NUDGE_ABS_CAP above, for the same reason (a degraded spacing
+# toward 0 would re-fire on every turn; 10+ digits risks wrapping negative).
+resolve_rearm_spacing() {
+  case "$HANDOFF_NUDGE_REARM_SPACING" in
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) REARM_SPACING=80000 ;;
+    *) REARM_SPACING=$HANDOFF_NUDGE_REARM_SPACING ;;
+  esac
 }
 
 # Reads the latest assistant usage block from the last 200 lines of $1 and
@@ -398,9 +413,24 @@ if [ "$ESTIMATE" -lt "$THRESHOLD" ] 2>/dev/null; then
   exit 0
 fi
 
-# Already fired: suppress repeated nudges without logging (already recorded).
+# Already fired: suppress until the estimate has advanced REARM_SPACING
+# tokens past the last fire; re-arms rather than staying silent forever.
+resolve_rearm_spacing
 FIRED_MARKER="${MARKER_DIR}/${SESSION_ID}"
+LAST_FIRED_AT=""
 if [ -f "$FIRED_MARKER" ]; then
+  IFS= read -r LAST_FIRED_AT < "$FIRED_MARKER" 2>/dev/null || LAST_FIRED_AT=""
+fi
+# A corrupt/unreadable/pre-change-format marker reads as "no prior fire"
+# and forces a fire — mirrors the hook's write-failure posture (fail
+# toward firing, never toward staying silently suppressed). The explicit
+# `0` arm matters here too: the hook only ever writes ESTIMATE at fire
+# time, which is always >= THRESHOLD > 0, so a literal "0" marker is never
+# legitimate and must not be read as "last fired at token 0" — accepting
+# it as a real LAST_FIRED_AT would suppress future fires under a large
+# HANDOFF_NUDGE_REARM_SPACING override instead of forcing one.
+case "$LAST_FIRED_AT" in ''|0|*[!0-9]*|0[0-9]*|?????????*) LAST_FIRED_AT="" ;; esac
+if [ -n "$LAST_FIRED_AT" ] && [ "$ESTIMATE" -lt "$(( LAST_FIRED_AT + REARM_SPACING ))" ] 2>/dev/null; then
   exit 0
 fi
 
@@ -420,7 +450,7 @@ OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson thr
   find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
   printf 'nudged session=%s est=%s model=%s window=%s event=%s\n' \
     "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
-  touch "$FIRED_MARKER" 2>/dev/null || true
+  printf '%s\n' "$ESTIMATE" > "$FIRED_MARKER" 2>/dev/null || true
   printf '%s' "$OUTPUT"
 }
 
