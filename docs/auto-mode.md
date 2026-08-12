@@ -143,27 +143,28 @@ subagent that *inherits* the parent model runs on whatever that anchor model
 is.
 
 Subagent model resolution follows this **requested** order — not a
-guarantee. Measured: `staff-*`/`ciso-reviewer` dispatches carrying an
-explicit request or a frontmatter pin still resolved to Opus in a nontrivial
-share of sampled cases; see the global `CLAUDE.md`'s Model Routing section.
+guarantee outside auto mode's own resolution path either; see "Subagent
+delegation under plan mode" below for the measured mechanism and its
+falsification test.
 
 1. `CLAUDE_CODE_SUBAGENT_MODEL` environment variable (global override)
 2. The `model` parameter on the `Agent` dispatch
 3. The `model:` frontmatter in the agent's definition file
 4. The parent / main-conversation model (inherited)
 
-`Explore` sits outside this order entirely: this repo ships a same-named
-override, `claude/.claude/agents/Explore.md`, which replaces the built-in
-before resolution applies at all — its pin is a repo-owned fact, not a
-request the platform can decline.
+This repo ships a same-named override, `claude/.claude/agents/Explore.md`,
+which replaces the built-in `Explore` before resolution applies at all —
+see "Subagent delegation under plan mode" below for how its pin holds up
+under measurement.
 
-The routinely-dispatched built-in and repo-shipped subagents resolve as
-follows:
+The routinely-dispatched built-in and repo-shipped subagents' `model:`
+pins are requests competing with resolution step 4 (parent inheritance) —
+treat the table below as what each agent *asks for*:
 
-| Agent | Model under an auto-mode parent | Why |
+| Agent | Requested model | Why |
 |---|---|---|
-| `Explore` | Sonnet | `claude/.claude/agents/Explore.md` override — independent of parent model |
-| `staff-*`, `ciso-reviewer` | Requested Sonnet, resolved unreliably | `model: sonnet` frontmatter in `~/.claude/agents/` — not always honored |
+| `Explore` | Sonnet | `claude/.claude/agents/Explore.md` override |
+| `staff-*`, `ciso-reviewer` | Sonnet | `model: sonnet` frontmatter in `~/.claude/agents/` |
 | `code-writer` | Sonnet | `model: sonnet` frontmatter |
 | `general-purpose` | **Inherited from parent** | No model of its own — falls through to the parent |
 
@@ -183,6 +184,31 @@ Do **not** reach for `CLAUDE_CODE_SUBAGENT_MODEL` to solve this. It sits at
 resolution step 1 and overrides *every* subagent's model — including the
 `staff-*` reviewers' Sonnet pin. The per-dispatch `model` parameter is the
 targeted instrument; the env var is a blunt global hammer.
+
+## Subagent delegation under plan mode
+
+Plan mode is a separate axis from auto mode — a session can be in plan mode
+whether or not it is anchored via `--model auto`, and the two combine
+independently. Plan mode forces subagent dispatches to Opus regardless of a
+`model:` frontmatter pin or an explicit `model` param on the `Agent`
+dispatch, and this is confirmed independent of the parent's own model, not
+just correlated with it — `Explore`: 92/95 plan-mode dispatches resolved to
+Opus (97%) despite its pin; `staff-*`/`ciso-reviewer`: 340/341 (99.7%);
+across 500 plan-mode dispatches overall, 489 resolved to Opus including all
+70 that carried an explicit `model: sonnet` param. A falsification test
+ruled out the obvious confound (this repo's `opusplan` default makes plan
+mode and an Opus-anchored parent nearly synonymous) by isolating 178
+non-plan-mode dispatches from Opus-anchored parents: 178/178 still resolved
+to Sonnet, matching the pin. See
+[`case-studies/plan-mode-model-resolution.md`](case-studies/plan-mode-model-resolution.md)
+for the full investigation, primary-source citations, and rejected
+mitigations (`ExitPlanMode` timing, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS`).
+
+No instruction-layer mitigation is known. Pass an explicit `model` on every
+dispatch anyway (see the global `CLAUDE.md`'s Model Routing section) — it
+costs nothing, even though it won't change the outcome in plan mode. See
+the case study's "Rejected mitigations" section for the two real
+(non-instruction-layer) levers.
 
 ## Inspection and tuning
 

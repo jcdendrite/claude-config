@@ -79,3 +79,14 @@ Full empirical record: [`case-studies/hashline-edit-format.md`](case-studies/has
 | Flip `claude/.claude/settings.json`'s shared `model` default from `opusplan` to `sonnet` | Superseded, dropped after four revisions | Collided with `guard-settings-session-keys.sh`, which hard-blocks any Claude-Code-authored commit touching that key with no in-session bypass, requiring the engineer to commit it manually outside the harness. Also touched 11 sites across 5 files asserting "opusplan is the default," needed a new CHANGELOG entry and an escalation wrapper for Opus-during-planning users, and only fixed `Explore` for sessions already anchored to Sonnet — not one started with `--model opus`. Dropped in favor of the agent-owned override in `Explore.md`, which needs none of the above. |
 | `ANTHROPIC_MODEL=sonnet` environment variable | Rejected, sibling of the above | Sits above the `model` setting in Claude Code's own precedence order and only fixes one machine, not the repo-owned agent. |
 | `CLAUDE_CODE_SUBAGENT_MODEL` global override | Rejected, sibling of the above | A global override `docs/auto-mode.md` already advises against — it would force every subagent to one model, not just `Explore`. |
+
+**2026-08-11 follow-up, confirmed 2026-08-12:** the first row's "needs none
+of the above" claim is partly falsified — `Explore.md`'s `model: sonnet`
+override is not honored during harness plan mode (92/95 dispatches resolved
+to Opus anyway, ~75% of `Explore`'s corpus), confirmed independent of the
+`opusplan`-default confound by a falsification test (178/178 non-plan-mode
+dispatches with an Opus-anchored parent still honored their pin) — see
+[`case-studies/plan-mode-model-resolution.md`](case-studies/plan-mode-model-resolution.md).
+Verdict unchanged: the `opusplan`-flip complications this row recorded are
+unaffected by this finding; reopening the flip is a separate decision, not
+made here.
