@@ -234,10 +234,18 @@ from the session's tool list [verified: measured this session — denying
 removed it while `ExitWorktree` survived, showing removal is per-tool, not
 per-family] — anchors: row6
 Row 8 [assumption]: the same removal applies to `EnterPlanMode` specifically,
-leaving both `ExitPlanMode` and a human's Shift+Tab entry intact [unverified]
-— anchors: row7 — headless `-p` never exposes plan-mode tools even under
-`--permission-mode plan`, so only an interactive session can confirm; the
-engineer runs this check (see Verification).
+leaving `ExitPlanMode` and every human entry path intact [verified:
+interactive session against a full copy of the stowed settings.json —
+`EnterPlanMode` absent with no loadable schema; `ExitPlanMode` still present
+as a deferred tool; `Shift+Tab` and the `/plan` prefix both still entered plan
+mode] — anchors: row7 — headless `-p` never exposes plan-mode tools even under
+`--permission-mode plan`, so this could only be settled interactively.
+Row 8a [assumption]: interactive sessions honor project-scope bare-name deny,
+not only headless ones [verified: a `WebSearch` control, denied in the same
+full copy of the stowed `settings.json` used for Row 8's check, was
+behaviorally unavailable in the interactive session while the deferred
+`WebFetch` remained] — anchors: row7 — rules out the failure mode
+where the mechanism measured headlessly does not apply to real sessions.
 Row 9 [assumption]: no hook, test, or skill depends on `EnterPlanMode` being
 present [verified: `git grep -n EnterPlanMode -- claude/ docs/ README.md`
 returns nothing; require-plan-review.sh gates `ExitPlanMode`] — anchors: row6
@@ -304,41 +312,48 @@ row3 — forces the sequencing and the two-action rollback.
   three-column format and its existing dated-follow-up convention are both
   already established in-file; match them.
 
-## Pre-implementation gate
+## Pre-implementation gate — run, passed
 
-**This runs before Lever B is written, not after.** Row 8 is the one
-`[unverified]` assumption that decides whether Lever B ships at all, so
-checking it during Verification would mean implementing a lever that the
-check might delete.
+This gate must run before Lever B is implemented, since Row 8 decides whether
+Lever B ships at all; running it during verification instead would mean
+implementing a lever the check might delete. It is also the procedure to
+repeat for the periodic re-verification the residual-risk section commits to.
 
-The engineer, in a scratch directory outside this repo, appends
-`"EnterPlanMode"` to `permissions.deny` in a **copy of the real stowed
-`~/.claude/settings.json`**, not a minimal from-scratch file, and starts an
-interactive `claude` session against it. Two reasons the copy matters: the
-real file carries 30+ other deny entries plus a full hook and `skillOverrides`
-tree, so a minimal repro cannot rule out an interaction effect; and
-`review-permissions/REFERENCES.md` already records one case where project- and
-user-scope settings did *not* behave identically for permissions (subagent
-inheritance ignoring project-scope `.claude/settings.json`). That precedent is
-about subagent inheritance rather than the parent's own tool list, so it
-probably does not apply — but scope-swap-as-proxy has burned this repo once
-already.
+Setup: append `"EnterPlanMode"` to `permissions.deny` in a **full copy of the
+stowed `~/.claude/settings.json`** — not a minimal file — placed as
+`.claude/settings.json` in a scratch project, then start an interactive
+`claude` session there. The full copy matters because the real file carries
+30+ other deny entries plus a hook and `skillOverrides` tree that a minimal
+repro cannot rule out interacting with, and because
+`review-permissions/REFERENCES.md` records a prior case where project- and
+user-scope settings did not behave identically for permissions.
 
-Confirm four things:
+**Add a control tool to the same deny list** — a second, unrelated tool known
+to be removable. Without it a negative result is unattributable: it could mean
+the deny worked, or that the settings file was never loaded.
 
-1. The session exposes no `EnterPlanMode` tool.
-2. **Shift+Tab still enters plan mode** — the human's primary entry path.
-3. The **`/plan` prefix** still enters plan mode, and `defaultMode: "plan"`
-   still starts a session in it. The permission-modes doc names all three as
-   distinct entry paths; none routes through the tool, which is the premise
-   that makes this lever narrower than "prohibit plan mode."
-4. Once in plan mode, `ExitPlanMode` still works, so `require-plan-review.sh`'s
-   gate is unaffected.
+**Ask for tool *calls*, never for a tool inventory.** Self-reported tool lists
+are unreliable — a model can claim access to a tool that has been removed.
+Forcing an actual call makes the result observable: the call either happens or
+it does not.
 
-All four hold → implement Lever B as planned. Any one fails → drop Lever B,
-ship Levers A and C alone, and record the negative result as a row in
-`docs/cost-levers-considered.md`. Lever A's prose changes either way; only its
-"the tool is not available to you" framing would soften to advisory-only.
+Four checks:
+
+1. Instruct the session to *use* the control tool. It must be unable to.
+   (Failing this means the deny is not reaching interactive sessions at all,
+   which invalidates everything below.)
+2. Instruct the session to *call* `EnterPlanMode`. It must be unable to.
+3. `Shift+Tab` and the `/plan` prefix must both still enter plan mode — the
+   human's entry paths, which the permission-modes doc names as distinct from
+   the tool.
+4. `ExitPlanMode` must remain available, so `require-plan-review.sh`'s gate is
+   unaffected.
+
+**Result: all four passed** — see Row 8 and Row 8a for the verified specifics.
+Lever B ships as planned.
+
+Should a later re-run fail any check, drop Lever B and ship Levers A and C
+alone, recording the negative in `docs/cost-levers-considered.md`.
 
 ## Verification
 
