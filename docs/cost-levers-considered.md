@@ -80,14 +80,13 @@ Full empirical record: [`case-studies/hashline-edit-format.md`](case-studies/has
 | `ANTHROPIC_MODEL=sonnet` environment variable | Rejected, sibling of the above | Sits above the `model` setting in Claude Code's own precedence order and only fixes one machine, not the repo-owned agent. |
 | `CLAUDE_CODE_SUBAGENT_MODEL` global override | Rejected, sibling of the above | A global override `docs/auto-mode.md` already advises against — it would force every subagent to one model, not just `Explore`. |
 
-**2026-08-11 follow-up:** the first row's "needs none of the above" claim is
-partly falsified by later measurement (`plan-mode-model-routing.md`) —
-`Explore.md`'s `model: sonnet` override is not honored during harness plan
-mode (92/95 plan-mode `Explore` dispatches resolved to Opus anyway), which is
-roughly 75% of `Explore` dispatches in the measured corpus (95/127). The
-override still holds outside plan mode (0/32 opus). This does not reopen the
-row's verdict — the `opusplan`-flip complications it recorded (the
-settings-guard hard block, the 11-site "opusplan is the default" cleanup)
-are unaffected by this finding — see `docs/auto-mode.md`'s plan-mode
-subsection and that plan's "Out of scope" section for why reopening the flip
-is a separate decision, not made here.
+**2026-08-11 follow-up, confirmed 2026-08-12:** the first row's "needs none
+of the above" claim is partly falsified — `Explore.md`'s `model: sonnet`
+override is not honored during harness plan mode (92/95 dispatches resolved
+to Opus anyway, ~75% of `Explore`'s corpus), confirmed independent of the
+`opusplan`-default confound by a falsification test (178/178 non-plan-mode
+dispatches with an Opus-anchored parent still honored their pin) — see
+[`case-studies/plan-mode-model-resolution.md`](case-studies/plan-mode-model-resolution.md).
+Verdict unchanged: the `opusplan`-flip complications this row recorded are
+unaffected by this finding; reopening the flip is a separate decision, not
+made here.

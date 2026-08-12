@@ -143,35 +143,28 @@ subagent that *inherits* the parent model runs on whatever that anchor model
 is.
 
 Subagent model resolution follows this **requested** order — not a
-guarantee. Measured: outside plan mode, `staff-*`/`ciso-reviewer` dispatches
-carrying an explicit request or a frontmatter pin resolve to Sonnet reliably
-(~2/1,231 opus). The unreliability is not a property of auto mode's
-resolution order in general — it is concentrated in plan mode specifically
-(340/341 = 99.7% opus in plan mode, n=1,619 total) — see "Subagent delegation
-under plan mode" below and the global `CLAUDE.md`'s Model Routing section.
+guarantee outside auto mode's own resolution path either; see "Subagent
+delegation under plan mode" below for the measured mechanism and its
+falsification test.
 
 1. `CLAUDE_CODE_SUBAGENT_MODEL` environment variable (global override)
 2. The `model` parameter on the `Agent` dispatch
 3. The `model:` frontmatter in the agent's definition file
 4. The parent / main-conversation model (inherited)
 
-`Explore` sits outside this order entirely: this repo ships a same-named
-override, `claude/.claude/agents/Explore.md`, which replaces the built-in
-before resolution applies at all — its pin is a repo-owned fact, not a
-request the platform can decline, *outside plan mode* (0/32 opus across
-non-plan-mode `Explore` dispatches, measured). In plan mode the override is
-not honored (92/95 plan-mode dispatches resolved to Opus anyway, n=127
-total) — see "Subagent delegation under plan mode" below.
+This repo ships a same-named override, `claude/.claude/agents/Explore.md`,
+which replaces the built-in `Explore` before resolution applies at all —
+see "Subagent delegation under plan mode" below for how its pin holds up
+under measurement.
 
-The routinely-dispatched built-in and repo-shipped subagents resolve as
-follows (assumes a non-plan-mode auto session — see "Subagent delegation
-under plan mode" below for how this table breaks down once plan mode is
-also active):
+The routinely-dispatched built-in and repo-shipped subagents' `model:`
+pins are requests competing with resolution step 4 (parent inheritance) —
+treat the table below as what each agent *asks for*:
 
-| Agent | Model under an auto-mode parent | Why |
+| Agent | Requested model | Why |
 |---|---|---|
-| `Explore` | Sonnet | `claude/.claude/agents/Explore.md` override — independent of parent model |
-| `staff-*`, `ciso-reviewer` | Requested Sonnet, ~100% reliable outside plan mode | `model: sonnet` frontmatter in `~/.claude/agents/` — honored outside plan mode (~2/1,231 opus, measured) |
+| `Explore` | Sonnet | `claude/.claude/agents/Explore.md` override |
+| `staff-*`, `ciso-reviewer` | Sonnet | `model: sonnet` frontmatter in `~/.claude/agents/` |
 | `code-writer` | Sonnet | `model: sonnet` frontmatter |
 | `general-purpose` | **Inherited from parent** | No model of its own — falls through to the parent |
 
@@ -196,55 +189,26 @@ targeted instrument; the env var is a blunt global hammer.
 
 Plan mode is a separate axis from auto mode — a session can be in plan mode
 whether or not it is anchored via `--model auto`, and the two combine
-independently. Measured: while in plan mode, subagent dispatches resolve to
-Opus regardless of a `model:` frontmatter pin or an explicit `model` param
-on the `Agent` dispatch, at comparable rates across both the resolution
-order above and the repo-owned `Explore` override:
+independently. Plan mode forces subagent dispatches to Opus regardless of a
+`model:` frontmatter pin or an explicit `model` param on the `Agent`
+dispatch, and this is confirmed independent of the parent's own model, not
+just correlated with it — `Explore`: 92/95 plan-mode dispatches resolved to
+Opus (97%) despite its pin; `staff-*`/`ciso-reviewer`: 340/341 (99.7%);
+across 500 plan-mode dispatches overall, 489 resolved to Opus including all
+70 that carried an explicit `model: sonnet` param. A falsification test
+ruled out the obvious confound (this repo's `opusplan` default makes plan
+mode and an Opus-anchored parent nearly synonymous) by isolating 178
+non-plan-mode dispatches from Opus-anchored parents: 178/178 still resolved
+to Sonnet, matching the pin. See
+[`case-studies/plan-mode-model-resolution.md`](case-studies/plan-mode-model-resolution.md)
+for the full investigation, primary-source citations, and rejected
+mitigations (`ExitPlanMode` timing, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS`).
 
-- `Explore`: 92/95 plan-mode dispatches resolved to Opus (97%) despite the
-  `claude/.claude/agents/Explore.md` pin; 0/32 opus outside plan mode (n=127
-  total).
-- `staff-*`/`ciso-reviewer`: 340/341 plan-mode dispatches resolved to Opus
-  (99.7%); ~2/1,231 opus outside plan mode (n=1,619 total).
-- Across 500 plan-mode dispatches overall, 489 resolved to Opus, including
-  all 70 that carried an explicit `model: sonnet` param — 0/70 honored.
-
-This is platform behavior in the harness's plan-mode dispatch path, not
-something this repo's frontmatter or per-dispatch `model` param can
-override — see the global `CLAUDE.md`'s Model Routing section.
-
-Anthropic's own docs partially corroborate the mechanism, without fully
-explaining it. Claude Code ships a distinct built-in `Plan` subagent,
-separate from `Explore`, used specifically for plan-mode research
-([code.claude.com/docs/en/sub-agents](https://code.claude.com/docs/en/sub-agents)):
-"A research agent used during plan mode to gather context before
-presenting a plan... Model: inherits from the main conversation... When
-you're in plan mode and Claude needs to understand your codebase, it
-delegates research to the Plan subagent." No per-repo override for `Plan`'s
-model is documented — inheriting the parent is that agent's designed
-behavior. The same page states, unscoped, that a same-named override of
-`Explore` "keeps its own `model` field" — no plan-mode carve-out. The docs
-confirm a plan-mode-specific, non-overridable model-inheritance path exists
-by design for `Plan`; they do not explain why an explicitly-dispatched
-`Explore` exhibits the same behavior under that path. That connection is
-this session's own measurement, not a documented mechanism.
-
-No instruction-layer mitigation is known. Moving discovery fan-out to run
-after `ExitPlanMode` is not available, since `ExitPlanMode`'s own tool
-description states it can only be invoked once the plan file is already
-fully written ("Only use this tool ... when you have finished writing your
-plan to the plan file"), so plan-mode discovery cannot be deferred to a
-post-approval step without abandoning "explore before presenting a plan" as
-a workflow. `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` was checked and
-rejected, not left untested: "To remove only the built-in `Explore` and
-`Plan` subagents, set `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1`. Claude
-reads and explores files directly instead of delegating to them." That
-removes subagent delegation for research entirely rather than fixing its
-model — the parent's own already-Opus turns would do that work inline,
-a cost regression relative to even a mis-tiered subagent. The only real
-levers are revisiting the `opusplan` session default (see
-`docs/cost-levers-considered.md`) or accepting the cost as intrinsic to
-plan mode's explore-before-committing value.
+No instruction-layer mitigation is known. Pass an explicit `model` on every
+dispatch anyway (see the global `CLAUDE.md`'s Model Routing section) — it
+costs nothing, even though it won't change the outcome in plan mode. See
+the case study's "Rejected mitigations" section for the two real
+(non-instruction-layer) levers.
 
 ## Inspection and tuning
 

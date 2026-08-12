@@ -39,7 +39,7 @@ Find the plan to review. Check, in order:
 
 ## Step 2 — Detect domains
 
-Read the plan and classify which domains it touches. When using an agent to explore the codebase for plan context, use `general-purpose` — not `Explore` — with an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule; a no-op when `/plan-review` runs inside plan mode (0/70 honored, measured) but effective for invocations against an already-written plan file outside plan mode. The `Explore` agent reads excerpts and is not suitable for design-doc auditing or cross-file consistency checks; it misses content past its read window.
+Read the plan and classify which domains it touches. When using an agent to explore the codebase for plan context, use `general-purpose` — not `Explore` — with an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule. The `Explore` agent reads excerpts and is not suitable for design-doc auditing or cross-file consistency checks; it misses content past its read window.
 
 - **Infrastructure**: CI/CD, workflows, deployment, hosting, config files
 - **Data infrastructure**: Database migrations, schema DDL, RLS policies, CDC / change-stream config, ETL/ELT pipelines, warehouse ingestion connectors, raw landing schemas, schema-drift handling

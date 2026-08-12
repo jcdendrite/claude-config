@@ -32,7 +32,7 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 
 ## Step 3 — Codebase exploration
 
-Find similar features, the target subsystem, and integration points. Spawn `general-purpose` subagents in parallel when scope warrants — judge fan-out from surface area, do not default to a fixed count. Pass an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule; this step runs inside plan mode in the common case, where the param is measured 0/70 honored, but it holds for this skill's own non-plan-mode paths (e.g. the Step 1 plan-path-write-failure recovery). Read the files each subagent flags before designing. Do not use `Explore` here; its read-excerpt window is wrong for design-context analysis.
+Find similar features, the target subsystem, and integration points. Spawn `general-purpose` subagents in parallel when scope warrants — judge fan-out from surface area, do not default to a fixed count. Pass an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule. Read the files each subagent flags before designing. Do not use `Explore` here; its read-excerpt window is wrong for design-context analysis.
 
 **Pattern claims require a grep, not a single example.** Before asserting a code shape is "canonical," "the existing pattern," or "how the codebase does X," run `git grep` (or ripgrep) and count call sites. Cite the count ("12 of 13 modules use form X; one exception at `path/to/file:NN`") rather than a single example. A single-call-site citation establishes that the shape compiles, not that it is canonical — outliers look identical to canonical examples until you check the population.
 
