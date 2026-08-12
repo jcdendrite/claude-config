@@ -10,9 +10,17 @@ sonnet` override is "not a request the platform can decline." A root-cause
 investigation this session measured the opposite: during harness **plan
 mode**, subagent dispatches resolve to Opus regardless of frontmatter pin or
 an explicit `model` param on the `Agent` dispatch, while outside plan mode
-resolution is ~100% reliable. The docs never mention plan mode as a variable
-at all — they attribute the leak to auto-mode's request-based resolution
-order, which is a different, unaffected mechanism. The goal is to correct
+resolution is ~100% reliable. Primary-source verification (`verify-sources`,
+this session) found Anthropic's own sub-agents doc *does* mention plan mode
+as a variable, via a distinct built-in `Plan` subagent whose model
+"inherits from the main conversation" by design, with no per-repo override
+documented — unlike `Explore`, whose same-named-override "keeps its own
+`model` field" claim carries no plan-mode carve-out. The docs corroborate
+that a plan-mode-specific, non-overridable model-inheritance path exists;
+they do not explain why an explicitly-dispatched `Explore` exhibits it too.
+That specific mechanism remains corroborated only by this session's own
+measurement, not by the primary source — see G1's citation below. The goal
+is to correct
 every falsified claim with a citation to the measurement that falsifies it,
 fix one confirmed independent inconsistency, and record — rather than paper
 over — that no working mitigation exists for the plan-mode case today.
@@ -35,7 +43,7 @@ same measurement. anchors: root
 
 | # | Given | Reason |
 |---|---|---|
-| G1 | Plan mode forcing Opus onto subagent dispatches is platform behavior this repo's instruction layer cannot override | Confirmed by direct measurement of the dispatch/resolution mechanism, which lives in the harness, not in repo-owned files — [verified: root-cause investigation this session, personal-account corpus, Explore n=127 (92 opus in plan mode / 95 plan-mode dispatches = 97%, 0/32 opus outside plan mode), staff-*/ciso-reviewer n=1,619 (340/341 = 99.7% opus in plan mode, ~2/1,231 outside), 500 plan-mode dispatches overall (489 opus, including 70 carrying an explicit `model: sonnet` param — 0/70 honored)] |
+| G1 | Plan mode forcing Opus onto subagent dispatches is platform behavior this repo's instruction layer cannot override | Confirmed by direct measurement of the dispatch/resolution mechanism, which lives in the harness, not in repo-owned files — [verified: root-cause investigation this session, personal-account corpus, Explore n=127 (92 opus in plan mode / 95 plan-mode dispatches = 97%, 0/32 opus outside plan mode), staff-*/ciso-reviewer n=1,619 (340/341 = 99.7% opus in plan mode, ~2/1,231 outside), 500 plan-mode dispatches overall (489 opus, including 70 carrying an explicit `model: sonnet` param — 0/70 honored)]. Partially corroborated by primary source — [verified: `code.claude.com/docs/en/sub-agents`, read this session — "Plan — A research agent used during plan mode to gather context before presenting a plan... Model: inherits from the main conversation... When you're in plan mode and Claude needs to understand your codebase, it delegates research to the Plan subagent"; the same page states, unscoped, "A user or project subagent named `Explore` overrides the built-in and keeps its own `model` field"]. The primary source confirms a plan-mode-specific, non-overridable model-inheritance path exists (the `Plan` agent's designed behavior); it does not confirm why `Explore`'s own, separately-documented override loses effect under that same path — that connection is [unverified] beyond this session's own dispatch-count measurement. |
 | G2 | `ExitPlanMode` cannot be invoked before a plan file is fully written, so plan-mode discovery cannot be moved to a post-`ExitPlanMode` step without abandoning "explore before presenting a plan" as a workflow | [verified: `ExitPlanMode` tool description, this session — "Only use this tool ... when you have finished writing your plan to the plan file and are ready for user approval"; "This tool does NOT take the plan content as a parameter - it will read the plan from the file you wrote"] |
 
 **Mechanisms:**
@@ -48,7 +56,7 @@ same measurement. anchors: root
 - **M5 — Amend (not rewrite) `cost-levers-considered.md`'s `pin-explore-to-sonnet.md` register entry** (~line 79). Its recorded rationale for dropping the opusplan-default flip claims the Explore override "needs none of" the complications that blocked the flip — false for the ~75% of Explore dispatches happening in plan mode. Per this repo's Axis 3 discipline on preserved content, add a dated follow-up note below the existing row rather than editing the original "Measured reason" cell in place — the original reasoning is a record of what was believed at decision time, not a live description to correct silently. anchors: row G1
 - **M6 — Fix `plan-it/SKILL.md:35` and `plan-review/SKILL.md:42`** to name an explicit `model: sonnet` on their `general-purpose` dispatches, matching `CLAUDE.md`'s "always dispatch `general-purpose` with an explicit `model`" rule. This is a no-op for the majority case (dispatched from plan mode, where the param is measured 0/70 honored) but a real fix for the two documented non-plan-mode paths: `plan-it`'s own "if the harness-provided plan path write fails" recovery flow, and any `/plan-review` invocation against an already-written plan file outside plan mode. Framed as instruction-file consistency with a partial-coverage caveat stated explicitly, not as a cost lever. anchors: row G1
 - **No heavier mechanism was considered or adopted.** The one candidate behavior change (restructuring `plan-it` to run discovery after `ExitPlanMode`) is ruled out by G2, not implemented via a heavier substitute (e.g., a hook attempting to detect and redirect plan-mode discovery) — a hook can't reliably distinguish legitimate plan-mode exploration from the fan-out at issue, and would be exactly this repo's own "compounding defensive layers" tell if it tried to compensate for a platform behavior the instruction layer has no lever over. This is recorded as a dead end (M7 below), not routed around.
-- **M7 — Document the dead end explicitly**, in `docs/auto-mode.md`'s corrected section (part of M1): plan mode's Opus-forcing has no known instruction-layer mitigation as of this plan; the only real levers are revisiting the `opusplan` default (out of scope, see below) or accepting the cost as intrinsic to plan mode's explore-before-committing value. anchors: row G2
+- **M7 — Document the dead end explicitly**, in `docs/auto-mode.md`'s corrected section (part of M1): plan mode's Opus-forcing has no known instruction-layer mitigation as of this plan; the only real levers are revisiting the `opusplan` default (out of scope, see below) or accepting the cost as intrinsic to plan mode's explore-before-committing value. One control was checked and rejected, not left untested: `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` — [verified: `code.claude.com/docs/en/sub-agents`, this session — "To remove only the built-in `Explore` and `Plan` subagents, set `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1`. Claude reads and explores files directly instead of delegating to them."] — removes subagent delegation for research entirely rather than fixing its model; the parent's own (already-Opus, by design) turns would then do that work inline, which is a cost regression relative to even a mis-tiered subagent, not a mitigation. anchors: row G2
 
 **Alternatives considered and set aside:**
 

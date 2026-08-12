@@ -211,16 +211,40 @@ order above and the repo-owned `Explore` override:
 
 This is platform behavior in the harness's plan-mode dispatch path, not
 something this repo's frontmatter or per-dispatch `model` param can
-override — see the global `CLAUDE.md`'s Model Routing section. No
-instruction-layer mitigation is known: moving discovery fan-out to run
+override — see the global `CLAUDE.md`'s Model Routing section.
+
+Anthropic's own docs partially corroborate the mechanism, without fully
+explaining it. Claude Code ships a distinct built-in `Plan` subagent,
+separate from `Explore`, used specifically for plan-mode research
+([code.claude.com/docs/en/sub-agents](https://code.claude.com/docs/en/sub-agents)):
+"A research agent used during plan mode to gather context before
+presenting a plan... Model: inherits from the main conversation... When
+you're in plan mode and Claude needs to understand your codebase, it
+delegates research to the Plan subagent." No per-repo override for `Plan`'s
+model is documented — inheriting the parent is that agent's designed
+behavior. The same page states, unscoped, that a same-named override of
+`Explore` "keeps its own `model` field" — no plan-mode carve-out. The docs
+confirm a plan-mode-specific, non-overridable model-inheritance path exists
+by design for `Plan`; they do not explain why an explicitly-dispatched
+`Explore` exhibits the same behavior under that path. That connection is
+this session's own measurement, not a documented mechanism.
+
+No instruction-layer mitigation is known. Moving discovery fan-out to run
 after `ExitPlanMode` is not available, since `ExitPlanMode`'s own tool
 description states it can only be invoked once the plan file is already
 fully written ("Only use this tool ... when you have finished writing your
 plan to the plan file"), so plan-mode discovery cannot be deferred to a
 post-approval step without abandoning "explore before presenting a plan" as
-a workflow. The only real levers are revisiting the `opusplan` session
-default (see `docs/cost-levers-considered.md`) or accepting the cost as
-intrinsic to plan mode's explore-before-committing value.
+a workflow. `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` was checked and
+rejected, not left untested: "To remove only the built-in `Explore` and
+`Plan` subagents, set `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1`. Claude
+reads and explores files directly instead of delegating to them." That
+removes subagent delegation for research entirely rather than fixing its
+model — the parent's own already-Opus turns would do that work inline,
+a cost regression relative to even a mis-tiered subagent. The only real
+levers are revisiting the `opusplan` session default (see
+`docs/cost-levers-considered.md`) or accepting the cost as intrinsic to
+plan mode's explore-before-committing value.
 
 ## Inspection and tuning
 
