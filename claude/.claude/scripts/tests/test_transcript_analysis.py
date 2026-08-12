@@ -7593,6 +7593,7 @@ class TestCostSummary:
         assert "## Top" not in out
         assert "## Cost by project" not in out
         assert "## Cost by context-at-turn bucket" not in out
+        assert "## Cost by account" not in out
         assert "1 priced sessions" in out
         assert "1 priced turns" in out
 
