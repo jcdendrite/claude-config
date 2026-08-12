@@ -15,13 +15,15 @@ Note the branch names — you will pass them to later subcommands via `--branche
 
 ## Step 2 — Extract verbatim user turns
 
-Get the transcript file set — every declared account, not just the active one — and read only those files:
+Get the transcript file set and read only those files:
 
 ```bash
 python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" sessions --paths --include-subagents
 ```
 
-Read each returned path directly with the Read tool. Do not hand-roll a glob for this step — `sessions --paths` is the single source of the file set, resolved against every declared account (`~/.claude/transcript-config-dirs`), not just the one the active profile happens to be pointed at. From the records you read, filter to turns where:
+`sessions --paths` prints its resolved-scope header (`SESSIONS SOURCES (...)`) to stderr — record that line. This invocation passes no `--projects`, so its scope label is always `*`; the root-count clause is what tells you whether the corpus covers every declared account or just one.
+
+Read each returned path directly with the Read tool. Do not hand-roll a glob for this step — `sessions --paths` is the single source of the file set. Check the `SESSIONS SOURCES (...)` line from Step 2: if its root-count clause reads "1 root (no ~/.claude/transcript-config-dirs declared)", the corpus covers only the active account — say so in the case study rather than assuming every declared account was scanned. From the records you read, filter to turns where:
 - `role == "user"`
 - `isSidechain` is absent or `false` — exclude subagent/sidechain turns entirely
 

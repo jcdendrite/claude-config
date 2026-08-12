@@ -186,15 +186,20 @@ class TestScopeDisclosureHeader:
     def test_show_top_not_found_states_scanned_root_count_not_a_path(self, tmp_path, capsys):
         """The not-found message (Finding D) states how many roots were
         searched, not any individual root's path -- same disclosure
-        discipline as the header itself."""
+        discipline as the header itself. The header itself moves to stderr,
+        ahead of the message, on this failure path; stdout stays empty
+        (plan mechanism 5)."""
         roots = [tmp_path / "a" / "projects", tmp_path / "b" / "projects", tmp_path / "c" / "projects"]
 
         with pytest.raises(SystemExit):
             _mod.show_top(10, roots)
 
-        err = capsys.readouterr().err
-        assert "not found in any of 3 scanned roots" in err
-        assert str(tmp_path) not in err
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        err_lines = captured.err.splitlines()
+        assert err_lines[0] == "TOP SOURCES (*; 3 roots)"
+        assert "not found in any of 3 scanned roots" in err_lines[1]
+        assert str(tmp_path) not in captured.err
 
     def test_analyze_session_states_single_root_when_nothing_declared(self, tmp_path, capsys):
         jsonl = tmp_path / "sess.jsonl"
@@ -216,6 +221,54 @@ class TestScopeDisclosureHeader:
 
         out = capsys.readouterr().out
         assert out.splitlines()[0] == "SESSION SOURCES (sess; 2 roots)"
+
+    def test_main_session_not_found_prints_scope_header_to_stderr_before_message(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """main()'s explicit-session-id not-found exit states how many roots
+        were searched, on stderr, ahead of the not-found verdict -- the same
+        disclosure discipline show_top's not-found exit already carries
+        (plan mechanism 5)."""
+        active_config = tmp_path / "active"
+        (active_config / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active_config / "projects")
+        monkeypatch.setattr(sys, "argv", ["analyze-context.py", "no-such-session"])
+
+        with pytest.raises(SystemExit):
+            _mod.main()
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        err_lines = captured.err.splitlines()
+        assert err_lines[0] == (
+            "SESSION SOURCES (no-such-session; 1 root (no ~/.claude/transcript-config-dirs declared))"
+        )
+        assert err_lines[1] == "Session not found: no-such-session"
+
+    def test_main_no_sessions_for_project_prints_scope_header_to_stderr_before_message(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """main()'s no-session-id fallback (latest session in cwd's project)
+        states how many roots were searched, on stderr, ahead of the
+        not-found verdict, mirroring the explicit-session-id path above
+        (plan mechanism 5)."""
+        active_config = tmp_path / "active"
+        (active_config / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active_config / "projects")
+        monkeypatch.setattr(sys, "argv", ["analyze-context.py"])
+
+        with pytest.raises(SystemExit):
+            _mod.main()
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        project_key = _mod.cwd_to_project_key(Path.cwd())
+        err_lines = captured.err.splitlines()
+        assert err_lines[0] == (
+            f"SESSION SOURCES ({project_key}; 1 root (no ~/.claude/transcript-config-dirs declared))"
+        )
+        assert err_lines[1] == f"No sessions found for project directory: {Path.cwd()}"
+        assert err_lines[2] == "Run from the project root, or pass a session ID explicitly."
 
 
 class TestParseTurnsIncludesSubagents:

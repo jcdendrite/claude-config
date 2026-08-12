@@ -3,11 +3,20 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 # Matches bash's [:space:] class (the set cleanup-merged-branches.sh's
 # read_configured_roots trims against) -- not str.strip(), which also eats
 # NBSP/U+3000.
 _ASCII_WHITESPACE = " \t\n\r\x0b\x0c"
+
+# The display literal for messages naming *where to declare* a root (e.g. an
+# install.sh TIP, a scan-result sentence) -- unlike declared_roots_file()
+# below, this intentionally does NOT follow the TRANSCRIPT_CONFIG_DIRS_FILE
+# test seam, since an operator-facing message must always name the real path.
+TRANSCRIPT_CONFIG_DIRS_LABEL = "~/.claude/transcript-config-dirs"
+
+RootsFileState = Literal["absent", "unreadable", "present"]
 
 
 def config_dir() -> Path:
@@ -19,6 +28,37 @@ def config_dir() -> Path:
             raise ValueError(f"CLAUDE_CONFIG_DIR must be an absolute path, got: {override!r}")
         return path
     return Path.home() / ".claude"
+
+
+def declared_roots_file() -> Path:
+    """Return the path declared_roots_matching() reads: TRANSCRIPT_CONFIG_DIRS_FILE
+    if set (a test seam mirroring cleanup-merged-branches.sh's
+    CLEANUP_MERGED_BRANCHES_ROOTS_FILE), else ~/.claude/transcript-config-dirs.
+    Unlike TRANSCRIPT_CONFIG_DIRS_LABEL, this DOES follow the seam.
+    """
+    return Path(os.environ.get("TRANSCRIPT_CONFIG_DIRS_FILE") or (Path.home() / ".claude" / "transcript-config-dirs"))
+
+
+def declared_roots_file_state() -> RootsFileState:
+    """Return whether the roots file is absent, unreadable (exists but raised
+    OSError on read, e.g. permissions), or present (read successfully --
+    regardless of whether its content is empty, comments-only, or every entry
+    later fails validation; those all count as "present" here, distinguished
+    only by declared_roots_matching()'s own per-index stderr warnings).
+
+    Uses its own read_text() call rather than Path.exists() or sharing
+    declared_roots_matching()'s parse: .exists() re-raises OSError on some
+    Python versions but swallows it on others, and returns True for a
+    present-but-unreadable file -- masking exactly the state an operator must
+    fix. Not Path.is_file() either, for the same masking reason.
+    """
+    try:
+        declared_roots_file().read_text(errors="replace")
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "unreadable"
+    return "present"
 
 
 def declared_roots_matching(is_valid: Callable[[Path], bool], *, warn_prefix: str) -> list[Path]:
@@ -55,7 +95,7 @@ def declared_roots_matching(is_valid: Callable[[Path], bool], *, warn_prefix: st
     no-op, matching a stale line's fail-open behavior: a config-file problem
     must never break every invocation.
     """
-    roots_file = Path(os.environ.get("TRANSCRIPT_CONFIG_DIRS_FILE") or (Path.home() / ".claude" / "transcript-config-dirs"))
+    roots_file = declared_roots_file()
     try:
         raw_text = roots_file.read_text(errors="replace")
     except OSError:
