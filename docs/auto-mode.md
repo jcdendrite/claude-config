@@ -143,9 +143,12 @@ subagent that *inherits* the parent model runs on whatever that anchor model
 is.
 
 Subagent model resolution follows this **requested** order — not a
-guarantee. Measured: `staff-*`/`ciso-reviewer` dispatches carrying an
-explicit request or a frontmatter pin still resolved to Opus in a nontrivial
-share of sampled cases; see the global `CLAUDE.md`'s Model Routing section.
+guarantee. Measured: outside plan mode, `staff-*`/`ciso-reviewer` dispatches
+carrying an explicit request or a frontmatter pin resolve to Sonnet reliably
+(~2/1,231 opus). The unreliability is not a property of auto mode's
+resolution order in general — it is concentrated in plan mode specifically
+(340/341 = 99.7% opus in plan mode, n=1,619 total) — see "Subagent delegation
+under plan mode" below and the global `CLAUDE.md`'s Model Routing section.
 
 1. `CLAUDE_CODE_SUBAGENT_MODEL` environment variable (global override)
 2. The `model` parameter on the `Agent` dispatch
@@ -155,15 +158,20 @@ share of sampled cases; see the global `CLAUDE.md`'s Model Routing section.
 `Explore` sits outside this order entirely: this repo ships a same-named
 override, `claude/.claude/agents/Explore.md`, which replaces the built-in
 before resolution applies at all — its pin is a repo-owned fact, not a
-request the platform can decline.
+request the platform can decline, *outside plan mode* (0/32 opus across
+non-plan-mode `Explore` dispatches, measured). In plan mode the override is
+not honored (92/95 plan-mode dispatches resolved to Opus anyway, n=127
+total) — see "Subagent delegation under plan mode" below.
 
 The routinely-dispatched built-in and repo-shipped subagents resolve as
-follows:
+follows (assumes a non-plan-mode auto session — see "Subagent delegation
+under plan mode" below for how this table breaks down once plan mode is
+also active):
 
 | Agent | Model under an auto-mode parent | Why |
 |---|---|---|
 | `Explore` | Sonnet | `claude/.claude/agents/Explore.md` override — independent of parent model |
-| `staff-*`, `ciso-reviewer` | Requested Sonnet, resolved unreliably | `model: sonnet` frontmatter in `~/.claude/agents/` — not always honored |
+| `staff-*`, `ciso-reviewer` | Requested Sonnet, ~100% reliable outside plan mode | `model: sonnet` frontmatter in `~/.claude/agents/` — honored outside plan mode (~2/1,231 opus, measured) |
 | `code-writer` | Sonnet | `model: sonnet` frontmatter |
 | `general-purpose` | **Inherited from parent** | No model of its own — falls through to the parent |
 
@@ -183,6 +191,36 @@ Do **not** reach for `CLAUDE_CODE_SUBAGENT_MODEL` to solve this. It sits at
 resolution step 1 and overrides *every* subagent's model — including the
 `staff-*` reviewers' Sonnet pin. The per-dispatch `model` parameter is the
 targeted instrument; the env var is a blunt global hammer.
+
+## Subagent delegation under plan mode
+
+Plan mode is a separate axis from auto mode — a session can be in plan mode
+whether or not it is anchored via `--model auto`, and the two combine
+independently. Measured: while in plan mode, subagent dispatches resolve to
+Opus regardless of a `model:` frontmatter pin or an explicit `model` param
+on the `Agent` dispatch, at comparable rates across both the resolution
+order above and the repo-owned `Explore` override:
+
+- `Explore`: 92/95 plan-mode dispatches resolved to Opus (97%) despite the
+  `claude/.claude/agents/Explore.md` pin; 0/32 opus outside plan mode (n=127
+  total).
+- `staff-*`/`ciso-reviewer`: 340/341 plan-mode dispatches resolved to Opus
+  (99.7%); ~2/1,231 opus outside plan mode (n=1,619 total).
+- Across 500 plan-mode dispatches overall, 489 resolved to Opus, including
+  all 70 that carried an explicit `model: sonnet` param — 0/70 honored.
+
+This is platform behavior in the harness's plan-mode dispatch path, not
+something this repo's frontmatter or per-dispatch `model` param can
+override — see the global `CLAUDE.md`'s Model Routing section. No
+instruction-layer mitigation is known: moving discovery fan-out to run
+after `ExitPlanMode` is not available, since `ExitPlanMode`'s own tool
+description states it can only be invoked once the plan file is already
+fully written ("Only use this tool ... when you have finished writing your
+plan to the plan file"), so plan-mode discovery cannot be deferred to a
+post-approval step without abandoning "explore before presenting a plan" as
+a workflow. The only real levers are revisiting the `opusplan` session
+default (see `docs/cost-levers-considered.md`) or accepting the cost as
+intrinsic to plan mode's explore-before-committing value.
 
 ## Inspection and tuning
 

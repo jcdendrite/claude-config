@@ -15,4 +15,7 @@ in place of the built-in's inherit-capped-at-Opus default. The docs confirm
 the override replaces the built-in's `model` field explicitly; that the
 `tools:` line here is likewise authoritative (not merged with the built-in's
 own grant) is inferred from the same override mechanism, not separately
-documented.
+documented. The `model` override holds outside harness plan mode (0/32 opus,
+measured); during plan mode it is not honored (92/95 plan-mode dispatches
+resolved to Opus anyway) — see `claude/.claude/CLAUDE.md`'s Model Routing
+section.
