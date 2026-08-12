@@ -277,6 +277,30 @@ class TestCollisionGuardBranches:
         assert result.returncode == 0
         assert result.stdout == ""
 
+    def test_self_lock_not_last_worktree_still_recognized(self, isolated_home, tmp_path):
+        """The exact shape of the incident this guard's own porcelain-parse
+        bug caused: a second worktree added *after* the target means the
+        target is no longer the last record in `git worktree list
+        --porcelain`'s output. If the target's captured lock state were
+        lost (the original bug), the guard would misdiagnose its own lock
+        as unlocked, attempt a doomed re-lock, and deny — same reasoning as
+        test_self_lock_returns_immediately_without_reattempting_lock above,
+        just with a second worktree in the repo to exercise the porcelain
+        parser's cross-record behavior."""
+        repo = tmp_path / "notlast-repo"
+        _init_opted_in_repo(repo)
+        wt_path = tmp_path / "notlast-worktree"
+        _add_worktree(repo, wt_path, "notlast")
+        later_wt_path = tmp_path / "notlast-later-worktree"
+        _add_worktree(repo, later_wt_path, "notlast-later")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "notlast-session")
+        _lock_worktree(wt_path, f"claude-code pid {os.getpid()}")
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
     def test_foreign_live_lock_denies_naming_pid(self, isolated_home, tmp_path, live_pid):
         repo = tmp_path / "foreign-live-repo"
         _init_opted_in_repo(repo)
@@ -531,6 +555,66 @@ class TestWorktreeLockPid:
         result = _run_lock_pid("/some/path", porcelain)
         assert result.returncode == 2
         assert result.stdout == ""
+
+    def test_locked_target_not_last_record_still_found(self):
+        """The target's lock state must survive a later, unrelated worktree
+        record in the same capture — a repo with more than one worktree
+        puts the contended one anywhere in the listing, not just last."""
+        porcelain = (
+            "worktree /main\n"
+            "HEAD abc123\n"
+            "branch refs/heads/main\n"
+            "\n"
+            "worktree /some/path\n"
+            "HEAD def456\n"
+            "branch refs/heads/feature\n"
+            "locked claude-code pid 4242\n"
+            "\n"
+            "worktree /later/path\n"
+            "HEAD ghi789\n"
+            "branch refs/heads/later\n"
+        )
+        result = _run_lock_pid("/some/path", porcelain)
+        assert result.returncode == 0
+        assert result.stdout.strip() == "4242"
+
+    def test_unlocked_target_not_contaminated_by_later_locked_record(self):
+        """The inverse of the above: a genuinely unlocked target followed by
+        a *locked* later worktree must not have that later lock bleed into
+        the target's result."""
+        porcelain = (
+            "worktree /some/path\n"
+            "HEAD abc123\n"
+            "branch refs/heads/feature\n"
+            "\n"
+            "worktree /later/path\n"
+            "HEAD def456\n"
+            "branch refs/heads/later\n"
+            "locked claude-code pid 9999\n"
+        )
+        result = _run_lock_pid("/some/path", porcelain)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_locked_target_not_last_with_trailing_unparseable_reason(self):
+        """A locked, pid-parseable target followed by a worktree with an
+        unparseable-reason lock — exercises the trailing record's own
+        pid="" no-match branch, not just the parseable-pid branch the
+        not-last case above covers."""
+        porcelain = (
+            "worktree /some/path\n"
+            "HEAD abc123\n"
+            "branch refs/heads/feature\n"
+            "locked claude-code pid 4242\n"
+            "\n"
+            "worktree /later/path\n"
+            "HEAD def456\n"
+            "branch refs/heads/later\n"
+            "locked reviewing\n"
+        )
+        result = _run_lock_pid("/some/path", porcelain)
+        assert result.returncode == 0
+        assert result.stdout.strip() == "4242"
 
 
 class TestResolveClaudePid:

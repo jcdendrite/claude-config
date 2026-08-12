@@ -84,14 +84,18 @@
 #     contention (an old git without worktree-lock support, a permission
 #     error) is diagnosed the same as a transient race and told to "retry",
 #     which is permanently wrong advice in that case.
-#   - The collision guard now makes "already in a linked worktree" a
-#     conditional allow instead of an unconditional one: it depends on
-#     _lib_resolve_claude_pid resolving this session's own live pid, which
-#     in turn depends on capture-session-id.sh's SessionStart hook having
-#     already written a session file. SessionStart necessarily precedes any
-#     PreToolUse in the same session, so this holds by construction; noted
-#     here because that ordering guarantee is now load-bearing for a write
-#     path that was previously allow-unconditionally.
+#   - The collision guard makes a write into a linked worktree a
+#     conditional allow: it depends on _lib_resolve_claude_pid resolving
+#     this session's own live pid, which in turn depends on
+#     capture-session-id.sh's SessionStart hook having already written a
+#     session file. SessionStart necessarily precedes any PreToolUse in the
+#     same session, so this holds by construction. Reads stay an
+#     unconditional allow regardless of collision state.
+#   - A fast-path collision denial falls through to full parsing rather
+#     than denying directly, so a denied write now costs roughly double
+#     the collision guard's git-subprocess calls plus a python3 spawn
+#     versus a single call; only the already-rare, already-blocked deny
+#     path pays this, not the common allow path.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
@@ -189,19 +193,23 @@ if $SESSION_IS_WORKTREE; then
      && [[ "$COMMAND" != *'-C'* ]] \
      && [[ "$COMMAND" != *'('* ]] \
      && [[ "$COMMAND" != *'`'* ]]; then
-    COLLISION_REASON=$(_lib_worktree_collision_guard "$CWD" "$REPO_GIT_COMMON_DIR") || {
-      emit_deny "Blocked by worktree-enforcement hook: $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
+    if _lib_worktree_collision_guard "$CWD" "$REPO_GIT_COMMON_DIR" >/dev/null; then
       exit 0
-    }
-    exit 0
+    fi
+    # Collision guard denied. It alone can't tell read from write -- that
+    # needs the git subcommand -- so a fast-path denial is provisional:
+    # fall through to full parsing, which re-runs the guard only for an
+    # actual write record (ALLOWED_RE below skips it for reads).
   fi
 fi
 
-# From here on: either the session is in the main tree, or the command
-# could plausibly relocate a write. Parse it properly.
+# From here on: the session is in the main tree, the command could
+# plausibly relocate a write, or the fast path's own collision-guard call
+# denied above (it cannot tell read from write on its own). Parse it
+# properly.
 PARSER="$(dirname "$0")/parse-git-command.py"
 if ! command -v python3 >/dev/null 2>&1; then
-  emit_deny "Blocked by worktree-enforcement hook: python3 is required to parse this command safely and was not found on PATH. Install python3 (see claude-config README) or run this git operation from inside a linked worktree, where the fast path above does not require python3."
+  emit_deny "Blocked by worktree-enforcement hook: python3 is required to parse this command safely and was not found on PATH. Install python3 (see claude-config README) or run this git operation from inside a linked worktree with no active lock contention, where the fast path above does not require python3."
   exit 0
 fi
 

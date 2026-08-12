@@ -901,8 +901,6 @@ _lib_worktree_lock_pid() {
         else
           in_target=0
         fi
-        locked=0
-        pid=""
         ;;
       "locked"*)
         if [ "$in_target" -eq 1 ]; then
