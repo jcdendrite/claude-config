@@ -123,7 +123,7 @@ If not all three hold, point at the canonical source.
 
 6. **`maxTurns` integer validation** — `maxTurns: 20`, not `maxTurns: "20"`. Strings are silently ignored; the cap will not apply.
 
-7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing". Reviewer, code-writing, and specialist agents *request* `model: sonnet` — resolution is not guaranteed. `Explore`'s pin (`claude/.claude/agents/Explore.md`) is a repo-owned override rather than a per-dispatch request, and is enforced outside harness plan mode (0/32 opus, measured) — but not during plan mode, where it is measured unhonored (92/95 plan-mode dispatches resolved to Opus anyway). Routinely-dispatched subagents do not pin `opus`.
+7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing" for current resolution-reliability guidance, not this line — that guidance can change independently of this checklist. `Explore`'s pin (`claude/.claude/agents/Explore.md`) is a repo-owned override rather than a per-dispatch request. Routinely-dispatched subagents do not pin `opus`.
 
 8. **Length** — under the 200-line target. Flag anything that drifts past 200 (and especially past 300) without a load-bearing reason.
 
