@@ -1,13 +1,15 @@
 """Tests for nudge-handoff-near-context-cap.sh.
 
-The hook is a UserPromptSubmit and Stop hook that emits a one-shot
+The hook is a UserPromptSubmit and Stop hook that emits a
 hookSpecificOutput.additionalContext JSON payload when the estimated carried
 token count crosses the lesser of 40% of the resolved model's context window
 or an absolute-token cap (HANDOFF_NUDGE_ABS_CAP, default 360000). 200k models
 stay at 80000 (below the default cap, unaffected); 1M models — including
 unrecognized/missing model IDs, which default to the 1M window — are capped
-at 360000 rather than the raw 400000 (40% of 1M). The nudge fires once per
-session — a marker file gates subsequent turns.
+at 360000 rather than the raw 400000 (40% of 1M). The nudge re-arms at
+escalating token bands past the first fire — a marker file holds the
+triggering estimate and gates subsequent turns until the estimate advances
+HANDOFF_NUDGE_REARM_SPACING (default 80000) past it.
 
 All tests sandbox $HOME via monkeypatch so markers and logs land in tmp_path
 rather than the real $HOME.
@@ -44,6 +46,7 @@ LARGE_WINDOW = 1_000_000
 SMALL_WINDOW = 200_000
 SMALL_THRESHOLD = 80_000  # 40% of 200k — the pct arm, unaffected by the cap (A7)
 DEFAULT_ABS_CAP = 360_000  # HANDOFF_NUDGE_ABS_CAP's shipped default
+DEFAULT_REARM_SPACING = 80_000  # HANDOFF_NUDGE_REARM_SPACING's shipped default
 # Effective 200k-window threshold under min(pct, cap) — a distinct symbol from
 # SMALL_THRESHOLD (currently equal to it per A7) so a future cap below 80,000
 # doesn't silently overload one name with two meanings.
@@ -533,7 +536,21 @@ class TestNudgeHandoffNearContextCap:
         assert not _marker_path(tmp_path).exists()
 
     def test_already_fired_is_silent(self, tmp_path):
-        """When the per-session marker already exists, subsequent calls produce no stdout."""
+        """When the marker holds a LAST_FIRED_AT within REARM_SPACING of ESTIMATE, subsequent calls produce no stdout."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        marker_dir = tmp_path / ".claude" / ".handoff-nudge-fired.d"
+        marker_dir.mkdir(parents=True)
+        _marker_path(tmp_path).write_text(f"{ABOVE_LARGE}\n")
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_legacy_zero_byte_marker_now_fires(self, tmp_path):
+        """A zero-byte marker -- the shape a pre-rearm-change hook wrote via a bare
+        `touch` -- matches the case pattern's empty-string arm and is treated as no
+        prior fire, so the hook fires rather than staying silently suppressed
+        forever (the failure mode a stuck-suppressed nudge would be)."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
         marker_dir = tmp_path / ".claude" / ".handoff-nudge-fired.d"
@@ -541,7 +558,139 @@ class TestNudgeHandoffNearContextCap:
         _marker_path(tmp_path).touch()
         result = _run_hook(_base_payload(transcript), tmp_path)
         assert result.returncode == 0
-        assert result.stdout.strip() == ""
+        assert result.stdout.strip() != ""
+
+    # -----------------------------------------------------------------------
+    # Re-arming: escalating token bands past the first fire
+    # -----------------------------------------------------------------------
+
+    def test_second_fire_suppressed_before_rearm_spacing(self, tmp_path):
+        """Two real hook invocations: the second, still within REARM_SPACING of the
+        first fire's estimate, is silent -- driven through the hook itself rather
+        than a hand-seeded marker so the write/read newline convention is exercised
+        for real."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""
+
+        _write_transcript(
+            transcript,
+            [_record_totalling(LARGE_THRESHOLD + DEFAULT_REARM_SPACING - 40_000, model="claude-sonnet-5")],
+        )
+        second = _run_hook(_base_payload(transcript), tmp_path)
+        assert second.returncode == 0
+        assert second.stdout.strip() == ""
+
+    def test_second_fire_allowed_after_rearm_spacing(self, tmp_path):
+        """Two real hook invocations: the second, past LAST_FIRED_AT + REARM_SPACING,
+        fires again and overwrites the marker with the new triggering estimate --
+        not left at the old value, not empty, not touched-to-zero-byte."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""
+
+        second_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING + 40_000
+        _write_transcript(transcript, [_record_totalling(second_estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path)
+        assert second.returncode == 0
+        assert second.stdout.strip() != ""
+        marker_content = _marker_path(tmp_path).read_text()
+        assert marker_content == f"{second_estimate}\n"
+
+    @pytest.mark.parametrize(
+        "second_estimate,expect_fire",
+        [
+            (LARGE_THRESHOLD + DEFAULT_REARM_SPACING - 1, False),
+            (LARGE_THRESHOLD + DEFAULT_REARM_SPACING, True),
+        ],
+    )
+    def test_rearm_boundary_at_last_fired_plus_spacing(self, tmp_path, second_estimate, expect_fire):
+        """N-1/N boundary pair at the rearm threshold, matching this file's existing
+        adjacent-pair convention for every other threshold it tests."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""
+
+        _write_transcript(transcript, [_record_totalling(second_estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path)
+        assert second.returncode == 0
+        if expect_fire:
+            assert second.stdout.strip() != ""
+        else:
+            assert second.stdout.strip() == ""
+
+    @pytest.mark.parametrize(
+        "marker_content",
+        ["abc\n", "0999\n", "123456789\n", "0\n"],
+        ids=["non-numeric", "leading-zero", "nine-plus-digits", "literal-zero"],
+    )
+    def test_corrupt_marker_content_treated_as_no_prior_fire(self, tmp_path, marker_content):
+        """A marker holding non-numeric, leading-zero, 9+-digit, or literal-zero content
+        -- e.g. a stale write from a future format change -- falls back to "no prior
+        fire" via the 4-arm guard and fires again once ESTIMATE is past THRESHOLD,
+        rather than misparsing or staying silently suppressed forever. At the default
+        REARM_SPACING this case doesn't discriminate a literal "0" being accepted as a
+        real LAST_FIRED_AT from it being correctly blanked -- see the dedicated
+        large-spacing test below for that."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        marker_dir = tmp_path / ".claude" / ".handoff-nudge-fired.d"
+        marker_dir.mkdir(parents=True)
+        _marker_path(tmp_path).write_text(marker_content)
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+
+    def test_literal_zero_marker_not_accepted_as_real_last_fired_at(self, tmp_path):
+        """A marker of "0" is never legitimately written by the hook itself -- a real
+        fire only ever happens at ESTIMATE >= THRESHOLD > 0 -- so it must be treated as
+        corrupt, not as "last fired at token 0". Discriminates the bug this test guards
+        (verified live against the pre-fix hook this session): accepting a literal "0"
+        as LAST_FIRED_AT computes LAST_FIRED_AT + REARM_SPACING = REARM_SPACING, which
+        silently suppresses a fire that should occur whenever a HANDOFF_NUDGE_REARM_SPACING
+        override is larger than the current ESTIMATE -- the exact opposite of the hook's
+        documented "fail toward firing" posture for a corrupt marker. The default
+        REARM_SPACING (80000) can't expose this: ESTIMATE must already clear THRESHOLD
+        (>= 360000) to reach this code path at all, so 0 + 80000 is never large enough to
+        suppress it -- only an oversized override makes the two interpretations diverge."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(400_000, model="claude-sonnet-5")])
+        marker_dir = tmp_path / ".claude" / ".handoff-nudge-fired.d"
+        marker_dir.mkdir(parents=True)
+        _marker_path(tmp_path).write_text("0\n")
+        result = _run_hook(
+            _base_payload(transcript), tmp_path,
+            extra_env={"HANDOFF_NUDGE_REARM_SPACING": "1000000"},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", (
+            "a literal-zero marker must be treated as no-prior-fire, not as a real "
+            "LAST_FIRED_AT=0 that a large REARM_SPACING override can suppress against"
+        )
+
+    def test_three_fire_sequence_rearms_twice(self, tmp_path):
+        """Fire, suppress, re-fire past the second band, in one session -- exercises
+        the marker overwrite happening twice."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""
+        assert _marker_path(tmp_path).read_text() == f"{LARGE_THRESHOLD}\n"
+
+        suppressed_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING - 1
+        _write_transcript(transcript, [_record_totalling(suppressed_estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path)
+        assert second.stdout.strip() == ""
+        assert _marker_path(tmp_path).read_text() == f"{LARGE_THRESHOLD}\n"
+
+        third_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING
+        _write_transcript(transcript, [_record_totalling(third_estimate, model="claude-sonnet-5")])
+        third = _run_hook(_base_payload(transcript), tmp_path)
+        assert third.stdout.strip() != ""
+        assert _marker_path(tmp_path).read_text() == f"{third_estimate}\n"
 
     def test_killswitch_suppresses(self, tmp_path):
         """Presence of ~/.claude/.handoff-nudge-disabled suppresses nudge and produces no log line."""
@@ -989,14 +1138,16 @@ class TestNudgeHandoffNearContextCap:
         assert result.stdout.strip() != ""
 
     @pytest.mark.parametrize(
-        "malformed_value", ["abc", "080000", "", "-1", "1.5", "1e5", "9223372036854775808"]
+        "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
     def test_abs_cap_malformed_override_falls_back_to_default_not_zero(self, tmp_path, malformed_value):
-        """A malformed HANDOFF_NUDGE_ABS_CAP (non-numeric, zero-padded, empty, negative,
-        non-integer, or 10+ digits — which risks wrapping negative in bash's signed 64-bit
-        arithmetic, e.g. 2**63) must fall back to the shipped default rather than degrade
+        """A malformed HANDOFF_NUDGE_ABS_CAP (non-numeric, zero-padded, empty, literal zero,
+        negative, non-integer, or 10+ digits — which risks wrapping negative in bash's signed
+        64-bit arithmetic, e.g. 2**63) must fall back to the shipped default rather than degrade
         THRESHOLD toward 0/unset/negative — which would fire on every session, the opposite of
-        "override ignored"."""
+        "override ignored". The bare "0" case needs its own explicit arm in the case pattern:
+        0[0-9]* requires a second digit, so a lone "0" matches none of the other three arms
+        without it."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(
             transcript, [_record_totalling(LARGE_THRESHOLD - 1, model="claude-sonnet-5")]
@@ -1012,7 +1163,7 @@ class TestNudgeHandoffNearContextCap:
         )
 
     @pytest.mark.parametrize(
-        "malformed_value", ["abc", "080000", "", "-1", "1.5", "1e5", "9223372036854775808"]
+        "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
     def test_abs_cap_malformed_override_positive_control_fires_at_default(self, tmp_path, malformed_value):
         """Positive control for the test above: proves the fallback actually lands on the
@@ -1032,6 +1183,75 @@ class TestNudgeHandoffNearContextCap:
         assert result.stdout.strip() != "", (
             f"malformed HANDOFF_NUDGE_ABS_CAP={malformed_value!r} should fall back to the "
             "default cap and fire at it, not stay silent indefinitely"
+        )
+
+    # -----------------------------------------------------------------------
+    # HANDOFF_NUDGE_REARM_SPACING consumer override
+    # -----------------------------------------------------------------------
+
+    def test_rearm_spacing_override_changes_rearm_point(self, tmp_path):
+        """A valid HANDOFF_NUDGE_REARM_SPACING overrides the default 80000-token
+        spacing between fires."""
+        custom_spacing = 20_000
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        extra_env = {"HANDOFF_NUDGE_REARM_SPACING": str(custom_spacing)}
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.stdout.strip() != ""
+
+        below = LARGE_THRESHOLD + custom_spacing - 1
+        _write_transcript(transcript, [_record_totalling(below, model="claude-sonnet-5")])
+        result_below = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert result_below.stdout.strip() == ""
+
+        at_spacing = LARGE_THRESHOLD + custom_spacing
+        _write_transcript(transcript, [_record_totalling(at_spacing, model="claude-sonnet-5")])
+        result_at = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert result_at.stdout.strip() != ""
+
+    @pytest.mark.parametrize(
+        "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
+    )
+    def test_rearm_spacing_malformed_override_falls_back_to_default_not_zero(self, tmp_path, malformed_value):
+        """A malformed HANDOFF_NUDGE_REARM_SPACING (non-numeric, zero-padded, empty, literal
+        zero, negative, non-integer, or 10+ digits) must fall back to the shipped default
+        rather than degrade REARM_SPACING toward 0/unset/negative -- which would fire
+        on every turn, the opposite of "override ignored". The bare "0" case relies on the
+        same explicit `0` case arm added alongside HANDOFF_NUDGE_ABS_CAP's guard."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        extra_env = {"HANDOFF_NUDGE_REARM_SPACING": malformed_value}
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.stdout.strip() != ""
+
+        second_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING - 1
+        _write_transcript(transcript, [_record_totalling(second_estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert second.stdout.strip() == "", (
+            f"malformed HANDOFF_NUDGE_REARM_SPACING={malformed_value!r} should fall back to "
+            "the default spacing, not re-fire below it"
+        )
+
+    @pytest.mark.parametrize(
+        "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
+    )
+    def test_rearm_spacing_malformed_override_positive_control_fires_at_default(self, tmp_path, malformed_value):
+        """Positive control for the test above: proves the fallback actually lands on
+        DEFAULT_REARM_SPACING rather than some other silent-non-firing state that the
+        negative-only test above cannot distinguish from a guard regression that
+        leaves the hook permanently silent."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        extra_env = {"HANDOFF_NUDGE_REARM_SPACING": malformed_value}
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.stdout.strip() != ""
+
+        third_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING
+        _write_transcript(transcript, [_record_totalling(third_estimate, model="claude-sonnet-5")])
+        third = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert third.stdout.strip() != "", (
+            f"malformed HANDOFF_NUDGE_REARM_SPACING={malformed_value!r} should fall back to "
+            "the default spacing and fire at it, not stay silent indefinitely"
         )
 
     # -----------------------------------------------------------------------
@@ -1533,6 +1753,20 @@ class TestCheckMode:
         payload = _check_json(_run_check(tmp_path))
         assert payload["status"] == "ok"
         assert payload["already_fired"] is True
+
+    def test_already_fired_stays_true_even_when_due_for_rearm(self, tmp_path):
+        """already_fired reports marker existence only, not "no further nudge is
+        due" -- pins the contract docs/handoff-nudge.md's JSON-contract section now
+        documents: a session past its next re-arm band is still already_fired=true,
+        since --check doesn't compute a rearm-due boolean at all."""
+        config_dir = self._seeded(tmp_path, total=LARGE_THRESHOLD + DEFAULT_REARM_SPACING)
+        marker = _marker_path(tmp_path, config_dir=config_dir)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{LARGE_THRESHOLD}\n")
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["status"] == "ok"
+        assert payload["already_fired"] is True
+        assert payload["over_threshold"] is True
 
     def test_killswitch_reported_not_honoured(self, tmp_path):
         """The kill-switch suppresses notifying, not measuring — a session

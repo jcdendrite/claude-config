@@ -330,11 +330,6 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 pattern=r"Threshold \((\d+)%\)",
                 description="docs/handoff-nudge.md: table header threshold percentage",
             ),
-            Occurrence(
-                rel_path="docs/handoff-nudge.md",
-                pattern=r"well past (\d+)% without completing",
-                description="docs/handoff-nudge.md: well past N% without completing",
-            ),
         ],
     ),
     DocCountFact(
