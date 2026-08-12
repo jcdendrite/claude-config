@@ -40,6 +40,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Detect hook-relevant changes
         id: detect
@@ -140,11 +141,11 @@ jobs:
 
       - name: Run tests
         if: steps.detect.outputs.changed == 'true'
-        run: pytest claude/.claude/ -v
+        run: pytest claude/.claude/ plugins/ -v
 
       - name: Lint
         if: steps.detect.outputs.changed == 'true'
-        run: ruff check claude/.claude/
+        run: ruff check claude/.claude/ plugins/
 
       - name: Shellcheck
         if: steps.detect.outputs.shell_changed == 'true'
