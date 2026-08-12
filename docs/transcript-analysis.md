@@ -2,7 +2,7 @@
 
 `transcript-analysis.py` is an analysis toolkit for Claude Code transcripts. By default it scans the union of the active profile's `~/.claude/projects/*/*.jsonl` and every config dir declared in `~/.claude/transcript-config-dirs`, not just the active profile alone — except `cost --summary`, which is scoped to the active account only — see "Corpus scope: the declared-roots file" below. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
 
-All subcommands are local-only reads except `pr-link` (calls `gh`), `judgment-pair --out` (writes to a specified file), and `cost-ledger --record` (writes to `docs/cost-ledger.md`, gated on an opt-in sentinel — see the `cost-ledger` section below). No other subcommand writes to disk.
+All subcommands are local-only reads except `pr-link` (calls `gh`), `judgment-pair --out` (writes to a specified file), and `cost-ledger --record` (writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`, gated on an opt-in sentinel — see the `cost-ledger` section below). No other subcommand writes to disk.
 
 For question-driven routing ("which subcommand answers X?"), use the `/transcript-analysis` skill. This page is the per-subcommand reference: flags, output shape, and when to reach for each one.
 
@@ -686,7 +686,7 @@ A turn whose model ID has no pricing-table entry is excluded from every week's t
 
 ## cost-ledger
 
-**Purpose.** Read or append `docs/cost-ledger.md`, a durable, committed, append-only record of this repo's own weekly cost/efficiency figures — the retention `cost-trend` can't provide on its own, since Claude Code deletes the transcripts `cost-trend` re-derives every week from. See `docs/cost-ledger.md` for the row schema and `.claude/plans/cost-trend-ledger.md` for the full design rationale.
+**Purpose.** Read or append a local, per-account ledger file (`$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`) of this repo's own weekly cost/efficiency figures — the retention `cost-trend` can't provide on its own, since Claude Code deletes the transcripts `cost-trend` re-derives every week from. See `docs/cost-ledger.md` for the row schema and `.claude/plans/cost-trend-ledger.md` for the full design rationale.
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
@@ -695,7 +695,7 @@ A turn whose model ID has no pricing-table entry is excluded from every week's t
 - `--force` — with `--record`, overwrite an existing row for the same (week, machine) pair instead of refusing.
 - `--note TEXT` — free-text note for `--record`'s row (what changed in the workflow this week). Must not contain `|` or a newline.
 
-**Default (read) output.** Every row currently in `docs/cost-ledger.md`, followed by any ISO week present in the live corpus that no row (for any machine) has captured yet — the gap between "recorded" and "still recoverable."
+**Default (read) output.** Every row currently in the ledger file, followed by any ISO week present in the live corpus that no row (for any machine) has captured yet — the gap between "recorded" and "still recoverable."
 
 **`--record`'s row.** `usd`/`context_pct`/`opus_pct`/`ge200k_pct` reuse `_compute_cost_trend_data`, the per-week accumulation behind `cost-trend`'s own report. `context_pct` and `ge200k_pct` are two distinct metrics, not one under two names: `context_pct` is the context-class (cache read plus both cache-write tiers) dollar share of the week's spend, while `ge200k_pct` is the dollar share of turns whose context crossed the >=200k bucket — the same figure `cost-trend`'s own printed "Context%" column has always shown. `denials` and `reviewer_gap_pp` are windowed to the current ISO week's Monday-through-next-Monday UTC boundary via `review-trace --deny-summary`'s and `reviewer-yield`'s own accumulation, scoped to that one week rather than corpus lifetime. `reviewer_gap_pp` prints empty when either side of the findings-found/zero-finding comparison has zero measured dispatches that week.
 

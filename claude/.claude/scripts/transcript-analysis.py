@@ -7289,7 +7289,7 @@ def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
         print(f"\n  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
 
 
-# --- cost-ledger: docs/cost-ledger.md read/append -------------------------
+# --- cost-ledger: local per-week cost/efficiency ledger read/append -------
 #
 # See docs/cost-ledger.md for the schema and .claude/plans/cost-trend-ledger.md
 # for the design rationale (why each column exists, what got dropped, and the
@@ -7331,15 +7331,15 @@ class _CostLedgerParseError(Exception):
 
 
 def _cost_ledger_path() -> Path:
-    """Resolve docs/cost-ledger.md from this script's own on-disk location,
-    not the process cwd -- --record must find this repo's ledger file even
-    when invoked from an unrelated repo's working directory (stow installs
-    this script at ~/.claude/scripts/, itself a symlink into the
-    claude-config checkout). transcript-analysis.py lives at
-    claude/.claude/scripts/transcript-analysis.py, three directories under
-    the repo root.
-    """
-    return Path(__file__).resolve().parents[3] / "docs" / "cost-ledger.md"
+    """Return the active cost-ledger file path: $COST_LEDGER_PATH if set
+    (must be absolute), else config_dir() / "cost-ledger.md"."""
+    override = os.environ.get("COST_LEDGER_PATH")
+    if override:
+        path = Path(override)
+        if not path.is_absolute():
+            raise ValueError(f"COST_LEDGER_PATH must be an absolute path, got: {override!r}")
+        return path
+    return config_dir() / "cost-ledger.md"
 
 
 def _parse_cost_ledger_iso_week(week_str: str) -> None:
@@ -7554,10 +7554,11 @@ def _write_cost_ledger_file(ledger_path: Path, preamble: str, rows: list[dict]) 
 
     The temp file is chmod'd to the existing ledger file's permission bits
     before the replace -- tempfile.mkstemp creates it 0600, and os.replace
-    swaps that mode in along with the content, silently downgrading
-    docs/cost-ledger.md's git-checkout permissions on every --record
-    otherwise. ledger_path is confirmed to exist by _cost_ledger_report's
-    own check before this function is ever called.
+    swaps that mode in along with the content, silently downgrading the
+    ledger file's existing permissions on every --record otherwise. If
+    ledger_path does not exist yet (this --record is the first ever run
+    against it), the chmod is skipped and tempfile.mkstemp's own 0600
+    default is left in place.
     """
     new_text = preamble + "\n".join(_format_cost_ledger_row(r) for r in rows) + ("\n" if rows else "")
     fd, tmp_name = tempfile.mkstemp(dir=str(ledger_path.parent), prefix=".cost-ledger-", suffix=".tmp")
@@ -7568,7 +7569,8 @@ def _write_cost_ledger_file(ledger_path: Path, preamble: str, rows: list[dict]) 
         if written_text != new_text:
             raise _CostLedgerParseError("write verification mismatch -- refusing to publish")
         _parse_cost_ledger_file_text(written_text)  # fails loud on the canonical parser before publishing
-        os.chmod(tmp_name, stat.S_IMODE(ledger_path.stat().st_mode))
+        if ledger_path.exists():
+            os.chmod(tmp_name, stat.S_IMODE(ledger_path.stat().st_mode))
         os.replace(tmp_name, ledger_path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -7666,7 +7668,8 @@ def _acquire_cost_ledger_lock(lock_f) -> None:
             if time.monotonic() >= deadline:
                 print(
                     "cost-ledger: another cost-ledger --record appears to be running"
-                    " (lock held on docs/cost-ledger.md.lock) -- timed out after"
+                    " (lock held on the ledger's own .lock sibling file -- see"
+                    " _cost_ledger_path()) -- timed out after"
                     f" {_COST_LEDGER_LOCK_TIMEOUT_S:.0f}s",
                     file=sys.stderr,
                 )
@@ -7686,8 +7689,24 @@ def cmd_cost_ledger(args: argparse.Namespace) -> None:
     _cost_ledger_report(args, datetime.now(UTC).date(), roots)
 
 
+def _default_cost_ledger_preamble() -> str:
+    """Preamble for a ledger file --record creates fresh at a not-yet-existing
+    path -- header/separator are byte-identical to the module constants so
+    _parse_cost_ledger_file_text round-trips a freshly created file the same
+    as an already-canonical one."""
+    lines = [
+        "# cost-ledger",
+        "",
+        "Weekly cost/efficiency snapshots recorded by `cost-ledger --record`.",
+        _COST_LEDGER_HEADER_LINE,
+        _COST_LEDGER_SEPARATOR_LINE,
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | None = None) -> None:
-    """Read (default) or append (--record) one row of docs/cost-ledger.md.
+    """Read (default) or append (--record) one row of the cost ledger at
+    _cost_ledger_path().
 
     --record's row reuses _compute_cost_trend_data for usd/context_pct/
     opus_pct/ge200k_pct, and windows _compute_deny_summary_data/
@@ -7708,22 +7727,31 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     machine_label: str | None = getattr(args, "machine_label", None) or None
     note: str = getattr(args, "note", None) or ""
 
-    ledger_path = _cost_ledger_path()
-    if not ledger_path.exists():
-        # Prints the canonical repo-relative path, never the resolved
-        # absolute Path -- the latter is home-rooted and this repo's own
-        # redaction convention treats home-rooted paths as always-sensitive
-        # (command output here routinely gets pasted into public issues).
-        print(
-            "cost-ledger: ledger file not found at docs/cost-ledger.md -- see docs/cost-ledger.md",
-            file=sys.stderr,
-        )
+    try:
+        ledger_path = _cost_ledger_path()
+    except ValueError as exc:
+        # COST_LEDGER_PATH is new, operator-set, and easy to mistype relative
+        # -- route it through this module's standard stderr+exit convention
+        # rather than letting a raw traceback reach the terminal.
+        print(f"cost-ledger: {exc}", file=sys.stderr)
         sys.exit(1)
 
     if roots is None:
         roots = _resolve_scan_roots(args)
 
     if not record:
+        if not ledger_path.exists():
+            # Omits the resolved path entirely -- it's home-rooted, and this
+            # repo's own redaction convention treats home-rooted paths as
+            # always-sensitive (command output here routinely gets pasted
+            # into public issues).
+            print(
+                "cost-ledger: no ledger recorded here yet -- --record has never"
+                " run against this path (or COST_LEDGER_PATH/CLAUDE_CONFIG_DIR"
+                " resolves somewhere unexpected); see docs/cost-ledger.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         try:
             _preamble, existing_rows = _parse_cost_ledger_file_text(ledger_path.read_text())
         except _CostLedgerParseError as exc:
@@ -7734,8 +7762,11 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     sentinel_path = config_dir() / ".cost-ledger-enabled"
     if not sentinel_path.exists():
-        # Canonical path, not the resolved absolute one -- see the same
-        # rationale on the ledger-file-missing message above.
+        # Hardcodes the conventional ~/.claude path rather than sentinel_path
+        # itself -- same don't-print-a-resolved-home-rooted-path discipline
+        # as the ledger-file-missing message above, applied to a fixed
+        # docstring instead of an f-string since CLAUDE_CONFIG_DIR overrides
+        # are rare enough that the canonical hint reads clearer.
         print(
             "cost-ledger: --record requires the opt-in sentinel ~/.claude/.cost-ledger-enabled"
             " -- see docs/cost-ledger.md",
@@ -7750,13 +7781,10 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         print(f"cost-ledger: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
         sys.exit(1)
     if len(roots) > 1:
-        # Defense-in-depth against install.sh's TIP nudging a diverged
-        # profile to populate the roots file: --record commits its figure to
-        # docs/cost-ledger.md, a git-tracked file in this public repo, so
-        # unioning more than one declared account into that commit is
-        # refused until the ledger's storage location is redesigned (see
-        # docs/cost-ledger.md) -- non-record reads are unaffected and keep
-        # returning the union.
+        # --record writes to a single resolved ledger path; unioning multiple
+        # declared accounts into that one write risks silently committing one
+        # account's figures under another's (or a shared) destination, so
+        # it's refused outright -- non-record reads still return the union.
         print(
             "cost-ledger: --record is refused when more than one root is in"
             " scope; scope to a single account (--config-dir, or a roots"
@@ -7841,12 +7869,19 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         "note": note,
     }
 
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = ledger_path.with_name(ledger_path.name + ".lock")
     with open(lock_path, "w") as lock_f:
         _acquire_cost_ledger_lock(lock_f)
         try:
             try:
                 preamble, existing_rows = _parse_cost_ledger_file_text(ledger_path.read_text())
+            except FileNotFoundError:
+                # Treated uniformly as "never recorded here" -- doesn't
+                # distinguish a dangling symlink or an externally-removed
+                # directory from a genuinely fresh path; both are edge cases
+                # requiring external tampering, not a normal --record flow.
+                preamble, existing_rows = _default_cost_ledger_preamble(), []
             except _CostLedgerParseError as exc:
                 print(f"cost-ledger: {exc}", file=sys.stderr)
                 sys.exit(1)
@@ -9998,8 +10033,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cost_ledger = sub.add_parser(
         "cost-ledger",
         help=(
-            "Read or append docs/cost-ledger.md, this repo's durable per-week cost/efficiency"
-            " ledger. Default: print existing rows plus any live-corpus weeks not yet recorded."
+            "Read or append the local per-week cost/efficiency ledger (see COST_LEDGER_PATH)."
+            " Default: print existing rows plus any live-corpus weeks not yet recorded."
         ),
     )
     _add_project_scope_args(p_cost_ledger)

@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -9858,6 +9859,26 @@ def _reviewer_dispatch_records(
     return records
 
 
+class TestCostLedgerPathResolution:
+    def test_override_absolute_honored(self, monkeypatch, tmp_path):
+        override = tmp_path / "custom-ledger-location" / "cost-ledger.md"
+        monkeypatch.setenv("COST_LEDGER_PATH", str(override))
+        assert _mod._cost_ledger_path() == override
+
+    def test_override_relative_raises_value_error(self, monkeypatch):
+        monkeypatch.setenv("COST_LEDGER_PATH", "relative/cost-ledger.md")
+        with pytest.raises(ValueError, match="must be an absolute path"):
+            _mod._cost_ledger_path()
+
+    def test_unset_falls_back_to_config_dir(self, monkeypatch, tmp_path):
+        """Unset COST_LEDGER_PATH resolves against a monkeypatched
+        CLAUDE_CONFIG_DIR, not this workstation's real $HOME."""
+        monkeypatch.delenv("COST_LEDGER_PATH", raising=False)
+        cfg_dir = tmp_path / "isolated-claude-config"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
+        assert _mod._cost_ledger_path() == cfg_dir / "cost-ledger.md"
+
+
 class TestCostLedgerReadMode:
     def test_read_mode_lists_existing_rows_and_flags_unrecorded_live_week(
         self, fake_projects, cost_ledger_file, capsys
@@ -9885,6 +9906,25 @@ class TestCostLedgerReadMode:
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
         assert exc_info.value.code != 0
+
+    def test_read_mode_missing_ledger_file_prints_never_recorded_wording(
+        self, fake_projects, tmp_path, monkeypatch, capsys
+    ):
+        """Behavioral check that the "never recorded here yet" wording is
+        actually reached and printed on this code path, not just present
+        somewhere in source — see the source-grep tripwire below for the
+        companion check that the old wording doesn't silently return."""
+        monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: tmp_path / "absent-cost-ledger.md")
+        with pytest.raises(SystemExit):
+            _mod._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
+        err = capsys.readouterr().err
+        assert "no ledger recorded here yet" in err
+
+    def test_old_ledger_file_not_found_wording_absent_from_source(self):
+        """Source-grep tripwire, not a behavioral guarantee (see the
+        behavioral test above): pins against the literal old message text
+        silently reappearing."""
+        assert "ledger file not found" not in _SCRIPT.read_text()
 
     def test_format_read_row_renders_exact_fixed_width_columns(self):
         """_format_cost_ledger_read_row's fixed-width terminal line, checked
@@ -10153,6 +10193,89 @@ class TestCostLedgerWriteFidelity:
         assert len(rows) == 1
         assert 0 < rows[0]["opus_pct"] < 100
 
+    def test_write_to_nonexistent_ledger_path_leaves_mkstemp_default_mode(self, tmp_path):
+        """ledger_path not existing yet (the first write against a fresh
+        path) must not crash stat()'ing a nonexistent file while preserving
+        permissions -- it should leave tempfile.mkstemp's own 0600 default
+        in place instead."""
+        ledger_path = tmp_path / "cost-ledger.md"
+        preamble = _mod._COST_LEDGER_HEADER_LINE + "\n" + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+        _mod._write_cost_ledger_file(ledger_path, preamble, [])
+        assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o600
+
+    def test_write_to_existing_ledger_path_preserves_its_mode(self, tmp_path):
+        """The existing-file case -- chmod to the existing file's own mode
+        -- is unaffected by the ledger_path.exists() guard added for the
+        nonexistent-path case above."""
+        ledger_path = tmp_path / "cost-ledger.md"
+        preamble = _mod._COST_LEDGER_HEADER_LINE + "\n" + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+        ledger_path.write_text(preamble)
+        ledger_path.chmod(0o640)
+        _mod._write_cost_ledger_file(ledger_path, preamble, [])
+        assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o640
+
+
+class TestCostLedgerAutoCreate:
+    def test_record_creates_fresh_file_with_default_preamble_when_none_exists(
+        self, fake_projects, cost_ledger_enabled, tmp_path, monkeypatch
+    ):
+        """--record against a path with no file yet, but an existing parent
+        directory, creates the ledger fresh (default preamble, one row) --
+        round-trips through the canonical parser exactly like an
+        already-canonical file."""
+        ledger_path = tmp_path / "cost-ledger.md"
+        monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: ledger_path)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+
+        preamble, rows = _mod._parse_cost_ledger_file_text(ledger_path.read_text())
+        assert preamble == _mod._default_cost_ledger_preamble()
+        assert len(rows) == 1
+        assert rows[0]["week"] == "2026-W23"
+
+    def test_record_creates_missing_parent_directory_too(
+        self, fake_projects, cost_ledger_enabled, tmp_path, monkeypatch
+    ):
+        """--record against a path whose parent directory also doesn't
+        exist yet (a never-before-used $CLAUDE_CONFIG_DIR) must create both
+        the directory and the file -- a non-recursive mkdir() would pass
+        the previous test while still crashing here."""
+        ledger_path = tmp_path / "fresh-config-dir" / "cost-ledger.md"
+        monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: ledger_path)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+
+        assert ledger_path.parent.is_dir()
+        _preamble, rows = _mod._parse_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+
+    def test_record_refused_before_sentinel_check_leaves_no_directory_behind(
+        self, fake_projects, tmp_path, monkeypatch
+    ):
+        """A guard that rejects ahead of the auto-create mkdir (here: the
+        missing-sentinel check, the first guard --record hits) must leave
+        zero filesystem side effects -- this is the property every other
+        guard-rejection test only checks via exit code/stderr, not via the
+        directory the mkdir call would have created. A future edit that
+        hoisted the mkdir above a guard would pass every other test in this
+        file unchanged while still failing this one."""
+        ledger_path = tmp_path / "never-created-config-dir" / "cost-ledger.md"
+        monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: ledger_path)
+        cfg_dir_no_sentinel = tmp_path / "isolated-claude-config-no-sentinel"
+        cfg_dir_no_sentinel.mkdir()
+        monkeypatch.setattr(_mod, "config_dir", lambda: cfg_dir_no_sentinel)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+        assert not ledger_path.parent.exists()
+
 
 class TestCostLedgerRecordIdempotence:
     def test_second_record_without_force_refused_and_file_byte_identical(
@@ -10264,6 +10387,42 @@ class TestCostLedgerConcurrency:
             t.join()
 
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+        assert sorted(exit_codes) == [0, 1]
+
+    def test_two_racing_records_onto_not_yet_existing_parent_directory_produce_exactly_one_row(
+        self, fake_projects, cost_ledger_enabled, tmp_path, monkeypatch
+    ):
+        """Same race as above, but onto a path whose parent directory
+        doesn't exist yet -- the one directory-existence invariant this
+        auto-create feature actually changes. Both threads call
+        mkdir(parents=True, exist_ok=True) before acquiring the lock;
+        Path.mkdir(exist_ok=True) is documented race-safe under concurrent
+        creation, and this pins that property for this specific code path
+        rather than relying on it being true elsewhere."""
+        ledger_path = tmp_path / "fresh-config-dir" / "cost-ledger.md"
+        monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: ledger_path)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        args = _cost_ledger_args(record=True, machine_label="tstm1")
+        today = date(2026, 6, 3)
+        exit_codes: list[int | None] = [None, None]
+
+        def _run(i: int) -> None:
+            try:
+                _mod._cost_ledger_report(args, today)
+                exit_codes[i] = 0
+            except SystemExit as exc:
+                exit_codes[i] = exc.code
+
+        threads = [threading.Thread(target=_run, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        _preamble, rows = _mod._parse_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
         assert sorted(exit_codes) == [0, 1]
 
@@ -10483,6 +10642,49 @@ class TestCostLedgerSentinelGate:
         assert exc_info.value.code == 2
         assert "more than one root is in scope" in capsys.readouterr().err
         assert cost_ledger_file.read_text() == before
+
+
+class TestCostLedgerDefaultPathCliWiring:
+    def test_cmd_cost_ledger_record_lands_at_config_dir_default_path(self, monkeypatch, tmp_path):
+        """cmd_cost_ledger's own dispatch wiring -- not just a direct
+        _cost_ledger_report() call -- resolves the ledger's default
+        location through config_dir() when COST_LEDGER_PATH is unset.
+        cmd_cost_ledger reads datetime.now(UTC) itself with no override
+        parameter, so "today" is pinned via a real datetime subclass (not a
+        bare stub, so the datetime(...) constructor calls inside
+        _cost_ledger_report keep working) instead of depending on the real
+        wall clock."""
+        monkeypatch.delenv("COST_LEDGER_PATH", raising=False)
+        cfg_dir = tmp_path / "fresh-claude-config"
+        cfg_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
+        (cfg_dir / ".cost-ledger-enabled").touch()
+        expected_path = cfg_dir / "cost-ledger.md"
+        expected_path.write_text(
+            _mod._COST_LEDGER_HEADER_LINE + "\n" + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+        )
+
+        projects = tmp_path / "projects"
+        proj = projects / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        _write_jsonl(proj / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 6, 3, 12, 0, tzinfo=tz)
+
+        monkeypatch.setattr(_mod, "datetime", _FixedDatetime)
+
+        _mod.cmd_cost_ledger(_cost_ledger_args(record=True, machine_label="tstm1"))
+
+        assert _mod._cost_ledger_path() == expected_path
+        _preamble, rows = _mod._parse_cost_ledger_file_text(expected_path.read_text())
+        assert len(rows) == 1
+        assert rows[0]["week"] == "2026-W23"
 
 
 # ---------------------------------------------------------------------------
