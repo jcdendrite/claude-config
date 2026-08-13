@@ -91,10 +91,10 @@ Resolve the branch immediately before the call and pass it as a quoted, opaque l
 
 ```bash
 branch="$(git rev-parse --abbrev-ref HEAD)"
-python3 ~/.claude/scripts/transcript-analysis.py cost --this-repo --branches "$branch" --summary
+python3 "$config_dir/scripts/transcript-analysis.py" cost --this-repo --branches "$branch" --summary
 ```
 
-If `$branch` is the literal `HEAD` (detached HEAD), omit the section and say why, rather than publish a `$0.00` block for an unresolved branch. Otherwise embed stdout **verbatim** under `## Cost`, followed by the exact command (branch filled in) — never recompose, round, or re-narrate the figures. Session/turn counts and per-model-ID dollars are not neutral — they signal engagement scale and model mix. That is the intended read under an account that opted in; it is not a property of the output format, and an account enabling this for one engagement should not assume the fields are harmless in another.
+If `$branch` is the literal `HEAD` (detached HEAD), omit the section and say why, rather than publish a `$0.00` block for an unresolved branch. Otherwise embed stdout **verbatim** under `## Cost`, followed by the exact command — `$config_dir` left literal, unresolved, only `$branch` filled in with its real value — never recompose, round, or re-narrate the figures. Session/turn counts and per-model-ID dollars are not neutral — they signal engagement scale and model mix. That is the intended read under an account that opted in; it is not a property of the output format, and an account enabling this for one engagement should not assume the fields are harmless in another.
 
 ## Checks
 
