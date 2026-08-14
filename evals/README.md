@@ -20,6 +20,10 @@ subscription auth. This means:
   (`triggered 7/10`), not a gate. Running it in CI would also require
   `--dangerously-skip-permissions` on a public repo — a security footgun.
 
+This rationale applies equally to `measure_subagent_model_resolution.py` (see
+[below](#subagent-model-resolution-experiment)) — same subscription-auth
+subprocess launch, same never-CI posture.
+
 ## Usage
 
 ```bash
@@ -400,3 +404,29 @@ ruff check evals/
 ```
 
 Run locally before committing harness changes.
+
+## Subagent model resolution experiment
+
+`measure_subagent_model_resolution.py` is a separate, one-off instrument —
+not a skill eval. It launches short headless `claude -p` runs across an
+explicit (session model × permission mode × dispatch shape) matrix, then
+reads each run's `subagents/agent-*.jsonl` + `.meta.json` sidecars to report
+requested vs. observed subagent model, so the plan-mode subagent
+model-resolution question can be settled by measurement instead of corpus
+inference. Full design, hypotheses, and the run matrix live in
+[`.claude/plans/plan-mode-model-resolution-experiment.md`](../.claude/plans/plan-mode-model-resolution-experiment.md) —
+this is a pointer, not a restatement.
+
+```bash
+# Print the seven-run matrix without launching anything:
+python evals/measure_subagent_model_resolution.py --list
+
+# Run a single matrix cell (1-7):
+python evals/measure_subagent_model_resolution.py --run 1
+
+# Run the full matrix in order (stops if run 1's self-check fails):
+python evals/measure_subagent_model_resolution.py --all --json results.json
+```
+
+Tests: `evals/test_measure_subagent_model_resolution.py`, fixture-based, no
+live sessions.
