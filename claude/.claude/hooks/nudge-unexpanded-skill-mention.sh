@@ -10,13 +10,11 @@
 #
 # What this catches: slash-command expansion is anchored to message start,
 # and as of v2.1.199 the harness expands a leading run of up to six chained
-# skills (`/skill-a /skill-b do XYZ`). Both facts are documented at
-# code.claude.com/docs/en/commands.md — re-verify the chain limit there
-# before relying on it, since a later harness version may change it. A skill
-# named later in the prompt is inert text — nothing loads unless the agent
-# notices the mention unaided. This hook resolves a candidate `/<name>` token
-# outside that leading run against installed skill directories and asks the
-# agent to check with the engineer before invoking it.
+# skills (code.claude.com/docs/en/commands.md — re-verify there; harness
+# versions drift). A skill named later in the prompt is inert text — nothing
+# loads unless the agent notices the mention unaided. This hook resolves a
+# candidate `/<name>` token outside that leading run against installed skill
+# directories and asks the agent to check with the engineer before invoking.
 #
 # Fail-open, advisory only: every path below exits 0, including a missing
 # jq, an unreadable _lib.sh, an unresolvable config dir, and a malformed or
@@ -46,43 +44,27 @@
 # both deliberate engineer decisions, not oversights.
 #
 # Prompt text is partly untrusted — pasted issues, logs, and web content
-# reach this hook verbatim — so the token grammar is the trust boundary:
-# - Resolution never runs `git`, `find`, `ls`, a glob, or `eval`; the project
-#   skills root comes from a pure-bash ancestor-directory walk from `cwd`.
-# - The capture regex admits only [A-Za-z0-9_-], so `/`, `..`, and every
-#   shell metacharacter stop the match rather than entering a token.
-# - Each token is re-validated at point of use, mirroring
-#   _lib_valid_session_id_component, so a later edit widening the capture
-#   regex cannot silently widen what reaches a filesystem path.
-# - Each candidate is tested with an exact `[[ -f "$dir/$token/SKILL.md" ]]`,
-#   and only the validated token is echoed into additionalContext.
-#
-# The scanned prompt is truncated to a fixed byte cap before any pass, so a
-# multi-megabyte paste cannot turn a per-prompt hook into a slow scan —
-# unrelated to _LIB_SIZE_THRESHOLD_BYTES in _lib.sh, which gates file and
-# tool-response content, not prompt text.
+# reach this hook verbatim — so the token grammar is the trust boundary; the
+# point-of-use comments below carry it, and docs/hooks.md the summary.
 
 # Strict mode omitted deliberately, matching the other UserPromptSubmit
 # nudges: this hook must reach `exit 0` on all paths, and `set -e` would
 # turn an expected non-zero (a `grep` with no candidate match, an empty
 # PROJECT_SKILLS_ROOT) into an early exit that skips the exit-0 contract.
 
-# Byte cap for the scanned prompt text, applied right after jq extracts it
-# and before every downstream pass, to stay inside the <100ms per-fire budget
-# (claude-hook-review §7). Reading and jq-parsing stdin is itself uncapped, so
-# a multi-megabyte payload still costs one full parse first. A mention past
-# the cap is silently dropped — accepted, since raising the cap reopens the
-# stall it prevents.
+# Byte cap for the scanned prompt (<100ms per-fire budget, claude-hook-review
+# §7), applied right after jq extraction — jq's own parse of the raw payload
+# runs uncapped regardless, and a mention past the cap is silently dropped
+# since raising it just reopens the stall it prevents.
 _MAX_SCAN_BYTES=65536
 
-# Ceiling on distinct candidates resolved from one prompt. Bounds — but does
-# not close — the skill-name existence oracle noted in the header gaps.
+# Ceiling on distinct candidates per prompt — see "Known gaps" above for the
+# existence oracle this bounds.
 _MAX_CANDIDATE_TOKENS=32
 
-# Every text pass below uses an external tool rather than bash parameter
-# expansion: bash's `%`/`#` trimming scans the whole string per operation, so
-# on a capped-but-large prompt it costs far more than one `sed`/`awk` pass —
-# the same stall _MAX_SCAN_BYTES exists to prevent, reintroduced a stage later.
+# Text passes below use sed/awk/grep, not bash %/# trimming — bash's trimming
+# is O(n) per call on a capped-but-still-large prompt, so several calls turn
+# quadratic fast.
 
 INPUT=$(cat 2>/dev/null)
 
@@ -125,11 +107,10 @@ case "$PROMPT" in
   *) exit 0 ;;
 esac
 
-# Every pass from here on runs under LC_ALL=C. The byte cap above can split a
-# multi-byte character, and under a UTF-8 locale tr, awk, sed, and grep each
-# abort on the resulting partial sequence and emit NO stdout — which would
-# silently discard the whole scanned prompt, not just the bytes past the cut.
-# Byte-wise matching is safe here because every pattern below is ASCII.
+# Every pass below forces LC_ALL=C: under UTF-8, tr/awk/sed/grep abort with no
+# stdout on a multi-byte char split by the byte cap above — silently discarding
+# the whole prompt, not just the cut bytes — and every pattern here is ASCII so
+# byte-wise matching is correct.
 
 # Drop fenced code blocks entirely (opener, body, and closer). `tr` normalizes
 # CRLF first so a fence marker is detected regardless of line ending. `/^```/`
