@@ -130,9 +130,42 @@ level rather than by convention. Per
 "Plan mode tells Claude to research and propose changes without making them.
 Claude reads files, runs shell commands to explore, and writes a plan, but
 does not edit your source." The guarantee lost is therefore *no source edits*,
-not *no side effects* — shell still runs. `require-plan-review.sh` only gates
-once a plan file exists and never covers Bash, so the trade lands hardest on
-unattended sessions with no human to enter plan mode by hand.
+not *no side effects* — shell still runs. Whether a Bash-mediated write itself
+respects that boundary is unverified (Row 14) — the doc text is consistent
+with either "Bash is read-only in plan mode" or "only `Edit`/`Write` are
+gated," and confirming it would need Row 8's live-session methodology, not yet
+run for this question. `require-plan-review.sh` only gates once a plan file
+exists and never covers Bash, so the trade lands hardest on unattended
+sessions with no human to enter plan mode by hand — a population this
+uncertainty makes larger, not smaller, if Bash turns out to be unrestricted.
+
+**`defaultMode` is a second, unclosed entry path into the same state.** Lever
+B removes the `EnterPlanMode` tool, but `permissions.defaultMode: "plan"`
+selects the `permissionMode` a *new* session starts in, with no tool call
+involved — the agent's ordinary Write/Edit access to `.claude/settings.json`
+(project-scoped, or the primary checkout's `~/.claude/settings.json`) reaches
+it directly. `guard-settings-session-keys.sh`'s `GUARDED_KEYS_JSON` does not
+include `defaultMode`. `ask-review-permissions.sh` does fire a PreToolUse
+`Edit`/`Write`/`MultiEdit` hook on any `.claude/settings*.json` path, but its
+`permissionDecisionReason` names `permissions.allow` by example and never
+mentions `defaultMode`, so a human approving in the moment has no cue that
+this particular edit is the sensitive one — and whether an `ask` decision is
+honored at all in an unattended/headless automation loop (the population this
+gap matters most for) is itself unverified. An agent that writes `defaultMode:
+"plan"` (self-directed, misinstructed, or acting on injected content)
+reproduces the all-downstream-Opus-escalation state on the next session
+start, with `EnterPlanMode` never called and Lever A's prose not violated on
+a literal reading. This is out of Lever B's own scope — it is a config-write
+path, not a tool call. The committed/reviewed sub-path is closed by widening
+the `review-permissions/SKILL.md` checklist item this plan already adds
+(Critical files) and by a companion pin test (Row 17); the interactive edit
+path gets a real, if generic, cue once `ask-review-permissions.sh`'s message
+is widened to name `defaultMode` explicitly (Critical files). The unattended
+sub-path — an agent writing `defaultMode: "plan"` with no commit and no
+interactive approval, inside an automation loop that starts a fresh session
+in the same working directory — is closed by none of the above, since the
+`ask` decision's headless behavior is unverified. Accepted as open residual
+(Accepted residual risk).
 
 ### Lever A — advisory bullet in `claude/.claude/CLAUDE.md`
 
@@ -265,8 +298,9 @@ Row 10 [mechanism]: advisory bullet in CLAUDE.md's Agent Briefing — anchors:
 root — a bare-name deny removes the tool silently, so without prose the agent
 has no signal about what to do instead.
 Row 11 [assumption]: no existing prose in either checkout discourages agent-
-initiated plan-mode entry [verified: `git grep -n -i "plan mode"`, 51 hits,
-every one procedural or historical] — anchors: row10
+initiated plan-mode entry [verified: `git grep -n -i "plan mode"` returns only
+tool names, hook/test comments, and historical `.claude/plans/**` records —
+none argues against agent-initiated entry] — anchors: row10
 Row 12 [assumption]: the escalation path for Opus-during-planning users is an
 explicit `--model opus` session running `plan-it`, not a new wrapper script
 [engineer-verified] — anchors: row2b
@@ -276,7 +310,17 @@ sits directly on main.
 Row 14 [assumption]: plan mode's harness-level guarantee is "does not edit
 your source", not "no side effects" — shell commands still run
 [verified: code.claude.com/docs/en/permission-modes, quoted in Lever B] —
-anchors: row6 — bounds how much guardrail Lever B actually gives up.
+anchors: row6 — bounds how much guardrail Lever B actually gives up. **Not
+verified**: whether a Bash-mediated write (`echo payload >> src/file.py`) is
+itself blocked in plan mode, or only the dedicated `Edit`/`Write` tools are —
+the doc quote is consistent with either reading, and confirming it would need
+Row 8's live-session methodology, not yet run for this question. If Bash can
+write source, the "no source edits" guarantee is narrower than the Lever B
+paragraph implies. Deliberately deferred rather than run in this planning
+pass — the next execution of the Pre-implementation gate should add a fifth
+check (attempt a Bash-mediated write in a live plan-mode session and confirm
+it is blocked) rather than treating the four-check "passed" result below as
+covering this question.
 Row 15 [assumption]: a human has three plan-mode entry paths — `Shift+Tab`,
 the `/plan` prefix, and `defaultMode: "plan"` — none routed through the
 `EnterPlanMode` tool [verified: code.claude.com/docs/en/permission-modes] —
@@ -287,6 +331,27 @@ Claude-authored commit staging settings.json is denied, because the hook
 diffs the whole staged file against `main` rather than the commit's own delta
 [verified: claude/.claude/hooks/guard-settings-session-keys.sh] — anchors:
 row3 — forces the sequencing and the two-action rollback.
+Row 17 [assumption]: `permissions.defaultMode` is agent-writable via ordinary
+`Write`/`Edit` to `.claude/settings.json`, is absent from
+`guard-settings-session-keys.sh`'s `GUARDED_KEYS_JSON`, and the one hook that
+does inspect `Write`/`Edit` to `settings.json` (`ask-review-permissions.sh`)
+asks generically without naming `defaultMode` — so an agent setting
+`defaultMode: "plan"` reaches the identical escalation state Lever A and B
+are built to close, without calling `EnterPlanMode` [verified:
+claude/.claude/hooks/guard-settings-session-keys.sh `GUARDED_KEYS_JSON` omits
+`defaultMode`; docs/auto-mode.md:55-63 confirms `defaultMode` is a real,
+harness-honored key; claude/.claude/hooks/ask-review-permissions.sh matches
+`Edit`/`Write`/`MultiEdit` on any `.claude/settings*.json` path and returns an
+`ask` decision, but its `permissionDecisionReason` names `permissions.allow`
+by example and never mentions `defaultMode`, and whether `ask` is honored in
+an unattended/headless session is unverified] — anchors: row6 — the
+committed/reviewed sub-path is closed by widening the review-permissions
+checklist item (Critical files) and a companion pin test; the interactive
+edit path gets a real cue once `ask-review-permissions.sh`'s message is
+widened to name `defaultMode` (Critical files); the unattended sub-path is
+accepted as open residual (Accepted residual risk), not by adding
+`defaultMode` to `GUARDED_KEYS_JSON`, which guards a different problem
+(accidental machine-local state, not a deliberate-looking config value).
 ```
 
 ## Critical files
@@ -299,12 +364,13 @@ row3 — forces the sequencing and the two-action rollback.
 | `claude/.claude/settings.json` | `permissions.deny` — append `"EnterPlanMode"` (Lever B). Do **not** touch `model` in this commit |
 | `docs/auto-mode.md` | Add a row to the "Hard-floor deny rules" table for the new entry; update the opusplan-default prose at `:23`, `:24`, `:42`, `:51`, `:141`, and at `:199`, where "this repo's `opusplan` default makes plan mode and an Opus-anchored parent nearly synonymous" describes the confound at measurement time and must be scoped to then rather than left present-tense |
 | `docs/case-studies/plan-mode-model-resolution.md` | Its closing line names "keeping agent-initiated planning out of harness plan mode entirely" as one of two levers, "both … follow-up decisions, not made here". This PR makes that decision — append a dated follow-up recording the outcome, per Axis 3 rather than editing the record |
-| `README.md` | `:240` ("Configured with **opusplan** as the default model") and `:418` (the `claude-auto` bullet's two `opusplan` references) |
+| `README.md` | `:240` ("Configured with **opusplan** as the default model") and `:420` (the `claude-auto` bullet's two `opusplan` references) |
 | `claude/.claude/scripts/claude-auto.sh` | `:4,6` — comments asserting the repo default is `opusplan`. Update the rationale; the wrapper still earns its place for `--model` passthrough |
 | `docs/scripts.md` | `:65` — same stale rationale as the wrapper's comments |
 | `CHANGELOG.md` | New `### Changed` bullet at the top of `## [Unreleased]`: bolded lead, prose rationale, **Migration:** callout leading with the recommended planning workflow — start the session with `--model opus` and run `/plan-it`, which gets Opus planning turns with Sonnet fan-out (Row 2a). Must state that the flip does not change what a default session does, so readers do not go looking for a behavior change that is not there |
-| `claude/.claude/skills/review-permissions/SKILL.md` | Widen the frontmatter TRIGGER to cover `permissions.deny` bare tool-name entries, and add one checklist item: does removing this tool silently break a documented workflow, and is the removal paired with prose telling the agent what to do instead? Lever B ships the repo's first bare tool-name deny entry, and this skill is the only thing that would review the next one |
-| `claude/.claude/hooks/tests/test_hook_alignment.py` | Add a config-value pin: `json.loads` the real `settings.json` and assert `"EnterPlanMode" in settings["permissions"]["deny"]`. Docstring must scope the claim honestly — it proves the rule is declared, not that the harness honors it |
+| `claude/.claude/skills/review-permissions/SKILL.md` | Widen the frontmatter TRIGGER to cover `permissions.deny` bare tool-name entries and `permissions.defaultMode` changes, and add two checklist items: (1) does removing this tool silently break a documented workflow, and is the removal paired with prose telling the agent what to do instead; (2) does a `defaultMode` change select `"plan"` (or any permissionMode this repo restricts elsewhere), reopening the entry path Lever B closes. Lever B ships the repo's first bare tool-name deny entry, and `defaultMode` is a config-write path around it (assumption ledger Row 17) that this skill is the only thing that would review |
+| `claude/.claude/hooks/tests/test_hook_alignment.py` | Add a config-value pin: `json.loads` the real `settings.json` and assert `"EnterPlanMode" in settings["permissions"]["deny"]` and `settings.get("permissions", {}).get("defaultMode") != "plan"` (Row 17's companion pin — nested under `permissions`, matching the first assertion). Docstring must scope the claim honestly — it proves the rules are declared, not that the harness honors them |
+| `claude/.claude/hooks/ask-review-permissions.sh` | Widen `permissionDecisionReason` to name `permissions.defaultMode` alongside `permissions.allow` as a reason to run a review skill first, so a human approving a `settings.json` edit in the moment gets a concrete cue for this specific key (Row 17). Does not close the unattended/headless sub-path — `ask`'s behavior there is unverified and stays an accepted residual |
 | `docs/cost-levers-considered.md` | **Append** a dated follow-up note (Axis 3 — the `:79` and `:27` rows are preserved records, edit neither). It must record that the falsification test *removed* the flip's original cost rationale and supplied a coherence rationale instead, so the next person to propose it as a cost lever finds the refutation rather than repeating the reasoning. Also resolves the 2026-08-11 note's "reopening the flip is a separate decision, not made here", and corrects the "11 sites across 5 files" figure against Row 4's count |
 
 **Engineer-authored commit (lands last):**
@@ -331,7 +397,7 @@ row3 — forces the sequencing and the two-action rollback.
 This gate must run before Lever B is implemented, since Row 8 decides whether
 Lever B ships at all; running it during verification instead would mean
 implementing a lever the check might delete. It is also the procedure to
-repeat for the periodic re-verification the residual-risk section commits to.
+repeat for the re-verification the residual-risk section commits to.
 
 Setup: append `"EnterPlanMode"` to `permissions.deny` in a **full copy of the
 stowed `~/.claude/settings.json`** — not a minimal file — placed as
@@ -363,6 +429,10 @@ Four checks:
 4. `ExitPlanMode` must remain available, so `require-plan-review.sh`'s gate is
    unaffected.
 
+These four checks establish that the tool-removal mechanism works; they do
+not test the Bash-mediated-write question Row 14 leaves open — that would be
+a fifth check, not yet run (see Row 14).
+
 **Result: all four passed** — see Row 8 and Row 8a for the verified specifics.
 Lever B ships as planned.
 
@@ -391,7 +461,8 @@ alone, recording the negative in `docs/cost-levers-considered.md`.
    working fix as a failed one. Segment out sessions where a human entered
    plan mode by hand; those are out of this change's reach by design. Lands
    after merge; record as a dated follow-up in
-   `docs/cost-levers-considered.md` rather than blocking the PR.
+   `docs/cost-levers-considered.md` rather than blocking the PR. This same
+   measurement is also the residual-risk re-verification trigger below.
 5. Commit order check: `git log --oneline` shows the `model` flip as the final
    commit, authored by the engineer, with every doc and prose change already
    landed beneath it.
@@ -412,8 +483,27 @@ in `settings.json`, the pin test still passes, and Lever B silently stops
 working. The pin test catches only the entry being *removed or reshaped*
 (e.g. into `"EnterPlanMode(*)"`, a weaker rule). Driving a real interactive
 session from pytest would need pty automation — disproportionate for one
-boolean. Recorded as a residual, with periodic manual re-verification noted in
-the `docs/cost-levers-considered.md` follow-up rather than implied closed.
+boolean. Recorded as a residual. The re-verification trigger is not
+calendar-based: re-run the Pre-implementation gate's four checks whenever
+Verification step 4's `subagent-mix` measurement shows plan-mode dispatch
+volume from agent-initiated sessions rising off zero — that metric is already
+collected for a different purpose and doubles as a drift detector here at no
+extra instrumentation cost. Record the re-run in the
+`docs/cost-levers-considered.md` follow-up rather than implied closed.
+
+Two further residuals surfaced in review: an unattended, headless `defaultMode:
+"plan"` write (Row 17) — a session with no human in the loop to see
+`ask-review-permissions.sh`'s prompt, whose behavior in that mode is itself
+unverified — reaches an automation loop that the review-checklist widening,
+the pin test, and the widened hook message all miss, since none of the three
+covers a run with no commit, no pytest, and no interactive approval. Closing
+it fully would need a hard `deny` rather than an `ask`, the same class of
+tradeoff Lever B itself weighed for `EnterPlanMode` and rejected in favor of
+a lighter mechanism there; accepted open here for the same proportionality
+reason. And whether a Bash-mediated write is actually blocked in plan mode
+(Row 14) is unverified — the Pre-implementation gate's four checks don't
+cover it; add it as a fifth check the next time that gate runs, rather than
+assuming shell writes are safe.
 
 ## Out of scope
 
@@ -450,3 +540,9 @@ the `docs/cost-levers-considered.md` follow-up rather than implied closed.
   rejected in #631 (`docs/auto-mode.md`) — it removes the built-in `Explore`
   and `Plan` subagents entirely, moving that work onto the parent's own turns.
   A cost regression, not a fix.
+- **Widening `permissions.defaultMode` into a guarded key.** Row 17 names the
+  gap; the fix is review-checklist coverage and a pin test, not a
+  `guard-settings-session-keys.sh` addition. That hook guards accidental
+  machine-local drift landing in a commit — `defaultMode: "plan"` is a
+  deliberate-looking config value an ordinary review should catch, a
+  different failure mode from the one the hook exists for.
