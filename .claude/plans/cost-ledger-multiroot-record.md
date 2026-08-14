@@ -8,9 +8,9 @@ account in `~/.claude/transcript-config-dirs`, `--record` can never
 succeed, permanently, regardless of where its output goes. The engineer
 asked for this fixed after confirming the refusal is permanent-by-design,
 not a temporary artifact of the just-landed cost-ledger storage redesign
-(PR #637). This machine is exactly that case: `workstation-setup` PR #58
-just landed a generator for `transcript-config-dirs`, and PR #635's own
-plan predicted this outcome verbatim — landing that generator "would leave
+(PR #637). This machine is exactly that case: a separate personal-tooling
+change just landed a generator for `transcript-config-dirs`, and PR #635's
+own plan predicted this outcome verbatim — landing that generator "would leave
 `--record` refusing outright on any machine with more than one declared
 account, rather than recording safely." The intended outcome is that
 `--record` works normally on a multi-account machine, while still refusing
@@ -89,7 +89,7 @@ this file (cost --summary's mechanism 1, cost --no-redact, subagent-mix
 condition is met; adding one here would be a new pattern, not a
 consistent one. [verified:
 claude/.claude/scripts/transcript-analysis.py:5583-5594 (cost --summary),
-5601-5607 (cost --no-redact), 2980-2992 (subagent-mix --per-session), this
+5617-5622 (cost --no-redact), 2980-2992 (subagent-mix --per-session), this
 session]
 Row 4 [assumption]: an ambiguous git-check result (subprocess timeout,
 missing git binary, or a non-zero exit that isn't the expected "not a git
@@ -99,17 +99,19 @@ existing subprocess-based guard's own fail-closed posture on failure.
 2404-2420] — anchors: row1
 Row 5 [assumption]: the ledger row schema (columns, week+machine dedupe
 key in _upsert_cost_ledger_row) needs no change — anchors: root —
-[verified: claude/.claude/scripts/transcript-analysis.py:7298-7301,
-7520-7538 show a fixed 10-column schema with no versioning/migration
-mechanism; changing it would break every existing ledger file's header
-match, a cost this plan doesn't need to pay since the union content itself
-isn't the defect (see Approach's "why not per-account rows")]
+[verified: the module-level `_COST_LEDGER_HEADER_LINE`/
+`_COST_LEDGER_SEPARATOR_LINE` constants and `_parse_cost_ledger_file_text`'s
+exact-string header match on them (transcript-analysis.py) show a fixed
+10-column schema with no versioning/migration mechanism; changing it would
+break every existing ledger file's header match, a cost this plan doesn't
+need to pay since the union content itself isn't the defect (see
+Approach's "why not per-account rows")]
 Row 6 [assumption]: --machine-label stays an opaque per-machine label, not
 repurposed to carry account identity — anchors: row5 — [verified:
-_MACHINE_LABEL_RE and its hostname-collision check at
-claude/.claude/scripts/transcript-analysis.py:7308-7312, 7800-7806, plus
-docs/cost-ledger.md's `machine` column description — none of which this
-plan's Critical Files touch]
+`_MACHINE_LABEL_RE` and its hostname-collision check
+(`machine_label.lower() == socket.gethostname().lower()`) in
+`_cost_ledger_report`, plus docs/cost-ledger.md's `machine` column
+description — none of which this plan's Critical Files touch]
 ```
 
 ## Critical files
@@ -145,8 +147,8 @@ plan's Critical Files touch]
          repository" text → `False` (cleanly not tracked, proceed)
       4. anything else (a non-zero exit not matching #3, `TimeoutExpired`,
          `FileNotFoundError`, `OSError`) → `True` (fail closed, refuse)
-  - In `_cost_ledger_report` (~line 7783), replace the `if len(roots) > 1:`
-    block's unconditional `sys.exit(2)` with a check that also calls
+  - In `_cost_ledger_report`, replace the `if len(roots) > 1:` block's
+    unconditional `sys.exit(2)` with a check that also calls
     `_ledger_path_is_git_tracked(ledger_path)`, refusing (exit 2, same
     convention as the sibling multi-root guards) only when both are true.
     Use two distinguishable stderr messages, not one — an operator hitting
@@ -154,22 +156,28 @@ plan's Critical Files touch]
     itself failed, not that their path is confirmed git-tracked, or they'll
     troubleshoot the wrong thing. Neither message echoes the resolved path
     itself, matching this function's existing redaction discipline for
-    home-rooted paths (transcript-analysis.py:7743-7749).
+    home-rooted paths (the "no ledger recorded here yet" message earlier in
+    the same function).
   - Reuse opportunities: the subprocess+timeout idiom above; the existing
     exit-code convention (2 for a policy refusal, matching every sibling
     multi-root guard, vs. 1 for validation errors elsewhere in this
     function).
 
 - **`claude/.claude/scripts/tests/test_transcript_analysis.py`**
-  - `test_record_refuses_when_more_than_one_root_in_scope` (~line
-    10620-10644) currently uses a plain `tmp_path` ledger fixture, which is
-    not git-tracked — under the new guard this scenario must now succeed,
-    not refuse. Repurpose/rename it to cover the new condition: `git init`
-    `tmp_path` directly — `cost_ledger_file`'s ledger path is `tmp_path /
-    "cost-ledger.md"`, so `tmp_path` itself is the directory to initialize,
-    matching the existing real-git fixture precedent at
-    test_transcript_analysis.py:14981-15018 rather than scaffolding a new
-    nested repo dir. Keep the exit-2 / no-row-appended assertions.
+  - `test_record_refuses_when_more_than_one_root_in_scope` (in
+    `TestCostLedgerSentinelGate`; shipped as
+    `test_record_refuses_when_multi_root_and_ledger_path_git_tracked`)
+    currently uses a plain `tmp_path` ledger fixture, which is not
+    git-tracked — under the new guard this scenario must now succeed, not
+    refuse. Repurpose/rename it to cover the new condition: `git init`
+    `tmp_path` directly — `cost_ledger_file`'s ledger
+    path is `tmp_path / "cost-ledger.md"`, so `tmp_path` itself is the
+    directory to initialize, matching the existing real-git fixture
+    precedent already used elsewhere in this file (e.g.
+    `test_agents_md_over_limit_produces_enumerated_label`,
+    `test_skill_md_over_limit_produces_enumerated_label`) rather than
+    scaffolding a new nested repo dir. Keep the exit-2 / no-row-appended
+    assertions.
   - Add `test_record_succeeds_when_multi_root_and_ledger_path_not_git_tracked`
     covering the newly-unblocked case — the original fixture shape
     (plain `tmp_path`, two declared roots) — asserting a row IS appended.
@@ -191,10 +199,9 @@ plan's Critical Files touch]
     `.git` file (worktree pointer) instead of a `.git` directory.
   - Add a regression test pinning that `--force` cannot bypass the new
     guard: multi-root + git-tracked ledger path + `--force` still exits 2
-    with no row appended — the guard sits before `_upsert_cost_ledger_row`
-    in `_cost_ledger_report` today (transcript-analysis.py:7783 vs. ~7890),
-    but nothing currently pins that ordering against a future change that
-    special-cases `--force` to skip it.
+    with no row appended — the guard sits before the `_upsert_cost_ledger_row`
+    call in `_cost_ledger_report`, but nothing currently pins that ordering
+    against a future change that special-cases `--force` to skip it.
   - Confirm existing single-root tests are unaffected (they should be,
     since the new guard is still gated on `len(roots) > 1`).
 
@@ -228,8 +235,9 @@ worktree). Manually confirm on this machine: with
   new check would also close that gap if applied unconditionally, but
   doing so changes single-root behavior that wasn't asked for and that no
   prior plan scoped as broken. This is the second plan in a row to defer
-  it inline rather than close it — per this round's CISO review, the
-  marginal cost of applying the same helper unconditionally is low enough
-  that a third silent deferral isn't warranted; if declined again, it
-  should become a tracked follow-up (issue or plan stub) rather than prose
-  in a third plan's Out of Scope section.
+  it inline rather than close it, and the marginal cost of applying the
+  same helper unconditionally is low (the helper already exists and needs
+  no new logic) — not low enough to fold in unasked, but low enough that a
+  third silent deferral isn't warranted; if declined again, it should
+  become a tracked follow-up (issue or plan stub) rather than prose in a
+  third plan's Out of Scope section.

@@ -10898,6 +10898,64 @@ class TestCostLedgerSentinelGate:
         assert exc_info.value.code == 2
         assert cost_ledger_file.read_text() == before
 
+    def test_record_refuses_when_git_tracked_check_binary_missing(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """A missing git binary (FileNotFoundError, e.g. git absent from
+        PATH) fails closed (refuses) rather than raising past both except
+        clauses uncaught."""
+        def _raise_not_found(*args, **kwargs):
+            raise FileNotFoundError("git")
+        monkeypatch.setattr(_mod.subprocess, "run", _raise_not_found)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_refuses_when_git_tracked_check_stderr_has_invalid_utf8(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """Non-UTF-8 bytes on the git-tracked check's stderr (e.g. a
+        non-ASCII ancestor path in a permission-denied message) decode via
+        errors="replace" rather than raising UnicodeDecodeError uncaught,
+        which would otherwise crash --record instead of failing closed. A
+        fake `git` on PATH emits invalid UTF-8 so this doesn't depend on the
+        host's locale or filesystem permission semantics."""
+        fake_bin = tmp_path / "fake-git-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text("#!/bin/sh\nprintf '\\377\\376 permission denied\\n' >&2\nexit 128\n")
+        fake_git.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
     def test_record_refuses_when_git_tracked_check_exits_nonzero_unexpectedly(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
     ):
@@ -11016,12 +11074,17 @@ class TestCostLedgerSentinelGate:
         """An operator's shell exporting GIT_DIR/GIT_WORK_TREE for an
         unrelated repo must not redirect the git-tracked check to that
         repo's tracked status -- the check has to see the ledger path's own
-        (untracked) ancestor, not whatever the caller's env points at."""
+        (untracked) ancestor, not whatever the caller's env points at.
+        GIT_WORK_TREE is set to the ledger's own ancestor (not a sibling
+        directory) specifically so an unstripped env would answer "true"
+        (wrongly tracked) while the stripped env correctly answers "false" --
+        a sibling GIT_WORK_TREE answers "false" either way and wouldn't
+        discriminate the two behaviors."""
         unrelated_repo = tmp_path / "unrelated-repo"
         unrelated_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=unrelated_repo, check=True)
         monkeypatch.setenv("GIT_DIR", str(unrelated_repo / ".git"))
-        monkeypatch.setenv("GIT_WORK_TREE", str(unrelated_repo))
+        monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
