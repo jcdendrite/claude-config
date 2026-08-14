@@ -180,6 +180,64 @@ prefix would produce the same signature, and the repository's own tooling
 is only one source of such mutation. What makes this instance measurable is
 that ref moves are timestamped; other prefix mutations are not.
 
+## Locating the break: a fixed breakpoint boundary
+
+On a cold turn, `cache_read_input_tokens` is the size of the prefix that
+still matched. Its distribution locates the break.
+
+| Account | p25 | median | p75 | share in 20k–50k | share at exactly 0 |
+|---|---|---|---|---|---|
+| A | 25,398 | 25,412 | 25,412 | 83.0% | 5.0% |
+| B | 20,794 | 25,398 | 25,412 | 89.0% | 4.6% |
+
+The median and p75 agree to the token across two independently-billed
+accounts. On roughly 85% of cold events the first ~25,412 tokens survive
+and everything after is rewritten; only ~5% lose the whole prefix.
+
+The break is therefore **not** at the front — the system prompt and tool
+schemas persist — but at the next cache breakpoint. Restricted to events
+with a sub-60-second gap, no observable field change, no prior tool call
+and no intervening record, this population is 205,949,577 cache-write
+tokens on account A and 438,707,436 on account B.
+
+## Discriminating mutation from breakpoint churn
+
+Two mechanisms predict a fixed surviving-read boundary:
+
+- **Shared-state mutation** — something rewrites content that sits after
+  breakpoint 1, invalidating every running session. Predicts bursty,
+  time-clustered events that co-occur across concurrent sessions.
+- **Breakpoint churn** — the client repositions rolling cache breakpoints
+  as the conversation grows. Predicts regular, per-session events spaced by
+  roughly constant conversation growth, uncorrelated across sessions.
+
+Measured:
+
+| Signal | Account A | Account B |
+|---|---|---|
+| Turns between consecutive cold events (median) | 1 | 1 |
+| Coefficient of variation | 2.34 | 2.43 |
+| Cold-minutes where >1 session went cold at once | 437 of 526 (83%) | 1,207 of 1,536 (79%) |
+
+A coefficient of variation above 2 is strongly bursty, not periodic. The
+decisive figure is the third row: independent sessions have independent
+conversation growth, so breakpoint churn cannot synchronize them, while
+shared-state mutation invalidates all of them in the same instant.
+
+**Shared-state mutation is the mechanism.** Git pulls (measured above at
+5.5–8.4x lift) are one source but account for only ~4% of cold tokens; the
+synchronization evidence implies further sources of the same kind.
+
+### Open question
+
+Whether the shared state is machine-local (files under the config
+directory, changing while sessions run) or account-scoped (server-side
+cache eviction affecting one account's sessions together) is not yet
+settled. The discriminating measurement is whether cold-minutes coincide
+*across* two separately-billed accounts on the same machine: coincidence
+implicates machine-local files, independence implicates per-account
+server-side behavior. That test has not been run.
+
 ## Limits of this result
 
 - The warm set's 4.5% false-positive rate is not separable from a genuine
