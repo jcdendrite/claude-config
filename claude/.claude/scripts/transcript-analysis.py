@@ -2045,7 +2045,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
       marks non-gate friction (user-rejected, automode-blocked,
       automode-unavailable, interrupted) — see _is_nongate_friction_kind.
       Deduped by tool_use_id in its own set, independent of denial dedup.
-    - reviewer: Agent/Task spawn where subagent_type starts with 'staff-' or == 'ciso-reviewer'
+    - reviewer: Agent/Task spawn where subagent_type matches _REVIEWER_PREFIX or is in _REVIEWER_EXACT_NAMES
 
     denial and friction are deliberately separate event kinds: has_denial,
     denials=N, and --deny-only's session-selection all stay denial-kind-only,
