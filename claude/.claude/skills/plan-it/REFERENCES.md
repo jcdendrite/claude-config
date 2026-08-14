@@ -137,14 +137,22 @@ plans [engineer-verified] — anchors: root
 
 ### Why three tags, not two
 
-A binary verified/unverified split loses the case where the *human*
-supplied the fact directly — that source can't be re-derived by a grep or
-doc lookup, but it also must never be silently overridden by the agent's
-own investigation finding something that looks contradictory. Splitting
-out `[engineer-verified]` gives a reviewer (per `plan-review`) a clear job:
-resolve `[unverified]` rows by checking them, but *escalate*
-`[engineer-verified]` contradictions to the human rather than resolving
-them unilaterally.
+A binary verified/unverified split loses the case where the *human* stated
+the fact directly, as an utterance in the session — that source can't be
+re-derived by a grep or doc lookup, but it also must never be silently
+overridden by the agent's own investigation finding something that looks
+contradictory. Splitting out `[engineer-verified]` gives a reviewer (per
+`plan-review`) a clear job: resolve `[unverified]` rows by checking them,
+but *escalate* `[engineer-verified]` contradictions to the human rather
+than resolving them unilaterally.
+
+The utterance condition is what keeps the tag narrow. A file the human
+wrote — `CLAUDE.md`, a project doc, a prior plan — is `[verified: <file>]`,
+not this tag: it is re-derivable by reading the file, so it earns no
+override protection. Tagging file-sourced prose as `[engineer-verified]`
+converts the agent's own inference into something reviewers are instructed
+to defer to, which is the failure the escalation rule exists to prevent
+rather than a use of it.
 
 ## Anti-patterns confirmed across sources
 

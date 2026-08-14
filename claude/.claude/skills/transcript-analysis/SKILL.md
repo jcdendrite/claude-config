@@ -1,6 +1,16 @@
 ---
 name: transcript-analysis
-description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, PR-to-branch mapping, per-session review-activity timelines (skill invocations, hook denials, reviewer spawns), a per-session narrative of typed prompts classified as initial/followup/explicit correction, or a corpus-wide census of denial/friction shapes. For token-cost, cache-efficiency, or branch/repo-scoped dollar cost use the `cost` subcommand.
+description: >
+  Analyze Claude Code transcripts for cost, behavior, and review-activity
+  statistics; the `cost` subcommand covers token cost, cache efficiency, and
+  branch- or repo-scoped dollar cost.
+  TRIGGER when: needing any statistic derived from Claude Code transcripts —
+  cost, cache efficiency, model mix, subagent-vs-main split, test-failure
+  convergence, session or branch history, a denial/friction census, or a
+  per-session record of typed prompts and corrections.
+  DO NOT TRIGGER when: the ask is a case study or annotated timeline built
+  on top of these metrics (use `transcript-narrative`), or the number was
+  already produced by this toolkit earlier in the session.
 ---
 
 The toolkit lives at `scripts/transcript-analysis.py` under the active Claude Code config dir (`$CLAUDE_CONFIG_DIR`, or `~/.claude`). Run it directly from the shell.
