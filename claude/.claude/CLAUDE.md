@@ -79,7 +79,8 @@
 - **Effort:** pin `effort:` frontmatter per agent to the task's shape, not the invoking session's — the same task-fit-over-inheritance reasoning as `model:` above. It overrides the session's effort level in both directions, not only as a floor (see `docs/design-decisions.md` §24).
   - **`low`:** fast, narrow, high-frequency lookups with no exhaustiveness requirement (e.g. `Explore`).
   - **`medium`:** closed-form or bounded-input reviewers documented as cheap by design (see `docs/design-decisions.md` §9).
-  - **`xhigh`, not `max`:** single-pass reviewers and self-review loops where thoroughness is explicit and there is no second pass to catch a shallow miss (e.g. `ciso-reviewer`, `code-writer`; see `docs/design-decisions.md` §24 for why `xhigh` and not `max`).
+  - **`high` (the default):** work spanning a wide difficulty range rather than uniformly hard problems, especially when a separate downstream pass already backstops it (e.g. `code-writer`; see `docs/design-decisions.md` §24).
+  - **`xhigh`, not `max`:** single-pass reviewers with no second pass to catch a shallow miss, where thoroughness is uniformly required rather than concentrated in a hard subset (e.g. `ciso-reviewer`; see `docs/design-decisions.md` §24 for why `xhigh` and not `max`).
   - Current per-agent assignments live in `EXPECTED_EFFORT` (`claude/.claude/hooks/tests/test_agent_roster.py`) — that test is the source of truth, not this bullet.
 
 ## Safety

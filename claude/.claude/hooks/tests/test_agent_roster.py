@@ -80,12 +80,15 @@ NON_REVIEWER_MODELS = {
 # rationale. Not derived from CANARY_AGENTS: the tier split cuts across
 # that grouping (comment-discipline-reviewer and skill-fidelity-reviewer
 # are CANARY_AGENTS but get "medium", not the "xhigh" the other six get).
+# code-writer sits outside CANARY_AGENTS at "high", not "xhigh" — its
+# dispatches span a difficulty range rather than uniformly hard work
+# (see CLAUDE.md "Model & Effort Routing" and design-decisions.md §24).
 EXPECTED_EFFORT = {
     "Explore.md": "low",
     "comment-discipline-reviewer.md": "medium",
     "skill-fidelity-reviewer.md": "medium",
     "ciso-reviewer.md": "xhigh",
-    "code-writer.md": "xhigh",
+    "code-writer.md": "high",
     "staff-analytics-engineer.md": "xhigh",
     "staff-backend-engineer.md": "xhigh",
     "staff-data-engineer.md": "xhigh",
