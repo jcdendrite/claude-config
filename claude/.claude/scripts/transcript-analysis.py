@@ -1284,11 +1284,7 @@ AUDIT_JUDGMENT_SKILLS: frozenset[str] = frozenset({
     "agent-review", "security-review", "respond-pr", "ultrareview", "plan-it",
 })
 
-# Reviewer-agent subagent_type prefixes/names counted in review-trace and
-# reviewer-yield. Exact-name reviewers don't share the staff- prefix:
-# ciso-reviewer and comment-discipline-reviewer are Change-type-table
-# dispatch targets; skill-fidelity-reviewer is spawned only by
-# ready-for-review and carries no Item-ownership row of its own.
+# Exact-name reviewers (no staff- prefix) counted in review-trace and reviewer-yield.
 _REVIEWER_PREFIX = "staff-"
 _REVIEWER_EXACT_NAMES: frozenset[str] = frozenset(
     {"ciso-reviewer", "comment-discipline-reviewer", "skill-fidelity-reviewer"}
@@ -1827,7 +1823,7 @@ def _review_trace_session_events(
                     })
                 elif block_name in ("Agent", "Task"):
                     stype = (block.get("input") or {}).get("subagent_type") or ""
-                    if not (stype.startswith(_REVIEWER_PREFIX) or stype in _REVIEWER_EXACT_NAMES):
+                    if not _is_reviewer_subagent_type(stype):
                         continue
                     events.append({
                         "kind": "reviewer-spawn",
