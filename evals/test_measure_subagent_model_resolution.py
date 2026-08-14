@@ -233,6 +233,129 @@ class TestParseSubagentDispatches:
         assert result[0].observed_tools == frozenset()
 
 
+class TestWaitForSubagentSidecar:
+    """The subagent sidecar can materialize on disk slightly after the parent
+    `claude -p` process has already exited — this poll must tolerate that lag
+    without a fixed sleep. Returns True if found, False on timeout (the
+    caller surfaces a timeout as its own outcome — see RunResult's
+    sidecar_poll_timed_out)."""
+
+    def test_returns_true_immediately_when_already_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        _write_meta(subagent_dir, "agent-1", "toolu_1")
+
+        def _fail_if_called(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("should not sleep when the sidecar is already present")
+
+        monkeypatch.setattr(msmr.time, "sleep", _fail_if_called)
+        assert msmr._wait_for_subagent_sidecar(session_jsonl, timeout_s=5.0) is True
+
+    def test_returns_true_once_sidecar_appears_mid_poll(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Simulates the observed race: the sidecar doesn't exist yet, then
+        appears partway through polling. Also pins the poll interval to a
+        fixed, hardcoded-positive expectation (not a read of
+        SIDECAR_POLL_INTERVAL_S itself, which would make the assertion
+        circular against the very constant a regression might mutate) —
+        asserting only call *count* would still pass if the interval
+        regressed to a busy-spin (0.0)."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        sleep_calls: list[float] = []
+
+        def _create_on_second_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            if len(sleep_calls) >= 2:
+                _write_meta(subagent_dir, "agent-1", "toolu_1")
+
+        monkeypatch.setattr(msmr.time, "sleep", _create_on_second_sleep)
+        assert msmr._wait_for_subagent_sidecar(session_jsonl, timeout_s=5.0) is True
+
+        assert len(sleep_calls) == 2
+        assert all(interval >= 0.1 for interval in sleep_calls), (
+            f"poll interval regressed toward a busy-spin: {sleep_calls}"
+        )
+
+    def test_returns_false_after_timeout_without_raising(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sidecar that never appears is itself a finding for the caller to
+        report (RunResult.sidecar_poll_timed_out) — this function never
+        raises on timeout, it returns False."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        clock = {"t": 0.0}
+        monkeypatch.setattr(msmr.time, "monotonic", lambda: clock["t"])
+
+        def _advance_past_deadline(_seconds: float) -> None:
+            clock["t"] += 100.0
+
+        monkeypatch.setattr(msmr.time, "sleep", _advance_past_deadline)
+        assert msmr._wait_for_subagent_sidecar(session_jsonl, timeout_s=5.0) is False
+
+    def test_sidecar_landing_in_final_poll_window_still_counts_as_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sidecar that materializes during the sleep call that pushes the
+        clock past the deadline must still be found on the next check, not
+        discarded as a timeout — the loop re-checks before re-testing the
+        deadline, precisely to give the last poll window credit."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        clock = {"t": 0.0}
+        monkeypatch.setattr(msmr.time, "monotonic", lambda: clock["t"])
+
+        def _cross_deadline_and_write(_seconds: float) -> None:
+            clock["t"] = 5.0 + 0.01  # past the 5.0s deadline
+            _write_meta(subagent_dir, "agent-1", "toolu_1")
+
+        monkeypatch.setattr(msmr.time, "sleep", _cross_deadline_and_write)
+        assert msmr._wait_for_subagent_sidecar(session_jsonl, timeout_s=5.0) is True
+
+
+class TestResolvedTempProjectDir:
+    """Pins the macOS symlink-mismatch fix: a temp dir reached through a
+    symlink must come back resolved, or compute_session_store_dir() later
+    hashes a different string than Claude Code did and finds nothing.
+    Constructs its own symlink layer under tmp_path rather than relying on
+    the real /var -> /private/var symlink, so this runs on any platform."""
+
+    def test_resolves_a_symlinked_temp_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        link_dir = tmp_path / "link"
+        link_dir.symlink_to(real_dir)
+
+        created_name = "subagent-model-resolution-abc123"
+        (real_dir / created_name).mkdir()
+        unresolved_via_symlink = link_dir / created_name
+
+        monkeypatch.setattr(msmr.tempfile, "mkdtemp", lambda prefix: str(unresolved_via_symlink))
+
+        result = msmr._resolved_temp_project_dir("subagent-model-resolution-")
+
+        assert result == unresolved_via_symlink.resolve()
+        assert str(result) != str(unresolved_via_symlink)
+
+
+class TestComputeSidecarPollTimedOut:
+    """Pins the short-circuit composition in execute_matrix_cell as its own
+    testable unit — a plausible reordering there would run the 10s poll on
+    every no-dispatch cell with nothing to catch it."""
+
+    def test_no_attempted_dispatch_never_times_out(self) -> None:
+        assert msmr._compute_sidecar_poll_timed_out(attempted=False, sidecar_found=None) is False
+
+    def test_attempted_and_found_is_not_a_timeout(self) -> None:
+        assert msmr._compute_sidecar_poll_timed_out(attempted=True, sidecar_found=True) is False
+
+    def test_attempted_and_not_found_is_a_timeout(self) -> None:
+        assert msmr._compute_sidecar_poll_timed_out(attempted=True, sidecar_found=False) is True
+
+
 class TestModelFamily:
     @pytest.mark.parametrize(
         ("model_id", "expected"),
@@ -487,6 +610,39 @@ class TestGatherEnvironmentReport:
         assert report["staff_backend_engineer_declared_model"] == "sonnet"
         assert report["explore_haiku_override_declared_model"] == "haiku"
         assert "config_dir" in report
+
+
+class TestPrintRunResult:
+    """The one human-visible artifact an operator reads mid-experiment to
+    decide whether an empty-dispatches cell is a real negative or a dropped
+    trial to re-run — see RunResult.sidecar_poll_timed_out."""
+
+    def _result(self, *, sidecar_poll_timed_out: bool) -> msmr.RunResult:
+        return msmr.RunResult(
+            run=msmr.RUN_MATRIX[0], session_id="s", attempted_dispatch=True, timed_out=False,
+            declared_model_pin="sonnet", dispatches=(), sidecar_poll_timed_out=sidecar_poll_timed_out,
+        )
+
+    def test_timeout_prints_dropped_trial_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        msmr.print_run_result(self._result(sidecar_poll_timed_out=True))
+        out = capsys.readouterr().out
+        assert "dropped trial" in out
+        assert "re-run" in out
+
+    def test_genuine_no_dispatch_prints_plain_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        msmr.print_run_result(self._result(sidecar_poll_timed_out=False))
+        out = capsys.readouterr().out
+        assert "none observed" in out
+        assert "dropped trial" not in out
+
+
+class TestResultToDict:
+    def test_includes_sidecar_poll_timed_out_key(self) -> None:
+        result = msmr.RunResult(
+            run=msmr.RUN_MATRIX[0], session_id="s", attempted_dispatch=True, timed_out=False,
+            declared_model_pin="sonnet", dispatches=(), sidecar_poll_timed_out=True,
+        )
+        assert msmr.result_to_dict(result)["sidecar_poll_timed_out"] is True
 
 
 class TestBuildArgParser:

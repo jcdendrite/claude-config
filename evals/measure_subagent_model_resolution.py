@@ -332,6 +332,18 @@ class RunResult:
     timed_out: bool
     declared_model_pin: str | None
     dispatches: tuple[DispatchObservation, ...]
+    # True only when attempted_dispatch was True and the sidecar poll below
+    # never found a meta.json — distinguishes "the sidecar-flush race timed
+    # out" from "no dispatch was ever attempted" (attempted_dispatch=False)
+    # and from "sidecar found, dispatches legitimately empty." Without this,
+    # dispatches == () means the same thing in all three cases, and a poll
+    # timeout would misreport as a genuine model-resolution negative.
+    # Describes the poll's own outcome, not a guarantee about dispatches: a
+    # sidecar landing between this poll's check and parse_subagent_dispatches's
+    # own independent glob can leave this True alongside a non-empty
+    # dispatches tuple — print_run_result's `if not dispatches` guard means
+    # that case is reported as data found, not as a timeout.
+    sidecar_poll_timed_out: bool = False
 
 
 def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
@@ -370,6 +382,10 @@ def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
     return frozenset(model_ids), frozenset(tools)
 
 
+def subagent_dir_for_session(session_jsonl: Path) -> Path:
+    return session_jsonl.parent / session_jsonl.stem / SUBAGENT_SUBDIR
+
+
 def parse_subagent_dispatches(
     session_jsonl: Path, *, requested_agent_declared_tools: frozenset[str] | None
 ) -> tuple[DispatchObservation, ...]:
@@ -385,7 +401,7 @@ def parse_subagent_dispatches(
     that is unreadable or missing a string toolUseId is skipped, matching
     that function's meta_read_errors exclusion.
     """
-    subagent_dir = session_jsonl.parent / session_jsonl.stem / SUBAGENT_SUBDIR
+    subagent_dir = subagent_dir_for_session(session_jsonl)
     if not subagent_dir.is_dir():
         return ()
     observations: list[DispatchObservation] = []
@@ -442,7 +458,15 @@ def run1_self_check_passed(result: RunResult) -> bool:
     """Plan M2's Verification gate: run 1 (opus parent, staff-backend-engineer
     pinned to sonnet, default mode, no per-dispatch model param) must observe
     sonnet. Any other outcome means the harness is reading the parent's
-    model rather than the subagent's, voiding every other run."""
+    model rather than the subagent's, voiding every other run.
+
+    Known gap: does not distinguish a sidecar-poll timeout
+    (result.sidecar_poll_timed_out) from a genuine self-check failure — both
+    read as empty dispatches here and both stop the --all matrix the same
+    way. Stopping is the conservative choice either way, so this is a
+    messaging gap in the abort path, not a spend-safety one; a caller running
+    --all who wants to tell the two apart before deciding whether to retry
+    run 1 must read sidecar_poll_timed_out on the RunResult itself."""
     if not result.dispatches:
         return False
     return all(d.observed_model_family == MODEL_FAMILY_SONNET for d in result.dispatches)
@@ -545,6 +569,53 @@ def _run_claude_to_completion(cmd: list[str], cwd: Path, timeout_s: int) -> tupl
     return all_lines, timed_out
 
 
+# The subagent's own subagents/*.meta.json + *.jsonl sidecar can still be
+# missing from disk for a moment after the parent `claude -p` process has
+# fully exited (proc.wait() returned) — an async on-disk flush that trails
+# process termination, observed empirically against v2.1.228. Bounded poll,
+# not a fixed sleep, so a normal-speed write doesn't cost the full timeout.
+SIDECAR_POLL_TIMEOUT_S = 10.0
+SIDECAR_POLL_INTERVAL_S = 0.25
+
+
+def _wait_for_subagent_sidecar(session_jsonl: Path, *, timeout_s: float = SIDECAR_POLL_TIMEOUT_S) -> bool:
+    """Block until at least one *.meta.json appears under the session's
+    subagents/ directory, or timeout_s elapses. Returns True if found, False
+    on timeout — the caller surfaces a timeout as its own outcome rather than
+    letting it look identical to a genuine no-dispatch result. Only called
+    when the stream already showed an attempted dispatch. Checks once more
+    after the final sleep rather than re-testing the deadline first, so a
+    sidecar that lands in the last poll interval still counts as found."""
+    subagent_dir = subagent_dir_for_session(session_jsonl)
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if subagent_dir.is_dir() and any(subagent_dir.glob("*.meta.json")):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(SIDECAR_POLL_INTERVAL_S)
+
+
+def _resolved_temp_project_dir(prefix: str) -> Path:
+    """tempfile.mkdtemp() returns an unresolved path — on macOS this is
+    /var/folders/..., but /var is a symlink to /private/var, and Claude Code
+    hashes the resolved cwd when computing its session-store directory.
+    Passing the unresolved path to compute_session_store_dir() elsewhere
+    hashes a different string than Claude Code did and silently finds
+    nothing, so every caller must go through this rather than mkdtemp()
+    directly."""
+    return Path(tempfile.mkdtemp(prefix=prefix)).resolve()
+
+
+def _compute_sidecar_poll_timed_out(attempted: bool, sidecar_found: bool | None) -> bool:
+    """sidecar_found is None when the poll was never run (no attempted
+    dispatch — the caller must skip the 10s poll call itself in that case,
+    this function doesn't do that skipping). Only an explicit False — an
+    attempted dispatch whose poll genuinely ran out the clock — counts as a
+    timeout; None never does, regardless of attempted's value."""
+    return attempted and sidecar_found is False
+
+
 def execute_matrix_cell(run: MatrixRun, *, budget_cap_usd: float, timeout_s: int) -> RunResult:
     """Launch one matrix cell's `claude -p` session, parse its result, and
     clean up both the throwaway project dir and its session store (mirrors
@@ -552,13 +623,15 @@ def execute_matrix_cell(run: MatrixRun, *, budget_cap_usd: float, timeout_s: int
     not remove transcripts, which land outside it at
     compute_session_store_dir())."""
     session_id = str(uuid.uuid4())
-    tmp_project = Path(tempfile.mkdtemp(prefix="subagent-model-resolution-"))
+    tmp_project = _resolved_temp_project_dir("subagent-model-resolution-")
     try:
         cmd = build_run_command(run, session_id=session_id, budget_cap_usd=budget_cap_usd)
         lines, timed_out = _run_claude_to_completion(cmd, cwd=tmp_project, timeout_s=timeout_s)
         attempted = run_skill_evals.detect_dispatch_in_lines(lines)
 
         session_jsonl = run_skill_evals.compute_session_store_dir(tmp_project) / f"{session_id}.jsonl"
+        sidecar_found = _wait_for_subagent_sidecar(session_jsonl) if attempted else None
+        sidecar_poll_timed_out = _compute_sidecar_poll_timed_out(attempted, sidecar_found)
         declared_tools = declared_tools_for_dispatch(run.dispatch)
         dispatches = parse_subagent_dispatches(session_jsonl, requested_agent_declared_tools=declared_tools)
 
@@ -569,6 +642,7 @@ def execute_matrix_cell(run: MatrixRun, *, budget_cap_usd: float, timeout_s: int
             timed_out=timed_out,
             declared_model_pin=declared_model_pin_for_dispatch(run.dispatch),
             dispatches=dispatches,
+            sidecar_poll_timed_out=sidecar_poll_timed_out,
         )
     finally:
         shutil.rmtree(tmp_project, ignore_errors=True)
@@ -605,6 +679,7 @@ def result_to_dict(result: RunResult) -> dict:
         "timed_out": result.timed_out,
         "declared_model_pin": result.declared_model_pin,
         "dispatches": [observation_to_dict(d) for d in result.dispatches],
+        "sidecar_poll_timed_out": result.sidecar_poll_timed_out,
     }
 
 
@@ -629,7 +704,14 @@ def print_run_result(result: RunResult) -> None:
     print(f"  attempted_dispatch: {result.attempted_dispatch}  timed_out: {result.timed_out}")
     print(f"  declared_model_pin: {result.declared_model_pin}")
     if not result.dispatches:
-        print("  dispatches: none observed")
+        if result.sidecar_poll_timed_out:
+            print(
+                "  dispatches: NONE — sidecar poll timed out (a dispatch was attempted but its "
+                "subagents/ sidecar never appeared on disk). This is a dropped trial, not a "
+                "genuine no-dispatch result — re-run this cell."
+            )
+        else:
+            print("  dispatches: none observed")
         return
     for obs in result.dispatches:
         print(
