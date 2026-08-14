@@ -373,6 +373,9 @@ class RunResult:
     # dispatches tuple — print_run_result's `if not dispatches` guard means
     # that case is reported as data found, not as a timeout.
     sidecar_poll_timed_out: bool = False
+    # Only available in the stream's own "result" event — never persisted to
+    # the on-disk transcript; None if the process was killed before emitting one.
+    total_cost_usd: float | None = None
 
 
 def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
@@ -645,6 +648,24 @@ def _compute_sidecar_poll_timed_out(attempted: bool, sidecar_found: bool | None)
     return attempted and sidecar_found is False
 
 
+def _extract_total_cost_usd(lines: list[bytes]) -> float | None:
+    """Return the last stream "result" event's total_cost_usd (scanned in
+    reverse — if the stream ever carries more than one, the last one in
+    stream order wins), or None if no result event was emitted or the field
+    is missing/non-numeric."""
+    for raw in reversed(lines):
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("type") == "result":
+            cost = rec.get("total_cost_usd")
+            return cost if isinstance(cost, int | float) else None
+    return None
+
+
 def execute_matrix_cell(run: MatrixRun, *, budget_cap_usd: float, timeout_s: int) -> RunResult:
     """Launch one matrix cell's `claude -p` session, parse its result, and
     clean up both the throwaway project dir and its session store (mirrors
@@ -661,6 +682,7 @@ def execute_matrix_cell(run: MatrixRun, *, budget_cap_usd: float, timeout_s: int
         cmd = build_run_command(run, session_id=session_id, budget_cap_usd=budget_cap_usd)
         lines, timed_out = _run_claude_to_completion(cmd, cwd=tmp_project, timeout_s=timeout_s)
         attempted = run_skill_evals.detect_dispatch_in_lines(lines)
+        total_cost_usd = _extract_total_cost_usd(lines)
 
         session_jsonl = run_skill_evals.compute_session_store_dir(tmp_project) / f"{session_id}.jsonl"
         sidecar_found = _wait_for_subagent_sidecar(session_jsonl) if attempted else None
@@ -676,6 +698,7 @@ def execute_matrix_cell(run: MatrixRun, *, budget_cap_usd: float, timeout_s: int
             declared_model_pin=declared_model_pin_for_dispatch(run.dispatch),
             dispatches=dispatches,
             sidecar_poll_timed_out=sidecar_poll_timed_out,
+            total_cost_usd=total_cost_usd,
         )
     finally:
         shutil.rmtree(tmp_project, ignore_errors=True)
@@ -713,7 +736,19 @@ def result_to_dict(result: RunResult) -> dict:
         "declared_model_pin": result.declared_model_pin,
         "dispatches": [observation_to_dict(d) for d in result.dispatches],
         "sidecar_poll_timed_out": result.sidecar_poll_timed_out,
+        "total_cost_usd": result.total_cost_usd,
     }
+
+
+def format_aggregate_spend_line(results: list[RunResult]) -> str:
+    """One-line total spend across a batch of runs, e.g. from --all — missing
+    per-run costs (a process killed on timeout before its result event) are
+    excluded from the sum and called out by count rather than silently
+    treated as zero-cost."""
+    priced = [r.total_cost_usd for r in results if r.total_cost_usd is not None]
+    missing = len(results) - len(priced)
+    missing_note = f" ({missing} run(s) missing cost data — no result event)" if missing else ""
+    return f"--- total spend across {len(results)} run(s): ${sum(priced):.4f}{missing_note}"
 
 
 def print_matrix() -> None:
@@ -735,6 +770,12 @@ def print_run_result(result: RunResult) -> None:
     )
     print(f"  session_id: {result.session_id}")
     print(f"  attempted_dispatch: {result.attempted_dispatch}  timed_out: {result.timed_out}")
+    cost_label = (
+        f"${result.total_cost_usd:.4f}"
+        if result.total_cost_usd is not None
+        else "unknown (no result event — process likely killed on timeout)"
+    )
+    print(f"  total_cost_usd: {cost_label}")
     print(f"  declared_model_pin: {result.declared_model_pin}")
     if not result.dispatches:
         if result.sidecar_poll_timed_out:
@@ -823,6 +864,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             break
+    print(format_aggregate_spend_line(results))
     if args.json_out:
         Path(args.json_out).write_text(json.dumps([result_to_dict(r) for r in results], indent=2))
     return 0

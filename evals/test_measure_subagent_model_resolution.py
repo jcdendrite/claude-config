@@ -641,15 +641,60 @@ class TestGatherEnvironmentReport:
         assert "config_dir" in report
 
 
+class TestExtractTotalCostUsd:
+    """See RunResult.total_cost_usd for why this figure exists only here."""
+
+    def test_finds_cost_in_result_event(self) -> None:
+        lines = [
+            b'{"type": "assistant", "message": {"model": "claude-sonnet-5"}}',
+            b'{"type": "result", "total_cost_usd": 1.2345}',
+        ]
+        assert msmr._extract_total_cost_usd(lines) == 1.2345
+
+    def test_no_result_event_returns_none(self) -> None:
+        lines = [b'{"type": "assistant", "message": {"model": "claude-sonnet-5"}}']
+        assert msmr._extract_total_cost_usd(lines) is None
+
+    def test_empty_lines_returns_none(self) -> None:
+        assert msmr._extract_total_cost_usd([]) is None
+
+    def test_malformed_json_lines_are_skipped(self) -> None:
+        lines = [b"not json", b'{"type": "result", "total_cost_usd": 0.5}']
+        assert msmr._extract_total_cost_usd(lines) == 0.5
+
+    def test_valid_json_non_dict_lines_are_skipped_not_crashed_on(self) -> None:
+        lines = [b"5", b"[1, 2, 3]", b'{"type": "result", "total_cost_usd": 0.5}']
+        assert msmr._extract_total_cost_usd(lines) == 0.5
+
+    def test_multiple_result_events_last_in_stream_order_wins(self) -> None:
+        lines = [
+            b'{"type": "result", "total_cost_usd": 9.9}',
+            b'{"type": "assistant"}',
+            b'{"type": "result", "total_cost_usd": 0.1}',
+        ]
+        assert msmr._extract_total_cost_usd(lines) == 0.1
+
+    def test_non_numeric_total_cost_usd_returns_none(self) -> None:
+        lines = [b'{"type": "result", "total_cost_usd": "oops"}']
+        assert msmr._extract_total_cost_usd(lines) is None
+
+    def test_missing_total_cost_usd_key_returns_none(self) -> None:
+        lines = [b'{"type": "result"}']
+        assert msmr._extract_total_cost_usd(lines) is None
+
+
 class TestPrintRunResult:
     """The one human-visible artifact an operator reads mid-experiment to
     decide whether an empty-dispatches cell is a real negative or a dropped
     trial to re-run — see RunResult.sidecar_poll_timed_out."""
 
-    def _result(self, *, sidecar_poll_timed_out: bool) -> msmr.RunResult:
+    def _result(
+        self, *, sidecar_poll_timed_out: bool, total_cost_usd: float | None = None
+    ) -> msmr.RunResult:
         return msmr.RunResult(
             run=msmr.RUN_MATRIX[0], session_id="s", attempted_dispatch=True, timed_out=False,
             declared_model_pin="sonnet", dispatches=(), sidecar_poll_timed_out=sidecar_poll_timed_out,
+            total_cost_usd=total_cost_usd,
         )
 
     def test_timeout_prints_dropped_trial_message(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -664,6 +709,17 @@ class TestPrintRunResult:
         assert "none observed" in out
         assert "dropped trial" not in out
 
+    def test_known_cost_prints_dollar_amount(self, capsys: pytest.CaptureFixture[str]) -> None:
+        msmr.print_run_result(self._result(sidecar_poll_timed_out=False, total_cost_usd=1.5))
+        out = capsys.readouterr().out
+        assert "total_cost_usd: $1.5000" in out
+
+    def test_missing_cost_prints_unknown_reason(self, capsys: pytest.CaptureFixture[str]) -> None:
+        msmr.print_run_result(self._result(sidecar_poll_timed_out=False, total_cost_usd=None))
+        out = capsys.readouterr().out
+        assert "total_cost_usd: unknown" in out
+        assert "timeout" in out
+
 
 class TestResultToDict:
     def test_includes_sidecar_poll_timed_out_key(self) -> None:
@@ -672,6 +728,50 @@ class TestResultToDict:
             declared_model_pin="sonnet", dispatches=(), sidecar_poll_timed_out=True,
         )
         assert msmr.result_to_dict(result)["sidecar_poll_timed_out"] is True
+
+    def test_includes_total_cost_usd_key(self) -> None:
+        result = msmr.RunResult(
+            run=msmr.RUN_MATRIX[0], session_id="s", attempted_dispatch=True, timed_out=False,
+            declared_model_pin="sonnet", dispatches=(), total_cost_usd=2.5,
+        )
+        assert msmr.result_to_dict(result)["total_cost_usd"] == 2.5
+
+
+class TestFormatAggregateSpendLine:
+    """A missing-vs-zero-cost mixup here misreports how much of a batch's
+    spend is actually unaccounted for, without changing the printed total."""
+
+    def _result(self, total_cost_usd: float | None) -> msmr.RunResult:
+        return msmr.RunResult(
+            run=msmr.RUN_MATRIX[0], session_id="s", attempted_dispatch=True, timed_out=False,
+            declared_model_pin="sonnet", dispatches=(), total_cost_usd=total_cost_usd,
+        )
+
+    def test_sums_priced_runs(self) -> None:
+        line = msmr.format_aggregate_spend_line([self._result(1.0), self._result(2.5)])
+        assert "$3.5000" in line
+        assert "2 run(s)" in line
+
+    def test_missing_cost_excluded_from_sum_and_called_out(self) -> None:
+        line = msmr.format_aggregate_spend_line([self._result(1.0), self._result(None)])
+        assert "$1.0000" in line
+        assert "1 run(s) missing cost data" in line
+
+    def test_genuine_zero_cost_run_not_miscounted_as_missing(self) -> None:
+        # A real $0.00 run and a None run sum identically either way — only
+        # the missing-count note can reveal a `truthy`-vs-`is not None` bug.
+        line = msmr.format_aggregate_spend_line([self._result(0.0), self._result(None)])
+        assert "$0.0000" in line
+        assert "1 run(s) missing cost data" in line
+
+    def test_no_missing_runs_omits_missing_note(self) -> None:
+        line = msmr.format_aggregate_spend_line([self._result(1.0)])
+        assert "missing" not in line
+
+    def test_empty_results_reports_zero(self) -> None:
+        line = msmr.format_aggregate_spend_line([])
+        assert "$0.0000" in line
+        assert "0 run(s):" in line
 
 
 class TestBuildArgParser:
