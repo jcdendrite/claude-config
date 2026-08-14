@@ -145,6 +145,41 @@ change the prefix without emitting a record.
 This bears directly on whether harness changes can reduce it. On this
 evidence, they cannot: there is no harness action to change.
 
+## Confirmed mechanism: live stow mutation during a running session
+
+`~/.claude/CLAUDE.md`, and the skill, agent, and rule files beside it, are
+symlinks into the repository's main worktree. Their content therefore
+changes the moment the main branch's HEAD moves — while sessions are
+running, and without emitting any transcript record. This is the documented
+"changes go live on `git pull`" behavior, seen from the cache's side.
+
+Test: for each consecutive turn pair in a session, did a main-branch ref
+move land in the gap between the two turns? Compare cold rates.
+
+| Account | Pairs straddling a stowed-file-changing ref move | Cold rate | Baseline (no ref move) | Lift |
+|---|---|---|---|---|
+| A | 140 | 45.0% | 5.3% | **8.42x** |
+| B | 675 | 24.1% | 4.4% | **5.46x** |
+
+Measured over 118 ref moves on the main branch, 112 of which changed a file
+under `claude/.claude/`. Restricting to those 112 slightly *raises* the lift
+in both accounts (8.26x → 8.42x, 5.39x → 5.46x), which is the direction the
+mechanism predicts.
+
+This is the strongest predictor found. Every signal in the preceding
+attribution table sits at or below 2.3x.
+
+**Its volume contribution is nonetheless small.** Attributable cold tokens
+are 22,636,769 on account A (5.2% of that account's cold total) and
+41,011,719 on account B (3.7%). The mechanism fires at most once per ref
+move per running session, which bounds its exposure regardless of how
+reliably it fires.
+
+The finding generalizes beyond git: any mid-session mutation of the prompt
+prefix would produce the same signature, and the repository's own tooling
+is only one source of such mutation. What makes this instance measurable is
+that ref moves are timestamped; other prefix mutations are not.
+
 ## Limits of this result
 
 - The warm set's 4.5% false-positive rate is not separable from a genuine
