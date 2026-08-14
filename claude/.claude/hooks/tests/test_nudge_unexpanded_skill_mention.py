@@ -467,7 +467,11 @@ class TestLeadingChainBoundary:
         assert _context(result) is None
 
     def test_seventh_chained_mention_fires(self, personal_skill, tmp_path):
-        """The harness expands six; a seventh is genuinely unexpanded."""
+        """The harness expands six; a seventh is genuinely unexpanded.
+
+        This proves a token past the skipped prefix still fires, not that the
+        prefix is exactly six -- the filler tokens resolve to nothing at any
+        quantifier. The sibling six-token test carries the bound."""
         filler = " ".join(f"/zzz-fixture-filler-{i}" for i in range(6))
         result = _run(f"{filler} /{FIXTURE_SKILL} do X", tmp_path, personal_skill)
 
@@ -493,9 +497,14 @@ class TestMultiByteTruncationBoundary:
         self, personal_skill, tmp_path
     ):
         """A 4-byte emoji straddling _MAX_SCAN_BYTES must not abort a text
-        pass: under a UTF-8 locale tr/awk/sed/grep each emit no stdout on a
-        partial sequence, which would discard the whole scanned prompt --
-        including a mention that appeared long before the cut point."""
+        pass: under a UTF-8 locale a partial sequence makes the pass emit no
+        stdout, discarding the whole scanned prompt -- including a mention
+        long before the cut point.
+
+        Demonstrated bite is against the awk fence-stripping pass, the one
+        the split byte reaches first; dropping LC_ALL=C there fails both
+        assertions below. The later sed/grep passes carry it for the same
+        reason but are not independently pinned here."""
         max_scan_bytes = 65536
         emoji = "\U0001f600"
         prefix = f"do X /{FIXTURE_SKILL} "
@@ -519,10 +528,15 @@ class TestInjectionPayloadIsNeverExecuted:
         self, personal_skill, tmp_path
     ):
         """Proves non-execution, not merely non-echo: a payload whose shell
-        expansion would create a canary file must leave no canary behind."""
+        expansion would create a canary file must leave no canary behind.
+
+        The payload deliberately avoids the `do X` prefix the other tests use
+        for readability -- `do` is a bash reserved word, so `bash -c "do X;
+        touch ..."` is a syntax error that touches nothing, which would report
+        a false pass for the very regression this test targets."""
         canary = tmp_path / "pwned"
         payload = (
-            f"do X /{FIXTURE_SKILL}; touch {canary} "
+            f"echo probe /{FIXTURE_SKILL}; touch {canary} "
             f"$(touch {canary}) `touch {canary}`"
         )
         result = _run(payload, tmp_path, personal_skill)
