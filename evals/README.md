@@ -430,3 +430,8 @@ python evals/measure_subagent_model_resolution.py --all --json results.json
 
 Tests: `evals/test_measure_subagent_model_resolution.py`, fixture-based, no
 live sessions.
+
+**Known limitation:** this harness's headless `--permission-mode plan` runs do
+not reproduce interactive Shift+Tab plan mode's escalation to Opus — see
+[`docs/case-studies/plan-mode-model-resolution.md`](../docs/case-studies/plan-mode-model-resolution.md)
+for the measured discrepancy and what a valid re-verification requires.
