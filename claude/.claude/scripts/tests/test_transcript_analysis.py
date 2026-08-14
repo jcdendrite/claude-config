@@ -10801,14 +10801,14 @@ class TestCostLedgerSentinelGate:
         err = capsys.readouterr().err
         assert "must match" in err
 
-    def test_record_refuses_when_more_than_one_root_in_scope(
+    def test_record_refuses_when_multi_root_and_ledger_path_git_tracked(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
     ):
-        """Mechanism 8: --record refuses when a second account is in scope
-        via the declared-roots file, appending no row -- refusing this call
-        shape is what keeps mechanism 7's install.sh nudge from arming a
-        union commit to docs/cost-ledger.md, a public git-tracked file,
-        before the ledger's storage location is redesigned."""
+        """--record refuses when a second account is in scope via the
+        declared-roots file AND the resolved ledger path sits inside a git
+        working tree, appending no row -- refusing this call shape is what
+        keeps a union commit from landing in a path git could commit/push."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -10826,6 +10826,216 @@ class TestCostLedgerSentinelGate:
         assert exc_info.value.code == 2
         assert "more than one root is in scope" in capsys.readouterr().err
         assert cost_ledger_file.read_text() == before
+
+    def test_record_succeeds_when_multi_root_and_ledger_path_not_git_tracked(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """The ledger's default path is not git-tracked, so a second
+        declared account does not block --record -- only a git-tracked
+        destination does (see the git-tracked case above)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+        )
+        capsys.readouterr()
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+
+    def test_record_succeeds_when_multi_root_and_ledger_path_in_bare_repo(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """git rev-parse --is-inside-work-tree exits 0 with stdout "false"
+        for a bare repository (tracked by git, but not a work tree) -- pins
+        that this is treated the same as "not git-tracked", not misrouted
+        into the fail-closed branch."""
+        subprocess.run(["git", "init", "-q", "--bare"], cwd=tmp_path, check=True)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+        )
+        capsys.readouterr()
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+
+    def test_record_refuses_when_git_tracked_check_times_out(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """A timed-out git-tracked check fails closed (refuses) rather than
+        treating a hung check as "not tracked"."""
+        def _raise_timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=["git"], timeout=10)
+        monkeypatch.setattr(_mod.subprocess, "run", _raise_timeout)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_refuses_when_git_tracked_check_exits_nonzero_unexpectedly(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """A non-zero git exit whose stderr doesn't match the expected "not
+        a git repository" text fails closed -- the branch most likely to
+        silently flip if that stderr text ever changes."""
+        def _fake_permission_denied(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: permission denied\n")
+        monkeypatch.setattr(_mod.subprocess, "run", _fake_permission_denied)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_refuses_when_multi_root_and_ledger_path_in_linked_worktree(
+        self, fake_projects, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """A linked worktree's directory contains a `.git` file (a worktree
+        pointer), not a `.git` directory -- this repo's own convention
+        (.claude/worktrees/<branch>/) makes that the dominant real-world
+        layout, and no other case here exercises it."""
+        main_repo = tmp_path / "main-repo"
+        subprocess.run(["git", "init", "-q", str(main_repo)], check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=main_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=main_repo, check=True)
+        (main_repo / "README.md").write_text("x\n")
+        subprocess.run(["git", "add", "README.md"], cwd=main_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=main_repo, check=True)
+        worktree_dir = tmp_path / "linked-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", str(worktree_dir), "-b", "wt-branch"],
+            cwd=main_repo, check=True,
+        )
+        ledger_path = worktree_dir / "cost-ledger.md"
+        ledger_path.write_text(
+            "# Cost-trend ledger\n\n"
+            + _mod._COST_LEDGER_HEADER_LINE + "\n"
+            + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+        )
+        monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: ledger_path)
+
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = ledger_path.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert ledger_path.read_text() == before
+
+    def test_record_refuses_when_multi_root_and_ledger_path_git_tracked_even_with_force(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """Regression: --force skips the duplicate-(week, machine)-row check
+        in _upsert_cost_ledger_row, not the multi-root git-tracked refusal
+        above it -- pins that ordering against a future change that
+        special-cases --force to bypass this guard too."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1", force=True), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_succeeds_when_single_root_and_ledger_path_git_tracked(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path
+    ):
+        """The git-tracked check only runs when more than one root is in
+        scope -- a single declared account still succeeds against a
+        git-tracked ledger path, pinning that boundary against a future
+        edit to the `len(roots) > 1 and ...` guard."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+        )
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+
+    def test_record_not_redirected_by_inherited_git_dir_env(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch
+    ):
+        """An operator's shell exporting GIT_DIR/GIT_WORK_TREE for an
+        unrelated repo must not redirect the git-tracked check to that
+        repo's tracked status -- the check has to see the ledger path's own
+        (untracked) ancestor, not whatever the caller's env points at."""
+        unrelated_repo = tmp_path / "unrelated-repo"
+        unrelated_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=unrelated_repo, check=True)
+        monkeypatch.setenv("GIT_DIR", str(unrelated_repo / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(unrelated_repo))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+        )
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
 
 
 class TestCostLedgerDefaultPathCliWiring:
