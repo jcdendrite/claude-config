@@ -75,6 +75,33 @@ NON_REVIEWER_MODELS = {
     "Explore.md": "sonnet",      # same-named built-in override
 }
 
+# Expected effort tier per agent. Mirrors NON_REVIEWER_MODELS's role for
+# model: values — see CLAUDE.md "Model & Effort Routing" for the tier
+# rationale. Not derived from CANARY_AGENTS: the tier split cuts across
+# that grouping (comment-discipline-reviewer and skill-fidelity-reviewer
+# are CANARY_AGENTS but get "medium", not the "xhigh" the other six get).
+# code-writer sits outside CANARY_AGENTS at "high", not "xhigh" — its
+# dispatches span a difficulty range rather than uniformly hard work
+# (see CLAUDE.md "Model & Effort Routing" and design-decisions.md §24).
+EXPECTED_EFFORT = {
+    "Explore.md": "low",
+    "comment-discipline-reviewer.md": "medium",
+    "skill-fidelity-reviewer.md": "medium",
+    "ciso-reviewer.md": "xhigh",
+    "code-writer.md": "high",
+    "staff-analytics-engineer.md": "xhigh",
+    "staff-backend-engineer.md": "xhigh",
+    "staff-data-engineer.md": "xhigh",
+    "staff-frontend-engineer.md": "xhigh",
+    "staff-platform-engineer.md": "xhigh",
+    "staff-product-engineer.md": "xhigh",
+    "staff-sdet.md": "xhigh",
+}
+
+# Effort levels Claude Code recognizes.
+# https://code.claude.com/docs/en/model-config, "Adjust effort level" section.
+VALID_EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
+
 
 class TestReviewerAgentRoster:
     def test_all_reviewer_agents_exist(self):
@@ -351,6 +378,49 @@ class TestAgentFrontmatter:
             f"Agent files have no expected-model entry: {sorted(uncategorized)}. "
             f"Add each to REVIEWER_AGENTS (sonnet reviewer) or NON_REVIEWER_MODELS "
             f"(with its pinned model) in this test file."
+        )
+
+    def test_expected_effort_values_are_valid(self):
+        """Every value in EXPECTED_EFFORT must be a recognized effort level.
+
+        Guards against a typo (e.g. "xigh") landing in both EXPECTED_EFFORT
+        and an agent's frontmatter, which would otherwise pass
+        test_effort_pinned_to_expected_value silently since both sides agree
+        with each other but not with reality.
+        """
+        invalid = {t for t in EXPECTED_EFFORT.values() if t not in VALID_EFFORT_LEVELS}
+        assert not invalid, (
+            f"EXPECTED_EFFORT contains invalid effort level(s): {sorted(invalid)}. "
+            f"Valid levels: {sorted(VALID_EFFORT_LEVELS)}."
+        )
+
+    @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
+    def test_effort_pinned_to_expected_value(self, agent_path):
+        """Each agent must declare the exact effort tier its task shape requires.
+
+        See EXPECTED_EFFORT above and CLAUDE.md "Model & Effort Routing" for
+        the tier rationale.
+        """
+        fm = parse_frontmatter(agent_path)
+        actual_effort = fm.get("effort")
+        expected_effort = EXPECTED_EFFORT.get(agent_path.name)
+        assert actual_effort == expected_effort, (
+            f"{agent_path.name}: effort is '{actual_effort}', expected '{expected_effort}'. "
+            f"Update the agent's frontmatter or, if the policy has changed, update "
+            f"EXPECTED_EFFORT in this file."
+        )
+
+    def test_expected_effort_map_is_complete(self):
+        """EXPECTED_EFFORT must cover every agent file.
+
+        Adding an agent without updating EXPECTED_EFFORT will fail here.
+        This mirrors test_expected_model_map_is_complete.
+        """
+        all_agent_names = {p.name for p in AGENTS_DIR.glob("*.md")}
+        uncategorized = all_agent_names - set(EXPECTED_EFFORT)
+        assert not uncategorized, (
+            f"Agents missing from EXPECTED_EFFORT: {sorted(uncategorized)}. "
+            f"Add each with its expected effort tier."
         )
 
     def test_non_reviewer_roster_and_model_map_are_in_sync(self):
