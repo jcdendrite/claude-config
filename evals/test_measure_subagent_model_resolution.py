@@ -356,6 +356,62 @@ class TestComputeSidecarPollTimedOut:
         assert msmr._compute_sidecar_poll_timed_out(attempted=True, sidecar_found=False) is True
 
 
+class TestExecuteMatrixCell:
+    """Component test of the call sequence that already produced two real
+    bugs by hand (symlink path mismatch, sidecar-flush race) — each fixed by
+    a leaf-function unit test, but nothing previously exercised the
+    composition itself. Stubs only the subprocess launch; everything else
+    (temp-dir resolution, session-store lookup, sidecar parsing, cleanup)
+    runs for real, so a future reordering or a cleanup path that stops
+    matching the launch path would fail here even though every existing
+    leaf-function test would still pass in isolation."""
+
+    def test_launch_lookup_and_cleanup_all_target_the_same_resolved_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen_cwd: list[Path] = []
+
+        def fake_run_claude(cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
+            # Real Claude Code writes its session store relative to the exact
+            # cwd it was launched with — asserting cwd is already resolved
+            # here is what the original symlink-mismatch bug would have failed.
+            assert cwd == cwd.resolve()
+            seen_cwd.append(cwd)
+            session_id = cmd[cmd.index("--session-id") + 1]
+            subagent_dir = (
+                msmr.run_skill_evals.compute_session_store_dir(cwd) / session_id / msmr.SUBAGENT_SUBDIR
+            )
+            subagent_dir.mkdir(parents=True)
+            (subagent_dir / "agent-1.meta.json").write_text(
+                json.dumps({"toolUseId": "toolu_1", "agentType": "staff-backend-engineer", "model": "sonnet"})
+            )
+            (subagent_dir / "agent-1.jsonl").write_text(
+                json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5", "content": []}}) + "\n"
+            )
+            lines = [
+                json.dumps(
+                    {"event": {"type": "content_block_start",
+                                "content_block": {"type": "tool_use", "name": "Task"}}}
+                ).encode()
+            ]
+            return lines, False
+
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", fake_run_claude)
+
+        result = msmr.execute_matrix_cell(msmr.RUN_MATRIX[0], budget_cap_usd=11.5, timeout_s=90)
+
+        assert result.attempted_dispatch is True
+        assert result.sidecar_poll_timed_out is False
+        assert len(result.dispatches) == 1
+        assert result.dispatches[0].requested_agent_type == "staff-backend-engineer"
+
+        launched_cwd = seen_cwd[0]
+        assert not launched_cwd.exists(), "cleanup must remove the same tmp_project it launched in"
+        assert not msmr.run_skill_evals.compute_session_store_dir(launched_cwd).exists(), (
+            "cleanup must remove the session store keyed on the same resolved path used for launch"
+        )
+
+
 class TestModelFamily:
     @pytest.mark.parametrize(
         ("model_id", "expected"),
@@ -447,11 +503,23 @@ class TestRun1SelfCheck:
     def test_no_dispatches_fails(self) -> None:
         assert msmr.run1_self_check_passed(self._result([])) is False
 
+    def test_sidecar_poll_timeout_fails_same_as_genuine_no_dispatch(self) -> None:
+        """Pins the documented conservative choice: a sidecar-poll timeout is
+        indistinguishable from a genuine self-check failure here by design —
+        both stop the --all matrix rather than risk spending on runs 2-7
+        against a voided run 1."""
+        result = self._result([])
+        timed_out_result = msmr.RunResult(
+            run=result.run, session_id=result.session_id, attempted_dispatch=True,
+            timed_out=False, declared_model_pin="sonnet", dispatches=(),
+            sidecar_poll_timed_out=True,
+        )
+        assert msmr.run1_self_check_passed(timed_out_result) is False
+
 
 class TestShouldStopMatrixAfter:
-    """The --all loop's safety-critical stop decision, extracted from main()
-    so an off-by-one or a dropped break can't ship undetected — see
-    staff-sdet's 'Testability' finding on this diff."""
+    """The --all loop's stop condition, extracted from main() so it's
+    independently testable without a live subprocess."""
 
     def _result(self, run_number: int, family: str | None) -> msmr.RunResult:
         run = msmr.RUN_MATRIX[run_number - 1]
@@ -481,6 +549,14 @@ class TestShouldStopMatrixAfter:
         is data to report, not a reason to abort the matrix."""
         result = self._result(4, msmr.MODEL_FAMILY_SONNET)
         assert msmr.should_stop_matrix_after(msmr.RUN_MATRIX[3], result) is False
+
+    def test_stops_when_run_one_sidecar_poll_times_out(self) -> None:
+        result = msmr.RunResult(
+            run=msmr.RUN_MATRIX[0], session_id="s", attempted_dispatch=True,
+            timed_out=False, declared_model_pin="sonnet", dispatches=(),
+            sidecar_poll_timed_out=True,
+        )
+        assert msmr.should_stop_matrix_after(msmr.RUN_MATRIX[0], result) is True
 
 
 class TestBuildRunCommand:

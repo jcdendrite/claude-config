@@ -348,6 +348,15 @@ A fifth possibility — cells disagreeing across repetitions rather than landing
 cleanly — is a real outcome, not a failure: it means the behavior is
 probabilistic and the honest headline says so with a rate. The write-up must be
 able to state that; do not force a deterministic reading onto a mixed result.
+
+**2026-08-14 follow-up:** Runs 2-5 landed on H-ARTIFACT's predicted cells, but
+that reading doesn't hold — see
+`docs/case-studies/plan-mode-model-resolution.md`'s 2026-08-14 follow-up for
+why. Consequence taken: case study rewritten to state this explicitly; the
+five conditional files (`docs/auto-mode.md`, `CLAUDE.md` Model Routing,
+`subagent-delegation/SKILL.md`, `Explore.md`, `agent-review/SKILL.md`) left
+untouched — PR #647 had already closed the mechanism by the time this ran,
+making a model-routing re-scope moot.
 - **M7 — Document the harness** by extending `evals/README.md`'s existing "Why
   local only — never CI" section rather than writing a parallel disclaimer
   (single source of truth), and add a `docs/scripts.md` entry. **No CI risk
