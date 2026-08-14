@@ -4845,12 +4845,12 @@ _CACHE_WRITE_5M_MULTIPLIER = 1.25
 _CACHE_WRITE_1H_MULTIPLIER = 2
 _CACHE_READ_MULTIPLIER = 0.1
 
-_SONNET_5_PROMO_EXPIRES = date(2026, 8, 31)  # vendor-stated introductory-rate end
-# Published standard rate taking effect the day after _SONNET_5_PROMO_EXPIRES
-# ($3.00/MTok input, up from the $2.00 introductory rate); see
-# _PRICING_SOURCE_URL. Recorded here so updating _MODEL_BASE_INPUT_RATES once
-# the STALE PRICING banner fires doesn't need a fresh vendor-page lookup.
-_SONNET_5_SUCCESSOR_BASE_RATE = 3.00
+# Multipliers applied to every dollar class when usage.speed/usage.inference_geo
+# report that outcome, per platform.claude.com/docs/en/build-with-claude/fast-mode
+# and .../about-claude/pricing's data-residency section.
+_FAST_MODE_RATE_MULTIPLIER = 2
+_INFERENCE_GEO_US_RATE_MULTIPLIER = 1.1
+
 _DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
 
 # Base input $/MTok per model ID, keyed on the exact string Claude Code writes
@@ -4863,15 +4863,16 @@ _MODEL_BASE_INPUT_RATES: dict[str, float] = {
     "claude-sonnet-5": 2.00,
     "claude-sonnet-4-6": 3.00,
     "claude-haiku-4-5-20251001": 1.00,
+    # Exact-match only, unlike _context_window_for_model's prefix match on
+    # this same string -- a dated-snapshot variant like
+    # "claude-sonnet-4-5-20260115" still 200k-buckets correctly but prices as
+    # unpriced here.
+    "claude-sonnet-4-5": 3.00,
 }
 
-# Re-verify-by date per model ID: Sonnet 5's introductory rate has a
-# vendor-stated end date; every other model has none, so it gets
-# fetch-date+90d as a re-verify checkpoint instead.
-_MODEL_RATE_EXPIRES: dict[str, date] = {
-    model: (_SONNET_5_PROMO_EXPIRES if model == "claude-sonnet-5" else _DEFAULT_REVERIFY_BY)
-    for model in _MODEL_BASE_INPUT_RATES
-}
+# Re-verify-by date per model ID: fetch-date+90d for every model, since none
+# has a vendor-stated rate-change date today.
+_MODEL_RATE_EXPIRES: dict[str, date] = dict.fromkeys(_MODEL_BASE_INPUT_RATES, _DEFAULT_REVERIFY_BY)
 
 _CONTEXT_BUCKET_THRESHOLD = 200_000  # inclusive edge of the "≥200k" finding
 _CONTEXT_BUCKET_UNDER = "<200k"
@@ -5145,6 +5146,14 @@ def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, 
         "cache_write_1h": eph_1h / 1_000_000 * rates["cache_write_1h"],
         "cache_write_5m": eph_5m / 1_000_000 * rates["cache_write_5m"],
     }
+    # usage.speed/usage.inference_geo report the API's settled outcome, not an
+    # echo of the request, so no per-model eligibility list is needed here.
+    # Neither field is in _USAGE_DRIFT_INVARIANT_KEYS, so a non-run-invariant
+    # value on either gets no runtime drift canary today -- a known, accepted gap.
+    if usage.get("speed") == "fast":
+        dollars = {cls: val * _FAST_MODE_RATE_MULTIPLIER for cls, val in dollars.items()}
+    if usage.get("inference_geo") == "us":
+        dollars = {cls: val * _INFERENCE_GEO_US_RATE_MULTIPLIER for cls, val in dollars.items()}
     return dollars, context_at_turn, 0
 
 
@@ -5528,6 +5537,13 @@ def _print_model_id_table(model_totals: dict[str, float], grand_total: float) ->
         print(f"{model:<28} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
 
 
+# A root whose earliest in-scope turn is more than this many seconds newer
+# than a requested --since window's start fires _cost_report's
+# corpus-coverage warning below -- one day, not zero, so ordinary
+# per-record timestamp variance right at the window boundary doesn't warn.
+_CORPUS_COVERAGE_WARNING_THRESHOLD_SECONDS = 86400
+
+
 def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | None = None) -> None:
     """Corpus-wide dollar-cost report by token class, model ID, and context-at-turn bucket.
 
@@ -5631,11 +5647,18 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # (not gated on multi_root) -- the diagnostic loop runs at single root too
     # (roots is not None whenever cmd_cost's CLI path is reached, even with
     # zero declared extras), and _redaction_ordinals is correct and cheap on a
-    # single-element list. root_by_ordinal is its inverse, needed only for the
+    # single-element list. root_by_ordinal is its inverse -- used for the
     # (unreachable when multi_root, since --no-redact is refused above)
-    # non-redact display path.
+    # non-redact display path, and for the corpus-coverage warning below.
     redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
     root_by_ordinal: dict[int, Path] = {redact_ordinals[root.resolve()]: root for root in scan_roots}
+    # A single explicit root's ordinal never varies across sessions, so it's
+    # resolved once here rather than per-session like resolved_scan_roots'
+    # multi-root lookup below -- None when roots is None (the non-cmd_cost
+    # direct-call path, which gets no per-root coverage warning either).
+    single_root_ordinal: int | None = (
+        redact_ordinals[scan_roots[0].resolve()] if roots is not None and not multi_root else None
+    )
 
     total_transcripts_scanned = 0
     if roots is not None:
@@ -5706,6 +5729,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     )
     unpriced_tokens: dict[str, int] = defaultdict(int)
     bucket_totals: dict[str, float] = defaultdict(float)
+    # Earliest in-scope turn timestamp seen per root ordinal, regardless of
+    # --since -- feeds the corpus-coverage warning after the loop below, so a
+    # well-covered root can't mask a short one.
+    root_earliest_ts: dict[int, float] = {}
     session_rows: list[dict] = []
     stale_models: set[str] = set()
     main_total = 0.0
@@ -5735,6 +5762,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         if multi_root:
             root_position = _root_index_for_path(jsonl, resolved_scan_roots)
             account_ordinal = redact_ordinals[resolved_scan_roots[root_position]]
+        elif single_root_ordinal is not None:
+            account_ordinal = single_root_ordinal
 
         # Only needed when --branches is active — the carry-forward source
         # _attributed_branch resolves each worktree-agent-* record against.
@@ -5748,10 +5777,18 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             if not usage:
                 continue
 
-            if since_ts is not None:
-                rec_ts = _parse_ts(rec.get("timestamp"))
-                if rec_ts is None or rec_ts < since_ts:
-                    continue
+            # Parsed unconditionally (not just when since_ts is set) so
+            # root_earliest_ts reflects the corpus's actual earliest turn,
+            # not just the earliest turn inside an already-applied --since
+            # filter.
+            rec_ts = _parse_ts(rec.get("timestamp"))
+            if account_ordinal is not None and rec_ts is not None:
+                earliest_so_far = root_earliest_ts.get(account_ordinal)
+                if earliest_so_far is None or rec_ts < earliest_so_far:
+                    root_earliest_ts[account_ordinal] = rec_ts
+
+            if since_ts is not None and (rec_ts is None or rec_ts < since_ts):
+                continue
 
             if branch_filter is not None:
                 attributed_branch = _attributed_branch(rec, branch_index)
@@ -5830,6 +5867,16 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                     if current_repr is None or raw_part < current_raw_part:
                         project_repr_label[project_key] = scoped_label
 
+    if since_ts is not None:
+        for ordinal, earliest_ts in sorted(root_earliest_ts.items()):
+            if earliest_ts - since_ts > _CORPUS_COVERAGE_WARNING_THRESHOLD_SECONDS:
+                root_label = f"account-{ordinal}" if redact else str(root_by_ordinal[ordinal].parent)
+                print(
+                    f"WARNING: cost: {root_label}: earliest turn found is {_fmt_date(earliest_ts)},"
+                    f" more than 1 day after the requested --since window start ({_fmt_date(since_ts)})"
+                    " — this root's local corpus does not fully cover the requested window."
+                )
+
     grand_total = sum(class_totals.values())
 
     # The three invariants below sum the same per-turn dollar increments (the
@@ -5880,24 +5927,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         print(f"\n## Cost report ({title_since})\n")
 
     if stale_models:
-        # claude-sonnet-5's specific successor rate is recorded so this banner
-        # is actionable on sight — without it, an operator seeing the warning
-        # still has to re-fetch the vendor page to learn what to update
-        # _MODEL_BASE_INPUT_RATES to, which is the exact re-lookup this
-        # constant exists to save.
-        successor_hint = (
-            f" claude-sonnet-5's recorded successor base rate is"
-            f" ${_SONNET_5_SUCCESSOR_BASE_RATE:.2f}/MTok input — confirm against"
-            f" {_PRICING_SOURCE_URL} before updating _MODEL_BASE_INPUT_RATES."
-            if "claude-sonnet-5" in stale_models
-            else ""
-        )
         print(
             "STALE PRICING — today is past the re-verify-by date for: "
             + ", ".join(sorted(stale_models))
-            + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing the figures below."
-            + successor_hint
-            + "\n"
+            + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing the figures below.\n"
         )
 
     _print_token_class_table(class_totals, class_token_totals, grand_total)

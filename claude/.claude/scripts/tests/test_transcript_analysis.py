@@ -5259,6 +5259,8 @@ def _priced(
     branch: str = "main",
     request_id: str | None = None,
     content: list | None = None,
+    speed: str | None = None,
+    inference_geo: str | None = None,
 ) -> dict:
     """Build an assistant record with explicit priced usage fields for cost tests.
 
@@ -5272,6 +5274,8 @@ def _priced(
     keeps every pre-existing call site's empty-content shape; rearm-backtest's
     boundary-detection tests pass real tool_use/tool_result blocks instead,
     needing both a realistic content shape and known, priced usage in one record.
+    speed/inference_geo default to None (field absent), matching every usage
+    record sampled outside fast-mode/data-residency requests.
     """
     rec = _asst(model, branch=branch, ts=ts, content=content if content is not None else [], request_id=request_id)
     usage: dict = {
@@ -5287,6 +5291,10 @@ def _priced(
             "ephemeral_1h_input_tokens": ephemeral_1h,
             "ephemeral_5m_input_tokens": ephemeral_5m,
         }
+    if speed is not None:
+        usage["speed"] = speed
+    if inference_geo is not None:
+        usage["inference_geo"] = inference_geo
     rec["message"]["usage"] = usage
     return rec
 
@@ -5827,6 +5835,28 @@ class TestCost:
         assert sonnet5["$"] == "2.00"
         assert sonnet46["$"] == "3.00"
 
+    def test_claude_sonnet_4_5_prices_at_vendor_rate(self):
+        """claude-sonnet-4-5's five derived rates match the vendor table ($3
+        input / $15 output / $3.75 5m-write / $6 1h-write / $0.30 cache-read),
+        via the same _model_rates derivation every other model in the table
+        uses."""
+        rates = _mod._model_rates("claude-sonnet-4-5")
+        assert rates is not None
+        assert rates["input"] == pytest.approx(3.00)
+        assert rates["output"] == pytest.approx(15.00)
+        assert rates["cache_write_5m"] == pytest.approx(3.75)
+        assert rates["cache_write_1h"] == pytest.approx(6.00)
+        assert rates["cache_read"] == pytest.approx(0.30)
+
+    def test_claude_sonnet_4_5_dated_snapshot_unpriced_but_200k_bucketed(self):
+        """_MODEL_BASE_INPUT_RATES is an exact-match dict: a dated-snapshot
+        variant of claude-sonnet-4-5 still 200k-context-buckets correctly
+        (prefix match) but prices as unpriced (exact-match miss) -- pins the
+        asymmetry documented on the pricing-table entry."""
+        dated_model = "claude-sonnet-4-5-20260115"
+        assert _mod._model_rates(dated_model) is None
+        assert _mod._context_window_for_model(dated_model) == 200_000
+
     def test_unknown_model_id_surfaced_and_excluded_from_total(self, fake_projects, capsys):
         """Unknown model IDs are named in the model table and their tokens counted
         separately, never silently folded into the priced total at $0."""
@@ -5894,10 +5924,11 @@ class TestCost:
         assert "(no priced turns in range)" in out
 
     def test_staleness_banner_fires_when_today_past_expires(self, fake_projects, capsys):
-        """today past Sonnet 5's 2026-08-31 expiry: the banner fires in the same
-        output block as the dollar tables, not a separate log line."""
+        """today past the default fetch-date+90d re-verify-by date: the banner
+        fires in the same output block as the dollar tables, not a separate
+        log line."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        _mod._cost_report(_cost_args(), date(2026, 9, 1))
+        _mod._cost_report(_cost_args(), date(2026, 11, 1))
         out = capsys.readouterr().out
         assert "STALE PRICING" in out
         assert "claude-sonnet-5" in out.split("## Cost by token class")[0]
@@ -5907,6 +5938,16 @@ class TestCost:
         if the banner always printed."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
         _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "STALE PRICING" not in out
+
+    def test_sonnet_5_no_longer_flagged_stale_by_cancelled_promo_expiry_date(self, fake_projects, capsys):
+        """The vendor cancelled Sonnet 5's Sept 1, 2026 rate increase, so
+        today=2026-09-01 (past the old, now-removed 2026-08-31 promo-expiry
+        date) must not fire the banner -- Sonnet 5 uses the same
+        _DEFAULT_REVERIFY_BY schedule as every other model now."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
+        _mod._cost_report(_cost_args(), date(2026, 9, 1))
         out = capsys.readouterr().out
         assert "STALE PRICING" not in out
 
@@ -6527,6 +6568,84 @@ class TestCostMultiRootReport:
         assert cols["$"] == "2.00"
 
 
+class TestCostCorpusCoverageWarning:
+    """--since window vs. a root's actual earliest turn: a root whose local
+    corpus starts well after the requested window start must warn, not
+    silently under-report -- one line per short root, never masked by a
+    sibling root's full coverage."""
+
+    def test_warning_fires_when_root_short_of_since_window(self, fake_projects, monkeypatch, capsys):
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        earliest_ts = since_ts + 3 * 86400  # 3 days after window start, well over the 1-day threshold
+        earliest_iso = datetime.fromtimestamp(earliest_ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=earliest_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost: account-1: earliest turn found is" in out
+        assert _mod._fmt_date(earliest_ts) in out
+        assert _mod._fmt_date(since_ts) in out
+
+    def test_warning_silent_when_root_fully_covers_window(self, fake_projects, monkeypatch, capsys):
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        earliest_iso = datetime.fromtimestamp(since_ts - 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=earliest_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost:" not in out
+
+    def test_warning_silent_when_since_not_given(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000, ts="2020-01-01T00:00:00.000Z"),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost:" not in out
+
+    def test_boundary_exactly_24h_short_is_silent(self, fake_projects, monkeypatch, capsys):
+        """Exactly 1 day after the window start is not "more than" 1 day
+        short -- the inclusive edge of the no-warning side."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        boundary_iso = datetime.fromtimestamp(since_ts + 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=boundary_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost:" not in out
+
+    def test_boundary_24h_plus_epsilon_short_fires(self, fake_projects, monkeypatch, capsys):
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        over_iso = datetime.fromtimestamp(since_ts + 86400 + 1, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=over_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost: account-1: earliest turn found is" in out
+
+    def test_two_root_case_names_short_root_not_masked_by_covered_root(self, tmp_path, monkeypatch, capsys):
+        """acct-covered sorts before acct-short (resolved-path ordering), so
+        acct-covered is account-1 and acct-short is account-2 -- the
+        well-covered root's account-1 label must not appear in the warning."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        covered_iso = datetime.fromtimestamp(since_ts - 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        short_iso = datetime.fromtimestamp(since_ts + 3 * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        root_covered = _write_cost_root(tmp_path, "acct-covered", "-home-user-repo-a", "sess-a",
+                                         [_priced("claude-sonnet-5", input=1_000, ts=covered_iso)])
+        root_short = _write_cost_root(tmp_path, "acct-short", "-home-user-repo-b", "sess-b",
+                                       [_priced("claude-sonnet-5", input=1_000, ts=short_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[root_covered, root_short])
+        out = capsys.readouterr().out
+        assert "WARNING: cost: account-2: earliest turn found is" in out
+        assert "WARNING: cost: account-1:" not in out
+
+
 class TestScanRootTranscripts:
     """Direct unit tests for _scan_root_transcripts — neither its glob-count
     behavior nor its per-file skipped-counting was exercised at this layer
@@ -7140,6 +7259,29 @@ class TestCostThreadSplit:
         subagent_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("subagent"))
         assert float(subagent_line.split()[-2].replace(",", "")) == pytest.approx(2.00)  # not 0.00
 
+    def test_sidechain_fast_mode_multiplier_reflected_in_subagent_accumulator(self, fake_projects, capsys):
+        """A speed:"fast" sidechain turn's 2x multiplier (already pinned at the
+        unit level by TestPriceTurnSpeedGeoMultipliers) survives the isSidechain
+        main/subagent split and stdout table rendering end-to-end."""
+        session_id = "sess-sidechain-fast"
+        subagent_rec = _priced("claude-sonnet-4-5", input=1_000_000, speed="fast")  # 2x: $6.00
+        subagent_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-4-5", input=1_000_000),  # main: $3.00
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+
+        grand_total = _extract_grand_total(out)
+        assert grand_total == pytest.approx(9.00)  # 3.00 + 6.00
+
+        thread_section = out.split("## Cost by thread")[1].split("## Top")[0]
+        main_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("main"))
+        subagent_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("subagent"))
+        assert float(main_line.split()[-2].replace(",", "")) == pytest.approx(3.00)
+        assert float(subagent_line.split()[-2].replace(",", "")) == pytest.approx(6.00)  # not 3.00
+
 
 class TestPriceTurnArity:
     def test_price_turn_returns_exactly_three_values(self):
@@ -7171,6 +7313,48 @@ class TestPriceTurnArity:
         }
         _dollars, context_at_turn, _unpriced_tokens = _mod._price_turn("claude-sonnet-5", usage)
         assert context_at_turn == 100 + 50 + 10 + 5
+
+
+class TestPriceTurnSpeedGeoMultipliers:
+    """_price_turn's speed:"fast" (2x) and inference_geo:"us" (1.1x) dollar
+    multipliers -- vendor-billed outcome fields, applied regardless of the
+    model's own fast-mode/data-residency eligibility (see the regression-
+    anchor test below)."""
+
+    def test_speed_fast_multiplies_dollars_by_two(self):
+        usage = _priced("claude-sonnet-5", input=1_000_000, speed="fast")["message"]["usage"]
+        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        assert unpriced == 0
+        assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 2)
+
+    def test_inference_geo_us_multiplies_dollars_by_1_1(self):
+        usage = _priced("claude-sonnet-5", input=1_000_000, inference_geo="us")["message"]["usage"]
+        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        assert unpriced == 0
+        assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 1.1)
+
+    def test_speed_and_inference_geo_stack_multiplicatively(self):
+        """Both multipliers present on the same turn compose to 2 * 1.1 = 2.2x,
+        not just the larger of the two."""
+        usage = _priced(
+            "claude-sonnet-5", input=1_000_000, speed="fast", inference_geo="us",
+        )["message"]["usage"]
+        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        assert unpriced == 0
+        assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 2.2)
+
+    def test_multiplier_applies_regardless_of_model_eligibility(self):
+        """Regression anchor, not a new runtime check: _price_turn trusts the
+        API's own reported speed/inference_geo outcome rather than
+        hand-maintaining a per-model eligibility list, so a model that isn't
+        actually fast-mode/data-residency-eligible still gets the multiplier
+        if the usage record carries the field."""
+        usage = _priced(
+            "claude-sonnet-4-6", input=1_000_000, speed="fast", inference_geo="us",
+        )["message"]["usage"]
+        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-4-6", usage)
+        assert unpriced == 0
+        assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
 
 
 class TestDedupTurnsByRequestId:
@@ -7667,7 +7851,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 9, 1))
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 11, 1))
         out = capsys.readouterr().out
         assert "STALE PRICING" in out
 
