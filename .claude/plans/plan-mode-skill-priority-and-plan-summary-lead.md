@@ -118,6 +118,45 @@ deliberately: every mention fires, and the hook is active for every stow
 consumer by default. Recorded as Rows 14 and 15 so a later revision diffs
 against the decision rather than rediscovering it.
 
+### Source quotes
+
+The literal vendor-doc lines the givens and Rows 6-8 rest on, quoted rather
+than paraphrased so a later revision can diff against the source text.
+
+From `code.claude.com/docs/en/commands.md`:
+
+> A command is only recognized at the start of your message.
+
+> As of v2.1.199, skills are the exception: a skill invocation followed by
+> more skills, such as `/skill-a /skill-b do XYZ`, loads every skill named at
+> the start and passes the trailing text to each as arguments. Up to six
+> skills can be chained.
+
+From `code.claude.com/docs/en/hooks.md` — exit-2 semantics, per the
+per-event blocking table:
+
+> `UserPromptSubmit` | Yes | Blocks prompt processing and erases the prompt
+
+> For most events, stdout is written to the debug log but not shown in the
+> transcript. The exceptions are `UserPromptSubmit`, `UserPromptExpansion`,
+> and `SessionStart`, where stdout is added as context that Claude can see
+> and act on.
+
+The same reference lists the `UserPromptSubmit` stdin fields as `session_id`,
+`prompt_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`,
+and `prompt` — the three this hook reads are `prompt`, `cwd`, and
+`permission_mode`.
+
+On non-interactivity the reference defines hooks as:
+
+> Hooks are user-defined shell commands, HTTP endpoints, or LLM prompts that
+> execute automatically at specific points in Claude Code's lifecycle.
+
+It states no mechanism by which a hook prompts the user; the interactive
+`Elicitation` event is scoped to an MCP server requesting input during a tool
+call. That given therefore rests on a documented absence, not on an
+affirmative quote — recorded here so the distinction is visible.
+
 ### Assumption ledger
 
 ```
@@ -125,10 +164,11 @@ Root: a skill named after the first token of a prompt is never expanded by
 the harness, so whether it runs depends on the agent noticing unaided.
 
 Givens: slash-command expansion is anchored to message start — beyond reach:
-vendor behavior documented at code.claude.com/docs/en/commands.md.
+vendor behavior, quoted verbatim under Source quotes above.
 Givens: hooks cannot prompt the user interactively — beyond reach: the hooks
-reference defines hooks as non-interactive shell commands, HTTP endpoints, or
-LLM prompts; interactive elicitation is a separate MCP-only event.
+reference defines hooks as shell commands, HTTP endpoints, or LLM prompts and
+states no user-prompting mechanism; see Source quotes for the definition line
+and the documented-absence caveat.
 
 Row 1 [mechanism]: UserPromptSubmit hook injecting additionalContext —
 anchors: root — the only lifecycle point that sees raw prompt text before the
@@ -147,12 +187,13 @@ Row 5 [assumption]: 175 of 175 leading-position mentions expanded, 0 of 44
 non-initial mentions did [verified: local transcript corpus census] —
 anchors: root
 Row 6 [assumption]: exit 2 on UserPromptSubmit blocks and erases the prompt,
-so an advisory must exit 0 everywhere [verified: code.claude.com hooks
-reference] — anchors: row1
+so an advisory must exit 0 everywhere [verified: hooks reference, quoted under
+Source quotes] — anchors: row1
 Row 7 [assumption]: UserPromptSubmit stdout is added as context the agent can
-act on [verified: code.claude.com hooks reference] — anchors: row1
+act on [verified: hooks reference, quoted under Source quotes] — anchors: row1
 Row 8 [assumption]: the input JSON carries prompt, cwd, and permission_mode
-[verified: code.claude.com hooks reference] — anchors: row1
+[verified: hooks reference field list, cited under Source quotes] — anchors:
+row1
 Row 9 [assumption]: the agent reliably acts on injected additionalContext by
 asking rather than ignoring it [unverified] — anchors: row1 — load-bearing;
 compounds with the unmeasured self-invoke residual noted in Context.
