@@ -104,31 +104,35 @@ _DISPATCH_AGENT_TYPE = {
 
 # One fixed prompt template across runs 2-7 (plan M2) — only --model,
 # --permission-mode, and (runs 6-7) the dispatched agent's name vary, so an
-# observed difference can never be confounded with prompt wording. The task
-# is deliberately classification-shaped and cheap: the experiment needs the
-# dispatch to happen, not to produce useful work. The leading disambiguation
-# sentence exists because, under --permission-mode plan and this repo's own
-# ambient CLAUDE.md (which instructs running /plan-review before presenting
-# a plan), the model can read this instruction as itself being a plan, run a
-# self-referential /plan-review pass on it, and never reach the Task tool
-# call — a dropped trial, not a model-resolution result. Run 1 (the
-# instrument self-check, default mode) doesn't carry the sentence: it isn't
-# one of the four rival-hypothesis discriminating cells, and plan mode is
-# what triggers the confusion in the first place.
+# observed difference can never be confounded with prompt wording.
+#
+# Plan mode's own system prompt states its read-only restriction supersedes
+# any instruction embedded in the user's own prompt — no prompt wording can
+# talk the model out of declining an action-shaped dispatch request. The
+# task must read as genuine plan-mode research (context-gathering toward a
+# plan) or the dispatch is refused outright, independent of wording. This
+# template frames the dispatch as reviewing MARKER_FILE_NAME for the plan
+# about to be presented, rather than an arbitrary classification task with
+# no connection to planning — matching both plan mode's own legitimacy
+# criterion and staff-backend-engineer's actual declared purpose (a
+# code-review specialist, not a general classifier).
+MARKER_FILE_NAME = "example.py"
+MARKER_FILE_CONTENT = "def add(a, b):\n    return a + b\n"
+
 DISPATCH_PROMPT_TEMPLATE = (
-    "This is a direct execution instruction, not a plan or proposal — do not "
-    "invoke /plan-review or any other review skill on it, and do not treat "
-    "your own response as \"presenting a plan.\" Use the Task tool immediately "
-    'to dispatch exactly one "{agent_type}" subagent with this instruction: '
-    "\"Classify the sentence 'Please find attached the requested documents.' "
-    'as either FORMAL or CASUAL. Reply with only that one word." Wait for its '
-    "reply and report that single word back to me verbatim. Do not classify "
-    "the sentence yourself, and do not do any other work."
+    "As part of gathering context before presenting a plan, use the Task "
+    'tool to dispatch exactly one "{agent_type}" subagent with this '
+    'instruction: "Look at {marker_file} and report whether the code '
+    'appears SOUND or has CONCERNS. Reply with only that one word." Wait '
+    "for its reply and report that single word back to me verbatim. Do not "
+    "look at the file or judge it yourself, and do not do any other work."
 )
 
 
 def build_dispatch_prompt(dispatch: str) -> str:
-    return DISPATCH_PROMPT_TEMPLATE.format(agent_type=_DISPATCH_AGENT_TYPE[dispatch])
+    return DISPATCH_PROMPT_TEMPLATE.format(
+        agent_type=_DISPATCH_AGENT_TYPE[dispatch], marker_file=MARKER_FILE_NAME
+    )
 
 
 @dataclass(frozen=True)
@@ -636,6 +640,10 @@ def execute_matrix_cell(run: MatrixRun, *, budget_cap_usd: float, timeout_s: int
     session_id = str(uuid.uuid4())
     tmp_project = _resolved_temp_project_dir("subagent-model-resolution-")
     try:
+        # A real file for the dispatched agent to look at — the prompt frames
+        # the dispatch as plan-mode research grounded in the repo, so there
+        # must be a repo (however trivial) for that framing to be genuine.
+        (tmp_project / MARKER_FILE_NAME).write_text(MARKER_FILE_CONTENT)
         cmd = build_run_command(run, session_id=session_id, budget_cap_usd=budget_cap_usd)
         lines, timed_out = _run_claude_to_completion(cmd, cwd=tmp_project, timeout_s=timeout_s)
         attempted = run_skill_evals.detect_dispatch_in_lines(lines)
