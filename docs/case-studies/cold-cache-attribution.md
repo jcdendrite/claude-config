@@ -217,26 +217,46 @@ Measured:
 |---|---|---|
 | Turns between consecutive cold events (median) | 1 | 1 |
 | Coefficient of variation | 2.34 | 2.43 |
-| Cold-minutes where >1 session went cold at once | 437 of 526 (83%) | 1,207 of 1,536 (79%) |
 
-A coefficient of variation above 2 is strongly bursty, not periodic. The
-decisive figure is the third row: independent sessions have independent
-conversation growth, so breakpoint churn cannot synchronize them, while
-shared-state mutation invalidates all of them in the same instant.
+A coefficient of variation above 2 is strongly bursty, not periodic, which
+does not fit a mechanism driven by steady conversation growth.
 
-**Shared-state mutation is the mechanism.** Git pulls (measured above at
-5.5–8.4x lift) are one source but account for only ~4% of cold tokens; the
-synchronization evidence implies further sources of the same kind.
+Synchronization was then measured directly, counting **distinct sessions**
+cold per minute against the independence baseline implied by the
+per-session cold rate and the number of sessions active that minute:
 
-### Open question
+| | Minutes with ≥2 sessions active | Observed ≥2 cold | Expected if independent | Lift |
+|---|---|---|---|---|
+| A | 909 | 4.51% | 2.80% | 1.61x |
+| B | 5,793 | 3.85% | 2.26% | 1.70x |
 
-Whether the shared state is machine-local (files under the config
-directory, changing while sessions run) or account-scoped (server-side
-cache eviction affecting one account's sessions together) is not yet
-settled. The discriminating measurement is whether cold-minutes coincide
-*across* two separately-billed accounts on the same machine: coincidence
-implicates machine-local files, independence implicates per-account
-server-side behavior. That test has not been run.
+Across the two separately-billed accounts on the same machine, conditioned
+on minutes where both were active, the lift is weaker still: 1.44x at a
+±0 minute window, 1.28x at ±1, 1.17x at ±2.
+
+**Synchronization is real but weak — 1.6–1.7x within an account.** That is
+far too small to carry the population. A single shared mutation
+invalidating every running session would produce near-total co-occurrence;
+this does not. The mechanism behind the bulk of cold events is therefore
+**not** established, and no shared-state explanation should be inferred
+from these numbers.
+
+Confirmed sources remain confirmed: git pulls invalidate running sessions
+at 5.5–8.4x lift, but carry only ~4% of cold tokens.
+
+### The strongest remaining lead
+
+The median gap between consecutive cold events within a session is **one
+turn** — cold events arrive in runs, not as isolated invalidations. A
+one-off prefix mutation cannot produce that: it would cause a single cold
+turn, after which the new prefix re-caches and subsequent turns are warm.
+
+Runs at a fixed ~25,412-token survivor instead suggest that content sitting
+immediately *after* the first breakpoint changes on many turns, so that
+region never stabilizes into a reusable cache entry. Per-turn-varying
+injected content is the shape that would do this. Identifying what occupies
+that region is the next measurement, and it needs an instrument that can
+see the assembled request — transcripts do not record it.
 
 ## Limits of this result
 
