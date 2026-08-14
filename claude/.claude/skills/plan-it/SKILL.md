@@ -63,7 +63,7 @@ See `plan-it/REFERENCES.md` for a worked example and the full grammar rationale.
 Write the plan with these sections:
 
 1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
-2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block)
+2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block). Lead with the concluded design in one or two plain-language sentences before the assumption ledger — the ledger is supporting detail for diffing against a later revision, not the reader's entry point.
 3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement)
 4. **Verification** — how to test end-to-end
 5. **Out of scope** — only if scope creep was observed

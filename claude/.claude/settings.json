@@ -153,6 +153,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/nudge-worktree-anchor.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-unexpanded-skill-mention.sh"
           }
         ]
       }
