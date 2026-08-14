@@ -2,6 +2,7 @@
 name: Explore
 description: A fast, read-only agent for searching and analyzing codebases — file discovery, code search, and codebase exploration without making changes. Use it to locate symbols, map an unfamiliar area, or grep/glob across many files when the results themselves don't need to stay in the main conversation.
 model: sonnet
+effort: low
 tools: Read, Grep, Glob
 ---
 

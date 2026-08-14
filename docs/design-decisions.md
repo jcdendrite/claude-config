@@ -262,3 +262,14 @@ This reverses PR #593's closure of the "delegation-discipline pilot," which was 
 The other four `machine`-scope rows audited (`.handoff-nudge-disabled`, `.consume-durable-continuity-disabled`, `.commit-stall-block-disabled`, `.session-title-disabled`) are all kill switches — each fails leg 2 — and stay report-only.
 
 This criterion is structural only: it tests the sentinel's state shape and opt-in direction, not the security weight of the capability it gates. `worktree-required` and `autonomous-shipping-required` — two of the three pre-existing `machine-promptable` rows, both security/governance controls — happen to also satisfy both legs, but that is incidental, not evidence the criterion accounts for security impact. A future sentinel that is itself a security control (auth/authz gating, privilege grant) satisfying both legs still needs a separate security-impact discussion before promotion; this criterion alone is necessary but not sufficient for that case.
+
+## 24. Effort-tier routing: two-way clamp accepted, `xhigh` not `max` (2026-08-14)
+
+`effort:` frontmatter overrides the invoking session's effort level in both directions, not only as a floor: a session run at `max` gets a pinned `ciso-reviewer` dispatch clamped down to `xhigh`, the same mechanism that raises a `low`-effort session's dispatch up to `xhigh`. This is accepted deliberately for every reviewer and `code-writer` in the roster — consistent effort per agent matters more than deferring to whatever effort the calling session happens to run at.
+
+`xhigh`, not `max`, is the ceiling for reviewers and `code-writer`. Claude Code's general effort guidance flags `max` as prone to diminishing returns and directs testing before adopting it broadly, rather than banning it outright — `xhigh` is the deliberate starting point this repo hasn't yet measured past, not a permanent prohibition.
+
+### Sources
+
+- Anthropic, *Create custom subagents* — https://code.claude.com/docs/en/sub-agents — first-party documentation; `effort` frontmatter field, "Overrides the session effort level."
+- Anthropic, *Model configuration* — https://code.claude.com/docs/en/model-config — first-party documentation; "Adjust effort level" section, "Choose an effort level" table, `max` guidance ("Test before adopting broadly").

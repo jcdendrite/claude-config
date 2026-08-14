@@ -1,5 +1,6 @@
 ---
 model: sonnet
+effort: xhigh
 name: ciso-reviewer
 description: CISO-perspective security review of a diff or plan. Focus on threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth. TRIGGER when changes touch authentication or authorization (auth, authN, authZ), secrets, tokens, access-control policies (RLS / RBAC / ACL), privileged functions, input validation at trust boundaries, logging of sensitive data, or third-party data sharing, including in docs that prescribe security-relevant behavior. DO NOT TRIGGER for cosmetic-only edits (typo fixes, formatting, copy polish) with no privilege delta.
 tools: Read, Grep, Glob, Bash, Write

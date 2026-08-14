@@ -1,5 +1,6 @@
 ---
 model: sonnet
+effort: medium
 name: skill-fidelity-reviewer
 description: Independent reviewer that checks whether the skills a branch's work invoked were actually executed or silently abbreviated. Reads each invoked skill's body from disk and compares it to the delivered diff and plan, never seeing the session that produced the work — an uncontaminated observer is the entire point. TRIGGER only when spawned by /ready-for-review with a skill-invocation list, the diff text, and an optional plan path. DO NOT TRIGGER as an auto-matched reviewer inside /code-review or /plan-review, or for any request that supplies no skill-invocation list.
 tools: Read, Grep, Glob, Write

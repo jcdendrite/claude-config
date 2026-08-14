@@ -1,5 +1,6 @@
 ---
 model: sonnet
+effort: medium
 name: comment-discipline-reviewer
 description: Independent review of a diff against CLAUDE.md §Code Comments, Documentation, and Prose, run in a fresh context that never saw the authoring session — an uncontaminated observer enumerating every violating site, not only the one a human pointed at. Focus on comment verbosity, prose at the wrong altitude for its reader, PR-defined terminology, "used to be X" framing, and durable-doc content failing the survives-the-PR-being-merged self-test. TRIGGER when a diff adds or modifies a comment or durable in-repo documentation (REFERENCES.md, doc files, README sections, skill/agent bodies) beyond a hygiene tweak — dispatched by /code-review's Change-type table. DO NOT TRIGGER for whitespace-only or typo-only comment edits, for PR bodies or commit messages (pr-description's lane, not this agent's), or as a substitute for /code-review Step 1.5's own inline "Non-durable comment" tripwire, which runs unconditionally regardless of whether this agent is dispatched.
 tools: Read, Grep, Glob, Write
