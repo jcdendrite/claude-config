@@ -102,17 +102,28 @@ _DISPATCH_AGENT_TYPE = {
     DISPATCH_EXPLORE_HAIKU: EXPLORE_HAIKU_OVERRIDE_AGENT_NAME,
 }
 
-# One fixed prompt template across all seven runs (plan M2) — only --model,
+# One fixed prompt template across runs 2-7 (plan M2) — only --model,
 # --permission-mode, and (runs 6-7) the dispatched agent's name vary, so an
 # observed difference can never be confounded with prompt wording. The task
 # is deliberately classification-shaped and cheap: the experiment needs the
-# dispatch to happen, not to produce useful work.
+# dispatch to happen, not to produce useful work. The leading disambiguation
+# sentence exists because, under --permission-mode plan and this repo's own
+# ambient CLAUDE.md (which instructs running /plan-review before presenting
+# a plan), the model can read this instruction as itself being a plan, run a
+# self-referential /plan-review pass on it, and never reach the Task tool
+# call — a dropped trial, not a model-resolution result. Run 1 (the
+# instrument self-check, default mode) doesn't carry the sentence: it isn't
+# one of the four rival-hypothesis discriminating cells, and plan mode is
+# what triggers the confusion in the first place.
 DISPATCH_PROMPT_TEMPLATE = (
-    'Use the Task tool to dispatch exactly one "{agent_type}" subagent with this '
-    "instruction: \"Classify the sentence 'Please find attached the requested "
-    'documents.\' as either FORMAL or CASUAL. Reply with only that one word." '
-    "Wait for its reply and report that single word back to me verbatim. Do not "
-    "classify the sentence yourself, and do not do any other work."
+    "This is a direct execution instruction, not a plan or proposal — do not "
+    "invoke /plan-review or any other review skill on it, and do not treat "
+    "your own response as \"presenting a plan.\" Use the Task tool immediately "
+    'to dispatch exactly one "{agent_type}" subagent with this instruction: '
+    "\"Classify the sentence 'Please find attached the requested documents.' "
+    'as either FORMAL or CASUAL. Reply with only that one word." Wait for its '
+    "reply and report that single word back to me verbatim. Do not classify "
+    "the sentence yourself, and do not do any other work."
 )
 
 
