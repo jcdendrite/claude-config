@@ -3,8 +3,9 @@ name: review-permissions
 description: >
   Security review of permissions.allow rules, bare permissions.deny
   entries, and permissions.defaultMode changes in settings.json.
-  TRIGGER when: any of those three change in .claude/settings.json, or
-  user asks to review permission/allow rules.
+  TRIGGER when: permissions.allow changes, a bare permissions.deny
+  entry is added, or permissions.defaultMode changes, in any
+  .claude/settings.json; or user asks to review permission/allow rules.
   DO NOT TRIGGER when: reviewing hook entries (use claude-hook-review);
   other settings.json fields (env, model, theme); Bash behavior
   unrelated to permissions scoping.
@@ -93,9 +94,8 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
     or require an absolute path.
 
 11. **SSRF via registry/index flags** — Do npm/pip/cargo rules allow
-    `--registry`, `--index-url`, or `--extra-index-url`? These redirect
-    HTTP requests to attacker-controlled servers, leaking IP, auth
-    tokens, and package queries.
+    `--registry`/`--index-url`/`--extra-index-url`? These redirect
+    requests to attacker servers, leaking IP, auth tokens, and package queries.
 
 ### Data exfiltration and secret exposure
 
