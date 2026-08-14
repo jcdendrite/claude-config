@@ -49,9 +49,24 @@ cannot be the basis for a confident client-facing claim:
    repo takes the session's **first** stamp and would get it wrong.
 
 **Intended outcome.** One measured answer, a committed harness that re-derives
-it against any future Claude Code version, a rewritten case study that states
-the answer in one sentence, and a quotable paragraph. Where the measurement
-contradicts the current case study, the case study changes.
+it against any future Claude Code version, and a rewritten case study that
+states the answer in one sentence. The onward paraphrase the engineer quotes to
+clients is delivered in the session reply rather than committed (see M5). Where
+the measurement contradicts the current case study, the case study changes.
+
+**Budget constraint (engineer, this session).** The experiment gets **7 live
+runs** — 5 for the primary question, plus 2 the engineer added to test `Explore`
+specifically. Not the ~100 an earlier draft specified. This is a hard input to
+the design, not a target to approach: the matrix below extracts a full four-way
+discrimination from the first 5, and everything that cannot be bought with the
+7 is dropped to Out of scope rather than trimmed to fit.
+
+**Second question, added by the engineer: should `Explore` be pinned to Haiku
+rather than Sonnet?** This is downstream of the primary question and the plan
+treats it that way — if plan mode ignores the pin, the pin's *value* is
+irrelevant in plan mode and the Haiku change buys nothing there. Runs 6–7
+therefore test whether the pin survives at all *and* whether a Haiku request is
+honored exactly, in one pair of runs. See M9.
 
 ## Approach
 
@@ -70,7 +85,8 @@ discriminating datapoint is n=1. anchors: root
 | G2 | Plan mode is documented as changing *which agent Claude delegates to*, and that agent inherits the main conversation's model | Vendor-published design of a built-in agent — [verified: same page — `Plan`: "A research agent used during plan mode to gather context before presenting a plan"; "**Model**: inherits from the main conversation"; "When you're in plan mode and Claude needs to understand your codebase, it delegates research to the Plan subagent so that exploration output stays in a separate context window while the main conversation remains read-only"] |
 | G3 | The built-in `Explore` also inherits the main conversation's model (capped at Opus on the Claude API), but a user/project `Explore` override "keeps its own `model` field" | Vendor-published; sets the baseline this repo's `Explore.md` override relies on — [verified: same page — "**Model**: inherits from the main conversation, capped at Opus on the Claude API"; "A user or project subagent named `Explore` overrides the built-in and keeps its own `model` field"] |
 | G4 | `permissionMode` is re-stamped throughout a session on a dedicated `permission-mode` record type (plus some `user` records), so per-dispatch attribution is mechanically possible — but only if the reader carries the most recent preceding stamp forward | Harness-written transcript format, outside this repo's control — [verified: direct probe of 150 recent transcripts this session: 7,623 `permission-mode`-type stamps vs 959 on `user` records; 48 of 150 sessions change mode mid-session; median last stamp sits at 98.3% of the way through the session, and 0% of sessions have their last stamp inside the first 5% of records] |
-| G4a | This repo's own hooks and `marker.sh` resolve their write targets through `_lib_config_dir()` — `CLAUDE_CONFIG_DIR` when set and absolute, else `$HOME/.claude` — so a seeded config dir genuinely contains marker, handoff-nudge, and session-id state rather than leaking it into the operator's live tree | Repo-owned rather than beyond reach, but load-bearing for M1a's containment claim and so recorded as checked — [verified: `claude/.claude/hooks/_lib.sh:98-118`, plus `capture-session-id.sh`, `nudge-handoff-near-context-cap.sh`, `session-marker-dashboard.sh`, `set-session-title-from-branch.sh`, and `claude/.claude/scripts/marker.sh`, this session] |
+| G4a | This repo's hooks write session state keyed by PID or session id (`capture-session-id.sh` → `sessions/$CLAUDE_PID`; `nudge-handoff-near-context-cap.sh` → `.handoff-nudge-fired.d/<session_id>` plus a shared append-only log), and `marker.sh` is not exercised by a run that invokes no review skill | Repo-owned rather than beyond reach, but load-bearing for M1a's decision to run against the ambient config dir: it is why seven headless runs cannot clobber a concurrent interactive session's state, and why the only residue is accumulation — [verified: `claude/.claude/hooks/_lib.sh:106-120`, `capture-session-id.sh`, `nudge-handoff-near-context-cap.sh`, `claude/.claude/scripts/marker.sh`, this session] |
+| G3a | Same-named subagent definitions resolve by a documented priority order — managed settings (1), the `--agents` CLI flag (2), project `.claude/agents/` (3), user `~/.claude/agents/` (4), plugin `agents/` (5) — so a definition supplied via `--agents` outranks the stowed user-scoped `Explore.md` that is present in every run | Vendor-published; load-bearing for M9, which would otherwise be measuring whichever definition happened to win — [verified: `code.claude.com/docs/en/sub-agents`, "Choose the subagent scope", read this session — "When multiple subagents share the same name, Claude Code uses the one from the higher-priority location", with the five-row priority table; and `claude --help`, v2.1.228 — `--agents <json>` "JSON object defining custom agents"] |
 | G5 | `--permission-mode plan` and `--model <alias>` are both accepted on a headless `claude -p` run, and a subagent's resolved model is recoverable from `<session>/subagents/agent-<id>.jsonl` (`.message.model` on assistant records), with the *requested* model and agent type in the paired `.meta.json` | Harness-provided CLI and on-disk format — [verified: `claude --help` this session, v2.1.228 — `--permission-mode <mode>` "(choices: 'acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan')" with no print-mode restriction annotation; and direct inspection of this session's own subagent sidecars: `{"agentType":"general-purpose",...,"spawnDepth":1,"model":"sonnet"}` alongside 36 assistant records all reading `claude-sonnet-5`] |
 | G6 | The engineer's current client-facing statement is "in plan mode, subagents are pinned to the parent," and they are not confident in it | Stated directly this session — [engineer-verified] |
 
@@ -78,30 +94,35 @@ discriminating datapoint is n=1. anchors: root
 
 All four fit the committed corpus numbers. They differ in one cell.
 
-| | What it claims | Cell 1 (`sonnet` + plan) | Cell 3 (`opus` + plan, Sonnet-pinned agent) | Which agent ran (M3) |
+| | What it claims | Run 2 (`sonnet` + plan) | Run 4 (`opus` + plan, Sonnet-pinned agent) | Which agent ran (M3) |
 |---|---|---|---|---|
 | **H-OPUS** | Plan mode overrides resolution steps 1–3 and forces Opus, independent of parent. *The committed case study's claim.* | **Opus** | Opus | requested |
 | **H-INHERIT** | Plan mode collapses resolution to step 4 (main conversation's model), bypassing param and frontmatter. *The engineer's stated understanding.* | **Sonnet** | **Opus** | requested |
 | **H-SUBSTITUTE** | Plan mode changes nothing about resolution; it routes research to the built-in `Plan` agent, which has no `model:` field and so falls through to step 4 exactly as documented (G1+G2). | **Sonnet** | **Opus** | **built-in `Plan`** |
 | **H-ARTIFACT** | Plan mode does nothing to model choice. The corpus signal is the `opusplan` confound plus mode mis-attribution (G4) and/or the mid-corpus `Explore` change. | **Sonnet** | **Sonnet** | requested |
 
-Cell 1 separates H-OPUS from the rest; cell 3 separates H-ARTIFACT from
+Run 2 separates H-OPUS from the rest; run 4 separates H-ARTIFACT from
 H-INHERIT/H-SUBSTITUTE. **No model outcome separates H-INHERIT from
 H-SUBSTITUTE** — they predict identical models in every cell. The sole
 discriminator is M3's agent-identity read, which is therefore load-bearing on
-every plan-mode cell rather than an extra on the decisive one.
+every plan-mode run rather than an extra on the decisive one. This is also why
+so few runs suffice: the four hypotheses disagree in only two places, and the
+third signal is parsed from transcripts those same runs already produce.
 
 H-SUBSTITUTE deserves emphasis: it is the only hypothesis that requires **no
 undocumented behavior at all**, and G1+G2 together predict it. The case study
 currently asserts H-OPUS — the reading that requires the most undocumented
 machinery — on the strength of one datapoint.
 
-**Scope precondition for H-SUBSTITUTE.** G2's sentence describes Claude
-*autonomously deciding* to research the codebase. It does **not** say a
-prompt-directed dispatch to a named agent is rerouted. If substitution applies
-only to self-initiated exploration, a matrix built entirely from explicit named
-dispatches cannot test H-SUBSTITUTE at all, and no number of repetitions would
-help. Cell 0 resolves this before the rest of the matrix runs.
+**Scope note on H-SUBSTITUTE.** G2's sentence describes Claude *autonomously
+deciding* to research the codebase; it does not say a prompt-directed dispatch
+to a named agent is rerouted. Within the 5-run budget this plan measures the
+**named-dispatch** case only — which is the case that matters here, because the
+engineer's pipeline dispatches named agents (`Explore`, `staff-*`) rather than
+relying on autonomous exploration. M3's agent-identity read on runs 2–7 answers
+"was the named dispatch rerouted to `Plan`?" directly and at no extra run cost.
+Whether *autonomous* exploration behaves differently is a separate question,
+deferred to Out of scope.
 
 ### Mechanisms
 
@@ -121,99 +142,153 @@ help. Cell 0 resolves this before the rest of the matrix runs.
   Harness output goes to a **gitignored** path under `evals/` or to stdout,
   never a working file a later `git add -A` could sweep into a public repo.
   anchors: row G5
-- **M1a — Run the whole matrix under a dedicated, seeded `CLAUDE_CONFIG_DIR`,
-  not the operator's ambient one.** Seed it from the repo's committed
-  `claude/.claude/` tree so `Explore.md`'s pin and the session-default model are
-  the *reviewed* ones rather than whatever is stowed at run time. One change
-  resolves three otherwise-separate problems, which is why it is a mechanism and
-  not three patches: **(i) reproducibility** — a rerun cannot silently differ
-  because the operator's personal `~/.claude` drifted, which matters because the
-  stated outcome is re-derivation against future versions, and cell 7's premise
-  otherwise rests on whichever `Explore.md` happens to be stowed;
-  **(ii) containment** — the ~100 sessions' transcript directories land in a
-  disposable tree instead of accumulating in the real corpus, and the runs'
-  `SessionStart`/`UserPromptSubmit` hooks stop mutating the engineer's live
-  marker and handoff-nudge state, which is shared with concurrent interactive
-  sessions; **(iii) account scoping** — this machine runs several Claude Code
-  accounts under distinct config dirs, so an ambient-inherited value could
-  attribute runs to the wrong account. Record `claude --version` and the config
-  dir in the harness's own output. The seeded dir lives in a **temp location
-  outside the repo** — never inside the working tree, so no credential material
-  can reach a commit. anchors: row G5
-- **M1b — Authenticate the seeded config dir explicitly, and verify it before
-  the matrix runs.** Seeding from `claude/.claude/` alone produces an
-  *unauthenticated* dir: `.claude.json` (which carries the account/auth
-  segment), `settings.local.json`, and `plugins/` are all gitignored and
-  therefore absent from the committed tree — [verified: `git check-ignore`
-  against `.gitignore:20,104-112,122`, this session's platform review]. Left
-  unhandled, `claude -p` against that dir either fails auth outright or falls
-  back to the ambient `$HOME` — and the silent fallback is the worse outcome,
-  because it defeats containment goal (iii) at exactly the point M1a claims to
-  fix it, while appearing to work. Two parts:
-  1. **Setup step:** copy the operator's active `.claude.json` into the seeded
-     dir with a plain file copy. Never read its contents — this repo's own rule
-     forbids pulling credential files into a session transcript, and `cp` moves
-     the bytes without doing so.
-  2. **Precondition check, not an assumption:** before any cell runs, execute one
-     throwaway `claude -p` against the seeded dir and assert from its transcript
-     that the session landed *in the seeded dir* rather than in the ambient one.
-     A silent ambient fallback must fail loudly here rather than quietly
-     invalidating every cell and polluting the real corpus.
+- **M1a — Record the ambient environment; do not try to replace it.** The
+  harness records `claude --version`, the effective `CLAUDE_CONFIG_DIR`, the
+  `model:` frontmatter it read for the dispatched agent, and
+  **`CLAUDE_CODE_SUBAGENT_MODEL` (set/unset, plus its value)** — and **aborts
+  before run 1 if that variable is set.** It sits at resolution step 1 of G1,
+  above both the per-dispatch param and the frontmatter pin, so an ambient value
+  would override every other step in all seven runs and make the four
+  hypotheses indistinguishable — with nothing in the output to show it happened.
+  Recording it is not enough on its own: discovering it afterwards means seven
+  wasted runs against a hard budget, so this is a precondition that fails loudly,
+  not a field on a report. **Reproducibility is scoped to "same CLI flags, same
+  frontmatter, same subagent-model env" — not "same environment."** Recording
+  `CLAUDE_CONFIG_DIR` captures a *path*, and that path's gitignored
+  `settings.local.json` and `plugins/` mutate independently of any commit, so a
+  future re-run against the same path is not guaranteed the same effective
+  settings. The write-up must claim the narrower thing.
 
-  The three `enabledPlugins` entries (`skill-management`, `claude-hook-review`,
-  `plugin-semver`) are also absent from a seeded dir. Confirm before running —
-  do not assume — that none of the matrix's dispatches (`staff-backend-engineer`,
-  `Explore`, and the no-named-agent prompts) invoke them; if any does, the cell
-  is measuring a different environment than the one being reasoned about.
+  **Why not a dedicated config dir.** An earlier draft ran the matrix under one
+  seeded from the committed `claude/.claude/` tree; at this scale that is an
+  over-powered primitive and it is dropped. Its three justifications do not
+  survive the smaller budget: **containment** was about ~100 sessions polluting
+  the corpus and live marker state, and seven transcript directories are noise;
+  **account scoping** is handled by recording which config dir was active rather
+  than controlling it; and **reproducibility** mattered most for the
+  `Explore`-pin cell, which M9 now covers by writing a project-scoped definition
+  into its own temp project instead. Dropping it also removes the auth problem it
+  created — the committed tree has no `.claude.json`, `settings.local.json`, or
+  `plugins/` (all gitignored — [verified: `git check-ignore` against
+  `.gitignore:20,104-112,122`, this session]), so a seeded dir would have had to
+  be hand-authenticated and then *proven* not to have silently fallen back to
+  the ambient `$HOME`. Recording beats controlling here: one line of output
+  instead of a setup step, a credential copy, and a fail-loud fallback check.
+
+  **Accepted residue, stated rather than left looking like an oversight.**
+  Running against the ambient config dir means the seven runs leave two traces
+  in the engineer's live `~/.claude/`: a `sessions/<pid>` entry each, and
+  possibly a `.handoff-nudge-fired.d/<session_id>` marker. Neither collides with
+  a concurrent interactive session — every such write is keyed by PID or session
+  id (G4a) — but `claude -p` one-shot runs never fire `SessionEnd`, so these are
+  not self-cleaning. Seven entries is accepted noise, not worth a cleanup step;
+  recorded here so a later reader knows it was weighed rather than missed.
+  `marker.sh` is never exercised at all, since the harness invokes no review
+  skill. anchors: rows G5, G4a
+- **M2 — Run seven sessions.** All seven use one **fixed prompt template**,
+  varying only `--model`, `--permission-mode`, and (for runs 6–7) the agent
+  dispatched, so an observed difference cannot be confounded with prompt
+  wording. Runs 1–5 dispatch
+  `staff-backend-engineer` (frontmatter `model: sonnet`, no per-dispatch param)
+  with a cheap classification-shaped task — the experiment needs the dispatch to
+  *happen*, not to produce useful work. Carry forward the reuse source's
+  per-subprocess wall-clock timeout (`run_skill_evals.py`'s `SAMPLE_TIMEOUT_S`
+  pattern); headless `-p` without a TTY can hang on an approval prompt, and run
+  1 exercises `default` mode with a real dispatch. Run 1 first — if it fails,
+  the other six are uninterpretable and no budget should be spent on them.
   anchors: row G5
-- **M2 — Run the matrix.** Cell 0 first; it gates whether cells 7 and 9 are
-  meaningful. Every cell uses a **single fixed prompt template**, varying only
-  the named agent, so an observed difference cannot be confounded with prompt
-  wording. Carry forward the reuse source's per-subprocess wall-clock timeout
-  (`run_skill_evals.py`'s `SAMPLE_TIMEOUT_S` pattern) — headless `-p` without a
-  TTY can hang on an approval prompt, and cells 2/4/6 exercise `default` mode
-  with a real dispatch. anchors: row G5
 
-  | # | `--model` | `--permission-mode` | Dispatch | Reps | Isolates |
-  |---|---|---|---|---|---|
-  | 0 | `opusplan` | `plan` | Explicit `staff-backend-engineer`, **and** separately a prompt giving only "understand this codebase" with no named agent | 5 each | **Pre-flight.** Whether an explicit named dispatch is ever rerouted to `Plan`, or substitution applies only to autonomous exploration. Determines whether H-SUBSTITUTE is testable by named dispatch at all. Branching in the table below |
-  | 1 | `sonnet` | `plan` | `staff-backend-engineer`, no `model` param | **30** | **Decisive.** Opus ⇒ H-OPUS; Sonnet ⇒ every other hypothesis |
-  | 2 | `sonnet` | `default` | same | 5 | Baseline for cell 1 |
-  | 3 | `opus` | `plan` | same | **30** | **Decisive.** Separates H-ARTIFACT from H-INHERIT/H-SUBSTITUTE |
-  | 4 | `opus` | `default` | same | 5 | Instrument self-check; controlled replication of the prior pass's 178/178 |
-  | 5 | `opusplan` | `plan` | same | 5 | Environment sanity — confirms `opusplan` resolves as documented and reproduces the corpus's dominant condition. Not hypothesis-discriminating |
-  | 6 | `opusplan` | `default` | same | 5 | Environment sanity — `opusplan`'s execution-phase half |
-  | 7 | `opus` | `plan` | `Explore` (repo override pins `sonnet`) | 5 | Whether G3's "keeps its own `model` field" survives plan mode. Reads cleanly only under cell 0's "0 of 5" branch — if `Explore` is itself rerouted to `Plan`, the pin was never consulted and "the pin failed" is the wrong reading |
-  | 8 | `opusplan` | `plan` | `staff-backend-engineer` **with** explicit `model: sonnet` param | 5 | Resolution step 2 under plan mode; the prior pass's 0/70 claim. Same cell-0 caveat as cell 7 |
-  | 9 | `opus` | `plan` | No named agent — "understand this codebase" only | 5 | The condition G2 literally describes. Interpretation set by cell 0's branch, per the table below |
+  | Run | `--model` | `--permission-mode` | Purpose |
+  |---|---|---|---|
+  | 1 | `opus` | `default` | **Instrument self-check, and it must run first.** Parent Opus, pin Sonnet, no plan mode ⇒ must return **Sonnet**. If it returns Opus the harness is reading the parent rather than the subagent, and runs 2–7 are void. Also a controlled replication of the prior pass's 178/178 |
+  | 2 | `sonnet` | `plan` | **Decisive A.** Opus ⇒ H-OPUS; Sonnet ⇒ every other hypothesis |
+  | 3 | `sonnet` | `plan` | Repeat of run 2 |
+  | 4 | `opus` | `plan` | **Decisive B.** Sonnet ⇒ H-ARTIFACT; Opus ⇒ H-INHERIT or H-SUBSTITUTE |
+  | 5 | `opus` | `plan` | Repeat of run 4 |
+  | 6 | `opus` | `plan` | **`Explore` pin test** — dispatches `Explore` against a `model: haiku` definition supplied via `--agents`, instead of `staff-backend-engineer`. See M9 |
+  | 7 | `opus` | `plan` | Repeat of run 6 |
 
-  **Cell 0 branching — decide this before any other cell is read.** Count how
-  many of the 5 explicit-`staff-backend-engineer` reps ran as the built-in
-  `Plan` rather than the requested agent (M3's read):
+  **How so few runs still discriminate all four hypotheses.** Runs 2 and 4 are
+  the only two cells the four hypotheses disagree on (see the table above), and
+  M3's agent-identity read — which costs no extra sessions because it is parsed
+  from the same transcripts — separates the one pair those two cells cannot
+  (H-INHERIT vs H-SUBSTITUTE). Run 1 is not discriminating but is not optional:
+  without it, a broken instrument produces four confident readings of nothing.
+  Runs 6–7 answer the engineer's separate `Explore`/Haiku question (M9) and take
+  no part in the four-way discrimination. The `opusplan` sanity cells, the
+  explicit-param cell, and the autonomous-delegation cell all answered
+  *secondary* questions and are deferred to Out of scope rather than squeezed in
+  at n=1.
 
-  | Cell 0 result | What it means | Action |
-  |---|---|---|
-  | **0 of 5 rerouted** | Explicit named dispatch is not subject to substitution; H-SUBSTITUTE is unreachable by named dispatch | Cells 1/3/7/8 read as designed, and their agent-identity column is expected to be constant. **Cell 9 becomes the only test of H-SUBSTITUTE** and must be read against cell 0's own no-named-agent arm |
-  | **5 of 5 rerouted** | Explicit named dispatch *is* rerouted; substitution is live everywhere | H-SUBSTITUTE is in play for every named-dispatch cell, and M3's agent-identity column — not the model column — carries the discrimination in cells 1/3/7/8 |
-  | **1–4 of 5 rerouted** | Rerouting is probabilistic, not a rule | No cell may be read as a clean binary. Every downstream cell must report the agent-identity split alongside the model split, and the write-up states a **rate**, not a mechanism. Do not average the two populations together — a cell mixing rerouted and non-rerouted dispatches is two experiments, not one |
+  **What two repeats buy, and what they do not.** Runs 3 and 5 exist to catch an
+  unlucky draw on the two observations everything else rests on — the corpus
+  showed off-rates around 3% and 0.3%, so a single decisive run could in
+  principle land on an exception and invert the conclusion. Two agreeing runs
+  make that much less likely. They do **not** support any rate claim: at n=2 the
+  detectable floor is nowhere near those percentages. **The write-up may say
+  "2 of 2 runs" and must not say "always," "deterministic," or any percentage
+  derived from these runs.** It may cite the prior pass's 178/178 alongside them
+  **only if the corpus cross-check in Verification confirms that figure survives
+  corrected per-dispatch mode attribution** — that number is precisely what the
+  cross-check exists to re-derive, and citing it unconditioned would re-import
+  the suspect evidence this experiment was built to replace. If runs 2 and 3
+  disagree — or 4 and 5, or 6 and 7 — the honest result is "behavior is not
+  deterministic and seven runs cannot characterize it," which is a finding to
+  report, not a failure to paper over by picking the majority.
 
-  Cell 0 runs at n=5, the same floor the plan applies to every other
-  non-decisive cell, rather than a lower ad hoc count — a gate that decides how
-  three other cells are interpreted should not rest on weaker evidence than the
-  cells it gates.
+  Report **attempted vs. observed** dispatches for every run. A run where the
+  requested dispatch never happened is a dropped trial, not a silent omission,
+  and at n=2 losing one is half the evidence — re-run it rather than reporting
+  1 of 1.
+- **M9 — Runs 6–7: does `Explore`'s override survive plan mode, and is a Haiku
+  request honored exactly?** Dispatch `Explore` in an `opus` + `plan` session
+  against a **project-scoped** `Explore.md` the harness writes into its own temp
+  project, carrying `model: haiku`. Three points, in order of importance:
 
-  **On repetition counts.** n=5 is ample for *hypothesis selection*, because the
-  hypotheses predict opposite outcomes — roughly 100 percentage points apart,
-  not a subtle effect. n=5 is **not** sufficient to characterize the residual
-  off-rate the corpus showed (92/95 ≈ 3%, 340/341 ≈ 0.3%): a clean 5/5 is fully
-  consistent with a real 3% deviation rate. Cells 1 and 3 therefore run n=30,
-  which at 80% power detects rates down to roughly 5%. **This bounds the claim
-  the write-up may make:** a clean sweep at n=30 licenses "no exceptions in 30
-  trials, ruling out deviation rates above ~5%" — it does **not** license
-  "always" or "deterministic," and M4 must not state either. Report **attempted
-  vs. observed** dispatches per cell; a rep where the requested dispatch never
-  happened is a dropped trial, and silently excluding it would inflate apparent
-  determinism.
+  1. **Why Haiku rather than the current Sonnet pin — it is a strictly sharper
+     instrument, not just the config under consideration.** With the parent on
+     Opus and the pin on Haiku, three outcomes are distinguishable: **Haiku** ⇒
+     the pin is honored exactly; **Sonnet** ⇒ the pin is consulted but
+     substituted upward, which would be *undocumented* — G3 documents a **cap**
+     at Opus, not a floor at Sonnet, so a Haiku request landing on Sonnet is a
+     finding in its own right; **Opus** ⇒ the pin is ignored, or `Explore` was
+     replaced by `Plan`, separated by M3. A Sonnet pin against an Opus parent
+     collapses the first two of those into one observation and would answer the
+     engineer's actual question only by inference.
+  2. **Supply the override via the `--agents` CLI flag, and do not edit the
+     committed `claude/.claude/agents/Explore.md`.** That file is stowed to every
+     consumer of this repo; a measurement must not mutate shipped config. The
+     flag sits at priority 2 in the documented scope order, above both project
+     (3) and the stowed user-scope definition (4) — and the stowed `model: sonnet`
+     `Explore.md` **is present in all seven runs**, because M1a runs against the
+     ambient config dir. Without an override that provably outranks it, a Sonnet
+     reading in runs 6–7 would be ambiguous between "Haiku request substituted
+     upward" and "the user-scoped Sonnet definition simply won" — two
+     explanations producing identical model output *and* identical agent
+     identity, which M3 cannot separate. `--agents` removes that fourth outcome
+     by construction rather than leaving it to be reasoned about afterwards.
+     anchors: row G3a
+  3. **The pin's value only matters if the pin survives.** If runs 2–5 show the
+     frontmatter pin losing effect in plan mode — whether because it is
+     overridden on the requested agent (H-INHERIT) or because `Explore` is
+     replaced by `Plan` and the pin is never consulted at all (H-SUBSTITUTE) —
+     then switching `Explore` to Haiku buys **nothing for plan-mode dispatches**.
+     Since the prior corpus pass put roughly three-quarters of `Explore`
+     dispatches inside plan mode, that would gut most of the expected saving.
+     M9's result must be read against runs 2–5 before any pin change is
+     proposed, and the write-up must say so rather than presenting Haiku as an
+     unconditional cost lever. If runs 2/3 or 4/5 disagree, the primary question
+     is unresolved and M9 cannot be interpreted either — report both as open
+     rather than reading M9 against a coin flip. anchors: row G3
+  4. **M9 is hypothesis-generating for the pin decision, not authorization for
+     it.** Two runs are enough to select among mechanisms that differ by ~100
+     percentage points; they are not enough to justify changing a default that
+     ships to every stow consumer of this public repo. A pin change is a separate
+     decision with its own validation, and it also has to be squared with this
+     repo's own Model Routing rule ("Haiku: narrow, deterministic skills only.
+     Never for code authoring or judgment") — `Explore` decides what is relevant
+     and what to report back, which is judgment feeding the planning step. Not
+     resolved here; named so the decision is made deliberately. anchors: row G3
 - **M3 — Record which agent actually ran, not just which was requested.** This
   is the sole discriminator between H-INHERIT and H-SUBSTITUTE, and neither the
   committed `subagent-mix` subcommand nor the prior pass's ad-hoc script
@@ -258,11 +333,11 @@ help. Cell 0 resolves this before the rest of the matrix runs.
 
 ### Outcome → consequence decision table
 
-Which files change, and what the claim becomes, is fully determined by two
-cells and one observation — none of which requires waiting for the data to work
-out. Only the counts get filled in from M2.
+Which files change, and what the claim becomes, is fully determined by two runs
+and one observation — none of which requires waiting for the data to work out.
+Only the counts get filled in from M2.
 
-| Reading | Cell 1 (`sonnet`+plan) | Cell 3 (`opus`+plan) | M3: which agent ran | Headline sentence | Engineer's clause (i) "pinned to the parent" | Engineer's clause (ii) "not documented" | Files to change |
+| Reading | Run 2 (`sonnet`+plan) | Run 4 (`opus`+plan) | M3: which agent ran | Headline sentence | Engineer's clause (i) "pinned to the parent" | Engineer's clause (ii) "not documented" | Files to change |
 |---|---|---|---|---|---|---|---|
 | **H-OPUS** | Opus | Opus | requested | Plan mode forces subagents to Opus regardless of the parent's model or any pin. | **Wrong** — the target is Opus specifically, not the parent | **Correct** | Case study sharpened only; PR #631's corrections stand as written |
 | **H-INHERIT** | Sonnet | Opus | requested | In plan mode, subagent model resolution collapses to the main conversation's model; the per-dispatch param and the frontmatter pin are both ignored. | **Correct** | **Half wrong** — `Plan`'s inheritance is documented; a named agent's pin losing effect is not | Case study rewritten; `docs/auto-mode.md` "forces Opus" → "collapses to the parent's model"; `CLAUDE.md`, `subagent-delegation`, `Explore.md`, `agent-review` re-scoped |
@@ -280,17 +355,25 @@ able to state that; do not force a deterministic reading onto a mixed result.
   `pytest claude/.claude/ plugins/` (`.github/workflows/tests.yml`), so `evals/`
   is never a collection target; `pyproject.toml`'s `pythonpath` entry governs
   import resolution only. anchors: row G5
-- **M8 — Estimate the cost before running M2, using this repo's own tooling**
-  (`transcript-analysis.py cost`, `docs/cost-levers-considered.md`), and state
-  the figure in the PR. Pass `--max-budget-usd` on each subprocess as a guard —
-  [verified: `claude --help`, v2.1.228 this session — "Maximum dollar amount to
-  spend on API"; it bounds a single session, so the aggregate across ~100
-  sessions is the figure that must be stated, not the per-run cap].
-  ~100 headless sessions, many Opus-anchored, is not a free operation, and the
-  stated outcome is re-running it against future versions — so the cost recurs
-  rather than being one-time. Pin each dispatched agent's task to a cheap
-  classification-shaped probe: the experiment needs the dispatch to *happen*,
-  not to produce useful work. anchors: row G5
+- **M8 — Cap each run's spend and report the actual total.** Pass
+  `--max-budget-usd` on each of the seven subprocesses — [verified:
+  `claude --help`, v2.1.228 this session — "Maximum dollar amount to spend on
+  API"; it bounds a *single* session, so seven runs need seven caps and the
+  aggregate is the number to report]. At this scale the pre-run estimate an
+  earlier draft required is disproportionate — the per-run cap bounds the worst
+  case by construction, which is what the estimate was for. Report the actual
+  total from `transcript-analysis.py cost` afterwards so the PR carries a real
+  figure, not a projection.
+
+  **Derive the cap; do not pick a round number.** Before run 1, take a
+  representative `staff-backend-engineer` dispatch's actual cost from the
+  existing corpus via `transcript-analysis.py cost` and set the cap at roughly
+  10× it, recording both the derived per-dispatch figure and the multiplier in
+  the harness. The headroom is the point: a cap set near the expected cost
+  truncates a run mid-flight, and the runs it would truncate are the decisive
+  ones that repeat only twice — converting a spend guardrail into exactly the
+  dropped-trial failure M2 already guards against. A truncated run is re-run,
+  never reported as a result. anchors: row G5
 
 **No heavier mechanism adopted.** Two lighter primitives were considered
 before committing a new harness, per the over-powered-primitive check:
@@ -325,6 +408,17 @@ condition must be *created*, not found.
   drives the effect, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` becomes a
   *testable mitigation* rather than the dead end the current case study records
   (`:32`).
+- **M3's discriminator may never observe a true positive.** H-SUBSTITUTE's row
+  predicts an agent-identity read of `Plan` for a *named* dispatch, but G2
+  documents substitution only for Claude's autonomous exploration. If named
+  dispatches are never rerouted — plausible, and left open by this plan's own
+  scope note — M3 reads "requested" in all seven runs, the experiment never
+  produces a real substitution record, and the `agent-substituted-to-Plan`
+  fixture stays synthetic and never validated against a genuine one. That does
+  not invalidate the result, but it changes its strength: **if H-SUBSTITUTE is
+  selected, the write-up must say whether it was confirmed by an observed
+  substitution or only by elimination from the model pattern.** Those are not
+  the same claim and must not be reported as one.
 
 ## Critical files
 
@@ -344,14 +438,14 @@ condition must be *created*, not found.
   agent-ran-as-requested, agent-substituted-to-`Plan`, missing sidecar, missing
   `.message.model`, and a mixed-model dispatch. **It lives beside the harness,
   not in `claude/.claude/tests/`** — see the note below.
-- `.github/workflows/tests.yml` — add this one test file by explicit path to the
-  two `pytest claude/.claude/ plugins/` invocations (lines 160, 166) and the
-  `ruff check` invocation (line 170), alongside the harness module itself.
-  Explicit paths, not a blanket `evals/` target: broadening collection to the
-  whole directory would sweep in `run_skill_evals.py`, which `evals/README.md`
-  documents as never-CI. Also check the change-gating regexes above those steps
-  (~lines 111–130) — the pytest steps are skipped unless a hook-relevant path
-  changed, so a PR touching only `evals/` would otherwise skip its own tests.
+- **No `.github/workflows/tests.yml` change.** An earlier draft wired this test
+  into CI by explicit path, which also meant touching the change-gating regexes
+  that decide when the pytest steps run at all. That is disproportionate for a
+  parser behind a manually-run, rarely-changed script: the wiring is more
+  delicate than the thing it guards, and `evals/`'s sibling harness is already
+  documented as never-CI. The test runs from the local command in Verification.
+  Recorded as a deliberate gap, not an oversight — if this harness later grows
+  enough to rot unnoticed, wiring it in is the follow-up.
 - `docs/case-studies/plan-mode-model-resolution.md` — rewrite per M4/M5.
   Currently 34 lines; the prior pass's numbers become a dated prior section.
 - `docs/case-studies.md` — line 13, the index summary (M4).
@@ -376,25 +470,32 @@ on CI-collection grounds before the stow-distribution consequence was weighed.)
 
 ## Verification
 
-- **Structural self-check on every plan-mode cell, before reading any outcome.**
-  Cells 2 and 4 are both `default` mode and so cannot catch a plan-mode-only
-  parsing failure — if substitution changes the sidecar shape or breaks the
-  `toolUseId` join, the `default`-mode outcome checks below pass while every
-  measured cell is silently misread. A bare not-null assertion is **not enough**:
-  a field-mapping bug that picks up a stale or sibling value yields something
-  non-null and passes, which is the same silent misattribution the check exists
-  to prevent. So the check must corroborate, not merely find:
-  1. Pin cell 4's known-good `default`-mode record as a **schema fixture**, and
-     validate every plan-mode record against it — a shape divergence then
-     surfaces as a schema mismatch rather than as a plausible value.
+- **Outcome self-check, run 1, before spending budget on runs 2–7:** `opus` +
+  `default` with a Sonnet-pinned agent must return **Sonnet**. If it returns
+  Opus, the harness is reading the parent rather than the subagent and every
+  other run is void — stop and fix the instrument.
+- **Structural self-check on runs 2–7, before reading any outcome.** Run 1 is
+  `default` mode and so cannot catch a plan-mode-only parsing failure — if
+  substitution changes the sidecar shape or breaks the `toolUseId` join, run 1's
+  outcome check passes while every measured run is silently misread. A bare
+  not-null assertion is **not enough**: a field-mapping bug that picks up a
+  stale or sibling value yields something non-null and passes, which is the same
+  silent misattribution the check exists to prevent. So it must corroborate, not
+  merely find:
+  1. Pin run 1's known-good `default`-mode record as a **schema fixture** and
+     validate every plan-mode record against it — a shape divergence surfaces as
+     a schema mismatch rather than as a plausible value. **Scope the fixture to
+     the fields the outcome parser and M3 actually read** (`.message.model`, the
+     `tool_use` entries, `agentType`), not a whole-record diff: it is built from
+     a single run, so a full-record schema would encode whatever that one
+     classification-shaped task happened to emit — flagging legitimate
+     plan-mode-only shape variation as corruption and burning re-run budget,
+     while still missing a field that run 1 never produced.
   2. Cross-validate the parsed agent identity against the **observed toolset**
      (M3's discriminator, applied redundantly). Two independent signals
-     disagreeing is a parser defect and voids the cell; agreeing is corroboration
-     no single field read can give.
-- **Outcome self-check before trusting any cell:** cell 2 (`sonnet` +
-  `default`, Sonnet-pinned agent) must return Sonnet, and cell 4 (`opus` +
-  `default`) must return Sonnet. If cell 4 returns Opus, the instrument is
-  reading the parent rather than the subagent and every other cell is void.
+     disagreeing is a parser defect and voids the run; agreeing is corroboration
+     no single field read can give. At n=2 a voided run must be re-run, not
+     dropped.
 - **Corpus cross-check:** re-derive the prior pass's headline numbers with
   *correct per-dispatch* `permissionMode` attribution (carry the most recent
   preceding stamp forward, per G4). Agreement strengthens the prior pass;
@@ -425,6 +526,29 @@ on CI-collection grounds before the stow-distribution consequence was weighed.)
   corpus cross-check could have contaminated. `/ready-for-review` before handoff.
 
 ## Out of scope
+
+**Dropped to fit the 5-run budget.** Each answers a real question and each is a
+clean follow-up once the primary question is settled; none is a prerequisite for
+it. Listed rather than silently cut, so the write-up can say what it did not
+measure:
+
+- **Whether an explicit per-dispatch `model: sonnet` param is honored in plan
+  mode** (resolution step 2; the prior pass's 0/70 claim).
+- **Whether autonomous exploration behaves differently from a named dispatch** —
+  the condition G2 literally describes, and the only form in which H-SUBSTITUTE
+  is vendor-documented. This plan measures named dispatch only. Because of that,
+  the write-up must disclose if M3 never observed a genuine substitution and
+  H-SUBSTITUTE was selected only by elimination (see the fifth validity threat).
+- **Whether a `user`-scoped `Explore` override behaves as the `--agents`-supplied
+  one M9 tests.** M9 supplies the definition via the CLI flag to avoid mutating
+  shipped config and to outrank the stowed file (G3a); the engineer's real setup
+  is user-scoped via stow. The scope order is documented, but whether plan mode
+  treats a scope-4 definition identically to a scope-2 one is not — so a result
+  showing the pin honored does not by itself prove the *stowed* pin would be.
+- **`opusplan` environment-sanity runs**, confirming the alias resolves Opus
+  while planning and Sonnet during execution.
+- **Any rate or off-rate characterization.** Five runs cannot support one; the
+  corpus's ~3% and ~0.3% figures stay attributed to the prior pass.
 
 - **Reopening the `opusplan` session default.** The measurement may sharpen the
   cost argument for flipping it, but the flip collides with
