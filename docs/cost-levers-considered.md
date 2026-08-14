@@ -90,3 +90,29 @@ dispatches with an Opus-anchored parent still honored their pin) — see
 Verdict unchanged: the `opusplan`-flip complications this row recorded are
 unaffected by this finding; reopening the flip is a separate decision, not
 made here.
+
+**2026-08-14 follow-up:** `plan-mode-workflow-discipline.md` reopened this
+flip and landed it — resolving the question the note above left open. The
+falsification test cited there does more than confirm the pin holds outside
+plan mode: it removes this row's own cost-lever rationale for the flip,
+since the flip changes nothing about plan-mode-honored `model:` pins — the
+override that breaks them is gated on `permissionMode`, not on any model
+setting. `plan-mode-workflow-discipline.md` ships the flip instead as a
+coherence fix: once agent-initiated planning is kept out of harness plan
+mode entirely (that plan's actual fix, via an advisory `CLAUDE.md` bullet
+and an `EnterPlanMode` deny rule), `opusplan`'s Opus half is reachable only
+through a path the agent no longer takes, so the default no longer needs to
+advertise it. Next person proposing this flip as a cost win: the rationale
+above is refuted, not merely stale — reuse the coherence framing instead.
+
+The "11 sites across 5 files" figure above is also superseded — that count
+was taken during an earlier PR's editing process rather than measured
+against a stable point-in-time state.
+`plan-mode-workflow-discipline.md`'s own count, run against the tree it
+modified, found five files carrying a live "opusplan is the default"
+assertion in editable prose (README.md, `claude-auto.sh`, `settings.json`,
+`docs/auto-mode.md`, `docs/scripts.md`), plus four further hits in Axis-3
+preserved records left untouched. The commit-gate collision this row
+recorded is still real and still resolved the same way (the engineer
+commits the one-line flip manually) — only the cost-lever framing and the
+"separate decision" status change.

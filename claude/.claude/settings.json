@@ -61,7 +61,8 @@
       "Bash(yum install *)",
       "Bash(dnf install *)",
       "Bash(apk add *)",
-      "Bash(zypper install *)"
+      "Bash(zypper install *)",
+      "EnterPlanMode"
     ]
   },
   "model": "opusplan",

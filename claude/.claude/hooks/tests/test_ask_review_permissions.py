@@ -7,6 +7,7 @@ from helpers import (
     bash_input,
     edit_input,
     run_hook,
+    run_hook_reason,
     write_input,
 )
 
@@ -39,3 +40,13 @@ class TestAskReviewPermissions:
 
     def test_bash_tool_allowed(self):
         assert run_hook(REVIEW_PERMS_HOOK, bash_input("cat /some/project/.claude/settings.json")) == "allow"
+
+    def test_ask_reason_names_deny_and_default_mode(self):
+        """Pins the ask-reason wording — it must name both permissions.deny
+        and permissions.defaultMode, not just permissions.allow."""
+        reason = run_hook_reason(
+            REVIEW_PERMS_HOOK, edit_input("/some/project/.claude/settings.json")
+        )
+        assert reason is not None
+        assert "permissions.deny" in reason
+        assert "permissions.defaultMode" in reason

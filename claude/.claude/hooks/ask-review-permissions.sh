@@ -24,4 +24,4 @@ if ! printf '%s\n' "$FILE_PATH" | grep -qE '\.claude/settings[^/]*\.json$'; then
   exit 0
 fi
 
-echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Edit to .claude/settings.json. If this changes permissions.allow rules, run the /review-permissions skill first. Approve if unrelated (model, hooks, statusLine, enabledPlugins, etc)."}}'
+echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Edit to .claude/settings.json. If this changes permissions.allow, adds a bare tool name to permissions.deny, or changes permissions.defaultMode, run the /review-permissions skill first. Approve if unrelated (model, hooks, statusLine, enabledPlugins, etc)."}}'

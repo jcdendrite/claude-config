@@ -1,10 +1,10 @@
 ---
 name: review-permissions
 description: >
-  Security review of permissions.allow rules in settings.json.
-  TRIGGER when: permissions.allow rules added/modified in any
-  .claude/settings.json, or user asks to review permission/allow
-  rules.
+  Security review of permissions.allow rules, bare permissions.deny
+  entries, and permissions.defaultMode changes in settings.json.
+  TRIGGER when: any of those three change in .claude/settings.json, or
+  user asks to review permission/allow rules.
   DO NOT TRIGGER when: reviewing hook entries (use claude-hook-review);
   other settings.json fields (env, model, theme); Bash behavior
   unrelated to permissions scoping.
@@ -60,9 +60,9 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
    than `cat`? Check whether rules are sensitive to path prefixes.
 
 6. **Symlink and path traversal** — Do path-scoped rules account for
-   symlinks and `../` traversal? A symlink inside the project directory
-   can point anywhere on the filesystem. `Write(./src/*)` is bypassed
-   if `./src/evil -> /etc/passwd`. Same risk applies to `Read`, `Edit`.
+   symlinks and `../` traversal? A symlink in the project directory can
+   point anywhere on disk (`Write(./src/*)` bypassed by
+   `./src/evil -> /etc/passwd`) — same risk for `Read`, `Edit`.
 
 7. **Special filesystem paths** — Do rules allow reads/writes to
    `/dev/` (e.g., `/dev/tcp/host/port` for network exfiltration),
@@ -84,14 +84,13 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
 
 9. **Subcommand specificity** — For multi-subcommand tools (git, docker,
    kubectl, npm, cargo), does the rule include the subcommand?
-   `Bash(git:*)` matches `git push --force`, `git remote add evil`,
-   and `git config --global`. `Bash(git status:*)` is vastly safer.
-   Flag rules that glob on the binary name without a subcommand.
+   `Bash(git:*)` matches `git push --force` and `git remote add evil` —
+   `Bash(git status:*)` is safer. Flag rules globbing the binary name.
 
 10. **PATH-resolved commands** — Does the rule name an unqualified binary
-    (no leading `/`, `~/`, or `./`)? A project prepending `./bin/` or
-    `./node_modules/.bin/` silently wins. Flag bare-name entries; require
-    justification (binary is OS-provided and unshadowable) or an absolute-path rule.
+    (no `/`, `~/`, or `./` prefix)? `./bin/` or `./node_modules/.bin/`
+    silently wins — flag bare names unless OS-provided and unshadowable,
+    or require an absolute path.
 
 11. **SSRF via registry/index flags** — Do npm/pip/cargo rules allow
     `--registry`, `--index-url`, or `--extra-index-url`? These redirect
@@ -124,8 +123,7 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
 
 ### Code execution
 
-15. **Project code execution** — Do rules allow commands that execute
-    project-controlled code?
+15. **Project code execution** — Do rules allow commands that execute project-controlled code?
     - Test runners (`jest`, `vitest`, `pytest`, `go test`, etc.)
       execute config files, setup scripts, and test code
     - Build tools (`make`, `cargo build`, `go build`, `npm run build`)
@@ -136,9 +134,8 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
     justification.
 
 16. **Arbitrary binary execution** — Do rules allow running any binary
-    with certain flags (e.g., `Bash(*:--version)`)? A malicious binary
-    in `$PATH` ignores `--version` and runs its payload. Prefer
-    explicit binary names.
+    with certain flags (e.g., `Bash(*:--version)`)? A malicious binary in
+    `$PATH` ignores `--version` and runs its payload — prefer explicit names.
 
 ### AI manipulation
 
@@ -165,15 +162,13 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
 ### Scope
 
 19. **Global vs project scope** — Are the rules in a global
-    `~/.claude/settings.json` or a project `.claude/settings.json`?
-    Global rules apply across all projects and should be maximally
-    restrictive. Project-level rules can be more permissive because
-    the risk context is known.
+    `~/.claude/settings.json` or project `.claude/settings.json`? Global
+    rules apply everywhere and should be maximally restrictive;
+    project-level can be more permissive since the risk context is known.
 
-20. **Blanket allows** — Are there unscoped rules like `"Bash"` (allows
-    all bash commands) or `"Edit"` (allows all file edits)? These
-    defeat the permission system entirely. Flag and recommend scoped
-    alternatives.
+20. **Blanket allows** — Are there unscoped rules like `"Bash"` (all bash
+    commands) or `"Edit"` (all file edits)? These defeat the permission
+    system entirely — flag and recommend scoped alternatives.
 
 ### Non-Bash tool permissions
 
@@ -186,6 +181,12 @@ assume `Bash(cmd:*)` matches the entire command string, not just arguments.
     `Read(~/.ssh/*)`, `Read(.env)`, `Read(/proc/*/environ)` expose
     credentials. Same concern as checklist item 12 but for the Read
     tool.
+
+23. **Bare-deny removal and `defaultMode` reopening** — A bare
+    `permissions.deny` entry shows no reason; pair it with prose (e.g.
+    `CLAUDE.md`) naming the alternative. Flag a `permissions.defaultMode`
+    change selecting a restricted mode (e.g. `"plan"`) — no tool call
+    needed, so it can reopen a closed entry path.
 
 ## Output format
 

@@ -21,9 +21,10 @@ repo adds on top, see the [README](../README.md#auto-mode).
   5, Opus 4.7+, or Fable 5 qualify. Auto mode also anchors the session to one
   model for its entire lifetime — there's no plan-mode-to-execution switch the
   way `opusplan` provides, so `opusplan` itself isn't a valid session model for
-  it. This repo ships `opusplan` as the default; the `claude-auto` wrapper
-  described below starts auto mode on a concrete, eligible model instead —
-  Sonnet unless you name another.
+  it. This repo ships `sonnet` as the default, which already satisfies that
+  requirement; the `claude-auto` wrapper described below is still useful for
+  starting auto mode on a different model in one step, or if you've set
+  `opusplan` as your own default.
 - **Claude Code:** a recent release — check `claude --version` against the
   [permission modes reference](https://code.claude.com/docs/en/permission-modes).
 
@@ -40,7 +41,9 @@ claude-auto "summarize the open PRs"  # positional prompt passes through
 ```
 
 The wrapper resolves the mismatch between `opusplan` (a plan-mode/execution
-model pair) and auto mode's requirement for one concrete session model. It
+model pair) and auto mode's requirement for one concrete session model —
+relevant if you've set `opusplan` as your own default; this repo's shipped
+default, `sonnet`, already satisfies auto mode's requirement directly. It
 takes the same `--model` flag as `claude` and passes it through untouched. With
 no `--model`, it uses `ANTHROPIC_MODEL` if that is set, and `sonnet` otherwise
 — the alias resolves to the latest Sonnet, which auto mode accepts on every
@@ -77,6 +80,7 @@ close gaps the classifier's default block list doesn't cover:
 | `Read(**/.env)`, `Read(**/.env.local)`, `Read(**/.env.local.*)`, `Read(**/.env.production)`, `Read(**/.env.production.*)`, `Read(**/.env.development)`, `Read(**/.env.development.*)`, `Read(**/.env.staging)`, `Read(**/.env.staging.*)`, `Read(**/.env.test)`, `Read(**/.env.test.*)` | Local secret reads — hard floors on the well-known secret-bearing variants; the classifier won't flag in-working-directory reads as exfiltration |
 | `Read(**/credentials.json)`, `Read(**/.credentials.json)` | Cloud provider credential files (AWS CLI, GCP service accounts, etc.) |
 | `Bash(brew install *)`, `Bash(brew tap *)`, `Bash(brew reinstall *)`, `Bash(gem install *)`, `Bash(cargo install *)`, `Bash(go install *)`, `Bash(gh extension install *)`, `Bash(mas install *)`, `Bash(pipx install *)`, `Bash(apt-get install *)`, `Bash(apt install *)`, `Bash(yum install *)`, `Bash(dnf install *)`, `Bash(apk add *)`, `Bash(zypper install *)` | Package installs with no restore-command collision — a bare literal is always an install, never a routine dependency restore. The `curl \| bash` classifier rule this complements is a *soft* block that user intent can clear; these rules cannot be cleared regardless of what the conversation says |
+| `EnterPlanMode` | Agent-initiated plan mode entry — plan mode escalates all downstream subagent dispatches to Opus regardless of `model:` pins (see "Subagent delegation under plan mode" below). A human's `Shift+Tab`, `/plan` prefix, and `defaultMode` entry paths are untouched — this is the repo's first bare tool-name deny entry, which removes the tool from the session rather than blocking a call pattern |
 
 The `deny-env-reads.sh` PreToolUse hook covers `.env.*` variants not listed
 above. It allows the three conventional non-secret template suffixes
@@ -196,10 +200,10 @@ just correlated with it — `Explore`: 92/95 plan-mode dispatches resolved to
 Opus (97%) despite its pin; `staff-*`/`ciso-reviewer`: 340/341 (99.7%);
 across 500 plan-mode dispatches overall, 489 resolved to Opus including all
 70 that carried an explicit `model: sonnet` param. A falsification test
-ruled out the obvious confound (this repo's `opusplan` default makes plan
-mode and an Opus-anchored parent nearly synonymous) by isolating 178
-non-plan-mode dispatches from Opus-anchored parents: 178/178 still resolved
-to Sonnet, matching the pin. See
+ruled out the obvious confound — that, at measurement time, this repo's
+`opusplan` default made plan mode and an Opus-anchored parent nearly
+synonymous — by isolating 178 non-plan-mode dispatches from Opus-anchored
+parents: 178/178 still resolved to Sonnet, matching the pin. See
 [`case-studies/plan-mode-model-resolution.md`](case-studies/plan-mode-model-resolution.md)
 for the full investigation, primary-source citations, and rejected
 mitigations (`ExitPlanMode` timing, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS`).
