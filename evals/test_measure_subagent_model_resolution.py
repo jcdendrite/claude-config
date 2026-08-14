@@ -515,6 +515,35 @@ class TestBuildRunCommand:
         assert cmd[cmd.index("--max-budget-usd") + 1] == "7.25"
 
 
+class TestBuildDispatchPrompt:
+    """Guards against the dispatcher voluntarily passing an explicit `model`
+    param that overrides the --agents-supplied haiku pin on the explore-haiku
+    dispatch shape (runs 6-7)."""
+
+    def test_staff_backend_engineer_prompt_has_no_model_param_clause(self) -> None:
+        prompt = msmr.build_dispatch_prompt(msmr.DISPATCH_STAFF_BACKEND_ENGINEER)
+        assert "model parameter" not in prompt
+
+    def test_staff_backend_engineer_prompt_substitutes_marker_file(self) -> None:
+        prompt = msmr.build_dispatch_prompt(msmr.DISPATCH_STAFF_BACKEND_ENGINEER)
+        assert msmr.MARKER_FILE_NAME in prompt
+
+    def test_explore_haiku_prompt_forbids_explicit_model_param(self) -> None:
+        prompt = msmr.build_dispatch_prompt(msmr.DISPATCH_EXPLORE_HAIKU)
+        assert msmr.DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX in prompt
+
+    def test_explore_haiku_prompt_extends_shared_template(self) -> None:
+        explore_prompt = msmr.build_dispatch_prompt(msmr.DISPATCH_EXPLORE_HAIKU)
+        expected = (
+            msmr.DISPATCH_PROMPT_TEMPLATE.format(
+                agent_type=msmr.EXPLORE_HAIKU_OVERRIDE_AGENT_NAME,
+                marker_file=msmr.MARKER_FILE_NAME,
+            )
+            + msmr.DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX
+        )
+        assert explore_prompt == expected
+
+
 class TestRunMatrix:
     def test_seven_runs_numbered_one_through_seven(self) -> None:
         assert [r.number for r in msmr.RUN_MATRIX] == list(range(1, 8))

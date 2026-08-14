@@ -102,9 +102,9 @@ _DISPATCH_AGENT_TYPE = {
     DISPATCH_EXPLORE_HAIKU: EXPLORE_HAIKU_OVERRIDE_AGENT_NAME,
 }
 
-# One fixed prompt template across runs 2-7 (plan M2) — only --model,
-# --permission-mode, and (runs 6-7) the dispatched agent's name vary, so an
-# observed difference can never be confounded with prompt wording.
+# One fixed prompt template across runs 2-5 (plan M2) — only --model and
+# --permission-mode vary, so an observed difference can never be confounded
+# with prompt wording.
 #
 # Plan mode's own system prompt states its read-only restriction supersedes
 # any instruction embedded in the user's own prompt — no prompt wording can
@@ -128,11 +128,25 @@ DISPATCH_PROMPT_TEMPLATE = (
     "look at the file or judge it yourself, and do not do any other work."
 )
 
+# Runs 6-7 (the Explore/Haiku --agents pin test) append one line diverging
+# from the runs-2-5 template above: the dispatcher can spontaneously pass an
+# explicit model param sourced from ambient CLAUDE.md's Explore-pinning
+# instruction, which loads regardless of the harness's temp-project cwd and
+# always overrides an --agents-supplied frontmatter pin — this line forbids
+# that so the run measures whether the pin survives plan mode unforced.
+DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX = (
+    " Do not pass an explicit model parameter on the Task call — dispatch "
+    "the agent by name only."
+)
+
 
 def build_dispatch_prompt(dispatch: str) -> str:
-    return DISPATCH_PROMPT_TEMPLATE.format(
+    prompt = DISPATCH_PROMPT_TEMPLATE.format(
         agent_type=_DISPATCH_AGENT_TYPE[dispatch], marker_file=MARKER_FILE_NAME
     )
+    if dispatch == DISPATCH_EXPLORE_HAIKU:
+        prompt += DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX
+    return prompt
 
 
 @dataclass(frozen=True)
