@@ -1780,6 +1780,17 @@ def _n_cited_reviewer_dispatches(
     return records
 
 
+class TestIsReviewerSubagentType:
+    def test_recognizes_prefix_and_all_exact_names(self):
+        """staff- prefix, plus each of the three exact-name reviewers sharing
+        _REVIEWER_EXACT_NAMES with review-trace's own detection."""
+        assert _mod._is_reviewer_subagent_type("staff-backend-engineer")
+        assert _mod._is_reviewer_subagent_type("ciso-reviewer")
+        assert _mod._is_reviewer_subagent_type("comment-discipline-reviewer")
+        assert _mod._is_reviewer_subagent_type("skill-fidelity-reviewer")
+        assert not _mod._is_reviewer_subagent_type("general-purpose")
+
+
 class TestReviewerYield:
     def test_no_concerns_verdict_adjacent_to_bold_markers_classified_zero_finding(self, fake_projects, capsys):
         """`\\b` word-boundary anchors match identically next to whitespace or
@@ -4106,6 +4117,24 @@ class TestReviewTrace:
         # Exactly one reviewer-spawn event (event lines start with "  [").
         reviewer_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "reviewer" in ln]
         assert len(reviewer_lines) == 1
+
+    def test_reviewer_spawn_detected_comment_discipline_and_skill_fidelity(self, fake_projects, capsys):
+        """comment-discipline-reviewer and skill-fidelity-reviewer are exact-name
+        reviewer-spawn matches, not just the staff- prefix or ciso-reviewer."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[
+                      _agent_use("a1", "comment-discipline-reviewer"),
+                      _agent_use("a2", "skill-fidelity-reviewer"),
+                  ]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "comment-discipline-reviewer" in out
+        assert "skill-fidelity-reviewer" in out
+        reviewer_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "reviewer" in ln]
+        assert len(reviewer_lines) == 2
 
     def test_sidechain_skill_invocation_excluded(self, fake_projects, capsys):
         """A code-review Skill call inside a sidechain record must not appear as a skill event."""

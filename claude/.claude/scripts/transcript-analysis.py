@@ -1284,9 +1284,15 @@ AUDIT_JUDGMENT_SKILLS: frozenset[str] = frozenset({
     "agent-review", "security-review", "respond-pr", "ultrareview", "plan-it",
 })
 
-# Reviewer-agent subagent_type prefixes/names counted in review-trace.
+# Reviewer-agent subagent_type prefixes/names counted in review-trace and
+# reviewer-yield. Exact-name reviewers don't share the staff- prefix:
+# ciso-reviewer and comment-discipline-reviewer are Change-type-table
+# dispatch targets; skill-fidelity-reviewer is spawned only by
+# ready-for-review and carries no Item-ownership row of its own.
 _REVIEWER_PREFIX = "staff-"
-_REVIEWER_EXACT = "ciso-reviewer"
+_REVIEWER_EXACT_NAMES: frozenset[str] = frozenset(
+    {"ciso-reviewer", "comment-discipline-reviewer", "skill-fidelity-reviewer"}
+)
 
 # Shared bound for every hook-name/label capture below (detection and
 # extraction alike): a name-shaped character class (word chars, spaces, '.',
@@ -1821,7 +1827,7 @@ def _review_trace_session_events(
                     })
                 elif block_name in ("Agent", "Task"):
                     stype = (block.get("input") or {}).get("subagent_type") or ""
-                    if not (stype.startswith(_REVIEWER_PREFIX) or stype == _REVIEWER_EXACT):
+                    if not (stype.startswith(_REVIEWER_PREFIX) or stype in _REVIEWER_EXACT_NAMES):
                         continue
                     events.append({
                         "kind": "reviewer-spawn",
@@ -3218,11 +3224,6 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         print(f"\n  ({total_meta_read_errors:,} meta.json files failed to parse, excluded)")
 
 
-# Reviewer-agent subagent_type additionally counted by reviewer-yield (not
-# review-trace's _REVIEWER_PREFIX/_REVIEWER_EXACT): skill-fidelity-reviewer
-# doesn't match either, but is one of #558's own reviewer-agent table entries.
-_REVIEWER_YIELD_EXTRA_EXACT = "skill-fidelity-reviewer"
-
 # Reviewer verdict-text patterns for reviewer-yield's dispatch-outcome join.
 # Loosened from each reviewer agent's documented `**No X concerns**` /
 # `Found <N> issues.` / `**Approve with concerns**` / `**Request changes**`
@@ -3661,11 +3662,11 @@ def _normalize_cited_path(candidate: str, cwd: str) -> str | None:
 
 
 def _is_reviewer_subagent_type(stype: str) -> bool:
-    """True for a subagent_type in reviewer-yield's reviewer-agent set
-    (review-trace's _REVIEWER_PREFIX/_REVIEWER_EXACT plus
-    skill-fidelity-reviewer), used by the dispatch-classification loop to
-    decide which Agent/Task tool_use blocks to aggregate."""
-    return stype.startswith(_REVIEWER_PREFIX) or stype in (_REVIEWER_EXACT, _REVIEWER_YIELD_EXTRA_EXACT)
+    """True for a subagent_type in the shared reviewer-agent set
+    (_REVIEWER_PREFIX/_REVIEWER_EXACT_NAMES), used by the
+    dispatch-classification loop to decide which Agent/Task tool_use blocks
+    to aggregate."""
+    return stype.startswith(_REVIEWER_PREFIX) or stype in _REVIEWER_EXACT_NAMES
 
 
 def _code_write_target_path(tool_input: dict) -> str | None:
@@ -3905,8 +3906,8 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     """Per-reviewer-agent-type dispatch-to-verdict yield, plus cited-path edit overlap.
 
     Joins each main-thread reviewer-agent dispatch (Agent/Task tool_use with
-    subagent_type in the reviewer set — review-trace's _REVIEWER_PREFIX/
-    _REVIEWER_EXACT plus skill-fidelity-reviewer) to its own subagent
+    subagent_type in the reviewer set — _REVIEWER_PREFIX/_REVIEWER_EXACT_NAMES)
+    to its own subagent
     transcript via subagents/<id>.meta.json's toolUseId field, then
     classifies that transcript's last assistant text block as findings-found,
     zero-finding, or unclassified. A dispatch with no matching meta.json is

@@ -86,40 +86,24 @@ Unskippable — markdown, skill, and config diffs benefit from the same pass.
 
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
-Check that skills this branch invoked were executed, not silently abbreviated —
-run by an independent observer so a rationalization in the working session can't
-wave the deviation through. List what the branch invoked:
+Check that skills this branch invoked were executed, not silently abbreviated — an independent observer, so a rationalization in the working session can't wave the deviation through. List invocations and the reviewer-spawn timeline:
 
 ```bash
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 python3 ~/.claude/scripts/transcript-analysis.py skill-invocation \
   --branches "$BRANCH" --include-subagents
+python3 ~/.claude/scripts/transcript-analysis.py review-trace \
+  --this-repo --branches "$BRANCH"
 ```
 
-Omit `--projects` — its repo-scoped default is the minimization control keeping
-other projects' skill names out of the output; passing one here is a bug.
+`skill-invocation` defaults to this repo (omit `--projects`); `review-trace` defaults machine-wide, so `--this-repo` is required — branch names aren't unique across repos, and omitting it leaks another repo's same-named branch in as false spawn evidence.
 
-- Empty list → state no skills were invoked on this branch and continue (an
-  affirmative no-op, not a silent skip).
-- Otherwise, before dispatch, add `agent-reviews/` to `$(git rev-parse
-  --git-path info/exclude)` idempotently (grep-check before appending). Spawn
-  `skill-fidelity-reviewer` **synchronously** with: the list; the literal diff
-  **output** step 3's `git diff` already produced (paste that output — never
-  the command that produced it, and never a range expression: the agent has
-  no `Bash` to resolve either); the plan path if one exists; and
-  `findings_path: agent-reviews/skill-fidelity-reviewer-<epoch>-<slug>.md`
-  (same convention as `/code-review`). `Read` the findings file after it
-  returns.
+- Empty list → state no skills were invoked on this branch and continue (an affirmative no-op, not a silent skip).
+- Otherwise, before dispatch, add `agent-reviews/` to `$(git rev-parse --git-path info/exclude)` idempotently (grep-check before appending). Spawn `skill-fidelity-reviewer` **synchronously** with: the list; the literal diff **output** step 3's `git diff` already produced (paste that output — never the command that produced it, and never a range expression: the agent has no `Bash` to resolve either); the plan path if one exists; the `review-trace` output; and `findings_path: agent-reviews/skill-fidelity-reviewer-<epoch>-<slug>.md` (same convention as `/code-review`). `Read` the findings file after it returns.
 
-Name the pipeline's own skills **out of scope** in the prompt (the agent body
-also excludes them) — `code-review`, `plan-review`, `ready-for-review`,
-`skill-review`, `agent-review`, plus this run's still-executing invocations —
-else the reviewer audits the gate running it.
+Name the pipeline's own skills **out of scope** in the prompt (the agent body also excludes them) — `code-review`, `plan-review`, `ready-for-review`, `skill-review`, `agent-review`, plus still-executing invocations — else the reviewer audits the gate running it. Exception: `code-review`'s Ripple effect triage spawn-dispatch obligation, checked only against the `review-trace` timeline, never `code-review`'s own reasoning.
 
-**Halt on a silent-abbreviation finding.** The escape hatch is stating the
-deviation with a rationale — a low bar. Fix findings in a new commit (normal
-staged-diff `/code-review` + marker gate), then return to step 2; don't re-run
-this step on its own output.
+**Halt on a silent-abbreviation finding.** The escape hatch is stating the deviation with a rationale — a low bar. Fix findings in a new commit (normal staged-diff `/code-review` + marker gate), then return to step 2; don't re-run this step on its own output.
 
 ## 5. PR description (unconditional; warn + fix)
 

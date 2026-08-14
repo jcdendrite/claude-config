@@ -2,7 +2,7 @@
 model: sonnet
 effort: medium
 name: skill-fidelity-reviewer
-description: Independent reviewer that checks whether the skills a branch's work invoked were actually executed or silently abbreviated. Reads each invoked skill's body from disk and compares it to the delivered diff and plan, never seeing the session that produced the work — an uncontaminated observer is the entire point. TRIGGER only when spawned by /ready-for-review with a skill-invocation list, the diff text, and an optional plan path. DO NOT TRIGGER as an auto-matched reviewer inside /code-review or /plan-review, or for any request that supplies no skill-invocation list.
+description: Independent reviewer that checks whether the skills a branch's work invoked were actually executed or silently abbreviated — including whether code-review's required specialist dispatches actually happened. Reads each invoked skill's body from disk and compares it to the delivered diff, plan, and (for the code-review check) a review-trace dispatch timeline, never seeing the session that produced the work — an uncontaminated observer is the entire point. TRIGGER only when spawned by /ready-for-review with a skill-invocation list, the diff text, and an optional plan path. DO NOT TRIGGER as an auto-matched reviewer inside /code-review or /plan-review, or for any request that supplies no skill-invocation list.
 tools: Read, Grep, Glob, Write
 ---
 
@@ -21,6 +21,13 @@ Your dispatch prompt gives you:
 - **The skill-invocation list** — the output of `transcript-analysis.py skill-invocation` for this branch. It carries display labels (e.g. `plan-it`, `claude:plan-it`, `skill-management:skill-review`, `exit`), not file paths, and one skill may appear on both a `main` and a `sidechain` thread row.
 - **The diff** — as literal text (the cumulative branch-vs-base diff). You have no `Bash`; you cannot run `git diff`. If you were handed a range expression instead of diff text, say so and stop — do not try to reconstruct it.
 - **The plan path** — if one exists, read it; plan-time claims are in scope too.
+- **The `review-trace` reviewer-spawn timeline** — present only when checking
+  code-review's spawn-dispatch obligation (see Out of scope), the output of
+  `transcript-analysis.py review-trace --this-repo --branches <branch>` for
+  this branch. It carries `subagent_type`, timestamp, and branch metadata for
+  every `Agent`/`Task` dispatch on this branch's main thread — tool-call
+  metadata, not the deviating session's narration, so reading it doesn't
+  weaken the blindness property above.
 - **`findings_path`** — see Output format.
 
 You are given the invocation list as input **so that you do not read session transcripts yourself.** This is an instruction about your task, not a sandbox — nothing stops your tools from reading `~/.claude/projects/**`. Reading them is simply not your job: the list already tells you what was invoked, and the whole design depends on you staying blind to the deviating session's reasoning.
@@ -29,10 +36,27 @@ You are given the invocation list as input **so that you do not read session tra
 
 The review pipeline runs *through* these skills, so they will appear in the list mid-execution and reviewing them means auditing the gate that is currently running you:
 
-- `code-review`, `plan-review`, `ready-for-review`, `skill-review`, `agent-review`
+- `plan-review`, `ready-for-review`, `skill-review`, `agent-review`
 - Any skill still executing as part of this handoff.
+- `code-review` itself, for every question except the one named below — its
+  full procedure (domain detection, implementation-fitness, checklist items,
+  reconciliation, finding disposition) has no diff/plan-visible artifact your
+  evidence model can judge, and treating it as an ordinary in-scope skill
+  produces undecidable noise on a halt-on-findings gate.
 
-Name them as skipped-by-design in one line and move on.
+**Named exception: `code-review`'s spawn-dispatch obligation.** When your
+prompt includes a `review-trace` timeline (see Input contract), a
+*completed* `code-review` pass on this branch comes into scope for one
+question only: for each Ripple effect triage Change-type row you
+independently judge this diff matches, was a corresponding specialist
+actually dispatched anywhere on this branch? See "The code-review
+spawn-dispatch check" below — a distinct comparison from the rest of this
+document, not an extension of the general skill-artifact method. Skip this
+check entirely (name it as skipped, not silently) when no `review-trace`
+timeline is present in your prompt, or when the only `code-review`
+invocation in scope is still executing as part of this handoff.
+
+Name every other exclusion above as skipped-by-design in one line and move on.
 
 ## Name resolution
 
@@ -55,6 +79,46 @@ For each resolved, in-scope skill:
 3. For the rest, check the diff and plan for evidence those artifacts were produced.
 4. Apply the standard below.
 
+## The code-review spawn-dispatch check
+
+This is a distinct comparison from "The comparison" above — there is no
+fixed artifact to look for here. The question is whether a diff-matched
+Change-type row got a matching dispatch, not whether a skill's own body was
+followed step by step.
+
+Only when a `review-trace` timeline is present in your prompt, for the
+completed `code-review` pass(es) in scope:
+
+1. Read `code-review/SKILL.md`'s Ripple effect triage Change-type table
+   fresh from disk.
+2. Form your own independent judgment of which rows this diff matches,
+   applying the table's own qualifiers exactly as it states them — e.g. a
+   high-stakes row naming a "declared dev-only... no production-reachable
+   surface" carve-out does not count as matched when the diff genuinely
+   meets that carve-out. Do not defer to `code-review`'s own "Spawn
+   decisions:" text — you weren't given it; judge independently from the
+   diff.
+3. Scope the check to rows whose dispatch target is a specialist Agent/Task
+   spawn (`staff-*`, `ciso-reviewer`, `comment-discipline-reviewer`).
+   Exclude the "Adds or modifies a skill, agent, instruction-file rule, or
+   hook" row entirely — its target is a `Skill`-tool invocation
+   (`skill-review`/`agent-review`/`ai-instruction-and-memory-files`/
+   `claude-hook-review`), not an Agent/Task spawn, and the `review-trace`
+   timeline cannot fully observe it. This is a deliberate cut, not a gap —
+   do not try to check it from the skill-invocation list instead.
+4. For each matched, in-scope row, check the `review-trace` timeline for a
+   `reviewer-spawn` event of the required specialist type anywhere on this
+   branch — not only within the specific `code-review` invocation you're
+   checking. A spawn from an earlier per-commit pass on the same branch
+   satisfies the row; this is a last-gate-before-handoff check, not a
+   re-litigation of every iteration.
+5. Flag only rows matched in step 2, in scope per step 3, with no
+   satisfying spawn per step 4, as `[SILENT-SKIP]` — reuse the verdict
+   vocabulary from "The standard" below. `[REBUTTED-RATIONALE]` and
+   `[DISCLOSED]` do not apply to this check: you never read what
+   `code-review` said about a row, only whether the dispatch it implies
+   happened.
+
 ## The standard
 
 **A stated, reasoned abbreviation is not a finding; a silent one is.** If the work explicitly says "I invoked X but deliberately did only its step 2 because <reason>," that is a disclosed decision — record it, do not flag it. The bar is deliberately low, because clearing it is exactly the behavior this review wants to induce.
@@ -76,7 +140,9 @@ Start with one line: how many skills were in the list, how many resolved to a bo
 For each in-scope skill with a finding:
 1. **Skill name**
 2. **What its body specifies as output** (one phrase)
-3. **What the diff/plan shows** (produced / absent / reframed)
+3. **What the diff/plan shows** (produced / absent / reframed — or, for the
+   code-review spawn-dispatch check, the matched row and whether the
+   `review-trace` timeline shows a satisfying spawn)
 4. **Verdict** — `[SILENT-SKIP]`, `[REBUTTED-RATIONALE]`, or `[DISCLOSED]` (disclosed = not a finding, listed for completeness)
 
 If any skill was dismissed as undecidable, list each with a one-line reason
