@@ -31,6 +31,60 @@ already-guarded top-level key.
 
 ## Approach
 
+### Assumption ledger
+
+```
+Root: two independently-scoped gaps in this repo's cost/config hygiene
+remain unaddressed by token-cost-reduction.md's shipped phases — CLAUDE.md
+gives no explicit guidance on when to reset session context, and
+guard-settings-session-keys.sh's key-matching is bypassable via a nested
+env.* path.
+Givens: which settings.json keys have a documented CLAUDE_CODE_*/
+ANTHROPIC_* env-var equivalent is fixed by Anthropic's own settings.json
+and environment-variables reference docs — beyond reach: this repo
+cannot add or remove which keys the Claude Code CLI itself treats as
+env-overridable; it can only guard the ones vendor docs confirm exist
+today (see Row 4).
+
+Row 1 [mechanism]: dot-split path-traversal restructure of guarded_value
+(reduce-based, presence tracked separately from value) — anchors: root —
+closes the nested env.* bypass while preserving identical behavior for
+existing top-level keys (a single-segment path degenerates to the
+original has()/[] check).
+Row 2 [assumption]: guard-settings-session-keys.sh's guarded_value only
+matches top-level keys today (has($key) on $settings directly)
+[verified: read claude/.claude/hooks/guard-settings-session-keys.sh:107-119
+this session] — anchors: row1
+Row 3 [assumption]: env.CLAUDE_CODE_EFFORT_LEVEL and env.ANTHROPIC_MODEL
+are the two real env-var equivalents worth guarding, not a hypothetical
+pair [verified: docs/hooks.md:25 already documents these as the env-var
+equivalents of the guarded model/effortLevel keys] — anchors: row1
+Row 4 [assumption]: no other guarded top-level key
+(skipAutoPermissionPrompt, skipWorkflowUsageWarning, theme, tui) has a
+documented Claude-Code env-var equivalent that would also need guarding
+in this same pass [verified: Anthropic's settings.md "Settings and
+Environment Variable Equivalents" table and env-vars.md reference,
+checked this session — none of the four have one] — anchors: row1
+Row 5 [assumption]: claude/.claude/hooks/tests/test_guard_settings_session_keys.py
+already exists (473 lines, added by PR #573) — the parent
+token-cost-reduction.md plan's claim that "no test file exists for this
+hook today" is stale [verified: file present at that path this session;
+git log shows PR #573 added it, predating the parent plan] — anchors: row1
+Row 6 [mechanism]: two new Working Style bullets in CLAUDE.md
+(phase-boundary /clear, pre-idle /compact) — anchors: root — gives
+explicit session-hygiene guidance the parent plan's cost analysis
+identifies as the dominant lever (session length / C_bar) but CLAUDE.md
+currently doesn't state.
+Row 7 [assumption]: the "review markers survive across a /clear"
+mechanism is already stated under CLAUDE.md's existing "## Safety"
+section, so restating it in the new Phase 4 bullets would be duplication
+[verified: ai-instruction-and-memory-files review this session flagged
+and trimmed exactly this duplication from an earlier draft] — anchors: row6
+Row 8 [engineer-verified]: bundling Phase 4 and Phase 5a together into
+one PR, in this order, with Phase 5b and Phase 6 deferred — anchors: root
+— the engineer confirmed this ordering and scope explicitly this session.
+```
+
 ### Phase 4 — CLAUDE.md guidance lines
 
 Two bullets under the existing `## Working Style` section, alongside the
@@ -220,3 +274,8 @@ the new cases need — no new test infrastructure.
   bypass path for existing guarded keys; guarding the entire `env`
   block would block legitimate unrelated env-var commits with no
   stated harm to prevent.
+- Redesigning `guard-settings-session-keys.sh`'s overall mechanism (a
+  git-commit gate diffing staged `settings.json` against `main` on a
+  fixed key allowlist). This plan extends the guard's key-matching only;
+  the gate's trigger/diff shape is this repo's existing, working
+  control and unrelated to closing the nested-key bypass.
