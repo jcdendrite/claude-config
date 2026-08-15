@@ -1,405 +1,271 @@
-# Detect rationale restated across sites
+# Detect evidence restated across a plan's mechanisms
 
 ## Context
 
-**Goal:** make this repo's review pipeline catch "the same explanation,
-measurement, or justification written to two or more sites instead of one
-canonical home plus pointers" before a human PR reviewer has to.
+**Goal:** make `/plan-review` catch a plan whose mechanisms each write the
+same measurement, citation, or investigation result into a different file
+without naming one of them as its home — before that shape reaches code.
 
 An error-mode analysis of this repo's 2026-08-02 → 2026-08-14 session corpus
 found 6 instances of the agent defaulting to a heavier, multi-site fix and
-being redirected to a lighter, single-source one — 5 caught live in
-conversation, 1 caught only at PR review. In that one, PR #631, the reviewer
-wrote: *"Wrong solution overall. You added the plan mode caveat all over the
-place. This is compounding engineering."*
+being redirected to a lighter, single-source one. One reached PR review —
+#631, where the reviewer wrote: *"Wrong solution overall. You added the plan
+mode caveat all over the place. This is compounding engineering."*
 
-**What that evidence does and does not support.** Only PR #631 produced a
-shipped diff, so it is the only instance confirmed to match the specific
-shape this check targets — duplicated prose, as distinct from duplicated
-logic or an unrelated over-powered-primitive choice. The other 5 were
+**What that evidence supports.** Only PR #631 produced a shipped diff, so it
+is the only instance confirmed to match this shape. The other 5 were
 conversational corrections with nothing left to inspect; they establish that
-the *family* of defect recurs, not that this check would have fired on any of
-them. The design below is justified on the one confirmed case plus the
-architecture already in place, not on an unexamined count of 6.
+the family of defect recurs, not that this check would have fired on them.
 
-Why now: the rule this violates is already loaded in every session —
-`CLAUDE.md` §Engineering Judgment carries both "Single source of truth" and
-"Compounding defensive layers are a wrong-foundation tell." Availability is
-not the gap; **activation** is. Nothing in the automated pipeline converts
-either rule into an observable a reviewer checks against diff or plan text.
+**Why the plan stage specifically.** The duplication a human caught on #631
+was designed in `.claude/plans/plan-mode-model-routing.md` before any code
+existed: mechanisms M1/M2/M4/M8 each independently instruct adding the claim
+*with its measurement*, and none is designated the home. That same plan
+carries M3 as the author's own counter-example ("cross-reference `CLAUDE.md`,
+don't restate"), so the shape was distinguishable at plan time by the author
+who wrote both.
 
-Intended outcome: four one-line tripwires, one appended to each of the four
-enumerations the pipeline already runs at author and reviewer stations, plus
-one decision record and one presence test guarding them. No new agent, no new
-numbered checklist item.
+The code stage is deliberately left alone. `comment-discipline-reviewer`
+already caught duplication on #631 without any named angle — commit
+`962779fb` records two rounds of it finding restatements the first fix round
+introduced. That mechanism works; this plan does not touch it.
+
+Intended outcome: one foundation tripwire in `plan-review` Step 4, and one
+decision record.
 
 ## Approach
 
-Each of the four stations gets **one line naming an observable** — "the same
-rationale appears at 2+ sites" — appended to a tripwire list that already
-exists there. None of the four restates the CLAUDE.md rule; each points at
-it. The rationale for the whole change lives in exactly one new place,
-`docs/design-decisions.md` §25.
+`plan-review` Step 4 already runs a list of foundation tripwires that fire on
+observable plan text — `Over-powered primitive`, `Compounding layers`,
+`Self-referential findings`, `Misordered observe-then-mutate steps`,
+`Overcorrection`, `Unjustified given`. This adds a seventh in the same shape.
 
-That shape is forced by an on-record rejection. `docs/design-decisions.md`
-§13 (2026-05-22) already considered and rejected the obvious form of this
-change:
+**The firing condition is duplicated evidence with no named home.** Not
+duplicated rule text: a rule may be restated wherever it is needed, which is
+what `docs/design-decisions.md` §4 sanctions so each skill stands alone. Not
+a compressed summary that points at a named home either — that is a
+legitimate altitude difference, and excluding it is load-bearing rather than
+a nicety (see below). What the tripwire catches is a mechanism list where the
+same evidence lands in several files and the plan never says which one owns
+it.
 
-> A `/code-review` checklist item was considered and rejected: it would be a
-> second copy of an always-loaded rule on a surface that can drift from it —
-> the exact failure the rule names.
+**Why this is answerable at plan stage but not at code-review stage.** A
+plan-stage reviewer asks the author to name a home; the author knows their own
+altitudes and can answer. A diff-stage reviewer would have to *infer* whether
+a given restatement is a summary pointing at a deeper home or a genuine
+duplicate — which requires reasoning about document altitude and load paths.
 
-§13's objection is to a checklist item that **restates the principle**. It
-does not reach a tripwire that **names an observable**. That distinction is
-this repo's own established answer to "rule loaded but not applied," settled
-in `.claude/plans/activate-engineering-judgment-at-review-time.md:18`:
+That distinction is what confined this plan to one station. A code-stage
+version was attempted as a sixth review angle in `comment-discipline-reviewer`
+and abandoned after three discriminator drafts, each falsified by a case in
+this repo:
 
-> A tripwire is the detection *procedure* for a principle, not a restatement
-> of it — different knowledge, different home, not a DRY violation.
+- *Duplicated rationale, not instruction* — fires on the `## Reconciliation`
+  block (`code-review/SKILL.md:269-284` and `plan-review/ROUTING.md:53-68`),
+  deliberate duplication of explanatory prose with its own pytest.
+- *Reader reachability* — deciding whether a reader can reach the canonical
+  home means investigating load paths, which is open-ended architecture work.
+  `docs/design-decisions.md` §9 records that this agent "reads a diff and a
+  fixed rule set, no shell needed," and that closed-form property is the
+  stated justification for its `effort: medium` and its omission of `Bash`.
+- *Evidence, not rule text* — fires on commit `962779fb`, the corrective
+  commit it was meant to exonerate: that diff adds `178/178` at three sites,
+  `92/95` at two, each alongside a pointer to the case study it creates as
+  the home. [verified: `git show 962779fb`, this session]. Separating those
+  legitimate summaries from duplicates needs the same altitude judgment the
+  reachability draft was rejected for.
 
-So this plan does not revive the rejected item. It applies the pattern that
-replaced it — the same pattern that produced `code-review`'s existing Step
-1.5 tripwires (`Unverified external-state claim`, `Out-of-scope file edits`,
-`Preserved-record edits`, `Non-durable comment`).
+Three failures of the same kind is the signal that the angle does not fit that
+persona, which is the call `docs/design-decisions.md` §9's decision tree
+exists to make. The plan stage, where the author can simply be asked to name
+the home, does not have the problem.
 
-**The discriminator is reader reachability.** The firing test is: *can the
-reader at this site follow a pointer to the canonical home?* If yes,
-duplication is a defect. If each site's reader loads independently and cannot
-reach the other, the duplication is load-bearing and the tripwire must stay
-silent.
+**Threshold is 2, not 3.** From CLAUDE.md's own wording — "Before writing
+something a second time, pick the canonical home" — rather than inherited
+from `code-review` checklist item 9's code-duplication count of 3.
 
-That test is the operational form of `skill-review` §6's three-condition rule,
-and it classifies both known cases correctly:
-
-- **Fires on PR #631.** The canonical home was `docs/auto-mode.md`, reachable
-  from every site that restated it — `CLAUDE.md` is always loaded, and a doc
-  file is one Read away. Nothing forced those sites to carry the measurement
-  inline.
-
-  *Count, derived from `git show 2001121c` this session:* 8 files touched.
-  `docs/auto-mode.md` is the canonical home and `docs/cost-levers-considered.md`
-  a separate follow-up note. Of the remaining 6, **five restate the measurement
-  digits inline** (`CLAUDE.md`, `agents/Explore.md`,
-  `skills/agent-review/SKILL.md`, `skills/plan-it/SKILL.md`,
-  `skills/plan-review/SKILL.md` — each carrying some combination of the
-  `0/70`, `340/341`, `92/95`, `0/32` figures) and one
-  (`skills/subagent-delegation/SKILL.md`) only points at `CLAUDE.md` without
-  restating them. The inclusion criterion is *restates the measurement*, not
-  *mentions plan mode* — the pointing site is the near-miss that makes the
-  criterion load-bearing rather than cosmetic.
-- **Stays silent on the `## Reconciliation` block**, duplicated near-verbatim
-  between `code-review/SKILL.md:269-284` and `plan-review/ROUTING.md:53-68`
-  and pinned by `claude/.claude/hooks/tests/test_reconciliation_block_consistency.py`.
-  A session running `/code-review` never loads `ROUTING.md` and vice versa, so
-  neither reader can follow a pointer to the other. This is sanctioned,
-  tested, deliberate duplication of *explanatory* prose.
-
-A rationale-vs-instruction split was drafted first and rejected: it fires on
-the `## Reconciliation` block, which is duplicated rationale by design. Any
-formulation keying on *what kind of text* is duplicated hits that case;
-keying on *whether the reader can reach the canonical home* does not. What
-remains true is that rationale is the usual thing over-copied — in PR #631
-every file legitimately needed the *instruction* ("pass `model: sonnet`") and
-only the *justification* was over-copied, which is what the corrective commit
-`962779fb` moved to one home. So rationale-vs-instruction is useful for
-deciding **what to move**, never for deciding **whether to fire**.
-
-**Threshold is 2, not 3.** Taken from CLAUDE.md's own wording — "Before
-writing something a second time, pick the canonical home" — rather than
-inherited from checklist item 9's code-duplication count of 3.
-
-**Alternatives set aside.** A dedicated fresh-context reviewer agent modeled
-on `comment-discipline-reviewer`: rejected as the heavier primitive, and the
-precedent argues against it on its own terms — that agent shipped for comment
-verbosity and the defect recurred within 48 hours on PR #645 (error-mode
-report row #10), so a dedicated agent is not demonstrated to be what makes a
-check stick. Adding an angle to `comment-discipline-reviewer` instead:
-rejected because its charter is explicitly scoped to CLAUDE.md §Code
-Comments, Documentation, and Prose, while this rule lives in §Engineering
-Judgment. A new numbered Hygiene item (9i): rejected per §13 above.
+**Alternatives set aside.** A new dedicated reviewer agent: rejected as the
+heavier primitive, and `comment-discipline-reviewer`'s own history argues
+against it — that agent shipped for comment verbosity and the defect recurred
+within 48 hours on PR #645 (error-mode report row #10). A new numbered
+checklist item or Step 1.5 tripwire in `code-review`: rejected per
+`docs/design-decisions.md` §13, which considered and rejected a `/code-review`
+checklist item for this rule on the grounds that "it would be a second copy of
+an always-loaded rule on a surface that can drift from it — the exact failure
+the rule names." Extending `comment-discipline-reviewer` to run on plan files:
+rejected on angle fit — its "used to be X" angle collides with the ledger's
+mandated dated revision notes, and its one-line-not-a-paragraph angle collides
+with a plan's Approach section being multi-paragraph rationale by design.
 
 ### Assumption ledger
 
-**Root problem:** `CLAUDE.md`'s single-source-of-truth and compounding-layers
-rules are loaded in every session but not converted into anything the review
-pipeline observes, so multi-site rationale duplication reaches human review.
+**Root problem:** nothing in `/plan-review` names duplicated evidence across a
+plan's mechanisms as a defect, so a plan can designate no home for a
+measurement and pass review.
 
 **Givens:**
 
 | # | Given | Reason |
 |---|---|---|
-| G1 | "Same rationale" is not a computable predicate; the check can only ever be a model judgment against an observable | A capability boundary of the runtime, not an artifact any repo owns — semantic equivalence between two prose passages is not decidable by string comparison, so no hook this repo could write would decide it. Hooks can gate on the *presence* of text, never on whether two passages carry the same reasoning. [verified: `code-review/SKILL.md:49-54` — every existing Step 1.5 tripwire is a model-judgment check, none is hook-backed] |
-| G2 | The engineer wants coverage at all four stations, having explicitly weighed and accepted the breadth | [engineer-verified] — answered this session, with the standing instruction to remain wary of overengineering the decision itself. |
+| G1 | The check can only be a model judgment, not a hook | A capability boundary of the runtime, not an artifact any repo owns. A hook cannot distinguish a restated measurement from a coincidentally equal number, recognise the same result stated in different words, identify which site the author intends as the home, or separate a compressed summary from a duplicate. [verified: `plan-review/SKILL.md:82-87` — every existing Step 4 tripwire is a model-judgment check, none is hook-backed] |
 
 **Mechanisms:**
 
-- **M1 — `code-review` Step 1.5: one tripwire bullet.** The reviewer-side
-  code-stage station. Extends an existing four-bullet list; adds no numbered
-  item and therefore no Item-ownership row. `anchors: root`
-- **M2 — `code-writer` self-review step 6: one bullet.** The author-side
-  code-stage station. Step 6 is documented as "the same set the code-review
-  skill's Judgment-activation pass checks, applied here before handoff"
-  (`code-writer.md:92-94`), so the two lists are a deliberate pair; adding to
-  one without the other breaks a documented symmetry. `anchors: root`
-- **M3 — `plan-review` Step 4: one foundation tripwire.** The reviewer-side
-  plan-stage station. Extends the existing six-tripwire list (`Over-powered
-  primitive`, `Compounding layers`, `Self-referential findings`, `Misordered
-  observe-then-mutate steps`, `Overcorrection`, `Unjustified given`).
-  `anchors: root`
-- **M4 — `plan-it` Step 5: one sentence.** The author-side plan-stage
-  station, appended to the existing per-mechanism over-powered-primitive
-  paragraph. `plan-review`'s own `Over-powered primitive` tripwire states its
-  threshold is "the same threshold `plan-it` Step 5 sets for the author, so a
-  one-alternative plan fails here rather than passing review while violating
-  the authoring rule" (`plan-review/SKILL.md:82`) — the repo's convention is
-  that a plan-stage reviewer tripwire has an author-side counterpart.
-  `anchors: root`
-- **M5 — `docs/design-decisions.md` §25 (new).** The single canonical home
-  for this change's rationale, recording the revisit of §13 on new evidence.
-  §13 itself is left byte-for-byte intact: it is a dated decision record and
-  therefore preserved content under CLAUDE.md §Working Style Axis 3.
-  `anchors: root`
-- **M6 — a presence-only pytest pinning the four tripwires.** Nothing else
-  prevents a future length-trimming pass from silently deleting a one-line
-  addition; `code-review/SKILL.md` sits at 405 of its 500-line cap, so that
-  pressure is real rather than hypothetical. `anchors: root`
+- **M1 — `plan-review` Step 4: one foundation tripwire.** Extends an existing
+  six-item list in its established shape. `anchors: root`
+- **M2 — `docs/design-decisions.md` §25 (new).** Records the decision and,
+  critically, why the code-stage angle was attempted and abandoned — so the
+  next session reaching for it finds the three falsified drafts rather than
+  repeating them. §13 and §9 are left byte-for-byte intact; both are dated
+  decision records and preserved content under CLAUDE.md §Working Style Axis
+  3. `anchors: root`
 
-**Why four stations is not itself the defect it catches.** The
-over-powered-primitive check applies to this plan reflexively, so it is
-answered explicitly. Two lighter primitives were enumerated and both fail:
-
-1. *One station only (`code-review`)*. Fails because the two stages observe
-   different populations, evidenced in PR #631 itself. At plan stage:
-   `.claude/plans/plan-mode-model-routing.md`'s mechanisms M1/M2/M4/M8 each
-   independently instruct adding the claim *with its measurement*, and none is
-   designated the canonical home — observable in the plan text before any code
-   was written. At code stage: commit `962779fb` records that "the first fix
-   round's own edits introduced fresh duplication," which no plan named. One
-   station misses one of those two populations.
-2. *Reviewer stations only, no author stations*. Fails against the repo's
-   documented author/reviewer pairing at both stages (`code-writer.md:92-94`;
-   `plan-review/SKILL.md:82`), which exists so an authoring rule and its
-   review gate cannot drift.
-
-The repo's own canonical test for justified duplication agrees. `skill-review`
-§6 and `agent-review` §6 permit duplicating content across skills and agents
-when **all three** conditions hold; all three hold here:
-
-1. *Content is critical* — each site is a review gate.
-2. *Different load paths* — `code-review` and `plan-review` bodies load when
-   their skill is invoked; `code-writer`'s body loads at dispatch; `plan-it`'s
-   loads at plan authoring. Four distinct paths.
-3. *One path could silently fail* — a `code-writer` dispatch can return
-   without the parent ever invoking `/code-review`; a session that never runs
-   `plan-it` still reaches `code-review`.
-
-The load-bearing constraint that keeps four sites from becoming the defect:
-**each site is one line naming an observable and defers to CLAUDE.md for the
-rule.** If any of the four grows into an explanation of single-source-of-truth,
-the change has become what it catches. This is checkable — see Verification.
+**Why one station.** The over-powered-primitive check applies reflexively. A
+second station was designed, reviewed across three drafts, and dropped on
+evidence — see Approach. The confirmed failure was at plan stage, and the code
+stage retains the mechanism that already catches this class there.
 
 **Assumptions:**
 
-- No *existing* pytest test pins `code-review/SKILL.md`'s checklist
-  numbering, item count, or Item-ownership table; none pins `plan-it` Step 5
-  or `code-writer`'s step-6 list content — which is why M6 adds one, rather
-  than a reason no test is needed. [verified: subagent sweep of
-  `claude/.claude/hooks/tests/` this session — `test_agent_roster.py` pins
-  only `code-writer.md` frontmatter (`model`, `effort`, `Write` tool);
-  `test_reconciliation_block_consistency.py` pins only the `## Reconciliation`
-  block; `test_require_code_review.py` pins only the `HOOK_TEST_FIXTURE`
-  marker-write block at `code-review/SKILL.md:387`]
-- Length caps are not at risk. `check-skill-length.sh:10-15` sets 500 for
-  `code-review` (currently 405) and `plan-review` (272); `plan-it` (92) falls
-  to the 200 default. [verified: `check-skill-length.sh:10-15` and `wc -l`,
-  this session]
-- Step 1.5 tripwires carry no Item-ownership row, so M1 adds no routing-table
-  edit and does not trigger the `Reshapes reviewer ownership` spawn rule.
-  [verified: `code-review/SKILL.md:340-381` — the table's primary key is the
-  numbered checklist item; no Step 1.5 tripwire appears in it]
-- The `Adds or modifies a skill, agent, instruction-file rule, or hook`
-  Change-type row will match this diff, requiring `skill-review` (3 SKILL.md
-  files) and `agent-review` (`code-writer.md`) at `/code-review` time.
-  `skill-review` is additionally hook-enforced on commit. [verified:
-  `.claude/rules/review-pipeline-dispatch.md`, loaded this session]
+- No pytest pins `plan-review` Step 4's tripwire list; `test_agent_roster.py`
+  pins agent frontmatter only. [verified: subagent sweep of
+  `claude/.claude/hooks/tests/` this session]
+- Length cap is not at risk: `plan-review/SKILL.md` is 272 lines against the
+  500 `check-skill-length.sh:10-15` grants it. [verified: `wc -l` and
+  `check-skill-length.sh:10-15`, this session]
+- `skill-review` is required and hook-enforced at commit for the
+  `plan-review/SKILL.md` edit. No `staff-*` spawn is triggered: the edit adds
+  a tripwire, it does not change the output a `staff-*` lane reviews, and it
+  touches no `agents/*.md` scope language. [verified:
+  `.claude/rules/review-pipeline-dispatch.md`; `code-review/SKILL.md:249,251`]
 
 ## Critical files
 
 All paths relative to the worktree
 `.claude/worktrees/caveat-duplication-check/`.
 
-**1. `claude/.claude/skills/code-review/SKILL.md`** — modify.
-Append a fifth bullet to the Step 1.5 tripwire list (after the
-`Non-durable comment` bullet, currently line 54). Draft text:
+**1. `claude/.claude/skills/plan-review/SKILL.md`** — modify.
+Append a seventh foundation tripwire to the Step 4 list, after
+`Unjustified given` (ends line 87). Draft text:
 
-> - **Rationale restated across sites** — the diff writes the same
->   explanation, measurement, or justification at two or more sites (a site
->   is a file, or a distinct section within one), or restates one that
->   already has a canonical home elsewhere in the repo, rather than stating
->   it once and pointing at it. Fire only when a reader at each site could
->   follow a pointer to that home instead. Prose duplicated because each
->   site's reader loads independently and cannot reach the other is the
->   stand-alone exception CLAUDE.md §Engineering Judgment names — do not
->   flag it; a duplicate carrying its own consistency test is the clearest
->   case. Scope the check to the diff — sites within it, plus a canonical
->   home the diff itself cites. Do not run a repo-wide duplication search.
-
-*Reuse:* matches the existing bullet shape exactly — bolded observable, em
-dash, one-sentence condition. No new numbered item, no Item-ownership row.
-"Site" is defined once here and used verbatim by the other three drafts;
-they must not re-derive it.
-
-**2. `claude/.claude/agents/code-writer.md`** — modify.
-Append a seventh bullet to the self-review step 6 list (after the
-comment bullet ending line 102). Draft text:
-
-> - A rationale, measurement, or justification restated at two or more sites
->   in your own diff where a reader at each site could have followed a
->   pointer to one canonical home instead. Not a finding when each site's
->   reader loads independently and cannot reach the other.
-
-*Reuse:* the six existing bullets are noun-phrase fragments naming an
-observable; this matches without introducing a new section.
-
-**M1 and M2 must land in the same commit.** `code-writer.md:92-94` states
-step 6 checks "the same set the code-review skill's Judgment-activation pass
-checks." Landing either edit without the other makes that sentence false.
-
-**3. `claude/.claude/skills/plan-review/SKILL.md`** — modify.
-Append a seventh foundation tripwire to the Step 4 list (after
-`Unjustified given`, line 87). Draft text:
-
-> - **Rationale restated across sites.** Two or more of the plan's mechanisms
->   write the same explanation, measurement, or justification to different
->   sites. Required: name the canonical home and reduce the other mechanisms
->   to pointers, or state per site why its reader cannot reach that home and
->   must carry the rationale standalone.
+> - **Evidence restated across mechanisms.** Two or more mechanisms write the
+>   same measurement, citation, or investigation result into different files
+>   in full, rather than one holding it and the others pointing at it.
+>   Required: name the site that holds it and reduce the others to a pointer,
+>   or state per mechanism why its site must carry the evidence in full. A
+>   compressed summary that points at the holding site is not a finding; a
+>   rule restated at sites that must each stand alone is not one either.
 
 *Reuse:* matches the existing tripwire shape — bolded name, observable
-condition, `Required:` clause.
+condition, `Required:` clause. Extends a list of six; adds no new section, no
+`ROUTING.md` change, and no Item-ownership row (Step 4 tripwires carry none).
 
-**4. `claude/.claude/skills/plan-it/SKILL.md`** — modify.
-Append one sentence to the end of the `**Per mechanism:**` bullet in the
-assumption ledger (line 53). Draft text:
+**2. `docs/design-decisions.md`** — modify.
+Add `## 25. Duplicated-evidence detection sited at plan review, not code
+review (2026-08-15)` after §24, which ends at line 279 and is the last section
+[verified: `grep -n "^## 2[0-9]\."`, this session]. What it must record:
 
-> The same check applies to breadth, not only power: if two or more
-> mechanisms would write the same explanation, measurement, or justification
-> to different sites, name the canonical home in one and reduce the rest to
-> pointers before the ledger is final — or record, per site, why its reader
-> cannot reach that home.
+1. The firing condition, and why it excludes both restated rule text (§4) and
+   compressed summaries pointing at a named home.
+2. **Why there is no code-stage counterpart**, naming §9. Three discriminator
+   drafts were falsified — rationale-vs-instruction on the `## Reconciliation`
+   block, reader-reachability on §9's closed-form record, evidence-vs-rule on
+   commit `962779fb` itself. Anyone reaching for a `comment-discipline-reviewer`
+   angle should find this and the reason before re-attempting it.
+3. That §13 rejected a `/code-review` checklist item for this rule, and that a
+   Step 4 tripwire firing on plan text is not one.
+4. **The evidence ratio: 1 of 6 instances is confirmed to match this shape**
+   (PR #631, the only one with a shipped diff). Do not cite "6 instances" as
+   undifferentiated recurrence evidence.
+5. **A revisit trigger.** The check is a model judgment (G1), so false
+   positives have no automatic detector. If two false positives are reported,
+   narrow the tripwire or drop it.
 
-*Reuse:* extends the paragraph that already holds the over-powered-primitive
-check rather than opening a new sub-section.
-
-**5. `docs/design-decisions.md`** — modify.
-Add `## 25. Single-source-of-truth detection added as tripwires, not a
-checklist item (2026-08-15)` after §24 (ends line 279). §13 is not edited.
-Five things this section must record, each of which a reviewer flagged as a
-gap if omitted:
-
-1. What §13 rejected, and why that reasoning does not reach a tripwire.
-2. **Why SSOT survives that scrutiny despite sitting closer to the line than
-   its sibling tripwires.** The three shipped Step 1.5 tripwires translate an
-   *abstract* CLAUDE.md instruction into a differently-shaped diff-surface
-   test; CLAUDE.md already phrases SSOT as an observable, so the translation
-   gap is narrower here. State the reason it still holds — the tripwire's job
-   is detecting the diff-surface pattern (same text, 2+ reachable sites),
-   which is a different act from the rule's prose — rather than treating
-   "tripwire ≠ restatement" as automatically dispositive.
-3. **The evidence ratio, stated honestly: 1 of 6 instances is confirmed to
-   match this specific shape** (PR #631, the only one with a shipped diff);
-   the other 5 were conversational corrections whose shape — duplicated
-   prose vs. duplicated logic vs. an unrelated over-powered-primitive
-   pattern — is not verifiable from the repo. Do not cite "6 instances" as
-   undifferentiated recurrence evidence for this check.
-4. The reachability discriminator, and why §4's no-shared-partials policy is
-   not in tension with it.
-5. **A revisit trigger.** Because "same rationale" is a model judgment (G1),
-   false positives have no automatic detector and every stow user pays each
-   one on every future review. Record a concrete criterion: if two false
-   positives are reported, narrow the tripwire or drop it.
-
-*Reuse:* follows the existing dated-section format with a `### Sources`
+*Reuse:* follows the existing dated-section format, with a `### Sources`
 subsection where sources are cited.
 
-**6. `claude/.claude/hooks/tests/test_rationale_tripwire_presence.py`** — create.
-A presence-only test asserting each of the four station files contains a
-stable anchor substring for the tripwire. Nothing else pins these four
-additions, and `code-review/SKILL.md` sits at 405 of its 500-line cap, so a
-future length-trimming pass is a live deletion vector.
-
-*Reuse:* mirror `test_reconciliation_block_consistency.py`'s second test
-(`test_reconciliation_block_contains_collapsing_rule_and_discriminator`) —
-presence-only, not byte-equality. Byte-equality is wrong here: the four texts
-are deliberately worded per-file, so there is no cross-file string to pin.
-
-**7. `.claude/plans/caveat-duplication-check.md`** — this file, committed to
+**3. `.claude/plans/caveat-duplication-check.md`** — this file, committed to
 the branch per `branch-management`.
 
 ## Verification
 
-1. **Self-test — the change must not fire its own tripwire.** Run
-   `/code-review` on the staged diff. The new tripwire must *not* fire on
-   M1–M6: the rationale lives once in `docs/design-decisions.md` §25 and the
-   four station edits name observables without restating it. Weak evidence by
-   construction — it is self-graded, and the Approach section was written to
-   satisfy it — so treat a pass as a sanity check, not validation. Check 8 is
-   the primary test. A *failure* here is still decisive: reduce the design,
-   do not argue past it.
-2. **Line-budget check.** `git diff --stat` — each of the four station edits
-   should be ≤8 added lines. A station edit that grew into a paragraph is the
-   failure mode check 1 exists to catch, visible here earlier.
-3. **Test suite:** `../../../.venv/bin/pytest claude/.claude/` from the
-   worktree (the contributor `.venv` lives at the main worktree root only).
-   Expect no failures, including M6's new presence test. Confirm M6 actually
-   fails when it should: delete one station's tripwire line locally, re-run,
-   see it go red, restore. A pinning test that passes against a missing
-   anchor is worse than no test.
-4. **Lint:** `../../../.venv/bin/ruff check claude/.claude/` — no Python
-   changed, run as a clean-tree check.
-5. **Length gate:** confirm `check-skill-length.sh` passes at commit —
-   `code-review` ≤500, `plan-review` ≤500, `plan-it` ≤200.
-6. **Per-file-type review dispatch** (`.claude/rules/review-pipeline-dispatch.md`):
-   `skill-review` on the three SKILL.md files (hook-enforced at commit) and
-   `agent-review` on `code-writer.md`.
-7. **Behavioral spot-check on the known-positive case.** Re-read PR #631's
-   first-round commit `2001121c` (the five restating sites derived in
-   Approach) against the new `code-review` tripwire text and confirm it names
-   that diff as a hit; then re-read the corrective commit `962779fb` and
-   confirm the tripwire does *not* fire on it. A tripwire that cannot
-   separate those two commits does not encode the defect.
-8. **Held-out negative case — the sanctioned-duplication stress test.** Apply
-   the drafted tripwire text to the `## Reconciliation` block, duplicated
-   near-verbatim between `code-review/SKILL.md:269-284` and
-   `plan-review/ROUTING.md:53-68` and pinned by
-   `test_reconciliation_block_consistency.py`. It must **not** fire: the two
-   readers load independently and neither can reach the other. This case is
-   held out in the sense that matters — the wording was drafted against
-   #631, not against this — so unlike checks 1 and 7 it can fail on wording
-   the author did not tune for it. An earlier draft of the discriminator
-   (rationale-vs-instruction) failed exactly here, which is why this check
-   exists rather than being assumed.
+1. **Known-positive case.** Read `.claude/plans/plan-mode-model-routing.md` as
+   it stood at commit `e119b47f` and confirm the drafted tripwire fires on its
+   M1/M2/M4/M8 mechanism list. If it does not fire on the one plan known to
+   carry this shape, M1 is unjustified and should be dropped rather than
+   reworded. That plan's M3 is the author's own non-duplicating mechanism in
+   the same file, so the case discriminates rather than merely matching.
+2. **Held-out negative — the altitude case.** Apply the drafted tripwire to a
+   hypothetical mechanism list describing what commit `962779fb` actually did:
+   one mechanism creating `docs/case-studies/plan-mode-model-resolution.md` as
+   the home, and three writing compressed restatements of `178/178` / `92/95`
+   into `docs/auto-mode.md`, `docs/cost-levers-considered.md`, and
+   `docs/case-studies.md`, each pointing at it. It must **not** fire. This is
+   the case that falsified the code-stage design; if the plan-stage wording
+   fails it too, the whole approach is wrong, not just the wording.
+3. **Held-out negative — the `§4` case.** Apply it to a mechanism list where
+   two `SKILL.md` files each state the same convention because each must stand
+   alone (`plan-it/SKILL.md:35` and `plan-review/SKILL.md:42` both carry "Pass
+   an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule"). Must
+   **not** fire — rule text, no evidence.
+4. **Named-home-but-still-duplicated case.** Apply the tripwire to a mechanism
+   list that designates one site as holding the evidence *and* still writes
+   the same figures in full into two others. It must **fire**. This is the
+   case an earlier wording missed by testing whether a home was *named*
+   rather than whether the others were reduced to pointers; the condition now
+   tests the substance, and this check is what holds it there.
+5. **Deference check.** Confirm the drafted tripwire states an observable and
+   defers to CLAUDE.md for the rule rather than arguing for
+   single-source-of-truth itself. If it has grown into an argument for the
+   principle, cut it back.
+6. **Self-test.** Run `/code-review` on the staged diff. Weak evidence by
+   construction — self-graded — so treat a pass as a sanity check. A failure
+   is still decisive.
+7. **`skill-review`** on `plan-review/SKILL.md` (hook-enforced at commit).
+8. **Test suite and lint:** `../../../.venv/bin/pytest claude/.claude/` and
+   `../../../.venv/bin/ruff check claude/.claude/` from the worktree (the
+   contributor `.venv` lives at the main worktree root only). No Python
+   changes; run as a regression check on the length and skill-review hooks.
+
+**Checks 1–4 are not blind** — the wording was authored knowing all four
+cases. They are regression cases, not validation. No genuinely held-out case
+is constructible now; the first real one is the next plan a session writes
+without having read this. §25's revisit trigger is what covers that gap.
+
+**No pinning test is proposed.** One tripwire in a file at 272 of a 500-line
+cap carries little deletion pressure, and prose-snapshotting costs more than
+it buys. `test_agent_roster.py` is the established home if that changes.
 
 ## Out of scope
 
+- **A code-stage counterpart.** Attempted and abandoned on evidence — see
+  Approach and §25 item 2. `comment-discipline-reviewer` is left unmodified,
+  including its charter, angle list, frontmatter, and Output format.
+
+  **Residual seam this leaves.** The tripwire checks a plan's stated design,
+  not that the implementation follows it. A plan that correctly designates a
+  holding site and then drifts during implementation is caught only by
+  `comment-discipline-reviewer`'s existing unmodified trigger, which has one
+  cited instance of catching evidence duplication (`962779fb`) and took two
+  rounds to do it. Accepted rather than closed: closing it is what the three
+  falsified code-stage drafts were for. §25's revisit trigger covers the
+  first real occurrence.
 - **PR #631** — merged and closed. Not re-opened, edited, or reverted.
 - **The 5 live-correction instances** — conversational corrections, never
   shipped code. Nothing to change retroactively.
-- **A general-purpose duplication detector.** Scoped strictly to the
-  restated-rationale shape. Logic duplication is checklist item 9's job;
-  comment verbosity is item 12a's and `comment-discipline-reviewer`'s.
-- **Editing `docs/design-decisions.md` §13.** A dated decision record, and
+- **Author-side stations** (`plan-it` Step 5, `code-writer` step 6). Inside
+  reach, declined: the confirmed evidence is one case, which one reviewer-side
+  station covers. Revisit only on evidence M1 is insufficient.
+- **A general-purpose duplication detector.** Logic duplication is
+  `code-review` item 9's job; comment verbosity is item 12a's.
+- **Editing `docs/design-decisions.md` §13 or §9.** Dated decision records,
   preserved content under CLAUDE.md §Working Style Axis 3. §25 records the
-  revisit alongside it.
-- **A hook enforcing the check mechanically.** Declined on G1's grounds — a
-  hook cannot decide the predicate it would gate.
+  new decision alongside them.
+- **A hook enforcing the check.** Declined on G1's grounds — a hook cannot
+  decide the predicate it would gate.
 - **Changing the no-shared-partials policy** (root `CLAUDE.md`;
-  `docs/design-decisions.md` §4 — see Approach). Inside this plan's reach —
-  this repo owns both artifacts — and deliberately declined: the policy is
-  correct as written, and the check is designed to coexist with it via the
-  reachability discriminator rather than by narrowing it. If that
-  discriminator turns out not to hold, the correct response is to drop the
-  check, not to weaken §4.
-- **Editing `CLAUDE.md` §Engineering Judgment.** The principles are already
-  complete and correctly worded; the gap this plan closes is activation, not
-  statement.
+  `docs/design-decisions.md` §4). Inside reach and declined: the policy is
+  correct, and the tripwire is built to coexist with it — restated rule text
+  carries no evidence and never fires.
+- **Editing `CLAUDE.md` §Engineering Judgment.** The principles are complete;
+  the gap this closes is activation, not statement.
