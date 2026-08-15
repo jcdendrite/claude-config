@@ -404,6 +404,15 @@
             "command": "~/.claude/hooks/redact-credential-values.sh"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-transcript-toolkit.sh"
+          }
+        ]
       }
     ],
     "Notification": [

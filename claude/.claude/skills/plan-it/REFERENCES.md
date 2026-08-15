@@ -137,14 +137,17 @@ plans [engineer-verified] — anchors: root
 
 ### Why three tags, not two
 
-A binary verified/unverified split loses the case where the *human*
-supplied the fact directly — that source can't be re-derived by a grep or
-doc lookup, but it also must never be silently overridden by the agent's
-own investigation finding something that looks contradictory. Splitting
-out `[engineer-verified]` gives a reviewer (per `plan-review`) a clear job:
-resolve `[unverified]` rows by checking them, but *escalate*
-`[engineer-verified]` contradictions to the human rather than resolving
-them unilaterally.
+A binary verified/unverified split loses the case where the *human* stated
+the fact directly, as an utterance in the session — that source can't be
+re-derived by a grep or doc lookup, but it also must never be silently
+overridden by the agent's own investigation finding something that looks
+contradictory. Splitting out `[engineer-verified]` gives a reviewer (per
+`plan-review`) a clear job: resolve `[unverified]` rows by checking them,
+but *escalate* `[engineer-verified]` contradictions to the human rather
+than resolving them unilaterally.
+
+File-sourced facts are always `[verified: <file>]`; the tag exists only for
+utterances a grep can't re-derive.
 
 ## Anti-patterns confirmed across sources
 
