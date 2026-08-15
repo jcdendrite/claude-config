@@ -258,6 +258,78 @@ injected content is the shape that would do this. Identifying what occupies
 that region is the next measurement, and it needs an instrument that can
 see the assembled request — transcripts do not record it.
 
+## Testing the leading hypothesis: wire-level capture
+
+Claude Code's `OTEL_LOG_RAW_API_BODIES=file:<dir>` (documented at
+`monitoring-usage.md`) writes the untruncated, wire-format request/response
+JSON for every API attempt — the instrument the prior section identified as
+missing. This section's measurements are scoped differently from the rest of
+this document: a live instrumented session plus a 15-session, 11,317-turn
+sample from local transcripts on one account, not the multi-account corpus
+used above. Figures here should not be pooled with it.
+
+**Request structure, confirmed by SHA-256 comparison across turns.** The
+wire order is `tools → system[0..3] → messages[]`. `system[2]` carries
+`cache_control: {scope: "global"}` — shared cross-session, not just within
+one conversation: a brand-new session's first turn read tools-plus-base-
+system as a cache **hit** rather than a miss. The fixed survivor floor
+measured directly at **22,050 tokens**, identical across two unrelated
+sessions on the same account — consistent with the corpus's ~25,412-token
+median (a different account/CLI version would size its global-scope block
+differently) and pinning the number precisely for this account.
+
+**The leading hypothesis — refuted.** The candidate mechanism was the
+per-turn `ToolSearch` "deferred tools" reminder rewriting itself as tools
+load, invalidating everything after it. Two tests:
+
+1. Loading a tool via `ToolSearch` across separate `--resume` invocations
+   left the reminder text unchanged on the next turn — loaded-tool state
+   turned out to be in-process, not persisted, so this test was invalid by
+   construction.
+2. Loading three tools sequentially *within one process* (state genuinely
+   persisted): the `tools` array measurably grew and reordered (12→13
+   entries, schema inserted near the front, hash changed) — yet
+   `cache_read_input_tokens` matched the full prior-turn total on every
+   following round-trip. Cache stayed 100% warm.
+
+The mechanism does not reproduce under direct, instrumented test.
+
+**Attachment-logged events explain a minority.** Claude Code records certain
+context-refresh events as `attachment`-typed transcript entries
+(`date_change`, `skill_listing`, `deferred_tools_delta`,
+`mcp_instructions_delta`, `agent_listing_delta`, `hook_additional_context`,
+among others). Restricting to mid-session cold turns (excluding each
+session's unclassifiable first turn) and checking whether *any* attachment
+event immediately preceded each one:
+
+| | Count | Share of mid-session cold turns |
+|---|---|---|
+| Preceded by some attachment event | 47 | 18.3% |
+| Preceded by no attachment event | 210 | 81.7% |
+
+Among the types that do occur, the `_delta`-suffixed ones and `date_change`
+carry real lift over the ~2.3% sample-wide cold rate — `deferred_tools_delta`
+13.9%, `mcp_instructions_delta` 18.2%, `agent_listing_delta` 16.7%,
+`skill_listing` 8.5%, `date_change` 27.3% (n=11, too small to trust
+precisely) — but collectively they account for well under a fifth of cold
+turns. `hook_success`, `task_reminder`, and `queued_command` — the three
+most frequent attachment types by volume — sit at or below the baseline
+rate and predict nothing.
+
+**Ordinary TTL expiry does not explain the remainder either.** Of the 210
+mid-session cold turns with no attachment marker, 80% occurred with a
+wall-clock gap under 5 minutes since the prior turn (median ≈ 0); only 8.1%
+had a gap ≥60 minutes, the threshold this document's own ground-truth
+construction (see "Ground truth without circularity") uses for idle expiry.
+These are rapid, same-session rewrites, not TTL lapses.
+
+**Conclusion.** Roughly two-thirds of all cold events in this sample are
+explained by neither the leading content-drift hypothesis, nor any
+harness-logged event, nor idle-time TTL expiry. Pinning the actual
+mechanism requires wire-level capture of an occurrence as it happens —
+transcripts do not retroactively record the assembled request, so this
+can't be recovered from history after the fact.
+
 ## Limits of this result
 
 - The warm set's 4.5% false-positive rate is not separable from a genuine
@@ -272,3 +344,7 @@ see the assembled request — transcripts do not record it.
 - The cold set is small (n=106), being restricted to long-gap turns on one
   account. It is sufficient to separate the two distributions, not to
   characterize cold-turn behavior in general.
+- The wire-level capture section's 15-session sample is single-account and
+  was not selected randomly — it is the largest local transcripts by file
+  size, which skews toward long, tool-heavy sessions. It should not be
+  treated as representative of the account's full cold-event population.
