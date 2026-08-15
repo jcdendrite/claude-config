@@ -19,6 +19,8 @@ The toolkit lives at `scripts/transcript-analysis.py` under the active Claude Co
 
 Before quoting a corpus-wide statistic from this toolkit's output, include the resolved-scope header line verbatim in what you report, and if that line reads "1 root (no ~/.claude/transcript-config-dirs declared)", ask the user whether other Claude accounts exist before treating the number as complete.
 
+**"I found nothing" is one of those statistics.** A zero-match run is the case most likely to be a scoping failure rather than a real result, so quote its header too before reporting the absence — never report an empty result without stating the corpus it was empty across.
+
 `cost --summary` prints no resolved-scope header — it is always scoped to the active account only, and states so on its own `Scope: this account only (...)` line instead; quote that line rather than asking about other accounts.
 
 ## Which subcommand to use
@@ -76,7 +78,7 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 
 ## Caveats
 
-- Every subcommand's default scope is a union across every config dir listed in `~/.claude/transcript-config-dirs` (see `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section), not just the active profile — except `cost --summary`, which resolves to the active config dir only. The resolved-scope header states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — see "Scope confirmation" above — except `review-trace` and `skill-invocation`, which defer their header print until a match is found, and `cost --summary`, which prints no header at all. Redaction covers `cost`, `cost-trend`, `context-distribution`, and `audit-routing` only; every other subcommand prints raw project labels, branch names, or paths under this same union.
+- Every subcommand's default scope is a union across every config dir listed in `~/.claude/transcript-config-dirs` (see `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section), not just the active profile — except `cost --summary`, which resolves to the active config dir only. The resolved-scope header states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared and even when the run matched nothing — see "Scope confirmation" above — except `cost --summary`, which prints no header at all. Redaction covers `cost`, `cost-trend`, `context-distribution`, and `audit-routing` only; every other subcommand prints raw project labels, branch names, or paths under this same union.
 - `--branches` filters records by `gitBranch` string only, never by project dir or root — under a multi-root scope it pools same-named branches across every declared account into one tally, with no per-account signal.
 - The `N failed` count is a coarse proxy: it matches any `N failed` in tool output, including pre-existing failures and intentional baseline runs. Treat the sequence view as the primary read; the aggregate rate is corroborating.
 - Subagent (`isSidechain`) turns are excluded from `fail-seq` and `struggle` — reviewer, `Explore`, and `code-writer` agents are not the debugging surface these subcommands measure.
