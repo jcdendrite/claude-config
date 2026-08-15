@@ -54,3 +54,18 @@ record somewhere else instead (a private repo, a synced location) — export
 it from a persistent shell init file, not an ad hoc session variable, since
 an unset override on a later invocation silently falls back to the default
 path instead of erroring.
+
+When more than one Claude account is declared in scope (via
+`~/.claude/transcript-config-dirs`), `--record` unions their corpora into a
+single row as usual, unless doing so would write that union into a path git
+could commit — it refuses (exit 2) only when the resolved ledger path sits
+inside a git working tree. The default path isn't one, so this refusal is
+dormant unless `COST_LEDGER_PATH` is pointed at a git-tracked location. The
+check walks up from the ledger path to the nearest existing ancestor and
+asks git directly, so it can't see two git-invisible ways the same figure
+could still end up shared: a cloud-sync folder (Dropbox, iCloud, OneDrive)
+syncing `$CLAUDE_CONFIG_DIR` or `COST_LEDGER_PATH`'s directory, and a
+bare-repo dotfile manager (yadm-style, tracking `$HOME` via
+`--git-dir`/`--work-tree` flags rather than an in-tree `.git`). Neither is
+closed by this check; avoid both if the ledger's multi-account union
+content should stay off a shared destination.

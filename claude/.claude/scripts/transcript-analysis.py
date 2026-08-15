@@ -7375,6 +7375,63 @@ def _cost_ledger_path() -> Path:
     return config_dir() / "cost-ledger.md"
 
 
+def _ledger_path_is_git_tracked(ledger_path: Path) -> bool:
+    """Return True iff the nearest existing ancestor of ledger_path sits
+    inside a git working tree -- scopes --record's multi-root refusal to
+    paths git could actually commit/push, not every ledger destination.
+    Fails closed (True) on any ambiguous result: a missing git binary, a
+    timeout, or a non-zero exit that isn't git's clean "not a git
+    repository" signal (a bare repository, for instance, exits 0 with
+    stdout "false" -- tracked by git but not a work tree, so this returns
+    False for it)."""
+    ancestor = ledger_path.parent
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    # Explicit env, not the inherited one: a GIT_DIR/GIT_WORK_TREE exported
+    # in the caller's shell would otherwise redirect this check to an
+    # unrelated repo; removing (not blanking) them restores git's normal
+    # discovery. LC_ALL=C pins the fatal-error text checked below to stable
+    # English regardless of the operator's locale.
+    env = os.environ.copy()
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        env.pop(var, None)
+    env["LC_ALL"] = "C"
+    try:
+        # Same local-git timeout rationale as _repo_scoped_project_slugs's
+        # git calls: no network/credential work, so 10s only bounds a
+        # wedged invocation.
+        # encoding/errors pinned explicitly: text=True alone decodes with the
+        # parent process's own locale, not LC_ALL=C above (that only governs
+        # what bytes git emits) -- under a narrow-locale parent, a non-ASCII
+        # ancestor path embedded in git's stderr could otherwise raise
+        # UnicodeDecodeError uncaught, defeating fail-closed.
+        proc = subprocess.run(
+            ["git", "-C", str(ancestor), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=10, check=False, env=env,
+            encoding="utf-8", errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        # Not exc's str(): TimeoutExpired renders the full argv, which
+        # includes `ancestor` -- a home-rooted path this module otherwise
+        # never echoes to stderr.
+        print("cost-ledger: git-tracked check timed out", file=sys.stderr)
+        return True
+    except OSError as exc:
+        print(f"cost-ledger: git-tracked check failed ({exc})", file=sys.stderr)
+        return True
+    if proc.returncode == 0:
+        # git only ever emits "true"/"false" here on success; anything else
+        # is treated as "false" rather than validated against that literal.
+        return proc.stdout.strip() == "true"
+    if "not a git repository" in proc.stderr:
+        return False
+    print(
+        f"cost-ledger: git-tracked check exited {proc.returncode} unexpectedly",
+        file=sys.stderr,
+    )
+    return True
+
+
 def _parse_cost_ledger_iso_week(week_str: str) -> None:
     """Raise _CostLedgerParseError unless week_str is a genuine ISO week
     label -- both the YYYY-Www shape and a week number the given year
@@ -7813,15 +7870,19 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     if not _MACHINE_LABEL_RE.match(machine_label):
         print(f"cost-ledger: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
         sys.exit(1)
-    if len(roots) > 1:
+    if len(roots) > 1 and _ledger_path_is_git_tracked(ledger_path):
         # --record writes to a single resolved ledger path; unioning multiple
-        # declared accounts into that one write risks silently committing one
-        # account's figures under another's (or a shared) destination, so
-        # it's refused outright -- non-record reads still return the union.
+        # declared accounts into that one write only risks silently
+        # committing/pushing one account's figures if the write actually
+        # lands somewhere git could commit it -- non-record reads still
+        # return the union regardless. Doesn't echo ledger_path itself,
+        # matching this function's other home-rooted-path redaction above.
         print(
             "cost-ledger: --record is refused when more than one root is in"
-            " scope; scope to a single account (--config-dir, or a roots"
-            " file declaring only this account) or drop --record",
+            " scope and the ledger path is inside a git working tree; scope"
+            " to a single account (--config-dir, or a roots file declaring"
+            " only this account), move COST_LEDGER_PATH outside git, or drop"
+            " --record",
             file=sys.stderr,
         )
         sys.exit(2)
