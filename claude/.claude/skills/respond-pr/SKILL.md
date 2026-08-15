@@ -58,28 +58,28 @@ Fetch all review comments on the current branch's open pull request and address 
 7. Post replies using the appropriate endpoint for each comment type — do **not** use `gh api .../pulls/comments/{id}` with `-F body=...`; that endpoint PATCHes the target comment in place and silently overwrites the author's text.
 
    - **Inline file comments** (fetched from `pulls/{n}/comments`) — reply via the `/replies` sub-resource:
-     ```
-     gh api repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies \
-       -F body='**[Claude Code]** ...reply text...
+   ```
+   gh api repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies \
+     -F body='**[Claude Code]** ...reply text...
 
-     🤖 Generated with [Claude Code](https://claude.com/claude-code)'
-     ```
+   🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+   ```
 
    - **Top-level review bodies** (fetched from `pulls/{n}/reviews`) — no `/replies` primitive exists; post a new top-level comment in the conversation tab:
-     ```
-     gh api repos/{owner}/{repo}/issues/{number}/comments \
-       -F body='**[Claude Code]** ...reply text...
+   ```
+   gh api repos/{owner}/{repo}/issues/{number}/comments \
+     -F body='**[Claude Code]** ...reply text...
 
-     🤖 Generated with [Claude Code](https://claude.com/claude-code)'
-     ```
+   🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+   ```
 
    - **Issue-level comments** (fetched from `issues/{n}/comments`) — same path; no `/replies` sub-resource:
-     ```
-     gh api repos/{owner}/{repo}/issues/{number}/comments \
-       -F body='**[Claude Code]** ...reply text...
+   ```
+   gh api repos/{owner}/{repo}/issues/{number}/comments \
+     -F body='**[Claude Code]** ...reply text...
 
-     🤖 Generated with [Claude Code](https://claude.com/claude-code)'
-     ```
+   🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+   ```
 8. Commit and push any code changes in a single commit
 9. **Remove this session's hook bypass marker:**
    <!-- HOOK_TEST_FIXTURE: disable-bypass — the hook-alignment test suite reads this exact fenced block to verify it removes the marker the enable step created. Do not duplicate elsewhere; the test re-reads it from here. -->
@@ -113,7 +113,7 @@ gh api repos/owner/repo/pulls/4/comments/12345678/replies \
     '**[Claude Code]**'*) gh api repos/{owner}/{repo}/pulls/comments/{id} -X PATCH \
                             -F body='**[Claude Code]** ...corrected text...
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)' ;;
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)' ;;
     *) echo "ABORT: target is not Claude-authored; reply via /replies instead" >&2; exit 1 ;;
   esac
   ```
