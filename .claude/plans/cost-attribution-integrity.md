@@ -182,11 +182,68 @@ is a settings key within reach, and Step 0 changes it.
 | 2 | No sidechain stream on any account receives 1h TTL, and exactly one account's main thread receives none | `[verified: direct read of cache_creation.ephemeral_1h_input_tokens over 155,000+ assistant turns across all six roots, including the four-level subagent path]` |
 | 3 | The existing main-vs-subagent attribution is correct; the gap is that `cmd_cost` carries no drift canary — only `cmd_subagents` and `cmd_skill_pair` call it, at `transcript-analysis.py:1200,4098` | `[verified: code trace]` |
 | 4 | Cache TTL differs by account despite identical settings, so it is account-scoped (plan tier or usage-overage state) rather than config-scoped | `[verified: one account's main thread shows 0 one-hour-TTL tokens across 22,290 turns while the other five all show non-zero]` |
-| 5 | `write > read` indicates a cold prefix | `[unverified — known-defective]` Named misclassification modes: a large single tool result appended to a short warm prefix; a multi-breakpoint request refreshing some breakpoints while hitting others; a 5-minute TTL lapse, which is cold but for a different reason than a prefix rewrite. Step 1 replaces or confirms it; every Context-table column derived from it is provisional until then. |
-| 6 | The read-collapse rule stated under Approach separates append from cold, at some margin `T` | `[unverified]` — Step 1's primary hypothesis, tested against row 5 as the incumbent. `T` is derived in Step 1, not assumed here. The rule determines *whether* a prefix was served, not *why* it was not, and does not separate full from partial-breakpoint collapse. |
-| 7 | The ~52% residual is one mechanism rather than several | `[unverified]` — Step 5 is designed to falsify this, not assume it |
+| 5 | `write > read` indicates a cold prefix | `[verified: docs/case-studies/cold-cache-attribution.md — falsified]` Named misclassification modes confirmed: 93.4% true-positive vs R2's 100%, at a marginally higher false-positive rate. Superseded by row 6. |
+| 6 | The read-collapse rule stated under Approach separates append from cold, at some margin `T` | `[verified: docs/case-studies/cold-cache-attribution.md]` — R2 at `T = 0.50` adopted: 100% true-positive, 4.5% false-positive, maximum Youden's J across tested thresholds. |
+| 7 | The ~52% residual is one mechanism rather than several | `[verified: docs/case-studies/cold-cache-attribution.md — falsified as stated]` — it is not one identifiable mechanism; harness-logged events explain 18.3% of mid-session cold turns, TTL expiry a further 8.1% of the remainder, and ~65% are unexplained by any transcript-visible signal. Step 5 closed on this explicit non-attribution finding rather than a reproduced cause. |
 | 8 | Cold re-writes are addressable rather than intrinsic to vendor-side caching | `[unverified]` — a negative result is a valid, plan-closing outcome |
 | 9 | The outlier account's spend problem shares a cause with the other accounts | `[engineer-verified]` — the engineer's stated leading hypothesis; row 1 and the matched lift table are consistent with it, and row 4's TTL gap is an additional, separable factor |
+
+## Status: re-scoped after Step 1 and Step 5 execution
+
+Steps 1 and 5's corpus arm are done; results are in
+`docs/case-studies/cold-cache-attribution.md`. Two deviations from this
+plan's original design, and their consequences for Steps 0 and 5's
+remaining scope:
+
+**Step 1 ran against the existing corpus, not scripted live sessions.**
+Rather than issuing synthetic known-warm/known-cold turns (this plan's
+original design), the classifier was validated against turn pairs whose
+cache state is fixed by vendor TTL semantics: cold = consecutive turns
+>60 min apart on an account whose main thread never receives the 1-hour
+TTL (row 4); warm = consecutive turns <60 s apart in the same
+session/thread. This is cheaper and equally non-circular — ground truth
+comes from vendor TTL semantics either way — but it means the "Replicates"
+and "Redaction" sub-bullets under Step 1 below describe a protocol that
+was not the one executed. R2 at `T = 0.50` was adopted; see the case study
+for the full scoring.
+
+**Step 5's remaining sub-conditions are superseded by a broader scan, not
+executed as separately planned.** The corpus arm (idle-gap correlation,
+tool-type lift table) is done and already shows every tested tool-call
+type — `Read`, `Agent`, `Bash`, `Edit` — at ≤2.3x lift, none predictive.
+The two sub-conditions not separately re-tested under the validated
+classifier — (b) `AskUserQuestion` specifically, (c) `Agent` spawns with
+zero file edits specifically — were not run, because the consistent null
+result across every other tested tool type made an incremental few-percent
+addition to that table low-value relative to a structural instrument gap
+found in the meantime: transcripts cannot show the assembled wire-format
+request, so no amount of correlation mining inside them can attribute the
+majority of cold events. A follow-up scan (15-session, 11,317-turn local
+sample, see the case study's "Testing the leading hypothesis" section)
+found harness-logged attachment events explain only 18.3% of mid-session
+cold turns and ordinary TTL expiry a further 8.1% of the remainder — ~65%
+of cold events are unexplained by any transcript-visible signal. **Step 5
+is closed on that explicit non-attribution finding**, which satisfies its
+own stated success criterion ("a mechanism reproduced on demand, **or an
+explicit record that the residual is not attributable with available
+instruments**").
+
+**Step 0 is skipped, not deferred.** It existed to feed more corpus into
+Step 5's transcript-based attribution. That approach has hit a structural
+ceiling independent of corpus size — transcripts do not retroactively
+record the assembled request no matter how much history is retained, so
+extending `cleanupPeriodDays` would not move Step 5 further. The
+forward-looking replacement instrument is in place instead:
+`OTEL_LOG_RAW_API_BODIES` wire-level capture, enabled via a personal,
+gitignored `settings.local.json` (not the committed stowed config), for
+this account going forward. It captures full request/response bodies
+whenever a cold event next occurs live — the one thing retroactive corpus
+mining cannot do. It is unbounded and needs manual pruning, tracked in
+the engineer's own memory rather than in this plan.
+
+**Steps 2–4 are unaffected by the above** — they operationalize the
+validated classifier from Step 1 (done), not the unresolved mechanism from
+Step 5, and proceed as originally scoped.
 
 ## Implementation
 
@@ -194,7 +251,7 @@ Steps land as **three separate commits** — Step 0 alone (different blast
 radius), Steps 1+5 (experiment and its case study), Steps 2–4 (tooling) —
 so Step 0 is revertable without a hand-split.
 
-### Step 0 — Stop clipping the evidence window
+### Step 0 — Stop clipping the evidence window (skipped — see "Status: re-scoped" above)
 
 **File:** `settings.local.json` in each config dir the experiment will
 sample — **not** the committed stowed `claude/.claude/settings.json`.
@@ -310,7 +367,7 @@ matching the coverage `cost`, `edit-format`, and `read-scope` already carry.
 asserts it fires from these call sites, and a canary that fires on healthy
 data gets ignored.
 
-### Step 5 — Attribute the residual
+### Step 5 — Attribute the residual (closed — see "Status: re-scoped" above)
 
 **File:** `docs/case-studies/cold-cache-attribution.md` (extends Step 1).
 **Change:** re-derive the correlation table under the validated classifier,
@@ -338,7 +395,7 @@ and varying one factor separates a real trigger from co-occurrence.
 
 | Path | Change |
 |---|---|
-| `settings.local.json` (per config dir, not committed) | Step 0 |
+| `settings.local.json` (per config dir, not committed) | Step 0 — **skipped**, not applied |
 | `docs/case-studies/cold-cache-attribution.md` | Steps 1, 5 |
 | `claude/.claude/scripts/transcript-analysis.py` | Steps 2, 3 |
 | `claude/.claude/scripts/tests/test_transcript_analysis.py` | Step 4 |
@@ -364,15 +421,19 @@ is at `../../../../.venv/`.
    <venv>/bin/shellcheck` clean.
 2. Step 4(b)'s canary test is observed red before Step 3 lands and green
    after — recorded, not asserted.
-3. Step 1 reports which classifier survived, the scored result for both the
-   known-warm and known-cold constructed cases, and the derived value of
-   `T`. If neither rule cleanly separates the two cases, Steps 2–5 do not
-   proceed and the plan closes with that finding.
+3. **Done.** Step 1 reports R2 (read-collapse) at `T = 0.50` as the
+   surviving classifier — 100% true-positive / 4.5% false-positive against
+   the two constructed ground-truth cases — scored against corpus turn
+   pairs rather than scripted sessions (see "Status: re-scoped" above).
+   `docs/case-studies/cold-cache-attribution.md`.
 4. `cache-efficiency` output is redacted by default, and `--no-redact`
    across two roots exits 2.
-5. Step 5 reaches a mechanism reproduced on demand, or an explicit record
-   that the residual is not attributable with available instruments. An
-   inconclusive run is reported as inconclusive.
+5. **Done, closed on the second branch.** Step 5 did not reach a
+   reproducible mechanism; it reaches the explicit record this criterion
+   names as its alternative success condition — harness-logged events
+   explain 18.3% of mid-session cold turns, TTL expiry a further 8.1% of
+   the remainder, and ~65% are not attributable with transcript-based
+   instruments. See "Status: re-scoped" above.
 
 ## Out of scope
 
