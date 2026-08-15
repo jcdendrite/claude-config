@@ -41,8 +41,7 @@ not something you can resolve. If none match, proceed without a layer.
 - **What and why.** What change is being made — summarized so the reviewer
   gets its shape without reading the whole diff — and why: the context you
   had as the author, and decisions that are not visible in the source.
-- **A first line that stands alone.** A reader skimming a list of PRs sees
-  that line and nothing else; it has to carry the change by itself.
+- **A first line of prose that stands alone.** The first line of prose, read after the attribution trailer below, is what a reader skimming a list of PRs sees; it has to carry the change by itself.
 - **No list of commit subjects.** A bulleted `git log` of the branch is
   chronology, not a summary: it re-narrates how the work arrived instead of
   what it does, and it is the per-commit narrative the checks below exist to
@@ -65,8 +64,7 @@ not something you can resolve. If none match, proceed without a layer.
   the body's own headings — do not drop it, do not silently paraphrase it,
   and do not leave it sitting as an unlabeled block between sections. A bare
   block is exactly the span the coherence pass is told to flag.
-- **The attribution trailer** as the last line of the body:
-  `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
+- **The attribution trailer**, at both the top and the bottom of the body — the first line (blank line, then the rest of the body) and the last line: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
 
 ## Cost section
 
@@ -158,6 +156,7 @@ Flag and fix:
 - **External-state claims.** **Content-claim verification** covers files in this repo; this covers state outside it — most often a follow-up ticket said to be pending, or promised as `will create`. Re-check each claim at its own source, then rewrite it to its current truth value; carry an identifier across only where the body already names that tracker — never invent a fresh reference for a claim the body didn't already make. Whether CI is *wired up* is such a claim; whether CI is *passing* is not — that is stripped under **Reviewer-action items Claude can answer itself**.
 - `TBD` / `pending` / "to be updated" markers still in the body.
 - Files in the diff absent from the body.
+- **Missing or duplicated attribution trailer.** Older bodies may carry the trailer only at the bottom — add it as the first line too. Never end up with more than one copy at either position.
 
 ## Delivering the body
 
