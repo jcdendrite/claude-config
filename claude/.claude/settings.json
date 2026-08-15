@@ -65,7 +65,7 @@
       "EnterPlanMode"
     ]
   },
-  "model": "opusplan",
+  "model": "sonnet",
   "skillOverrides": {
     "brief": "name-only",
     "handoff": "name-only",
