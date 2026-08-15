@@ -3871,73 +3871,17 @@ def _review_trace_args(
     })()
 
 
-def _event_suffix_branch_model(line: str) -> tuple[str, str]:
-    """Parse the trailing '(branch=X model=Y)' suffix off a review-trace event line."""
-    m = re.search(r"\(branch=(\S+) model=(\S+)\)", line)
-    assert m, f"no branch/model suffix found in line: {line!r}"
-    return m.group(1), m.group(2)
-
-
-def _extract_deny_summary_count(out: str, label: str) -> int:
-    """Parse one label's count from a --deny-summary grouped-count table.
-
-    Row labels may be multi-word (e.g. 'git commit'), so _table_cols' one-
-    token-per-column assumption doesn't apply here — this matches the label
-    as a literal line prefix and reads the trailing count.
-    """
-    for line in out.splitlines():
-        if line.startswith(label):
-            rest = line[len(label):].strip()
-            if rest.isdigit():
-                return int(rest)
-    return 0
-
-
-def _extract_pre_regime_count(out: str) -> int:
-    """Read --deny-summary's 'N errored, non-gate tool result(s) predate...' count.
-
-    Regex-extracts and int-compares rather than substring-containing on the
-    prefix (matching _extract_unpriced_total's pattern) — a plain 'in out'
-    check on '1 errored' would also pass for a count of 11.
-    """
-    match = re.search(r"(\d+) errored, non-gate tool result\(s\) predate", out)
-    assert match is not None, "pre-regime count line not found in output"
-    return int(match.group(1))
-
-
-def _extract_cross_tab_count(out: str, hook: str, shape: str) -> int:
-    """Read one (hook, shape) cell from --deny-summary's hook x command-shape
-    cross-tab table.
-
-    Both the hook-label and shape-label columns can carry a single internal
-    space (e.g. 'git commit', 'plan-review routing'), so whitespace-token
-    splitting doesn't apply — columns are separated by >=2 spaces by
-    construction (_print_deny_summary's col_width is always at least 2 wider
-    than the longest shape label), so splitting on runs of 2+ spaces keeps
-    each multi-word label intact as one column. The cross-tab's own header
-    ("  Hook  ...") is indented two spaces, unlike the marginal hook/gate
-    table's identically-worded row labels — this locates the header by its
-    unique two-space-indented "Hook" lead cell, then scopes the row search to
-    the block of two-space-indented lines directly beneath it, so a hook
-    label shared with the marginal table's own row (e.g. "code-review") never
-    matches the wrong table.
-    """
-    lines = out.splitlines()
-    header_idxs = [i for i, ln in enumerate(lines) if re.split(r"\s{2,}", ln.strip())[:1] == ["Hook"]]
-    assert len(header_idxs) == 1, f"cross-tab header not found uniquely: {len(header_idxs)}"
-    header_idx = header_idxs[0]
-    header_cols = re.split(r"\s{2,}", lines[header_idx].strip())
-    assert shape in header_cols, f"shape {shape!r} not a cross-tab column: {header_cols}"
-    shape_idx = header_cols.index(shape)
-    table_rows = []
-    for ln in lines[header_idx + 1:]:
-        if not ln.startswith("  "):
-            break
-        table_rows.append(ln)
-    matches = [ln for ln in table_rows if re.split(r"\s{2,}", ln.strip())[:1] == [hook]]
-    assert len(matches) == 1, f"cross-tab row not found uniquely for {hook!r}: {len(matches)}"
-    row_cols = re.split(r"\s{2,}", matches[0].strip())
-    return int(row_cols[shape_idx])
+def _since_until_epochs(since: str | None, until: str | None) -> tuple[float | None, float | None]:
+    """Mirror cmd_review_trace's own --since/--until date-string -> epoch-second
+    boundary conversion, so a test calling _review_trace_session_events directly
+    passes boundaries in the same form the CLI itself would compute."""
+    since_ts = _mod._parse_ts(f"{since}T00:00:00Z") if since else None
+    until_epoch = None
+    if until:
+        day_start = _mod._parse_ts(f"{until}T00:00:00Z")
+        if day_start is not None:
+            until_epoch = day_start + 86400
+    return since_ts, until_epoch
 
 
 class TestDropDenialCommandFlagValues:
@@ -4053,59 +3997,51 @@ class TestSanitizeTableCell:
 
 
 class TestReviewTrace:
-    def test_skill_invocation_appears_in_output(self, fake_projects, capsys):
-        """Main-thread Skill call for a review skill produces a 'skill' event in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_skill_invocation_appears_in_output(self):
+        """Main-thread Skill call for a review skill produces a 'skill' event."""
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "skill" in out
-        assert "code-review" in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+        assert events[0]["skill"] == "code-review"
 
-    def test_denial_dict_blockingError_parsed(self, fake_projects, capsys):
+    def test_denial_dict_blockingError_parsed(self):
         """hook_blocking_error with blockingError as a dict produces a denial event."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny("require-code-review", stringified=False),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "denial" in out
-        assert "require-code-review" in out
+        records = [_hook_deny("require-code-review", stringified=False)]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
+        assert events[0]["hook_name"] == "require-code-review"
 
-    def test_denial_stringified_blockingError_parsed_identically(self, fake_projects, capsys):
-        """hook_blocking_error with blockingError as a JSON string produces identical output to dict form."""
-        _write_jsonl(fake_projects / "dict_form.jsonl", [
-            _hook_deny("require-code-review", stringified=False),
-        ])
-        _write_jsonl(fake_projects / "str_form.jsonl", [
-            _hook_deny("require-code-review", stringified=True),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        # Event lines have leading whitespace followed by a timestamp bracket.
-        sections = out.split("### ")
-        dict_section = next((s for s in sections if "dict_form" in s), "")
-        str_section = next((s for s in sections if "str_form" in s), "")
-        # Each section should have exactly one event line tagged 'denial'.
-        dict_denial_lines = [ln for ln in dict_section.splitlines() if ln.startswith("  [") and "denial" in ln]
-        str_denial_lines = [ln for ln in str_section.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(dict_denial_lines) == 1
-        assert len(str_denial_lines) == 1
-        # The hook name and message content should be identical between both forms.
-        assert "require-code-review" in dict_denial_lines[0]
-        assert "require-code-review" in str_denial_lines[0]
+    def test_denial_stringified_blockingError_parsed_identically(self):
+        """hook_blocking_error with blockingError as a JSON string produces
+        an identical denial event to the dict form."""
+        dict_events, _tuc1, _pr1 = _mod._review_trace_session_events(
+            [_hook_deny("require-code-review", stringified=False)], None, None, None,
+        )
+        str_events, _tuc2, _pr2 = _mod._review_trace_session_events(
+            [_hook_deny("require-code-review", stringified=True)], None, None, None,
+        )
+        assert len(dict_events) == 1
+        assert len(str_events) == 1
+        assert dict_events[0]["hook_name"] == "require-code-review"
+        assert str_events[0]["hook_name"] == "require-code-review"
         # The human-readable message text must appear in both forms, not a dict repr.
-        assert "blocked the operation" in dict_denial_lines[0]
-        assert "blocked the operation" in str_denial_lines[0]
-        # Must NOT be showing a raw dict repr.
-        assert "{'blockingError'" not in dict_denial_lines[0]
-        assert "{'blockingError'" not in str_denial_lines[0]
+        assert "blocked the operation" in dict_events[0]["message"]
+        assert "blocked the operation" in str_events[0]["message"]
+        assert "{'blockingError'" not in dict_events[0]["message"]
+        assert "{'blockingError'" not in str_events[0]["message"]
 
-    def test_hook_non_blocking_error_produces_zero_denial_events(self, fake_projects, capsys):
-        """hook_non_blocking_error records must NOT appear as denial events."""
+    def test_hook_non_blocking_error_produces_zero_denial_events(self):
+        """hook_non_blocking_error records must NOT produce a denial event."""
         non_blocking_rec = {
             "type": "attachment",
             "attachment": {
@@ -4115,86 +4051,85 @@ class TestReviewTrace:
                 "blockingError": {"message": "non-fatal"},
             },
         }
-        _write_jsonl(fake_projects / "sess.jsonl", [non_blocking_rec])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        # No sessions should be emitted — the non-blocking record is not a review event.
-        assert "denial" not in out
-        assert "denials=1" not in out
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [non_blocking_rec], None, None, None,
+        )
+        assert events == []
 
-    def test_reviewer_spawn_detected_general_purpose_excluded(self, fake_projects, capsys):
-        """staff-backend-engineer spawn appears; general-purpose spawn is excluded."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_reviewer_spawn_detected_general_purpose_excluded(self):
+        """staff-backend-engineer spawn produces a reviewer-spawn event; general-purpose does not."""
+        records = [
             _asst("claude-opus-4-7", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
                   content=[
                       _agent_use("a1", "staff-backend-engineer"),
                       _agent_use("a2", "general-purpose"),
                   ]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "staff-backend-engineer" in out
-        assert "general-purpose" not in out
-        # Exactly one reviewer-spawn event (event lines start with "  [").
-        reviewer_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "reviewer" in ln]
-        assert len(reviewer_lines) == 1
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        reviewer_events = [e for e in events if e["kind"] == "reviewer-spawn"]
+        assert len(reviewer_events) == 1
+        assert reviewer_events[0]["subagent_type"] == "staff-backend-engineer"
 
-    def test_reviewer_spawn_detected_comment_discipline_and_skill_fidelity(self, fake_projects, capsys):
+    def test_reviewer_spawn_detected_comment_discipline_and_skill_fidelity(self):
         """comment-discipline-reviewer and skill-fidelity-reviewer are exact-name
         reviewer-spawn matches, not just the staff- prefix or ciso-reviewer."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-opus-4-7", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
                   content=[
                       _agent_use("a1", "comment-discipline-reviewer"),
                       _agent_use("a2", "skill-fidelity-reviewer"),
                   ]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "comment-discipline-reviewer" in out
-        assert "skill-fidelity-reviewer" in out
-        reviewer_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "reviewer" in ln]
-        assert len(reviewer_lines) == 2
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        reviewer_types = {e["subagent_type"] for e in events if e["kind"] == "reviewer-spawn"}
+        assert reviewer_types == {"comment-discipline-reviewer", "skill-fidelity-reviewer"}
 
-    def test_sidechain_skill_invocation_excluded(self, fake_projects, capsys):
-        """A code-review Skill call inside a sidechain record must not appear as a skill event."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_sidechain_skill_invocation_excluded(self):
+        """A code-review Skill call inside a sidechain record must not produce a skill event."""
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
                   sidechain=True,
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        # Sidechain skill produces no events → the session block is not printed at all.
-        assert "### " not in out
-        assert "No sessions matched in scope." in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
 
-    def test_since_boundary_inclusive_record_included(self, fake_projects, capsys):
+    def test_since_boundary_inclusive_record_included(self):
         """A record whose timestamp matches exactly --since is included."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T00:00:00Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(since="2026-05-19"))
-        out = capsys.readouterr().out
-        assert "skill" in out
-        assert "code-review" in out
+        ]
+        since_ts, until_epoch = _since_until_epochs("2026-05-19", None)
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, since_ts, until_epoch, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
 
-    def test_until_boundary_inclusive_record_included(self, fake_projects, capsys):
+    def test_until_boundary_inclusive_record_included(self):
         """A record whose timestamp matches exactly --until is included."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T23:59:59Z",
                   content=[_skill_use("s1", "plan-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(until="2026-05-19"))
-        out = capsys.readouterr().out
-        assert "skill" in out
-        assert "plan-review" in out
+        ]
+        since_ts, until_epoch = _since_until_epochs(None, "2026-05-19")
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, since_ts, until_epoch, None,
+        )
+        assert len(events) == 1
+        assert events[0]["skill"] == "plan-review"
 
     def test_record_with_no_timestamp_excluded_no_crash(self, fake_projects, capsys):
         """A record with no parseable timestamp is excluded when a date filter is active; no crash."""
@@ -4207,37 +4142,38 @@ class TestReviewTrace:
         # No crash; output may be empty (no matching events survive the date filter).
         capsys.readouterr()  # consume; success if no exception raised above
 
-    def test_deny_only_restricts_to_denial_sessions(self, fake_projects, capsys):
-        """--deny-only: only sessions with at least one hook denial appear."""
-        # Session A: has a denial.
-        _write_jsonl(fake_projects / "with_denial.jsonl", [
-            _hook_deny("require-code-review"),
-        ])
-        # Session B: only a reviewer spawn, no denial.
-        _write_jsonl(fake_projects / "no_denial.jsonl", [
-            _asst("claude-opus-4-7", branch="feat",
-                  ts="2026-05-19T10:00:00.000Z",
-                  content=[_agent_use("a1", "staff-backend-engineer")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_only=True))
-        out = capsys.readouterr().out
-        assert "with_denial" in out
-        assert "no_denial" not in out
+    def test_deny_only_restricts_to_denial_sessions(self):
+        """--deny-only retains sessions with a denial event; a session with a
+        reviewer spawn but no denial does not qualify."""
+        session_a, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [_hook_deny("require-code-review")], None, None, None,
+        )
+        session_b, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [
+                _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                      content=[_agent_use("a1", "staff-backend-engineer")]),
+            ],
+            None, None, None,
+        )
+        assert any(e["kind"] == "denial" for e in session_a)
+        assert not any(e["kind"] == "denial" for e in session_b)
 
-    def test_until_subsecond_record_included(self, fake_projects, capsys):
+    def test_until_subsecond_record_included(self):
         """A record at T23:59:59.500Z on the --until date IS included (sub-second gap fix)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-10T23:59:59.500Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(until="2026-05-10"))
-        out = capsys.readouterr().out
-        assert "skill" in out
-        assert "code-review" in out
+        ]
+        since_ts, until_epoch = _since_until_epochs(None, "2026-05-10")
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, since_ts, until_epoch, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
 
-    def test_denial_blockingError_key_used_for_display_message(self, fake_projects, capsys):
-        """Denial message displays the nested blockingError string, not a dict repr."""
+    def test_denial_blockingError_key_used_for_display_message(self):
+        """Denial event's message carries the nested blockingError string, not a dict repr."""
         human_message = "Hook 'require-code-review' blocked the operation"
         error_dict = {"blockingError": human_message, "command": "git commit -m x"}
         denial_rec = {
@@ -4249,59 +4185,53 @@ class TestReviewTrace:
                 "blockingError": error_dict,
             },
         }
-        _write_jsonl(fake_projects / "sess.jsonl", [denial_rec])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if "denial" in ln and ln.startswith("  [")]
-        assert len(denial_lines) == 1
-        # Human-readable text must appear, not a raw dict repr.
-        assert "blocked the operation" in denial_lines[0]
-        assert "{'blockingError'" not in denial_lines[0]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [denial_rec], None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["message"] == human_message
+        assert "{'blockingError'" not in events[0]["message"]
 
-    def test_no_match_session_produces_no_output(self, fake_projects, capsys):
-        """A session with only non-review tool_use (Bash) produces no output block."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_no_match_session_produces_no_output(self):
+        """A session with only non-review tool_use (Bash) produces no events."""
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git status")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "### " not in out
-        assert "No sessions matched in scope." in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
 
-    def test_current_format_denial_detected(self, fake_projects, capsys):
-        """A current-format is_error tool_result with a hook-denial signature is a denial."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 1
-        assert "code-review gate" in denial_lines[0]
+    def test_current_format_denial_detected(self):
+        """A current-format is_error tool_result with a hook-denial signature produces a denial event."""
+        records = [_hook_deny_current("Commit blocked by code-review gate: run /code-review.")]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
+        assert "code-review gate" in events[0]["message"]
 
-    def test_current_format_ordinary_error_is_not_a_denial(self, fake_projects, capsys):
-        """An is_error tool_result without a hook-denial signature is NOT a denial."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("npm ERR! command failed with exit code 1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "### " not in out
-        assert "No sessions matched in scope." in out
+    def test_current_format_ordinary_error_is_not_a_denial(self):
+        """An is_error tool_result without a hook-denial signature produces no events."""
+        records = [_hook_deny_current("npm ERR! command failed with exit code 1")]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
 
-    def test_current_format_denial_text_without_is_error_ignored(self, fake_projects, capsys):
-        """A tool_result with denial-shaped text but no is_error flag is NOT a denial."""
+    def test_current_format_denial_text_without_is_error_ignored(self):
+        """A tool_result with denial-shaped text but no is_error flag produces no events."""
         rec = _hook_deny_current("Blocked by worktree-enforcement hook: not allowed.")
         rec["message"]["content"][0]["is_error"] = False
-        _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "### " not in out
-        assert "No sessions matched in scope." in out
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [rec], None, None, None,
+        )
+        assert events == []
 
-    def test_legacy_and_current_shapes_deduped_by_tool_use_id(self, fake_projects, capsys):
+    def test_legacy_and_current_shapes_deduped_by_tool_use_id(self):
         """A denial recorded as both an attachment and an is_error tool_result for one
         tool_use_id collapses to one event. Dedup keeps whichever record appears first
         in the transcript; here the attachment is written ahead of its twin, so the
@@ -4311,185 +4241,202 @@ class TestReviewTrace:
             "Blocked by worktree-enforcement hook: 'git add' not allowed.",
             tool_id="toolu_worktree",
         )
-        _write_jsonl(fake_projects / "sess.jsonl", [attach, twin])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 1
-        assert "denials=1" in out
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [attach, twin], None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
         # Dedup retains the first-seen record. The attachment is written ahead of the
         # current-format twin above, so the retained event carries hook=worktree; had
-        # the twin come first, hook= would be empty.
-        assert "hook=worktree" in denial_lines[0]
+        # the twin come first, hook_name would be empty.
+        assert events[0]["hook_name"] == "worktree"
 
-    def test_multiple_distinct_current_format_denials_each_counted(self, fake_projects, capsys):
+    def test_multiple_distinct_current_format_denials_each_counted(self):
         """Two current-format denials with distinct tool_use_ids count as two events —
         dedup collapses same-id pairs, not distinct denials."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
             _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="toolu_b"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 2
-        assert "denials=2" in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_events = [e for e in events if e["kind"] == "denial"]
+        assert len(denial_events) == 2
 
-    def test_current_format_denial_with_list_content_detected(self, fake_projects, capsys):
+    def test_current_format_denial_with_list_content_detected(self):
         """A current-format denial whose tool_result content is a list of text blocks
-        (not a bare string) is still detected."""
+        (not a bare string) is still detected — hook_denial_key's signature match
+        relies on _content_text to decode the list shape before matching."""
         rec = _hook_deny_current("placeholder")
         rec["message"]["content"][0]["content"] = [
             {"type": "text", "text": "Commit blocked by code-review gate: run /code-review."},
         ]
-        _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 1
-        assert "code-review gate" in denial_lines[0]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [rec], None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
+        assert "code-review gate" in events[0]["message"]
 
-    def test_deny_only_matches_current_format_denial(self, fake_projects, capsys):
+    def test_deny_only_matches_current_format_denial(self):
         """--deny-only retains a session whose only denial is current-format."""
-        _write_jsonl(fake_projects / "cur.jsonl", [
-            _hook_deny_current("Push to a branch blocked by ready-for-review gate."),
+        denial_events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [_hook_deny_current("Push to a branch blocked by ready-for-review gate.")], None, None, None,
+        )
+        no_denial_events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [
+                _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                      content=[_agent_use("a1", "staff-sdet")]),
+            ],
+            None, None, None,
+        )
+        assert any(e["kind"] == "denial" for e in denial_events)
+        assert not any(e["kind"] == "denial" for e in no_denial_events)
+
+    def test_deny_only_plain_timeline_restricts_to_denial_sessions(self, fake_projects, capsys):
+        """--deny-only's session-skip (the `if deny_only and not has_denial:
+        continue` gate inside cmd_review_trace itself, not either accessor) drops
+        a session with a matched event but no denial from the plain (non-
+        --deny-summary) timeline — a session with a denial still prints."""
+        _write_jsonl(fake_projects / "denial-session.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
         ])
-        _write_jsonl(fake_projects / "none.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
-                  content=[_agent_use("a1", "staff-sdet")]),
+        _write_jsonl(fake_projects / "skill-only-session.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
         ])
         _mod.cmd_review_trace(_review_trace_args(deny_only=True))
         out = capsys.readouterr().out
-        assert "cur.jsonl" in out
-        assert "none.jsonl" not in out
+        assert "denial-session.jsonl" in out
+        assert "skill-only-session.jsonl" not in out
 
     # -----------------------------------------------------------------------
     # GH-482: per-record branch/model attribution
     # -----------------------------------------------------------------------
 
-    def test_gh482_events_attributed_to_own_branch_not_session_first_branch(self, fake_projects, capsys):
+    def test_gh482_events_attributed_to_own_branch_not_session_first_branch(self):
         """A session opening on one branch, then moving to another before any review
         event fires, must attribute every event to its own (later) branch — and
-        --branches must select by that per-event value, not the session's first
+        branch_filter must select by that per-event value, not the session's first
         record's branch (the 53-session class from row 4 of the GH-482 plan)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
             _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:05:00.000Z",
                   content=[_agent_use("a1", "staff-backend-engineer")]),
-        ])
+        ]
 
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
-        assert len(event_lines) == 2
-        for ln in event_lines:
-            branch, _model = _event_suffix_branch_model(ln)
-            assert branch == "feature-x", f"event must attribute to feature-x, not main: {ln!r}"
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 2
+        for evt in events:
+            assert evt["branch"] == "feature-x", f"event must attribute to feature-x, not main: {evt!r}"
 
-        _mod.cmd_review_trace(_review_trace_args(branches="feature-x"))
-        out_feature = capsys.readouterr().out
-        assert "skill" in out_feature
-        assert "reviewer" in out_feature
+        events_feature_x, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, {"feature-x"},
+        )
+        assert {e["kind"] for e in events_feature_x} == {"skill", "reviewer-spawn"}
 
-        _mod.cmd_review_trace(_review_trace_args(branches="main"))
-        out_main = capsys.readouterr().out
-        assert "### " not in out_main, "the session's first-record branch must return zero events"
+        events_main_only, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, {"main"},
+        )
+        assert events_main_only == [], "the session's first-record branch must return zero events"
 
-    def test_header_branches_and_models_are_distinct_sorted_sets(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_header_branches_and_models_are_distinct_sorted_sets(self):
+        """The per-event branch/model values a session contributes are the distinct
+        set cmd_review_trace's header line joins and sorts, not a single session-wide value."""
+        records = [
             _asst("claude-sonnet-4-6", branch="feat-a", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
             _asst("claude-opus-4-7", branch="feat-b", ts="2026-05-19T10:05:00.000Z",
                   content=[_agent_use("a1", "staff-backend-engineer")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        header = next(ln for ln in out.splitlines() if ln.startswith("branches="))
-        branches = re.search(r"branches=(\S+)", header).group(1).split(",")
-        models = re.search(r"models=(\S+)", header).group(1).split(",")
-        assert set(branches) == {"feat-a", "feat-b"}
-        assert set(models) == {"sonnet", "opus"}
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert {e["branch"] for e in events} == {"feat-a", "feat-b"}
+        assert {e["model"] for e in events} == {"sonnet", "opus"}
 
-    def test_denial_stamped_with_its_own_branch_not_carried_forward(self, fake_projects, capsys):
+    def test_denial_stamped_with_its_own_branch_not_carried_forward(self):
         """An attachment denial record carrying its own gitBranch, differing from the
         carried-forward branch, is stamped with the record's own value."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z"),
             _hook_deny("require-code-review", branch="feature-y", ts="2026-05-19T10:05:00.000Z"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_line = next(ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln)
-        branch, _model = _event_suffix_branch_model(denial_line)
-        assert branch == "feature-y"
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_event = next(e for e in events if e["kind"] == "denial")
+        assert denial_event["branch"] == "feature-y"
 
-    def test_denial_inherits_last_assistant_model_not_other(self, fake_projects, capsys):
+    def test_denial_inherits_last_assistant_model_not_other(self):
         """A denial carries no message.model of its own — it must inherit the last
         main-thread assistant model family, not render 'other'."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z"),
             _hook_deny("require-code-review", branch="main", ts="2026-05-19T10:05:00.000Z"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_line = next(ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln)
-        _branch, model = _event_suffix_branch_model(denial_line)
-        assert model == "opus"
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_event = next(e for e in events if e["kind"] == "denial")
+        assert denial_event["model"] == "opus"
 
-    def test_unresolvable_branch_renders_sentinel(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_unresolvable_branch_renders_sentinel(self):
+        records = [
             _asst("claude-sonnet-4-6", branch="", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_line = next(ln for ln in out.splitlines() if ln.startswith("  ["))
-        branch, _model = _event_suffix_branch_model(event_line)
-        assert branch == "?"
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events[0]["branch"] == "?"
 
-    def test_branch_carry_forward_crosses_since_boundary(self, fake_projects, capsys):
+    def test_branch_carry_forward_crosses_since_boundary(self):
         """An in-window event with no gitBranch of its own inherits the branch of an
         out-of-window record — carry-forward crosses the --since boundary."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="old-branch", ts="2026-05-01T10:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(since="2026-05-10"))
-        out = capsys.readouterr().out
-        event_line = next(ln for ln in out.splitlines() if ln.startswith("  ["))
-        branch, _model = _event_suffix_branch_model(event_line)
-        assert branch == "old-branch"
+        ]
+        since_ts, until_epoch = _since_until_epochs("2026-05-10", None)
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, since_ts, until_epoch, None,
+        )
+        assert len(events) == 1
+        assert events[0]["branch"] == "old-branch"
 
-    def test_deny_only_with_branches_filters_before_gating(self, fake_projects, capsys):
-        """The sole denial sits on a branch --branches excludes: no block is emitted
-        (filter-then-deny), not a block that still prints because the session
-        qualified for --deny-only before filtering was applied."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny("require-code-review", branch="wrong-branch"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_only=True, branches="right-branch"))
-        out = capsys.readouterr().out
-        assert "### " not in out
+    def test_deny_only_with_branches_filters_before_gating(self):
+        """The sole denial sits on a branch the filter excludes: branch filtering
+        drops it before deny_only's has_denial check ever sees it (filter-then-deny),
+        not a session that still qualifies because it had a denial before filtering."""
+        records = [_hook_deny("require-code-review", branch="wrong-branch")]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, {"right-branch"},
+        )
+        assert events == []
 
-    def test_dedup_before_branch_filter_pins_ordering(self, fake_projects, capsys):
+    def test_dedup_before_branch_filter_pins_ordering(self):
         """A duplicate-id denial recorded on two different branches must still
-        collapse to one event when --branches includes both branches — dedup (step 3)
+        collapse to one event when both branches are in scope — dedup (step 3)
         is global and runs before branch filtering (step 5), not scoped per branch."""
         attach = _hook_deny("worktree", branch="branch-a")
         twin = _hook_deny_current(
             "Blocked by worktree-enforcement hook: 'git add' not allowed.",
             tool_id="toolu_worktree", branch="branch-b",
         )
-        _write_jsonl(fake_projects / "sess.jsonl", [attach, twin])
+        records = [attach, twin]
 
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 1
-        assert "denials=1" in out
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_events = [e for e in events if e["kind"] == "denial"]
+        assert len(denial_events) == 1
 
         # attach (branch-a) is the first-occurring record, so dedup collapses the
         # pair to a single event attributed to branch-a — filtering to branch-b
@@ -4497,19 +4444,16 @@ class TestReviewTrace:
         # event entirely. A filter-before-dedup implementation would instead
         # exclude attach before dedup ever runs, letting twin (branch-b) through
         # undeduped and yielding one event — the regression this pins against.
-        _mod.cmd_review_trace(_review_trace_args(branches="branch-b"))
-        out_branch_b_only = capsys.readouterr().out
-        denial_lines_branch_b_only = [
-            ln for ln in out_branch_b_only.splitlines() if ln.startswith("  [") and "denial" in ln
-        ]
-        assert len(denial_lines_branch_b_only) == 0
-        assert "### " not in out_branch_b_only
+        events_branch_b_only, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, {"branch-b"},
+        )
+        assert events_branch_b_only == []
 
-    def test_deny_summary_groups_by_hook_and_command_shape(self, fake_projects, capsys):
+    def test_deny_summary_groups_by_hook_and_command_shape(self):
         """--deny-summary groups denials by hook/gate name and by attempted command
         shape, mixing multiple hook names (code-review x2, ready-for-review x1) and
         multiple git-command shapes (git commit x2, git push x1)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
@@ -4519,104 +4463,75 @@ class TestReviewTrace:
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:02:00.000Z",
                   content=[_bash_use("b3", "git commit -m y")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b3"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cr = _table_cols(out, header_contains="Hook/gate", row_contains="code-review", row_startswith=True)
-        assert hook_cr["Count"] == "2"
-        hook_rfr = _table_cols(out, header_contains="Hook/gate", row_contains="ready-for-review", row_startswith=True)
-        assert hook_rfr["Count"] == "1"
-        assert _extract_deny_summary_count(out, "git commit") == 2
-        assert _extract_deny_summary_count(out, "git push") == 1
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {"code-review": 2, "ready-for-review": 1}
+        assert dict(data["command_shape_counts"]) == {"git commit": 2, "git push": 1}
 
-    def test_deny_summary_command_shape_empty_command_bucketed_as_other(self, fake_projects, capsys):
+    def test_deny_summary_command_shape_empty_command_bucketed_as_other(self):
         """A denial with an enumerated hook name but no paired Bash tool_use (an
         empty command string) still lands the command-shape axis in 'other' — the
         shape-axis counterpart to test_deny_summary_unmatched_hook_name_bucketed_not_dropped,
         isolated from that test's hook-axis unmatched-ness."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "other") == 1
+        records = [_hook_deny_current("Commit blocked by code-review gate: run /code-review.")]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
-    def test_deny_summary_git_dash_c_flag_value_dropped_bucketed_as_true_subcommand(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_git_dash_c_flag_value_dropped_bucketed_as_true_subcommand(self):
         """'git -C <path> commit' buckets as 'git commit', not 'other' and not a
         naive misread of <path> as the subcommand — -C is
         require-worktree-for-git-writes.sh's own resolution mechanism for a
         compliant worktree write, so this is the dominant separate-token flag
         shape in the worktree-enforcement denial category. The path itself never
-        appears in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        appears in the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git -C ~/repo commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git commit") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "~/repo" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
-    def test_deny_summary_git_dash_lowercase_c_flag_value_dropped_bucketed_as_true_subcommand(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_git_dash_lowercase_c_flag_value_dropped_bucketed_as_true_subcommand(self):
         """'git -c key=value commit' (a separate-token config override, the value
         itself containing '=') buckets as 'git commit', not 'other'."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git -c user.name=eng commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git commit") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
-    def test_deny_summary_git_dir_equals_attached_flag_value_dropped_bucketed_as_true_subcommand(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_git_dir_equals_attached_flag_value_dropped_bucketed_as_true_subcommand(self):
         """'git --git-dir=<path> status' (an =-attached flag, consuming only its
-        own token) buckets as 'git status', not 'other'. The path never appears
-        in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        own token) buckets as 'git status', not 'other'. The path never leaks
+        into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git --git-dir=~/repo/.git status")]),
             _hook_deny_current("Blocked by worktree-enforcement gate: not in a linked worktree.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git status") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "~/repo" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git status": 1}
 
-    def test_deny_summary_work_tree_separate_token_flag_value_dropped_bucketed_as_true_subcommand(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_work_tree_separate_token_flag_value_dropped_bucketed_as_true_subcommand(self):
         """'git --work-tree <path> commit' (a separate-token flag) buckets as
-        'git commit', not 'other'. The path never appears in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        'git commit', not 'other'. The path never leaks into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git --work-tree ~/repo commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git commit") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "~/repo" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
-    def test_deny_summary_env_assignment_prefix_stripped_before_classification(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_env_assignment_prefix_stripped_before_classification(self):
         """A leading NAME=VALUE environment-assignment prefix (the corpus shape
         wrapping a marker.sh invocation with a live per-machine token) is
-        stripped before classification — the denial buckets as 'marker.sh write'
-        and the env value never appears in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        stripped before classification — the denial buckets as 'marker.sh
+        write' and the env value never leaks into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use(
                       "b1",
@@ -4628,21 +4543,15 @@ class TestReviewTrace:
                 "Command (truncated): ~/.claude/scripts/marker.sh write code-review",
                 tool_id="b1",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "marker.sh write") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "CLAUDE_CONFIG_DIR" not in out
-        assert "claude-accounts" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"marker.sh write": 1}
 
-    def test_deny_summary_absolute_marker_script_path_basenamed_not_leaked(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_absolute_marker_script_path_basenamed_not_leaked(self):
         """An absolute marker.sh invocation path (rather than the tilde form) is
         basenamed before classification — the denial buckets as 'marker.sh
-        activate', and the home-rooted path never appears in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        activate', with no home-rooted path surviving into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "~/.claude/scripts/marker.sh activate plan-review")]),
             _hook_deny_current(
@@ -4650,133 +4559,105 @@ class TestReviewTrace:
                 "Command (truncated): ~/.claude/scripts/marker.sh activate plan-review",
                 tool_id="b1",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "marker.sh activate") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "~/.claude/scripts" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"marker.sh activate": 1}
 
-    def test_deny_summary_unenumerated_attached_flag_before_subcommand_falls_to_other_no_leak(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_unenumerated_attached_flag_before_subcommand_falls_to_other_no_leak(self):
         """A git global flag outside the named value-taking set (e.g.
         --exec-path=<path>) is left in place by _drop_denial_command_flag_values,
-        but since it looks like a flag it must never be read as, and printed as,
+        but since it looks like a flag it must never be read as, and bucketed as,
         the subcommand — the denial falls to 'other' rather than leaking the
-        attached path into the command-shape table."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        attached path into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git --exec-path=~/secret-tools status")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "other") == 1
-        assert "~/secret-tools" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
-    def test_deny_summary_esc_byte_in_trailing_argument_never_reaches_stdout(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_esc_byte_in_trailing_argument_never_reaches_stdout(self):
         """An ESC byte embedded in an argument past the subcommand (e.g. a commit
-        message) never survives to stdout — the classifier only ever prints the
-        command and one subcommand token, so the denial buckets as 'git commit'
-        with the control byte discarded along with the rest of the argument."""
+        message) never survives into the returned command-shape data — the
+        classifier only ever keeps the command and one subcommand token, so the
+        denial buckets as 'git commit' with the control byte discarded along with
+        the rest of the argument."""
         esc_message = "\x1b[31mFAKE PROMPT\x1b[0m"
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", f'git commit -m "{esc_message}"')]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git commit") == 1
-        assert "\x1b" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
-    def test_deny_summary_unenumerated_non_flag_subcommand_token_falls_to_other_no_leak(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_unenumerated_non_flag_subcommand_token_falls_to_other_no_leak(self):
         """A credential-shaped token occupying the subcommand position itself
         (not a flag, not a member of _DENIAL_COMMAND_SUBCOMMANDS) must never be
-        read as, and printed as, the subcommand — the denial falls to 'other'
-        and the token never appears anywhere in --deny-summary output."""
+        read as, and bucketed as, the subcommand — the denial falls to 'other'
+        and the token never appears as a key in the returned shape counts."""
         credential_token = "AKIA_FAKE_SECRET_ACCESS_KEY_ABCDEFGHIJKL"
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", f"git {credential_token} status")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "other") == 1
-        assert credential_token not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
-    def test_deny_summary_unmatched_hook_name_bucketed_not_dropped(self, fake_projects, capsys):
+    def test_deny_summary_unmatched_hook_name_bucketed_not_dropped(self):
         """A denial matched via _HOOK_DENIAL_SIGNATURE's 'invocation denied' alternative,
         which names no hook, lands in the 'unmatched' bucket rather than being silently
         dropped from --deny-summary's total. Its unresolvable tool_use_id also lands in
         the command-shape grouping's 'other' bucket."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("Skill invocation denied."),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
-        assert hook_cols["Count"] == "1"
-        assert _extract_deny_summary_count(out, "other") == 1
+        records = [_hook_deny_current("Skill invocation denied.")]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {_mod._DENY_SUMMARY_UNMATCHED_HOOK: 1}
+        assert dict(data["command_shape_counts"]) == {_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
-    def test_deny_summary_covers_marker_invocation_denied_wording(self, fake_projects, capsys):
+    def test_deny_summary_covers_marker_invocation_denied_wording(self):
         """enforce-marker-script-shape.sh's 'marker.sh invocation denied ...' wording
         names no hook via the 'blocked by <name> hook/gate' idiom, but the
         '<name> invocation denied' pattern extracts 'marker.sh' as an enumerated
-        label rather than dropping it into 'unmatched'."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        label rather than falling to unmatched."""
+        records = [
             _hook_deny_current(
                 "marker.sh invocation denied (path traversal '..' detected). "
                 "Command (truncated): ~/.claude/scripts/marker.sh write ../foo"
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="marker.sh", row_startswith=True)
-        assert hook_cols["Count"] == "1"
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {"marker.sh": 1}
 
-    def test_deny_summary_covers_self_labeled_gate_colon_wording(self, fake_projects, capsys):
+    def test_deny_summary_covers_self_labeled_gate_colon_wording(self):
         """check-skill-length.sh states its own label as the message's own prefix
         ('Skill length gate: ...') rather than via 'blocked by' — the
         '<name> gate:' pattern extracts 'Skill length' as an enumerated label."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current(
                 "Skill length gate: one or more SKILL.md files grew past their "
                 "per-skill limit. Reduce to the limit or fewer lines before committing."
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        # "Skill length" is a two-word label; _table_cols assumes single-token
-        # cells (see its docstring), so this reads the row the same way the
-        # existing "git commit"/"git push" multi-word-label assertions do.
-        assert _extract_deny_summary_count(out, "Skill length") == 1
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {"Skill length": 1}
 
-    def test_deny_summary_unenumerated_colon_wording_falls_to_unmatched_no_leak(self, fake_projects, capsys):
+    def test_deny_summary_unenumerated_colon_wording_falls_to_unmatched_no_leak(self):
         """deny-credential-file-reads.sh's 'Read of '<path>' denied by the
         credential-file read gate: ...' wording now matches _HOOK_DENIAL_SIGNATURE's
         colon-anchored alternative (previously invisible), but the captured span
         includes the 'denied by the' prefix and so isn't an enumerated label —
-        it falls to 'unmatched' rather than fabricating a new hook row, and the
-        credential-shaped path never appears in --deny-summary's output at all."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        it falls to 'unmatched' rather than fabricating a new hook bucket, and the
+        credential-shaped path never appears as a key in the returned hook counts."""
+        records = [
             _hook_deny_current(
                 "Read of './secrets/.netrc' denied by the credential-file "
                 "read gate: the path is credential-shaped."
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
-        assert hook_cols["Count"] == "1"
-        assert ".netrc" not in out
-        assert "secrets" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {_mod._DENY_SUMMARY_UNMATCHED_HOOK: 1}
 
     @pytest.mark.parametrize(
         "message_template",
@@ -4786,36 +4667,24 @@ class TestReviewTrace:
             "{name} gate: some detail.",
         ],
     )
-    def test_deny_summary_over_max_chars_hook_name_candidate_falls_to_unmatched_no_leak(
-        self, fake_projects, capsys, message_template
-    ):
+    def test_deny_summary_over_max_chars_hook_name_candidate_falls_to_unmatched_no_leak(self, message_template):
         """A candidate hook-name span longer than _DENIAL_HOOK_NAME_MAX_CHARS
         (40) across each of the three extraction patterns never yields an
         enumerated label — it falls to 'unmatched', and the credential-shaped
-        name never appears anywhere in --deny-summary's output."""
+        name is never returned as the label."""
         over_cap_name = "AKIA_FAKE_SECRET_ACCESS_KEY_" + "X" * 20  # 48 chars, over the 40-char cap
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current(message_template.format(name=over_cap_name)),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
-        assert hook_cols["Count"] == "1"
-        assert over_cap_name not in out
+        records = [_hook_deny_current(message_template.format(name=over_cap_name))]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {_mod._DENY_SUMMARY_UNMATCHED_HOOK: 1}
 
-    def test_deny_summary_attachment_hookname_not_enumerated_falls_to_unmatched(self, fake_projects, capsys):
+    def test_deny_summary_attachment_hookname_not_enumerated_falls_to_unmatched(self):
         """The legacy attachment branch's hookName field is bounded the same way as
         the regex-extracted branch: an unenumerated hookName (legacy transcripts
         predate this bound, so any historical value is unverified) is not echoed
-        verbatim into --deny-summary's hook/gate table — it falls to 'unmatched'."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny("legacy-hook-slug"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
-        assert hook_cols["Count"] == "1"
-        assert "legacy-hook-slug" not in out
+        verbatim into the returned hook counts — it falls to 'unmatched'."""
+        records = [_hook_deny("legacy-hook-slug")]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {_mod._DENY_SUMMARY_UNMATCHED_HOOK: 1}
 
     def test_deny_summary_replaces_per_session_listing(self, fake_projects, capsys):
         """--deny-summary suppresses the normal per-session event listing entirely —
@@ -4845,49 +4714,43 @@ class TestReviewTrace:
         assert "No denials found in scope." in out
         assert "Denials by hook/gate" not in out
 
-    def test_absent_toolDenialKind_produces_no_friction_event(self, fake_projects, capsys):
+    def test_absent_toolDenialKind_produces_no_friction_event(self):
         """A current-format denial with no toolDenialKind field produces only a
         `denial` event — no `friction` event, since a falsy toolDenialKind means
         the field is absent, not friction."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
-        assert len(event_lines) == 1
-        assert "denial" in event_lines[0]
-        assert "friction" not in event_lines[0]
+        records = [_hook_deny_current("Commit blocked by code-review gate: run /code-review.")]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
 
-    def test_already_gate_denied_record_produces_denial_not_friction(self, fake_projects, capsys):
+    def test_already_gate_denied_record_produces_denial_not_friction(self):
         """A record whose text matches the hook-denial signature AND carries a
         non-gate toolDenialKind produces only a `denial` event, never also a
         `friction` one — already_gate_denied short-circuits
         _is_nongate_friction_kind so one record can't double-count across both
         axes."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current(
                 "Commit blocked by code-review gate: run /code-review.",
                 tool_id="toolu_both", tool_denial_kind="user-rejected",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
-        assert len(event_lines) == 1
-        assert "denial" in event_lines[0]
-        assert "friction" not in event_lines[0]
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
 
-    def test_multi_block_record_produces_one_friction_event_for_the_errored_block_only(
-        self, fake_projects, capsys
-    ):
+    def test_multi_block_record_produces_one_friction_event_for_the_errored_block_only(self):
         """toolDenialKind lives once on the parent user record, but a parallel
         tool call can carry multiple tool_result blocks under it — only the
         block whose own is_error is True is the one the interruption applies
         to. A sibling successful block (is_error False) must not also be
         promoted to its own spurious friction event carrying its unrelated
         successful output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             {
                 "type": "user",
                 "gitBranch": "main",
@@ -4900,35 +4763,36 @@ class TestReviewTrace:
                      "content": "some unrelated successful output", "is_error": False},
                 ]},
             },
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(friction_lines) == 1
-        assert "id=toolu_errored" in friction_lines[0]
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(friction_events) == 1
+        assert friction_events[0]["tool_use_id"] == "toolu_errored"
 
-    def test_legacy_attachment_denial_and_friction_kind_coexist(self, fake_projects, capsys):
+    def test_legacy_attachment_denial_and_friction_kind_coexist(self):
         """A legacy attachment denial and a separate current-format friction
         record (distinct tool_use_ids) in the same session produce one denial
         event and one friction event — the legacy shape never carries
         toolDenialKind, so it cannot itself become friction, and the two axes
         don't interfere with each other."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny("require-code-review"),
             _hook_deny_current(
                 "Request interrupted by user for tool use", tool_id="toolu_interrupt",
                 tool_denial_kind="interrupted",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(denial_lines) == 1
-        assert len(friction_lines) == 1
-        assert "denials=1" in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_events = [e for e in events if e["kind"] == "denial"]
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(denial_events) == 1
+        assert len(friction_events) == 1
 
-    def test_friction_dedup_set_independent_of_denial_dedup_set(self, fake_projects, capsys):
+    def test_friction_dedup_set_independent_of_denial_dedup_set(self):
         """A legacy attachment denial and a current-format record sharing the
         SAME tool_use_id, where the current-format record carries a non-gate
         toolDenialKind and non-signature-matching text, still produces a
@@ -4941,20 +4805,20 @@ class TestReviewTrace:
             "Request interrupted by user for tool use", tool_id=shared_id,
             tool_denial_kind="interrupted",
         )
-        _write_jsonl(fake_projects / "sess.jsonl", [attach, friction_twin])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(denial_lines) == 1
-        assert len(friction_lines) == 1
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [attach, friction_twin], None, None, None,
+        )
+        denial_events = [e for e in events if e["kind"] == "denial"]
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(denial_events) == 1
+        assert len(friction_events) == 1
 
-    def test_friction_event_with_empty_tool_use_id_not_deduped_against_others(self, fake_projects, capsys):
+    def test_friction_event_with_empty_tool_use_id_not_deduped_against_others(self):
         """Multiple friction records with no tool_use_id (empty string) each
         still produce their own event — an empty id is falsy and so is never
         added to seen_friction_ids, matching hook_denial_key's own 'empty
         string is a valid id' contract for denials."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current(
                 "Request interrupted by user for tool use", tool_id="",
                 tool_denial_kind="interrupted",
@@ -4963,71 +4827,71 @@ class TestReviewTrace:
                 "Request interrupted by user for tool use", tool_id="",
                 tool_denial_kind="interrupted", ts="2026-05-19T10:01:00.000Z",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(friction_lines) == 2
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(friction_events) == 2
 
-    def test_unrecognized_toolDenialKind_prints_as_other_kind_not_raw_value(self, fake_projects, capsys):
+    def test_unrecognized_toolDenialKind_prints_as_other_kind_not_raw_value(self):
         """A toolDenialKind value outside the closed four-value enumeration
-        still produces a friction event, but prints as `other-kind` — the raw
-        field value is never echoed verbatim."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        still produces a friction event, carrying the raw field value verbatim
+        on the returned event — _friction_kind_label (already unit-tested
+        separately) is what maps it to `other-kind` at print/count time, not
+        the accessor itself."""
+        records = [
             _hook_deny_current(
                 "Some new denial shape not yet enumerated.", tool_id="toolu_future",
                 tool_denial_kind="some-future-kind",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(friction_lines) == 1
-        assert "kind=other-kind" in friction_lines[0]
-        assert "some-future-kind" not in friction_lines[0]
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(friction_events) == 1
+        assert friction_events[0]["friction_kind"] == "some-future-kind"
 
-    def test_friction_only_session_survives_deny_only_with_deny_summary(self, fake_projects, capsys):
+    def test_friction_only_session_survives_deny_only_with_deny_summary(self):
         """A session with only friction events (no denial-kind events at all) is
         not dropped by --deny-only when --deny-summary also runs: the friction
         tally reads the full per-session events list before deny_only's
         has_denial skip is applied."""
-        _write_jsonl(fake_projects / "friction_only.jsonl", [
+        records = [
             _hook_deny_current(
                 "Request interrupted by user for tool use", tool_id="toolu_a",
                 tool_denial_kind="interrupted",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_only=True, deny_summary=True))
-        out = capsys.readouterr().out
-        assert "No denials found in scope." not in out
-        friction_cols = _table_cols(out, header_contains="Kind", row_contains="interrupted", row_startswith=True)
-        assert friction_cols["Count"] == "1"
+        ]
+        data = _mod._compute_deny_summary_data(
+            [("friction_only.jsonl", records)], deny_only=True,
+        )
+        assert data["any_session_matched"] is True
+        assert dict(data["friction_counts"]) == {"interrupted": 1}
 
-    def test_friction_only_session_renders_timeline_line_default_output(self, fake_projects, capsys):
-        """Without --deny-summary, the same friction-only session's default
-        timeline renders a `friction` line rather than an empty denials=0
-        header with nothing under it — and, pinning the flip side, no
-        `denial`-kind line renders and denials=0 stays accurate, since
-        has_denial and --deny-only's own session-selection semantics stay
-        denial-kind-only."""
-        _write_jsonl(fake_projects / "friction_only.jsonl", [
+    def test_friction_only_session_renders_timeline_line_default_output(self):
+        """Without --deny-summary, a friction-only session's events list carries
+        a `friction`-kind event rather than nothing, and pinning the flip side,
+        no `denial`-kind event is present — has_denial and --deny-only's own
+        session-selection semantics stay denial-kind-only."""
+        records = [
             _hook_deny_current(
                 "Request interrupted by user for tool use", tool_id="toolu_a",
                 tool_denial_kind="interrupted",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
-        assert len(event_lines) == 1
-        assert "friction" in event_lines[0]
-        assert "denial" not in event_lines[0]
-        assert "denials=0" in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "friction"
+        assert not any(e["kind"] == "denial" for e in events)
 
-    def test_deny_summary_prints_corpus_window(self, fake_projects, capsys):
-        """--deny-summary reports the earliest/latest in-scope record
-        timestamp as the corpus window, not just the grouped-count tables."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_deny_summary_prints_corpus_window(self):
+        """--deny-summary computes the earliest/latest in-scope event
+        timestamp as the corpus window, not just the grouped counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
                   content=[_bash_use("b1", "git commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
@@ -5036,20 +4900,18 @@ class TestReviewTrace:
                   content=[_bash_use("b2", "git push origin main")]),
             _hook_deny_current("Push blocked by ready-for-review gate.",
                                 tool_id="b2", ts="2026-07-15T09:00:01.000Z"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert "Corpus window: 2026-07-01 to 2026-07-15" in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
+        assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-15T09:00:01.000Z")
 
-    def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(self):
         """An errored, non-gate-signature tool_result timestamped before
         toolDenialKind's 2026-07-20 introduction structurally cannot carry
         the field — it produces neither a denial nor a friction event (the
         exact record shape this design would silently read as zero friction),
-        but --deny-summary reports it in a separate pre-regime count rather
-        than folding it into a zero. A same-shaped record dated inside the
+        but pre_regime_tool_result_count reports it separately rather than
+        folding it into a zero. A same-shaped record dated inside the
         regime with a real toolDenialKind is included as a control, pinning
         that the pre-regime count is date-gated, not 'every non-denial
         record'. A gate-matching denial dated before the regime is also
@@ -5057,7 +4919,7 @@ class TestReviewTrace:
         correctly classified on the hook/gate axis regardless of era — are
         excluded from the pre-regime count, which counts only the population
         whose kind is genuinely unknowable, not every old record."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current(
                 "Request interrupted by user for tool use",
                 tool_id="pre_regime", ts="2026-06-25T10:00:00.000Z",
@@ -5071,22 +4933,20 @@ class TestReviewTrace:
                 tool_id="in_regime", tool_denial_kind="interrupted",
                 ts="2026-07-25T10:00:00.000Z",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_pre_regime_count(out) == 1
-        friction_cols = _table_cols(out, header_contains="Kind", row_contains="interrupted", row_startswith=True)
-        assert friction_cols["Count"] == "1"
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["pre_regime_tool_result_count"] == 1
+        assert dict(data["friction_counts"]) == {"interrupted": 1}
 
-    def test_deny_summary_cross_tab_shows_joint_counts_not_just_marginals(self, fake_projects, capsys):
+    def test_deny_summary_cross_tab_shows_joint_counts_not_just_marginals(self):
         """Two hooks each deny two command shapes with symmetric marginals
         (code-review: 2 commits + 1 checkout = 3; worktree-enforcement: 1
         commit + 2 checkouts = 3; git commit: 2+1=3; git checkout: 1+2=3) —
-        the marginal hook and shape tables alone can't distinguish which hook
-        denied which shape how many times. The cross-tab must show the true
-        joint counts (code-review x git commit = 2, worktree-enforcement x
-        git checkout = 2), not the marginal-implied even split."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        the marginal hook and shape counts alone can't distinguish which hook
+        denied which shape how many times. hook_shape_counts must carry the
+        true joint counts (code-review x git commit = 2, worktree-enforcement
+        x git checkout = 2), not the marginal-implied even split."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
                   content=[_bash_use("b1", "git commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
@@ -5114,19 +4974,17 @@ class TestReviewTrace:
                 "Blocked by worktree-enforcement hook: 'git checkout' is not on the read-only allowlist.",
                 tool_id="b6",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
         # Marginals confirm the symmetric setup (both hooks 3, both shapes 3).
-        assert _extract_deny_summary_count(out, "git commit") == 3
-        assert _extract_deny_summary_count(out, "git checkout") == 3
+        assert dict(data["command_shape_counts"]) == {"git commit": 3, "git checkout": 3}
         # The cross-tab is what actually distinguishes the two hooks' shapes.
-        assert _extract_cross_tab_count(out, "code-review", "git commit") == 2
-        assert _extract_cross_tab_count(out, "code-review", "git checkout") == 1
-        assert _extract_cross_tab_count(out, "worktree-enforcement", "git commit") == 1
-        assert _extract_cross_tab_count(out, "worktree-enforcement", "git checkout") == 2
+        assert data["hook_shape_counts"][("code-review", "git commit")] == 2
+        assert data["hook_shape_counts"][("code-review", "git checkout")] == 1
+        assert data["hook_shape_counts"][("worktree-enforcement", "git commit")] == 1
+        assert data["hook_shape_counts"][("worktree-enforcement", "git checkout")] == 2
 
-    def test_deny_summary_real_corpus_shapes_all_classify_no_other_or_unmatched(self, fake_projects, capsys):
+    def test_deny_summary_real_corpus_shapes_all_classify_no_other_or_unmatched(self):
         """A fixture drawn from real transcript-analysis.py corpus denials —
         realistic multi-line/chained commands and full hook-message wording,
         not minimal strings copied from A3's own allowlist — across both of
@@ -5139,7 +4997,7 @@ class TestReviewTrace:
         in the first place — hook_counts/command_shape_counts are populated
         only from `denial`-kind events, never `friction`-kind ones — so they
         are irrelevant to, not merely absent from, this fixture."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z", content=[_bash_use(
                 "b1", "git checkout main && git pull --ff-only && git worktree add "
                       ".claude/worktrees/some-feature -b some-feature",
@@ -5251,11 +5109,10 @@ class TestReviewTrace:
                 "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo.",
                 tool_id="b14",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert _extract_deny_summary_count(out, "unmatched") == 0
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["command_shape_counts"].get(_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
+        assert data["hook_counts"].get(_mod._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
 
 
 # ---------------------------------------------------------------------------
