@@ -557,6 +557,8 @@ Pricing is looked up per exact model ID (Sonnet 5 and Sonnet 4.6 price different
 
 Two further multipliers apply on top of the per-model rate, read from the usage record itself rather than a per-model eligibility list: `usage.speed == "fast"` doubles every class's dollars (2×, the vendor's fast-mode rate), and `usage.inference_geo == "us"` multiplies every class's dollars by 1.1× (the vendor's data-residency surcharge). Both compose multiplicatively when present on the same turn (2.2× total) and apply regardless of whether the turn's model is actually eligible for fast mode or data residency — `speed`/`inference_geo` report the API's own settled outcome, not an echo of the request, so a turn that carries either field is trusted as-is.
 
+Like `subagents` and `skill-pair`, `cost` calls `_warn_if_subagent_format_drift` after its own scan: a corpus with subagent spawns but zero `isSidechain` assistant turns read back prints a `WARNING` on stderr, since that signature means the `subagents/*.jsonl` split-file format has drifted rather than that no subagent work happened.
+
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); mutually exclusive with `--projects`
@@ -660,6 +662,38 @@ session-2        private-project-2                189.07
 ```
 
 **When to reach for it.** Rank workflow-efficiency levers by dollars instead of raw token counts before proposing an optimization — a metric denominated in output tokens alone (like `audit-routing`'s Sonnet-tier estimate) can headline 0.6% of spend while missing an 87%-of-spend context-cost problem entirely. Also the source of the redacted, aggregate-only tables that go into a public cost-audit issue — never publish the top-N-sessions section or any `--no-redact` output, both of which are real-project-identifying by construction. If that issue is filed via `gh issue create`, note that `deny-private-project-refs.sh` does not scan `gh issue create`/`gh issue comment` bodies at all — see `docs/private-project-redaction.md`'s "Known gaps" section — so this redaction is not backstopped by the hook on that publish path. Even a `--this-repo`-scoped, redacted table's `private-project-N` numbering is shaped by the operator's full local project corpus, not just this repo — see `_build_redact_map`'s docstring for the ordinal side-channel this implies. Observed wall-clock for a `--since 30d` run against this toolkit's own transcript corpus: ~10s with `--no-redact`, ~18s with the default redacted run — the redact-map first pass roughly doubles the time, since it fully parses every transcript once just to read a directory name (see `iter_sessions`' docstring; this is a known, deliberately deferred perf gap, not a `cost`-specific one).
+
+---
+
+## cache-efficiency
+
+**Purpose.** Per-thread (main/sidechain) cold-cache read-collapse census: assistant turn counts, `cache_read_input_tokens` and both `cache_creation` tiers, and cold-write volume/rate. `cost` buckets spend by token class only and never distinguishes a cold prefix re-write from an ordinary incremental append; `cache-efficiency` is the subcommand that draws that line, using the classifier validated in [`case-studies/cold-cache-attribution.md`](case-studies/cold-cache-attribution.md).
+
+**Classifier.** A turn is **cold** when this turn's `cache_read_input_tokens` collapses more than `T = 0.50` below the prior turn's own prefix total (`cache_read_input_tokens` plus both `cache_creation` tiers) — read-collapse rule R2, adopted over the incumbent `cache_creation > cache_read_input_tokens` rule (R1) after scoring 100% true-positive / 4.5% false-positive against two ground-truth-constructed cache states, the maximum Youden's J across every threshold tested. A session/thread's first turn has no predecessor and is never classified cold — see the case study for the full validation. A cold turn's own `cache_creation` tokens (both tiers) are counted as that turn's cold tokens.
+
+The prior-turn chain is scoped per source-file group (the main transcript, or one subagent file — `_read_session_file_partitioned`, not the flattened `--include-subagents` merge) and per `sessionId` within a group, mirroring `read-scope`'s own prompt-token growth chain: a subagent's own cache prefix is not continuous with the main thread's, or with a sibling subagent's, so comparing across that boundary would misclassify a fresh subagent dispatch's first turn as a cold re-write of an unrelated prefix. The chain also resets at each `compact_boundary` record, since the pre-compaction prefix no longer exists to collapse from.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`, all projects)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); mutually exclusive with `--projects`
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir` (see the `cost` section above). Refused together with `--no-redact`.
+- `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity. Refused when `--config-dir` puts more than one root in scope.
+
+**Per-account breakdown.** When `--config-dir` puts more than one root in scope, a `## Cache efficiency by account` section follows the global table: one `### account-N` block per scanned root, using the same `account-N` labeling `cost`'s and `edit-format`'s own per-account breakdowns use — never a raw project name or config-dir path.
+
+Like `cost`, `subagents`, and `skill-pair`, `cache-efficiency` calls `_warn_if_subagent_format_drift` after its own scan.
+
+**Sample output (synthetic, illustrative counts only).**
+```
+## Cache efficiency by thread
+
+Thread          Turns             Read        Write1h        Write5m          ColdTok     Cold/Wr    Cold/Rd   ColdEvts     AvgEvt
+main              812        6,000,000        400,000      2,600,000        1,500,000       50.0%      25.0%         10    150,000
+sidechain         240          500,000              0      1,000,000          250,000       25.0%      50.0%          4     62,500
+```
+`Write1h`/`Write5m` are the two `cache_creation` tiers (1-hour and 5-minute ephemeral). `Cold/Wr` is cold tokens as a share of that thread's total write tokens (`Write1h + Write5m`); `Cold/Rd` is cold tokens as a share of that thread's total `Read`. `AvgEvt` is `ColdTok / ColdEvts`, `0` when `ColdEvts` is `0`.
+
+**When to reach for it.** Answer "how much of this account's cache-write spend is a genuine cold re-write, versus an ordinary incremental append" before proposing a prefix-trimming or breakpoint-placement fix — `cost`'s own token-class table cannot separate the two. See the case study for what the validated classifier found: cold re-writes are real and large (60.6%–76.4% of cache-write tokens on the two accounts measured there), but a harness-side fix is not guaranteed to exist for most of it — a 15-session wire-level-capture sample found roughly two-thirds of cold events unexplained by any transcript-visible signal.
 
 ---
 

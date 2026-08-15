@@ -237,7 +237,6 @@ before citing them forward.
 | Symbol-level navigation as a token-reduction lever | Rejected, below the double-digit bar | Upper bound ≈3.8% of billed input tokens on the most code-dense account, ≈1.7% on the other measured. `Read` output is ≈11.7% of billed input tokens, and only the whole-file-indexable-code slice — 32.6% of all read volume — is addressable at all. Markdown is the largest read bucket at 42.6% and LSP does not touch it. Both bounds carry an unverified read-to-billed conversion that could move in either direction, and no discount for comprehension reads a symbol lookup cannot replace. The 11.7% is against billed input tokens; the `context-composition-analyzer.md` entry above measures the same content against cumulative prompt-token growth, which counts a chunk once on entry rather than on every subsequent turn — different denominators, not conflicting figures. |
 | Code-dense repositories as a proxy for code-dense reading | Refuted | The account with by far the most statically-analyzable source still read 42.6% Markdown against 40.8% code. Portfolio composition does not predict read composition; measure the transcripts, not the tree. |
 | Enabling the native code-intelligence plugins | Adopted for diagnostics, not for tokens | Post-edit type errors without a compiler or linter run (vendor-documented, unmeasured here). Installed at user scope per account, so `claude/.claude/settings.json` is untouched and adoption is deliberately unrecorded in-repo. Carries a documented memory cost on large projects and false-positive import diagnostics in misconfigured monorepos. |
-
 ## From `background-slow-bash-calls.md` — "Default slow/network-bound Bash calls to `run_in_background`"
 
 | Lever | Verdict | Measured reason |
@@ -258,3 +257,11 @@ a one-off scan.
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | `subagent-delegation/SKILL.md` rule routing instrument-authoring to `general-purpose` | Rejected (measured) | Across 622 scanned sessions, zero-dispatch sessions (189, 30.4% of sessions) carried only 6.6% of main-thread authored-payload mass (~312K of ~4.74M chars); sessions that dispatched at least once (433, 69.6%) carried the other 93.4% (~4.43M chars). The plan's rule fires on concentration in the zero-dispatch cohort; the measured concentration runs the opposite direction — sessions that already delegate account for the overwhelming majority of inline-authoring mass, so inline authoring is not tracking the pattern the rule would exist to catch (a session answering its own question by writing the tool it needs, rather than delegating the build). |
+
+## From `cost-attribution-integrity.md` — "Cold prompt-cache measurement and root cause"
+
+Full empirical record: [`case-studies/cold-cache-attribution.md`](case-studies/cold-cache-attribution.md).
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Cache TTL as a uniform, non-account-scoped property | Corrected, not a lever this repo can pull | Direct reads of `cache_creation.ephemeral_1h_input_tokens` across 22,290 turns on one account's main thread show zero one-hour-TTL tokens, while the other five accounts on the byte-identical stowed harness all show non-zero. The `:22` row's "nothing in `settings.json`, hooks, or env vars exposes this field" premise still holds — this corrects only its "no lever exists" framing: a real, lever-shaped difference exists between accounts, but it tracks plan tier or usage-overage state, which is a vendor account question to resolve outside this repo, not a config gap inside it. |

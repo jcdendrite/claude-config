@@ -479,6 +479,7 @@ _DO_NOT_PUBLISH_BANNER = (
 # can never validate against two different accounts.
 _SUBCOMMANDS_WITH_OWN_CONFIG_DIR = (
     "cost", "context-distribution", "context-composition", "edit-format", "read-scope",
+    "cache-efficiency",
     "subagents", "subagent-mix", "cost-trend", "cache-rebuild", "plan-boundary",
     "instrument-authoring",
 )

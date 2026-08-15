@@ -6632,12 +6632,13 @@ class TestCostMultiRootRedaction:
         assert "external-unrelated-secret-clientname" not in str(exc_info.value)
         assert "-home-user-escaped" not in str(exc_info.value)
 
-    def test_no_redact_refused_by_cost_report_itself_even_when_called_directly(self, tmp_path):
+    def test_no_redact_refused_by_cost_report_itself_even_when_called_directly(self, tmp_path, capsys):
         """Defense-in-depth: _cost_report is the function that actually prints
         raw labels when redact is False, so it must refuse the multi-root +
         --no-redact combination itself rather than trusting that
         _resolve_cost_roots already validated it — every test in this class
-        calls _cost_report directly, bypassing that CLI-level boundary."""
+        calls _cost_report directly, bypassing that CLI-level boundary.
+        Refusal happens before any output is printed."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
@@ -6645,6 +6646,7 @@ class TestCostMultiRootRedaction:
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_report(_cost_args(no_redact=True), date(2026, 8, 2), roots=[root_a, root_b])
         assert exc_info.value.code == 2
+        assert capsys.readouterr().out == ""
 
     def test_no_redact_refused_at_cmd_cost_when_config_dir_given(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
@@ -8691,13 +8693,14 @@ class TestEditFormat:
         assert "mean old_string chars/edit: n/a" in out
         assert "old_string share of Edit payload: 0.0%" in out
 
-    def test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly(self, tmp_path):
+    def test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly(self, tmp_path, capsys):
         """Defense-in-depth: _edit_format_report must refuse the multi-root +
         --no-redact combination itself rather than trusting that
         _resolve_cost_roots already validated it, mirroring
         test_no_redact_refused_by_cost_report_itself_even_when_called_directly
         — the in-function guard's own docstring claims this module's tests
-        exercise it directly; prior to this test, none did."""
+        exercise it directly; prior to this test, none did. Refusal happens
+        before any output is printed."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
             _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
         ])
@@ -8707,6 +8710,7 @@ class TestEditFormat:
         with pytest.raises(SystemExit) as exc_info:
             _mod._edit_format_report(_edit_format_args(no_redact=True), roots=[root_a, root_b])
         assert exc_info.value.code == 2
+        assert capsys.readouterr().out == ""
 
 
 class TestScanEditFormatSession:
@@ -9052,11 +9056,12 @@ class TestReadScope:
         assert _mod._DO_NOT_PUBLISH_BANNER in out
         assert _extract_read_total(out) == 1
 
-    def test_no_redact_refused_by_read_scope_report_itself_even_when_called_directly(self, tmp_path):
+    def test_no_redact_refused_by_read_scope_report_itself_even_when_called_directly(self, tmp_path, capsys):
         """Defense-in-depth: _read_scope_report must refuse the multi-root +
         --no-redact combination itself rather than trusting that
         _resolve_cost_roots already validated it, mirroring
-        test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly."""
+        test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly.
+        Refusal happens before any output is printed."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
             _opus([_read_tool_use("r1", file_path="/a.py")]),
         ])
@@ -9066,6 +9071,7 @@ class TestReadScope:
         with pytest.raises(SystemExit) as exc_info:
             _mod._read_scope_report(_read_scope_args(no_redact=True), roots=[root_a, root_b])
         assert exc_info.value.code == 2
+        assert capsys.readouterr().out == ""
 
     def test_since_flag_filters_growth_deltas_at_report_level(self, fake_projects, capsys):
         records = [
@@ -9967,6 +9973,253 @@ class TestScanInstrumentAuthoringSession:
         assert cohort_totals["dispatched"]["session_n"] == 2
         assert cohort_totals["zero_dispatch"]["payload_chars"] == 1000
         assert cohort_totals["dispatched"]["payload_chars"] == 20
+
+
+# ---------------------------------------------------------------------------
+# cache-efficiency
+# ---------------------------------------------------------------------------
+
+
+def _cache_efficiency_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    no_redact: bool = False,
+    extra_config_dirs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "no_redact": no_redact,
+        "extra_config_dirs": extra_config_dirs,
+    })()
+
+
+class TestCacheEfficiencyClassifier:
+    """Direct unit tests for the read-collapse classifier
+    (docs/case-studies/cold-cache-attribution.md), scored at
+    T=_COLD_READ_COLLAPSE_MARGIN=0.50 -- the margin the case study measured
+    as the maximum Youden's J across every threshold tested there."""
+
+    def test_margin_boundary_exactly_at_t_is_not_cold(self):
+        """collapse == T (not strictly greater than T) stays warm: prior
+        prefix 100, this turn's read 50 -> exactly 0.50 collapse."""
+        assert _mod._is_cold_read_collapse(100, 50) is False
+
+    def test_margin_boundary_just_past_t_is_cold(self):
+        """One token further past the same prior prefix flips the
+        classification: prior prefix 100, read 49 -> 0.51 collapse."""
+        assert _mod._is_cold_read_collapse(100, 49) is True
+
+    def test_zero_prior_prefix_is_never_cold(self):
+        """No prefix to collapse from -- covers both a prior turn whose own
+        prefix total was genuinely zero and (via _scan_cache_efficiency_group
+        below) a session's first turn, which has no prior turn at all."""
+        assert _mod._is_cold_read_collapse(0, 0) is False
+
+
+class TestCacheEfficiencyGroupScan:
+    """Direct unit tests for _scan_cache_efficiency_group's classification
+    over one source-file group -- the layer TestCacheEfficiencyClassifier's
+    pure-function tests can't reach, since the first-turn carve-out depends
+    on the per-session prior-turn chain, not the margin comparison alone."""
+
+    def test_first_turn_of_session_with_zero_read_is_not_cold(self):
+        """A session's first assistant turn has no predecessor, so a
+        first-turn read==0 (e.g. a genuinely fresh context) must not be
+        misread as a cold re-write -- the first-turn carve-out."""
+        records = [_priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100)]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["turns"] == 1
+        assert stats["main"]["cold_events"] == 0
+
+    def test_non_first_turn_with_zero_read_after_nonzero_prior_is_cold(self):
+        """The non-first-turn counterpart to the carve-out above: a turn
+        following a real prior prefix, whose own read collapses to zero,
+        must classify cold."""
+        records = [
+            _priced("claude-sonnet-5", cache_read=1000, request_id="r1"),
+            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r2"),
+        ]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["cold_events"] == 1
+        assert stats["main"]["cold_tokens"] == 500
+
+    def test_compact_boundary_resets_the_chain(self):
+        """A compact_boundary record resets the prior-turn chain -- the turn
+        immediately after compaction is treated as a first turn (not cold),
+        since the pre-compaction prefix it would otherwise be compared
+        against no longer exists."""
+        records = [
+            _priced("claude-sonnet-5", cache_read=100_000, request_id="r1"),
+            _compact_boundary_rec(),
+            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2"),
+        ]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["cold_events"] == 0
+
+    def test_second_session_first_turn_does_not_inherit_first_sessions_chain(self):
+        """The carve-out is keyed by sessionId, not by turn position within
+        the group: a second session's first turn must not inherit a first
+        session's already-built prior-prefix chain, even though both turns
+        appear in the same source-file group."""
+        session_a_turn = _priced("claude-sonnet-5", cache_read=10_000, request_id="r1")
+        session_a_turn["sessionId"] = "session-a"
+        session_b_first_turn = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2")
+        session_b_first_turn["sessionId"] = "session-b"
+        records = [session_a_turn, session_b_first_turn]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["cold_events"] == 0
+
+    def test_sidechain_turn_buckets_separately_from_main(self):
+        """isSidechain routes a turn into its own thread bucket, mirroring
+        cost's and subagents' own main/sidechain split."""
+        side_rec = _priced("claude-sonnet-5", cache_read=200)
+        side_rec["isSidechain"] = True
+        records = [_priced("claude-sonnet-5", cache_read=100), side_rec]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["turns"] == 1
+        assert stats["main"]["read_tokens"] == 100
+        assert stats["sidechain"]["turns"] == 1
+        assert stats["sidechain"]["read_tokens"] == 200
+
+    def test_sidechain_first_turn_does_not_inherit_mains_prior_prefix(self):
+        """The prior-prefix chain is keyed by (sessionId, thread), not
+        sessionId alone: a sidechain record sharing the main record's
+        sessionId (the real-world shape -- a subagent file's records carry
+        the parent session's sessionId) must not inherit the main thread's
+        prior prefix. Values are chosen so cross-thread contamination would
+        flip the verdict: main's prefix (10,000) vastly exceeds the
+        sidechain's own read (0), so a shared chain would misclassify the
+        sidechain's first turn as a cold collapse."""
+        side_rec = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100)
+        side_rec["isSidechain"] = True
+        records = [_priced("claude-sonnet-5", cache_read=10_000), side_rec]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["sidechain"]["cold_events"] == 0
+
+
+class TestCacheEfficiency:
+    def test_turn_and_token_totals_and_cold_share_hand_computed(self, fake_projects, capsys):
+        """End-to-end report totals against a small hand-computed fixture:
+        turn 1 (no predecessor) is never cold; turn 2 is a warm append
+        (read stays at turn 1's full prefix); turn 3's read collapses to
+        zero against turn 2's 1,200-token prefix -- cold, contributing its
+        own 500 write-5m tokens as cold tokens."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=1000, request_id="r1"),
+            _priced("claude-sonnet-5", cache_read=1000, ephemeral_5m=200, request_id="r2"),
+            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r3"),
+        ])
+        _mod._cache_efficiency_report(_cache_efficiency_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Turns"] == "3"
+        assert cols["Read"] == "2,000"
+        assert cols["Write5m"] == "700"
+        assert cols["ColdTok"] == "500"
+        assert cols["ColdEvts"] == "1"
+
+    def test_multi_record_turn_split_across_jsonl_lines_not_misread_cold(self, fake_projects, capsys):
+        """Claude Code writes one JSONL record per assistant content block
+        (thinking/text/tool_use), all sharing one requestId and identical
+        cache_read/cache_creation usage (_dedup_turns_by_request_id's own
+        documented invariant). Without deduping each source-file group
+        before classification, the second record of that same turn would
+        read as a second turn whose read 'collapsed' against the first
+        record's own (identical) usage -- a false cold event on a turn that
+        never actually ended. Guards _cache_efficiency_report's per-group
+        _dedup_turns_by_request_id call."""
+        rec1 = _priced("claude-sonnet-5", cache_read=100, ephemeral_5m=10_000, request_id="req-1")
+        rec2 = _priced("claude-sonnet-5", cache_read=100, ephemeral_5m=10_000, request_id="req-1")
+        _write_jsonl(fake_projects / "sess.jsonl", [rec1, rec2])
+        _mod._cache_efficiency_report(_cache_efficiency_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Turns"] == "1"
+        assert cols["ColdEvts"] == "0"
+
+    def test_no_assistant_turns_prints_zeroes_without_division_error(self, fake_projects, capsys):
+        """A session with no assistant turns at all (e.g. only a user
+        message) prints a clean zero-state row rather than raising
+        ZeroDivisionError -- mirrors edit-format's own zero-state coverage."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
+        _mod._cache_efficiency_report(_cache_efficiency_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Turns"] == "0"
+        assert cols["Cold/Wr"] == "0.0%"
+
+    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+        """--no-redact is refused when --config-dir puts more than one root
+        in scope, mirroring cost's/edit-format's/read-scope's own refusal."""
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cache_efficiency(_cache_efficiency_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
+        assert exc_info.value.code == 2
+        assert "--no-redact" in capsys.readouterr().err
+
+    def test_no_redact_allowed_alone_with_single_root_content_unchanged(self, fake_projects, capsys):
+        """--no-redact with no --config-dir (single root) is unaffected —
+        this report's content never varies with redact, since it carries no
+        project name or session ID, but the banner still prints for CLI
+        parity with cost/edit-format/read-scope."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        _mod._cache_efficiency_report(_cache_efficiency_args(no_redact=True))
+        out = capsys.readouterr().out
+        assert _mod._DO_NOT_PUBLISH_BANNER in out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Turns"] == "1"
+
+    def test_no_redact_refused_by_report_itself_even_when_called_directly(self, tmp_path, capsys):
+        """Defense-in-depth: _cache_efficiency_report must refuse the
+        multi-root + --no-redact combination itself rather than trusting
+        that _resolve_cost_roots already validated it, mirroring
+        test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly.
+        Refusal happens before any output is printed."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
+            _priced("claude-sonnet-5", cache_read=200),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cache_efficiency_report(_cache_efficiency_args(no_redact=True), roots=[root_a, root_b])
+        assert exc_info.value.code == 2
+        assert capsys.readouterr().out == ""
+
+    def test_per_account_breakdown_uses_account_n_labels_not_raw_paths(self, tmp_path, capsys):
+        """Per-account figures are emitted through account-N labels — never
+        the raw config-dir path or account-identifying directory name — the
+        same discipline edit-format's own per-account breakdown carries."""
+        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
+            _priced("claude-sonnet-5", cache_read=200),
+            _priced("claude-sonnet-5", cache_read=300),
+        ])
+        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert "acct-alice-clientwork" not in out
+        assert "acct-bob-clientwork" not in out
+        assert str(root_a) not in out
+        assert str(root_b) not in out
+        account_1 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=2)
+        account_2 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=3)
+        assert account_1["Turns"] == "1"
+        assert account_2["Turns"] == "2"
 
 
 # ---------------------------------------------------------------------------
@@ -14964,6 +15217,49 @@ class TestFormatDriftCanary:
         # The drift canary fires: spawns=1 (main-thread Agent), sidechain_turns=0
         # (subagent record has no isSidechain field → not counted as sidechain).
         assert "WARNING" in captured.err
+
+    def test_drift_warning_also_fires_in_cost(self, fake_projects, capsys):
+        """cmd_cost also emits the drift warning when spawns have no
+        sidechain turns -- _cost_report now accumulates total_spawns/
+        total_sidechain_turns through its own per-session loop instead of
+        never calling _warn_if_subagent_format_drift at all."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_no_warning_in_cost_on_healthy_corpus(self, fake_projects, capsys):
+        """A corpus with no subagent spawns at all draws no drift warning
+        from cmd_cost -- the negative counterpart, so the canary is known to
+        stay silent on ordinary data rather than firing unconditionally."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_drift_warning_also_fires_in_cache_efficiency(self, fake_projects, capsys):
+        """cmd_cache_efficiency also emits the drift warning when spawns
+        have no sidechain turns."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_no_warning_in_cache_efficiency_on_healthy_corpus(self, fake_projects, capsys):
+        """The negative counterpart for cmd_cache_efficiency: no spawns, no
+        warning."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" not in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
