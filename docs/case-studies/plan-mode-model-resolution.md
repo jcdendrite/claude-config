@@ -33,6 +33,18 @@ Two candidate fixes were checked and rejected, not left untested:
 
 No instruction-layer mitigation is known as of this writing. The two real levers are revisiting the `opusplan` session default (see `docs/cost-levers-considered.md`'s `pin-explore-to-sonnet.md` register entry) or keeping agent-initiated planning out of harness plan mode entirely — both are follow-up decisions, not made here.
 
+**2026-08-14 follow-up:** `plan-mode-workflow-discipline.md` made the second
+lever the fix — an advisory bullet in `claude/.claude/CLAUDE.md`'s Agent
+Briefing plus `"EnterPlanMode"` in `permissions.deny` keep agent-initiated
+planning out of harness plan mode entirely, since the override this case
+study measured is keyed to `permissionMode`, not to any model setting. That
+plan also flipped the `opusplan` session default to `sonnet`, but as a
+coherence consequence of closing plan mode to the agent, not as an attempt
+to fix this escalation directly — no model setting reaches a
+`permissionMode`-gated override. See `docs/cost-levers-considered.md` for
+how that flip differs from the `pin-explore-to-sonnet.md` register entry's
+cost-lever framing of the same setting.
+
 ## 2026-08-14 follow-up: independent re-derivation, and a headless-measurement limitation
 
 A committed, re-runnable harness (`evals/measure_subagent_model_resolution.py`) was built to settle this by controlled experiment rather than corpus inference. Its own decisive cells — a Sonnet-pinned `staff-backend-engineer` dispatched under `claude -p --permission-mode plan`, both from a Sonnet parent and an Opus parent, two repetitions each — resolved to the declared pin every time, no exceptions; `python evals/measure_subagent_model_resolution.py --run 2` (or `--run 4`) re-runs the same live cell, though — being a real API call — not guaranteed to land on an identical outcome each time. Taken alone this would read as H1 falsified. It is not: the harness measures a condition that turns out not to represent the mechanism this case study is about.

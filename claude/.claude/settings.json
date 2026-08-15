@@ -61,10 +61,11 @@
       "Bash(yum install *)",
       "Bash(dnf install *)",
       "Bash(apk add *)",
-      "Bash(zypper install *)"
+      "Bash(zypper install *)",
+      "EnterPlanMode"
     ]
   },
-  "model": "opusplan",
+  "model": "sonnet",
   "skillOverrides": {
     "brief": "name-only",
     "handoff": "name-only",

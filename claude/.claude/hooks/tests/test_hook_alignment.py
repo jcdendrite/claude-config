@@ -9,7 +9,9 @@ plugins/*/hooks/ (excluding _lib.sh siblings) must declare a
 matching gate-naming prefixes or the EXPLICIT_GATES set must declare
 `# hook-class: gate`. Layer 1 also pins each gate-backed review skill to the
 hook that gates it — both files present, and the hook still wired into a
-PreToolUse matcher group.
+PreToolUse matcher group — and pins standalone config-value invariants in
+settings.json unrelated to gate/skill pairing (e.g. the plan-mode-entry
+deny/defaultMode declarations).
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -215,6 +217,30 @@ def test_gate_backed_skill_has_a_live_gate(skill_name: str, hook_name: str) -> N
         f"{hook_name}: present on disk but not wired into any PreToolUse "
         f"matcher group in {_SETTINGS_PATH.name} — the gate never fires, yet "
         f"{skill_name}/SKILL.md still describes itself as gate-backed"
+    )
+
+
+def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
+    """The two config-value declarations backing plan-mode-entry discipline.
+
+    This proves the *declared* config state — `"EnterPlanMode"` is present
+    in `permissions.deny`, and `permissions.defaultMode` is not `"plan"` —
+    not that the harness actually honors either at runtime. That live-session
+    verification lives outside pytest (see
+    `.claude/plans/plan-mode-workflow-discipline.md`'s Pre-implementation
+    gate); this test only pins the declaration so a future edit can't drop it
+    silently.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert "EnterPlanMode" in settings.get("permissions", {}).get("deny", []), (
+        f"'EnterPlanMode' missing from permissions.deny in "
+        f"{_SETTINGS_PATH.name} — agent-initiated harness plan-mode entry "
+        f"is no longer blocked"
+    )
+    assert settings.get("permissions", {}).get("defaultMode") != "plan", (
+        f"permissions.defaultMode is 'plan' in {_SETTINGS_PATH.name} — this "
+        f"reopens the same escalation state the EnterPlanMode deny closes, "
+        f"via a config write rather than a tool call"
     )
 
 
