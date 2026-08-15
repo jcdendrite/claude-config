@@ -100,6 +100,70 @@ class TestRequireMemorySkill:
         payload = _memory_input(edit_input(readme), "sess-non-memory")
         assert run_hook(HOOK_PATH, payload) == "allow"
 
+    def test_memory_md_edit_blocked_through_symlinked_projects_dir(
+        self, isolated_home, tmp_path
+    ):
+        """projects/ symlinked independently of its $HOME/.claude parent
+        must still resolve to the same physical prefix as the target path,
+        so an Edit reached through the symlink is classified and denied."""
+        real_projects = tmp_path / "real-projects-elsewhere"
+        mem_dir = real_projects / "abc123" / "memory"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / "MEMORY.md").touch()
+
+        claude_dir = isolated_home / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        (claude_dir / "projects").symlink_to(real_projects)
+
+        memory_md_via_symlink = claude_dir / "projects" / "abc123" / "memory" / "MEMORY.md"
+        payload = _memory_input(
+            edit_input(str(memory_md_via_symlink)), "sess-symlinked-projects-edit"
+        )
+        assert run_hook(HOOK_PATH, payload) == "deny"
+
+    def test_new_topic_file_blocked_through_symlinked_projects_dir(
+        self, isolated_home, tmp_path
+    ):
+        """Same symlinked-projects/ scenario as above, for the new-topic-file
+        (class b) path rather than the MEMORY.md-index (class a) path."""
+        real_projects = tmp_path / "real-projects-elsewhere"
+        mem_dir = real_projects / "abc123" / "memory"
+        mem_dir.mkdir(parents=True)
+
+        claude_dir = isolated_home / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        (claude_dir / "projects").symlink_to(real_projects)
+
+        new_topic_via_symlink = claude_dir / "projects" / "abc123" / "memory" / "new_topic.md"
+        assert not new_topic_via_symlink.exists()
+        payload = _memory_input(
+            write_input(str(new_topic_via_symlink)), "sess-symlinked-projects-write"
+        )
+        assert run_hook(HOOK_PATH, payload) == "deny"
+
+    def test_existing_topic_file_edit_allowed_through_symlinked_projects_dir(
+        self, isolated_home, tmp_path
+    ):
+        """Allow-path counterpart to the two deny tests above: an Edit on an
+        already-existing topic file reached through the symlinked projects/
+        still passes through, pairing with test_existing_topic_file_edit_allowed
+        so a future over-broadened prefix match would show up here too."""
+        real_projects = tmp_path / "real-projects-elsewhere"
+        mem_dir = real_projects / "abc123" / "memory"
+        mem_dir.mkdir(parents=True)
+        existing = mem_dir / "user_role.md"
+        existing.write_text("# User role\n")
+
+        claude_dir = isolated_home / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        (claude_dir / "projects").symlink_to(real_projects)
+
+        existing_via_symlink = claude_dir / "projects" / "abc123" / "memory" / "user_role.md"
+        payload = _memory_input(
+            edit_input(str(existing_via_symlink)), "sess-symlinked-projects-allow"
+        )
+        assert run_hook(HOOK_PATH, payload) == "allow"
+
     def test_memory_md_edit_blocked_under_claude_config_dir(self, isolated_home, tmp_path):
         """CLAUDE_CONFIG_DIR-set: a MEMORY.md write under
         $CLAUDE_CONFIG_DIR/projects/.../memory/ is classified as a candidate
