@@ -60,19 +60,25 @@ Fetch all review comments on the current branch's open pull request and address 
    - **Inline file comments** (fetched from `pulls/{n}/comments`) — reply via the `/replies` sub-resource:
      ```
      gh api repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies \
-       -F body='**[Claude Code]** ...reply text...'
+       -F body='**[Claude Code]** ...reply text...
+
+     🤖 Generated with [Claude Code](https://claude.com/claude-code)'
      ```
 
    - **Top-level review bodies** (fetched from `pulls/{n}/reviews`) — no `/replies` primitive exists; post a new top-level comment in the conversation tab:
      ```
      gh api repos/{owner}/{repo}/issues/{number}/comments \
-       -F body='**[Claude Code]** ...reply text...'
+       -F body='**[Claude Code]** ...reply text...
+
+     🤖 Generated with [Claude Code](https://claude.com/claude-code)'
      ```
 
    - **Issue-level comments** (fetched from `issues/{n}/comments`) — same path; no `/replies` sub-resource:
      ```
      gh api repos/{owner}/{repo}/issues/{number}/comments \
-       -F body='**[Claude Code]** ...reply text...'
+       -F body='**[Claude Code]** ...reply text...
+
+     🤖 Generated with [Claude Code](https://claude.com/claude-code)'
      ```
 8. Commit and push any code changes in a single commit
 9. **Remove this session's hook bypass marker:**
@@ -84,12 +90,14 @@ Fetch all review comments on the current branch's open pull request and address 
 
 ## Attribution
 
-**CRITICAL:** All PR comment replies are posted through the user's GitHub token and will appear as the user's account. To avoid confusion, **always** prefix every reply body with `**[Claude Code]**` followed by the response content. This makes it clear the response is AI-generated.
+**CRITICAL:** All PR comment replies are posted through the user's GitHub token and will appear as the user's account. To avoid confusion, **always** prefix every reply body with `**[Claude Code]**` followed by the response content, and end the body with the attribution trailer: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`. The prefix marks authorship inline for thread readers; the trailer is the AI-disclosure line — they serve different readers and both are required.
 
 Example:
 ```
 gh api repos/owner/repo/pulls/4/comments/12345678/replies \
-  -F body='**[Claude Code]** Moved the utility functions to the shared module as suggested.'
+  -F body='**[Claude Code]** Moved the utility functions to the shared module as suggested.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)'
 ```
 
 ## Guidelines
@@ -103,7 +111,9 @@ gh api repos/owner/repo/pulls/4/comments/12345678/replies \
   TARGET_BODY=$(gh api repos/{owner}/{repo}/pulls/comments/{id} --jq '.body')
   case "$TARGET_BODY" in
     '**[Claude Code]**'*) gh api repos/{owner}/{repo}/pulls/comments/{id} -X PATCH \
-                            -F body='**[Claude Code]** ...corrected text...' ;;
+                            -F body='**[Claude Code]** ...corrected text...
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)' ;;
     *) echo "ABORT: target is not Claude-authored; reply via /replies instead" >&2; exit 1 ;;
   esac
   ```
