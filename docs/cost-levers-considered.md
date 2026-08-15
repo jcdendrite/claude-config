@@ -26,6 +26,16 @@ register doesn't restate their content, it indexes it.
 | Retiring `staff-analytics-engineer` from auto-routing | Rejected | `reviewer-yield` measurement: 6 dispatches, 6 found, 0 zero-finding, 0 unclassified — flagged concerns in every dispatch sampled. "Findings" is a documented lower bound on value, not a yield signal to cut against. |
 | Model routing (reduce Opus usage) | No change needed | Opus measured at 15.7% of spend; the existing `model: opusplan` routing was already correct for that share. |
 
+**2026-08-15 follow-up:** the "nothing in `settings.json`, hooks, or env
+vars exposes this field" claim above is outdated — `ENABLE_PROMPT_CACHING_1H`
+and `FORCE_PROMPT_CACHING_5M` are real, documented environment variables
+(`code.claude.com/docs/en/prompt-caching`) that select TTL per session.
+Verdict unchanged (rejected): main-thread 5-minute-tier writes are 96–97%
+concentrated in idle gaps under 5 minutes on every account checked (personal-
+subscription, small-subscription-client, API-key-client), where the pricier
+1-hour breakpoint adds cost with no avoided-rebuild benefit — do not set
+either variable.
+
 ## From `absolute-token-handoff-threshold.md` (PR #593) — "Re-unit the handoff nudge"
 
 | Lever | Verdict | Measured reason |
