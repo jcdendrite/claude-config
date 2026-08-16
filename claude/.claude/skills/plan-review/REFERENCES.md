@@ -21,6 +21,7 @@ as "has no canonical principle behind it," which is a different claim from
 | Misordered observe-then-mutate steps | None — skill-local. CLAUDE.md has no ordering/self-inflicted-staleness principle to operationalize; this tripwire generalizes a single observed planning failure (see the surfacing incident below) rather than a stated global rule. |
 | Overcorrection that negates a named allowance | §Working Style — Scope discipline, Axis 2 (the in-file opportunistic-refactoring license is the allowance most often negated) |
 | Unjustified given | §Engineering Judgment — A locally-valid patch can signal a wrong foundation (the "check whether a change one level up … dissolves the need for it" test, applied to an accepted design constraint rather than a code patch) |
+| Evidence restated across mechanisms | §Engineering Judgment — Single source of truth |
 
 ## Load-on-demand routing architecture
 
@@ -83,6 +84,8 @@ Two worked fixtures fix the fire condition to reach, not to sincerity or to the 
 
 - **Expect fire.** Root: "a length gate denies commits on a file carrying machine-generated content." Given: "the file carries a generated block — beyond reach: the downstream repo's index generator owns it." Critical files: the gate script and its test. Fires on the first prong — the generator is a peer repository's own script, editable by a coordinated change even though this plan's Critical files don't include it, so ownership alone does not put it out of reach.
 - **Expect no fire.** Same root and Critical files. Given: "the gate receives only the staged blob — beyond reach: the Claude Code harness defines the `PreToolUse` hook payload." Neither prong reaches: the harness's hook contract is the platform the gate script runs on top of, not an editable peer artifact — no plan can change what capabilities that contract provides from within it.
+
+The seventh tripwire (evidence restated across mechanisms) was added after a PR review flagged a plan-stage design where four mechanisms each independently restated the same claim and its measurement into different files with no site named as the home. The rule fires only on duplicated evidence — not on restated rule text (§4's no-shared-partials policy) and not on a compressed summary pointing at a named holding site. See `docs/design-decisions.md` §26 for the discriminator, the evidence ratio, and citations (including the source PR review comment and commit).
 
 Keep a paragraph here per tripwire. When Step 4 gains a rule and this section does not, the omission reads as "that rule has no recorded origin" — and the count drift is invisible until someone compares the two files line by line.
 
