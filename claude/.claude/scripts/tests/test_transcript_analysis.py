@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from conftest import _agent_use, _asst, _bash_use, _tool_result, _user_msg, _write_jsonl
 from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
@@ -23,10 +24,6 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
-
-
-def _write_jsonl(path: Path, records: list[dict]) -> None:
-    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
 
 def _write_subagent_jsonl(
@@ -216,52 +213,6 @@ def _extract_summary_unpriced(out: str) -> tuple[int, int]:
     match = re.search(r"Unpriced tokens: ([\d,]+) tokens across (\d+) model IDs", out)
     assert match is not None, "summary unpriced-tokens line not found in output"
     return int(match.group(1).replace(",", "")), int(match.group(2))
-
-
-def _asst(
-    model: str,
-    *,
-    branch: str = "main",
-    sidechain: bool = False,
-    ts: str | None = None,
-    content: list | None = None,
-    request_id: str | None = None,
-) -> dict:
-    rec: dict = {
-        "type": "assistant",
-        "gitBranch": branch,
-        "isSidechain": sidechain,
-        "message": {"model": model, "content": content or [], "usage": {}},
-    }
-    if ts:
-        rec["timestamp"] = ts
-    if request_id is not None:
-        rec["requestId"] = request_id
-    return rec
-
-
-def _user_msg(content, *, branch: str = "main", ts: str | None = None) -> dict:
-    rec: dict = {"type": "user", "gitBranch": branch, "message": {"content": content}}
-    if ts:
-        rec["timestamp"] = ts
-    return rec
-
-
-def _bash_use(tool_id: str, command: str) -> dict:
-    return {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
-
-
-def _tool_result(tool_id: str, text: str) -> dict:
-    return {"type": "tool_result", "tool_use_id": tool_id, "content": text}
-
-
-def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", prompt: str = "y") -> dict:
-    return {
-        "type": "tool_use",
-        "id": tool_id,
-        "name": tool_name,
-        "input": {"subagent_type": subagent_type, "description": "x", "prompt": prompt},
-    }
 
 
 def _priced_sidechain_asst(
@@ -15840,10 +15791,10 @@ def _fake_gh_pr_list_run(cmd, *a, **k):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
-# (cli_name, header_name, cmd_func, zero-arg args factory) for the 22
+# (cli_name, header_name, cmd_func, zero-arg args factory) for the 23
 # subcommands whose resolved-scope header prints unconditionally, even over
 # an empty scope. review-trace and skill-invocation print unconditionally
-# too, but carry zero-match message text and branches the other 22 don't, so
+# too, but carry zero-match message text and branches the other 23 don't, so
 # they get their own tests below rather than a row here.
 _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("buckets", "BUCKETS", _mod.cmd_buckets,
@@ -15868,6 +15819,10 @@ _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("audit-routing", "AUDIT ROUTING", _mod.cmd_audit_routing, _audit_routing_args),
     ("cost", "COST", _mod.cmd_cost, _cost_args),
     ("context-distribution", "CONTEXT DISTRIBUTION", _mod.cmd_context_distribution, _context_distribution_args),
+    ("context-composition", "CONTEXT COMPOSITION", _mod.cmd_context_composition,
+     lambda: type("A", (), {
+         "projects": "*", "this_repo": False, "since": None, "no_redact": False, "extra_config_dirs": None,
+     })()),
     ("cost-trend", "COST TREND", _mod.cmd_cost_trend, _cost_trend_args),
     ("cache-rebuild", "CACHE REBUILD", _mod.cmd_cache_rebuild, _cache_rebuild_args),
     ("handoff-ratio", "HANDOFF RATIO", _mod.cmd_handoff_ratio, _handoff_args),

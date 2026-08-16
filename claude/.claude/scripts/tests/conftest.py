@@ -1,6 +1,9 @@
 """Shared git-repo scaffolding helpers for the worktree-cleanup script tests
 (test_cleanup_merged_branches.py, test_cleanup_idle_open_pr_worktrees.py),
-plus suite-wide transcript-corpus isolation (see the autouse fixture below).
+plus suite-wide transcript-corpus isolation (see the autouse fixture below),
+plus the transcript-record fixture builders shared by
+test_transcript_analysis.py and test_context_composition.py (see the
+extraction rationale on _write_jsonl below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
 `tmp_path` (or a repo built from it) as an explicit argument rather than
@@ -11,10 +14,64 @@ a worktree is identical regardless of which script is under test.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    """Write records as one-JSON-object-per-line, transcript-analysis.py's on-disk shape -- shared
+    here (with _asst/_user_msg) so test_context_composition.py doesn't re-derive its own,
+    possibly-drifting copy of the requestId run-merge shape _dedup_turns_by_request_id relies on."""
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+
+def _asst(
+    model: str,
+    *,
+    branch: str = "main",
+    sidechain: bool = False,
+    ts: str | None = None,
+    content: list | None = None,
+    request_id: str | None = None,
+) -> dict:
+    rec: dict = {
+        "type": "assistant",
+        "gitBranch": branch,
+        "isSidechain": sidechain,
+        "message": {"model": model, "content": content or [], "usage": {}},
+    }
+    if ts:
+        rec["timestamp"] = ts
+    if request_id is not None:
+        rec["requestId"] = request_id
+    return rec
+
+
+def _user_msg(content, *, branch: str = "main", ts: str | None = None) -> dict:
+    rec: dict = {"type": "user", "gitBranch": branch, "message": {"content": content}}
+    if ts:
+        rec["timestamp"] = ts
+    return rec
+
+
+def _bash_use(tool_id: str, command: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
+
+
+def _tool_result(tool_id: str, text: str) -> dict:
+    return {"type": "tool_result", "tool_use_id": tool_id, "content": text}
+
+
+def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", prompt: str = "y") -> dict:
+    return {
+        "type": "tool_use",
+        "id": tool_id,
+        "name": tool_name,
+        "input": {"subagent_type": subagent_type, "description": "x", "prompt": prompt},
+    }
 
 
 @pytest.fixture(autouse=True)
