@@ -244,3 +244,17 @@ before citing them forward.
 |---|---|---|
 | Defaulting a Bash call expected to be slow or network-bound (branch push, PR create, CI-check poll) to `run_in_background: true`, so the main thread does not sit idle long enough to expire the prompt cache | Rejected, premise falsified | The multi-minute call durations that motivated it are not execution time. A transcript records only the assistant `tool_use` timestamp and the matching `tool_result` timestamp — there is no per-call execution field in the schema — so any duration derived from it includes permission-prompt wait and operator idle. Scanning that window across the default declared-root scope found main-thread Bash calls at 5 minutes or more whose command shapes include `cd`, `pwd`, `echo` and `git status` at the same magnitude as `gh pr view` and `git push`, with the longest exceeding 20 hours; `cd` has no execution cost to background. The named commands measure sub-second on this machine (`git push --dry-run`, `gh pr list`). Figures are a one-off scan, not a rerunnable script — treat the precision accordingly. |
 | `run_in_background: true` for a Bash call whose execution genuinely does take minutes (not merely wait-inflated) | Rejected, mechanism does not reach the wait | `run_in_background` governs whether a call detaches after dispatch, not whether it is approved, so it does not shorten an approval wait. A backgrounded call also re-invokes the main thread on completion, so absent independent work to interleave it converts a blocking wait into an idle wait of the same length. The residual driver is the concurrent-session-switching finding in the `context-cost-root-cause.md` section above, not the shape of the Bash call. |
+
+## From `delegate-instrument-authoring.md` — "Delegate the instrument along with the objective"
+
+The plan fixed its go/no-go rule before running the measurement: ship a
+`subagent-delegation` rule (Phase 2A) if inline instrument-authoring mass
+concentrates in sessions that never dispatched a subagent; record this row
+instead (Phase 2B) if authoring mass is not concentrated there. Reproducible
+via `transcript-analysis.py instrument-authoring` (default corpus scope, no
+`--since`) — unlike several entries above, this is a standing subcommand, not
+a one-off scan.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| `subagent-delegation/SKILL.md` rule routing instrument-authoring to `general-purpose` | Rejected (measured) | Across 622 scanned sessions, zero-dispatch sessions (189, 30.4% of sessions) carried only 6.6% of main-thread authored-payload mass (~312K of ~4.74M chars); sessions that dispatched at least once (433, 69.6%) carried the other 93.4% (~4.43M chars). The plan's rule fires on concentration in the zero-dispatch cohort; the measured concentration runs the opposite direction — sessions that already delegate account for the overwhelming majority of inline-authoring mass, so inline authoring is not tracking the split-objective failure the rule would exist to catch. |
