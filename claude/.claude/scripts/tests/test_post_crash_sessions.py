@@ -1118,6 +1118,19 @@ def test_build_report_no_sessions_dir_at_all_produces_clean_report(tmp_path):
     assert "Resumable (0)" in output
 
 
+def test_build_report_stores_config_dirs_on_returned_report(tmp_path):
+    """The config_dirs list passed in is main()'s fully-resolved list -- the
+    tests that spy on build_report's config_dirs kwarg only prove what
+    main() sends in, not that build_report stores it unmodified on the
+    returned Report. Closes that passthrough gap directly."""
+    first = tmp_path / "config-a"
+    first.mkdir()
+    second = tmp_path / "config-b"
+    second.mkdir()
+    report = _mod.build_report(config_dirs=[first, second], find_root=tmp_path / "home")
+    assert report.config_dirs == [first, second]
+
+
 def test_build_report_foreign_json_in_sessions_dir_produces_clean_report(tmp_path):
     sessions_dir = tmp_path / "config" / "sessions"
     sessions_dir.mkdir(parents=True)
@@ -1443,30 +1456,25 @@ def test_render_report_notes_unreadable_roots_file(monkeypatch, tmp_path):
     assert "present but unreadable" in output
 
 
-def test_main_config_dir_explicit_notes_override_not_roots_file_state(tmp_path, monkeypatch, capsys):
-    """--config-dir passed explicitly is a different provenance from the
-    declared-roots-file default: the note must reflect the override, not the
-    (here populated) roots file's own state, even though it never got read
-    this run. Driven through main(), since the provenance distinction lives
-    in argument parsing, not render_report."""
-    default_dir = tmp_path / "default-config"
-    default_dir.mkdir()
+def test_render_report_explicit_config_dir_note_overrides_populated_roots_file(monkeypatch, tmp_path):
+    """config_dirs_explicit=True must select the override note before the
+    root_count check is ever reached, even with more than one root and a
+    populated, contributing roots file -- _config_dirs_scanned_note checks
+    config_dirs_explicit first, unconditionally. A single config_dirs entry
+    can't pin that ordering: at root_count=1 a reordered (buggy)
+    implementation that checks root_count first produces the identical
+    output, since root_count=1 also satisfies its own `!= 1` guard -- only
+    root_count>1 makes the two orderings diverge."""
     declared_dir = tmp_path / "declared-config"
     (declared_dir / "projects").mkdir(parents=True)
     roots_file = tmp_path / "roots"
     roots_file.write_text(f"{declared_dir}\n")
-    explicit_dir = tmp_path / "explicit-config"
-    (explicit_dir / "sessions").mkdir(parents=True)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
-    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
-
-    exit_code = _mod.main(["--config-dir", str(explicit_dir)])
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert "--config-dir passed explicitly" in captured.out
-    assert "declared; contributed no additional directories" not in captured.out
-    assert "no ~/.claude/transcript-config-dirs declared" not in captured.out
+    report = _blank_report(config_dirs=[Path("/fake/explicit-account-1"), Path("/fake/explicit-account-2")])
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=True)
+    assert "--config-dir passed explicitly" in output
+    assert "declared; contributed no additional directories" not in output
+    assert "no ~/.claude/transcript-config-dirs declared" not in output
 
 
 # ---------------------------------------------------------------------------
@@ -1876,29 +1884,59 @@ def test_main_rejects_nan_near_boot_hours(tmp_path, monkeypatch, capsys):
     assert "--near-boot-hours" in captured.err
 
 
-def test_main_always_scans_default_config_dir_first(monkeypatch, tmp_path, capsys):
+def _spy_on_build_report(monkeypatch):
+    """Monkeypatch build_report to capture its call kwargs instead of
+    running the real scan -- the config_dirs kwarg it receives is main()'s
+    fully-resolved list, so asserting on it directly is a stronger and more
+    direct check than string-scanning render_report's printed output."""
+    captured_kwargs = {}
+
+    def fake_build_report(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _blank_report()
+
+    monkeypatch.setattr(_mod, "build_report", fake_build_report)
+    return captured_kwargs
+
+
+def _spy_on_render_report(monkeypatch):
+    """Monkeypatch render_report to capture its call kwargs instead of
+    formatting a real report -- pair with _spy_on_build_report so main()'s
+    real registry/find scan never runs, keeping the wiring check hermetic."""
+    captured_kwargs = {}
+
+    def fake_render_report(report, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "fake report"
+
+    monkeypatch.setattr(_mod, "render_report", fake_render_report)
+    return captured_kwargs
+
+
+def test_main_always_scans_default_config_dir_first(monkeypatch, tmp_path):
+    captured_kwargs = _spy_on_build_report(monkeypatch)
     default_dir = tmp_path / "default-config"
     default_dir.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
     monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
     exit_code = _mod.main([])
-    captured = capsys.readouterr()
     assert exit_code == 0
-    assert str(default_dir) in captured.out
+    assert captured_kwargs["config_dirs"][0] == default_dir
 
 
-def test_main_dedupes_default_config_dir_supplied_again_explicitly(monkeypatch, tmp_path, capsys):
+def test_main_dedupes_default_config_dir_supplied_again_explicitly(monkeypatch, tmp_path):
+    captured_kwargs = _spy_on_build_report(monkeypatch)
     default_dir = tmp_path / "default-config"
     (default_dir / "sessions").mkdir(parents=True)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
     monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
     exit_code = _mod.main(["--config-dir", str(default_dir)])
-    captured = capsys.readouterr()
     assert exit_code == 0
-    assert captured.out.count(str(default_dir)) == 1
+    assert captured_kwargs["config_dirs"] == [default_dir]
 
 
-def test_main_scans_declared_roots_by_default_when_no_config_dir_flag(tmp_path, monkeypatch, capsys):
+def test_main_scans_declared_roots_by_default_when_no_config_dir_flag(tmp_path, monkeypatch):
+    captured_kwargs = _spy_on_build_report(monkeypatch)
     default_dir = tmp_path / "default-config"
     default_dir.mkdir()
     declared_dir = tmp_path / "declared-config"
@@ -1910,21 +1948,17 @@ def test_main_scans_declared_roots_by_default_when_no_config_dir_flag(tmp_path, 
     monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
 
     exit_code = _mod.main([])
-    captured = capsys.readouterr()
     assert exit_code == 0
-    # Not asserted by raw path: with no explicit --config-dir, the declared
-    # root's own path must not appear in the default (non-redacted) header
-    # -- see test_render_report_declared_roots_default_shows_count_not_paths.
-    # The count line is the proof this root was actually unioned into the scan.
-    assert "Config directories scanned: 2" in captured.out
-    assert str(declared_dir) not in captured.out
+    assert declared_dir in captured_kwargs["config_dirs"]
+    assert len(captured_kwargs["config_dirs"]) == 2
 
 
-def test_main_declared_sessions_only_root_is_not_silently_dropped(tmp_path, monkeypatch, capsys):
+def test_main_declared_sessions_only_root_is_not_silently_dropped(tmp_path, monkeypatch):
     """A declared root with a sessions/ dir but no projects/ dir is the
     crashed-fresh-account case this tool exists for -- declared_transcript_roots()'s
     own projects/-only requirement would drop it, so main() must apply its
     own looser sessions/-or-projects/ check instead."""
+    captured_kwargs = _spy_on_build_report(monkeypatch)
     default_dir = tmp_path / "default-config"
     default_dir.mkdir()
     sessions_only_dir = tmp_path / "sessions-only-config"
@@ -1936,18 +1970,16 @@ def test_main_declared_sessions_only_root_is_not_silently_dropped(tmp_path, monk
     monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
 
     exit_code = _mod.main([])
-    captured = capsys.readouterr()
     assert exit_code == 0
-    # Not asserted by raw path -- see test_render_report_declared_roots_default_shows_count_not_paths.
-    # The count line is the proof this root wasn't dropped from the scan.
-    assert "Config directories scanned: 2" in captured.out
-    assert str(sessions_only_dir) not in captured.out
+    assert sessions_only_dir in captured_kwargs["config_dirs"]
+    assert len(captured_kwargs["config_dirs"]) == 2
 
 
-def test_main_explicit_config_dir_overrides_declared_roots_default(tmp_path, monkeypatch, capsys):
+def test_main_explicit_config_dir_overrides_declared_roots_default(tmp_path, monkeypatch):
     """An explicit --config-dir takes precedence over the declared-roots
     default entirely, mirroring transcript-analysis.py's _resolve_scan_roots
     precedence -- the declared root must not also be scanned."""
+    captured_kwargs = _spy_on_build_report(monkeypatch)
     default_dir = tmp_path / "default-config"
     default_dir.mkdir()
     declared_dir = tmp_path / "declared-config"
@@ -1961,11 +1993,8 @@ def test_main_explicit_config_dir_overrides_declared_roots_default(tmp_path, mon
     monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
 
     exit_code = _mod.main(["--config-dir", str(explicit_dir)])
-    captured = capsys.readouterr()
     assert exit_code == 0
-    assert str(default_dir) in captured.out
-    assert str(explicit_dir) in captured.out
-    assert str(declared_dir) not in captured.out
+    assert captured_kwargs["config_dirs"] == [default_dir, explicit_dir]
 
 
 def test_main_end_to_end_prints_resume_command_for_crashed_session(tmp_path, monkeypatch, capsys):
@@ -2029,7 +2058,34 @@ def test_main_smoke_against_live_environment_no_traceback(tmp_path, monkeypatch,
     assert "Post-crash session recovery report" in captured.out
 
 
-def test_main_redact_flag_produces_ordinal_output(tmp_path, monkeypatch, capsys):
+def test_main_redact_flag_produces_ordinal_output(tmp_path, monkeypatch):
+    """Proves --redact reaches render_report's redact kwarg, by spying on
+    render_report itself -- the ordinal-substitution behavior that flag
+    produces is already covered directly, hermetically, by
+    test_render_report_redact_maps_cwd_and_session_to_ordinals_and_drops_branch.
+    Also spies build_report so this wiring check never shells out to the
+    real ps/find scan, matching test_main_threads_near_boot_hours_into_build_report's
+    own hermeticity."""
+    _spy_on_build_report(monkeypatch)
+    captured_kwargs = _spy_on_render_report(monkeypatch)
+    empty_config = tmp_path / "empty-config"
+    empty_config.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(empty_config))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    exit_code = _mod.main(["--redact"])
+    assert exit_code == 0
+    assert captured_kwargs["redact"] is True
+
+
+def test_main_redact_end_to_end_hides_session_id_and_cwd(tmp_path, monkeypatch, capsys):
+    """Runs a real crashed session through the full classify -> build_report
+    -> render_report chain under --redact -- the wiring test above only
+    proves the flag reaches render_report, and render_report's own unit test
+    (test_render_report_redact_maps_cwd_and_session_to_ordinals_and_drops_branch)
+    only exercises a hand-built SessionRow's currently-known fields. This is
+    the one test that would catch a future field carrying real session data
+    into the report unredacted."""
     config_dir_path = tmp_path / "config"
     sessions_dir = config_dir_path / "sessions"
     proj = tmp_path / "recoverable-project"
@@ -2080,4 +2136,26 @@ def test_main_threads_near_boot_hours_into_build_report(tmp_path, monkeypatch, c
     exit_code = _mod.main(["--near-boot-hours", "72"])
     assert exit_code == 0
     assert captured_kwargs["near_boot_window_seconds"] == 72 * 3600.0
+
+
+def test_main_threads_explicit_config_dir_flag_into_render_report(tmp_path, monkeypatch):
+    """--config-dir passed explicitly must reach render_report's
+    config_dirs_explicit kwarg as True -- the note-text consequence of that
+    flag is covered directly and hermetically at the render_report layer by
+    test_render_report_explicit_config_dir_note_overrides_populated_roots_file,
+    not through main(). Also spies build_report so this wiring check never
+    shells out to the real ps/find scan, matching
+    test_main_threads_near_boot_hours_into_build_report's own hermeticity."""
+    _spy_on_build_report(monkeypatch)
+    captured_kwargs = _spy_on_render_report(monkeypatch)
+    default_dir = tmp_path / "default-config"
+    default_dir.mkdir()
+    explicit_dir = tmp_path / "explicit-config"
+    (explicit_dir / "sessions").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    exit_code = _mod.main(["--config-dir", str(explicit_dir)])
+    assert exit_code == 0
+    assert captured_kwargs["config_dirs_explicit"] is True
 
