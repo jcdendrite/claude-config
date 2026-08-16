@@ -10,8 +10,10 @@ repo adds on top, see the [README](../README.md#auto-mode).
 
 ## Requirements
 
-- **Plan:** All plans. On Team and Enterprise, an Owner must first enable auto
-  mode in Claude Code admin settings before members can turn it on.
+- **Plan:** Available on every plan — this is feature eligibility, not
+  which mode a session starts in (see "Activating" below for that). On Team
+  and Enterprise, an Owner can turn availability off org-wide by setting
+  `permissions.disableAutoMode` to `"disable"` in managed settings.
 - **Model:** Auto mode requires a supported *session* model — the eligible set
   is provider-dependent, not plan-dependent (see the
   [permission modes reference](https://code.claude.com/docs/en/permission-modes)
@@ -30,9 +32,22 @@ repo adds on top, see the [README](../README.md#auto-mode).
 
 ## Activating
 
-Press **Shift+Tab** in the CLI to cycle through modes until `auto` appears,
-then accept the one-time opt-in prompt. To start directly in auto mode, use the
-`claude-auto` wrapper shipped by this repo:
+On Pro, Max, and Team plans, in a terminal or the VS Code extension, auto
+mode is Claude Code's built-in starting mode already — no activation step
+needed — as of Claude Code v2.1.228 (macOS, Linux, WSL) or v2.1.233 (native
+Windows). The first time the built-in default starts a session in auto mode,
+Claude Code shows a one-time notice, not a prompt requiring acceptance. On an
+older Claude Code version, an Enterprise plan, a Claude Console API key
+account, `claude -p` / the Agent SDK, or another provider (Amazon Bedrock,
+Google Cloud's Agent Platform, Microsoft Foundry, Claude Platform on AWS, the
+Claude apps gateway), the built-in starting mode is still Manual; see the
+"Which mode a session starts in" section of the
+[permission modes reference](https://code.claude.com/docs/en/permission-modes)
+for the full starting-mode precedence table.
+
+To pick a specific model in one step, or to start auto mode explicitly where
+it isn't the built-in default, use the `claude-auto` wrapper shipped by this
+repo:
 
 ```bash
 claude-auto                           # start auto mode on Sonnet
@@ -55,7 +70,9 @@ start against a default like `opusplan`. Name the model explicitly whenever you
 care which one you get. `claude --permission-mode auto` also works directly
 once your default is already a single eligible model.
 
-To make auto mode the default, add to `~/.claude/settings.json`:
+Where auto mode isn't the built-in default — Enterprise, a Claude Console API
+key account, an older Claude Code version, or another provider — make it the
+default for your own sessions by adding to `~/.claude/settings.json`:
 
 ```json
 {
@@ -196,17 +213,19 @@ whether or not it is anchored via `--model auto`, and the two combine
 independently. Plan mode forces subagent dispatches to Opus regardless of a
 `model:` frontmatter pin or an explicit `model` param on the `Agent`
 dispatch, and this is confirmed independent of the parent's own model, not
-just correlated with it — `Explore`: 92/95 plan-mode dispatches resolved to
-Opus (97%) despite its pin; `staff-*`/`ciso-reviewer`: 340/341 (99.7%);
-across 500 plan-mode dispatches overall, 489 resolved to Opus including all
-70 that carried an explicit `model: sonnet` param. A falsification test
-ruled out the obvious confound — that, at measurement time, this repo's
+just correlated with it. A corrected re-scan of `staff-*`/`ciso-reviewer`
+dispatches with a Sonnet-declared pin, a Sonnet-family parent turn, and
+`permissionMode == "plan"` at dispatch time found 131 matching dispatches,
+129 of which resolved to Opus; 12 of those 131 already carried an explicit
+`model: sonnet` param, and all 12 still resolved to Opus. A falsification
+test ruled out the obvious confound — that, at measurement time, this repo's
 `opusplan` default made plan mode and an Opus-anchored parent nearly
 synonymous — by isolating 178 non-plan-mode dispatches from Opus-anchored
 parents: 178/178 still resolved to Sonnet, matching the pin. See
 [`case-studies/plan-mode-model-resolution.md`](case-studies/plan-mode-model-resolution.md)
-for the full investigation, primary-source citations, and rejected
-mitigations (`ExitPlanMode` timing, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS`).
+(lines 54 and 56 for the corrected re-scan) for the full investigation,
+primary-source citations, and rejected mitigations (`ExitPlanMode` timing,
+`CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS`).
 
 No instruction-layer mitigation is known. Pass an explicit `model` on every
 dispatch anyway (see the global `CLAUDE.md`'s Model Routing section) — it
