@@ -1275,6 +1275,10 @@ REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
 )
 
+# Shared by review-trace's two zero-match termini (default timeline and
+# --deny-summary) so both read identically under the scope header.
+_REVIEW_TRACE_NO_SESSIONS_MSG = "No sessions matched in scope."
+
 # Skills that open a judgment span in audit-routing: any turn within an active span
 # (from skill invocation until the next user turn) is classified as `judgment`, not
 # by its tool-use contents. Extends REVIEW_TRACE_SKILLS with security-review,
@@ -2081,29 +2085,32 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
             until_epoch = day_start + 86400
 
     if deny_summary:
+        # Ahead of the scan, matching the default arm below: a crash partway
+        # through the corpus still leaves the scanned scope on stdout.
+        _print_resolved_scope("review-trace", scope_label, roots)
         data = _compute_deny_summary_data(
             session_iter, since_ts=since_ts, until_ts=until_epoch,
             branch_filter=branch_filter, deny_only=deny_only,
         )
         if sum(data["hook_counts"].values()) or sum(data["friction_counts"].values()):
-            _print_resolved_scope("review-trace", scope_label, roots)
             _print_deny_summary(
                 data["hook_counts"], data["command_shape_counts"], data["hook_shape_counts"],
                 data["friction_counts"], data["pre_regime_tool_result_count"],
                 data["corpus_min_ts"], data["corpus_max_ts"],
             )
         elif data["any_session_matched"]:
-            # Scope resolved and had matching sessions, but none carried a
-            # denial — printed explicitly so this reads distinctly from a
-            # broken --branches/scope flag matching no sessions at all.
-            _print_resolved_scope("review-trace", scope_label, roots)
+            # Sessions matched but none carried a denial — distinct from the
+            # scope matching no sessions at all, which the else covers.
             print("\nNo denials found in scope.")
+        else:
+            print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
         return
 
-    # The scope header prints lazily, on the first emitted block — not
-    # unconditionally up front — so a run that matches no session still
-    # produces byte-for-byte empty output, as it always has.
-    scope_header_printed = False
+    # Printed before the scan, not on the first emitted block: a run matching
+    # no session must still state the corpus it read, or a wrongly-scoped scan
+    # is indistinguishable from a correctly-scoped empty one.
+    _print_resolved_scope("review-trace", scope_label, roots)
+    emitted_any_session = False
 
     for jsonl, records in session_iter:
         events, tool_use_commands, _pre_regime = _review_trace_session_events(
@@ -2122,9 +2129,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         branches_seen = ",".join(sorted({e["branch"] for e in events}))
         models_seen = ",".join(sorted({e["model"] for e in events}))
 
-        if not scope_header_printed:
-            _print_resolved_scope("review-trace", scope_label, roots)
-            scope_header_printed = True
+        emitted_any_session = True
 
         print(f"\n### {jsonl}")
         print(
@@ -2150,6 +2155,9 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}  msg={msg!r}{suffix}")
             elif kind == "reviewer-spawn":
                 print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
+
+    if not emitted_any_session:
+        print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
 
 
 def cmd_judgment_pair(args: argparse.Namespace) -> None:
@@ -2853,6 +2861,16 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
     keyed = set(skill_top) | set(skill_routed) | set(skill_slash)
     all_skills: set[str] = {skill for skill, _thread in keyed}
 
+    scope_parts = [
+        "explicit --projects (not repo-scoped)" if projects_arg else "this repo",
+        "main+subagents" if include_subagents else "main thread",
+    ]
+    if branch_filter:
+        scope_parts.append(f"branches: {','.join(sorted(branch_filter))}")
+    # Printed above the zero-match return, not after it: "found nothing" is only
+    # interpretable alongside the corpus that was searched.
+    _print_resolved_scope("skill-invocation", "; ".join(scope_parts), roots)
+
     if not all_skills:
         print("No skill invocations found.")
         return
@@ -2865,14 +2883,6 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
         return sum(_thread_total(s, thread) for thread in ("main", "sidechain"))
 
     sorted_skills = sorted(all_skills, key=lambda s: (-_skill_total(s), s))
-
-    scope_parts = [
-        "explicit --projects (not repo-scoped)" if projects_arg else "this repo",
-        "main+subagents" if include_subagents else "main thread",
-    ]
-    if branch_filter:
-        scope_parts.append(f"branches: {','.join(sorted(branch_filter))}")
-    _print_resolved_scope("skill-invocation", "; ".join(scope_parts), roots)
 
     if include_subagents:
         header = (

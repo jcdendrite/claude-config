@@ -4169,7 +4169,8 @@ class TestReviewTrace:
         _mod.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
         # Sidechain skill produces no events → the session block is not printed at all.
-        assert out.strip() == ""
+        assert "### " not in out
+        assert "No sessions matched in scope." in out
 
     def test_since_boundary_inclusive_record_included(self, fake_projects, capsys):
         """A record whose timestamp matches exactly --since is included."""
@@ -4266,7 +4267,8 @@ class TestReviewTrace:
         ])
         _mod.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
-        assert out.strip() == ""
+        assert "### " not in out
+        assert "No sessions matched in scope." in out
 
     def test_current_format_denial_detected(self, fake_projects, capsys):
         """A current-format is_error tool_result with a hook-denial signature is a denial."""
@@ -4286,7 +4288,8 @@ class TestReviewTrace:
         ])
         _mod.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
-        assert out.strip() == ""
+        assert "### " not in out
+        assert "No sessions matched in scope." in out
 
     def test_current_format_denial_text_without_is_error_ignored(self, fake_projects, capsys):
         """A tool_result with denial-shaped text but no is_error flag is NOT a denial."""
@@ -4295,7 +4298,8 @@ class TestReviewTrace:
         _write_jsonl(fake_projects / "sess.jsonl", [rec])
         _mod.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
-        assert out.strip() == ""
+        assert "### " not in out
+        assert "No sessions matched in scope." in out
 
     def test_legacy_and_current_shapes_deduped_by_tool_use_id(self, fake_projects, capsys):
         """A denial recorded as both an attachment and an is_error tool_result for one
@@ -4391,7 +4395,7 @@ class TestReviewTrace:
 
         _mod.cmd_review_trace(_review_trace_args(branches="main"))
         out_main = capsys.readouterr().out
-        assert out_main.strip() == "", "the session's first-record branch must return zero events"
+        assert "### " not in out_main, "the session's first-record branch must return zero events"
 
     def test_header_branches_and_models_are_distinct_sorted_sets(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -4468,7 +4472,7 @@ class TestReviewTrace:
         ])
         _mod.cmd_review_trace(_review_trace_args(deny_only=True, branches="right-branch"))
         out = capsys.readouterr().out
-        assert out.strip() == ""
+        assert "### " not in out
 
     def test_dedup_before_branch_filter_pins_ordering(self, fake_projects, capsys):
         """A duplicate-id denial recorded on two different branches must still
@@ -4499,7 +4503,7 @@ class TestReviewTrace:
             ln for ln in out_branch_b_only.splitlines() if ln.startswith("  [") and "denial" in ln
         ]
         assert len(denial_lines_branch_b_only) == 0
-        assert out_branch_b_only == ""
+        assert "### " not in out_branch_b_only
 
     def test_deny_summary_groups_by_hook_and_command_shape(self, fake_projects, capsys):
         """--deny-summary groups denials by hook/gate name and by attempted command
@@ -15547,9 +15551,9 @@ def _fake_gh_pr_list_run(cmd, *a, **k):
 
 # (cli_name, header_name, cmd_func, zero-arg args factory) for the 22
 # subcommands whose resolved-scope header prints unconditionally, even over
-# an empty scope — the 23rd and 24th funnel sites (review-trace,
-# skill-invocation) defer their header print until something is found, so
-# they get their own seeded-session tests below instead.
+# an empty scope. review-trace and skill-invocation print unconditionally
+# too, but carry zero-match message text and branches the other 22 don't, so
+# they get their own tests below rather than a row here.
 _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("buckets", "BUCKETS", _mod.cmd_buckets,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
@@ -15612,9 +15616,9 @@ class TestAllSubcommandsSingleRootHeader:
         assert "scanning root" not in combined, f"{subcommand}: a single-root run must not print a per-root progress line"
 
     def test_review_trace_header_states_one_root_once_a_session_matches(self, fake_projects, capsys):
-        """review-trace defers its header print until the first emitted event
-        block, so an empty scope prints nothing at all (unchanged, long-
-        standing behavior) — seed one qualifying session to reach the header."""
+        """review-trace prints its header before the scan regardless of match
+        count; seed one qualifying session so the matched path is covered here
+        (the zero-match path has its own test)."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
@@ -15626,8 +15630,8 @@ class TestAllSubcommandsSingleRootHeader:
         assert "scanning root" not in combined
 
     def test_skill_invocation_header_states_one_root_once_a_skill_matches(self, fake_projects, capsys):
-        """skill-invocation also defers its header print until at least one
-        skill invocation is found (pre-existing behavior, unchanged here)."""
+        """skill-invocation prints its header before the zero-match return;
+        this covers the matched path (the zero-match path has its own test)."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
@@ -15637,6 +15641,117 @@ class TestAllSubcommandsSingleRootHeader:
         assert "SKILL INVOCATION SOURCES (" in combined
         assert self._HEADER_SUFFIX in combined
         assert "scanning root" not in combined
+
+    def test_review_trace_zero_match_still_states_its_scope(self, fake_projects, capsys):
+        """A zero-match run is the case the header exists for: at one root no
+        per-root progress line prints either, so without this the run is
+        byte-for-byte silent and a mis-scoped scan reads as a genuine empty."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(branches="no-such-branch"))
+        out, err = capsys.readouterr()
+        assert "REVIEW TRACE SOURCES (" in out
+        assert self._HEADER_SUFFIX in out
+        assert "No sessions matched in scope." in out
+        assert "### " not in out, "no session block should be emitted on a zero-match run"
+        assert "scanning root" not in out + err
+
+    def test_review_trace_deny_summary_zero_match_still_states_its_scope(self, fake_projects, capsys):
+        """--deny-summary's third state — scope matched no sessions at all, as
+        distinct from matching sessions that carried no denial."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True, branches="no-such-branch"))
+        out, err = capsys.readouterr()
+        assert "REVIEW TRACE SOURCES (" in out
+        assert self._HEADER_SUFFIX in out
+        assert "No sessions matched in scope." in out
+        assert "No denials found in scope." not in out, (
+            "zero sessions matched is a different state from matched-but-no-denials"
+        )
+        assert "scanning root" not in out + err
+
+    def test_skill_invocation_zero_match_still_states_its_scope(self, fake_projects, capsys):
+        """The not-found message alone cannot distinguish a wrongly-scoped scan
+        from a correctly-scoped empty one; the header is what separates them."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_skill_invocation(_skill_inv_args(branches="no-such-branch"))
+        out, err = capsys.readouterr()
+        assert "SKILL INVOCATION SOURCES (" in out
+        assert self._HEADER_SUFFIX in out
+        assert "No skill invocations found." in out
+        assert "scanning root" not in out + err
+
+    def test_skill_invocation_zero_match_header_names_the_subagent_thread_scope(
+        self, fake_projects, capsys
+    ):
+        """The thread-scope clause is part of what a zero-match run must disclose —
+        'searched main+subagents and found nothing' is a different claim from
+        'searched the main thread and found nothing'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_skill_invocation(
+            _skill_inv_args(branches="no-such-branch", include_subagents=True)
+        )
+        out = capsys.readouterr().out
+        assert "main+subagents" in out
+        assert "No skill invocations found." in out
+
+    _DISTINCTIVE_GLOB = "-home-user-somerepo-worktrees-somebranch"
+
+    def test_review_trace_zero_match_header_echoes_an_explicit_projects_glob_verbatim(
+        self, fake_projects, capsys
+    ):
+        """review-trace's scope label IS the glob, so an operator's own --projects
+        value reaches stdout even at zero matches — the reason the section's
+        not-publish-safe warning has to cover empty runs. Pinned so a later
+        'redact the empty case to be safe' change breaks a test, not a promise."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(
+            _review_trace_args(projects=self._DISTINCTIVE_GLOB, branches="no-such-branch")
+        )
+        out = capsys.readouterr().out
+        assert "REVIEW TRACE SOURCES (" in out
+        assert self._DISTINCTIVE_GLOB in out
+
+    def test_skill_invocation_zero_match_header_does_not_echo_the_projects_glob(
+        self, fake_projects, capsys
+    ):
+        """skill-invocation labels the escape hatch ('explicit --projects
+        (not repo-scoped)') instead of interpolating the glob, so its output stays
+        free of the operator's path even under --projects. That divergence from
+        review-trace is a minimization property, not an oversight."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_skill_invocation(
+            _skill_inv_args(projects=self._DISTINCTIVE_GLOB, branches="no-such-branch")
+        )
+        out = capsys.readouterr().out
+        assert "explicit --projects (not repo-scoped)" in out
+        assert self._DISTINCTIVE_GLOB not in out
+
+    def test_review_trace_deny_only_does_not_mask_which_zero_match_state_was_reached(
+        self, fake_projects, capsys
+    ):
+        """`any_session_matched` is set before the --deny-only skip, so a run whose
+        sessions matched but carried no denial must still say 'No denials found',
+        not 'No sessions matched'. Moving that assignment below the skip would
+        silently misreport scope coverage as empty."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True, deny_only=True))
+        out = capsys.readouterr().out
+        assert "No denials found in scope." in out
+        assert "No sessions matched in scope." not in out
 
 
 def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
