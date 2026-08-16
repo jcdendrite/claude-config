@@ -85,6 +85,14 @@ Full empirical record: [`case-studies/hashline-edit-format.md`](case-studies/has
 | Delegate debug-investigation reads (read-only) to a subagent | Adopted | Investigation reads measured ≈244K characters (~61K tokens), roughly 10x the check output (~6K tokens); a multi-session chain compacted three times and handed off before shipping because of this read weight. |
 | Write-capable debug-and-fix agent | Rejected as the heavier primitive | Reintroduces the model-agency failure class documented in check-runner Incident 1 (see [`case-studies/check-runner.md`](case-studies/check-runner.md)) — an agent that can edit files while looking at a failing check will attempt to fix it, defeating the separation delegation exists to provide. |
 
+## From `context-composition-analyzer.md` — "Context composition analyzer"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| `PostToolUse` hook appending a ledger row per ingestion | Rejected | Can only observe tool results — the ~27% minority of context growth, not the ~73% majority (`read-scope --since 30d` measures tool-result content at roughly a sixth of cumulative prompt-token growth, all tool results combined at roughly a quarter). Produces nothing until new sessions accumulate, and hook payloads carry no token counts, so it would estimate anyway — no advantage over a retroactive scan. |
+| Extending `read-scope` to cover non-tool categories | Rejected | Its cohort model is `Read`-call-specific; every non-tool category (conversation-history replay, assistant text/thinking, the static system prefix) falls outside its frame. |
+| `context-distribution` as the host subcommand | Rejected | Buckets sessions by peak context without decomposing what filled it — a different question. Its redaction pattern (no redact map, no per-project label) was adopted anyway; see `docs/transcript-analysis.md`'s "Corpus scope" section. |
+
 ## From `pin-explore-to-sonnet.md` (this plan) — Step 1's superseded earlier draft
 
 | Lever | Verdict | Measured reason |
