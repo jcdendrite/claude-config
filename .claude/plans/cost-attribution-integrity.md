@@ -182,8 +182,8 @@ is a settings key within reach, and Step 0 changes it.
 | 2 | No sidechain stream on any account receives 1h TTL, and exactly one account's main thread receives none | `[verified: direct read of cache_creation.ephemeral_1h_input_tokens over 155,000+ assistant turns across all six roots, including the four-level subagent path]` |
 | 3 | The existing main-vs-subagent attribution is correct; the gap is that `cmd_cost` carries no drift canary — only `cmd_subagents` and `cmd_skill_pair` call it, at `transcript-analysis.py:1200,4098` | `[verified: code trace]` |
 | 4 | Cache TTL differs by account despite identical settings, so it is account-scoped (plan tier or usage-overage state) rather than config-scoped | `[verified: one account's main thread shows 0 one-hour-TTL tokens across 22,290 turns while the other five all show non-zero]` |
-| 5 | `write > read` indicates a cold prefix | `[verified: docs/case-studies/cold-cache-attribution.md — falsified]` Named misclassification modes confirmed: 93.4% true-positive vs R2's 100%, at a marginally higher false-positive rate. Superseded by row 6. |
-| 6 | The read-collapse rule stated under Approach separates append from cold, at some margin `T` | `[verified: docs/case-studies/cold-cache-attribution.md]` — R2 at `T = 0.50` adopted: 100% true-positive, 4.5% false-positive, maximum Youden's J across tested thresholds. |
+| 5 | `write > read` indicates a cold prefix | `[verified: docs/case-studies/cold-cache-attribution.md — falsified]` Named misclassification modes confirmed: 93.4% true-positive vs the read-collapse rule's 100%, at a marginally higher false-positive rate. Superseded by row 6. |
+| 6 | The read-collapse rule stated under Approach separates append from cold, at some margin `T` | `[verified: docs/case-studies/cold-cache-attribution.md]` — the read-collapse rule at `T = 0.50` adopted: 100% true-positive, 4.5% false-positive, maximum Youden's J across tested thresholds. |
 | 7 | The ~52% residual is one mechanism rather than several | `[verified: docs/case-studies/cold-cache-attribution.md — falsified as stated]` — it is not one identifiable mechanism; harness-logged events explain 18.3% of mid-session cold turns, TTL expiry a further 8.1% of the remainder, and ~65% are unexplained by any transcript-visible signal. Step 5 closed on this explicit non-attribution finding rather than a reproduced cause. |
 | 8 | Cold re-writes are addressable rather than intrinsic to vendor-side caching | `[unverified]` — a negative result is a valid, plan-closing outcome |
 | 9 | The outlier account's spend problem shares a cause with the other accounts | `[engineer-verified]` — the engineer's stated leading hypothesis; row 1 and the matched lift table are consistent with it, and row 4's TTL gap is an additional, separable factor |
@@ -204,8 +204,8 @@ TTL (row 4); warm = consecutive turns <60 s apart in the same
 session/thread. This is cheaper and equally non-circular — ground truth
 comes from vendor TTL semantics either way — but it means the "Replicates"
 and "Redaction" sub-bullets under Step 1 below describe a protocol that
-was not the one executed. R2 at `T = 0.50` was adopted; see the case study
-for the full scoring.
+was not the one executed. The read-collapse rule at `T = 0.50` was adopted;
+see the case study for the full scoring.
 
 **Step 5's remaining sub-conditions are superseded by a broader scan, not
 executed as separately planned.** The corpus arm (idle-gap correlation,
@@ -421,7 +421,7 @@ is at `../../../../.venv/`.
    <venv>/bin/shellcheck` clean.
 2. Step 4(b)'s canary test is observed red before Step 3 lands and green
    after — recorded, not asserted.
-3. **Done.** Step 1 reports R2 (read-collapse) at `T = 0.50` as the
+3. **Done.** Step 1 reports the read-collapse rule at `T = 0.50` as the
    surviving classifier — 100% true-positive / 4.5% false-positive against
    the two constructed ground-truth cases — scored against corpus turn
    pairs rather than scripted sessions (see "Status: re-scoped" above).

@@ -9995,6 +9995,24 @@ def _cache_efficiency_args(
     })()
 
 
+class TestCachePrefixTotal:
+    """Direct unit tests for _cache_prefix_total's usage-dict traversal --
+    the read-collapse classifier's prior-turn denominator."""
+
+    def test_excludes_input_tokens(self):
+        """input_tokens must not contribute to the prefix total -- only
+        cache_read_input_tokens and both cache_creation tiers count, per the
+        function's own documented differentiator from _context_at_turn. A
+        prior turn carrying only input_tokens (no cache fields at all) must
+        report a prefix total of zero, not the input_tokens value."""
+        usage = _priced("claude-sonnet-5", input=50_000, cache_read=0)["message"]["usage"]
+        assert _mod._cache_prefix_total(usage) == 0
+
+    def test_sums_read_and_both_cache_write_tiers(self):
+        usage = _priced("claude-sonnet-5", cache_read=1000, ephemeral_1h=200, ephemeral_5m=300)["message"]["usage"]
+        assert _mod._cache_prefix_total(usage) == 1500
+
+
 class TestCacheEfficiencyClassifier:
     """Direct unit tests for the read-collapse classifier
     (docs/case-studies/cold-cache-attribution.md), scored at
@@ -10061,6 +10079,34 @@ class TestCacheEfficiencyGroupScan:
         _mod._scan_cache_efficiency_group(records, stats)
         assert stats["main"]["cold_events"] == 0
 
+    def test_input_heavy_prior_turn_not_treated_as_cache_prefix(self):
+        """A prior turn with a large input_tokens value but zero cache
+        fields contributes nothing to the prior-prefix chain (per
+        _cache_prefix_total's documented exclusion) -- the next turn's own
+        cache_read must not be misclassified as a collapse against that
+        input-heavy, uncached prefix. A buggy _cache_prefix_total that
+        folded input_tokens back in would see a 50,000-token prior prefix
+        and flag turn 2 as cold; this expects no such collapse."""
+        records = [
+            _priced("claude-sonnet-5", input=50_000, cache_read=0, request_id="r1"),
+            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2"),
+        ]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["cold_events"] == 0
+
+    def test_return_value_counts_sidechain_assistant_records_read(self):
+        """The int return value counts isSidechain assistant records seen in
+        this group, independent of stats['sidechain']['turns'] -- feeds the
+        drift canary via _cache_efficiency_report's total_sidechain_turns
+        accumulation."""
+        side_rec = _priced("claude-sonnet-5", cache_read=100)
+        side_rec["isSidechain"] = True
+        records = [_priced("claude-sonnet-5", cache_read=50), side_rec]
+        stats = _mod._new_cache_efficiency_stats()
+        sidechain_turns_read = _mod._scan_cache_efficiency_group(records, stats)
+        assert sidechain_turns_read == 1
+
     def test_second_session_first_turn_does_not_inherit_first_sessions_chain(self):
         """The carve-out is keyed by sessionId, not by turn position within
         the group: a second session's first turn must not inherit a first
@@ -10097,9 +10143,12 @@ class TestCacheEfficiencyGroupScan:
         flip the verdict: main's prefix (10,000) vastly exceeds the
         sidechain's own read (0), so a shared chain would misclassify the
         sidechain's first turn as a cold collapse."""
+        main_rec = _priced("claude-sonnet-5", cache_read=10_000)
+        main_rec["sessionId"] = "session-a"
         side_rec = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100)
         side_rec["isSidechain"] = True
-        records = [_priced("claude-sonnet-5", cache_read=10_000), side_rec]
+        side_rec["sessionId"] = "session-a"
+        records = [main_rec, side_rec]
         stats = _mod._new_cache_efficiency_stats()
         _mod._scan_cache_efficiency_group(records, stats)
         assert stats["sidechain"]["cold_events"] == 0
@@ -10220,6 +10269,32 @@ class TestCacheEfficiency:
         account_2 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=3)
         assert account_1["Turns"] == "1"
         assert account_2["Turns"] == "2"
+
+    def test_per_account_breakdown_attributes_cold_events_to_the_correct_account(self, tmp_path, capsys):
+        """A cold event originating in one account's session must land in
+        that account's own per_account[ordinal] bucket, not leak into the
+        other account's bucket or only the aggregate -- the attribution-
+        sensitive columns for a PR titled cost-attribution-integrity. A bug
+        in the redact_ordinals/root_position lookup could pass a
+        turn-counts-only check while still misattributing cold figures
+        across accounts."""
+        root_a_turn = _priced("claude-sonnet-5", cache_read=100)
+        root_a_turn["sessionId"] = "sess-a"
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [root_a_turn])
+
+        root_b_turn_1 = _priced("claude-sonnet-5", cache_read=1000, request_id="r1")
+        root_b_turn_1["sessionId"] = "sess-b"
+        root_b_turn_2 = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r2")
+        root_b_turn_2["sessionId"] = "sess-b"
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [root_b_turn_1, root_b_turn_2])
+        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        account_1 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=2)
+        account_2 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=3)
+        assert account_1["ColdEvts"] == "0"
+        assert account_1["ColdTok"] == "0"
+        assert account_2["ColdEvts"] == "1"
+        assert account_2["ColdTok"] == "500"
 
 
 # ---------------------------------------------------------------------------
@@ -15258,6 +15333,27 @@ class TestFormatDriftCanary:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", cache_read=100),
         ])
+        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cache_efficiency_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
+        """The true no-drift case: a spawn paired with an actual sidechain
+        assistant turn in the subagents/ file. The spawn-only case above
+        (sidechain=0) and the no-spawn case (sidechain=0) both leave
+        total_sidechain_turns at 0 regardless of whether
+        _scan_cache_efficiency_group's return value is summed correctly --
+        only this spawn=1/sidechain=1 case proves the accumulation actually
+        works, since a dropped or off-by-one return value would still print
+        no warning in the other two cases but would wrongly warn here."""
+        session_id = "sess-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        side_rec = _priced("claude-sonnet-5", cache_read=100)
+        side_rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
         _mod.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
 
