@@ -66,6 +66,29 @@ def _make_user(text: str) -> dict:
     return {"type": "user", "message": {"content": text}}
 
 
+def _make_session(
+    session_id: str,
+    proj: str = "proj",
+    fam: str = "opus",
+    out: int = 0,
+    inp: int = 0,
+    plan: bool = False,
+    edits: bool = False,
+    task: bool = False,
+    thinking: bool = False,
+    judgment_skill: bool = False,
+    sidechain: bool = False,
+) -> dict:
+    """Build a session dict matching _walk()'s real per-session output shape,
+    for tests that exercise _render_report directly without going through
+    _walk (and its jsonl-fixture setup) first."""
+    return {
+        "id": session_id, "proj": proj, "fam": fam, "out": out, "inp": inp,
+        "plan": plan, "edits": edits, "task": task, "thinking": thinking,
+        "judgment_skill": judgment_skill, "sidechain": sidechain,
+    }
+
+
 def _iso(offset_seconds: float = 0) -> str:
     """Return an ISO 8601 UTC timestamp offset from now by offset_seconds (negative = past)."""
     from datetime import UTC, datetime
@@ -538,3 +561,168 @@ def test_main_discloses_resolved_scope_at_two_roots(monkeypatch, tmp_path, capsy
 
     out = capsys.readouterr().out
     assert "TOKEN ANALYZER SOURCES (*; 2 roots)" in out
+
+
+def test_render_report_orders_model_rows_and_skips_absent_families():
+    """Row order follows the fixed ('opus', 'sonnet', 'haiku', 'other')
+    iteration in _render_report regardless of ft's insertion order, and
+    families absent from ft produce no row."""
+    ft = {
+        "haiku": {"n": 1, "inp": 10, "out": 20, "cc": 0, "cr": 0},
+        "opus": {"n": 2, "inp": 100, "out": 200, "cc": 0, "cr": 0},
+    }
+    report = _mod._render_report(ft, [], label="")
+
+    model_rows = [
+        line.split()[0] for line in report.splitlines()
+        if line.split() and line.split()[0] in ("opus", "sonnet", "haiku", "other")
+    ]
+    assert model_rows == ["opus", "haiku"]
+
+
+def test_render_report_truncates_to_top_10_by_output():
+    """Only the 10 highest-output sessions survive (11th's id confirmed
+    absent); fam="sonnet" keeps all 11 out of the opus-only candidates
+    section so truncation is tested in isolation."""
+    sessions = [_make_session(f"sess{i:02d}", fam="sonnet", out=1000 - i * 10) for i in range(11)]
+
+    report = _mod._render_report({}, sessions, label="")
+
+    present = [s["id"] for s in sessions if s["id"] in report]
+    assert len(present) == 10
+    assert "sess10" not in report  # out=900, the lowest of the 11 -- excluded
+
+
+def test_render_report_exclusion_breakdown_lists_only_triggered_dimensions():
+    """Breakdown line names only the triggered dimension (edits) and omits
+    the other five."""
+    sessions = [
+        _make_session("sess-edit-a", fam="opus", out=600, edits=True),
+        _make_session("sess-edit-b", fam="opus", out=700, edits=True),
+    ]
+
+    report = _mod._render_report({}, sessions, label="")
+
+    breakdown_line = next(line for line in report.splitlines() if line.startswith("excluded"))
+    assert "edits=2" in breakdown_line
+    for other_label in ("plan=", "task=", "thinking=", "judgment-skill=", "sidechain="):
+        assert other_label not in breakdown_line
+
+
+def test_render_report_shows_none_found_when_no_candidates():
+    """Zero qualifying candidates renders the literal 'None found.' line."""
+    sessions = [_make_session("sess-a", fam="opus", out=600, plan=True)]
+    report = _mod._render_report({}, sessions, label="")
+    assert "None found." in report
+
+
+def test_render_report_full_report_whitespace_fidelity():
+    """Exercises every section at once (2 model families, 11 sessions,
+    non-empty exclusion breakdown and candidates) against the exact
+    returned string, not a substring -- a bad blank-line split would
+    silently drop or duplicate a line that substring checks wouldn't
+    catch."""
+    ft = {
+        "opus": {"n": 3, "inp": 1000, "out": 5000, "cc": 100, "cr": 200},
+        "sonnet": {"n": 2, "inp": 500, "out": 800, "cc": 0, "cr": 50},
+    }
+    session_specs = [
+        ("s0", "opus", 1100, {}),
+        ("s1", "sonnet", 1000, {}),
+        ("s2", "opus", 900, {"edits": True}),
+        ("s3", "opus", 800, {"plan": True}),
+        ("s4", "sonnet", 700, {}),
+        ("s5", "opus", 600, {}),
+        ("s6", "opus", 500, {"task": True}),
+        ("s7", "opus", 400, {}),
+        ("s8", "sonnet", 300, {}),
+        ("s9", "opus", 200, {}),
+        ("s10", "opus", 100, {}),
+    ]
+    sessions = [
+        _make_session(sid, proj=f"proj-{sid}", fam=fam, out=out, inp=out * 2, **extra)
+        for sid, fam, out, extra in session_specs
+    ]
+
+    report = _mod._render_report(ft, sessions, label="")
+
+    assert report == (
+        "## Per-model token summary\n"
+        "\n"
+        "Model    Sessions        Input       Output  CacheCreate    CacheRead  HitRate\n"
+        "------------------------------------------------------------------------------\n"
+        "opus            3        1,000        5,000          100          200      17%\n"
+        "sonnet          2          500          800            0           50       9%\n"
+        "\n"
+        "## Top 10 sessions by output tokens\n"
+        "\n"
+        "     Session  Model         Output       Input  Plan  Edits  Project\n"
+        "------------------------------------------------------------------------------\n"
+        "          s0  opus           1,100       2,200     N      N  proj-s0\n"
+        "          s1  sonnet         1,000       2,000     N      N  proj-s1\n"
+        "          s2  opus             900       1,800     N      Y  proj-s2\n"
+        "          s3  opus             800       1,600     Y      N  proj-s3\n"
+        "          s4  sonnet           700       1,400     N      N  proj-s4\n"
+        "          s5  opus             600       1,200     N      N  proj-s5\n"
+        "          s6  opus             500       1,000     N      N  proj-s6\n"
+        "          s7  opus             400         800     N      N  proj-s7\n"
+        "          s8  sonnet           300         600     N      N  proj-s8\n"
+        "          s9  opus             200         400     N      N  proj-s9\n"
+        "\n"
+        "## Opus → Sonnet candidates (2 sessions: no plan-mode, no edits, no task/thinking/judgment-skill/sidechain)\n"
+        "\n"
+        "excluded 3 high-output Opus sessions: plan=1 edits=1 task=1\n"
+        "     Session      Output       Input  Project\n"
+        "--------------------------------------------------\n"
+        "          s0       1,100       2,200  proj-s0\n"
+        "          s5         600       1,200  proj-s5\n"
+        "\n"
+        "(For per-turn analysis use: transcript-analysis.py audit-routing)\n"
+        "(For price-weighted dollar cost by token class/model/context bucket use: transcript-analysis.py cost)"
+    )
+
+
+def test_main_wires_since_argument_into_walk(monkeypatch, tmp_path, capsys):
+    """Asserts _walk receives the --since epoch, bracketed by time.time()
+    calls before/after main() to avoid a flaky exact-timestamp comparison."""
+    active = tmp_path / "active" / "projects"
+    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+
+    captured = {}
+
+    def _recording_walk(since=None, roots=None):
+        captured["since"] = since
+        return {}, []
+
+    monkeypatch.setattr(_mod, "_walk", _recording_walk)
+    monkeypatch.setattr(sys, "argv", ["token-analyzer.py", "--since", "2d"])
+
+    before = time.time() - 2 * 86400
+    _mod.main()
+    after = time.time() - 2 * 86400
+
+    assert before <= captured["since"] <= after
+    # _walk is stubbed but _render_report still runs for real inside main() --
+    # confirm the --since label actually reaches the printed report.
+    assert "(activity in the last 2d)" in capsys.readouterr().out
+
+
+def test_main_scans_active_root_alone_when_no_roots_declared(monkeypatch, tmp_path):
+    """With no ~/.claude/transcript-config-dirs declared, main() must call
+    _walk with roots == [active] -- the single-root counterpart to
+    test_main_scans_every_declared_root, which only covers the two-root
+    case."""
+    active = tmp_path / "active" / "projects"
+    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+
+    captured = {}
+
+    def _recording_walk(since=None, roots=None):
+        captured["roots"] = roots
+        return {}, []
+
+    monkeypatch.setattr(_mod, "_walk", _recording_walk)
+    monkeypatch.setattr(sys, "argv", ["token-analyzer.py"])
+    _mod.main()
+
+    assert captured["roots"] == [active]
