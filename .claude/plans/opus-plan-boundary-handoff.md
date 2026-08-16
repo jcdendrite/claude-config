@@ -135,8 +135,9 @@ handing off is cheapest.
   truth.** *anchors: M1.* This is **new parsing work, not reuse** — the field
   exists in transcripts but `transcript-analysis.py` does not read it today
   (zero references to `cache_miss_reason`, `model_changed`, or `diagnostics`
-  anywhere in the repo). [verified: corpus probe, this session] Every
-  `model_changed` occurrence sits at exactly
+  anywhere in the repo, reproducible via `grep -rn cache_miss_reason
+  claude/.claude/scripts/` against the tree predating this plan's own M3).
+  Every `model_changed` occurrence sits at exactly
   `record.message.diagnostics.cache_miss_reason`, on a `type: "assistant"`
   record carrying a `requestId` — 456 of 456 observed, no other path and no
   non-assistant variant. It is therefore inside
@@ -148,7 +149,7 @@ handing off is cheapest.
   `requestId` (23 requestIds at 1, 64 at 2, 67 at 3, 13 at 4, 9 at 5–7), so
   summing raw records inflates the switch cost roughly 2.6x on average.
 - **M4 — Reuse `_ramp_curve_from_corpus` to re-derive the ramp; never cite
-  3.55x.** *anchors: A4.* Arm C recovers dollars via that curve's own
+  3.55x (see A4).** *anchors: A4.* Arm C recovers dollars via that curve's own
   convention — bucket rate is total per-turn dollars over `output_tokens/1000`,
   multiplied back as `(output_tokens/1000) * rate`. Do **not** scale observed
   dollars by a ramp factor: the observed figure already embeds both the model-
@@ -182,13 +183,19 @@ handing off is cheapest.
   families.** PR #605 asserted the curve "reproduces independently within both
   the Opus and Sonnet families," but that assertion is itself pre-dedup-fix
   (A4).
-- **A3 [verified: feasibility probe, this session] — The corpus supports the
-  measurement.** 88 Opus-anchored `plan-review` boundaries, median 129 post-
-  boundary main-thread turns, splitting 48 with a post-boundary model switch /
-  30 pure-Opus / 8 and 2 in mixed cells including a third model family.
-  Separately 23 `ExitPlanMode` boundaries, 14 of them cleanly `opus → sonnet`.
-  No cell contained a session with zero post-boundary main-thread turns.
-  Counts are provisional pending the A7 reconciliation.
+- **A3 [preliminary feasibility check, pre-implementation] — The corpus
+  supports the measurement.** 88 Opus-anchored `plan-review` boundaries,
+  median 129 post-boundary main-thread turns, splitting 48 with a
+  post-boundary model switch / 30 pure-Opus / 8 and 2 in mixed cells
+  including a third model family. Separately 23 `ExitPlanMode` boundaries, 14
+  of them cleanly `opus → sonnet`. No cell contained a session with zero
+  post-boundary main-thread turns. These counts predate the shipped
+  `plan-boundary` subcommand and use a different per-signal-type breakdown
+  than its unified boundary detection; they justified building the tool, not
+  the tool's own findings. Superseded by the subcommand's own reproducible,
+  reconciled output — re-run `plan-boundary` for current figures, and see
+  `docs/cost-levers-considered.md`'s recorded verdict for this measurement's
+  actual result.
 - **A4 [verified: `.claude/plans/handoff-boundary-decision-rule.md` line 49,
   commit `07f28e0`] — The 3.55x ramp figure is unreproducible and predates a
   known pricing bug.** The plan calls its own table "a point-in-time
@@ -210,9 +217,8 @@ handing off is cheapest.
 **Scope of the corpus figures.** A3's and A7's numbers are corpus-wide across
 the account's whole transcript root, not scoped to this repo's own sessions.
 They are aggregate volume and turn-count statistics carrying no project
-identifier,
-which is what makes them publishable under the repo's redaction rules; M9
-transcribes them at that same aggregate grain.
+identifier, which is what makes them publishable under the repo's redaction
+rules; M9 transcribes them at that same aggregate grain.
 
 ### Deliberate duplication — why M1 does not extract the shared check
 
@@ -385,9 +391,12 @@ behave exactly as today.
   the model, and A3's median of 129 remaining turns weakens that objection.
   Not pursued here — it would turn a measurement into a hook change.
 - **`docs/auto-mode.md` staleness.** Its plan-mode subsection still reads at
-  the pre-PR-#647 state and lacks the corrected 129/131 and 12/12 figures.
-  Real, but a different change — raising it to the reviewer rather than
-  bundling it (scope Axis 1, bucket 3).
+  the pre-PR-#647 state and lacks the corrected turn-count and
+  escalation-rate figures — 129 of 131 matched dispatches resolved to Opus,
+  and all 12 dispatches carrying an explicit `model: sonnet` param still
+  escalated (see G3's source, `docs/case-studies/plan-mode-model-resolution.md`
+  lines 54, 56). Real, but a different change — raising it to the reviewer
+  rather than bundling it (scope Axis 1, bucket 3).
 
 **Accepted outcome.** A null result — no arm clearing the M7 criterion, so
 M1–M6, M8, M9 ship and the skills stay unchanged — is an acceptable end state
