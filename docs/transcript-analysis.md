@@ -849,6 +849,64 @@ A `nudged` log line whose session id has no match in the resolved scope (a since
 
 ---
 
+## plan-boundary
+
+**Purpose.** Re-price each Opus-anchored session's own post-plan-boundary main-thread turn sequence under three pricing arms — the report's own labels for continuing on Opus, switching the session to Sonnet in place, and handing off to a fresh Sonnet session — holding the observed work (turns, output tokens) fixed and varying only the price schedule and the context-rebuild penalty. A session is Opus-anchored when its first main-thread turn's model family is Opus. Its plan boundary is the first main-thread (non-sidechain) assistant turn that calls `ExitPlanMode` (harness plan mode) or invokes the `plan-review` Skill (the non-plan-mode path) — a later occurrence of either signal in the same session is re-planning inside work this measurement already treats as post-boundary, not a second transition to price separately. A session with no such turn, or where the boundary is the session's own final main-thread turn (no post-boundary work to reprice), is excluded from the repriced total but counted in the report's own breakdown.
+
+- **Arm A — continue on Opus.** The turn sequence's own actually-observed pricing; today's default behavior.
+- **Arm B — switch to Sonnet in place.** The turn immediately after the boundary charges a Sonnet cache-write over the context that existed at the boundary, plus Sonnet input/output on that turn's own new tokens — never a scaled cache-read, since the prompt cache is model-keyed and a model switch forces a full cache miss rather than reusing the prefix. Every later post-boundary turn carries its observed cache read/write split forward, repriced at Sonnet rates instead of the turn's real (Opus) model.
+- **Arm C — fresh Sonnet handoff.** Each post-boundary turn is priced from a context-rebuild ramp curve (dollars per 1,000 output tokens, bucketed by turn position since a fresh session start), re-derived from the current corpus every run — never by scaling the turn's actual observed dollars, which already embed both the model-price gap and the context-growth gap. The curve is derived from the corpus's own Sonnet-anchored sessions specifically, not pooled across model families: the Opus/Sonnet per-turn-position cost ratio varies across turn-position buckets rather than sitting at a fixed multiple of the vendor price ratio, so a family-pooled curve mis-prices this arm. Falls back to the pooled corpus only when the Sonnet-anchored slice in scope has no priced output tokens to derive a curve from.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir`: composes with `--this-repo`, and `--no-redact` is refused once this puts more than one root in scope
+- `--since Nd` — limit to sessions with a first timestamp in the last N days (e.g. `35d`); whole-session scope, not per-turn — a post-boundary turn sequence's own turn-position indexing depends on the session's full turn sequence staying intact
+- `--no-redact` — this report's output is aggregate-only (no project names, session IDs, plan text, or `planFilePath`), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
+
+**Sample output (synthetic, illustrative counts only).**
+```
+## Plan boundary report (last 90d, generated 2026-08-16)
+
+Sessions scanned: 340
+Opus-anchored: 58
+  No plan boundary detected: 12
+  Boundary is the session's final main-thread turn (excluded, no post-boundary work): 1
+  Plan-boundary sessions repriced: 45
+
+Post-boundary main-thread turns repriced: 5,805
+Post-boundary output tokens repriced: 6,340,000
+
+Arm                            $
+------------------------------------
+A: continue on Opus         1,205.40
+B: switch to Sonnet           910.15
+C: fresh Sonnet handoff       845.60
+
+## Work-inflation breakeven
+
+How much extra Sonnet work (post-boundary turns/output tokens) the cheaper arm in each pair could absorb before its dollar advantage disappears -- the mitigation for the unverifiable assumption that Sonnet completes the same post-boundary work Opus did.
+A vs B: B cheaper by $295.25 -- breakeven at +32.4% more work (~1,881 extra turns, ~2,055,000 extra output tokens)
+A vs C: C cheaper by $359.80 -- breakeven at +42.5% more work (~2,468 extra turns, ~2,695,000 extra output tokens)
+B vs C: C cheaper by $64.55 -- breakeven at +7.6% more work (~442 extra turns, ~483,000 extra output tokens)
+
+## Ground truth: real model switch at boundary+1
+
+Sessions with a real model change observed at boundary+1: 5 of 45
+cache_miss_reason at boundary+1, for those sessions:
+  model_changed: 4
+  previous_message_not_found: 1
+```
+
+**Work-inflation breakeven.** For each arm pair, the cheaper arm's dollar advantage is expressed as a percentage: how much its own post-boundary turns/output tokens would have to grow, at its own observed $/turn rate, before that advantage closes to zero. This exists because "Sonnet completes the same post-boundary work Opus did, in the same turns and tokens" is not a claim this measurement can verify from transcripts — the corpus has no matched-task pairs to test it against — so instead of asserting the assumption silently inside a bare dollar comparison, the report turns it into a reported sensitivity: how wrong that assumption would have to be before the dollar totals above stop being decisive.
+
+**Ground truth: real model switch at boundary+1.** Counts the subset of repriced sessions where the turn immediately after the boundary shows an actually recorded model change (not a repricing arm — a real switch the operator or `/model` command made), cross-checked against that turn's own `cache_miss_reason` diagnostic field. Reported for context only; it is never fed back into Arm B's repricing formula above.
+
+**Redaction.** Aggregate-only, like `rearm-backtest` and `cache-rebuild`: no per-session row, no plan text, and no `planFilePath` ever leave the boundary-detection walk — boundary records are consumed for type and position only.
+
+**When to reach for it.** Decide whether an Opus-anchored session should continue past its own plan boundary on Opus, switch to Sonnet in place, or hand off to a fresh Sonnet session — see `docs/cost-levers-considered.md`'s entry on this measurement for the recorded verdict.
+
+---
+
 ## audit-routing-shape
 
 **Purpose.** Turn-shape distributions for Opus code-read turns across three dimensions: files-Read per turn (D1), code-read streak lengths (D2), and read-then-edit ratio (D3).
