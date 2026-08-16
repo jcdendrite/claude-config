@@ -248,9 +248,9 @@ before citing them forward.
 ## From `delegate-instrument-authoring.md` — "Delegate the instrument along with the objective"
 
 The plan fixed its go/no-go rule before running the measurement: ship a
-`subagent-delegation` rule (Phase 2A) if inline instrument-authoring mass
-concentrates in sessions that never dispatched a subagent; record this row
-instead (Phase 2B) if authoring mass is not concentrated there. Reproducible
+`subagent-delegation` rule if inline instrument-authoring mass concentrates
+in sessions that never dispatched a subagent; record this row instead if
+authoring mass is not concentrated there. Reproducible
 via `transcript-analysis.py instrument-authoring` (default corpus scope, no
 `--since`) — unlike several entries above, this is a standing subcommand, not
 a one-off scan.
