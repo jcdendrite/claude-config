@@ -169,6 +169,28 @@ read-and-reason split Step 2 already defines — so `ready-for-review`
 Step 3 and `/code-review`'s inline diff reads are governed by that
 stated rule.
 
+## From `opus-plan-boundary-handoff.md` — "Opus-anchored plan boundary: continue, switch, or hand off"
+
+`plan-boundary` re-priced 95 Opus-anchored sessions' own post-plan-boundary
+main-thread turn sequences (15,047 turns, 16,455,317 output tokens) under
+three arms, out of 611 sessions scanned and 117 Opus-anchored (~90 days of
+current retention — the corpus is rolling and self-deleting, so these counts
+will drift on a later rerun).
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Model-conditional branch in `plan-it` Step 7 and `handoff`'s warrant section, gated on the plan's own pre-committed five-part criterion | Rejected — null result, all five required and two failed | Continue on Opus totaled $2,464.44, switch to Sonnet in place $1,855.80, fresh Sonnet handoff $1,643.25 (cheapest). The handoff arm's advantage over switching in place breaks even at only +12.9% work-inflation, below the required 20% stress-margin floor, and the winning arm flips depending on whether the context-rebuild ramp curve is scoped to Sonnet-anchored sessions or pooled across model families — both required checks, neither holds. The other three required checks do pass: the corpus-denominator concern traced to subagent sidechain transcripts this subcommand already excludes, and is consistent across a 90-day and an all-time window; the switch-in-place simulation matched the 8 sessions with a real observed switch to within a mean deviation of -0.1% (worst single session ±2.3%); and 95 sessions clears the 20-session floor, with the fresh-handoff-cheaper-than-switch-in-place direction surviving a 2,000-resample bootstrap in 98.2% of resamples. |
+| Continuing on Opus past the plan boundary (today's default behavior) | Not favored, direction robust | Loses to both alternatives in 100% of 2,000 session-level bootstrap resamples. Breakeven against switching in place is +32.8% work-inflation, against a fresh handoff +50.0% — the direction that continuing is the costliest arm is not the part this measurement leaves undecided. |
+| Family-pooled context-rebuild ramp curve for the fresh-handoff arm's pricing | Rejected in favor of a Sonnet-anchored-only curve | The Opus/Sonnet per-turn-position rate ratio ranges 1.14x–2.28x across buckets, not a flat ~2.5x matching the vendor price ratio. Pricing the handoff arm from a family-pooled curve overstates its cost by roughly 12% and changes which of switch-in-place/handoff wins; `plan-boundary` derives it from the 472 Sonnet-anchored sessions (~54M output tokens) in scope instead. |
+
+**Verdict:** because the plan's gate requires all five criteria and two do
+not hold, this is a null result — no model-conditional branch ships in
+`plan-it` Step 7 or `handoff`'s warrant section, and the current
+context-only rule in both is unchanged. The reusable `plan-boundary`
+subcommand is the durable output of this measurement; the verdict is
+re-runnable against a fresher corpus if a later measurement's breakeven
+clears the 20% margin under both ramp-curve methodologies.
+
 ## From `context-cost-root-cause.md` — "Context cost root cause: idle-gap cache rebuilds"
 
 | Lever | Verdict | Measured reason |
