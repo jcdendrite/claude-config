@@ -32,6 +32,7 @@ def _make_assistant(
     task: bool = False,
     sidechain: bool = False,
     timestamp: str | None = None,
+    request_id: str | None = None,
 ) -> dict:
     content = [{"type": "tool_use", "name": n} for n in (tool_names or [])]
     if thinking:
@@ -56,6 +57,8 @@ def _make_assistant(
     }
     if timestamp is not None:
         rec["timestamp"] = timestamp
+    if request_id is not None:
+        rec["requestId"] = request_id
     return rec
 
 
@@ -134,6 +137,94 @@ def test_per_model_totals_mixed_session(fake_projects):
     assert ft["opus"]["n"] == 1
     assert ft["sonnet"]["n"] == 1
     assert len(sessions) == 1
+
+
+def test_multi_block_request_id_run_counted_once(fake_projects):
+    """Three same-requestId records collapse to one turn; ascending output_tokens
+    per block also pins that usage is read from the run's last record, not
+    summed or taken from the first."""
+    session_a, _ = fake_projects
+    _write_jsonl(
+        session_a / "multi_block.jsonl",
+        [
+            _make_assistant("claude-opus-4-7", inp=1000, out=50, cc=200, cr=300, request_id="req-1"),
+            _make_assistant("claude-opus-4-7", inp=1000, out=140, cc=200, cr=300, request_id="req-1"),
+            _make_assistant("claude-opus-4-7", inp=1000, out=200, cc=200, cr=300, request_id="req-1"),
+        ],
+    )
+
+    ft, sessions = _mod._walk()
+
+    assert ft["opus"]["out"] == 200   # last block's value, not 50+140+200=390
+    assert ft["opus"]["inp"] == 1000  # shared value, not summed 3x
+    assert ft["opus"]["cc"] == 200
+    assert ft["opus"]["cr"] == 300
+    assert len(sessions) == 1
+    assert sessions[0]["out"] == 200
+
+
+def test_multi_block_request_id_run_since_windowed_by_first_block(fake_projects):
+    """--since windowing on a merged run uses the first block's timestamp (see
+    _merge_assistant_run), so a run straddling the cutoff is excluded entirely
+    rather than partially counted."""
+    session_a, _ = fake_projects
+    _write_jsonl(
+        session_a / "straddling_run.jsonl",
+        [
+            _make_assistant("claude-opus-4-7", inp=100, out=50, cc=0, cr=0,
+                            request_id="req-1", timestamp=_iso(-5 * 86400)),  # before cutoff
+            _make_assistant("claude-opus-4-7", inp=100, out=200, cc=0, cr=0,
+                            request_id="req-1", timestamp=_iso(-1 * 3600)),   # after cutoff
+        ],
+    )
+
+    cutoff = time.time() - 2 * 86400
+    ft, sessions = _mod._walk(since=cutoff)
+
+    assert len(sessions) == 0
+    assert "opus" not in ft
+
+
+def test_subagent_multi_block_request_id_run_credited_once(fake_projects):
+    """A multi-block, same-requestId run entirely inside a subagent split
+    file is credited once per family, not once per block -- extends
+    test_walk_credits_subagent_dispatched_cache_tokens's single-block
+    coverage to a merged multi-block run."""
+    session_a, _ = fake_projects
+    _write_jsonl(
+        session_a / "with-subagent-multi.jsonl",
+        [_make_assistant("claude-opus-4-7", inp=10, out=50, cc=0, cr=100)],
+    )
+    _write_subagent_jsonl(
+        session_a, "with-subagent-multi", "agent1",
+        [
+            _make_assistant("claude-opus-4-7", inp=5, out=20, cc=0, cr=500,
+                            sidechain=True, request_id="req-side"),
+            _make_assistant("claude-opus-4-7", inp=5, out=60, cc=0, cr=500,
+                            sidechain=True, request_id="req-side"),
+        ],
+    )
+
+    ft, sessions = _mod._walk()
+
+    assert ft["opus"]["cr"] == 600       # 100 (main) + 500 (subagent run once, not 1000)
+    assert ft["opus"]["out"] == 50 + 60  # main's 50 + subagent run's last-block value, not 50+20+60
+    assert sessions[0]["sidechain"] is True
+
+
+def test_multi_block_request_id_run_classification_flag_on_non_first_block(fake_projects):
+    """Classification flags (edits/task/thinking/judgment_skill) union across
+    every raw record independent of the requestId dedup, so a qualifying
+    tool_use on a merged run's non-first block is still detected."""
+    session_a, _ = fake_projects
+    rec1 = _make_assistant("claude-opus-4-7", inp=50, out=10, cc=0, cr=0, request_id="req-1")
+    rec2 = _make_assistant("claude-opus-4-7", inp=50, out=20, cc=0, cr=0,
+                           request_id="req-1", tool_names=["Edit"])
+    _write_jsonl(session_a / "edit_on_second_block.jsonl", [rec1, rec2])
+
+    _, sessions = _mod._walk()
+
+    assert sessions[0]["edits"] is True
 
 
 def test_cache_hit_ratio():

@@ -81,6 +81,9 @@ def _walk(since: float | None = None, roots: Sequence[Path] | None = None):
             # cache/token usage under <session>/subagents/*.jsonl is included --
             # a flat per-file read undercounts cache efficiency across the corpus.
             records = _transcript_analysis._read_session_file(jsonl, include_subagents=True)
+            # Claude Code writes one record per content block sharing a requestId;
+            # collapse each run before summing usage or multi-block turns inflate.
+            records = _transcript_analysis._dedup_turns_by_request_id(records)
             for rec in records:
                 rtype = rec.get("type", "")
                 is_side = bool(rec.get("isSidechain"))
