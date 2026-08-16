@@ -155,6 +155,12 @@ while `ready-for-review` Step 3 runs the cumulative branch diff inline and
 behaviors are correct — the same skill's frontmatter excludes the diff you
 reason over line by line — but no single file states where the boundary falls.
 
+**2026-08-16:** `subagent-delegation/SKILL.md` Step 1's Output test now
+names the discriminator directly — the locate-and-report vs.
+read-and-reason split Step 2 already defines — so `ready-for-review`
+Step 3 and `/code-review`'s inline diff reads are governed by that
+stated rule.
+
 ## From `context-cost-root-cause.md` — "Context cost root cause: idle-gap cache rebuilds"
 
 | Lever | Verdict | Measured reason |
