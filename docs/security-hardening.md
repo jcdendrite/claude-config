@@ -20,11 +20,13 @@ segmentation). See [Limitations](#limitations).
 
 ## The always-on credential guards
 
+`<config-dir>` below means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
+
 | Hook | Gates | Optional additions file |
 |---|---|---|
-| `deny-credential-bash-reads.sh` | `Bash` — denies any command whose raw text contains a credential-shaped path token, matched case-insensitively (SSH private key, `.netrc`/`_netrc`, `.git-credentials`, a cloud credential store, a non-template `.env`/`credentials.json`) | `~/.claude/credential-file-guard.md` |
-| `deny-credential-file-reads.sh` | `Read` — same built-in path shapes (case-insensitive), resolves symlinks and fails closed on an unresolvable target | `~/.claude/credential-file-guard.md` |
-| `redact-credential-values.sh` | `Bash`/`Read`/`WebFetch`/`Grep`/`Task` (PostToolUse) — redacts a credential-*shaped value* with a vendor-fixed format (a GitHub token prefix, an AWS access key ID, a full PEM private-key block) wherever it surfaces in a tool result, regardless of path | `~/.claude/credential-value-patterns.md` |
+| `deny-credential-bash-reads.sh` | `Bash` — denies any command whose raw text contains a credential-shaped path token, matched case-insensitively (SSH private key, `.netrc`/`_netrc`, `.git-credentials`, a cloud credential store, a non-template `.env`/`credentials.json`) | `<config-dir>/credential-file-guard.md` |
+| `deny-credential-file-reads.sh` | `Read` — same built-in path shapes (case-insensitive), resolves symlinks and fails closed on an unresolvable target | `<config-dir>/credential-file-guard.md` |
+| `redact-credential-values.sh` | `Bash`/`Read`/`WebFetch`/`Grep`/`Task` (PostToolUse) — redacts a credential-*shaped value* with a vendor-fixed format (a GitHub token prefix, an AWS access key ID, a full PEM private-key block) wherever it surfaces in a tool result, regardless of path | `<config-dir>/credential-value-patterns.md` |
 
 None of these three hooks has a config file to arm — they run for every
 stow user from install. The optional additions files widen the built-in
@@ -33,22 +35,22 @@ convention, an internal secret-value prefix); unlike the built-ins, a
 guessed personal convention does carry real false-positive risk, which is
 why it stays opt-in even though the built-ins do not.
 
-`~/.claude/credential-file-guard.md` (checked by both path-based hooks, in
-addition to their built-in regex): one glob per line, same grammar as
+`<config-dir>/credential-file-guard.md` (checked by both path-based
+hooks, in addition to their built-in regex): one glob per line, same grammar as
 `data-file-read-guard.md` below — `#` comments and blank lines ignored,
 each remaining line a path glob. Optional — the built-in path shapes are
 already always on; this file only adds personal/org-specific ones.
 
 ```bash
-cat > ~/.claude/credential-file-guard.md <<'EOF'
+cat > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/credential-file-guard.md" <<'EOF'
 # Path globs for personal/org-specific credential files, in addition to
 # the built-in set. See docs/security-hardening.md in the claude-config
 # repo for the grammar.
 EOF
-chmod 600 ~/.claude/credential-file-guard.md
+chmod 600 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/credential-file-guard.md"
 ```
 
-`~/.claude/credential-value-patterns.md` (checked by
+`<config-dir>/credential-value-patterns.md` (checked by
 `redact-credential-values.sh`, in addition to its built-in regex): one
 `<label>: <regex>` line per pattern, same grammar as `pii-patterns.md`
 below, minus its `exclude:` directive — there is no diff-scan concept to
@@ -60,12 +62,12 @@ on any other parse failure. Optional — the built-in value shapes are
 already always on; this file only adds personal/org-specific ones.
 
 ```bash
-cat > ~/.claude/credential-value-patterns.md <<'EOF'
+cat > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/credential-value-patterns.md" <<'EOF'
 # Personal/org-specific credential-value patterns, in addition to the
 # built-in set. See docs/security-hardening.md in the claude-config repo
 # for the grammar.
 EOF
-chmod 600 ~/.claude/credential-value-patterns.md
+chmod 600 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/credential-value-patterns.md"
 ```
 
 The path-based pair (`deny-credential-bash-reads.sh`,
@@ -350,17 +352,17 @@ of its own grammar hazards (`-r`/`-e` includes, environment markers, PEP
 
 | Hook | Gates | Armed by |
 |---|---|---|
-| `deny-pii-in-commits.sh` | `git commit` — scans the staged diff and commit message for PII | `~/.claude/pii-patterns.md` |
-| `deny-data-file-reads.sh` | `Read` — refuses data-shaped files before their content enters context | `~/.claude/data-file-read-guard.md` |
+| `deny-pii-in-commits.sh` | `git commit` — scans the staged diff and commit message for PII | `<config-dir>/pii-patterns.md` |
+| `deny-data-file-reads.sh` | `Read` — refuses data-shaped files before their content enters context | `<config-dir>/data-file-read-guard.md` |
 
 Each hook is a no-op until its config file exists as a readable regular
-file. Both config files are **user-local** — they live at `~/.claude/`
+file. Both config files are **user-local** — they live at `<config-dir>/`
 directly, never inside the stowed `claude/.claude/` package, and are never
 committed. See [Config file security](#config-file-security).
 
 `deny-pii-in-commits.sh` also carries an always-on credential-value
 sub-check (the same pattern `redact-credential-values.sh` uses) that fires
-whether or not `~/.claude/pii-patterns.md` exists — see [Arming the
+whether or not `<config-dir>/pii-patterns.md` exists — see [Arming the
 commit-scan hook](#arming-the-commit-scan-hook) below for how the two
 tiers split.
 
@@ -379,11 +381,11 @@ native hook chain.
 
 ```bash
 # Create the config file. The hook ignores `#` comment lines and blanks.
-cat > ~/.claude/pii-patterns.md <<'EOF'
+cat > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pii-patterns.md" <<'EOF'
 # PII patterns scanned in git commits. See docs/security-hardening.md in
 # the claude-config repo for the grammar.
 EOF
-chmod 600 ~/.claude/pii-patterns.md
+chmod 600 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pii-patterns.md"
 ```
 
 **Pattern tiers.**
@@ -391,7 +393,7 @@ chmod 600 ~/.claude/pii-patterns.md
 - **Credential-value patterns** (always on, no config file needed): the
   same GitHub-token-prefix / PEM-private-key-header regex
   `redact-credential-values.sh` uses. Fires whether or not
-  `~/.claude/pii-patterns.md` exists.
+  `<config-dir>/pii-patterns.md` exists.
 - **Built-in generic PII patterns** (once armed): US Social Security
   numbers (`NNN-NN-NNNN`) and credit-card-shaped 13–19 digit runs that pass
   a Luhn checksum. These need no config beyond arming.
@@ -439,11 +441,11 @@ Credit-card detection matches contiguous digit runs only.
 
 ```bash
 # An empty file arms the hook with built-in rules only.
-cat > ~/.claude/data-file-read-guard.md <<'EOF'
+cat > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/data-file-read-guard.md" <<'EOF'
 # Path globs for data files Claude must not Read. See
 # docs/security-hardening.md in the claude-config repo.
 EOF
-chmod 600 ~/.claude/data-file-read-guard.md
+chmod 600 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/data-file-read-guard.md"
 ```
 
 **Built-in rules** (active once armed) — `Read` is denied when the target:
@@ -484,9 +486,9 @@ naming pattern is itself sensitive. Treat them as sensitive artifacts:
 - **Keep them out of cloud sync.** None of the four must sit under a
   cloud-synced or backed-up home directory (iCloud Drive, Dropbox,
   OneDrive, Google Drive). Syncing them ships your identifier fingerprints
-  to a third-party service. Verify with `ls -la ~/.claude/` and check
+  to a third-party service. Verify with `ls -la "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"` and check
   whether `~` itself is synced.
-- They live at `~/.claude/` directly — never inside the stowed
+- They live at `<config-dir>/` directly — never inside the stowed
   `claude/.claude/` package. The repo-root `.gitignore` has
   belt-and-suspenders entries for all four in case one is created in the
   wrong place by mistake.
@@ -615,7 +617,7 @@ to hold PII/PHI or live credentials:
   limitation above), not a `.env` file's own key=value contents, so this one
   shape makes the Bash gate weaker than its `deny-credential-file-reads.sh`
   Read-tool sibling, which has no such exemption. Adding an `--env-file` glob
-  to `~/.claude/credential-file-guard.md` re-denies it, since that scan site
+  to `<config-dir>/credential-file-guard.md` re-denies it, since that scan site
   reads the un-stripped command text and is never fed the exemption's output.
 - The exemption is text-pattern matching, not shell-semantics-aware: `bash -c
   'cat "$2"' _ --env-file <path>/.env` passes the gate, because `--env-file
@@ -654,7 +656,7 @@ to hold PII/PHI or live credentials:
   four names this mechanism trusts by basename.
 - `deny-pii-in-commits.sh`'s credential-value sub-check runs `git diff
   --cached` (and, for worktree-targeting commit forms, `git diff HEAD`)
-  unconditionally on every commit, not only when `~/.claude/pii-patterns.md`
+  unconditionally on every commit, not only when `<config-dir>/pii-patterns.md`
   is armed — the always-on tier needs the diff regardless of arming. Each
   call is capped at 5 seconds; a legitimately large or slow-to-diff commit
   (a vendor/dependency bump, a generated-file commit, an NFS-mounted working

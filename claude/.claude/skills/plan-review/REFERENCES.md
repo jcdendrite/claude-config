@@ -27,7 +27,7 @@ as "has no canonical principle behind it," which is a different claim from
 
 **Why ROUTING.md exists:** The 200-line skill ceiling is a hard constraint enforced by `check-skill-length.sh`. The Reviewer roles table, Reconciliation logic, and Item ownership table together account for ~83 lines — extracting them to a load-on-demand file via a Read directive was the primary lever for getting SKILL.md under the ceiling without dropping behavioral content.
 
-**The pattern:** SKILL.md's Reviewer routing section contains a single unconditional directive: `Read ~/.claude/skills/plan-review/ROUTING.md before any spawn decision.` All spawn criteria — including the always-spawn rules for ciso-reviewer and staff-product-engineer — live exclusively in ROUTING.md. The model reads ROUTING.md on demand before making any spawn decision.
+**The pattern:** SKILL.md's Reviewer routing section contains a single unconditional directive: `Read ${CLAUDE_SKILL_DIR}/ROUTING.md before any spawn decision.` All spawn criteria — including the always-spawn rules for ciso-reviewer and staff-product-engineer — live exclusively in ROUTING.md. The model reads ROUTING.md on demand before making any spawn decision.
 
 ## Reconciliation discriminator
 

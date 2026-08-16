@@ -3,7 +3,7 @@
 ## Activation
 
 ```bash
-touch ~/.claude/track-permission-prompts
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/track-permission-prompts"
 ```
 
 Opt-in, per machine, off by default. Shipped to every stow user of this repo but inert until this sentinel exists — see [`claude/.claude/hooks/_lib.sh`](../claude/.claude/hooks/_lib.sh)'s `_lib_permission_prompt_tracking_active`.
@@ -25,26 +25,26 @@ On each fire, the hook:
 Remove the sentinel:
 
 ```bash
-rm ~/.claude/track-permission-prompts
+rm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/track-permission-prompts"
 ```
 
 There is no per-repo opt-out. This mechanism only appends to a local log and changes no git/PR/tool behavior, and its whole purpose is a cross-repo frequency view — a per-repo opt-out would fragment the aggregate the feature exists to produce, for no privacy benefit the sentinel above doesn't already provide.
 
 ## Log location and format
 
-`~/.claude/.permission-prompt-log.jsonl` — one JSON object per line: the entire `Notification` payload Claude Code sent, credential-redacted, plus `logged_at`. The file is `chmod 600`d after every append.
+`<config-dir>/.permission-prompt-log.jsonl` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) — one JSON object per line: the entire `Notification` payload Claude Code sent, credential-redacted, plus `logged_at`. The file is `chmod 600`d after every append.
 
 The log is append-only and not rotated automatically — see [Known limitations](#known-limitations) for the retention tradeoff. Trim it manually if disk space or data age is a concern:
 
 ```bash
 # Delete and let it regrow:
-rm ~/.claude/.permission-prompt-log.jsonl
+rm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.permission-prompt-log.jsonl"
 
 # Or keep only lines logged in the last 30 days:
 jq -c --arg cutoff "$(date -u -v-30d +%Y-%m-%dT%H:%M:%SZ)" \
   'select(.logged_at >= $cutoff)' \
-  ~/.claude/.permission-prompt-log.jsonl > /tmp/trimmed.jsonl \
-  && mv /tmp/trimmed.jsonl ~/.claude/.permission-prompt-log.jsonl
+  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.permission-prompt-log.jsonl" > /tmp/trimmed.jsonl \
+  && mv /tmp/trimmed.jsonl "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.permission-prompt-log.jsonl"
 ```
 
 (`date -v-30d` is the BSD/macOS form; GNU `date` uses `date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ` instead.)

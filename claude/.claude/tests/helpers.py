@@ -73,8 +73,10 @@ def _build_subprocess_env(
     the parent environment as-is — preserving PATH for hook tool lookups
     (jq, grep, git, etc.).
 
-    Full parent env is intentionally inherited even when home or extra_env is
-    set, because hook scripts depend on PATH to locate tool binaries.
+    Full parent env — including any ambient CLAUDE_CONFIG_DIR — is always
+    inherited; this function can't distinguish an ambient leak from a test's
+    deliberate `monkeypatch.setenv`, so a caller needing it cleared must
+    `monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)` before calling.
     """
     if home is None and extra_env is None:
         return None

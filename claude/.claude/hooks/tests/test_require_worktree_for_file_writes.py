@@ -274,6 +274,17 @@ class TestRequireWorktreeForFileWritesConfigDirExemption:
         path = str(opted_in_repo / "some-project-file.txt")
         assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "deny"
 
+    def test_exact_config_dir_not_exempt(self, opted_in_repo, isolated_home, monkeypatch):
+        """A write path of exactly the resolved config dir (no trailing
+        segment) does not satisfy the '<config_dir>/*' glob and falls
+        through to repo-walk denial — mirrors
+        test_exact_dotclaude_dir_not_exempt for the config-dir arm."""
+        config_dir = opted_in_repo / "profile-config"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        path = str(config_dir)
+        assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "deny"
+
 
 class TestMachineLevelMarker:
     """Tests for the machine-level ~/.claude/worktree-required marker."""

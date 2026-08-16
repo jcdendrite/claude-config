@@ -1,6 +1,6 @@
 # transcript-analysis.py reference
 
-`transcript-analysis.py` is an analysis toolkit for Claude Code transcripts. By default it scans the union of the active profile's `~/.claude/projects/*/*.jsonl` and every config dir declared in `~/.claude/transcript-config-dirs`, not just the active profile alone — except `cost --summary`, which is scoped to the active account only — see "Corpus scope: the declared-roots file" below. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
+`transcript-analysis.py` is an analysis toolkit for Claude Code transcripts. By default it scans the union of the active profile's `<config-dir>/projects/*/*.jsonl` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) and every config dir declared in `~/.claude/transcript-config-dirs`, not just the active profile alone — except `cost --summary`, which is scoped to the active account only — see "Corpus scope: the declared-roots file" below. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
 
 All subcommands are local-only reads except `pr-link` (calls `gh`), `judgment-pair --out` (writes to a specified file), and `cost-ledger --record` (writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`, gated on an opt-in sentinel — see the `cost-ledger` section below). No other subcommand writes to disk.
 
@@ -26,7 +26,7 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
   ```
 
   The trailing `*` picks up both per-worktree project dirs and sessions started in a subdirectory. A prefix-with-separator match (`<slug>-*`) was considered and rejected as the default instead: it still collides with a sibling clone at `<repo>-fork`, which is exactly the collision `--this-repo`'s exact-identity match exists to prevent — this glob is a deliberately looser fallback for the one case exact identity can't reach, not a general replacement for it. Because it is a prefix, it also over-includes rows for any other sibling sharing that prefix; for `buckets` that shows up as extra rows in the output, visibly, rather than silently returning nothing.
-- **An orphaned project directory.** If a worktree is removed, its project directory under `~/.claude/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had.
+- **An orphaned project directory.** If a worktree is removed, its project directory under `<config-dir>/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had.
 - **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)). That fallback recovers *scope*, not *branch attribution* — a subagent's `gitBranch` field can silently disagree with the branch actually checked out in a pre-existing different-repo cwd, so treat an all-zero `--branches` result there as inconclusive, not proof of zero spend.
 
 All four gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected.
@@ -402,7 +402,7 @@ Branch and model are resolved *per event*, from the record that produced it — 
 ```
 REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcript-config-dirs declared))
 
-### ~/.claude/projects/my-project/abc123.jsonl
+### <config-dir>/projects/my-project/abc123.jsonl
 branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=4
   [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=main model=opus)
   [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
@@ -801,7 +801,7 @@ Wall-clock scales with corpus size: ~3 minutes was observed against a ~165k-call
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
-- `--record` — append the current ISO week's row instead of reading. Requires the opt-in sentinel `~/.claude/.cost-ledger-enabled` and `--machine-label`.
+- `--record` — append the current ISO week's row instead of reading. Requires the opt-in sentinel `<config-dir>/.cost-ledger-enabled` and `--machine-label`.
 - `--machine-label LABEL` — required with `--record`: an opaque per-machine token matching `^[a-z0-9]{1,8}$`, rejected case-insensitively against this machine's hostname.
 - `--force` — with `--record`, overwrite an existing row for the same (week, machine) pair instead of refusing.
 - `--note TEXT` — free-text note for `--record`'s row (what changed in the workflow this week). Must not contain `|` or a newline.
@@ -848,7 +848,7 @@ Total             22          141   13.5%
 Each candidate spacing is replayed against every in-scope session's own recorded turn sequence: real context/output growth is never altered, only the dollars charged after a simulated re-arm point are re-priced. That re-pricing uses a fresh-session rebuild ramp — $/1k-output-tokens bucketed by turn-index-since-a-fresh-start, re-derived from the current corpus every run (PR #605's own turn-index bands are reused for comparability, but the multipliers are never hardcoded — that PR's own table is a one-off, non-reproducible measurement). Two figures are reported per spacing:
 
 - **perfect** — the session splits at the first *hook-observable boundary* at or after a band crossing (`UserPromptSubmit`/`Stop`'s own sampling points, reconstructed from the transcript). This is a ceiling: it assumes the operator acts on the nudge the instant it's technically visible.
-- **realistic** — the same boundary detection, plus an empirically measured operator-response lag: how far past each historical nudge's fire point (`~/.claude/.handoff-nudge.log`'s own `nudged` lines) sessions in this corpus actually kept running.
+- **realistic** — the same boundary detection, plus an empirically measured operator-response lag: how far past each historical nudge's fire point (`<config-dir>/.handoff-nudge.log`'s own `nudged` lines) sessions in this corpus actually kept running.
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)

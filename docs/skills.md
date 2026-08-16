@@ -19,8 +19,8 @@ Full descriptions for skills, slash commands, and project-scoped plugins in this
 - **`/config-environments`** — designing configuration that differs across environments (dev, staging, production): env var naming, credential isolation, secrets provisioning, and the anti-patterns that reintroduce tight coupling.
 - **`/ai-instruction-and-memory-files`** — how AI coding agents load instruction files (CLAUDE.md, AGENTS.md, Cursor rules, Lovable knowledge) and Claude Code auto-memory: precedence, duplication rules, length targets, import patterns.
 - **`/verify-sources`** — when researching a library, API, or architecture/design decision, or when acting on a documentation claim from a subagent, blog post, or other secondary source, confirm it at the official docs or spec directly.
-- **`/handoff`** — write a structured cross-session handoff file at `~/.claude/handoffs/<slug>-handoff.md` capturing goal, status, task list, next step, modified files, active markers, open questions, and the resume incantation. Resumed via `resume-context <path>`, which moves the file to a temp path and launches a new session with it loaded. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only` — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
-- **`/brief`** — write a cold-start task briefing at `~/.claude/briefs/<slug>-task.md` for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, settled-scope ticket) — covers goal, scope, anchors, current state, decisions to make, steps to ship, out of scope. Distinct from `/handoff`, which captures mid-flight session state; `/brief` is for work the current session is *not* going to do. Resumed the same way, via `resume-context <path>`. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
+- **`/handoff`** — write a structured cross-session handoff file at `<config-dir>/handoffs/<slug>-handoff.md` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) capturing goal, status, task list, next step, modified files, active markers, open questions, and the resume incantation. Resumed via `resume-context <path>`, which moves the file to a temp path and launches a new session with it loaded. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only` — see [Skills available by name](#skills-available-by-name-no-description-budget-cost).
+- **`/brief`** — write a cold-start task briefing at `<config-dir>/briefs/<slug>-task.md` for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, settled-scope ticket) — covers goal, scope, anchors, current state, decisions to make, steps to ship, out of scope. Distinct from `/handoff`, which captures mid-flight session state; `/brief` is for work the current session is *not* going to do. Resumed the same way, via `resume-context <path>`. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/read-docx-comments`** — extract comments from `.docx` files with anchored text context. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/transcript-analysis`** — reference guidance for the `transcript-analysis.py` toolkit: which subcommand answers which analysis question, how to read `fail-seq` convergence-vs-thrashing output, and the measurement caveats. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
 - **`/transcript-narrative`** — workflow for producing a narrative case study / annotated timeline from Claude Code session transcripts: verbatim prompts bucketed into phases, quantitative appendix from `transcript-analysis`, and extracted lessons. Model-invocable by exact name; description excluded from the listing budget via `skillOverrides: name-only`.
@@ -91,9 +91,9 @@ Two bundled skills are name-only instead of fully disabled — they are availabl
 
 ### Re-enable for your session
 
-Via `/skills` UI: open `/skills`, highlight the skill, press `Space` to cycle to `"on"`, then `Enter`. This writes to `~/.claude/settings.local.json` (gitignored; persists across sessions).
+Via `/skills` UI: open `/skills`, highlight the skill, press `Space` to cycle to `"on"`, then `Enter`. This writes to `<config-dir>/settings.local.json` (gitignored; persists across sessions).
 
-Persistent per-user: add to `~/.claude/settings.local.json`:
+Persistent per-user: add to `<config-dir>/settings.local.json`:
 
 ```json
 {
@@ -155,7 +155,7 @@ claude plugin install plugin-semver@claude-config --scope project
 
 Claude Code allocates 1% of the context window for skill descriptions by default (`skillListingBudgetFraction: 0.01`). Run `/doctor` to see current usage; a warning appears when descriptions are dropped.
 
-After this repo's plugin restructure, stowed skills from claude-config use less budget than before. If a downstream project still sees truncation — because it has many of its own project-specific skills — raise the cap locally in `~/.claude/settings.local.json` (create if absent; gitignored, per-user):
+After this repo's plugin restructure, stowed skills from claude-config use less budget than before. If a downstream project still sees truncation — because it has many of its own project-specific skills — raise the cap locally in `<config-dir>/settings.local.json` (create if absent; gitignored, per-user):
 
 ```json
 {

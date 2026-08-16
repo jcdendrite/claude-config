@@ -90,9 +90,9 @@ Check that skills this branch invoked were executed, not silently abbreviated â€
 
 ```bash
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-python3 ~/.claude/scripts/transcript-analysis.py skill-invocation \
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" skill-invocation \
   --branches "$BRANCH" --include-subagents
-python3 ~/.claude/scripts/transcript-analysis.py review-trace \
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace \
   --this-repo --branches "$BRANCH"
 ```
 

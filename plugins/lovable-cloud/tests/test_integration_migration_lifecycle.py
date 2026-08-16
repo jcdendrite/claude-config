@@ -24,13 +24,22 @@ def _plugin_extra_env() -> dict:
     return {"CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}
 
 
+def _env(home: Path, **overrides: str) -> dict[str, str]:
+    """Subprocess env with HOME isolated. CLAUDE_CONFIG_DIR isolation is
+    conftest.py's job (autouse _clear_ambient_config_dir) — os.environ is
+    already clean of it here."""
+    env = {**os.environ, "HOME": str(home)}
+    env.update(overrides)
+    return env
+
+
 def test_one_shot_lifecycle(tmp_path):
     # Step 1: run the generator to obtain an authorized filename and token.
     result = subprocess.run(
         [str(GENERATOR), "integration-test-slug"],
         capture_output=True,
         text=True,
-        env={**os.environ, "HOME": str(tmp_path)},
+        env=_env(tmp_path),
         check=True,
     )
     emitted_filename = result.stdout.strip()
@@ -63,11 +72,7 @@ def test_one_shot_lifecycle(tmp_path):
         input=json.dumps(posttooluse_input(migration_path)),
         capture_output=True,
         text=True,
-        env={
-            **os.environ,
-            "HOME": str(tmp_path),
-            "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
-        },
+        env=_env(tmp_path, CLAUDE_PLUGIN_ROOT=str(PLUGIN_ROOT)),
         check=True,
     )
     assert not token_path.exists(), (

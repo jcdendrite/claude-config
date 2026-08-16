@@ -134,7 +134,8 @@ Claude Code when both files exist. Zero maintenance, single source.
 
 ## 5. Claude Code auto-memory (Claude-written, per-user)
 
-Auto-memory at `~/.claude/projects/<project>/memory/` is adjacent to
+Auto-memory at `<config-dir>/projects/<project>/memory/` (`<config-dir>`
+means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) is adjacent to
 CLAUDE.md but serves a different role. It's machine-local and per
 working tree — never a place for team rules.
 

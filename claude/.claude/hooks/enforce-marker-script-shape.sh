@@ -199,6 +199,15 @@ case "$TOOL_NAME" in
     # network home) would otherwise block the tool call with no backstop.
     EXPANDED_TARGET="${TARGET_PATH/#\~/$HOME}"
     NORMALIZED_TARGET=$(_lib_realpath_m "$EXPANDED_TARGET" 2>/dev/null)
+    # The `.claude/`-shape match above assumes marker state always sits under
+    # a `.claude` path segment, which is true for the default $HOME/.claude
+    # resolution but not for a CLAUDE_CONFIG_DIR value with no `.claude`
+    # segment (e.g. ~/.config/claude-accounts/<account>) — marker.sh still
+    # resolves and writes there via _lib_config_dir(), so this second arm
+    # closes that gap. Skipped (not denied) when _lib_config_dir() itself
+    # can't resolve, matching this repo's fail-toward-existing-behavior
+    # posture for an unresolvable config dir.
+    CONFIG_DIR_RESOLVED=$(_lib_config_dir 2>/dev/null) || CONFIG_DIR_RESOLVED=""
     for candidate_path in "$EXPANDED_TARGET" "$NORMALIZED_TARGET"; do
       [ -n "$candidate_path" ] || continue
       case "$candidate_path" in
@@ -212,6 +221,16 @@ $GATE_RELEASE_DENIAL_GUIDANCE"
           exit 0
           ;;
       esac
+      if [ -n "$CONFIG_DIR_RESOLVED" ]; then
+        case "$candidate_path" in
+          "$CONFIG_DIR_RESOLVED"/*-markers/*|"$CONFIG_DIR_RESOLVED"/.*-active.d/*)
+            emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate by writing '$TARGET_PATH'.
+
+$GATE_RELEASE_DENIAL_GUIDANCE"
+            exit 0
+            ;;
+        esac
+      fi
     done
     exit 0
     ;;

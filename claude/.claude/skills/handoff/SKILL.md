@@ -3,28 +3,29 @@ name: handoff
 description: Write a cross-session handoff file at ~/.claude/handoffs/<descriptive-slug>-handoff.md capturing goal, status, task list, next step, files modified, active markers, open questions, and resume command.
 ---
 
-Write a cross-session handoff file at `~/.claude/handoffs/<descriptive-slug>-handoff.md`
+Write a cross-session handoff file at `<config-dir>/handoffs/<descriptive-slug>-handoff.md`
+(`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`)
 using the structure below. Run the command below before writing — the
 directory is not guaranteed to exist yet.
 
 <!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
-mkdir -p ~/.claude/handoffs
+mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/handoffs"
 ```
 
 ## Before writing: is a handoff warranted?
 
-A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check` rather than inferring. On `"status":"ok"`, write the handoff when `over_threshold` is `true` or when `already_fired` is `true`, and report `estimate` and `threshold`; say so when `nudge_disabled` is `true`, since the measurement still holds but no nudge will arrive on its own; and when `"model_recognized":false`, report `model` and `context_window` too — the window fell back to the 1M default, so the threshold may not match the running model and the engineer needs both to judge how far off it is. On `"status":"cannot-resolve"` or `"status":"schema-drift"`, name the `reason` and fall back to judgment rather than assuming either answer: session length, how much of the task remains, whether this is a natural seam. `docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file.
+A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check` rather than inferring. On `"status":"ok"`, write the handoff when `over_threshold` is `true` or when `already_fired` is `true`, and report `estimate` and `threshold`; say so when `nudge_disabled` is `true`, since the measurement still holds but no nudge will arrive on its own; and when `"model_recognized":false`, report `model` and `context_window` too — the window fell back to the 1M default, so the threshold may not match the running model and the engineer needs both to judge how far off it is. On `"status":"cannot-resolve"` or `"status":"schema-drift"`, name the `reason` and fall back to judgment rather than assuming either answer: session length, how much of the task remains, whether this is a natural seam. `docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file.
 
 ## Verify the handoff file with Bash, never Read
 
-A `Read` of any `~/.claude/handoffs/*-handoff.md` path consumes the file — verify with a Bash
+A `Read` of any `<config-dir>/handoffs/*-handoff.md` path consumes the file — verify with a Bash
 command (`cat`, `grep`, `sed -n`, `wc -l`) instead. The consume fires from this
 authoring session too, mid-draft, long before any resume: the `Read` returns the
 content, and the file is gone from the canonical path by the next tool call.
 
 If it already happened, that successful `Read` reports the temp path the file
-moved to. `cp` it back to `~/.claude/handoffs/<slug>-handoff.md` before any
+moved to. `cp` it back to `<config-dir>/handoffs/<slug>-handoff.md` before any
 further `Edit`, which still targets the canonical path. A later `Read` of the
 now-empty canonical path reports only that the file does not exist — it does not
 name where the file went.
@@ -91,7 +92,7 @@ Steps the prior agent flagged as irreversible or shared-state — do not execute
 Header line: working directory + current git branch. Derive both from the worktree the work actually lives in rather than from ambient shell state — a session that drifted reports the main checkout and the default branch, sending the resuming session to the wrong tree with a header that looks authoritative. When the work lives in a linked worktree, name that path and direct the resuming session to re-enter it before running any command or dispatching any subagent: the anchor is session-scoped and does not survive the session boundary, so a resumed session starts in the main checkout. Then list paths edited this session and their state (staged / unstaged / committed). Include the most recent uncommitted work.
 
 ## §5 Gates / markers
-List markers under `~/.claude/*-markers/` and `~/.claude/.*-active.d/` — filenames, which skill wrote each, and for completion markers, the state whose hash it stores. Each skill hashes the state it reviewed: staged diff for `/code-review` and `/skill-review`, active plan set for `/plan-review`, HEAD SHA for `/ready-for-review`.
+List markers under `<config-dir>/*-markers/` and `<config-dir>/.*-active.d/` — filenames, which skill wrote each, and for completion markers, the state whose hash it stores. Each skill hashes the state it reviewed: staged diff for `/code-review` and `/skill-review`, active plan set for `/plan-review`, HEAD SHA for `/ready-for-review`.
 
 A completion marker stays valid past the session boundary, but only while the state it covers is unchanged — any further change to that state invalidates it. Finished work left uncommitted therefore reaches the resuming session one incidental edit away from a full re-review; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
 
@@ -101,7 +102,7 @@ Committing can also disarm a gate outright rather than invalidating its marker: 
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.
 
 ## §7 Resume command
-If §4 named a worktree, `resume-context --cwd <worktree path> ~/.claude/handoffs/<slug>-handoff.md`; otherwise (work happened in the main checkout) `resume-context ~/.claude/handoffs/<slug>-handoff.md` alone. `--cwd` makes the
+If §4 named a worktree, `resume-context --cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`; otherwise (work happened in the main checkout) `resume-context <config-dir>/handoffs/<slug>-handoff.md` alone. `--cwd` makes the
 launched session start in that directory regardless of where the resume
 command is actually run from — do not use a `cd <path> &&` prefix instead,
 which only works if the invoker happens to already be positioned to run it.
@@ -135,7 +136,8 @@ Before writing the file, verify:
 - §2 Status is consistent with §3 Next concrete step and §6 Open questions
 - You are not claiming "done" for any step whose verification is still pending
 - §7 Resume command names the exact file you are about to write
-- Markers in §5 use the globs `~/.claude/*-markers/` and `~/.claude/.*-active.d/` — not a hardcoded subdir list
+- §7 Resume command's `<config-dir>` and `<slug>` placeholders are both resolved to real values — an unresolved token ships a command that cannot run
+- Markers in §5 use the globs `<config-dir>/*-markers/` and `<config-dir>/.*-active.d/` — not a hardcoded subdir list
 - §2.5 is populated; if any prerequisite phases are incomplete or unverified, they are listed there, not silently omitted
 - If the handoff reason is context-limit, §2.5 names what was mid-flight at the time of the handoff
 - §2.6 is populated — a faithful task-list serialization with per-item ordinal, status, and blocking edges, or "None." — and carries the resume directive
