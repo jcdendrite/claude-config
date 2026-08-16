@@ -16,10 +16,13 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import _agent_use, _asst, _bash_use, _tool_result, _user_msg, _write_jsonl
+from conftest import _agent_use, _asst, _bash_use, _table_cols, _tool_result, _user_msg, _write_jsonl
 from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
+# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
+# alone doesn't register it), so it can't shadow the real transcript_analysis package --
+# switching to the standard importlib recipe (which does register in sys.modules) would.
 _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
@@ -53,95 +56,6 @@ def _write_subagent_dispatch(
     if requested_model is not None:
         meta["model"] = requested_model
     (subdir / f"{agent_id}.meta.json").write_text(json.dumps(meta))
-
-
-def _table_cols(out: str, *, header_contains: str, row_contains: str | Sequence[str],
-                drop_leading_labels: int = 0,
-                max_labels: int | None = None,
-                row_startswith: bool = False,
-                occurrence: int | None = None) -> dict[str, str]:
-    """Map column-label -> cell value for the data row matching `row_contains`.
-
-    Anchors column positions to the header row (the line containing
-    `header_contains`) instead of hard-coding indices, so a column reorder in
-    the source output fails meaningfully rather than silently reading the wrong
-    column.
-
-    Precondition: every asserted column's header label AND cell value is a
-    single whitespace token (true for all leading label/count columns; trailing
-    free-text columns like "Top subagent types" are not assertable this way and
-    are not asserted by any test). `drop_leading_labels` lets a caller declare
-    that the row deliberately suppresses N leading left-aligned labels (the only
-    case: cmd_subagents continuation rows blank the Branch column,
-    transcript-analysis.py:688) — declared explicitly per call, never inferred.
-    `max_labels` limits labels to only the first N single-token columns, required
-    for tables whose header contains a trailing multi-word column name (e.g.,
-    cmd_subagent_mix's "Top subagent types") whose tokens would otherwise inflate
-    the label count beyond the data row's token count.
-    `row_startswith=True` matches only lines where `row_contains` appears at
-    column 0, filtering out indented summary/annotation lines that also contain
-    the same text (e.g., cmd_skill_invocation summary section).
-
-    Row search is always scoped to one table's own section -- from its header
-    line through the next blank line or the next header-containing line -- so
-    a second table elsewhere in the same output that happens to share row
-    text (e.g. both tables use "main"/"sidechain" thread labels, or both
-    start "AgentType") is never mistaken for this one's data. Without
-    `occurrence`, `header_contains` must match exactly one line in the whole
-    output. `occurrence` scopes to the Nth (1-indexed) line containing
-    `header_contains` instead, for a header substring that legitimately
-    repeats across tables (e.g. reviewer-yield's Table 1 and Table 2 both
-    start "AgentType"). A table's own rule line ("-" * len(header), printed
-    immediately after the header) is pure dashes, so it never matches a
-    blank-line or header-match boundary check and needs no special-casing to
-    stay inside the section.
-    `row_contains` accepts a single string or a sequence of strings, all of
-    which must appear on the matched line — needed once a table can hold more
-    than one row per entity (e.g. two bucket rows per agent type), where a
-    bare entity-name substring would match more than one line even within a
-    single table's section.
-
-    Fails loudly (AssertionError) when exactly one header / data row isn't
-    found, or when token counts don't line up — a silent mismatch would
-    reintroduce the GH-363 bug class under a new cause.
-    """
-    lines = out.splitlines()
-    header_indices = [i for i, ln in enumerate(lines) if header_contains in ln]
-    if occurrence is None:
-        assert len(header_indices) == 1, f"header match not unique for {header_contains!r}: {len(header_indices)}"
-        start = header_indices[0]
-    else:
-        assert len(header_indices) >= occurrence, (
-            f"header occurrence {occurrence} requested but only {len(header_indices)} "
-            f"found for {header_contains!r}"
-        )
-        start = header_indices[occurrence - 1]
-    end = len(lines)
-    for i in range(start + 1, len(lines)):
-        if not lines[i].strip() or header_contains in lines[i]:
-            end = i
-            break
-    section_lines = lines[start:end]
-
-    headers = [ln for ln in section_lines if header_contains in ln]
-    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
-    header = headers[0]
-
-    needles = (row_contains,) if isinstance(row_contains, str) else tuple(row_contains)
-    if row_startswith:
-        rows = [
-            ln for ln in section_lines
-            if ln != header and ln.startswith(needles[0]) and all(n in ln for n in needles)
-        ]
-    else:
-        rows = [ln for ln in section_lines if ln != header and all(n in ln for n in needles)]
-    assert len(rows) == 1, f"row match not unique for {row_contains!r}: {len(rows)}"
-    labels = header.split()[drop_leading_labels:]
-    if max_labels is not None:
-        labels = labels[:max_labels]
-    values = rows[0].split()
-    assert len(values) >= len(labels), f"row has fewer cells than labels: {rows[0]!r}"
-    return dict(zip(labels, values, strict=False))
 
 
 def _md_table_cols(out: str, *, header_contains: str, row_contains: str | Sequence[str],
@@ -313,52 +227,31 @@ def _mcp_use(tool_id: str, server: str, tool: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": f"mcp__{server}__{tool}", "input": {}}
 
 
-@pytest.fixture()
-def fake_projects(tmp_path, monkeypatch):
-    projects = tmp_path / "projects"
-    proj = projects / "-home-user-testrepo"
-    proj.mkdir(parents=True)
-    monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
-    # _resolve_cost_roots (subagents, subagent-mix, cost, context-distribution)
-    # derives its default root from a fresh config_dir() call, not from the
-    # PROJECTS_DIR patch above — without this, a subcommand routed through
-    # _resolve_cost_roots would silently fall back to this machine's real
-    # config dir instead of this fixture's isolated tmp_path.
-    monkeypatch.setattr(_mod, "config_dir", lambda: tmp_path)
-    return proj
-
-
-@pytest.fixture()
-def fake_config_dir_factory(tmp_path):
-    """Factory for extra --config-dir roots: each call builds a fresh config
-    dir (with its own projects/ subdirectory) under tmp_path, independent of
-    fake_projects' own PROJECTS_DIR — cost's multi-root tests use this to
-    build a second (and third) account profile."""
-    def _make(name: str) -> Path:
-        config_dir_path = tmp_path / name
-        (config_dir_path / "projects").mkdir(parents=True)
-        return config_dir_path
-    return _make
-
-
 def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
-    """PROJECTS_DIR is computed at import time from config_dir(); a fresh
-    import with CLAUDE_CONFIG_DIR set resolves under that directory instead
-    of ~/.claude."""
+    """scope.PROJECTS_DIR is computed at import time from config_dir(); a fresh
+    import of transcript_analysis.scope with CLAUDE_CONFIG_DIR set resolves
+    under that directory instead of ~/.claude.
+
+    Loaded by path (not a plain `import transcript_analysis.scope`, which
+    would hit sys.modules' already-imported copy) for the same reason _mod
+    above is: the module-level PROJECTS_DIR assignment only re-runs on a
+    genuinely fresh exec.
+    """
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    spec = importlib.util.spec_from_file_location("transcript_analysis_config_dir_case", _SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert tmp_path / "projects" == mod.PROJECTS_DIR
+    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    spec = importlib.util.spec_from_file_location("transcript_analysis_scope_config_dir_case", scope_path)
+    scope_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scope_mod)
+    assert tmp_path / "projects" == scope_mod.PROJECTS_DIR
 
 
 class TestConfigDirFlag:
-    """--config-dir reassigns the module-level PROJECTS_DIR after argument
-    parsing, distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
+    """--config-dir reassigns scope.PROJECTS_DIR after argument parsing,
+    distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
     test_projects_dir_honors_claude_config_dir covers above. Every test here
-    registers _mod.PROJECTS_DIR with monkeypatch before calling main() (even
-    when just re-setting it to its current value) so main()'s direct
-    `global PROJECTS_DIR` reassignment — which bypasses monkeypatch — is
+    registers _mod.scope.PROJECTS_DIR with monkeypatch before calling main()
+    (even when just re-setting it to its current value) so main()'s direct
+    `scope.PROJECTS_DIR = ...` reassignment — which bypasses monkeypatch — is
     still restored to its pre-test value at teardown, protecting the rest of
     this shared, once-imported module from leaking state across tests."""
 
@@ -372,7 +265,7 @@ class TestConfigDirFlag:
         session-iteration path captured PROJECTS_DIR into a local before
         main()'s post-parse reassignment, silently reporting zero sessions
         (the exact regression class this feature exists to close)."""
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", _mod.PROJECTS_DIR)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", _mod.scope.PROJECTS_DIR)
         config_dir = tmp_path / "other-account"
         proj = config_dir / "projects" / "-home-user-testrepo"
         proj.mkdir(parents=True)
@@ -381,7 +274,7 @@ class TestConfigDirFlag:
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "--config-dir", str(config_dir), "buckets"])
         _mod.main()
 
-        assert config_dir / "projects" == _mod.PROJECTS_DIR
+        assert config_dir / "projects" == _mod.scope.PROJECTS_DIR
         out = capsys.readouterr().out
         assert "feat-config-dir" in out, (
             f"the seeded session's branch never surfaced in `buckets` output: {out!r}"
@@ -394,19 +287,19 @@ class TestConfigDirFlag:
         main() performs after parsing, e.g. an unguarded `Path(None)`."""
         fixture_projects_dir = tmp_path / "projects"
         fixture_projects_dir.mkdir()
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", fixture_projects_dir)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", fixture_projects_dir)
 
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "buckets"])
         _mod.main()
 
-        assert fixture_projects_dir == _mod.PROJECTS_DIR
+        assert fixture_projects_dir == _mod.scope.PROJECTS_DIR
 
     def test_this_repo_loud_error_on_zero_matches(self, monkeypatch, tmp_path, capsys):
         """--config-dir + --this-repo, resolved against a config dir with no
         matching project directories, errors loudly instead of silently
         reporting an empty scope -- closes the original reported symptom
         (declaring no sessions exist for a container that has them)."""
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", _mod.PROJECTS_DIR)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", _mod.scope.PROJECTS_DIR)
         config_dir = tmp_path / "other-account"
         (config_dir / "projects").mkdir(parents=True)  # exists, but empty
 
@@ -466,7 +359,7 @@ class TestConfigDirFlag:
             _mod.main()
 
         assert exc_info.value.code == 2
-        assert other_account / "projects" != _mod.PROJECTS_DIR  # refusal happens before reassignment
+        assert other_account / "projects" != _mod.scope.PROJECTS_DIR  # refusal happens before reassignment
         err = capsys.readouterr().err
         assert "--config-dir" in err
         assert subcommand in err
@@ -745,7 +638,7 @@ class TestBuckets:
         proj_a.mkdir(parents=True)
         _write_jsonl(proj_a / "sess1.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
         _write_jsonl(proj_a / "sess2.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
 
         args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
         _mod.cmd_buckets(args)
@@ -762,7 +655,7 @@ class TestBuckets:
         proj_b.mkdir(parents=True)
         _write_jsonl(proj_a / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
         _write_jsonl(proj_b / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
 
         args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
         _mod.cmd_buckets(args)
@@ -780,7 +673,7 @@ class TestBuckets:
 def _collect_runs(target_branch: str) -> list[tuple[str, int]]:
     """Extract (model_family, failed_count) pairs for target_branch using the module's core logic."""
     runs: list[tuple[str, int]] = []
-    for _jsonl, records in _mod.iter_sessions(_mod.PROJECTS_DIR):
+    for _jsonl, records in _mod.iter_sessions(_mod.scope.PROJECTS_DIR):
         pending: dict[str, str] = {}
         current_branch: str = ""
         for rec in records:
@@ -1713,11 +1606,11 @@ class TestSubagentMixMultiRoot:
         therefore always sorts first regardless — that shared setup cannot
         catch this regression class, the same blind spot PR #603's own
         pre-fix edit-format test had."""
-        monkeypatch.setattr(_mod, "declared_transcript_roots", lambda: [])
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         active_proj = active / "projects" / "-home-user-active-repo"
         active_proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: active)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
         _write_jsonl(active_proj / "sess-active.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
         ])
@@ -5905,7 +5798,7 @@ class TestCost:
         """
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -5976,8 +5869,8 @@ class TestCost:
         opaque token, never the raw session ID."""
         session_map = {"sess-real-id": "session-1"}  # "sess-other-id" deliberately absent
         assert _mod._redact_session_id("sess-real-id", session_map) == "session-1"
-        assert _mod._redact_session_id("sess-other-id", session_map) == _mod._REDACT_SESSION_MISS_TOKEN
-        assert _mod._REDACT_SESSION_MISS_TOKEN != "sess-other-id"
+        assert _mod._redact_session_id("sess-other-id", session_map) == _mod.redaction._REDACT_SESSION_MISS_TOKEN
+        assert _mod.redaction._REDACT_SESSION_MISS_TOKEN != "sess-other-id"
 
     def test_redact_proj_label_claude_config_passthrough_preserved(self):
         """claude-config still passes through unredacted after the fail-closed rewrite."""
@@ -6077,7 +5970,7 @@ class TestCost:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -6121,7 +6014,7 @@ class TestCost:
         mine_solo = solo_projects / "-repo-main"
         mine_solo.mkdir(parents=True)
         _write_jsonl(mine_solo / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", solo_projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", solo_projects)
         _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
         solo_out = capsys.readouterr().out
         assert "private-project-1" in solo_out
@@ -6136,7 +6029,7 @@ class TestCost:
         other.mkdir(parents=True)
         _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", shared_projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", shared_projects)
         _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
         shared_out = capsys.readouterr().out
         assert "private-project-2" in shared_out
@@ -6168,7 +6061,7 @@ class TestCost:
         other.mkdir(parents=True)
         _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", shared_projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", shared_projects)
         _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "private-project-1" in out
@@ -6200,14 +6093,14 @@ class TestCostResolveRoots:
     def test_default_root_alone_when_no_extra_config_dirs(self, tmp_path, monkeypatch):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         roots = _mod._resolve_cost_roots(_cost_args())
         assert roots == [default_dir / "projects"]
 
     def test_single_extra_config_dir_allowed(self, tmp_path, monkeypatch, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         roots = _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects", acct_b / "projects"]
@@ -6215,7 +6108,7 @@ class TestCostResolveRoots:
     def test_extra_roots_appended_in_argument_order(self, tmp_path, monkeypatch, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         acct_c = fake_config_dir_factory("acct-c")
         roots = _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b), str(acct_c)]))
@@ -6224,7 +6117,7 @@ class TestCostResolveRoots:
     def test_duplicate_root_deduped_by_resolve_not_string_equality(self, tmp_path, monkeypatch, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         # Same directory, supplied twice under different (but equal-once-
         # resolved) spellings — the dedup guard is by .resolve(), not string
@@ -6237,7 +6130,7 @@ class TestCostResolveRoots:
     def test_nonexistent_root_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         missing = tmp_path / "does-not-exist"
         with pytest.raises(SystemExit) as exc_info:
             _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(missing)]))
@@ -6247,7 +6140,7 @@ class TestCostResolveRoots:
     def test_root_without_projects_subdir_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         bogus = tmp_path / "bogus"
         bogus.mkdir()
         with pytest.raises(SystemExit) as exc_info:
@@ -6268,7 +6161,7 @@ class TestCostResolveRoots:
         _resolve_project_scope."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         roots = _mod._resolve_cost_roots(_cost_args(this_repo=True, extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects", acct_b / "projects"]
@@ -6276,7 +6169,7 @@ class TestCostResolveRoots:
     def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod._resolve_cost_roots(_cost_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
@@ -6287,7 +6180,7 @@ class TestCostResolveRoots:
         """--no-redact with no --config-dir (single root) is unaffected."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         roots = _mod._resolve_cost_roots(_cost_args(no_redact=True))
         assert roots == [default_dir / "projects"]
 
@@ -6301,8 +6194,8 @@ class TestCostResolveRoots:
         forms."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
-        monkeypatch.setattr(_mod, "declared_transcript_roots", lambda: [tmp_path / "declared-account"])
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [tmp_path / "declared-account"])
         acct_b = fake_config_dir_factory("acct-b")
         roots = _mod._resolve_cost_roots(_cost_args(summary=True, extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects"]
@@ -6354,7 +6247,7 @@ class TestCostMultiRootReport:
         (root / "-home-user-this-repo").mkdir()
         args = _cost_args(this_repo=True)
         args._this_repo_slugs = ["-home-user-this-repo"]
-        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
 
         _mod._cost_report(args, date(2026, 8, 2), roots=[root])
         out = capsys.readouterr().out
@@ -6756,7 +6649,7 @@ class TestCostMultiRootRedaction:
     def test_no_redact_refused_at_cmd_cost_when_config_dir_given(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         args = _cost_args(no_redact=True, extra_config_dirs=[str(acct_b)])
         with pytest.raises(SystemExit) as exc_info:
@@ -6772,7 +6665,7 @@ class TestCostMultiRootRedaction:
         value is proving no path still reaches the report bypassing the
         (now-removed) guard."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         slug = "-home-user-this-repo"
         proj_default = default_dir / "projects" / slug
         proj_default.mkdir(parents=True)
@@ -6783,7 +6676,7 @@ class TestCostMultiRootRedaction:
         proj_b.mkdir(parents=True)
         _write_jsonl(proj_b / "sess-b.jsonl", [_priced("claude-sonnet-5", input=2_000_000)])  # $4.00
 
-        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
 
         args = _cost_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         _mod.cmd_cost(args)
@@ -6820,7 +6713,7 @@ class TestCostByProject:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -6893,7 +6786,7 @@ class TestCostByProject:
         proj_b = projects / "-home-user-testrepo--claude-worktrees-branch-b"
         proj_a.mkdir(parents=True)
         proj_b.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(proj_a / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
         _write_jsonl(proj_b / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000)])    # $1.00
 
@@ -6968,7 +6861,7 @@ class TestCostByProject:
         coincidental = projects / "-home-user-shared-family--claude-worktrees-fake"
         unrelated.mkdir(parents=True)
         coincidental.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(unrelated / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])    # $2.00
         _write_jsonl(coincidental / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000)])   # $1.00
 
@@ -7400,7 +7293,7 @@ class TestDedupTurnsByRequestId:
         _usage_drift_warned is reset here since the canary is rate-limited to
         one warning per process (see _warn_if_run_usage_drift) and other
         tests in this module-scoped process may have already tripped it."""
-        monkeypatch.setattr(_mod, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
         rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
@@ -7413,7 +7306,7 @@ class TestDedupTurnsByRequestId:
         input_tokens and the cache_* classes stay identical -- never fires
         the drift canary; an ascending output_tokens is the documented norm,
         not drift."""
-        monkeypatch.setattr(_mod, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
         rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
@@ -7643,7 +7536,7 @@ class TestCostSummary:
     def test_summary_refuses_by_project_in_combination(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7660,7 +7553,7 @@ class TestCostSummary:
     def test_summary_refuses_no_redact_in_combination(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7677,7 +7570,7 @@ class TestCostSummary:
     def test_summary_refuses_config_dir_in_combination(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7709,7 +7602,7 @@ class TestCostSummary:
         mine.mkdir(parents=True)
         other = projects / "-home-user-otherrepo"
         other.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess-mine.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])    # $2.00
         _write_jsonl(other / "sess-other.jsonl", [_priced("claude-sonnet-5", input=5_000_000)])  # $10.00
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
@@ -7741,7 +7634,7 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -7766,7 +7659,7 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [
             _priced("<synthetic>", input=1_000_000, output=500_000),  # unpriced
             _priced("claude-sonnet-5", input=100_000),                 # priced
@@ -7796,7 +7689,7 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -7818,7 +7711,7 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -7838,7 +7731,7 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -7944,7 +7837,7 @@ class TestCostSummary:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7970,7 +7863,7 @@ class TestCostSummary:
         so this repo's own slug dir is left with zero transcripts."""
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7996,7 +7889,7 @@ class TestCostSummary:
         model ever priced a turn to produce a data row."""
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -8026,7 +7919,7 @@ class TestCostSummary:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -8053,7 +7946,7 @@ class TestCostSummary:
         silently reintroduce that collision without this pin."""
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -8278,7 +8171,7 @@ class TestContextDistribution:
         scope, mirroring cost's own refusal exactly."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_context_distribution(
@@ -8711,7 +8604,7 @@ class TestEditFormat:
         in scope, mirroring cost's and context-distribution's own refusal."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_edit_format(_edit_format_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
@@ -9142,7 +9035,7 @@ class TestReadScope:
     def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_read_scope(_read_scope_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
@@ -9537,7 +9430,7 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r2", file_path="/b.py")]),
             _opus([_read_tool_use("r3", file_path="/c.py")]),
         ]
-        assert _mod._read_session_file(jsonl, include_subagents=True) == expected
+        assert _mod.corpus.read_session_file(jsonl, include_subagents=True) == expected
 
     def test_read_session_file_partitioned_keeps_empty_main_group_ahead_of_subagents(self, fake_projects):
         """A readable-but-empty main file still yields its own empty group
@@ -9809,7 +9702,7 @@ class TestCostTrendConfigDir:
     def test_default_root_alone_when_no_extra_config_dirs(self, tmp_path, monkeypatch):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         roots = _mod._resolve_cost_roots(_cost_trend_args(), subcommand="cost-trend")
         assert roots == [default_dir / "projects"]
 
@@ -9818,7 +9711,7 @@ class TestCostTrendConfigDir:
     ):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         acct_c = fake_config_dir_factory("acct-c")
         roots = _mod._resolve_cost_roots(
@@ -9831,7 +9724,7 @@ class TestCostTrendConfigDir:
     ):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         roots = _mod._resolve_cost_roots(
             _cost_trend_args(extra_config_dirs=[str(acct_b), str(acct_b) + "/."]), subcommand="cost-trend"
@@ -9841,7 +9734,7 @@ class TestCostTrendConfigDir:
     def test_nonexistent_root_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         missing = tmp_path / "does-not-exist"
         with pytest.raises(SystemExit) as exc_info:
             _mod._resolve_cost_roots(_cost_trend_args(extra_config_dirs=[str(missing)]), subcommand="cost-trend")
@@ -9855,7 +9748,7 @@ class TestCostTrendConfigDir:
     def test_root_without_projects_subdir_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         bogus = tmp_path / "bogus"
         bogus.mkdir()
         with pytest.raises(SystemExit) as exc_info:
@@ -9869,7 +9762,7 @@ class TestCostTrendConfigDir:
         """--config-dir + --this-repo end-to-end through cmd_cost_trend,
         mirroring TestCostMultiRootRedaction's own this-repo-composition test."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         slug = "-home-user-this-repo"
         proj_default = default_dir / "projects" / slug
         proj_default.mkdir(parents=True)
@@ -9882,7 +9775,7 @@ class TestCostTrendConfigDir:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _priced("claude-sonnet-5", input=2_000_000, ts="2026-06-01T10:00:00.000Z"),  # $4.00
         ])
-        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
 
         args = _cost_trend_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         _mod.cmd_cost_trend(args)
@@ -9896,7 +9789,7 @@ class TestCostTrendConfigDir:
         """The new per-root scan diagnostic labels each root account-N (not
         the raw config-dir path), matching cost's own labeling convention."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         proj_default = default_dir / "projects" / "-home-user-repo-a"
         proj_default.mkdir(parents=True)
         _write_jsonl(proj_default / "sess-a.jsonl", [
@@ -9921,7 +9814,7 @@ class TestCostTrendConfigDir:
         (Mechanism 2 step 4's new per-root diagnostic, cost-trend's own
         counterpart to cost's own per-root-empty-state coverage)."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         (default_dir / "projects").mkdir(parents=True)  # exists, holds no project dirs
         acct_b = fake_config_dir_factory("acct-b")
         proj_b = acct_b / "projects" / "-home-user-repo-b"
@@ -9947,7 +9840,7 @@ class TestCostTrendConfigDir:
         pinning the diagnostic's presence ties the absence-of-leak claim to
         the code path it's meant to guard."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         proj_default = default_dir / "projects" / "-home-user-secret-clientname-a"
         proj_default.mkdir(parents=True)
         _write_jsonl(proj_default / "sess-a.jsonl", [
@@ -9982,7 +9875,7 @@ class TestCostTrendConfigDir:
         PermissionError, so the redact-suppression logic here was analyzed
         but never actually exercised."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         (default_dir / "projects").mkdir(parents=True)
         acct_b = fake_config_dir_factory("acct-b")
         proj_b = acct_b / "projects" / "-home-user-repo-b"
@@ -10025,26 +9918,12 @@ class TestCostTrendConfigDir:
 
 
 @pytest.fixture()
-def cost_ledger_file(tmp_path, monkeypatch):
-    """Isolated docs/cost-ledger.md: a fresh file with the canonical header/
-    separator and zero data rows, matching the real committed file's own
-    shape. _cost_ledger_path is monkeypatched so every test in this section
-    reads/writes this file, never this repo's own tracked ledger."""
-    ledger_path = tmp_path / "cost-ledger.md"
-    ledger_path.write_text(
-        "# Cost-trend ledger\n\n"
-        + _mod._COST_LEDGER_HEADER_LINE + "\n"
-        + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
-    )
-    monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: ledger_path)
-    return ledger_path
-
-
-@pytest.fixture()
 def cost_ledger_enabled(tmp_path, monkeypatch):
-    """Isolated config dir carrying the cost-ledger opt-in sentinel, wired
-    the same way TestCostResolveRoots isolates config_dir() for --config-dir
-    tests."""
+    """Isolated config dir carrying the cost-ledger opt-in sentinel. Patches
+    _mod's own config_dir binding, not scope.config_dir: cost-ledger isn't in
+    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR, so its sentinel check
+    (config_dir() / ".cost-ledger-enabled") reads the shim's own import,
+    never scope.py's _resolve_cost_roots."""
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
@@ -11116,7 +10995,7 @@ class TestCostLedgerPublishSafety:
         projects = tmp_path / "projects"
         proj = projects / "SENTINEL-PROJECT-marker"
         proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(proj / "SENTINEL-SESSION-marker.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -11618,7 +11497,7 @@ class TestCostLedgerDefaultPathCliWiring:
         projects = tmp_path / "projects"
         proj = projects / "-home-user-testrepo"
         proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(proj / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -12523,14 +12402,14 @@ class TestAuditRoutingSamples:
         match = re.search(r"\*\*Bash:\*\* `([^`]*)`", out)
         assert match is not None
         rendered_command = match.group(1)
-        assert rendered_command == "a" * _mod._BASH_COMMAND_DISPLAY_CHARS + "…"
+        assert rendered_command == "a" * _mod.render._BASH_COMMAND_DISPLAY_CHARS + "…"
 
     def test_format_md_fallback_for_unknown_tool(self):
         """_pretty_tool_call renders an unrecognised tool name using the **<Name>:** fallback."""
         # SomeOtherTool is not in _CODE_READ_TOOLS, so a turn using only it would never
         # be classified as code-read and would not reach _pretty_tool_call via the full
         # pipeline.  Testing the helper directly exercises the fallback rendering path.
-        rendered = _mod._pretty_tool_call({"name": "SomeOtherTool", "input": {"x": 1}})
+        rendered = _mod.render._pretty_tool_call({"name": "SomeOtherTool", "input": {"x": 1}})
         assert "**SomeOtherTool:**" in rendered
 
     def test_format_md_blockquotes_multiline_user_message(self, fake_projects, capsys):
@@ -12601,7 +12480,7 @@ class TestAuditRoutingSamples:
 
     def test_pretty_tool_call_bash_with_description(self):
         """_pretty_tool_call renders Bash with description as 'description — `cmd`'."""
-        result = _mod._pretty_tool_call({
+        result = _mod.render._pretty_tool_call({
             "name": "Bash",
             "input": {"command": "grep -rn foo bar/", "description": "Find foo"},
         })
@@ -12609,7 +12488,7 @@ class TestAuditRoutingSamples:
 
     def test_pretty_tool_call_bash_without_description(self):
         """_pretty_tool_call Bash without description falls back to bare command."""
-        result = _mod._pretty_tool_call({
+        result = _mod.render._pretty_tool_call({
             "name": "Bash",
             "input": {"command": "ls /tmp"},
         })
@@ -13354,7 +13233,7 @@ class TestSkillInvocation:
         proj_b = projects / "-home-user-repoB"
         proj_a.mkdir(parents=True)
         proj_b.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         # repoA has a skill invocation; repoB has a different skill
         rec_a = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("ta1", "code-review")])
         rec_b = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tb1", "plan-review")])
@@ -13486,7 +13365,7 @@ class TestSkillInvocation:
         proj_b = projects / "-home-user-repoB"
         proj_a.mkdir(parents=True)
         proj_b.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         rec_a = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tc1", "code-review")])
         rec_b = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tc2", "code-review")])
         _write_jsonl(proj_a / "s_a.jsonl", [rec_a])
@@ -13705,7 +13584,7 @@ class TestSkillInvocationRepoScope:
         theirs = projects / "-other-project"
         mine.mkdir(parents=True)
         theirs.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [
             _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("x1", "code-review")]),
         ])
@@ -13775,7 +13654,7 @@ class TestSkillInvocationRepoScope:
         theirs = projects / "-home-u-rX-main"     # a wildcard on 'mine' would match this
         mine.mkdir(parents=True)
         theirs.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [
             _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("y1", "code-review")]),
         ])
@@ -13810,7 +13689,7 @@ class TestSkillInvocationRepoScope:
         linked_dir = projects / "-repo--claude-worktrees-feat"  # slug of the linked worktree
         main_dir.mkdir(parents=True)
         linked_dir.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(main_dir / "s.jsonl", [
             _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("m1", "code-review")]),
         ])
@@ -13883,7 +13762,7 @@ class TestRepoScopedProjectSlugsGuard:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         slugs = _mod._repo_scoped_project_slugs("duration")
-        assert slugs == [_mod._path_to_project_slug("/repo")]
+        assert slugs == [_mod.scope._path_to_project_slug("/repo")]
 
     def test_sibling_repo_sharing_string_prefix_is_rejected(self, monkeypatch, capsys):
         """cwd inside a sibling path sharing the same string prefix (<repo>-fork)
@@ -13957,7 +13836,7 @@ class TestResolveProjectScope:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="main")])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -13984,7 +13863,7 @@ class TestResolveProjectScope:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -14058,18 +13937,18 @@ class TestPathToProjectSlug:
     """The slug transform and its known, accepted lossiness."""
 
     def test_main_repo_path(self):
-        assert _mod._path_to_project_slug("/home/u/repo") == "-home-u-repo"
+        assert _mod.scope._path_to_project_slug("/home/<user>/repo") == "-home-<user>-repo"
 
     def test_worktree_path(self):
-        assert (_mod._path_to_project_slug("/home/u/repo/.claude/worktrees/b")
-                == "-home-u-repo--claude-worktrees-b")
+        assert (_mod.scope._path_to_project_slug("/home/<user>/repo/.claude/worktrees/b")
+                == "-home-<user>-repo--claude-worktrees-b")
 
     def test_known_slug_collision_is_accepted(self):
         """`/` and `.` both map to `-`, so distinct paths can collapse to one slug.
         This is Claude Code's own dir-naming scheme, not ours to change; the repo
         scoping accepts this residual (see _repo_scoped_project_slugs). Pinned so a
         later refactor cannot silently assume injectivity."""
-        assert _mod._path_to_project_slug("/home/u/a/b") == _mod._path_to_project_slug("/home/u/a.b")
+        assert _mod.scope._path_to_project_slug("/home/<user>/a/b") == _mod.scope._path_to_project_slug("/home/<user>/a.b")
 
 
 # ---------------------------------------------------------------------------
@@ -14552,11 +14431,11 @@ class TestSubagentsMultiRoot:
         therefore always sorts first regardless — that shared setup cannot
         catch this regression class, the same blind spot PR #603's own
         pre-fix edit-format test had."""
-        monkeypatch.setattr(_mod, "declared_transcript_roots", lambda: [])
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         active_proj = active / "projects" / "-home-user-active-repo"
         active_proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: active)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
         _write_jsonl(active_proj / "sess-active.jsonl", [
             _asst("claude-opus-4-7", branch="feat"),
         ])
@@ -16216,7 +16095,7 @@ def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
     (acct_a / "projects").mkdir(parents=True)
     acct_b = tmp_path / "acct-b"
     (acct_b / "projects").mkdir(parents=True)
-    monkeypatch.setattr(_mod, "PROJECTS_DIR", acct_a / "projects")
+    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
     roots_file = tmp_path / "roots"
     roots_file.write_text(f"{acct_b}\n")
@@ -16360,7 +16239,7 @@ class TestRootsThreadingSpy:
 
         _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*", single root (fake_projects' PROJECTS_DIR)
 
-        assert calls == [_mod.PROJECTS_DIR]
+        assert calls == [_mod.scope.PROJECTS_DIR]
 
 
 class TestThisRepoUnionsAcrossRoots:
@@ -16431,8 +16310,8 @@ class TestThisRepoUnionsAcrossRoots:
         same slug -- under --this-repo, both are admitted. A future change to
         slug derivation that silently alters this posture, in either
         direction, must fail this test."""
-        this_repo_slug = _mod._path_to_project_slug("/a/b/c")
-        foreign_path_slug = _mod._path_to_project_slug("/a/b.c")
+        this_repo_slug = _mod.scope._path_to_project_slug("/a/b/c")
+        foreign_path_slug = _mod.scope._path_to_project_slug("/a/b.c")
         assert this_repo_slug == foreign_path_slug == "-a-b-c"  # the collision this test pins
 
         root_a = tmp_path / "acct-a"
@@ -16448,7 +16327,7 @@ class TestThisRepoUnionsAcrossRoots:
 
         args = type("A", (), {"projects": "*", "this_repo": True})()
         args._this_repo_slugs = [this_repo_slug]
-        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
 
         session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
@@ -16463,7 +16342,7 @@ class TestThisRepoUnionsAcrossRoots:
         proj_a = root_a / "-repo-main"
         proj_a.mkdir(parents=True)
         _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="feat-in-root-a")])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", root_a)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", root_a)
 
         root_b = tmp_path / "acct-b-config"
         proj_b = root_b / "projects" / "-repo-main"
@@ -16563,7 +16442,7 @@ class TestPoisonedProjectsDirGlobal:
     def test_sessions_found_via_declared_root_despite_nonexistent_projects_dir(
         self, tmp_path, monkeypatch, capsys
     ):
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "nonexistent-active-profile" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "nonexistent-active-profile" / "projects")
         real_root = tmp_path / "real-account"
         proj = real_root / "projects" / "-home-user-testrepo"
         proj.mkdir(parents=True)
@@ -16592,7 +16471,7 @@ class TestMultiRootFormatOutliers:
         default_proj = default_config / "projects" / "-home-user-repo-a"
         default_proj.mkdir(parents=True)
         _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_config)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_config)
 
         declared_config = tmp_path / "declared-account"
         declared_proj = declared_config / "projects" / "-home-user-repo-b"
@@ -16729,12 +16608,12 @@ class TestResolveScanRoots:
     many such fixtures)."""
 
     def test_no_config_dir_no_declared_roots_returns_projects_dir_alone(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         args = argparse.Namespace(config_dir=None)
         assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
 
     def test_no_config_dir_with_declared_roots_unions_both(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         declared = tmp_path / "declared-account"
         (declared / "projects").mkdir(parents=True)
         roots_file = tmp_path / "roots"
@@ -16752,7 +16631,7 @@ class TestResolveScanRoots:
         """The flagship precedence rule: an explicit --config-dir wins outright,
         returning that one directory's projects/ subdirectory alone — the
         declared-roots file's entries are not unioned in on top of it."""
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         declared = tmp_path / "declared-account"
         (declared / "projects").mkdir(parents=True)
         roots_file = tmp_path / "roots"
@@ -16767,7 +16646,7 @@ class TestResolveScanRoots:
         """A hand-built test `args` Namespace that predates the top-level
         --config-dir flag (this file's many such fixtures) must not raise
         AttributeError -- its absence means "not passed," the real default."""
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         args = type("A", (), {})()  # no config_dir attribute at all
         assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
 
@@ -16779,7 +16658,7 @@ class TestResolveScanRoots:
         active profile is deduped, not double-listed."""
         active_config = tmp_path / "active-account"
         (active_config / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", active_config / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{active_config}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
@@ -16879,7 +16758,7 @@ class TestRootCountDescDirectUnit:
 
     def test_one_root_absent_roots_file_states_no_declared_roots_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
-        assert _mod._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+        assert _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
             "1 root (no ~/.claude/transcript-config-dirs declared)"
         )
 
@@ -16890,7 +16769,7 @@ class TestRootCountDescDirectUnit:
         roots_file = tmp_path / "roots"
         roots_file.write_text("# just a comment\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
-        desc = _mod._root_count_desc([tmp_path / "acct-a" / "projects"])
+        desc = _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"])
         assert "no ~/.claude/transcript-config-dirs declared" not in desc
         assert "~/.claude/transcript-config-dirs" in desc
 
@@ -16905,7 +16784,7 @@ class TestRootCountDescDirectUnit:
         roots_file_as_dir = tmp_path / "roots-is-a-directory"
         roots_file_as_dir.mkdir()
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file_as_dir))
-        assert _mod._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+        assert _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
             "1 root (~/.claude/transcript-config-dirs present but unreadable)"
         )
 
@@ -16914,8 +16793,8 @@ class TestRootCountDescDirectUnit:
         file, so the >1-root branch must not name the file at all."""
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
         roots = [tmp_path / "acct-a" / "projects", tmp_path / "acct-b" / "projects"]
-        assert _mod._root_count_desc(roots) == "2 roots"
-        assert "transcript-config-dirs" not in _mod._root_count_desc(roots)
+        assert _mod.scope._root_count_desc(roots) == "2 roots"
+        assert "transcript-config-dirs" not in _mod.scope._root_count_desc(roots)
 
     def test_absent_state_literal_appears_in_both_skill_files(self, tmp_path, monkeypatch):
         """Contract test, a tripwire not a full guarantee: derives
@@ -16926,7 +16805,7 @@ class TestRootCountDescDirectUnit:
         verbatim positive pin on its own scope-confirmation sentence (see
         each skill's dedicated tests) is the real contract."""
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
-        literal = _mod._root_count_desc([tmp_path / "acct-a" / "projects"])
+        literal = _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"])
         for skill_name in ("transcript-analysis", "transcript-narrative"):
             skill_text = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
             assert literal in skill_text, f"{skill_name}/SKILL.md does not quote _root_count_desc()'s literal"
@@ -17854,7 +17733,7 @@ class TestPlanBoundaryReport:
         combination."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_plan_boundary(_plan_boundary_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
@@ -17895,7 +17774,7 @@ class TestPlanBoundaryReport:
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", _opus_boundary_session())
         multi_root = [root_a, root_b]
 
-        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: ["-home-user-testrepo"])
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: ["-home-user-testrepo"])
 
         for kwargs, roots in (
             ({}, single_root),

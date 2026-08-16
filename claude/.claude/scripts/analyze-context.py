@@ -19,32 +19,21 @@ investigate with the per-session view.
 """
 
 import argparse
-import importlib.util
 import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from _config_dir import config_dir
+from transcript_analysis import scope
+from transcript_analysis.corpus import read_session_file
 
-# Fallback/display-only: main()'s actual scan roots come from
-# _transcript_analysis._resolve_scan_roots/_session_meta_dir_for_root, which
-# read that module's own PROJECTS_DIR, not this one -- monkeypatching this
-# file's PROJECTS_DIR no longer affects what main() scans.
+# Display/fallback only -- main()'s actual scan roots read scope.PROJECTS_DIR,
+# not this module-level constant; patch scope.PROJECTS_DIR (not this file's
+# PROJECTS_DIR) to redirect a test.
 CLAUDE_DIR = config_dir()
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 SESSION_META_DIR = CLAUDE_DIR / "usage-data" / "session-meta"
-
-# transcript-analysis.py is a hyphenated filename, not a valid `import`
-# identifier -- load it by path, mirroring how this suite's own tests load
-# hyphenated sibling scripts (e.g. tests/test_analyze_context.py).
-_TRANSCRIPT_ANALYSIS_PATH = Path(__file__).parent / "transcript-analysis.py"
-sys.path.insert(0, str(_TRANSCRIPT_ANALYSIS_PATH.parent))
-_transcript_analysis_spec = importlib.util.spec_from_file_location(
-    "transcript_analysis", _TRANSCRIPT_ANALYSIS_PATH
-)
-_transcript_analysis = importlib.util.module_from_spec(_transcript_analysis_spec)
-_transcript_analysis_spec.loader.exec_module(_transcript_analysis)
 
 
 def cwd_to_project_key(cwd: Path) -> str:
@@ -110,14 +99,14 @@ def latest_session_jsonl(project_key: str, roots: Sequence[Path]) -> tuple[str, 
 def parse_turns(jsonl_path: Path) -> list[dict]:
     """Extract per-turn usage fields, merging subagent transcripts.
 
-    Reads via _read_session_file(include_subagents=True) so a session that
+    Reads via read_session_file(include_subagents=True) so a session that
     dispatched work to a subagent contributes that subagent's turns to the
     growth curve too, instead of silently under-reporting it. Sorted by
-    timestamp afterward: _read_session_file appends subagent-file records
+    timestamp afterward: read_session_file appends subagent-file records
     after all main-file records, and the growth curve's turn-by-turn deltas
     are only meaningful in chronological order.
     """
-    records = _transcript_analysis._read_session_file(jsonl_path, include_subagents=True)
+    records = read_session_file(jsonl_path, include_subagents=True)
     turns = []
     for record in records:
         try:
@@ -154,7 +143,7 @@ def render_bar(value: int, peak: int, width: int = 40) -> str:
 
 
 def analyze_session(session_id: str, jsonl_path: Path, roots: Sequence[Path]) -> None:
-    _transcript_analysis._print_resolved_scope("session", session_id, roots)
+    scope.print_resolved_scope("session", session_id, roots)
     turns = parse_turns(jsonl_path)
     if not turns:
         print(f"No usage data found in {jsonl_path}", file=sys.stderr)
@@ -214,13 +203,13 @@ def show_top(count: int, roots: Sequence[Path]) -> None:
     meta_dirs = [_session_meta_dir_for_root(root) for root in roots]
     if not any(d.exists() for d in meta_dirs):
         # stderr, not stdout: this is a failure exit, unlike the header print below it.
-        _transcript_analysis._print_resolved_scope("top", "*", roots, file=sys.stderr)
+        scope.print_resolved_scope("top", "*", roots, file=sys.stderr)
         print(
             f"Session metadata directory not found in any of {len(roots)} scanned roots",
             file=sys.stderr,
         )
         sys.exit(1)
-    _transcript_analysis._print_resolved_scope("top", "*", roots)
+    scope.print_resolved_scope("top", "*", roots)
 
     sessions = []
     for meta_dir in meta_dirs:
@@ -280,7 +269,7 @@ examples:
         help="show N heaviest sessions by direct token usage (default 10)",
     )
     args = parser.parse_args()
-    roots = _transcript_analysis._resolve_scan_roots(args)
+    roots = scope.resolve_scan_roots(args)
 
     if args.top is not None:
         show_top(args.top, roots)
@@ -289,7 +278,7 @@ examples:
     if args.session_id:
         jsonl = find_session_jsonl(args.session_id, roots)
         if jsonl is None:
-            _transcript_analysis._print_resolved_scope("session", args.session_id, roots, file=sys.stderr)
+            scope.print_resolved_scope("session", args.session_id, roots, file=sys.stderr)
             print(f"Session not found: {args.session_id}", file=sys.stderr)
             sys.exit(1)
         analyze_session(args.session_id, jsonl, roots)
@@ -298,7 +287,7 @@ examples:
     project_key = cwd_to_project_key(Path.cwd())
     result = latest_session_jsonl(project_key, roots)
     if result is None:
-        _transcript_analysis._print_resolved_scope("session", project_key, roots, file=sys.stderr)
+        scope.print_resolved_scope("session", project_key, roots, file=sys.stderr)
         print(
             f"No sessions found for project directory: {Path.cwd()}\n"
             "Run from the project root, or pass a session ID explicitly.",

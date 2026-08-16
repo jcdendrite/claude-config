@@ -19,7 +19,7 @@ launched project dir; shutil.rmtree(project_dir) alone does not remove
 them), and detect_dispatch_in_lines() for the attempted-dispatch signal.
 The meta.json/jsonl join mirrors (does not import) _index_subagent_dispatches
 and _dispatch_usage_summary's observed-model walk in
-claude/.claude/scripts/transcript-analysis.py:3251,3363 — this harness only
+claude/.claude/scripts/transcript-analysis.py — this harness only
 ever has one dispatch per run to join, so the multi-root/pricing generality
 those functions carry for the full corpus tool doesn't apply here.
 """
@@ -221,7 +221,7 @@ def build_run_command(run: MatrixRun, *, session_id: str, budget_cap_usd: float)
 
 # --- Agent frontmatter reading ----------------------------------------------
 # Mirrors _agent_frontmatter_model's leading-YAML-block scoping in
-# claude/.claude/scripts/transcript-analysis.py:3302 (never matches a
+# claude/.claude/scripts/transcript-analysis.py (never matches a
 # "model:"/"tools:" mention inside the agent's prose body).
 
 _AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
@@ -286,7 +286,7 @@ MODEL_FAMILY_MIXED = "mixed"
 
 def model_family(model_id: str) -> str:
     """Bucket a raw model ID to its family name. Mirrors _fam() in
-    claude/.claude/scripts/transcript-analysis.py:85."""
+    claude/.claude/scripts/transcript_analysis/render.py."""
     lowered = model_id.lower()
     if "opus" in lowered:
         return MODEL_FAMILY_OPUS
@@ -383,7 +383,7 @@ def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
     from one subagent's own transcript.
 
     Mirrors _dispatch_usage_summary's observed-model walk
-    (claude/.claude/scripts/transcript-analysis.py:3363) — every assistant
+    (claude/.claude/scripts/transcript-analysis.py) — every assistant
     record's message.model, excluding the literal "<synthetic>" placeholder
     — and collects tool_use block names in the same pass for M3's
     discriminator. Returns two empty frozensets on any read error, matching
@@ -426,7 +426,7 @@ def parse_subagent_dispatches(
     dispatch.
 
     Mirrors _index_subagent_dispatches's meta.json read
-    (claude/.claude/scripts/transcript-analysis.py:3251) — toolUseId,
+    (claude/.claude/scripts/transcript-analysis.py) — toolUseId,
     requested model, and (unlike that function, which doesn't need it since
     it joins agentType from the parent's own tool_use block) agentType read
     directly from meta.json, which carries it as its own field. A meta.json
