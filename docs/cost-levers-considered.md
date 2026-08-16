@@ -167,3 +167,14 @@ stated rule.
 |---|---|---|
 | Cache-invalidation-by-payload-mutation (`.claude/plans/transcript-cost-subcommand.md`'s "Prefix-cache invalidation" hypothesis, killed via an 11.7k-tokens/turn corpus mean) | Refuted, mechanism reclassified | The prompt bytes across an idle gap are byte-identical; the tokens are re-billed because the vendor's 5-minute/1-hour cache TTL lapsed during the gap, not because the payload changed. A right-skewed distribution hides a tail a mean can't see: `cache-rebuild --since 30d --threshold 100000` measured 1,577 idle-gap rebuilds / $1,513.55 excess at list price (as measured; reproduce against the current rolling 30-day window — 165,303 calls scanned, 2,261 (1.4%) writing >= 100,000 tokens). |
 | Idle-gap rebuild cause: concurrent-session switching vs. operator breaks | **Concurrent-session switching (92.9%), not breaks (7.1%)** | Classifying each idle-gap rebuild by whether another Claude Code session, in any account, had a call during the gap: 1,465 rebuilds / $1,406.52 occurred with another session active; 112 rebuilds / $107.03 occurred with everything idle, a real break. Breaks are almost exactly 7% of this cost and are not worth optimizing against. |
+
+## From `binding-context-cap.md` — "Compel a handoff decision at a tail context threshold" (rejected before merge, 2026-08-16)
+
+Unlike the other entries on this page, this plan never merged — it is not a
+read-only historical record under `.claude/plans/`, so this row is the only
+surviving record of it.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| `Stop`-hook `{"decision":"block"}` on `nudge-handoff-near-context-cap.sh`, compelling a handoff decision past an escalating tail-context threshold | Rejected, never merged | Failed `/plan-review` twice: three reviewers across two rounds established that a `Stop`-hook block is satisfiable by any one-sentence reply from the agent — a stronger nudge at best, not the binding mechanism the plan claimed. |
+| Reversing `token-cost-reduction.md` (PR #622)'s informational-only decision on the same hook to enable the above | Rejected, not shown necessary | PR #622 documents an engineer-verified decision to keep this hook informational-only ("nothing stronger is available without breaking the informational-class contract the engineer keeps deliberately"), made under the same project-engagement risk PR #622's own opening line already states. Measuring the real nudge-to-handoff conversion rate (344 distinct nudged sessions across all 6 declared config accounts, joined against `handoff session=` log lines) found 5.51% before PR #622's escalating-band re-arm shipped vs. 33.93% after — a ~6x improvement. Confounded (not a controlled experiment) and concentrated in one account (307 of 344 nudged sessions), but large and directional enough to undercut the premise that the informational lever had already failed and needed replacing. |
