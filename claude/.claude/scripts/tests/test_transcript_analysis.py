@@ -10273,11 +10273,9 @@ class TestCacheEfficiency:
     def test_per_account_breakdown_attributes_cold_events_to_the_correct_account(self, tmp_path, capsys):
         """A cold event originating in one account's session must land in
         that account's own per_account[ordinal] bucket, not leak into the
-        other account's bucket or only the aggregate -- the attribution-
-        sensitive columns for a PR titled cost-attribution-integrity. A bug
-        in the redact_ordinals/root_position lookup could pass a
-        turn-counts-only check while still misattributing cold figures
-        across accounts."""
+        other account's bucket or only the aggregate. A bug in the
+        redact_ordinals/root_position lookup could pass a turn-counts-only
+        check while still misattributing cold figures across accounts."""
         root_a_turn = _priced("claude-sonnet-5", cache_read=100)
         root_a_turn["sessionId"] = "sess-a"
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [root_a_turn])
@@ -10295,6 +10293,27 @@ class TestCacheEfficiency:
         assert account_1["ColdTok"] == "0"
         assert account_2["ColdEvts"] == "1"
         assert account_2["ColdTok"] == "500"
+
+
+class TestCacheEfficiencyArgparseWiring:
+    """Round-trips the real argparser, mirroring
+    TestPlanBoundaryArgparseWiring -- every other new test in this section
+    builds args via the hand-rolled _cache_efficiency_args() factory, which
+    cannot catch a dest= typo or missing set_defaults in the real parser."""
+
+    def test_registers_cache_efficiency_subcommand_with_expected_defaults(self):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["cache-efficiency"])
+        assert args.extra_config_dirs is None
+        assert args.no_redact is False
+        assert args.func == _mod.cmd_cache_efficiency
+
+    def test_config_dir_and_no_redact_wire_to_expected_attributes(self):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["cache-efficiency", "--config-dir", "X", "--no-redact"])
+        assert args.func is _mod.cmd_cache_efficiency
+        assert args.extra_config_dirs == ["X"]
+        assert args.no_redact is True
 
 
 # ---------------------------------------------------------------------------
@@ -15354,6 +15373,61 @@ class TestFormatDriftCanary:
         side_rec = _priced("claude-sonnet-5", cache_read=100)
         side_rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
+        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cost_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
+        """The cmd_cost counterpart to
+        test_no_warning_in_cache_efficiency_with_spawn_and_real_sidechain_turn
+        above: a spawn paired with an actual priced sidechain turn is the
+        true no-drift case and must not warn."""
+        session_id = "sess-side-cost"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        side_rec = _priced("claude-sonnet-5", cache_read=100)
+        side_rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cost_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
+        """The sidechain-turn count in _cost_report happens before the
+        usage-presence check (per that code's own comment), so an unpriced
+        sidechain assistant turn -- message.usage == {}, via _asst's default,
+        never _priced -- must still count toward total_sidechain_turns and
+        keep the canary silent. The priced-sidechain test above cannot catch
+        a regression that moves the count after the usage check, since a
+        priced turn passes either ordering."""
+        session_id = "sess-unpriced-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [
+            _asst("claude-opus-4-7", branch="main", sidechain=True),
+        ])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cache_efficiency_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
+        """The cache-efficiency counterpart to the cost test above: an
+        unpriced sidechain assistant turn must still count toward
+        _scan_cache_efficiency_group's returned sidechain_turns_read, since
+        that count happens before the group scan's own `if not usage:
+        continue` guard."""
+        session_id = "sess-unpriced-side-ce"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [
+            _asst("claude-opus-4-7", branch="main", sidechain=True),
+        ])
         _mod.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
 

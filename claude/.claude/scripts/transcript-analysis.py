@@ -6537,9 +6537,11 @@ def _print_context_composition_report(stats: dict, since_label: str) -> None:
         print(f"{category:<32} {value:>16,.0f} {_pct_of(value, total_weighted):>8} {count:>10,}")
 
 
-# T=0.50 is the case study's highest-scoring threshold for the read-collapse
-# rule (max Youden's J); see docs/case-studies/cold-cache-attribution.md for
-# the full comparison against the incumbent write>read rule.
+
+# T=0.50 is the case study's highest-scoring threshold for this read-collapse
+# rule (max Youden's J) against the alternative cache_creation >
+# cache_read_input_tokens rule; see docs/case-studies/cold-cache-attribution.md
+# for the full comparison.
 _COLD_READ_COLLAPSE_MARGIN = 0.50
 
 
@@ -10479,7 +10481,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Additional Claude Code config directory to scan (repeatable). The default resolved"
             " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --no-redact."
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root; --no-redact is refused once this puts more than one"
+            " root in scope."
         ),
     )
     p_cache_efficiency.add_argument(
