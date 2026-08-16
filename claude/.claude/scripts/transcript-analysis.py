@@ -7213,11 +7213,7 @@ def _normalize_composition_tool_name(name: str | None) -> str:
 
 
 def _classify_content_item(record_type: str, item, *, is_compact_summary: bool = False) -> tuple[str, int]:
-    """Sizes the item via chars // 4 (_READ_SCOPE_CHARS_PER_TOKEN) and discards its text immediately after.
-    Returns (category, estimated_tokens); category is the unqualified _CATEGORY_TOOL_CALL/_CATEGORY_TOOL_RESULT
-    constant for tool blocks -- the caller appends the tool-name suffix itself.
-    `is_compact_summary` marks a user record's carried-forward compaction digest, not a fresh prompt or reply.
-    An unrecognized block shape is sized off its own JSON length and counted only, under _CATEGORY_UNCLASSIFIED."""
+    """`is_compact_summary` marks a carried-forward compaction digest, not a fresh prompt."""
     if isinstance(item, dict):
         block_type = item.get("type")
         if block_type == "text":
@@ -7251,10 +7247,7 @@ def _classify_content_item(record_type: str, item, *, is_compact_summary: bool =
 
 
 def _split_context_sequences(records: list[dict]) -> list[list[dict]]:
-    """Split one already-deduped record stream into context sequences: a sequence ends at a
-    compact_boundary record or whenever isSidechain toggles between consecutive records; two
-    back-to-back interleaved dispatches with no main-thread record between them are not split
-    into two sequences (a legacy-shape gap, not a concern for the current split-file format)."""
+    """Splits at a compact_boundary record or an isSidechain toggle between consecutive records."""
     sequences: list[list[dict]] = []
     current: list[dict] = []
     current_sidechain: bool | None = None
@@ -7339,12 +7332,8 @@ def _merge_context_composition_stats(dst: dict, src: dict) -> None:
 
 
 def _scan_context_composition_sequence(records: list[dict], since_ts: float | None) -> dict:
-    """Single-pass composition scan over one context sequence (see _split_context_sequences --
-    no compact_boundary or isSidechain toggle inside). turn_introduced uses the NEXT assistant
-    turn after an item's own record, since an assistant turn's generated content is this turn's
-    OUTPUT, not part of its own input. Per-item pricing is O(1) via one prefix-sum lookup over
-    the per-turn read-class multiplier, since every item in this sequence shares the same closing
-    turn."""
+    """turn_introduced uses the NEXT assistant turn, since an assistant turn's own generated
+    content is that turn's OUTPUT, not its input."""
     stats = _new_context_composition_stats()
 
     turn_usages: list[dict] = []
@@ -7485,13 +7474,7 @@ def cmd_context_composition(args: argparse.Namespace) -> None:
 
 
 def _context_composition_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
-    """Rate-weighted token-turns by content-item category, corpus-wide, gated by a reconciliation
-    check against _context_at_turn (see _context_composition_residual_instability and
-    _print_context_composition_report for the reconciliation mechanics). Redaction contract
-    mirrors context-distribution, not cost: no redact map, no per-root/per-account/per-project
-    breakdown -- see that function's own docstring for why `roots=None` only ever fires for a
-    direct caller (this module's own tests included).
-    """
+    """Redaction contract mirrors context-distribution: no redact map, no per-root/per-account/per-project breakdown."""
     redact: bool = not bool(getattr(args, "no_redact", False))
 
     scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
@@ -7615,8 +7598,9 @@ def _print_context_composition_report(stats: dict, since_label: str) -> None:
     if actual_new_total:
         split_discrepancy = abs(introduced_total - actual_new_total) / actual_new_total
         print(
-            f"\nIntroduced-vs-resident split: our bookkeeping={introduced_total:,} tok,"
-            f" usage's own new-token split={actual_new_total:,} tok (discrepancy {split_discrepancy:.1%})"
+            f"\nIntroduced-vs-resident split (corpus-wide, not scoped by --since): our"
+            f" bookkeeping={introduced_total:,} tok, usage's own new-token split={actual_new_total:,} tok"
+            f" (discrepancy {split_discrepancy:.1%})"
         )
         if split_discrepancy > _CONTEXT_COMPOSITION_SPLIT_DISCREPANCY_TOLERANCE:
             print(
@@ -10952,7 +10936,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_context_comp.add_argument(
         "--since", metavar="Nd",
-        help="Limit rate-weighted turns to timestamps in the last N days (e.g. 35d); reconciliation still scans every turn.",
+        help=(
+            "Limit rate-weighted turns to timestamps in the last N days (e.g. 35d); reconciliation"
+            " and the introduced-vs-resident split diagnostic both still scan/accumulate every turn."
+        ),
     )
     p_context_comp.add_argument(
         "--no-redact", action="store_true",

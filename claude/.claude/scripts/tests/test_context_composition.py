@@ -4,6 +4,7 @@ Every fixture here is synthetic -- hand-built records, never sampled or copied f
 transcript. See .claude/plans/context-composition-analyzer.md for the algorithm this pins.
 """
 import importlib.util
+import math
 import re
 import sys
 from pathlib import Path
@@ -190,6 +191,30 @@ class TestRefusalGate:
         out = capsys.readouterr().out
         assert "REFUSED" in out
         assert "## Category" not in out
+
+
+class TestNegativeResidualInstability:
+    def test_residual_instability_of_negative_residual_is_infinite(self):
+        """A negative residual (context_at_turn undercounts the reconstructed resident size) is
+        unconditionally maximally unstable, distinct from the finite range/mean value the formula
+        would otherwise compute from these same two numbers."""
+        assert _mod._context_composition_residual_instability([-5, 10]) == math.inf
+
+    def test_negative_residual_from_real_sequence_triggers_refusal(self, capsys):
+        """usage.input_tokens (10) undercounts the 100-tok item actually introduced that turn,
+        producing residual = 10 - 100 = -90 -- a real scan (not a hand-built stats dict) must
+        reach the same math.inf-driven refusal as the direct unit test above."""
+        records = [
+            _user_msg("a" * 400, ts="2026-05-19T10:00:00.000Z"),  # 100 tok estimate, intro=0
+            _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:05.000Z"),
+        ]
+        records[1]["message"]["usage"] = {"input_tokens": 10}  # residual = 10 - 100 = -90
+        stats = _mod._scan_context_composition_session([records], None)
+        assert stats["residuals"] == [[-90]]
+
+        _mod._print_context_composition_report(stats, "")
+        out = capsys.readouterr().out
+        assert "REFUSED" in out
 
 
 class TestEmptyScan:
@@ -554,6 +579,27 @@ class TestFastModeAndGeoWeighting:
         # weighted = 10 * 1.56 = 15.6 -- a bug that dropped the scale would give 10*1.45=14.5.
         assert stats["weighted_by_category"]["user_text"] == pytest.approx(15.6)
 
+    def test_fast_and_geo_scale_multiply_together_on_one_turn(self):
+        """Both usage.speed="fast" and usage.inference_geo="us" set on the SAME turn --
+        _context_composition_turn_rate_scale multiplies the two factors (2 * 1.1 = 2.2x), not
+        just applies whichever check happens to run second."""
+        records = [
+            _user_msg("a" * 40, ts="2026-05-19T10:00:00.000Z"),  # 10 tok, intro=0
+            _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:05.000Z"),
+            _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:10.000Z"),
+        ]
+        records[1]["message"]["usage"] = {
+            "cache_creation_input_tokens": 1,
+            "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 1},
+        }
+        records[2]["message"]["usage"] = {"cache_read_input_tokens": 1, "speed": "fast", "inference_geo": "us"}
+
+        stats = _mod._scan_context_composition_session([records], None)
+        # write_mult[0] = 1.25 (5m tier, no scale). read_mult[1] = 0.1 * 2 * 1.1 = 0.22 (combined).
+        # per_item = 1.25 + 0.22 = 1.47. weighted = 10 * 1.47 = 14.7 -- a bug that applied only one
+        # factor would give 10*(1.25+0.2)=14.5 (fast alone) or 10*(1.25+0.11)=13.6 (geo alone).
+        assert stats["weighted_by_category"]["user_text"] == pytest.approx(14.7)
+
 
 class TestRedaction:
     _FAKE_PATH = "/Users/<fakeoperator>/secret-project-x/config.py"
@@ -591,6 +637,33 @@ class TestRedaction:
         assert _mod._DO_NOT_PUBLISH_BANNER in combined
         assert self._FAKE_PATH not in combined
         assert self._FAKE_SESSION_UUID not in combined
+
+    def test_redact_ordinal_label_appears_and_real_root_path_absent_under_default_redaction(
+        self, fake_projects, capsys
+    ):
+        """Mirrors cost's own account-N diagnostic assertions (test_transcript_analysis.py
+        TestCostMultiRootReport, e.g. :6419) -- the per-root scan-diagnostic label is the only
+        place `redact` actually changes context-composition's printed output (root_label =
+        "account-N" if redact else str(root.parent)); every other TestRedaction test here would
+        still pass even if that branch were deleted, since item text is discarded structurally
+        regardless of `redact`."""
+        self._seed_needle_session(fake_projects)
+        real_root_parent = str(fake_projects.parent.parent)  # config_dir(), the segment redact hides
+        _mod.cmd_context_composition(_context_composition_args())
+        out = capsys.readouterr().out
+        assert "context-composition: account-1: scanned" in out
+        assert real_root_parent not in out
+
+    def test_real_root_path_appears_and_account_label_absent_under_no_redact(self, fake_projects, capsys):
+        """The other arm of the same ternary as the test above -- with --no-redact at single-root
+        scope (opt-in, matching context-distribution's already-shipped behavior), the real path
+        prints and the account-N label does not."""
+        self._seed_needle_session(fake_projects)
+        real_root_parent = str(fake_projects.parent.parent)
+        _mod.cmd_context_composition(_context_composition_args(no_redact=True))
+        out = capsys.readouterr().out
+        assert real_root_parent in out
+        assert "account-1" not in out
 
     def test_needle_absent_from_multi_root_refusal_error(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"

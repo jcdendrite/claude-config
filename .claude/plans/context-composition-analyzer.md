@@ -74,7 +74,10 @@ as that turn's token-weighted blend of the tiers actually present:
 scalar, so it does not reintroduce per-item resolution, and it reflects the
 dollars actually written that turn. Note this blends *within* the write class
 only — it is not the read/write blending rejected above, which diluted the
-write rate across long-resident items that were never rewritten.
+write rate across long-resident items that were never rewritten. When a turn
+has no cache-write tokens at all (`eph_1h + eph_5m == 0`), the formula is
+undefined by construction; fall back to the plain input rate (1×), mirroring
+`_price_turn`'s own rate for a turn with no cache-write tier.
 
 Then scale by the two turn-level adjustments `_price_turn` applies to every
 class, keyed off `usage.speed` and `usage.inference_geo`: fast mode (2×) and
