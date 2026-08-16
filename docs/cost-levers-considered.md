@@ -198,6 +198,21 @@ clears the 20% margin under both ramp-curve methodologies.
 | Cache-invalidation-by-payload-mutation (`.claude/plans/transcript-cost-subcommand.md`'s "Prefix-cache invalidation" hypothesis, killed via an 11.7k-tokens/turn corpus mean) | Refuted, mechanism reclassified | The prompt bytes across an idle gap are byte-identical; the tokens are re-billed because the vendor's 5-minute/1-hour cache TTL lapsed during the gap, not because the payload changed. A right-skewed distribution hides a tail a mean can't see: `cache-rebuild --since 30d --threshold 100000` measured 1,577 idle-gap rebuilds / $1,513.55 excess at list price (as measured; reproduce against the current rolling 30-day window — 165,303 calls scanned, 2,261 (1.4%) writing >= 100,000 tokens). |
 | Idle-gap rebuild cause: concurrent-session switching vs. operator breaks | **Concurrent-session switching (92.9%), not breaks (7.1%)** | Classifying each idle-gap rebuild by whether another Claude Code session, in any account, had a call during the gap: 1,465 rebuilds / $1,406.52 occurred with another session active; 112 rebuilds / $107.03 occurred with everything idle, a real break. Breaks are almost exactly 7% of this cost and are not worth optimizing against. |
 
+**2026-08-16 follow-up:** an idle gap past the 5-minute tier is necessary but
+not sufficient for a rebuild. Reading `usage` fields directly for main-thread
+calls preceded by a gap of at least 10 minutes but under an hour —
+unambiguously past the 5-minute tier and inside the 1-hour one — large warm
+cache reads outnumbered large cache writes by roughly 1.8 to 1 over 30 days. Both tiers are vendor-documented, so
+a mixed corpus is expected; the rows above are unaffected, since they classify
+calls that already crossed the write threshold rather than predicting which
+gaps will. Two consequences for anyone reusing this section's numbers:
+`cache-rebuild` sorts gaps against the documented tier boundaries rather than
+discovering them (`transcript-analysis.py:7782-7783` hardcodes 300 and 3600
+seconds), so its bucket labels restate the vendor's model rather than
+confirming it; and a plan may not assume a given gap length forces a rebuild.
+Counts here are a one-off scan, not a rerunnable script, and are undeduped by
+`requestId` — treat the ratio as the finding and the absolutes as unreliable.
+
 ## From `binding-context-cap.md` — "Compel a handoff decision at a tail context threshold" (rejected before merge, 2026-08-16)
 
 Unlike the other entries on this page, this plan never merged — it is not a
@@ -222,3 +237,10 @@ before citing them forward.
 | Symbol-level navigation as a token-reduction lever | Rejected, below the double-digit bar | Upper bound ≈3.8% of billed input tokens on the most code-dense account, ≈1.7% on the other measured. `Read` output is ≈11.7% of billed input tokens, and only the whole-file-indexable-code slice — 32.6% of all read volume — is addressable at all. Markdown is the largest read bucket at 42.6% and LSP does not touch it. Both bounds carry an unverified read-to-billed conversion that could move in either direction, and no discount for comprehension reads a symbol lookup cannot replace. The 11.7% is against billed input tokens; the `context-composition-analyzer.md` entry above measures the same content against cumulative prompt-token growth, which counts a chunk once on entry rather than on every subsequent turn — different denominators, not conflicting figures. |
 | Code-dense repositories as a proxy for code-dense reading | Refuted | The account with by far the most statically-analyzable source still read 42.6% Markdown against 40.8% code. Portfolio composition does not predict read composition; measure the transcripts, not the tree. |
 | Enabling the native code-intelligence plugins | Adopted for diagnostics, not for tokens | Post-edit type errors without a compiler or linter run (vendor-documented, unmeasured here). Installed at user scope per account, so `claude/.claude/settings.json` is untouched and adoption is deliberately unrecorded in-repo. Carries a documented memory cost on large projects and false-positive import diagnostics in misconfigured monorepos. |
+
+## From `background-slow-bash-calls.md` — "Default slow/network-bound Bash calls to `run_in_background`"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Defaulting a Bash call expected to be slow or network-bound (branch push, PR create, CI-check poll) to `run_in_background: true`, so the main thread does not sit idle long enough to expire the prompt cache | Rejected, premise falsified | The multi-minute call durations that motivated it are not execution time. A transcript records only the assistant `tool_use` timestamp and the matching `tool_result` timestamp — there is no per-call execution field in the schema — so any duration derived from it includes permission-prompt wait and operator idle. Scanning that window across the default declared-root scope found main-thread Bash calls at 5 minutes or more whose command shapes include `cd`, `pwd`, `echo` and `git status` at the same magnitude as `gh pr view` and `git push`, with the longest exceeding 20 hours; `cd` has no execution cost to background. The named commands measure sub-second on this machine (`git push --dry-run`, `gh pr list`). Figures are a one-off scan, not a rerunnable script — treat the precision accordingly. |
+| `run_in_background: true` for a Bash call whose execution genuinely does take minutes (not merely wait-inflated) | Rejected, mechanism does not reach the wait | `run_in_background` governs whether a call detaches after dispatch, not whether it is approved, so it does not shorten an approval wait. A backgrounded call also re-invokes the main thread on completion, so absent independent work to interleave it converts a blocking wait into an idle wait of the same length. The residual driver is the concurrent-session-switching finding in the `context-cost-root-cause.md` section above, not the shape of the Bash call. |
