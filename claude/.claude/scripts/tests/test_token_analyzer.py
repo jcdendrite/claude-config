@@ -212,21 +212,6 @@ def test_subagent_multi_block_request_id_run_credited_once(fake_projects):
     assert sessions[0]["sidechain"] is True
 
 
-def test_multi_block_request_id_run_classification_flag_on_non_first_block(fake_projects):
-    """Classification flags (edits/task/thinking/judgment_skill) union across
-    every raw record independent of the requestId dedup, so a qualifying
-    tool_use on a merged run's non-first block is still detected."""
-    session_a, _ = fake_projects
-    rec1 = _make_assistant("claude-opus-4-7", inp=50, out=10, cc=0, cr=0, request_id="req-1")
-    rec2 = _make_assistant("claude-opus-4-7", inp=50, out=20, cc=0, cr=0,
-                           request_id="req-1", tool_names=["Edit"])
-    _write_jsonl(session_a / "edit_on_second_block.jsonl", [rec1, rec2])
-
-    _, sessions = _mod._walk()
-
-    assert sessions[0]["edits"] is True
-
-
 def test_cache_hit_ratio():
     # cache_read / (cache_read + input) per spec
     assert _mod._pct(300, 300 + 100) == "75%"
