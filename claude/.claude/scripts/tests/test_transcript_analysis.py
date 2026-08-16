@@ -144,6 +144,52 @@ def _table_cols(out: str, *, header_contains: str, row_contains: str | Sequence[
     return dict(zip(labels, values, strict=False))
 
 
+def _md_table_cols(out: str, *, header_contains: str, row_contains: str | Sequence[str],
+                    occurrence: int | None = None) -> dict[str, str]:
+    """Map column-label -> cell value for the GFM pipe-table data row matching
+    `row_contains` -- the markdown-table counterpart to _table_cols, splitting
+    on `|` instead of whitespace since a markdown cell (a model ID, a share
+    percentage) may itself contain no whitespace token boundary to split on.
+
+    Mirrors _table_cols' anchoring (locates the section by the header line,
+    scoped through the next blank line or repeated header) and its
+    fail-loud-on-ambiguous-match semantics: exactly one header / one matching
+    data row must be found unless `occurrence` disambiguates a repeated
+    header. The `|---|---|...|` separator row never satisfies `row_contains`
+    (it has no cell text to match), so it needs no special-casing to stay
+    out of the returned row.
+    """
+    lines = out.splitlines()
+    header_indices = [i for i, ln in enumerate(lines) if header_contains in ln]
+    if occurrence is None:
+        assert len(header_indices) == 1, f"header match not unique for {header_contains!r}: {len(header_indices)}"
+        start = header_indices[0]
+    else:
+        assert len(header_indices) >= occurrence, (
+            f"header occurrence {occurrence} requested but only {len(header_indices)} "
+            f"found for {header_contains!r}"
+        )
+        start = header_indices[occurrence - 1]
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if not lines[i].strip() or header_contains in lines[i]:
+            end = i
+            break
+    section_lines = lines[start:end]
+
+    headers = [ln for ln in section_lines if header_contains in ln]
+    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
+    header = headers[0]
+
+    needles = (row_contains,) if isinstance(row_contains, str) else tuple(row_contains)
+    rows = [ln for ln in section_lines if ln != header and all(n in ln for n in needles)]
+    assert len(rows) == 1, f"row match not unique for {row_contains!r}: {len(rows)}"
+    labels = [c.strip() for c in header.strip().strip("|").split("|")]
+    values = [c.strip() for c in rows[0].strip().strip("|").split("|")]
+    assert len(values) >= len(labels), f"row has fewer cells than labels: {rows[0]!r}"
+    return dict(zip(labels, values, strict=False))
+
+
 def _sum_column_across_rows(out: str, *, header_contains: str, label: str, row_prefix: str) -> int:
     """Sum one single-token integer column across every row whose leading
     label starts with `row_prefix` (e.g. every multi-root "account-" row).
@@ -198,6 +244,14 @@ def _extract_arm_dollars(out: str, arm_label: str) -> float:
     text -- survives cosmetic changes to column width/precision."""
     match = re.search(rf"^{re.escape(arm_label)}\s+([\d,]+\.\d\d)\s*$", out, re.MULTILINE)
     assert match is not None, f"no row found for arm {arm_label!r}"
+    return float(match.group(1).replace(",", ""))
+
+
+def _extract_md_grand_total(out: str) -> float:
+    """Read --summary's bolded grand-total row ('| **total** | **X.XX** | | |')
+    from the markdown token-class table."""
+    match = re.search(r"^\|\s*\*\*total\*\*\s*\|\s*\*\*([\d,]+\.\d\d)\*\*\s*\|", out, re.MULTILINE)
+    assert match is not None, "markdown grand total row not found in output"
     return float(match.group(1).replace(",", ""))
 
 
@@ -5876,7 +5930,7 @@ class TestCost:
         out = capsys.readouterr().out
         # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
         # not $6.00 for pricing the group's usage three times over.
-        assert _extract_grand_total(out) == pytest.approx(2.00)
+        assert _extract_md_grand_total(out) == pytest.approx(2.00)
         # Three content-block records collapse into one priced turn, not three.
         assert "1 priced turns" in out
 
@@ -7154,6 +7208,59 @@ class TestCostThreadSplit:
         assert float(main_line.split()[-2].replace(",", "")) == pytest.approx(3.00)
         assert float(subagent_line.split()[-2].replace(",", "")) == pytest.approx(6.00)  # not 3.00
 
+    def test_print_thread_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
+        """Direct unit coverage of _print_thread_table's markdown branch,
+        called with known args rather than relying solely on full-report
+        integration coverage to catch a wiring bug (wrong argument order,
+        wrong _pct_of denominator)."""
+        _mod._print_thread_table(3.00, 1.00, 4.00, markdown=True)
+        out = capsys.readouterr().out
+        assert out == (
+            "\n### Cost by thread\n\n"
+            "| Thread | $ | Share |\n"
+            "|---|---|---|\n"
+            "| main | 3.00 | 75.0% |\n"
+            "| subagent | 1.00 | 25.0% |\n"
+        )
+
+
+class TestCostMarkdownTablePrinters:
+    """Direct unit coverage of _print_token_class_table's and
+    _print_model_id_table's markdown branches, mirroring
+    TestCostThreadSplit's _print_thread_table unit test -- pins each
+    function's own formatting invariants without paying --summary's full
+    _cost_report fixture cost."""
+
+    def test_print_token_class_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
+        class_totals = {cls: 0.0 for cls in _mod._TOKEN_CLASSES}
+        class_token_totals = {cls: 0 for cls in _mod._TOKEN_CLASSES}
+        class_totals["input"] = 3.00
+        class_token_totals["input"] = 1_500_000
+        _mod._print_token_class_table(class_totals, class_token_totals, 3.00, markdown=True)
+        out = capsys.readouterr().out
+        assert out == (
+            "### Cost by token class\n\n"
+            "| Class | $ | Share | Tokens |\n"
+            "|---|---|---|---|\n"
+            "| cache_read | 0.00 | 0.0% | 0 |\n"
+            "| cache_write_5m | 0.00 | 0.0% | 0 |\n"
+            "| cache_write_1h | 0.00 | 0.0% | 0 |\n"
+            "| output | 0.00 | 0.0% | 0 |\n"
+            "| input | 3.00 | 100.0% | 1,500,000 |\n"
+            "| **total** | **3.00** | | |\n"
+        )
+
+    def test_print_model_id_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
+        _mod._print_model_id_table({"claude-sonnet-5": 3.00, "claude-opus-5": 1.00}, 4.00, markdown=True)
+        out = capsys.readouterr().out
+        assert out == (
+            "\n### Cost by model ID\n\n"
+            "| Model | $ | Share |\n"
+            "|---|---|---|\n"
+            "| claude-sonnet-5 | 3.00 | 75.0% |\n"
+            "| claude-opus-5 | 1.00 | 25.0% |\n"
+        )
+
 
 class TestPriceTurnArity:
     def test_price_turn_returns_exactly_three_values(self):
@@ -7628,7 +7735,7 @@ class TestCostSummary:
         assert "sess-mine" not in out
         assert "sess-other" not in out
         assert "private-project" not in out
-        assert _extract_grand_total(out) == pytest.approx(2.00)  # not 12.00 — other project's $10 excluded
+        assert _extract_md_grand_total(out) == pytest.approx(2.00)  # not 12.00 — other project's $10 excluded
 
     def test_summary_never_prints_session_or_project_sections(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
@@ -7679,7 +7786,7 @@ class TestCostSummary:
         unpriced_tokens, unpriced_models = _extract_summary_unpriced(out)
         assert unpriced_tokens == 1_000_000 + 500_000
         assert unpriced_models == 1
-        input_cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        input_cols = _md_table_cols(out, header_contains="Class", row_contains="input")
         assert int(input_cols["Tokens"].replace(",", "")) == 100_000  # unpriced turn excluded
 
     def test_summary_unpriced_line_present_even_when_zero(self, tmp_path, monkeypatch, capsys):
@@ -7760,7 +7867,7 @@ class TestCostSummary:
         _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
         _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
         out = capsys.readouterr().out
-        assert _extract_grand_total(out) == pytest.approx(2.00)  # not 12.00 -- other account excluded
+        assert _extract_md_grand_total(out) == pytest.approx(2.00)  # not 12.00 -- other account excluded
         assert out.count("cost: account-1: scanned") == 1
 
     def test_without_summary_the_same_fixture_still_unions_both_accounts(
@@ -7880,6 +7987,87 @@ class TestCostSummary:
         assert "/Users/" not in out
         assert "/home/" not in out
         assert str(tmp_path) not in out
+
+    def test_summary_model_id_markdown_table_well_formed_with_zero_transcripts(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A zero-transcript --summary run still renders a well-formed GFM
+        model-ID table -- header and separator rows present even though no
+        model ever priced a turn to produce a data row."""
+        projects = tmp_path / "projects"
+        (projects / "-repo-main").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        header_idx = next(i for i, ln in enumerate(lines) if ln == "| Model | $ | Share |")
+        assert lines[header_idx + 1] == "|---|---|---|"
+        assert lines[header_idx + 2].strip() == ""  # no data rows -- blank line ends the table
+
+    def test_summary_token_class_total_row_renders_exact_bolded_gfm_shape(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The token-class table's closing row renders as the exact bolded
+        GFM shape '| **total** | **X.XX** | | |' -- not just a numerically
+        correct total, since a formatting regression (missing bold markers,
+        wrong column count) would still pass a value-only pytest.approx
+        check on the parsed number."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        # $2.00 -- claude-sonnet-5's $2/MTok input rate on 1M input tokens, hand-computed.
+        assert "| **total** | **2.00** | | |" in out
+        assert _extract_md_grand_total(out) == pytest.approx(2.00)
+
+    def test_summary_title_line_is_bare_prose_not_a_markdown_heading(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The --summary title line renders as bare prose ('Cost summary
+        (...)'), not a '## '-prefixed heading -- it sits inside the
+        pr-description skill's own '## Cost' heading, so a '##' here would
+        collide with that wrapper. A future edit re-adding '## ' would
+        silently reintroduce that collision without this pin."""
+        projects = tmp_path / "projects"
+        (projects / "-repo-main").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        assert "\nCost summary (all time)\n" in out
+        assert "## Cost summary" not in out
 
 
 class TestCostWorktreeAgentBranchCarryForward:
