@@ -27,6 +27,10 @@ denominator) were left out.
 | `reviewer_gap_pp` | `reviewer-yield` | Percentage-point gap between the findings-found and zero-finding cited-path edit rates |
 | `note` | operator-supplied `--note` | What changed in the workflow that week -- must be printable ASCII (no em dashes, curly quotes, or accented characters) and must not contain markdown link/image syntax |
 
+`context_pct` does not separate a warm cache read from an idle-gap TTL-expiry
+rebuild write — both land in the same context-class dollar share; see
+`cache-rebuild` for the write-specific breakdown.
+
 `denials` and `reviewer_gap_pp` are scoped to the same Monday 00:00:00 UTC
 through the following Monday 00:00:00 UTC (exclusive) ISO-week window as the
 other computed columns, not the corpus lifetime. `reviewer_gap_pp` is left

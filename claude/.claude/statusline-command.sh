@@ -5,7 +5,11 @@ input=$(cat)
 # Extract fields from JSON input
 model=$(echo "$input" | jq -r '.model.display_name // "Unknown Model"')
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
-used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+# Folded into one jq call so the size field costs no extra subprocess fork:
+# `// ""` (not `// empty`) keeps both array slots present even when
+# context_window is absent, so @tsv always yields exactly two columns.
+context_fields=$(echo "$input" | jq -r '[(.context_window.used_percentage // ""), (.context_window.total_input_tokens // "")] | map(tostring) | @tsv')
+IFS=$'\t' read -r used_pct total_input_tokens <<<"$context_fields"
 total_cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
 rate_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 rate_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
@@ -49,6 +53,12 @@ if [ -n "$used_pct" ]; then
         bar_color="$GREEN"
     fi
     ctx_display=$(printf "${bar_color}[${bar}]${RESET} ${used_int}%%")
+    # total_input_tokens (not cache_read_input_tokens) reflects prompt size on
+    # every turn, including a rebuild turn where cache_read collapses to ~0.
+    if [ -n "$total_input_tokens" ]; then
+        context_size_k=$(( total_input_tokens / 1000 ))
+        ctx_display="${ctx_display} ${DIM}·${RESET} ${context_size_k}k"
+    fi
 else
     ctx_display=$(printf "${DIM}[----------] --%${RESET}")
 fi

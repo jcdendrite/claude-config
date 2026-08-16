@@ -40,6 +40,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | What prompts did I write, and where did I redirect Claude? | `user-input` |
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | Which lever costs the most in actual dollars — cache read/write, output, or input? | `cost --since 30d` |
+| How much does idle-gap prompt-cache TTL-expiry rebuild cost, and is it concurrent-session switching or real breaks? | `cache-rebuild --since 30d` |
 | What did this branch cost, as a publish-ready aggregate for a PR body? | `cost --this-repo --branches <branch> --summary` |
 | Are reviewer dispatches producing real findings, and do sessions then edit what was cited? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
@@ -78,7 +79,7 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 
 ## Caveats
 
-- Every subcommand's default scope is a union across every config dir listed in `~/.claude/transcript-config-dirs` (see `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section), not just the active profile — except `cost --summary`, which resolves to the active config dir only. The resolved-scope header states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared and even when the run matched nothing — see "Scope confirmation" above — except `cost --summary`, which prints no header at all. Redaction covers `cost`, `cost-trend`, `context-distribution`, and `audit-routing` only; every other subcommand prints raw project labels, branch names, or paths under this same union.
+- Every subcommand's default scope is a union across every config dir listed in `~/.claude/transcript-config-dirs` (see `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section), not just the active profile — except `cost --summary`, which resolves to the active config dir only. The resolved-scope header states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared and even when the run matched nothing — see "Scope confirmation" above — except `cost --summary`, which prints no header at all. Redaction covers `cost`, `cost-trend`, `context-distribution`, `audit-routing`, and `cache-rebuild` only; every other subcommand prints raw project labels, branch names, or paths under this same union.
 - `--branches` filters records by `gitBranch` string only, never by project dir or root — under a multi-root scope it pools same-named branches across every declared account into one tally, with no per-account signal.
 - The `N failed` count is a coarse proxy: it matches any `N failed` in tool output, including pre-existing failures and intentional baseline runs. Treat the sequence view as the primary read; the aggregate rate is corroborating.
 - Subagent (`isSidechain`) turns are excluded from `fail-seq` and `struggle` — reviewer, `Explore`, and `code-writer` agents are not the debugging surface these subcommands measure.
