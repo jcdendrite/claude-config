@@ -142,16 +142,23 @@ the repo records that, so the next investigation will re-derive it.
 Append at end of file. Use the plan-anchored header form the file's other
 sections use, not the dateline form:
 `## From \`background-slow-bash-calls.md\` — "Default slow/network-bound Bash calls to \`run_in_background\`"`,
-followed by a one-row `Lever / Verdict / Measured reason` table.
+followed by a two-row `Lever / Verdict / Measured reason` table. The rows
+split the two independent rejection arguments, because one cell carrying both
+runs denser than every sibling cell in the file: row one names the lever as
+proposed and rejects it on the falsified premise; row two names the narrower
+lever that survives granting the premise — backgrounding a command whose
+execution genuinely does take minutes — and rejects that on the mechanism.
+Row two must name its own lever rather than backreferencing row one, since a
+reader scanning the Verdict column meets it alone.
 
-The **Measured reason** cell must carry four things, or a future reader can
-reopen the lever on a point already closed:
+The two **Measured reason** cells must carry four things between them, or a
+future reader can reopen the lever on a point already closed:
 
-1. The falsification — durations are not execution time (row 1's shape
-   evidence) and the named commands are sub-second (row 2).
+1. The falsification — durations are not execution time (ledger row 1's shape
+   evidence) and the named commands are sub-second (ledger row 2).
 2. The mechanism — backgrounding does not reach either the approval wait
-   (row 3) or the idle wait (row 4), so the lever fails even where a
-   genuinely slow command exists.
+   (ledger row 3) or the idle wait (ledger row 4), so the lever fails even
+   where a genuinely slow command exists.
 3. The residual real driver, by pointer not restatement: the adjacent
    `context-cost-root-cause.md` section's concurrent-session-switching finding
    already holds it.
@@ -189,10 +196,11 @@ scratchpad scan scripts stay in the scratchpad and are never added to the repo.
    should not move it, and `test_doc_counts.py` is the one place a docs edit
    could plausibly register.
 2. Both additions carry the not-a-rerunnable-script caveat — the new section
-   for rows 1 and 2, the follow-up for row 6. Neither figure is reproducible
-   from anything in the repo, so neither may be published bare.
-3. The new section's Measured reason cell contains all four elements listed
-   under Addition 1. Re-read the cell against that list; the mechanism element
+   on whichever of its rows publishes the scan figures from ledger rows 1 and
+   2, the follow-up for ledger row 6. Neither figure is reproducible from
+   anything in the repo, so neither may be published bare.
+3. The new section's Measured reason cells contain all four elements listed
+   under Addition 1. Re-read them against that list; the mechanism element
    (2) and the pointer (3) are the two a naive fill would drop.
 4. Every published figure traces to a ledger row, and no published figure is a
    single-session extremum. This governs both committed files in full — every
