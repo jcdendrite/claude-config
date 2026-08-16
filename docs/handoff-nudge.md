@@ -70,7 +70,7 @@ Refusing is a first-class outcome — a confident number for the wrong session i
 
 ## Log location
 
-The hook appends one line per significant event to `~/.claude/.handoff-nudge.log`. Two line types appear:
+The hook appends one line per significant event to `~/.claude/.handoff-nudge.log` (`$CLAUDE_CONFIG_DIR/.handoff-nudge.log` on a non-default account). Two line types appear:
 
 | Line prefix | Meaning |
 |---|---|
@@ -110,3 +110,4 @@ python3 ~/.claude/scripts/transcript-analysis.py handoff-ratio --since 2026-01-0
 - **`--check`'s stop rule keys on the process name `claude`.** The walk halts at the first ancestor whose `ps -o comm=` reports `claude`, matching the bare name GNU `ps` emits, the absolute path BSD `ps` emits, and the leading-hyphen form either emits when `argv[0]` carries one. A consumer whose CLI process reports some other name — a wrapper script, a version-manager shim, or an interpreter such as `node` — gets no early stop, so a nested session under one of those can still resolve a parent session's entry as it did before. The behaviour is unchanged for those installs rather than newly broken, and the failure direction everywhere else is a refusal, never a wrong number.
 - **`--check` reports the threshold as computed in its own environment.** That is authoritative when `HANDOFF_NUDGE_ABS_CAP` is unset (both paths fall back to the same literal), but may diverge from the fire path's if an override is exported somewhere only one of the two environments sees.
 - **Model→window table is hardcoded and dated.** Source: https://platform.claude.com/docs/en/about-claude/models/overview, fetched 2026-08-03; re-verify by 2026-11-03. An unlisted model ID silently takes the 1M-window default, whose effective threshold is the absolute cap (360000 by default) rather than 400000. This default is not self-detecting: a future smaller-window model that mis-resolves to the 1M default may still never accumulate enough tokens to cross the cap if its real window sits below it, so it never fires and never appears in the log at all. The dated source comment in the hook, checked manually, is the actual staleness control — check `model=`/`window=` on `nudged` log lines against reality for any model that does fire.
+- **A per-account `nudged` log can undercount fires that happened but were logged to a different account's file.** The log/marker path resolves from `CLAUDE_CONFIG_DIR`; an environment where that resolution is wrong (or was wrong when the fire occurred) misfiles the fire into another account's log instead of its own. Cross-check other accounts' logs, and nearby commit history if `CLAUDE_CONFIG_DIR` handling itself was recently touched, before treating an account-scoped gap as live suppression by the hook's own gates.
