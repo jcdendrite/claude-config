@@ -26,7 +26,8 @@ toward a question, apply two tests:
 
 - **Output test:** will my reasoning consume this command's *output*, or
   only a *conclusion drawn from it*? Conclusion-only ⇒ the output is
-  scratch.
+  scratch — the same locate-and-report vs. read-and-reason split named
+  under Codebase discovery below.
 - **Judgment test:** does choosing this command, and the next one after
   seeing its result, need parent-grade judgment? If a cheaper model
   could run the loop, it should.
