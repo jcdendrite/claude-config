@@ -401,36 +401,31 @@ def test_walk_unions_sessions_across_roots(tmp_path):
     assert ft["sonnet"]["out"] == 200
 
 
-def test_main_scans_every_declared_root(monkeypatch, tmp_path, capsys):
-    """main() threads _resolve_scan_roots' output into _walk -- a session
-    under a declared (non-active) root must appear in the CLI's own output,
-    not just be reachable via a direct _walk(roots=...) call."""
+def test_main_scans_every_declared_root(monkeypatch, tmp_path):
+    """main() must thread _resolve_scan_roots' output into _walk -- verified
+    by recording the roots _walk is actually called with, not by re-deriving
+    _resolve_scan_roots' return value and calling _walk directly (which would
+    still pass even if main() stopped wiring the two together)."""
     active = tmp_path / "active" / "projects"
-    proj_active = active / "-home-user-active-proj"
-    proj_active.mkdir(parents=True)
-    _write_jsonl(proj_active / "sess-active.jsonl",
-                 [_make_assistant("claude-opus-4-7", inp=10, out=600, cc=0, cr=0)])
     monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
 
     declared_config_dir = tmp_path / "declared-account"
-    proj_declared = declared_config_dir / "projects" / "-home-user-declared-proj"
-    proj_declared.mkdir(parents=True)
-    _write_jsonl(proj_declared / "sess-declared.jsonl",
-                 [_make_assistant("claude-opus-4-7", inp=10, out=700, cc=0, cr=0)])
+    (declared_config_dir / "projects").mkdir(parents=True)
     roots_file = tmp_path / "roots"
     roots_file.write_text(f"{declared_config_dir}\n")
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
+    captured = {}
+
+    def _recording_walk(since=None, roots=None):
+        captured["roots"] = roots
+        return {}, []
+
+    monkeypatch.setattr(_mod, "_walk", _recording_walk)
     monkeypatch.setattr(sys, "argv", ["token-analyzer.py"])
     _mod.main()
 
-    out = capsys.readouterr().out
-    # Distinctive name substrings, not numeric fields -- low collision risk today,
-    # but a future output column could coincidentally contain one of these; switch
-    # to a table-parsing assertion (see test_transcript_analysis.py's _table_cols)
-    # if that happens.
-    assert "active-proj" in out
-    assert "declared-proj" in out
+    assert captured["roots"] == [active, declared_config_dir / "projects"]
 
 
 def test_main_discloses_resolved_scope_at_one_root(monkeypatch, tmp_path, capsys):
