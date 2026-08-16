@@ -9,7 +9,10 @@ records the shorter-form architectural decisions this repo has made; this
 page is scoped specifically to *cost* levers and keeps the verdict plus the
 measured reason, not the full investigation.
 
-Each entry names its source plan under `.claude/plans/`. Merged plan files
+Most entries name their source plan under `.claude/plans/`; a lever measured
+and closed without one names the session date instead. A section's table may
+carry a dated follow-up paragraph that supersedes a row — read to the end of a
+section, not just its table. Merged plan files
 are read-only historical records (see the repo CLAUDE.md, Axis 3) — this
 register doesn't restate their content, it indexes it.
 
@@ -126,3 +129,28 @@ preserved records left untouched. The commit-gate collision this row
 recorded is still real and still resolved the same way (the engineer
 commits the one-line flip manually) — only the cost-lever framing and the
 "separate decision" status change.
+
+## From a 2026-08-15 session measurement — "Git-diff output in main-session context"
+
+Whether sessions load diffs into the main context to do work a script could do
+deterministically, or work a cheaper subagent could absorb.
+
+Figures are a one-off scan of main-thread `Bash` results across every Claude
+Code account on this machine — 587 sessions, 77,515 turns, a 30-day window
+ending 2026-08-15 — not a rerunnable script, so treat the precision
+accordingly. "Amplification-weighted" means each result's tokens multiplied by
+the turns remaining in its session, since a tool result is re-sent on every
+subsequent turn.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Delegating the diff read in `/code-review` to a cheaper subagent | Rejected | Diff-family output is 1.25% of cumulative main-context tokens amplification-weighted, against `Read` output at 7.95x that volume. The diff `/code-review` reads is the artifact under review, which `subagent-delegation`'s own frontmatter already excludes from delegation by name — delegating it delegates the review. |
+| Replacing in-context diff reads with deterministic scripts | No change needed | Already the case wherever it applies. Every marker and hook hash computes `git diff --cached \| sha256sum` inside a subprocess with output redirected to a file, so no diff bytes reach the model; only a deny message can surface. The seven `staff-*` agents and `ciso-reviewer` all carry `Bash` and re-fetch the diff inside their own contexts, so the parent never relays to them. |
+| File-path handoff of diff text to the reviewers that lack `Bash` | Rejected as below the noise floor | `skill-fidelity-reviewer` is handed literal diff text the parent already holds (`ready-for-review/SKILL.md:102`); `comment-discipline-reviewer` has the same no-`Bash` shape. The duplication lands at handoff time, when few turns remain to re-amplify it. Full-patch dumps are 24.6% of diff calls and 56.5% of diff bytes; the largest single call measured ~7,500 tokens. |
+
+**Unreconciled, noted rather than resolved:** `subagent-delegation/SKILL.md`
+names "verbose `git diff` / state-survey bursts" as delegation candidates,
+while `ready-for-review` Step 3 runs the cumulative branch diff inline and
+`/code-review` reads the staged diff in the main session by design. Both
+behaviors are correct — the same skill's frontmatter excludes the diff you
+reason over line by line — but no single file states where the boundary falls.
