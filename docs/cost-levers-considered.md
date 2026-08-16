@@ -154,3 +154,10 @@ while `ready-for-review` Step 3 runs the cumulative branch diff inline and
 `/code-review` reads the staged diff in the main session by design. Both
 behaviors are correct — the same skill's frontmatter excludes the diff you
 reason over line by line — but no single file states where the boundary falls.
+
+## From `context-cost-root-cause.md` — "Context cost root cause: idle-gap cache rebuilds"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Cache-invalidation-by-payload-mutation (`.claude/plans/transcript-cost-subcommand.md`'s "Prefix-cache invalidation" hypothesis, killed via an 11.7k-tokens/turn corpus mean) | Refuted, mechanism reclassified | The prompt bytes across an idle gap are byte-identical; the tokens are re-billed because the vendor's 5-minute/1-hour cache TTL lapsed during the gap, not because the payload changed. A right-skewed distribution hides a tail a mean can't see: `cache-rebuild --since 30d --threshold 100000` measured 1,577 idle-gap rebuilds / $1,513.55 excess at list price (as measured; reproduce against the current rolling 30-day window — 165,303 calls scanned, 2,261 (1.4%) writing >= 100,000 tokens). |
+| Idle-gap rebuild cause: concurrent-session switching vs. operator breaks | **Concurrent-session switching (92.9%), not breaks (7.1%)** | Classifying each idle-gap rebuild by whether another Claude Code session, in any account, had a call during the gap: 1,465 rebuilds / $1,406.52 occurred with another session active; 112 rebuilds / $107.03 occurred with everything idle, a real break. Breaks are almost exactly 7% of this cost and are not worth optimizing against. |

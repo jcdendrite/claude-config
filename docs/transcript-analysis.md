@@ -686,6 +686,76 @@ A turn whose model ID has no pricing-table entry is excluded from every week's t
 
 ---
 
+## cache-rebuild
+
+**Purpose.** Measure idle-gap prompt-cache TTL-expiry rebuilds: how much of the tail of large cache-write calls (`>=` a token threshold) is a full-prefix rewrite forced by a gap since the transcript's previous call outliving the vendor's 5-minute or 1-hour cache TTL — billed at the 1.25x/2x cache-write rate instead of the 0.1x warm-read rate it replaces — and whether those gaps are concurrent-session switching or genuine idle breaks. Reuses `cost`'s `_price_turn`, `_cache_write_split`, and `_dedup_turns_by_request_id`.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir`: composes with `--this-repo`, and `--no-redact` is refused once this puts more than one root in scope
+- `--since Nd` — limit to calls with timestamp in the last N days (e.g. `35d`). Default: `30d`.
+- `--threshold TOKENS` — minimum cache-write tokens (`ephemeral_1h + ephemeral_5m`) for a call to count as a large rebuild. Default: `100,000`.
+- `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
+
+**Sample output.**
+```
+CACHE REBUILD SOURCES (*; 6 roots)
+
+## Cache-rebuild report (last 30d, threshold >= 100,000 cache-write tokens)
+
+Calls scanned: 165,303
+Calls writing >= 100,000 tokens: 2,261 (1.4% of calls)
+Per-call write distribution: min=100,297  median=265,334  p90=531,575  max=910,239
+
+## Cause breakdown
+
+Cause                               Calls   Share
+session start                           0    0.0%
+idle 5m-1h                            985   43.6%
+idle >1h                              592   26.2%
+model switch                           81    3.6%
+unexplained                           603   26.7%
+excluded (timestamp anomaly)            0    0.0%
+
+## Idle-gap concurrency split [unverified]
+
+Classifies each idle-gap rebuild by whether any other transcript, in any
+account, had a call inside the gap window. This is an association, not proof
+the operator was attending that other session. [unverified]
+
+                              Rebuilds     Excess $
+Another session active           1,465     1,406.52
+Everything idle (a break)          112       107.03
+Total idle-gap rebuilds          1,577     1,513.55
+
+## Idle-gap excess by account
+
+Account           Rebuilds     Excess $
+account-1                9        11.41
+account-2               57        88.15
+account-3                2         2.35
+account-4              432       421.68
+account-5                1         0.44
+account-6            1,076       989.52
+```
+
+Excess $ figures throughout this report are list-price estimates against
+`claude-sonnet-5` rates — what the excess would cost at the vendor's posted
+per-token rate, not the operator's actual (possibly discounted or contracted)
+bill.
+
+**Cause classification.** `session start` is a transcript's first call (no prior cache to have hit, never bucketed as idle). `idle 5m-1h` and `idle >1h` are TTL-expiry rebuilds — the only two causes that feed the concurrency split and priced excess below. `model switch` and `unexplained` are large writes inside the 5-minute TTL window that aren't gap-driven. `excluded (timestamp anomaly)` covers a missing or out-of-order timestamp pair (clock skew), kept as its own row rather than silently folded into an idle bucket.
+
+**Idle-gap excess by account** prints only under a multi-root scope (`--config-dir` or a populated `~/.claude/transcript-config-dirs`), one zero-seeded row per account ordinal so a valid-but-empty root still renders instead of vanishing from the breakdown.
+
+**Rule of thumb.** At list `claude-sonnet-5` rates ($2.00/MTok base input), the per-token excess is the gap between the cache-write rate and the 0.1x warm-read rate it replaces: 1.15x base for a pure 5-minute-tier rebuild (roughly $1 per 435k tokens abandoned and rebuilt) and 1.9x base for a pure 1-hour-tier rebuild (roughly $1 per 263k tokens — costlier per token, since the 1-hour cache-write multiplier is wider). A `cache-rebuild` dollar total mixes both tiers, so dividing by a single tier's per-token figure over- or under-states the tokens involved; as a corpus-wide blended average across both tiers, **$1 per ~250k tokens** is a reasonable estimate to divide by when a per-tier breakdown isn't available.
+
+Wall-clock scales with corpus size: ~3 minutes was observed against a ~165k-call, 6-root corpus. Each session's file is read twice — once by the shared scope iterator, once more to recover the per-group (main thread vs. subagent) boundaries classification needs to avoid comparing timestamps across unrelated conversations — the same tradeoff `read-scope` already accepts for the same reason. `--since` only gates whether a threshold-crossing call is counted into the report, never whether it can see its own prior turn, and the concurrency check binary-searches one corpus-wide, pre-sorted call-timeline index rather than re-scanning per gap.
+
+**When to reach for it.** Answer "how much does idle-gap cache rebuild cost, and is it caused by switching between concurrent sessions or by real breaks" — see `docs/cost-levers-considered.md`'s entry on the killed cache-invalidation hypothesis this subcommand was built to re-test.
+
+---
+
 ## cost-ledger
 
 **Purpose.** Read or append a local, per-account ledger file (`$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`) of this repo's own weekly cost/efficiency figures — the retention `cost-trend` can't provide on its own, since Claude Code deletes the transcripts `cost-trend` re-derives every week from. See `docs/cost-ledger.md` for the row schema and `.claude/plans/cost-trend-ledger.md` for the full design rationale.

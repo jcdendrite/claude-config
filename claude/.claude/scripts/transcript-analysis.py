@@ -5,6 +5,7 @@ judgment-pair --out writes a file; all other subcommands are read-only.
 """
 
 import argparse
+import bisect
 import contextlib
 import errno
 import fcntl
@@ -18,6 +19,7 @@ import re
 import shlex
 import socket
 import stat
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -5262,7 +5264,8 @@ _DO_NOT_PUBLISH_BANNER = (
 # the top-level flag outright for each of these, so the two same-named flags
 # can never validate against two different accounts.
 _SUBCOMMANDS_WITH_OWN_CONFIG_DIR = (
-    "cost", "context-distribution", "edit-format", "read-scope", "subagents", "subagent-mix", "cost-trend"
+    "cost", "context-distribution", "edit-format", "read-scope", "subagents", "subagent-mix", "cost-trend",
+    "cache-rebuild",
 )
 
 
@@ -7327,6 +7330,366 @@ def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
         )
     if unpriced_turns:
         print(f"\n  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
+
+
+# --- cache-rebuild: idle-gap prompt-cache TTL-expiry measurement ----------
+# See .claude/plans/context-cost-root-cause.md for the corpus finding this
+# subcommand reproduces: a full-prefix cache rebuild after the vendor's 5m/1h
+# cache TTL expires during a gap, priced against a warm-cache read at the
+# same token count.
+
+_CACHE_REBUILD_DEFAULT_THRESHOLD = 100_000
+_CACHE_REBUILD_DEFAULT_SINCE = "30d"
+
+# Idle-gap boundaries mirror the vendor's own 5-minute/1-hour cache tiers
+# (_CACHE_WRITE_5M_MULTIPLIER/_CACHE_WRITE_1H_MULTIPLIER above, same source).
+_CACHE_REBUILD_IDLE_5M_SECONDS = 300
+_CACHE_REBUILD_IDLE_1H_SECONDS = 3600
+
+_CAUSE_SESSION_START = "session start"
+_CAUSE_IDLE_5M_1H = "idle 5m-1h"
+_CAUSE_IDLE_OVER_1H = "idle >1h"
+_CAUSE_MODEL_SWITCH = "model switch"
+_CAUSE_UNEXPLAINED = "unexplained"
+_CAUSE_TS_ANOMALY = "excluded (timestamp anomaly)"
+
+# Print order for the cause-breakdown table: the two TTL-explained idle
+# buckets first, then the non-idle tail, then the excluded diagnostic bucket
+# last -- a malformed/out-of-order timestamp pair gets its own explicit row
+# here rather than silently falling into "unexplained" or an idle bucket.
+_CACHE_REBUILD_CAUSES: tuple[str, ...] = (
+    _CAUSE_SESSION_START, _CAUSE_IDLE_5M_1H, _CAUSE_IDLE_OVER_1H,
+    _CAUSE_MODEL_SWITCH, _CAUSE_UNEXPLAINED, _CAUSE_TS_ANOMALY,
+)
+
+# Only these two causes are TTL-expiry rebuilds eligible for priced excess
+# and the concurrency split below -- session start has no prior cache to
+# have hit, and model switch/unexplained are not gap-driven.
+_CACHE_REBUILD_IDLE_GAP_CAUSES: tuple[str, ...] = (_CAUSE_IDLE_5M_1H, _CAUSE_IDLE_OVER_1H)
+
+
+def _cache_rebuild_gap_seconds(prev_ts: float | None, cur_ts: float | None) -> float | None:
+    """Seconds since the previous call in this transcript's own turn
+    sequence, or None when either endpoint is unparseable or the delta is
+    negative (clock skew) -- both must classify as a timestamp anomaly
+    (_CAUSE_TS_ANOMALY) rather than a silently computed idle bucket."""
+    if prev_ts is None or cur_ts is None:
+        return None
+    gap = cur_ts - prev_ts
+    return gap if gap >= 0 else None
+
+
+def _classify_cache_rebuild_cause(
+    is_first_call: bool, gap_seconds: float | None, model_changed: bool, pure_1h_tier_write: bool
+) -> str:
+    """Classify one threshold-crossing cache-write call's cause.
+
+    Idle buckets take priority over model switch -- the latter only applies
+    inside the still-warm 5-minute window. pure_1h_tier_write is True when
+    the call's cache-write tokens are entirely ephemeral_1h-tier (no
+    ephemeral_5m) -- such a write can't have been forced by a <1h gap, since
+    the 1h-TTL cache would still be warm, so it falls to "unexplained"
+    instead of "idle 5m-1h".
+    """
+    if is_first_call:
+        return _CAUSE_SESSION_START
+    if gap_seconds is None:
+        return _CAUSE_TS_ANOMALY
+    if gap_seconds >= _CACHE_REBUILD_IDLE_1H_SECONDS:
+        return _CAUSE_IDLE_OVER_1H
+    if gap_seconds >= _CACHE_REBUILD_IDLE_5M_SECONDS:
+        return _CAUSE_UNEXPLAINED if pure_1h_tier_write else _CAUSE_IDLE_5M_1H
+    if model_changed:
+        return _CAUSE_MODEL_SWITCH
+    return _CAUSE_UNEXPLAINED
+
+
+def _cache_rebuild_excess_dollars(model: str, usage: dict) -> tuple[float | None, int]:
+    """Priced excess for one idle-gap rebuild call: the dollar delta between
+    what its cache-write tokens were actually billed and what the same
+    token count would have cost at the cache-read rate (a warm hit).
+
+    Returns (excess_dollars, unpriced_tokens): excess_dollars is None, and
+    unpriced_tokens carries the turn's total token count, when the model has
+    no _MODEL_BASE_INPUT_RATES entry -- matching _price_turn's own
+    unpriced-model contract.
+    """
+    dollars_by_class, _context_at_turn, unpriced_tokens = _price_turn(model, usage)
+    if dollars_by_class is None:
+        return None, unpriced_tokens
+    write_dollars = dollars_by_class["cache_write_1h"] + dollars_by_class["cache_write_5m"]
+    eph_1h, eph_5m = _cache_write_split(usage)
+    rates = _model_rates(model)
+    warm_read_dollars = (eph_1h + eph_5m) / 1_000_000 * rates["cache_read"]
+    # Mirrors _price_turn's own fast/geo multiplier application so the
+    # counterfactual warm read is priced under the same settled infra
+    # conditions as the actual write.
+    if usage.get("speed") == "fast":
+        warm_read_dollars *= _FAST_MODE_RATE_MULTIPLIER
+    if usage.get("inference_geo") == "us":
+        warm_read_dollars *= _INFERENCE_GEO_US_RATE_MULTIPLIER
+    return write_dollars - warm_read_dollars, 0
+
+
+def cmd_cache_rebuild(args: argparse.Namespace) -> None:
+    """CLI entry point for the cache-rebuild subcommand.
+
+    Root resolution happens here, at the CLI boundary, mirroring cmd_cost --
+    --config-dir validation exits before any scan work.
+    """
+    roots = _resolve_cost_roots(args, subcommand="cache-rebuild")
+    _cache_rebuild_report(args, roots)
+
+
+def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
+    """Idle-gap prompt-cache TTL-expiry rebuild measurement: per-call write
+    distribution, cause classification, concurrency split, and priced
+    excess, broken down by account-N ordinal. Redacted by default.
+
+    Each session's own deduped turn sequence is scanned once per
+    _read_session_file_partitioned group (the main thread, then each of its
+    own subagent files) to classify every threshold-crossing cache write and
+    to append every parseable-timestamp call into one corpus-wide
+    (timestamp, transcript) index. is_first_call/gap_seconds/model_changed
+    reset at every group boundary -- a group is its own context, so a delta
+    taken across a boundary would compare two unrelated conversations (see
+    _read_session_file_partitioned's own docstring). Binary-searches one
+    pre-sorted global (timestamp, transcript) index per idle-gap call
+    instead of re-scanning per gap -- O(n log n) total, not O(gaps x calls).
+
+    `--since` only gates whether a call is *counted*, never whether it can
+    see its own prior turn (same contract as _cost_report's since_ts).
+
+    roots is None only for this module's own tests exercising the report
+    body directly; --this-repo/--config-dir CLI validation happens once in
+    cmd_cache_rebuild.
+    """
+    redact: bool = not bool(getattr(args, "no_redact", False))
+    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    multi_root = len(scan_roots) > 1
+
+    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
+    # point for this refusal, but every direct caller of this function
+    # (including this module's own tests) bypasses that boundary.
+    if not redact and multi_root:
+        print(
+            "cache-rebuild: --no-redact is refused when more than one root is in scope"
+            " (--config-dir was given); drop --no-redact or scope to a single profile",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if not redact:
+        print(_DO_NOT_PUBLISH_BANNER)
+        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+
+    threshold_arg = getattr(args, "threshold", None)
+    threshold: int = _CACHE_REBUILD_DEFAULT_THRESHOLD if threshold_arg is None else int(threshold_arg)
+    since_ts, since_raw = _parse_since_nd_arg(args, "cache-rebuild")
+    since_label = since_raw or ""
+
+    session_iter, scope_label = _resolve_project_scope(args, "cache-rebuild", include_subagents=True, roots=roots)
+
+    # redact_map is used only for the fingerprint below (this report prints
+    # no per-row project label), but the fingerprint must hash the same
+    # full-corpus label set every other --redact caller does to stay
+    # cross-run comparable, and that set can differ from session_iter's own
+    # (possibly --projects-narrowed) scope, so this second disk scan cannot
+    # be folded into the one below.
+    redact_map: dict[_RedactMapKey, str] = _build_redact_map(roots) if redact else {}
+    if redact:
+        print(
+            f"Corpus fingerprint: {_corpus_fingerprint(redact_map)}"
+            "  (private-project labels are not comparable across a different fingerprint)"
+        )
+    _print_resolved_scope("cache-rebuild", scope_label, scan_roots)
+
+    resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
+    single_root_ordinal: int | None = redact_ordinals[scan_roots[0].resolve()] if not multi_root else None
+
+    total_calls_in_scope = 0
+    tail_write_sizes: list[int] = []
+    cause_counts: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_CAUSES, 0)
+    idle_gap_candidates: list[dict] = []
+    global_timeline: list[tuple[float, str]] = []
+    unpriced_idle_gap_turns = 0
+    unpriced_idle_gap_tokens = 0
+    # Every account ordinal in scope is pre-seeded with a zero row -- a
+    # valid-but-empty root, or one with no idle-gap rebuilds, still renders
+    # a clean zero-state row instead of vanishing from the breakdown.
+    per_account_rebuilds: dict[int, int] = dict.fromkeys(redact_ordinals.values(), 0) if multi_root else {}
+    per_account_excess: dict[int, float] = dict.fromkeys(redact_ordinals.values(), 0.0) if multi_root else {}
+
+    for jsonl, _flat_records in session_iter:
+        session_key = str(jsonl.resolve())
+
+        account_ordinal: int | None = None
+        if multi_root:
+            root_position = _root_index_for_path(jsonl, resolved_scan_roots)
+            account_ordinal = redact_ordinals[resolved_scan_roots[root_position]]
+        elif single_root_ordinal is not None:
+            account_ordinal = single_root_ordinal
+
+        # session_iter already read and parsed this file once internally (to
+        # decide whether to yield it at all); this second, partitioned read
+        # is the cost of reusing _resolve_project_scope's shared iterator,
+        # which has no variant that also exposes the per-file group boundary
+        # classification needs (mirrors read-scope's own _scan_read_scope_session
+        # call site). Classification (is_first_call/gap_seconds/model_changed)
+        # resets at every group boundary: each group is its own context (the
+        # main thread, or one subagent's own turn sequence), so a delta taken
+        # across a boundary would compare two unrelated conversations (see
+        # _read_session_file_partitioned's own docstring). session_key stays
+        # file-level across every group, though -- a subagent's own calls are
+        # still this session's activity for the concurrency check below, not
+        # another session's.
+        for group in _read_session_file_partitioned(jsonl, include_subagents=True):
+            group_records = _dedup_turns_by_request_id(group)
+
+            i = 0
+            prev_ts: float | None = None
+            prev_model: str | None = None
+
+            for rec in group_records:
+                if rec.get("type") != "assistant":
+                    continue
+                msg = rec.get("message") or {}
+                usage = msg.get("usage")
+                if not usage:
+                    continue
+                model = msg.get("model", "")
+                if model == "<synthetic>":
+                    continue
+
+                cur_ts = _parse_ts(rec.get("timestamp"))
+                is_first_call = i == 0
+                gap_seconds = None if is_first_call else _cache_rebuild_gap_seconds(prev_ts, cur_ts)
+                model_changed = not is_first_call and model != prev_model
+                eph_1h, eph_5m = _cache_write_split(usage)
+                pure_1h_tier_write = eph_1h > 0 and eph_5m == 0
+                cause = _classify_cache_rebuild_cause(is_first_call, gap_seconds, model_changed, pure_1h_tier_write)
+
+                # Every parseable-timestamp call is corpus "activity", tail or
+                # not -- the concurrency check below asks whether ANY call
+                # happened during a gap, regardless of that call's own size.
+                if cur_ts is not None:
+                    global_timeline.append((cur_ts, session_key))
+
+                in_scope = since_ts is None or (cur_ts is not None and cur_ts >= since_ts)
+                if in_scope:
+                    total_calls_in_scope += 1
+
+                write_tokens = eph_1h + eph_5m
+                in_tail = write_tokens >= threshold
+
+                if in_tail and in_scope:
+                    tail_write_sizes.append(write_tokens)
+                    cause_counts[cause] += 1
+
+                    if cause in _CACHE_REBUILD_IDLE_GAP_CAUSES:
+                        excess_dollars, turn_unpriced_tokens = _cache_rebuild_excess_dollars(model, usage)
+                        if excess_dollars is None:
+                            unpriced_idle_gap_turns += 1
+                            unpriced_idle_gap_tokens += turn_unpriced_tokens
+                        else:
+                            idle_gap_candidates.append({
+                                "session_key": session_key,
+                                "gap_start_ts": prev_ts,
+                                "gap_end_ts": cur_ts,
+                                "excess_dollars": excess_dollars,
+                                "account_ordinal": account_ordinal,
+                            })
+
+                prev_ts = cur_ts if cur_ts is not None else prev_ts
+                prev_model = model
+                i += 1
+
+    # One sort, once, over the whole corpus -- every idle-gap candidate below
+    # binary-searches this same index rather than re-scanning per gap.
+    global_timeline.sort(key=lambda entry: entry[0])
+    global_ts = [ts for ts, _key in global_timeline]
+    global_keys = [key for _ts, key in global_timeline]
+
+    concurrent_rebuilds = 0
+    concurrent_excess = 0.0
+    idle_break_rebuilds = 0
+    idle_break_excess = 0.0
+
+    for cand in idle_gap_candidates:
+        # bisect_right/bisect_left: an open (gap_start_ts, gap_end_ts)
+        # interval, so a call from this same transcript at exactly one of
+        # the gap's own endpoints -- the gap's start and end ARE this
+        # transcript's own calls -- is excluded from the window. The
+        # exclusion is timestamp-value-based, not (timestamp, session_key)-
+        # identity-based: a genuinely different concurrent session whose own
+        # call happens to land at exactly one of those same endpoints is
+        # also excluded.
+        lo = bisect.bisect_right(global_ts, cand["gap_start_ts"])
+        hi = bisect.bisect_left(global_ts, cand["gap_end_ts"])
+        # Indexed range with early exit, not global_keys[lo:hi], so a
+        # concurrent-activity match short-circuits without first copying the
+        # whole candidate window.
+        other_active = any(global_keys[j] != cand["session_key"] for j in range(lo, hi))
+        if other_active:
+            concurrent_rebuilds += 1
+            concurrent_excess += cand["excess_dollars"]
+        else:
+            idle_break_rebuilds += 1
+            idle_break_excess += cand["excess_dollars"]
+        if multi_root and cand["account_ordinal"] is not None:
+            per_account_rebuilds[cand["account_ordinal"]] += 1
+            per_account_excess[cand["account_ordinal"]] += cand["excess_dollars"]
+
+    title_since = f"last {since_label}" if since_label else "all time"
+    print(f"\n## Cache-rebuild report ({title_since}, threshold >= {threshold:,} cache-write tokens)\n")
+
+    total_tail_calls = sum(cause_counts.values())
+    print(f"Calls scanned: {total_calls_in_scope:,}")
+    print(
+        f"Calls writing >= {threshold:,} tokens: {total_tail_calls:,}"
+        f" ({_pct_of(total_tail_calls, total_calls_in_scope)} of calls)"
+    )
+
+    if tail_write_sizes:
+        sorted_sizes = sorted(tail_write_sizes)
+        median = statistics.median(sorted_sizes)
+        p90 = sorted_sizes[min(len(sorted_sizes) - 1, int(0.9 * (len(sorted_sizes) - 1)))]
+        print(
+            f"Per-call write distribution: min={sorted_sizes[0]:,}  median={median:,.0f}"
+            f"  p90={p90:,}  max={sorted_sizes[-1]:,}"
+        )
+
+    print("\n## Cause breakdown\n")
+    print(f"{'Cause':<32} {'Calls':>8} {'Share':>7}")
+    for cause in _CACHE_REBUILD_CAUSES:
+        count = cause_counts[cause]
+        print(f"{cause:<32} {count:>8,} {_pct_of(count, total_tail_calls):>7}")
+
+    idle_gap_total = concurrent_rebuilds + idle_break_rebuilds
+    idle_gap_excess = concurrent_excess + idle_break_excess
+    print(
+        "\n## Idle-gap concurrency split [unverified]\n\n"
+        "Classifies each idle-gap rebuild by whether any other transcript, in any\n"
+        "account, had a call inside the gap window. This is an association, not proof\n"
+        "the operator was attending that other session. [unverified]\n"
+    )
+    print(f"{'':<28} {'Rebuilds':>9} {'Excess $':>12}")
+    print(f"{'Another session active':<28} {concurrent_rebuilds:>9,} {concurrent_excess:>12,.2f}")
+    print(f"{'Everything idle (a break)':<28} {idle_break_rebuilds:>9,} {idle_break_excess:>12,.2f}")
+    print(f"{'Total idle-gap rebuilds':<28} {idle_gap_total:>9,} {idle_gap_excess:>12,.2f}")
+
+    if multi_root:
+        print("\n## Idle-gap excess by account\n")
+        print(f"{'Account':<16} {'Rebuilds':>9} {'Excess $':>12}")
+        for ordinal in sorted(per_account_rebuilds):
+            print(f"{f'account-{ordinal}':<16} {per_account_rebuilds[ordinal]:>9,} {per_account_excess[ordinal]:>12,.2f}")
+
+    if unpriced_idle_gap_turns:
+        print(
+            f"\n  ({unpriced_idle_gap_turns:,} idle-gap tail calls / {unpriced_idle_gap_tokens:,} tokens"
+            " excluded from priced excess -- model has no price-table entry)"
+        )
 
 
 # --- cost-ledger: local per-week cost/efficiency ledger read/append -------
@@ -10130,6 +10493,47 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_cost_trend.set_defaults(func=cmd_cost_trend)
+
+    p_cache_rebuild = sub.add_parser(
+        "cache-rebuild",
+        help=(
+            "Idle-gap prompt-cache TTL-expiry rebuild measurement: per-call write distribution,"
+            " cause classification (session start / idle 5m-1h / idle >1h / model switch /"
+            " unexplained), concurrency split, and priced excess by account. Redacted by default."
+        ),
+    )
+    _add_project_scope_args(p_cache_rebuild)
+    p_cache_rebuild.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root; --no-redact is refused once this puts more than one"
+            " root in scope."
+        ),
+    )
+    p_cache_rebuild.add_argument(
+        "--since", metavar="Nd", default=_CACHE_REBUILD_DEFAULT_SINCE,
+        help=f"Limit to calls with timestamp in the last N days (e.g. 35d). Default: {_CACHE_REBUILD_DEFAULT_SINCE}.",
+    )
+    p_cache_rebuild.add_argument(
+        "--threshold", type=int, default=_CACHE_REBUILD_DEFAULT_THRESHOLD, metavar="TOKENS",
+        help=(
+            "Minimum cache-write tokens (ephemeral_1h + ephemeral_5m) for a call to count as a"
+            f" large rebuild. Default: {_CACHE_REBUILD_DEFAULT_THRESHOLD:,}."
+        ),
+    )
+    p_cache_rebuild.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "This report's output is aggregate-only (no project names or session IDs), so"
+            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
+            " banner and enforces the same multi-root refusal as cost, for CLI parity."
+            " Refused when --config-dir puts more than one root in scope."
+        ),
+    )
+    p_cache_rebuild.set_defaults(func=cmd_cache_rebuild)
 
     p_cost_ledger = sub.add_parser(
         "cost-ledger",
