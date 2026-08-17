@@ -128,6 +128,15 @@
             "command": "~/.claude/hooks/set-session-title-from-branch.sh"
           }
         ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/restore-authorization-boundary-on-compact.sh"
+          }
+        ]
       }
     ],
     "SubagentStart": [
