@@ -1679,7 +1679,7 @@ class TestPrescriptionAllowlistAlignment:
 
     @staticmethod
     def _allowed_bash_commands() -> set[str]:
-        settings = json.loads((CLAUDE_DIR / "settings.json").read_text())
+        settings = json.loads((CLAUDE_DIR / "settings.base.json").read_text())
         allow_entries = settings.get("permissions", {}).get("allow", [])
         commands = set()
         for entry in allow_entries:

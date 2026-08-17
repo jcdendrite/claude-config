@@ -639,7 +639,7 @@ def stage_settings(repo: Path, settings_file: Path, content: str) -> None:
     """Write `content` to `settings_file` and stage it."""
     settings_file.write_text(content)
     subprocess.run(
-        ["git", "add", "claude/.claude/settings.json"],
+        ["git", "add", "claude/.claude/settings.base.json"],
         cwd=repo, check=True,
     )
 

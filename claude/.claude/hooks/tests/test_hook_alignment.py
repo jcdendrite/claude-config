@@ -148,7 +148,7 @@ def test_hook_documented_in_hooks_md(hook: Path) -> None:
 # ------------------------------------------------------------------ #
 
 _SKILLS_DIR = _REPO_ROOT / "claude" / ".claude" / "skills"
-_SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.json"
+_SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.base.json"
 
 
 def _pretooluse_command_for(hook: Path) -> list[str]:

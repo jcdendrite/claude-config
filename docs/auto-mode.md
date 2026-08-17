@@ -78,9 +78,11 @@ above still applies regardless of how auto mode is activated.
 
 ## Hard-floor deny rules
 
-`settings.json` in this repo ships a `permissions.deny` list that runs *before*
-the classifier and cannot be overridden by any `autoMode.allow` entry. These
-close gaps the classifier's default block list doesn't cover:
+`settings.base.json` in this repo ships a `permissions.deny` list —
+`render-settings.sh` merges it into the `settings.json` the classifier
+actually reads — that runs *before* the classifier and cannot be overridden
+by any `autoMode.allow` entry. These close gaps the classifier's default
+block list doesn't cover:
 
 | Rule | What it closes |
 |---|---|
@@ -100,16 +102,26 @@ can't express — see the "network-install guard" section in
 
 These rules apply in all permission modes, not only auto mode.
 
-## What to put in `settings.local.json`
+Both the deny list and the hook registrations above live in the same
+`settings.base.json`, and `render-settings.sh` merges them into `settings.json`
+together — a missing or failed render loses both protections at once, not
+just one.
+
+## What to put in `settings.overlay.json`
 
 The classifier trusts only the working repo and its configured remotes by
-default. Add `autoMode.environment` to `<config-dir>/settings.local.json`
-(`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`;
-gitignored) to declare which infrastructure is yours, reducing false positives
-on routine operations:
+default. `autoMode` is read only from user-scope `settings.json` — declaring
+it in `<config-dir>/settings.local.json` (`<config-dir>` means
+`$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) is silently ignored. Add it
+to `<config-dir>/settings.overlay.json` (gitignored) instead:
+`render-settings.sh` merges this repo's tracked `settings.base.json` with
+your overlay into the `settings.json` the classifier actually reads. Re-run
+`render-settings.sh` (or re-run `install.sh`) after editing the overlay —
+the classifier reads only the rendered file, never the overlay directly.
 
 ```json
 {
+  "enabled": true,
   "autoMode": {
     "environment": [
       "$defaults",
@@ -128,7 +140,7 @@ built-in block rules including force-push and `curl | bash` protection. See the
 [danger note in the config reference](https://code.claude.com/docs/en/auto-mode-config#override-the-block-and-allow-rules).
 
 Keep project names, internal hostnames, and private domain names in
-`settings.local.json`. Do not put them in the committed `settings.json`.
+`settings.overlay.json`. Do not put them in the tracked `settings.base.json`.
 
 Start minimal and expand reactively: run `claude auto-mode config` to see your
 effective config, and check `/permissions → Recently denied` after the first

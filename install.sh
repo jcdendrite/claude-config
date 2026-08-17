@@ -276,6 +276,22 @@ stow -v "${stow_ignore_args[@]}" -t "$HOME" claude
 # INSTALL_TEST_FIXTURE: stow-adopt-ignore — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them after a real stow, to pin invocation order and
+# CLAUDE_CONFIG_DIR resolution against a pre-migration $HOME. Keep both
+# markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: render-settings-invoke — start
+# Render $HOME/.claude/settings.json from the just-stowed settings.base.json
+# (plus any settings.overlay.json already present). CLAUDE_CONFIG_DIR is
+# pinned to $HOME/.claude here regardless of the invoking shell's own value,
+# since the stow above always targets $HOME.
+#
+# Deliberately not warn-and-continue like the rest of this script: settings.json
+# carries the security hard-floor deny rules and hook registrations, so a
+# broken render must abort rather than leave those silently unenforced.
+CLAUDE_CONFIG_DIR="$HOME/.claude" "$REPO_DIR/claude/.claude/scripts/render-settings.sh"
+# INSTALL_TEST_FIXTURE: render-settings-invoke — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: repo-relocation-manifest — start

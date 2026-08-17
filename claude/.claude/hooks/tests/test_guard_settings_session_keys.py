@@ -37,11 +37,11 @@ def names_changed_keys(reason: str | None) -> set[str]:
 
 @pytest.fixture
 def settings_repo(tmp_path):
-    """Git repo with a main branch and a staged settings.json change.
+    """Git repo with a main branch and a staged settings.base.json change.
 
     Mirrors the structure the hook sees at commit time: a committed
     baseline on `main`, then a staged modification in the working tree.
-    The repo path matches `claude/.claude/settings.json` — the exact
+    The repo path matches `claude/.claude/settings.base.json` — the exact
     path the hook checks for.
     """
     repo = tmp_path / "settings-repo"
@@ -53,10 +53,10 @@ def settings_repo(tmp_path):
         ["git", "checkout", "-b", "main"],
         cwd=repo, check=True, capture_output=True,
     )
-    # Create the settings.json at the repo-relative path the hook checks.
+    # Create the settings.base.json at the repo-relative path the hook checks.
     settings_dir = repo / "claude" / ".claude"
     settings_dir.mkdir(parents=True)
-    settings_file = settings_dir / "settings.json"
+    settings_file = settings_dir / "settings.base.json"
     settings_file.write_text('{"model": "sonnet", "effortLevel": "normal"}\n')
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)

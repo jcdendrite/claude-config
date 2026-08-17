@@ -110,8 +110,8 @@ def _count_reviewer_agents() -> int:
 
 
 def _count_skill_overrides_off() -> int:
-    """Return the count of skillOverrides entries set to "off" in settings.json."""
-    settings_path = CLAUDE_DIR / "settings.json"
+    """Return the count of skillOverrides entries set to "off" in settings.base.json."""
+    settings_path = CLAUDE_DIR / "settings.base.json"
     settings = json.loads(settings_path.read_text())
     return sum(
         1
@@ -130,8 +130,8 @@ _BUILTIN_NAME_ONLY_SKILLS = {"loop", "simplify"}
 
 def _count_name_only_skills() -> int:
     """Return the count of skillOverrides entries set to "name-only" in
-    settings.json, excluding builtin skills with no repo SKILL.md."""
-    settings_path = CLAUDE_DIR / "settings.json"
+    settings.base.json, excluding builtin skills with no repo SKILL.md."""
+    settings_path = CLAUDE_DIR / "settings.base.json"
     settings = json.loads(settings_path.read_text())
     return sum(
         1
