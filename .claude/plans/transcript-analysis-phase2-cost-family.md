@@ -284,3 +284,272 @@ still-monolithic command group.
   bucket-(b)'s exact total external-reference count is implementation-time
   verification, since it changes no design decision, only which exact lines
   move.
+
+## Phase 2 reconciliation — origin/main's GH-638 cost-attribution-integrity (dee014a / PR #658)
+
+### Context
+
+Reconcile this branch against `origin/main` commit `dee014a` (PR #658,
+"GH-638: Cost attribution integrity"), landed after Phase 2 was already
+committed here. `dee014a` threads `total_spawns`/`total_sidechain_turns`
+through `_cost_report`'s per-session loop so `cmd_cost` also calls
+`_warn_if_subagent_format_drift` — but it edits `_cost_report` at its
+pre-decomposition location in `transcript-analysis.py`, while this branch
+already relocated `_cost_report` into `transcript_analysis/cost.py`,
+producing a real (non-mechanical) merge conflict. Doing this now, before
+handoff, keeps the branch's own `/ready-for-review` gate meaningful against
+current `origin/main` rather than a stale snapshot.
+
+### Approach
+
+Promote the two helper functions `dee014a` calls (`_count_subagent_spawns`,
+`_warn_if_subagent_format_drift`) from `transcript-analysis.py` into
+`transcript_analysis/pricing.py`, since `cost.py` cannot import back into
+the monolith; port `dee014a`'s four-hunk `_cost_report` change into
+`cost.py`'s copy; let `dee014a`'s wholly-additive `cache-efficiency`
+subcommand and the two later origin/main commits (`ff2c53f`, `bfb3a1b`)
+land via ordinary rebase with no manual reconciliation; split `dee014a`'s
+test additions between `test_transcript_cost.py` (cost-side) and
+`test_transcript_analysis.py` (everything else, unmoved by Phase 2).
+
+#### Assumption ledger
+
+**Root problem:** `origin/main` moved a function this branch already
+relocated, producing a merge conflict a mechanical rebase cannot resolve —
+this plan reconciles the two independent edits to `_cost_report` without
+losing either.
+
+**Given** (fixed, outside this plan's reach):
+
+- G1. `dee014a`'s own design decisions (the read-collapse classifier's
+  T=0.50 threshold, the cache-efficiency subcommand's shape, the
+  cold-cache-attribution findings) are `origin/main`'s already-reviewed,
+  already-merged work — this plan relocates code to preserve them across
+  this branch's own move, it does not re-derive or second-guess them.
+  `[verified: git show dee014a's commit message and diff, this session]`
+
+**Mechanisms:**
+
+- **M1 — Promote `_count_subagent_spawns`, `_warn_if_subagent_format_drift`,
+  and their shared dependency `_SPAWN_TOOL_NAMES` into `pricing.py`.**
+  `anchors: root`. Lighter alternatives considered and rejected: (a) leave
+  them in `transcript-analysis.py` and have `cost.py` import them back —
+  impossible, `transcript-analysis.py` imports `cost.py` at its own line 38
+  and is not itself an importable package member, a real circular-import
+  dead end; (b) duplicate their bodies into `cost.py` — rejected under
+  CLAUDE.md's DRY rule for production code, since the identical logic
+  already serves two call sites staying behind (`cmd_subagents`,
+  `cmd_skill_pair`) that would silently drift from a duplicate.
+  `pricing.py` is the correct destination, not an arbitrary one: it already
+  hosts the analogous `_warn_if_run_usage_drift` (line 284 as of this
+  writing), and both functions have zero dependency on
+  `scope`/`redaction`/any `cmd_*` function (bodies read in full this
+  session — only `sys` and `corpus.SUBAGENT_SUBDIR`), matching
+  `pricing.py`'s own documented contract ("no dependency on any cmd_*
+  subcommand, scope resolution, or redaction"). This is the same promotion
+  logic this plan's own M2 already established for
+  `_branch_filter`/`_parse_since_nd_arg`/`_projects_glob`.
+  **Insertion point, revised per staff-backend-engineer's plan-review
+  finding:** `ff2c53f` (M4) inserts ~53 new lines
+  (`_non_contiguous_run_usage_matches`, `_non_contiguous_merge_notices_logged`,
+  `_log_non_contiguous_merge_decision`) at this exact same anchor —
+  immediately after `_warn_if_run_usage_drift`, immediately before
+  `_price_turn` — so "adjacent to line 284" is a pre-rebase reference that
+  goes stale the moment the rebase step (M4) lands. Insert the promoted
+  block immediately before `_price_turn` instead (a stable anchor
+  regardless of what `ff2c53f` adds ahead of it), and do so only after
+  the rebase step has already landed `ff2c53f`'s own insertion — this
+  promotion is a plain post-rebase code edit, not part of the rebase
+  operation itself, so it cannot itself produce a merge conflict.
+  `[verified: Read of transcript-analysis.py:740-815,974 and pricing.py's
+  docstring/imports, this session; ff2c53f's insertion anchor confirmed by
+  staff-backend-engineer's plan-review pass against pricing.py:284-313 and
+  ff2c53f's diff hunk]`
+- **M2 — Re-export the three promoted names back into
+  `transcript-analysis.py`'s global namespace via the existing
+  `from transcript_analysis.pricing import (...)` block.** `anchors: row3`.
+  `_count_subagent_spawns` has 2 remaining call sites (`cmd_subagents:862`,
+  inside `cmd_skill_pair:3317-3392` at `:3344`), `_warn_if_subagent_format_drift`
+  2 (`cmd_subagents:915`, `cmd_skill_pair:3392`), and `_SPAWN_TOOL_NAMES` 3
+  further bare-name usages (`cmd_subagent_mix:2395`,
+  `_compute_reviewer_yield_data:3142`, `_scan_instrument_authoring_session:5314`)
+  — all 5 enclosing functions are later-phase command groups staying in
+  `transcript-analysis.py` this phase, so no lighter alternative applies;
+  this is the identical re-export mechanism the file already uses for
+  every other Phase-1/Phase-2 promoted name.
+  `[verified: grep -n for each name, cross-checked against an awk
+  enclosing-function sweep, this session]`
+- **M3 — Port `dee014a`'s four `_cost_report` hunks into `cost.py`'s copy
+  verbatim, qualifying each promoted name as `pricing.<name>` per this
+  module's own module-attribute-access convention.** `anchors: row3`.
+  `cost.py`'s current `_cost_report` (lines 172-511) is structurally
+  identical to `transcript-analysis.py`'s pre-`dee014a` version at all four
+  hunk points (locals block, dedup call, per-record loop entry, pre-
+  corpus-coverage-warning insertion point) — a verbatim line-for-line port
+  is the minimal correct change, not a redesign.
+  `[verified: Read of cost.py:172-511 against dee014a's diff hunks
+  (transcript-analysis.py's pre-move lines ~4272-4413), this session]`
+- **M4 — Let `dee014a`'s `cache-efficiency` subcommand and the two later
+  origin/main commits (`ff2c53f`, `bfb3a1b`) land via ordinary rebase, no
+  manual reconciliation.** `anchors: root`. `cache-efficiency` is ~250
+  wholly new production lines with zero line-range overlap with anything
+  Phase 2 moved (confirmed by reading its diff hunk, which inserts after
+  `_print_context_composition_report`, nowhere near the cost-family
+  region). `ff2c53f` rewrites `pricing.dedup_turns_by_request_id` but
+  leaves `_warn_if_run_usage_drift` untouched; `bfb3a1b` adds new
+  subcommands appended after `transcript-analysis.py:8590`. A trial
+  `git merge-tree` this session confirms `pricing.py` and `scope.py`
+  auto-merge with zero conflicts against the full three-commit span; the
+  only conflicting files are `transcript-analysis.py` and
+  `test_transcript_analysis.py`, both already covered by M1-M3 and M5.
+  `[verified: git merge-tree HEAD origin/main trial merge, plus git show
+  of ff2c53f and bfb3a1b's full diffs, this session]`
+- **M5 — Split `dee014a`'s test additions by whether the command group they
+  exercise moved in Phase 2.** `anchors: row3`. The 4 cost-side
+  drift-canary methods (`test_drift_warning_also_fires_in_cost`,
+  `test_no_warning_in_cost_on_healthy_corpus`,
+  `test_no_warning_in_cost_with_spawn_and_real_sidechain_turn`,
+  `test_no_warning_in_cost_with_spawn_and_unpriced_sidechain_turn`) were
+  added inline into `TestFormatDriftCanary`
+  (`test_transcript_analysis.py:12119-12195`, pre-`dee014a`), a class that
+  tests only `cmd_subagents`/`cmd_skill_pair` — neither cost-family nor
+  Phase-2-moved. Splitting one class's methods across two files (rather
+  than moving the whole class) is necessary here since the class's
+  remaining methods stay put; a new `TestCostFormatDriftCanary` class in
+  `test_transcript_cost.py`, mirroring the existing class's shape, is the
+  lighter alternative to either leaving cost-specific tests in the wrong
+  file or duplicating `TestFormatDriftCanary` wholesale. The 4
+  cache-efficiency-side counterparts plus the 5 wholly-new
+  `TestCachePrefixTotal`/`TestCacheEfficiencyClassifier`/
+  `TestCacheEfficiencyGroupScan`/`TestCacheEfficiency`/
+  `TestCacheEfficiencyArgparseWiring` classes stay in
+  `test_transcript_analysis.py` untouched — `cache-efficiency` never moved.
+  The 3 renamed `test_no_redact_refused_by_*_report_itself_even_when_called_directly`
+  tests (gained a `capsys` param + one assertion) each land in whichever
+  file already holds their class: the cost one in `test_transcript_cost.py`
+  (`TestCostMultiRootRedaction`, already relocated there), the
+  edit-format/read-scope ones directly in `test_transcript_analysis.py`
+  (neither group has moved). `TestConfigDirFlag`'s parametrize-off-the-tuple
+  change applies directly to `test_transcript_analysis.py` — that class
+  never moved either.
+  `[verified: Read of the full TestFormatDriftCanary class body and of
+  test_transcript_cost.py's existing fixture-import block, this session]`
+
+**Assumptions:**
+
+| # | Assumption | Tag |
+|---|---|---|
+| 1 | `dee014a`'s production diff touches exactly one location inside `_cost_report` (4 hunks: new locals ~4272-4278, spawn-counting after dedup ~4282-4288, sidechain-counting inside the turn loop ~4305-4312, the `_warn_if_subagent_format_drift` call before the corpus-coverage-warning block ~4400-4413) plus the wholly-separate ~250-line `cache-efficiency` addition (~6537-6787) and a `build_parser` wiring hunk (~10466). | `[verified: git show dee014a -- transcript-analysis.py, this session]` |
+| 2 | Current `cost.py`'s `_cost_report` (172-511) is structurally identical to `transcript-analysis.py`'s pre-`dee014a` version at all four hunk insertion points. | `[verified: Read of cost.py:172-511, this session]` |
+| 3 | `_count_subagent_spawns`/`_warn_if_subagent_format_drift`/`_SPAWN_TOOL_NAMES` currently at `transcript-analysis.py:748,770,974`; neither function depends on `scope`, `redaction`, or any `cmd_*` function. | `[verified: Read of transcript-analysis.py:740-815, this session]` |
+| 4 | `_count_subagent_spawns` has exactly 2 remaining call sites, `_warn_if_subagent_format_drift` exactly 2, `_SPAWN_TOOL_NAMES` 3 further bare-name usages beyond its own definition and use inside `_count_subagent_spawns`; all 5 enclosing functions (`cmd_subagents`, `cmd_subagent_mix`, `_compute_reviewer_yield_data`, `cmd_skill_pair`, `_scan_instrument_authoring_session`) are later-phase command groups staying in `transcript-analysis.py`. | `[verified: grep -n per name + awk enclosing-function sweep, this session]` |
+| 5 | `pricing.py` imports nothing from `corpus` today; `_warn_if_subagent_format_drift` needs `SUBAGENT_SUBDIR`, requiring `from transcript_analysis.corpus import SUBAGENT_SUBDIR`. No circularity: `corpus.py` imports only stdlib, and `redaction.py`/`scope.py` already import named symbols from `corpus` the identical way, establishing precedent. | `[verified: grep across transcript_analysis/*.py's import blocks, this session]` |
+| 6 | The two origin/main commits landing after `dee014a` (`ff2c53f` — dedup-turns fix, touches `pricing.py`; `bfb3a1b` — new `turn-shape`/`turn-shape-samples` subcommands, touches `transcript-analysis.py`) both auto-merge cleanly against this branch per a trial `git merge-tree`; the only conflicting files remain `transcript-analysis.py` and `test_transcript_analysis.py`, already covered by M1-M3/M5. | `[verified: git merge-tree HEAD origin/main + git show of both commits' full diffs, this session]` |
+| 7 | `TestFormatDriftCanary` (`test_transcript_analysis.py:12119-12195`, pre-`dee014a`) tests only `cmd_subagents` and `cmd_skill_pair`; `dee014a` appended 8 new methods into this same class (4 cost-side, 4 cache-efficiency-side) rather than creating a new class. | `[verified: Read of the full class body, this session]` |
+| 8 | `test_transcript_cost.py` already imports every fixture the 4 relocated cost-side drift tests need (`_agent_use`, `_asst`, `_cost_args`, `_priced`, `_write_jsonl`, `_write_subagent_jsonl`) and already calls `_mod.cmd_cost` bare at 4 existing call sites via the same shim re-export Phase 2 established — no new import or module-loading boilerplate needed. | `[verified: Read of test_transcript_cost.py:1-30 + grep for _mod.cmd_cost(, this session]` |
+| 9 | The redaction-refusal test rename gains only a `capsys` param and one `assert capsys.readouterr().out == ""` — no production behavior change, since `_cost_report`'s multi-root+no-redact refusal (cost.py:220-227) already exits before the first print statement (cost.py:229-231). This branch's copy (`test_transcript_cost.py:1204-1216`) needs the identical two-line addition. | `[verified: Read of cost.py:172-231 and test_transcript_cost.py:1204-1216, this session]` |
+| 10 | Current baseline (this worktree, this session, pre-reconciliation): `1247 passed in 68.23s` for `pytest test_transcript_analysis.py test_transcript_cost.py test_context_composition.py -q`. The reconciliation's parity check must not fall below this plus `dee014a`'s own new test count. | `[verified: ran this session]` |
+
+### Critical files
+
+#### Modify
+
+- `claude/.claude/scripts/transcript_analysis/pricing.py` — add
+  `_SPAWN_TOOL_NAMES`, `_count_subagent_spawns`,
+  `_warn_if_subagent_format_drift` (moved verbatim from
+  `transcript-analysis.py:974,748,770`, bodies unchanged); add
+  `from transcript_analysis.corpus import SUBAGENT_SUBDIR` to its import
+  block (assumption 5).
+- `claude/.claude/scripts/transcript_analysis/cost.py` — port `dee014a`'s
+  four-hunk `_cost_report` change (M3), each promoted-name call qualified
+  as `pricing._count_subagent_spawns`/`pricing._warn_if_subagent_format_drift`.
+- `claude/.claude/scripts/transcript-analysis.py` — remove the 3 promoted
+  symbols' bodies (748-767, 770-791, 974); add them to the existing
+  `from transcript_analysis.pricing import (...)` block (no `noqa`, real
+  bare-name call sites remain); rebase in `dee014a`'s `cache-efficiency`
+  addition and `ff2c53f`/`bfb3a1b`'s changes normally (M4 — no manual
+  reconciliation expected).
+- `claude/.claude/scripts/tests/test_transcript_cost.py` — add `capsys` +
+  the empty-stdout assertion to
+  `test_no_redact_refused_by_cost_report_itself_even_when_called_directly`
+  (line 1204, assumption 9); add a new `TestCostFormatDriftCanary` class
+  holding the 4 cost-side methods ported verbatim from `dee014a`'s diff,
+  using the already-imported fixtures (assumption 8). **One docstring edit
+  required during the port, per staff-sdet's plan-review finding:**
+  `test_no_warning_in_cost_with_spawn_and_real_sidechain_turn`'s docstring
+  in `dee014a`'s diff reads "The cmd_cost counterpart to
+  `test_no_warning_in_cache_efficiency_with_spawn_and_real_sidechain_turn`
+  above" — that referenced test stays behind in
+  `test_transcript_analysis.py` (M5), so "above" is both wrong (different
+  file) and orphaned once ported; drop or rewrite that clause. The sibling
+  reference in `test_no_warning_in_cost_with_spawn_and_unpriced_sidechain_turn`
+  ("the priced-sidechain test above") needs no edit — its referent moves
+  together with it in the same relative order.
+- `claude/.claude/scripts/tests/test_transcript_analysis.py` — rebase in
+  `dee014a`'s cache-efficiency test classes, the `TestConfigDirFlag`
+  parametrize-off-the-tuple change, and the edit-format/read-scope
+  `capsys`-param additions normally (none of these were touched by Phase
+  2's move); remove the 4 cost-side methods from `TestFormatDriftCanary`
+  once the rebase lands them there (M5).
+
+#### Reuse rather than reimplement
+
+- `pricing.py`'s own `_warn_if_run_usage_drift` (line 284) as the
+  structural precedent for where the new drift-warning helper belongs.
+- `corpus.py`'s `SUBAGENT_SUBDIR` — already the canonical single source of
+  truth (Phase 1 promoted it); no new definition.
+
+### Verification
+
+1. **Baseline parity.** `../../../.venv/bin/pytest
+   claude/.claude/scripts/tests/test_transcript_analysis.py
+   claude/.claude/scripts/tests/test_transcript_cost.py
+   claude/.claude/scripts/tests/test_context_composition.py -q` must be
+   ≥1247 (assumption 10) plus `dee014a`'s own new test count — read the
+   exact expected figure off the actual post-rebase diff at
+   implementation time rather than precomputing it here.
+2. **Full repo suite.** `../../../.venv/bin/pytest claude/.claude/`.
+3. **Lint.** `../../../.venv/bin/ruff check claude/.claude/`.
+4. **Drift-canary red-state check.** Temporarily revert the
+   `pricing._warn_if_subagent_format_drift` call added to `cost.py`'s
+   `_cost_report` and confirm `test_drift_warning_also_fires_in_cost`
+   fails — re-verifying locally what `dee014a`'s own commit message states
+   was checked pre-move, since the call site moved. Per staff-sdet's
+   plan-review finding, this is the *only* one of `TestCostFormatDriftCanary`'s
+   4 methods that actually flips red on this particular revert (removing
+   the call makes the warning never fire, which trivially satisfies the
+   other 3 methods' `"WARNING" not in ...` assertions) — those 3 guard a
+   different invariant (silence on healthy/negative-space corpora), not
+   this call site's existence.
+5. **No circular import.** `python3 -c "import transcript_analysis.pricing"`
+   from the scripts directory, plus a `transcript-analysis.py --help`
+   smoke test, after `pricing.py` gains the `corpus` import.
+6. **Architecture-doc-drift test.** No change expected —
+   `test_transcript_analysis_architecture_doc.py`'s set-based assertion is
+   unaffected, since no new package module is created by this
+   reconciliation.
+
+### Out of scope
+
+- Re-deriving or second-guessing `dee014a`'s own design decisions (G1) —
+  this plan only relocates code to preserve them.
+- Moving `cache-efficiency` into the `transcript_analysis` package — a new,
+  not-yet-decomposed command group, out of scope for both the original
+  Phase 2 plan and this reconciliation.
+- Any of the still-pending Phase 2→N decomposition work (reviewer-yield,
+  review-trace, audit-routing, cost-ledger) — unaffected by this
+  reconciliation.
+- Squashing or rewriting this branch's existing commits — the
+  reconciliation lands as new commit(s) on top.
+
+### Rollback
+
+Per staff-backend-engineer's plan-review finding: the origin/main sync uses
+`git rebase origin/main` (this repo's established convention for this
+branch — it has already been rebased twice per its own commit history, and
+`git-feature-branch-sync` is the prescribed skill for the sync step), not
+`git merge`. This matters for B11: a rebase keeps this branch's history
+linear, so reverting the reconciliation commit(s) with a plain `git revert`
+is unconditionally sufficient. A merge commit would need `-m <parent>` and
+would silently un-revert on a later origin/main merge — that pitfall does
+not apply here because a merge is not the mechanism used.
