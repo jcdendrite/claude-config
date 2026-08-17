@@ -173,15 +173,16 @@ def dedup_turns_by_request_id(records: Sequence[dict]) -> list[dict]:
     since real transcripts carry requestId-less synthetic error records that
     must not collapse into each other. Non-assistant records always pass
     through unchanged in their own position. Grouping is on requestId
-    equality alone (not also isSidechain/type).
+    equality alone (not also isSidechain/type). Callers must never
+    concatenate records from different sessions before calling this:
+    requestId is unique per API call, so concatenating one session's main
+    transcript with its own subagent transcripts is safe, but mixing in
+    another session's records is not -- a non-contiguous group can span the
+    entire input, so safety now rests on the usage-corroboration bar
+    (_non_contiguous_run_usage_matches) rather than on a contiguity-only
+    bound. A merged turn's --since timestamp is its first block's, so a
+    non-contiguous group's staleness window can span the entire input too.
     """
-    # A non-contiguous group can span the entire input, so callers
-    # concatenating a session's main transcript with its own subagent
-    # transcripts rely on the usage-corroboration bar to keep that
-    # concatenation safe from a stray requestId collision; mixing in another
-    # session's records is still unsafe.
-    # A merged turn's --since timestamp is its first block's, so a
-    # non-contiguous group's staleness window can span the entire input.
     groups: dict[str, list[int]] = {}
     for idx, rec in enumerate(records):
         if rec.get("type") != "assistant":
