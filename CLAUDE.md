@@ -139,14 +139,24 @@ doubt, strip it.
 
 **Reviewer discipline only — hook doesn't catch these:** internal
 tool/product names not generally known in open source; commit SHAs or
-PR numbers from private repos; structural fingerprints (see below).
+PR numbers from private repos; structural fingerprints and
+private-corpus provenance (see below).
 
-### Also redact structural fingerprints
+### Also redact structural fingerprints and provenance
 
 Identifiers aren't the only leak. Structural shapes can identify a
 project even without names — a verbatim RLS policy, a rare
 column-naming pattern, an unusual error-code namespace. Generalize
 examples that would reveal the project via shape alone.
+
+Provenance leaks the same way. If the only reason you know a fact is
+exposure to private engagement material, publishing it carries that
+engagement's fingerprint — whatever the datatype, and whether you
+quoted it, computed it, or recalled it. The test is where the
+knowledge came from, not what shape it takes; a figure drawn from a
+corpus mixing private and public sources inherits the private half.
+Content derived only from this repo's own history, from public
+sources, or from synthetic fixtures is not in this class.
 
 ### Secrets, tokens, credentials
 
