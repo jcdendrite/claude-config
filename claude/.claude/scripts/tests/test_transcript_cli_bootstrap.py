@@ -48,6 +48,66 @@ def test_analyze_context_help_exits_zero():
     assert result.returncode == 0, result.stderr
 
 
+def test_transcript_analysis_turn_shape_help_exits_zero():
+    result = _run("transcript-analysis.py", "turn-shape", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since" in result.stdout
+
+
+def test_transcript_analysis_turn_shape_subprocess_finds_seeded_session(tmp_path):
+    """A representative turn-shape run under a real subprocess, mirroring the
+    buckets smoke test below for this newer subcommand."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    session = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "message": {
+            "model": "claude-sonnet-5",
+            "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "ls"}}],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0},
+        },
+    }
+    (proj / "s.jsonl").write_text(json.dumps(session) + "\n")
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "turn-shape")
+
+    assert result.returncode == 0, result.stderr
+    assert "Tool calls per turn" in result.stdout
+
+
+def test_transcript_analysis_turn_shape_samples_help_exits_zero():
+    result = _run("transcript-analysis.py", "turn-shape-samples", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--seed" in result.stdout
+
+
+def test_transcript_analysis_turn_shape_samples_subprocess_finds_seeded_session(tmp_path):
+    """A representative turn-shape-samples run under a real subprocess, mirroring
+    the turn-shape smoke test above for this sibling subcommand."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    session = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "message": {
+            "model": "claude-sonnet-5",
+            "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "ls"}}],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0},
+        },
+    }
+    (proj / "s.jsonl").write_text(json.dumps(session) + "\n")
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "turn-shape-samples")
+
+    assert result.returncode == 0, result.stderr
+    assert "DO NOT PUBLISH" in result.stdout
+
+
 def test_transcript_analysis_buckets_subprocess_finds_seeded_session(tmp_path):
     """A representative subcommand run, not just --help: proves the package
     import resolves far enough for scope.PROJECTS_DIR, corpus.iter_sessions,

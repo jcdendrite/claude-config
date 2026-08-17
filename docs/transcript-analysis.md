@@ -991,3 +991,79 @@ neither           2,167       1,762,987
 Verdict meanings: `true (delegate)` — the reads sat in context with no immediate consumer, delegation would have saved tokens; `false (inline correct)` — the reads fed an immediate edit or comprehension-driven response; `skip` — ambiguous or noise.
 
 **When to reach for it.** Build a labeled training set for delegation-rule calibration. Use `--seed` for reproducible samples across sessions; use `--format md` for human curation review; use `--format json` to feed a downstream scoring script.
+
+---
+
+## turn-shape
+
+**Purpose.** Retrospective measurement for the tool-call batching and delegation-discipline rules: per-turn tool-call-count distribution, plus streak-length distributions for consecutive single-call turns (the batching rule's signal) and consecutive Bash-only single-call turns excluding mutating-git commands (the delegation rule's signal), each dollar-weighted. Independent of `audit-routing-shape`: population is every assistant turn with usage, across every model, not only Opus code-read turns outside judgment spans.
+
+isSidechain turns are excluded. A streak resets on a mid-session `gitBranch` change or on any turn that doesn't qualify for that streak's population. The mutating-git exclusion — `commit`, `push`, `merge`, `rebase`, `cherry-pick`, `reset`, `revert`, `stash`, `tag`, `checkout`, `switch`, `restore`, `add`, `rm`, `mv`, `branch`, `clean`, `remote`, `fetch`, `reflog`, `symbolic-ref`, `fsck`, `worktree` — applies only to the delegation streak; a single `git commit` still extends the batching streak (any single-call turn does).
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
+- `--since Nd` — limit to the last N days (e.g. `35d`)
+
+**Sample output.**
+```
+## Turn shape (last 7d)
+
+### Tool calls per turn
+
+Bucket      Turns            $
+────────────────────────────────
+0            1,958      $421.10
+1            2,407      $198.42
+2-3             49       $30.55
+4-7              1        $0.42
+8+               0        $0.00
+
+### Single-call streak length (batching rule)
+
+Bucket    Streaks            $
+────────────────────────────────
+1           2,205      $172.90
+2              49       $12.30
+3-5             1        $0.95
+
+### Bash-only single-call streak length, excluding mutating git (delegation rule)
+
+Bucket    Streaks            $
+────────────────────────────────
+1             980       $61.20
+2              22        $5.60
+```
+
+**When to reach for it.** Establish a re-derivable, dollar-weighted baseline for how often sessions violate the batching and delegation rules, before setting any nudge threshold — see `.claude/plans/tool-call-compliance-enforcement.md`.
+
+---
+
+## turn-shape-samples
+
+**Purpose.** Emit a random sample of flagged turn-shape streaks (length >= 2) as plain text, for manual precision/recall calibration of the batching and delegation rules against `turn-shape`'s aggregate.
+
+Plain text, not JSON — unlike `audit-routing-samples`, this output is stamped with the `DO NOT PUBLISH` banner, and prepending a banner line would corrupt a JSON stream. (`audit-routing-samples` never stamps this banner at all, a pre-existing gap in that subcommand.)
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
+- `--since Nd` — limit to the last N days (e.g. `35d`)
+- `--sample N` — maximum streaks to emit (default: 30)
+- `--seed N` — random seed for reproducible sampling
+
+**Sample output.**
+```
+DO NOT PUBLISH — this output contains real project names and session IDs.
+
+--- delegation streak, length=3, $0.0456, session=abc12345-test ---
+  1. Bash: git log
+  2. Bash: git diff HEAD~1
+  3. Bash: git show HEAD
+
+--- batching streak, length=2, $0.1230, session=def67890-test ---
+  1. Bash: pytest claude/.claude/
+  2. Read: (no command)
+```
+
+**When to reach for it.** Classify a flagged sample as genuine violation or legitimate sequential work, then compare the resulting precision/recall against the pre-registered floors before deciding whether either rule's detector ships. Raters must recognize a same-tool batch issued together for an unrelated reason (`pytest`, `ruff check`, `shellcheck` in one batch) as a legitimate true-negative, not a violation.
