@@ -15,10 +15,18 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 from conftest import _dead_pid, _seed_session, _worktree_lock_reason
 from helpers import HOOKS_DIR
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
+
+# Generous but bounded wait for one racer in the 20-way concurrency test
+# below: the guard's own worst-case subprocess chain is a handful of
+# 5s-capped git calls plus _launch_collision_guard_racer's own 5s
+# session-poll cap, so a racer that blows past this is genuinely hung, not
+# slow.
+_RACER_TIMEOUT_SECONDS = 30
 
 
 def _init_opted_in_repo(repo: Path) -> None:
@@ -38,6 +46,15 @@ def _add_worktree(repo: Path, wt_path: Path, branch: str) -> None:
 def _git_common_dir(repo: Path) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def _git_dir(worktree: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "--path-format=absolute", "--git-dir"],
         capture_output=True,
         text=True,
         check=True,
@@ -96,43 +113,111 @@ def _run_resolve_claude_pid(home: Path) -> subprocess.CompletedProcess:
     )
 
 
+def _launch_collision_guard_racer(
+    target_path: Path, repo_git_common_dir: str, home: Path
+) -> subprocess.Popen:
+    """Start one racer against _lib_worktree_collision_guard without
+    blocking, so N racers can be in flight concurrently. The racer waits
+    on its own session file — keyed to this outer bash process's own pid,
+    which Python knows synchronously as the returned Popen's `.pid` —
+    before calling the guard; the caller MUST seed that session
+    immediately after this returns; the racer blocks forever otherwise.
+
+    The guard call itself runs in a backgrounded, explicitly-waited-on
+    child rather than as the outer `-c` string's own tail statement: a
+    plain nested `bash -c '...'` there would be collapsed by bash's
+    tail-call exec optimization into the SAME os process as this outer
+    one, giving every racer launched this way an identical $PPID and
+    silently defeating the whole test (verified empirically — see
+    .claude/plans/atomic-worktree-lock-acquisition.md). The trailing
+    `exit $?` is required too: `wait` alone does not propagate the
+    backgrounded child's exit code as this script's own.
+
+    The session-file poll loop is capped at 5s (500 tries * 0.01s) with a
+    distinct exit code: an uncapped `while` here would hang forever, not
+    fail fast, if a future change to _seed_session or the session-file
+    naming convention broke the handshake.
+    """
+    env = {**os.environ, "HOME": str(home)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    script = (
+        'tries=0\n'
+        'while [ ! -f "$HOME/.claude/sessions/$$" ]; do\n'
+        '  tries=$((tries + 1))\n'
+        '  if [ "$tries" -gt 500 ]; then\n'
+        '    echo "racer $$: session file never appeared after 5s" >&2\n'
+        '    exit 3\n'
+        '  fi\n'
+        '  sleep 0.01\n'
+        'done\n'
+        'bash -c \'. "$1"; _lib_worktree_collision_guard "$2" "$3"\' _ "$1" "$2" "$3" &\n'
+        'inner=$!\n'
+        'wait "$inner"\n'
+        'exit $?\n'
+    )
+    return subprocess.Popen(
+        ["bash", "-c", script, "_", str(LIB_SH), str(target_path), repo_git_common_dir],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+
 class TestConcurrentLockRace:
-    def test_20_way_concurrent_lock_race_exactly_one_winner(self, tmp_path):
+    def test_20_way_concurrent_lock_race_exactly_one_winner(self, isolated_home, tmp_path):
         """The exclusivity property the whole collision-guard design leans
-        on: N real concurrent processes each calling `git worktree lock`
-        against the same worktree, and exactly one succeeds. Verified
-        manually during plan review (a 20-way race against a scratch repo,
-        every run) — codified here as a permanent regression test so a
-        future refactor of the guard's lock-attempt-first ordering (into,
-        say, a porcelain-read-then-conditional-write pair) that would
-        reintroduce the race is caught by CI rather than staying a claim in
-        the plan's assumption ledger."""
+        on, proven against the guard's own O_EXCL acquisition write — not
+        raw `git worktree lock`, which is confirmed non-atomic at git's
+        own source and was the actual cause of a CI flake in an earlier
+        version of this test (see
+        .claude/plans/atomic-worktree-lock-acquisition.md). N real
+        concurrent processes each call _lib_worktree_collision_guard
+        against the same worktree; exactly one succeeds. Under the O_EXCL
+        rewrite this is a deterministic OS guarantee, not a probabilistic
+        one, so 100% pass across repeated runs is the actual proof the fix
+        works — a single pass proves nothing about a race fix."""
         repo = tmp_path / "race-repo"
         _init_opted_in_repo(repo)
         wt_path = tmp_path / "race-worktree"
         _add_worktree(repo, wt_path, "race")
+        common_dir = _git_common_dir(repo)
 
         concurrency = 20
-        procs = [
-            subprocess.Popen(
-                ["git", "-C", str(wt_path), "worktree", "lock", str(wt_path), "--reason", f"racer {i}"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            for i in range(concurrency)
-        ]
-        outputs = [p.communicate() for p in procs]
+        procs = []
+        for i in range(concurrency):
+            proc = _launch_collision_guard_racer(wt_path, common_dir, isolated_home)
+            _seed_session(isolated_home, f"racer-{i}-session", pid=proc.pid)
+            procs.append(proc)
+
+        for p in procs:
+            try:
+                p.communicate(timeout=_RACER_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.communicate()
+                pytest.fail(
+                    f"racer pid {p.pid} did not exit within "
+                    f"{_RACER_TIMEOUT_SECONDS}s -- broken session-file "
+                    f"handshake or a hung guard call, not a race outcome"
+                )
         returncodes = [p.returncode for p in procs]
 
         successes = [rc for rc in returncodes if rc == 0]
-        losers_stderr = [err for (_, err), rc in zip(outputs, returncodes, strict=True) if rc != 0]
         assert len(successes) == 1, (
             f"expected exactly one winner among {concurrency} racers, "
             f"got {len(successes)} (returncodes={returncodes})"
         )
-        assert len(losers_stderr) == concurrency - 1
-        assert all("already locked" in err for err in losers_stderr), losers_stderr
+        losers = [rc for rc in returncodes if rc != 0]
+        assert losers == [1] * (concurrency - 1), (
+            f"every loser must be a real deny (exit 1), not an unrelated "
+            f"resolution failure: {returncodes}"
+        )
+
+        winner_pid = procs[returncodes.index(0)].pid
+        reason = _worktree_lock_reason(wt_path)
+        assert reason is not None
+        assert f"pid {winner_pid}" in reason
 
 
 class TestCollisionGuardRereadRace:
@@ -192,35 +277,106 @@ exec "{real_git}" "$@"
             "a real test of the re-read branch, not an accidental early exit"
         )
 
-    def test_self_race_on_diagnostic_reread_still_allows(self, isolated_home, tmp_path):
+    def test_verification_reread_mismatch_after_successful_write_denies(self, isolated_home, tmp_path):
+        """A distinct, narrow race from the one above: the window between
+        the guard's own successful noclobber write and its post-write
+        verification reread (mechanism 2 of
+        .claude/plans/atomic-worktree-lock-acquisition.md). If a human's
+        `git worktree unlock` lands in exactly that window, the guard must
+        still deny (fail closed) rather than return 0 for a lock it can no
+        longer confirm holds — this is the property mechanism 2 exists to
+        provide, and without this test it was only asserted in the plan's
+        prose. Forced deterministically via a `git` wrapper that performs
+        the racing unlock the instant the guard's SECOND `worktree list
+        --porcelain` call (the verification reread, distinguishable from
+        the first, self-lock-check read by call order) is made — the write
+        itself succeeds for real, so the reread is what's under test, not
+        the write."""
+        repo = tmp_path / "verify-reread-repo"
+        _init_opted_in_repo(repo)
+        wt_path = tmp_path / "verify-reread-worktree"
+        _add_worktree(repo, wt_path, "verify-reread")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "verify-reread-session")
+
+        real_git = shutil.which("git")
+        assert real_git is not None, "git must be on PATH to build the wrapper"
+        fake_bin = tmp_path / "_fake_bin"
+        fake_bin.mkdir()
+        counter_file = tmp_path / "_porcelain_read_count"
+        counter_file.write_text("0")
+        wrapper = fake_bin / "git"
+        wrapper.write_text(f"""#!/bin/bash
+if [ "$1" = "-C" ] && [ "$2" = "{wt_path}" ] && [ "$3" = "worktree" ] && [ "$4" = "list" ] && [ "$5" = "--porcelain" ]; then
+  count=$(cat "{counter_file}")
+  count=$((count + 1))
+  printf '%s' "$count" > "{counter_file}"
+  if [ "$count" -eq 2 ]; then
+    "{real_git}" -C "{wt_path}" worktree unlock "{wt_path}"
+  fi
+fi
+exec "{real_git}" "$@"
+""")
+        wrapper.chmod(0o755)
+
+        result = _run_collision_guard(
+            wt_path, common_dir, isolated_home,
+            extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        )
+        assert result.returncode == 1
+        assert result.stdout != ""
+        assert "could not be confirmed after acquiring it" in result.stdout, result.stdout
+        assert int(counter_file.read_text()) == 2, (
+            "the wrapper's own counter must have observed both the "
+            "self-lock-check read and the verification reread for this to "
+            "be a real test of the verification-reread branch"
+        )
+
+    def test_self_race_on_write_attempt_still_allows_via_diagnostic_reread(self, isolated_home, tmp_path):
         """A concurrent invocation from this SAME live session (two parallel
         subagents, or a backgrounded Bash write, both writing into this
         worktree with no `isolation: worktree` between them -- a pattern
         this repo's own CLAUDE.md Agent Briefing describes as normal) can
-        lose the `git worktree lock` race to an earlier call from its own
-        pid, not a foreign one. The diagnostic re-read must recognize its
-        own pid there and allow, exactly like the first read's self-lock
-        check -- not misreport the caller's own pid as a foreign collision.
-        Forced deterministically via a `git` wrapper that performs the
-        guard's own lock call for real but reports it as failed, landing
-        the guard on the diagnostic re-read against a lock it actually
-        already holds."""
+        lose the noclobber-write race to an earlier call from its own pid,
+        not a foreign one. The diagnostic re-read must recognize its own
+        pid there and allow, exactly like the first read's self-lock check
+        -- not misreport the caller's own pid as a foreign collision.
+        Forced deterministically via a `git` wrapper that, on the FIRST
+        `worktree list --porcelain` call (the self-lock check, which must
+        still report the accurate pre-race unlocked state), also creates
+        the worktree's own `locked` file as a side effect -- simulating a
+        racing same-pid write landing in the window between that read and
+        the guard's own write attempt, so the guard's real write genuinely
+        fails (file already exists) and the diagnosis reread is actually
+        reached, not skipped via the first read's own self-lock fast
+        path."""
         repo = tmp_path / "self-race-repo"
         _init_opted_in_repo(repo)
         wt_path = tmp_path / "self-race-worktree"
         _add_worktree(repo, wt_path, "self-race")
         common_dir = _git_common_dir(repo)
+        wt_git_dir = _git_dir(wt_path)
         _seed_session(isolated_home, "self-race-session")
 
         real_git = shutil.which("git")
         assert real_git is not None, "git must be on PATH to build the wrapper"
         fake_bin = tmp_path / "_fake_bin"
         fake_bin.mkdir()
+        counter_file = tmp_path / "_porcelain_read_count"
+        counter_file.write_text("0")
         wrapper = fake_bin / "git"
         wrapper.write_text(f"""#!/bin/bash
-if [ "$1" = "-C" ] && [ "$2" = "{wt_path}" ] && [ "$3" = "worktree" ] && [ "$4" = "lock" ]; then
-  "{real_git}" "$@"
-  exit 1
+if [ "$1" = "-C" ] && [ "$2" = "{wt_path}" ] && [ "$3" = "worktree" ] && [ "$4" = "list" ] && [ "$5" = "--porcelain" ]; then
+  count=$(cat "{counter_file}")
+  count=$((count + 1))
+  printf '%s' "$count" > "{counter_file}"
+  if [ "$count" -eq 1 ]; then
+    output=$("{real_git}" "$@")
+    printf '%s' "claude-code pid {os.getpid()}" > "{wt_git_dir}/locked"
+    printf '\n' >> "{wt_git_dir}/locked"
+    echo "$output"
+    exit 0
+  fi
 fi
 exec "{real_git}" "$@"
 """)
@@ -235,6 +391,12 @@ exec "{real_git}" "$@"
         reason = _worktree_lock_reason(wt_path)
         assert reason is not None
         assert f"pid {os.getpid()}" in reason
+        assert int(counter_file.read_text()) == 2, (
+            "the wrapper's own counter must have observed both the "
+            "self-lock-check read and the diagnostic reread for this to be "
+            "a real test of the self-race branch, not an accidental early "
+            "exit via the first read's own self-lock fast path"
+        )
 
 
 class TestCollisionGuardBranches:
@@ -261,8 +423,8 @@ class TestCollisionGuardBranches:
     def test_self_lock_returns_immediately_without_reattempting_lock(self, isolated_home, tmp_path):
         """Pre-locking as self (bypassing the guard) and then calling the
         guard proves the read-only fast path: if the guard mistakenly tried
-        to re-lock an already self-held worktree, that `git worktree lock`
-        call would itself fail ('already locked') and the guard would
+        to re-write an already self-held lock file, that noclobber write
+        would itself fail (file already exists) and the guard would
         misdiagnose its own lock as a live foreign one — this would show up
         as a nonzero exit here, not just as a wasted subprocess call."""
         repo = tmp_path / "selflock-repo"
@@ -434,6 +596,60 @@ exec "{real_git}" "$@"
         assert result.returncode == 1
         assert "could not confirm" in result.stdout
         assert "belongs to this repository" in result.stdout
+
+    def test_main_working_tree_target_denies(self, isolated_home, tmp_path):
+        """A target_path that resolves to the main working tree, not a
+        linked worktree, denies via the main-tree precondition check
+        (mechanism 3 of .claude/plans/atomic-worktree-lock-acquisition.md):
+        the main tree's own `--git-dir` and `--git-common-dir` resolve to
+        the same path, which no linked worktree's own git-dir ever does.
+        Both existing callers already exclude the main tree before calling
+        this guard, so this branch is unreachable through them today --
+        it exists as a backstop against a future caller regression, and
+        without a direct test it could silently break."""
+        repo = tmp_path / "main-tree-repo"
+        _init_opted_in_repo(repo)
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "main-tree-session")
+
+        result = _run_collision_guard(repo, common_dir, isolated_home)
+        assert result.returncode == 1
+        assert "is the main working tree" in result.stdout
+
+    def test_wt_git_dir_resolution_failure_denies(self, isolated_home, tmp_path):
+        """A failure of the NEW `--git-dir` rev-parse call (the main-tree
+        precondition check's own resolution step, distinct from the
+        `--git-common-dir` call covered above) denies rather than
+        proceeding to the noclobber write with an unresolved git-dir.
+        Forced via a `git` wrapper that fails only that specific call."""
+        repo = tmp_path / "wt-git-dir-fail-repo"
+        _init_opted_in_repo(repo)
+        wt_path = tmp_path / "wt-git-dir-fail-worktree"
+        _add_worktree(repo, wt_path, "wt-git-dir-fail")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "wt-git-dir-fail-session")
+
+        real_git = shutil.which("git")
+        assert real_git is not None, "git must be on PATH to build the wrapper"
+        fake_bin = tmp_path / "_fake_bin"
+        fake_bin.mkdir()
+        wrapper = fake_bin / "git"
+        wrapper.write_text(f"""#!/bin/bash
+if [ "$1" = "-C" ] && [ "$2" = "{wt_path}" ] \\
+  && [ "$3" = "rev-parse" ] && [ "$4" = "--path-format=absolute" ] \\
+  && [ "$5" = "--git-dir" ]; then
+  exit 1
+fi
+exec "{real_git}" "$@"
+""")
+        wrapper.chmod(0o755)
+
+        result = _run_collision_guard(
+            wt_path, common_dir, isolated_home,
+            extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        )
+        assert result.returncode == 1
+        assert "could not resolve the worktree-specific git-dir" in result.stdout
 
     def test_first_porcelain_read_failure_denies(self, isolated_home, tmp_path):
         """A failure of the first `worktree list --porcelain` read (the

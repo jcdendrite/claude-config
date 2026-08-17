@@ -48,10 +48,16 @@ that resolves the target worktree's root and:
    attempted.
 2. Otherwise, attempts to acquire the lock (`git worktree lock <root>
    --reason "claude-code pid <PID>"`, also `_lib_capped`). Success — allow.
-   This is the exclusion point for the contended case: two sessions that
-   both read "unlocked" in step 1 and both reach step 2 are resolved by
-   git's own lock-file write being exclusive-create, not by anything this
-   function does — see the verified acquisition-race note below.
+   **This paragraph's exclusivity claim was disproven and the design
+   changed as a result — see `atomic-worktree-lock-acquisition.md`.**
+   Git's own lock-file write is not exclusive-create: `lock_worktree()`
+   (`builtin/worktree.c`) reads then separately calls `write_file()`
+   (`wrapper.c`), which opens `O_CREAT|O_TRUNC` with no `O_EXCL` — a plain
+   check-then-write. Two sessions that both read "unlocked" in step 1 and
+   both reach step 2 can both win. The shipped implementation instead
+   performs an `O_EXCL` create (bash `noclobber`) directly against the
+   worktree's own `<git-dir>/locked` file, with a post-write porcelain
+   reread to confirm the write landed before returning success.
 3. A failed lock call ("already locked") means someone holds it as of the
    attempt — re-read porcelain to name who, then deny with a
    diagnosis-specific message and no automatic remedy:
@@ -170,21 +176,18 @@ chosen):
 
 **Assumption ledger:**
 
-- `git worktree lock` fails the *second* concurrent caller rather than
-  silently overwriting the first. Verified two ways: (1) this session,
-  sequential CLI calls — `git worktree lock <wt> --reason first` (exit 0),
-  then `git worktree lock <wt> --reason second` on the same worktree (exit
-  128, `fatal: '<wt>' is already locked, reason: first`), which proves
-  ordering-dependent exclusion but not true simultaneous-write safety on
-  its own; (2) `staff-sdet`'s independent re-review round, a genuine
-  20-way concurrent-process race against a scratch repo — exactly one
-  winner, nineteen clean `exit 128` failures, every run. (2) is the
-  stronger evidence for the concurrent-write claim specifically; (1)
-  establishes the CLI contract. This is what makes lock-attempt-first (not
-  a porcelain-read-then-write pair) the race-safety mechanism for the
-  contended path: two sessions that both observe "unlocked" and both then
-  call `lock` are resolved by the write itself being exclusive-create, not
-  by anything this function's own read ordering does.
+- **Corrected — the claim below was disproven; see
+  `atomic-worktree-lock-acquisition.md`.** `git worktree lock`'s write is
+  not exclusive-create: git's own `lock_worktree()`
+  (`builtin/worktree.c`) reads then separately calls `write_file()`
+  (`wrapper.c`), which opens `O_CREAT|O_TRUNC` with no `O_EXCL`. The
+  20-way concurrent-process race cited as proof of exclusivity in an
+  earlier version of this bullet was itself reproduced failing in CI
+  (`returncodes=[0, 0, 128×18]` — two racers both won), which is what
+  surfaced the gap. The shipped implementation replaces this write with a
+  genuine `O_EXCL` create (bash `noclobber`) against the worktree's own
+  `<git-dir>/locked` file instead of relying on `git worktree lock` for
+  exclusivity.
 - `git worktree unlock <path>` has **no ownership check** — it
   unconditionally removes whatever lock currently exists, verified this
   session by live reproduction: session A acquires a fresh lock
@@ -313,21 +316,19 @@ chosen):
   closed (deny, not a hook crash) rather than being silently unhandled.
 - New `claude/.claude/hooks/tests/test_lib_worktree_collision_guard.py` —
   unit coverage for `_lib_worktree_collision_guard` and
-  `_lib_resolve_claude_pid` directly, including a codified N-way (e.g.
-  20-way, matching this plan's own verification round) concurrent-process
-  test asserting exactly one winner and every other caller failing
-  "already locked" — the exclusivity property this whole design leans on
-  was verified manually during plan review; it must ship as a permanent
-  regression test, not live only as a citation in the assumption ledger,
-  so a future refactor of step 2 into check-then-lock is caught by CI
-  rather than silently reintroducing the race. Reuse opportunity: mirror
+  `_lib_resolve_claude_pid` directly. **Corrected:** this originally
+  prescribed a codified N-way concurrent-process race against raw `git
+  worktree lock` as proof of the exclusivity property — that property was
+  disproven (see `atomic-worktree-lock-acquisition.md`), so a race against
+  git's own command can only ever be probabilistic, not a real regression
+  test. The shipped test instead races `_lib_worktree_collision_guard`
+  itself, which is deterministic under the `O_EXCL` rewrite: exactly one
+  winner is now guaranteed by the OS, not "usually true." Reuse
+  opportunity: mirror
   `claude/.claude/scripts/tests/test_cleanup_merged_branches.py`'s
   `conftest.py`-level `_dead_pid()` helper (spawns and reaps a real
   process via `Popen(["true"])`, returning a guaranteed-dead PID) rather
-  than a hardcoded PID literal — it already exercises real `git worktree
-  lock --reason "... pid <dead>"` calls against a temp repo, which is the
-  closer precedent than `test_marker_lib.py`'s marker-file-based liveness
-  tests for a design keyed off git's own lock state.
+  than a hardcoded PID literal.
 - `docs/hooks.md` — update both hooks' entries to describe the new
   same-worktree collision check.
 - `README.md` "Worktree enforcement" section — extend past "isolates each
