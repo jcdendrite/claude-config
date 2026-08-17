@@ -24,6 +24,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -80,6 +81,19 @@ assert 80_000 < DEFAULT_ABS_CAP <= 400_000, (
     "from a broken one when the cap is strictly above SMALL_THRESHOLD and at "
     "or below 40% of the 1M window"
 )
+
+SMALL_TRANSCRIPT_LINES = 200  # equals the hook's own `tail -n 200` window
+LARGE_TRANSCRIPT_LINES = 150_000  # ~29MB; big enough that a regression to a
+# full-file read produces a ~6x runtime ratio against SMALL_TRANSCRIPT_LINES,
+# well clear of the noise ceiling below (measured: real hook ratio ~0.8-1.5x,
+# regressed hook ratio ~6.0x, at this fixture size).
+TRANSCRIPT_SCALING_RATIO = 3.0
+# Absolute slack so a near-zero baseline on a fast, quiet machine can't make
+# the ratio arbitrarily sensitive to scheduler noise — same values as
+# test_require_plan_review.py's MARKER_SCALING_RATIO/_SLACK_SECONDS, which
+# already established this pattern for the same "cost shouldn't scale with N"
+# property.
+TRANSCRIPT_SCALING_SLACK_SECONDS = 1.0
 
 # Literal, not derived from the production ternary formula — mirroring that
 # formula here would make the two threshold tests below tautological on
@@ -220,6 +234,54 @@ def _base_payload(
         "transcript_path": str(transcript_path),
         "hook_event_name": hook_event_name,
     }
+
+
+def _interleaved_median_seconds(
+    small_transcript: Path, large_transcript: Path, tmp_path: Path, runs: int = 3
+) -> tuple[float, float]:
+    """Median wall-clock seconds for `runs` interleaved invocations against
+    each transcript (small, large, small, large, ...), returned as
+    (small_median, large_median).
+
+    Interleaved order prevents a single load burst from biasing one arm's
+    entire sample window (this hook forks more subprocesses per call than
+    sibling tests, so single-sample runtime is noisier).
+
+    Each arm uses its own session_id: the fire path's incremental-read cache
+    is keyed by session_id alone, not transcript path, so sharing one
+    session_id between two different-sized transcripts makes each call
+    reset the other's cached scan offset -- collapsing the large arm's
+    "unread suffix" down to nearly the whole file every time instead of the
+    empty-suffix, cache-hit read this test means to exercise.
+    """
+    small_payload = _base_payload(small_transcript, session_id=f"{SESSION_ID}-small")
+    large_payload = _base_payload(large_transcript, session_id=f"{SESSION_ID}-large")
+    small_samples: list[float] = []
+    large_samples: list[float] = []
+    for _ in range(runs):
+        for payload, samples in (
+            (small_payload, small_samples),
+            (large_payload, large_samples),
+        ):
+            start = time.perf_counter()
+            result = _run_hook(payload, tmp_path)
+            samples.append(time.perf_counter() - start)
+            assert result.returncode == 0
+    small_samples.sort()
+    large_samples.sort()
+    mid = runs // 2
+    return small_samples[mid], large_samples[mid]
+
+
+def _perf_counter_sequence(durations: list[float]):
+    """Yields paired start/end values so consecutive `time.perf_counter()`
+    calls measure exactly the given elapsed durations, for deterministically
+    testing code that times itself via `perf_counter() - start`."""
+    clock = 0.0
+    for duration in durations:
+        yield clock
+        clock += duration
+        yield clock
 
 
 def _log_path(tmp_path: Path, config_dir: Path | None = None) -> Path:
@@ -1363,26 +1425,70 @@ class TestNudgeHandoffNearContextCap:
         )
 
     @pytest.mark.timing
-    def test_latency_under_500ms(self, tmp_path):
-        """Hook completes in under 500ms even with a ~10 MB transcript (10000 valid JSONL lines).
-
-        The bootstrap scan's tail -n 200 (and the incremental-read cache's own
-        offset/size checks via tail/wc/tr/head) keep every read bounded, not
-        O(file_size), so runtime is dominated by shell/jq/coreutils startup
-        across those several subprocess spawns, not file size. The 500ms bound
-        guards against an accidental regression to full-file reads while
-        tolerating CI-runner jitter (subprocess startup can reach 150-200ms
-        under memory pressure on loaded runners).
+    def test_latency_does_not_scale_with_transcript_size(self, tmp_path):
+        """Hook runtime stays flat as the transcript grows, verified via a
+        ratio rather than an absolute bound, since wall-clock time on this
+        hook varies orders of magnitude with machine load: a regression to a
+        full-file read inflates the large/small runtime ratio to ~6x, while
+        correct O(1) behavior stays near 1x.
         """
-        transcript = tmp_path / "large.jsonl"
         single_line = json.dumps(_assistant_record(input_tok=5000, output_tok=1000))
-        transcript.write_text("\n".join([single_line] * 10000) + "\n")
-        payload = _base_payload(transcript)
-        start = time.perf_counter()
-        result = _run_hook(payload, tmp_path)
-        elapsed = time.perf_counter() - start
-        assert result.returncode == 0
-        assert elapsed < 0.500, f"Hook took {elapsed:.3f}s — expected < 500ms (tail -n 200 should prevent O(file) reads)"
+        small_transcript = tmp_path / "small.jsonl"
+        small_transcript.write_text(
+            "\n".join([single_line] * SMALL_TRANSCRIPT_LINES) + "\n"
+        )
+        large_transcript = tmp_path / "large.jsonl"
+        large_transcript.write_text(
+            "\n".join([single_line] * LARGE_TRANSCRIPT_LINES) + "\n"
+        )
+
+        small_seconds, large_seconds = _interleaved_median_seconds(
+            small_transcript, large_transcript, tmp_path
+        )
+
+        allowed = (
+            small_seconds * TRANSCRIPT_SCALING_RATIO
+            + TRANSCRIPT_SCALING_SLACK_SECONDS
+        )
+        assert large_seconds < allowed, (
+            f"{LARGE_TRANSCRIPT_LINES}-line transcript took {large_seconds:.3f}s vs "
+            f"{small_seconds:.3f}s for {SMALL_TRANSCRIPT_LINES} lines -- over the "
+            f"allowed {allowed:.3f}s. Runtime is scaling with transcript size, which "
+            "suggests a regression to a full-file read (tail -n 200 should keep it flat)."
+        )
+
+    def test_interleaved_median_seconds_alternates_calls_and_picks_true_median(
+        self, monkeypatch, tmp_path
+    ):
+        """Deterministic pin for `_interleaved_median_seconds`'s call order
+        and median selection, independent of real hook subprocess timing —
+        an off-by-one in the median index or a reversion to block-sequential
+        sampling would otherwise hide behind this hook's own wide legitimate
+        timing variance instead of failing reliably.
+        """
+        small_transcript = tmp_path / "small.jsonl"
+        large_transcript = tmp_path / "large.jsonl"
+        call_log: list[str] = []
+
+        def fake_run_hook(payload, tmp_path_arg, extra_env=None):
+            call_log.append(payload["transcript_path"])
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        # small-arm calls take 0.1/0.2/0.3s, large-arm calls take
+        # 1.0/2.0/3.0s -- medians (0.2, 2.0) are unambiguous, and the
+        # assertions below fail if calls aren't truly alternating.
+        durations = [0.1, 1.0, 0.2, 2.0, 0.3, 3.0]
+        clock = iter(_perf_counter_sequence(durations))
+        monkeypatch.setattr(time, "perf_counter", lambda: next(clock))
+        monkeypatch.setattr(sys.modules[__name__], "_run_hook", fake_run_hook)
+
+        small_median, large_median = _interleaved_median_seconds(
+            small_transcript, large_transcript, tmp_path
+        )
+
+        assert call_log == [str(small_transcript), str(large_transcript)] * 3
+        assert small_median == pytest.approx(0.2)
+        assert large_median == pytest.approx(2.0)
 
     def test_partial_usage_block_falls_to_below_threshold(self, tmp_path):
         """A usage block with only output_tokens present sums to 500 — below threshold. No schema-drift, no nudge."""
