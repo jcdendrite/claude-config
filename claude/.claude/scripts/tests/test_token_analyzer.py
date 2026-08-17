@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
+from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 # Load token-analyzer as a module without it being on sys.path as a package.
 _SCRIPT = Path(__file__).parent.parent / "token-analyzer.py"
@@ -97,6 +98,10 @@ def _iso(offset_seconds: float = 0) -> str:
 
 @pytest.fixture()
 def fake_projects(tmp_path, monkeypatch):
+    """Local, not the conftest.py fixture of the same name: _walk()'s default
+    root reads this file's own module-level PROJECTS_DIR, not scope.PROJECTS_DIR,
+    so this must patch _mod.PROJECTS_DIR directly rather than merge into the
+    shared fixture's scope.PROJECTS_DIR/config_dir patches."""
     projects = tmp_path / "projects"
     proj_a = projects / "-home-user-repo"
     proj_b = projects / "-home-user-other"
@@ -453,7 +458,7 @@ def test_malformed_timestamp_record_skipped(fake_projects):
 
 def _write_subagent_jsonl(proj: Path, session_id: str, agent_id: str, records: list[dict]) -> None:
     """Write records to the split subagent layout: <session_id>/subagents/<agent_id>.jsonl."""
-    subdir = proj / session_id / _mod._transcript_analysis.SUBAGENT_SUBDIR
+    subdir = proj / session_id / SUBAGENT_SUBDIR
     subdir.mkdir(parents=True, exist_ok=True)
     _write_jsonl(subdir / f"{agent_id}.jsonl", records)
 
@@ -506,7 +511,7 @@ def test_main_scans_every_declared_root(monkeypatch, tmp_path):
     _resolve_scan_roots' return value and calling _walk directly (which would
     still pass even if main() stopped wiring the two together)."""
     active = tmp_path / "active" / "projects"
-    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active)
 
     declared_config_dir = tmp_path / "declared-account"
     (declared_config_dir / "projects").mkdir(parents=True)
@@ -534,7 +539,7 @@ def test_main_discloses_resolved_scope_at_one_root(monkeypatch, tmp_path, capsys
     scan and a multi-account scan read identically, silently pooling every
     declared account's tokens with no scope signal."""
     active = tmp_path / "active" / "projects"
-    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active)
 
     monkeypatch.setattr(sys, "argv", ["token-analyzer.py"])
     _mod.main()
@@ -548,7 +553,7 @@ def test_main_discloses_resolved_scope_at_two_roots(monkeypatch, tmp_path, capsy
     account is declared via ~/.claude/transcript-config-dirs, so a
     multi-account scan is never scope-ambiguous with a single-account one."""
     active = tmp_path / "active" / "projects"
-    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active)
 
     declared_config_dir = tmp_path / "declared-account"
     (declared_config_dir / "projects").mkdir(parents=True)
@@ -686,7 +691,7 @@ def test_main_wires_since_argument_into_walk(monkeypatch, tmp_path, capsys):
     """Asserts _walk receives the --since epoch, bracketed by time.time()
     calls before/after main() to avoid a flaky exact-timestamp comparison."""
     active = tmp_path / "active" / "projects"
-    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active)
 
     captured = {}
 
@@ -713,7 +718,7 @@ def test_main_scans_active_root_alone_when_no_roots_declared(monkeypatch, tmp_pa
     test_main_scans_every_declared_root, which only covers the two-root
     case."""
     active = tmp_path / "active" / "projects"
-    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active)
+    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active)
 
     captured = {}
 

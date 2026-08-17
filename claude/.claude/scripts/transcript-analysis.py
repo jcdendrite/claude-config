@@ -25,18 +25,84 @@ import sys
 import tempfile
 import time
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Sequence
-from datetime import UTC, date, datetime, timedelta
+from collections.abc import Iterable, Sequence
+from datetime import UTC, date, datetime
 from pathlib import Path
 
-from _config_dir import (
-    TRANSCRIPT_CONFIG_DIRS_LABEL,
-    config_dir,
-    declared_roots_file_state,
-    declared_transcript_roots,
-)
+from _config_dir import config_dir
 
-PROJECTS_DIR = config_dir() / "projects"
+# corpus/pricing/redaction/render are read only via _mod.<module> from test files
+# (unit-testing a private helper, or patching module-owned state like scope.PROJECTS_DIR
+# below) -- scope is the only one this file's own code reads bare, as scope.PROJECTS_DIR.
+from transcript_analysis import corpus, pricing, redaction, render, scope  # noqa: F401
+from transcript_analysis.corpus import SUBAGENT_SUBDIR, _parse_ts, _read_session_file_partitioned, iter_sessions
+from transcript_analysis.pricing import (
+    _CACHE_READ_MULTIPLIER,
+    _CACHE_WRITE_1H_MULTIPLIER,
+    _CACHE_WRITE_5M_MULTIPLIER,
+    _CONTEXT_BUCKET_OVER,
+    _CONTEXT_BUCKET_THRESHOLD,
+    _CONTEXT_BUCKET_UNDER,
+    _CONTEXT_DISTRIBUTION_THRESHOLD_ABS,
+    _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS,
+    _FAST_MODE_RATE_MULTIPLIER,
+    _INFERENCE_GEO_US_RATE_MULTIPLIER,
+    _MODEL_BASE_INPUT_RATES,
+    _MODEL_RATE_EXPIRES,
+    _PRICING_FETCH_DATE,
+    _PRICING_SOURCE_URL,
+    _TOKEN_CLASSES,
+    _cache_miss_reason,
+    _cache_write_split,
+    _context_at_turn,
+    _context_bucket,
+    _context_window_for_model,
+    _model_rates,
+    _price_turn,
+    _session_peak_context,
+    _token_counts,
+)
+from transcript_analysis.pricing import dedup_turns_by_request_id as _dedup_turns_by_request_id
+from transcript_analysis.redaction import (
+    _REDACT_MAP_MISS_TOKEN,
+    _assign_root_scoped_redact_label,
+    _assign_session_redact_label,
+    _build_redact_map,
+    _corpus_fingerprint,
+    _derive_proj_label,
+    _project_family,
+    _redact_proj_label,
+    _redact_session_id,
+    _RedactMapKey,
+)
+from transcript_analysis.render import (
+    _RECENT_LOOKBACK_N,
+    _content_text,
+    _context_distribution_rows,
+    _fam,
+    _fmt_usd,
+    _format_samples_as_markdown,
+    _pct_of,
+    _pct_value,
+    _recent_assistant_text,
+    _recent_tool_trail,
+    _sanitize_table_cell,
+)
+from transcript_analysis.scope import (
+    _DO_NOT_PUBLISH_BANNER,
+    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR,
+    _iter_glob_scoped_sessions,
+    _iter_scoped_sessions,
+    _redaction_ordinals,
+    _repo_scoped_project_slugs,
+    _resolve_cost_roots,
+    _resolve_project_scope,
+    _resolved_scope_header,
+    _root_index_for_path,
+    _scan_root_transcripts,
+)
+from transcript_analysis.scope import print_resolved_scope as _print_resolved_scope
+from transcript_analysis.scope import resolve_scan_roots as _resolve_scan_roots
 
 TEST_RUNNER_RE = re.compile(
     r"\b(vitest|jest|pytest|deno\s+test|npm\s+run\s+(verify|test|lint)|ruff\s+check|cargo\s+test|go\s+test)\b"
@@ -84,28 +150,6 @@ def _branch_filter(args: argparse.Namespace) -> set[str] | None:
     return {b for b in raw.split(",") if b} if raw else None
 
 
-def _fam(model: str) -> str:
-    m = model.lower()
-    if "opus" in m:
-        return "opus"
-    if "sonnet" in m:
-        return "sonnet"
-    if "haiku" in m:
-        return "haiku"
-    return "other"
-
-
-_BASH_COMMAND_DISPLAY_CHARS = 80
-
-
-def _content_text(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
-    return ""
-
-
 def _is_fresh_user_prompt(rec: dict) -> bool:
     """Return True iff rec is a genuine new user message (not a tool result or injected record).
 
@@ -131,218 +175,6 @@ def _is_fresh_user_prompt(rec: dict) -> bool:
     ):
         return False
     return bool(_content_text(content).strip())
-
-
-def _pretty_tool_call(tool_call: dict) -> str:
-    """Render a tool call dict as a concise markdown-inline string for curation review."""
-    name = tool_call.get("name", "")
-    inp = tool_call.get("input") or {}
-    if name == "Read":
-        file_path = inp.get("file_path", "")
-        return f"**Read:** `{file_path}`"
-    if name == "Grep":
-        pattern = inp.get("pattern", "")
-        path = inp.get("path")
-        if path:
-            return f"**Grep:** `{pattern}` in `{path}`"
-        return f"**Grep:** `{pattern}` (repo-wide)"
-    if name == "Glob":
-        pattern = inp.get("pattern", "")
-        path = inp.get("path")
-        if path:
-            return f"**Glob:** `{pattern}` in `{path}`"
-        return f"**Glob:** `{pattern}` (repo-wide)"
-    if name == "Bash":
-        command = inp.get("command", "")
-        description = inp.get("description", "")
-        truncated = command[:_BASH_COMMAND_DISPLAY_CHARS] + "…" if len(command) > _BASH_COMMAND_DISPLAY_CHARS else command
-        if description:
-            return f"**Bash:** {description} — `{truncated}`"
-        return f"**Bash:** `{truncated}`"
-    compact = json.dumps(inp, separators=(",", ":"))
-    return f"**{name}:** `{compact}`"
-
-
-def _blockquote_user_message(text: str) -> str:
-    """Prefix each line of text with '> ' for markdown blockquoting.
-
-    Blank lines render as '>' (no trailing space) to preserve blockquote
-    continuity in standard markdown renderers.
-    """
-    if not text:
-        return "> (no preceding user message)"
-    lines = text.split("\n")
-    return "\n".join((f"> {line}").rstrip() for line in lines)
-
-
-_NARRATION_EXCERPT_CHARS = 280
-_TRAIL_CMD_DISPLAY_CHARS = 100
-_RECENT_LOOKBACK_N = 3
-
-
-def _recent_assistant_text(
-    session_records: list[dict], turn_idx: int, n: int
-) -> list[str]:
-    """Return up to n most-recent assistant text excerpts before turn_idx.
-
-    Walks backward through session_records, collects the last text block
-    from each assistant turn (kind != 'user'), skips turns with no text
-    block. Returns entries in chronological order (oldest first).
-    Newlines in each excerpt are replaced with spaces so the caller can
-    render each as a single blockquote line.
-    """
-    excerpts: list[str] = []
-    for i in range(turn_idx - 1, -1, -1):
-        if len(excerpts) >= n:
-            break
-        entry = session_records[i]
-        if entry["kind"] == "user":
-            continue
-        last_text = ""
-        for block in entry.get("content", []):
-            if isinstance(block, dict) and block.get("type") == "text":
-                last_text = block.get("text") or ""
-        if not last_text:
-            continue
-        flat = last_text.replace("\n", " ")
-        if len(flat) > _NARRATION_EXCERPT_CHARS:
-            flat = flat[:_NARRATION_EXCERPT_CHARS] + "…"
-        excerpts.append(flat)
-    excerpts.reverse()
-    return excerpts
-
-
-def _recent_tool_trail(
-    session_records: list[dict], turn_idx: int, n: int
-) -> list[str]:
-    """Return up to n most-recent tool-call summary strings before turn_idx.
-
-    Walks backward through session_records collecting the first tool_use
-    block in each assistant turn, oldest-first in the returned list. Each
-    entry is a one-line human-readable label:
-      - Read: <file_path>
-      - Grep: <pattern> in <path>  /  Grep: <pattern> (repo-wide)
-      - Glob: <pattern> in <path>  /  Glob: <pattern> (repo-wide)
-      - Bash: <description> — `<truncated_command>`  (or just `<cmd>` if no description)
-      - <Name>: <compact_json_input>  (fallback)
-    """
-    trail: list[str] = []
-    for i in range(turn_idx - 1, -1, -1):
-        if len(trail) >= n:
-            break
-        entry = session_records[i]
-        if entry["kind"] == "user":
-            continue
-        for block in entry.get("content", []):
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                name = block.get("name", "")
-                inp = block.get("input") or {}
-                if name == "Read":
-                    label = f"Read: {inp.get('file_path', '')}"
-                elif name == "Grep":
-                    pat = inp.get("pattern", "")
-                    path = inp.get("path")
-                    label = f"Grep: {pat} in {path}" if path else f"Grep: {pat} (repo-wide)"
-                elif name == "Glob":
-                    pat = inp.get("pattern", "")
-                    path = inp.get("path")
-                    label = f"Glob: {pat} in {path}" if path else f"Glob: {pat} (repo-wide)"
-                elif name == "Bash":
-                    command = inp.get("command", "")
-                    description = (inp.get("description") or "").replace("\n", " ")
-                    truncated = command[:_TRAIL_CMD_DISPLAY_CHARS] + "…" if len(command) > _TRAIL_CMD_DISPLAY_CHARS else command
-                    label = f"Bash: {description} — `{truncated}`" if description else f"Bash: `{truncated}`"
-                else:
-                    compact = json.dumps(inp, separators=(",", ":"))
-                    label = f"{name}: {compact}"
-                trail.append(label)
-                break
-    trail.reverse()
-    return trail
-
-
-def _format_samples_as_markdown(
-    records: list[dict],
-    *,
-    since_raw: str | None,
-    sample_n: int,
-    seed: int | None,
-) -> str:
-    """Return a full markdown document for human curation of audit-routing-samples output."""
-    today = date.today().isoformat()
-    since_display = since_raw or "(none)"
-    seed_display = str(seed) if seed is not None else "(none)"
-    filter_line = f"`--since {since_display}  --sample {sample_n}  --seed {seed_display}`"
-
-    header = (
-        f"# audit-routing-samples curation — {len(records)} turns\n"
-        f"\n"
-        f"Generated: {today}  ·  Filter: {filter_line}\n"
-        f"\n"
-        f"For each turn: read the three context blocks, then check ONE verdict box.\n"
-        f"- `true (delegate)` — content sat in context with no immediate consumer;"
-        f" delegation would have saved tokens\n"
-        f"- `false (inline correct)` — content fed an immediate edit or comprehension-driven response\n"
-        f"- `skip` — ambiguous or noise; drop from curated set\n"
-    )
-
-    sections: list[str] = []
-    total = len(records)
-    for i, rec in enumerate(records):
-        session_id = rec.get("session_id", "")
-        turn_index = rec.get("turn_index", 0)
-        prior_user_message = rec.get("prior_user_message", "")
-        assistant_tool_call = rec.get("assistant_tool_call") or {"name": "", "input": {}}
-        next_assistant_action = rec.get("next_assistant_action", "")
-        next_turn_excerpt = rec.get("next_turn_excerpt", "")
-
-        blockquoted = _blockquote_user_message(prior_user_message)
-        tool_line = _pretty_tool_call(assistant_tool_call)
-        next_excerpt_line = next_turn_excerpt.replace("\n", " ") if next_turn_excerpt else "(none)"
-
-        recent_text = rec.get("recent_assistant_text") or []
-        recent_trail = rec.get("recent_tool_trail") or []
-
-        narration_block = ""
-        if recent_text:
-            lines = "\n".join(f"> {t}" for t in recent_text)
-            narration_block = f"\n**Recent agent narration:**\n{lines}\n"
-
-        trail_block = ""
-        if recent_trail:
-            lines = "\n".join(f"- {t}" for t in recent_trail)
-            trail_block = f"\n**Recent tool trail:**\n{lines}\n"
-
-        section = (
-            f"## {i + 1}/{total} — session `{session_id}` turn {turn_index}\n"
-            f"\n"
-            f"**User:**\n"
-            f"{blockquoted}\n"
-            f"\n"
-            f"{tool_line}\n"
-            f"{narration_block}"
-            f"{trail_block}"
-            f"\n"
-            f"**Next:** `{next_assistant_action}`\n"
-            f"> {next_excerpt_line}\n"
-            f"\n"
-            f"**Verdict** (check one):\n"
-            f"- [ ] true (delegate)\n"
-            f"- [ ] false (inline correct)\n"
-            f"- [ ] skip\n"
-        )
-        sections.append(section)
-
-    return header + "\n---\n\n" + "\n---\n\n".join(sections)
-
-
-def _parse_ts(ts_str: str | None) -> float | None:
-    if not ts_str:
-        return None
-    try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
-        return None
 
 
 def _parse_since_nd_arg(args: argparse.Namespace, subcommand: str) -> tuple[float | None, str | None]:
@@ -376,107 +208,6 @@ def _iso_date(s: str) -> str:
 
 def _fmt_date(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%d")
-
-
-def _fmt_usd(amount: float) -> str:
-    return f"-${-amount:,.2f}" if amount < 0 else f"${amount:,.2f}"
-
-
-def _parse_jsonl_records(jsonl: Path) -> list[dict] | None:
-    """Parse one .jsonl file into records, skipping malformed lines.
-
-    Returns None when the file cannot be opened, which is distinct from an empty
-    but readable file ([]): an unreadable main transcript aborts the whole
-    session, while an empty one still carries its subagent files.
-    """
-    records: list[dict] = []
-    try:
-        with open(jsonl) as fh:
-            for raw in fh:
-                try:
-                    records.append(json.loads(raw))
-                except json.JSONDecodeError:
-                    continue
-    except OSError:
-        return None
-    return records
-
-
-def _read_session_file_partitioned(jsonl: Path, include_subagents: bool) -> list[list[dict]]:
-    """Read one transcript file's records, keeping each source file's records separate.
-
-    Returns one list per source file: the main transcript first, then each
-    <session_id>/subagents/*.jsonl in sorted order. An unreadable main file
-    yields [] (no groups at all); an unreadable subagent file is skipped. A
-    readable-but-empty main file still yields its subagent groups, matching
-    _read_session_file's long-standing behaviour.
-
-    The per-file boundary matters to any caller that differences consecutive
-    turns: separate files are separate context windows, so a delta taken across
-    a boundary compares two unrelated conversations. _read_session_file flattens
-    this for the callers that only need the records. A group's own source-file
-    stem is not a reliable stand-in for its records' sessionId -- a subagent
-    file is named by its own agent id but its records carry the *parent*
-    session's sessionId -- so a caller needing per-record session identity
-    (e.g. _read_scope_growth_for_group) keys off each record's own sessionId,
-    never off this function's file-level grouping.
-    """
-    main = _parse_jsonl_records(jsonl)
-    if main is None:
-        return []
-    groups = [main]
-
-    if include_subagents:
-        subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
-        if subagent_dir.is_dir():
-            for sub_jsonl in sorted(subagent_dir.glob("*.jsonl")):
-                sub_records = _parse_jsonl_records(sub_jsonl)
-                if sub_records:
-                    groups.append(sub_records)
-
-    return groups
-
-
-def _read_session_file(jsonl: Path, include_subagents: bool) -> list[dict]:
-    """Read one transcript file's records, merging its subagent files when asked.
-
-    Shared by iter_sessions (which selects files by glob) and _iter_scoped_sessions
-    (which selects project dirs by exact-name identity, then reads each file).
-    Keeping the per-file read here means the two selection strategies cannot drift
-    in how they parse records or merge subagent files.
-
-    When include_subagents=True, records from split subagent files under
-    <session_id>/subagents/*.jsonl are appended. Those files carry
-    isSidechain: true on assistant records. Returns [] for an unreadable file.
-
-    Flattens _read_session_file_partitioned in source-file order, so the merged
-    sequence is exactly the concatenation it has always been.
-    """
-    return [rec for group in _read_session_file_partitioned(jsonl, include_subagents) for rec in group]
-
-
-def iter_sessions(
-    projects_dir: Path,
-    projects_glob: str = "*",
-    include_subagents: bool = False,
-) -> Iterator[tuple[Path, list[dict]]]:
-    """Yield (jsonl_path, records) for each transcript file matching the glob.
-
-    Files are yielded in a single flat sort over their full paths — NOT grouped
-    by directory. Grouping by directory would misorder projects whenever one
-    project-dir name is a lexical prefix of a sibling's (exactly this repo's
-    own worktree naming, e.g. -home-u-repo vs -home-u-repo--claude-worktrees-b).
-    Redact-label assignment (_build_redact_map) does not depend on this order —
-    it sorts the collected labels itself before assigning placeholders — but
-    every other caller iterates these results directly, so the flat sort is
-    what keeps their output order deterministic and reproducible across runs.
-    See _read_session_file for the per-file read and the include_subagents
-    merge behavior.
-    """
-    for jsonl in sorted(projects_dir.glob(f"{projects_glob}/*.jsonl")):
-        records = _read_session_file(jsonl, include_subagents)
-        if records:
-            yield jsonl, records
 
 
 def _longest_fail_streak(failed_flags: list[bool]) -> int:
@@ -807,7 +538,7 @@ def cmd_user_input(args: argparse.Namespace) -> None:
     earliest_ts: float | None = None
     latest_ts: float | None = None
 
-    for jsonl, records in iter_sessions(PROJECTS_DIR, projects_glob):
+    for jsonl, records in iter_sessions(scope.PROJECTS_DIR, projects_glob):
         proj_label = _derive_proj_label(jsonl)
         total_projects_seen.add(proj_label)
 
@@ -1257,9 +988,6 @@ def cmd_subagents(args: argparse.Namespace) -> None:
 
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
 
-# Subdirectory name where Claude Code writes split subagent transcripts.
-SUBAGENT_SUBDIR = "subagents"
-
 # Tool names that spawn a subagent in the main thread.
 _SPAWN_TOOL_NAMES = ("Agent", "Task")
 
@@ -1641,19 +1369,6 @@ _FRICTION_KIND_OTHER = "other-kind"
 def _friction_kind_label(tool_denial_kind: str) -> str:
     """Map a friction event's toolDenialKind to its printed label."""
     return tool_denial_kind if tool_denial_kind in _FRICTION_KINDS else _FRICTION_KIND_OTHER
-
-
-# Defense-in-depth beyond each label source's own closed vocabulary
-# (_DENIAL_HOOK_LABELS, _DENIAL_COMMAND_SUBCOMMANDS, _FRICTION_KINDS): strips
-# ASCII control characters before a value is written into a --deny-summary
-# table cell, the same way the per-session timeline's msg!r already guards
-# free-text denial messages.
-_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
-
-
-def _sanitize_table_cell(value: str) -> str:
-    """Strip ASCII control characters from a --deny-summary table cell value."""
-    return _CONTROL_CHAR_RE.sub("", value)
 
 
 def _print_deny_summary(
@@ -2327,125 +2042,6 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
         print(output_text)
 
 
-def _path_to_project_slug(path: str) -> str:
-    """Map an absolute path to Claude Code's project-directory slug.
-
-    Claude Code names each project dir under ~/.claude/projects/ by taking the
-    session's cwd and replacing every '/' and '.' with '-'. Verified against real
-    dirs: /home/u/repo -> -home-u-repo;
-    /home/u/repo/.claude/worktrees/b -> -home-u-repo--claude-worktrees-b.
-    """
-    return re.sub(r"[/.]", "-", path)
-
-
-def _repo_scoped_project_slugs(command_label: str = "skill-invocation") -> list[str]:
-    """Exact project-dir slugs for this repo's own worktrees (main + linked).
-
-    This is the minimization control for any caller (`command_label`) that must
-    scope a transcript read to this repo: output built from it is routinely
-    quoted into public PR descriptions, and transcripts under
-    ~/.claude/projects/ span every project on the machine. Scoping the read to
-    this repository — by *identity*, via `git worktree list`, matched as exact dir
-    names — guarantees no other project's skill names can enter the output. It is
-    deliberately not a path glob: a `<slug>*`-style match scopes by where a dir
-    sits in the path string, which a foreign repo cloned under this repo's
-    worktrees/, a sibling `<repo>-fork`, or a lossy-slug collision all defeat. A
-    session started in a repo *subdirectory* is a known exception this exactness
-    does not cover: its project dir is slugged from that subdirectory path and
-    is string-unequal to every worktree-root slug, so it is silently excluded —
-    the documented prefix-glob fallback covers that case instead.
-
-    Fails closed (SystemExit) rather than returning a machine-wide scope whenever
-    the environment is not a recognizable git worktree of this repo — a silent
-    fallback to "*" would reintroduce the cross-project read this exists to
-    prevent.
-    """
-    try:
-        # timeout guards the fail-closed posture: a hung local git (stale lock,
-        # network-mounted .git) would otherwise block the whole CLI with no exit.
-        # 10s is generous for a local `worktree list` (no network/credential work)
-        # while still bounding a wedged invocation.
-        proc = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        FileNotFoundError,
-        OSError,
-    ) as exc:
-        print(
-            f"{command_label}: cannot determine repo scope (git worktree list failed: {exc}); "
-            "refusing machine-wide scope",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    prefix = "worktree "
-    worktree_paths = [
-        line[len(prefix):] for line in proc.stdout.splitlines() if line.startswith(prefix)
-    ]
-    if not worktree_paths:
-        print(
-            f"{command_label}: git listed no worktrees; refusing machine-wide scope",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    resolved_worktrees = [Path(p).resolve() for p in worktree_paths]
-
-    # Containment guard: cwd must sit at or under one of the resolved worktree
-    # roots. Path-segment based, not str.startswith — a sibling sharing a bare
-    # string prefix (<repo>-fork) must not be wrongly accepted as "within".
-    cwd = Path(os.getcwd()).resolve()
-    if not any(cwd == wt or wt in cwd.parents for wt in resolved_worktrees):
-        print(
-            f"{command_label}: working directory is not within the resolved repo worktrees; "
-            "refusing to emit a scope that may not be this repo's",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Identity guard: containment alone is not posture-neutral — it would accept
-    # a cwd whose own repo resolves elsewhere under an environment override (e.g.
-    # GIT_WORK_TREE decoupling toplevel reporting from the worktree-list
-    # enumeration) but which happens to sit under one of the paths above.
-    # Confirm cwd's own git root is genuinely one of the worktrees: containment
-    # then governs *where under the root* the caller stands, this governs
-    # *which root* was resolved.
-    try:
-        # Same local-git timeout rationale as the `worktree list` call above:
-        # no network/credential work, so 10s only bounds a wedged invocation.
-        toplevel_proc = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        FileNotFoundError,
-        OSError,
-    ) as exc:
-        print(
-            f"{command_label}: cannot determine repo identity (git rev-parse failed: {exc}); "
-            "refusing machine-wide scope",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    cwd_repo_root = Path(toplevel_proc.stdout.strip()).resolve()
-    if cwd_repo_root not in resolved_worktrees:
-        print(
-            f"{command_label}: working directory's repo root is not among the resolved worktrees; "
-            "refusing to emit a scope that may not be this repo's",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    return [_path_to_project_slug(p) for p in worktree_paths]
-
-
 def _normalize_skill_name(raw: str) -> str:
     """Strip a directory qualifier from a transcript skill name.
 
@@ -2471,299 +2067,6 @@ def _normalize_skill_name(raw: str) -> str:
     skill body is the reviewer agent's job, not the extractor's.
     """
     return raw.rsplit("/", 1)[-1]
-
-
-def _dedup_new_project_dirs(candidates: Iterable[Path], visited_dirs: set[Path]) -> Iterator[Path]:
-    """Yield each directory in `candidates` at most once, keyed on resolved
-    real path, recording it into `visited_dirs` (mutated in place) as it's
-    yielded.
-
-    Shared across every multi-root project-dir scan in this file
-    (`_iter_scoped_sessions`, `_iter_glob_scoped_sessions`,
-    `_scan_root_transcripts`) — extracted after a cumulative review found
-    three near-identical copies of this same five-line pattern. Pass one
-    `visited_dirs` set across an entire multi-root loop (not a fresh one per
-    root) so a project dir aliased, by symlink, to one already yielded from a
-    prior root is caught too — not just two roots resolving to the same
-    directory.
-    """
-    for candidate in candidates:
-        if not candidate.is_dir():
-            continue
-        resolved_dir = candidate.resolve()
-        if resolved_dir in visited_dirs:
-            continue
-        visited_dirs.add(resolved_dir)
-        yield candidate
-
-
-def _iter_scoped_sessions(
-    slugs: list[str], include_subagents: bool, roots: Sequence[Path] | None = None
-):
-    """Yield sessions from an explicit set of exact project-dir slugs.
-
-    Matching is by identity, not location: enumerate the directory names under
-    each root in `roots` (default: PROJECTS_DIR alone, so every caller other
-    than cost's --config-dir is unaffected) and keep only those whose name is
-    string-equal to one of the scoped slugs. This deliberately does NOT route
-    the slug through Path.glob — a slug containing a glob metacharacter (a
-    `*`/`?`/`[` in the machine's home or username path) would otherwise be
-    interpreted as a wildcard and could widen the match beyond this repo's own
-    worktrees. Visiting each directory at most once (by resolved real path,
-    spanning every root — covers a root nested inside another, not just two
-    identical roots) also makes double-counting impossible.
-
-    A root that raises OSError while being listed (an unreadable directory,
-    not merely a missing one — `root.is_dir()` above only requires the
-    *parent* to be searchable) is reported to stderr and skipped, not
-    propagated: this function has no `redact` parameter of its own (unlike
-    cost's per-root diagnostic), so the reported detail always omits the raw
-    path — an OSError's `strerror` (e.g. "Permission denied"), never
-    `str(exc)`, which embeds the offending path.
-    """
-    if roots is None:
-        roots = (PROJECTS_DIR,)
-    wanted = set(slugs)
-    visited_dirs: set[Path] = set()
-    multi_root = len(roots) > 1
-    # Ordinal, not scan-order index: the same physical root must read as the
-    # same account-N here as in every other multi-root diagnostic in this
-    # file (_cost_report's per-root summary, --by-project's account column).
-    ordinals = _redaction_ordinals(roots) if multi_root else {}
-    for root in roots:
-        if multi_root:
-            # No path in this line: neither function knows whether its caller
-            # is a --redact context (cost's own per-root diagnostic handles
-            # that separately) -- an unconditional raw config-dir path here
-            # would leak account/client identity a redacted run must not print.
-            print(f"scanning root {ordinals[root.resolve()]}/{len(roots)}...", file=sys.stderr)
-        if not root.is_dir():
-            continue
-        try:
-            candidates = [p for p in sorted(root.iterdir()) if p.name in wanted]
-        except OSError as exc:
-            root_label = f"account-{ordinals[root.resolve()]}" if multi_root else "the scope root"
-            print(
-                f"_iter_scoped_sessions: cannot scan {root_label}"
-                f" ({exc.strerror or 'permission denied'}) — skipping",
-                file=sys.stderr,
-            )
-            continue
-        for project_dir in _dedup_new_project_dirs(candidates, visited_dirs):
-            for jsonl in sorted(project_dir.glob("*.jsonl")):
-                records = _read_session_file(jsonl, include_subagents)
-                if records:
-                    yield jsonl, records
-
-
-def _iter_glob_scoped_sessions(
-    roots: Sequence[Path], projects_glob: str, include_subagents: bool
-) -> Iterator[tuple[Path, list[dict]]]:
-    """Chain iter_sessions' glob match across more than one root.
-
-    Only used when len(roots) > 1 (cost's --config-dir); the single-root case
-    keeps calling iter_sessions directly so its documented flat-sort-over-
-    full-paths ordering guarantee is untouched for every other caller. Dedups
-    matched project directories by resolved real path, spanning all roots —
-    covers a --config-dir root nested inside another root's tree, not just
-    two roots that resolve to the same directory (already deduped earlier at
-    the CLI boundary).
-    """
-    visited_dirs: set[Path] = set()
-    multi_root = len(roots) > 1
-    # Ordinal, not scan-order index: the same physical root must read as the
-    # same account-N here as in every other multi-root diagnostic in this
-    # file (_cost_report's per-root summary, --by-project's account column).
-    ordinals = _redaction_ordinals(roots) if multi_root else {}
-    for root in roots:
-        if multi_root:
-            # No path in this line: neither function knows whether its caller
-            # is a --redact context (cost's own per-root diagnostic handles
-            # that separately) -- an unconditional raw config-dir path here
-            # would leak account/client identity a redacted run must not print.
-            print(f"scanning root {ordinals[root.resolve()]}/{len(roots)}...", file=sys.stderr)
-        for project_dir in _dedup_new_project_dirs(sorted(root.glob(projects_glob)), visited_dirs):
-            for jsonl in sorted(project_dir.glob("*.jsonl")):
-                records = _read_session_file(jsonl, include_subagents)
-                if records:
-                    yield jsonl, records
-
-
-def _resolve_scan_roots(parsed: argparse.Namespace) -> list[Path]:
-    """Resolve one invocation's scan roots -- the single funnel every
-    _resolve_project_scope caller threads `roots` through, replacing the
-    default single-root PROJECTS_DIR scope everywhere except cost and
-    context-distribution's own --config-dir extras (_resolve_cost_roots).
-
-    An explicit top-level --config-dir overrides everything else, returning
-    that one directory's projects/ subdirectory alone. Absent that, the base
-    is PROJECTS_DIR (the module global -- still config_dir()/"projects" at
-    import, still reassignable via monkeypatch.setattr(_mod, "PROJECTS_DIR",
-    ...)) plus each of declared_transcript_roots()'s own projects/
-    subdirectory, deduped by resolved real path. PROJECTS_DIR is listed
-    first, so the active profile is always scanned first -- the "active
-    profile first" convention analyze-context.py's session lookup also
-    relies on.
-
-    config_dir is read via getattr, not attribute access, matching
-    _resolve_project_scope's own rationale below: this file's many
-    hand-built test `args` fixtures predate the top-level --config-dir flag,
-    so its absence means "not passed," not a wiring bug.
-    """
-    config_dir_arg = getattr(parsed, "config_dir", None)
-    if config_dir_arg:
-        return [Path(config_dir_arg) / "projects"]
-
-    roots = [PROJECTS_DIR]
-    seen_resolved = {PROJECTS_DIR.resolve()}
-    for declared_root in declared_transcript_roots():
-        candidate = declared_root / "projects"
-        resolved = candidate.resolve()
-        if resolved in seen_resolved:
-            continue
-        seen_resolved.add(resolved)
-        roots.append(candidate)
-    return roots
-
-
-def _resolve_project_scope(
-    args: argparse.Namespace,
-    subcommand: str,
-    include_subagents: bool = False,
-    roots: Sequence[Path] | None = None,
-) -> tuple[Iterator[tuple[Path, list[dict]]], str]:
-    """Resolve --projects/--this-repo into a fresh session iterator and a scope label.
-
-    A plain function, not a generator: a generator would defer
-    _repo_scoped_project_slugs' fail-closed sys.exit(1) to the caller's first
-    next() instead of raising at scope-resolution time, unlike every other
-    scope decision in this file. Reads args.this_repo unguarded so a subparser
-    wired without _add_project_scope_args raises AttributeError rather than
-    silently falling through to machine-wide scope. `subcommand` is the CLI
-    subcommand name (e.g. "buckets"); it labels _repo_scoped_project_slugs'
-    fail-closed messages and, uppercased, the caller's resolved-scope header.
-    The resolved slug list is cached on `args` so a caller needing two
-    independent iterators over the same scope triggers one `git worktree
-    list` call, not two — no current caller does this, but the cache is
-    correct if one starts to. This caching relies on main()'s
-    single-Namespace-per-process, single-subcommand-dispatch invariant — an
-    `args` object reused across two different subcommand invocations would
-    silently reuse the first's resolved slugs instead of re-resolving for the
-    second.
-
-    `roots` defaults to (PROJECTS_DIR,) when a caller passes none, but every
-    cmd_* entry point in this file now threads its own _resolve_scan_roots(args)
-    result through (cost, context-distribution, edit-format, subagents, and
-    subagent-mix instead thread their own _resolve_cost_roots(args) result,
-    which unions the same declared_transcript_roots() plus their own
-    repeatable --config-dir extras), so the default only ever fires for a
-    caller that predates that threading (this module's own single-root test
-    fixtures). --this-repo and multi-root are no longer mutually exclusive: a
-    populated ~/.claude/transcript-config-dirs makes --this-repo multi-root by
-    default with no --config-dir flag at all, so the this_repo branch below
-    unions across every root in `roots` via _iter_scoped_sessions' own
-    basename match.
-
-    Under an explicit top-level --config-dir (a different flag from cost's
-    and context-distribution's own --config-dir above — see main()), zero of
-    the resolved slugs matching an actual directory under ANY resolved root
-    fails closed (sys.exit(1)) instead of returning an iterator that silently
-    yields nothing — this is the original reported symptom (declaring no
-    sessions exist for a container that has them), so an empty --this-repo
-    scope here is far more likely a wrong --config-dir than a genuinely
-    session-less repo. Without --config-dir, an empty scope stays silent,
-    matching every other subcommand's long-standing behavior. config_dir is
-    read via getattr (unlike this_repo above): it's a top-level parser flag
-    rather than something _add_project_scope_args wires per subparser, and
-    this file's many hand-built test `args` fixtures predate it, so its
-    absence means "not passed" (the real default), not a wiring bug. Under
-    _resolve_scan_roots' own precedence (an explicit top-level --config-dir
-    overrides declared roots entirely), that flag makes `roots` a
-    single-element list equal to the reassigned PROJECTS_DIR, so this check
-    checking every root in `roots` rather than PROJECTS_DIR alone is a
-    robustness improvement against a future precedence change, not a fix for
-    a divergence reachable today.
-    """
-    if roots is None:
-        roots = (PROJECTS_DIR,)
-    if args.this_repo:
-        slugs = getattr(args, "_this_repo_slugs", None)
-        if slugs is None:
-            slugs = _repo_scoped_project_slugs(subcommand)
-            args._this_repo_slugs = slugs
-        config_dir_arg = getattr(args, "config_dir", None)
-        if config_dir_arg and not any((root / slug).is_dir() for root in roots for slug in slugs):
-            print(
-                f"{subcommand}: --this-repo matched zero project directories under "
-                f"--config-dir {config_dir_arg} (checked {len(slugs)} candidate worktree "
-                "slug(s)) — refusing to report an empty scope silently; confirm "
-                "--config-dir points at the account these sessions actually live in.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        return (
-            _iter_scoped_sessions(slugs, include_subagents, roots=roots),
-            f"this repo ({len(slugs)} project dirs)",
-        )
-    glob = _projects_glob(args)
-    if len(roots) == 1:
-        return iter_sessions(roots[0], glob, include_subagents=include_subagents), glob
-    return _iter_glob_scoped_sessions(roots, glob, include_subagents), glob
-
-
-def _root_count_desc(roots: Sequence[Path]) -> str:
-    """Render the root-count clause of the resolved-scope header (e.g. "1 root
-    (no ~/.claude/transcript-config-dirs declared)" or "3 roots").
-
-    At one root, the wording branches on declared_roots_file_state(): "absent"
-    is the only state where "no ... declared" is accurate. "unreadable" (a
-    permissions problem, not a missing file) gets its own wording rather than
-    folding into "present" -- collapsing the two would claim a failed read
-    "declared" a root, masking exactly the problem the tri-state exists to
-    surface. "present" (the file contributed a root, or contributed nothing
-    because every entry failed validation) says "declared but contributed no
-    additional root" -- claiming "no ... declared" about a file that exists
-    would misrepresent it. The >1-root branch never names the file: extra
-    roots may come from --config-dir, not only a declared-roots file.
-    """
-    if len(roots) != 1:
-        return f"{len(roots)} roots"
-    state = declared_roots_file_state()
-    if state == "absent":
-        return f"1 root (no {TRANSCRIPT_CONFIG_DIRS_LABEL} declared)"
-    if state == "unreadable":
-        return f"1 root ({TRANSCRIPT_CONFIG_DIRS_LABEL} present but unreadable)"
-    return f"1 root ({TRANSCRIPT_CONFIG_DIRS_LABEL} declared but contributed no additional root)"
-
-
-def _resolved_scope_header(subcommand: str, scope_label: str, roots: Sequence[Path]) -> str:
-    """Build the one-line resolved-scope header text, shared by _print_resolved_scope
-    and any caller (e.g. judgment-pair's --out file) that needs the header written
-    somewhere other than a live print call.
-
-    `roots` is required, not defaulted: a call site that forgets to pass it is a
-    TypeError at implementation and test time, not a silently-wrong "1 root" line
-    printed while the subcommand actually scanned N. The root count is stated
-    unconditionally -- even at one root -- so the header discloses scope in the
-    exact zero-declared-roots state that produced the corpus-undercount this
-    exists to prevent, not only once an operator has already declared a second
-    account. A root skipped by index (a stale declared-roots line) is not named
-    here; that detail is a separate stderr warning from declared_transcript_roots()
-    itself, keeping this return value the single line judgment-pair's --out file
-    contract requires.
-    """
-    return f"{subcommand.upper().replace('-', ' ')} SOURCES ({scope_label}; {_root_count_desc(roots)})"
-
-
-def _print_resolved_scope(subcommand: str, scope_label: str, roots: Sequence[Path], *, file=None) -> None:
-    """Print the one-line resolved-scope header cmd_skill_invocation already uses,
-    so machine-wide vs. --this-repo output is never scope-ambiguous. `file` defaults
-    to stdout (resolved at call time, not import time — a `sys.stdout` default
-    value would bind the stream object process startup captured, bypassing test
-    capture and any later reassignment); audit-routing-samples routes it to stderr
-    instead, since its stdout is a JSON (or curation-markdown) data stream a header
-    line would corrupt."""
-    print(_resolved_scope_header(subcommand, scope_label, roots), file=file or sys.stdout)
 
 
 def cmd_skill_invocation(args: argparse.Namespace) -> None:
@@ -4402,229 +3705,6 @@ def _classify_opus_turn(
     return "other"
 
 
-def _derive_proj_label(jsonl: Path) -> str:
-    """Derive a short project label from a jsonl path, matching token-analyzer.py's convention."""
-    return jsonl.parent.name.lstrip("-").replace("-", "/", 2).split("/", 2)[-1]
-
-
-# iter_sessions documents this repo's own worktree naming: a linked worktree's
-# project-dir slug is the main dir's slug with --claude-worktrees-<branch>
-# appended, which _derive_proj_label carries through unchanged onto its output.
-_WORKTREE_SUFFIX_RE = re.compile(r"--claude-worktrees-.+$")
-
-
-def _project_family(raw_proj_label: str) -> str:
-    """Collapse a _derive_proj_label output to its base-repo "family" key.
-
-    One repo's main checkout and every linked worktree derive to distinct
-    labels (repo, repo--claude-worktrees-branch-a, ...) that would otherwise
-    fragment --by-project's per-project rows across branches of the same repo.
-
-    Matches on the literal substring alone — a project whose own name happens
-    to contain "--claude-worktrees-" would have that trailing portion
-    stripped and merged into a false family. Below current scale to guard
-    against; re-evaluate if --by-project output ever shows an unexpected
-    merge.
-    """
-    return _WORKTREE_SUFFIX_RE.sub("", raw_proj_label)
-
-
-_REDACT_MAP_MISS_TOKEN = "private-project-unmapped"
-
-# A cost redact-map key is either a plain raw label (single-root reports,
-# audit-routing) or a (root_index, raw_label) pair (cost's multi-root
-# --config-dir reports) — see _build_redact_map.
-_RedactMapKey = str | tuple[int, str]
-
-
-def _redact_proj_label(proj_label: _RedactMapKey, redact_map: dict[_RedactMapKey, str]) -> str:
-    """Apply the redact map to a project label, preserving 'claude-config' as-is.
-
-    proj_label may be a (root_index, raw_label) pair for a multi-root cost
-    report (see _build_redact_map); claude-config still passes through
-    unredacted regardless of which root it was found under.
-
-    A map miss returns a fixed opaque token rather than the raw label — the
-    map is only ever built from a full-corpus scan (_build_redact_map), so a
-    miss means the caller passed an incomplete map, and falling back to the
-    raw name would silently defeat --redact.
-    """
-    raw_label = proj_label[1] if isinstance(proj_label, tuple) else proj_label
-    if raw_label == "claude-config":
-        return raw_label
-    return redact_map.get(proj_label, _REDACT_MAP_MISS_TOKEN)
-
-
-def _sorted_distinct_proj_labels(root: Path) -> list[str]:
-    """Distinct project labels found under one root, sorted for deterministic
-    ordinal assignment — the per-root scan _build_redact_map shares across its
-    single- and multi-root branches.
-
-    Scans via iter_sessions(root, "*"), ignoring any caller's own --projects
-    filter, so a project always binds to the same placeholder whether it was
-    found by a narrowed cost run or a full audit-routing run — a narrower scan
-    would let the same label mean two different projects across two published
-    outputs. iter_sessions (not a raw glob) is used because it already
-    excludes zero-record transcripts; a raw glob would not, and that
-    difference would shift every subsequent private-project-N index.
-    """
-    labels: list[str] = []
-    for jsonl, _records in iter_sessions(root, "*"):
-        label = _derive_proj_label(jsonl)
-        if label not in labels:
-            labels.append(label)
-    labels.sort()
-    return labels
-
-
-def _redaction_ordinals(roots: Sequence[Path]) -> dict[Path, int]:
-    """Assign each root a stable 1-based ordinal ("account-N"), sorted by
-    resolved path once here rather than by each caller's own list order.
-
-    _resolve_scan_roots' scan order puts the active profile first, so a
-    position-based ordinal (each caller enumerating `roots` itself) would
-    renumber every other declared root depending on which profile produced
-    the report. Sorting once, here, and having every ordinal-assigning site
-    -- _build_redact_map, cost's per-row redact key, and its --by-project
-    account column -- look up the same dict keeps the same physical root at
-    the same account-N regardless of scan order, and keeps all three sites
-    from independently deriving (and risking desyncing) the same number.
-    """
-    resolved = sorted({root.resolve() for root in roots})
-    return {resolved_root: ordinal for ordinal, resolved_root in enumerate(resolved, start=1)}
-
-
-def _build_redact_map(roots: Sequence[Path] | None = None) -> dict[_RedactMapKey, str]:
-    """Build the project-label -> opaque-token map shared by every --redact caller.
-
-    --since never reaches this map and must not: it would change which
-    sessions are found on a per-run basis, shifting every subsequent
-    private-project-N index between two runs of the same corpus.
-
-    This means --redact reads every project's transcript bytes off disk even
-    under --this-repo, a considered tradeoff in tension with that flag's
-    minimization intent elsewhere in this file, not an oversight.
-
-    Ordinals are assigned sequentially over the sorted full-corpus label list,
-    not the caller's --this-repo-scoped subset, so a printed private-project-N
-    number is shaped by every other private project directory that exists
-    locally and sorts before the in-scope one — a structural fingerprint of
-    the operator's other projects that a --this-repo-scoped report does not
-    otherwise disclose. Narrowing the scan to the caller's own scope would
-    close this but breaks the cross-run label-stability guarantee above, so
-    this function does not attempt it.
-
-    roots defaults to (PROJECTS_DIR,) — a single root (the default, or any
-    caller passing exactly one, e.g. cmd_audit_routing) gets the original flat
-    private-project-N map, unnamespaced by account. More than one root
-    namespaces every label account-<K>/private-project-N, where <K> is the
-    root's ordinal from _redaction_ordinals (resolved-path-sorted, stable
-    across which profile is active) — never the config-dir path or its
-    basename, which would leak the account/client identifier the directory
-    name encodes. <N> restarts at 1 within each account's own scan. Labels
-    (and the corpus fingerprint derived from this map) are not comparable
-    across two report runs built from different declared-roots files: a
-    changed root set can renumber every ordinal. Two runs from the *same*
-    declared-roots file, differing only in which profile was active, assign
-    the same ordinal to the same physical root and so remain comparable.
-    """
-    if roots is None:
-        roots = (PROJECTS_DIR,)
-
-    redact_map: dict[_RedactMapKey, str] = {}
-
-    if len(roots) <= 1:
-        root = roots[0] if roots else PROJECTS_DIR
-        num_index = 1
-        for label in _sorted_distinct_proj_labels(root):
-            if label == "claude-config":
-                redact_map[label] = label
-            else:
-                redact_map[label] = f"private-project-{num_index}"
-                num_index += 1
-        return redact_map
-
-    ordinals = _redaction_ordinals(roots)
-    for root in roots:
-        ordinal = ordinals[root.resolve()]
-        account_label = f"account-{ordinal}"
-        num_index = 1
-        for label in _sorted_distinct_proj_labels(root):
-            key = (ordinal, label)
-            if label == "claude-config":
-                redact_map[key] = label
-            else:
-                redact_map[key] = f"{account_label}/private-project-{num_index}"
-                num_index += 1
-    return redact_map
-
-
-def _corpus_fingerprint(redact_map: dict[_RedactMapKey, str]) -> str:
-    """Short sha256 prefix of the sorted raw project-label set a redact map was
-    built from — a same-corpus indicator only, not a security boundary (see
-    _build_redact_map). Two report runs share a fingerprint only when their
-    underlying project-label sets are identical; a differing fingerprint means
-    ordinals are not comparable between them.
-    """
-    raw_labels = {key[1] if isinstance(key, tuple) else key for key in redact_map}
-    return hashlib.sha256("\n".join(sorted(raw_labels)).encode()).hexdigest()[:12]
-
-
-_REDACT_SESSION_MISS_TOKEN = "session-unmapped"
-
-
-def _assign_session_redact_label(session_id: str, session_redact_map: dict[str, str]) -> None:
-    """Assign session_id a stable opaque label the first time it's seen this run.
-
-    Unlike project labels, session-id placeholders need no cross-run or
-    cross-command stability — each command's own single pass over its corpus
-    is the map's only writer, so assignment happens inline as sessions are
-    discovered rather than needing a separate first pass.
-    """
-    if session_id not in session_redact_map:
-        session_redact_map[session_id] = f"session-{len(session_redact_map) + 1}"
-
-
-def _redact_session_id(session_id: str, session_redact_map: dict[str, str]) -> str:
-    """Apply a run-scoped session-id redact map; fails closed to a fixed token on a miss."""
-    return session_redact_map.get(session_id, _REDACT_SESSION_MISS_TOKEN)
-
-
-def _assign_root_scoped_redact_label(
-    kind: str, ordinal: int, value: str, redact_map: dict[tuple[int, str], str]
-) -> str:
-    """Assign one (root, value) pair a stable, account-namespaced opaque
-    label the first time it's seen this run, and return it.
-
-    `ordinal` must be looked up from _redaction_ordinals(roots), not a raw
-    scan-order position (_root_index_for_path) — scan order puts the active
-    profile first, so a position-based number would renumber the same
-    physical account depending on which profile produced the report, the
-    exact desync class _redaction_ordinals exists to prevent everywhere else
-    in this file (_build_redact_map, cost's per-row key, its --by-project
-    column). Generic across every value kind that needs this exact shape of
-    redaction: neither _redact_proj_label nor _assign_session_redact_label
-    covers gitBranch or subagent_type, and subagents'/subagent-mix's
-    --config-dir multi-root reports need their own primitive so two
-    accounts' identically-named value (e.g. both branch "main", or both
-    subagent_type "staff-sdet") never collapse into one label or leak a raw
-    value. Namespaced by account (account-<K>/<kind>-<N>, N restarting at 1
-    per account, tracked in `redact_map` which is scoped to one `kind` per
-    caller so branch and subagent_type numbering never share a counter)
-    rather than a single flat counter, mirroring _build_redact_map's
-    account-<K>/private-project-N convention. Like _assign_session_redact_label,
-    this label is stable only within one run, not across runs. subagent-mix's
-    exact-cent Actual $/Counterfactual $ columns are a stronger cross-run
-    correlation key against this label than the integer spawn counts already
-    printed alongside it, though only within an already-DO_NOT_PUBLISH report.
-    """
-    key = (ordinal, value)
-    if key not in redact_map:
-        n = sum(1 for k in redact_map if k[0] == ordinal) + 1
-        redact_map[key] = f"account-{ordinal}/{kind}-{n}"
-    return redact_map[key]
-
-
 def cmd_audit_routing(args: argparse.Namespace) -> None:
     """Per-turn Opus token breakdown by routing class across all sessions.
 
@@ -4843,620 +3923,6 @@ def cmd_audit_routing(args: argparse.Namespace) -> None:
     print(f"  = {sonnet_pct} of Opus output in this window")
 
 
-_TOKEN_CLASSES: tuple[str, ...] = ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input")
-
-_PRICING_SOURCE_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
-_PRICING_FETCH_DATE = date(2026, 8, 2)
-
-# Multipliers vs. a model's base input rate, per the pricing page's stated ratios.
-_OUTPUT_RATE_MULTIPLIER = 5
-_CACHE_WRITE_5M_MULTIPLIER = 1.25
-_CACHE_WRITE_1H_MULTIPLIER = 2
-_CACHE_READ_MULTIPLIER = 0.1
-
-# Multipliers applied to every dollar class when usage.speed/usage.inference_geo
-# report that outcome, per platform.claude.com/docs/en/build-with-claude/fast-mode
-# and .../about-claude/pricing's data-residency section.
-_FAST_MODE_RATE_MULTIPLIER = 2
-_INFERENCE_GEO_US_RATE_MULTIPLIER = 1.1
-
-_DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
-
-# Base input $/MTok per model ID, keyed on the exact string Claude Code writes
-# to message.model. Source: _PRICING_SOURCE_URL, fetched _PRICING_FETCH_DATE.
-# Output/cache-write/cache-read rates are derived from this one base rate per
-# model by _model_rates, so each model needs only its base rate kept current.
-_MODEL_BASE_INPUT_RATES: dict[str, float] = {
-    "claude-opus-5": 5.00,
-    "claude-opus-4-8": 5.00,
-    "claude-sonnet-5": 2.00,
-    "claude-sonnet-4-6": 3.00,
-    "claude-haiku-4-5-20251001": 1.00,
-    # Exact-match only, unlike _context_window_for_model's prefix match on
-    # this same string -- a dated-snapshot variant like
-    # "claude-sonnet-4-5-20260115" still 200k-buckets correctly but prices as
-    # unpriced here.
-    "claude-sonnet-4-5": 3.00,
-}
-
-# Re-verify-by date per model ID: fetch-date+90d for every model, since none
-# has a vendor-stated rate-change date today.
-_MODEL_RATE_EXPIRES: dict[str, date] = dict.fromkeys(_MODEL_BASE_INPUT_RATES, _DEFAULT_REVERIFY_BY)
-
-_CONTEXT_BUCKET_THRESHOLD = 200_000  # inclusive edge of the "≥200k" finding
-_CONTEXT_BUCKET_UNDER = "<200k"
-_CONTEXT_BUCKET_OVER = ">=200k"
-
-# Context window in tokens per model ID, mirroring
-# nudge-handoff-near-context-cap.sh's own CONTEXT_WINDOW case statement
-# exactly (same prefix list, same trailing-dash dated-snapshot match), so
-# _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS resolves to the window the hook
-# multiplies by for the same model ID. A fixed percentage of that window
-# still resolves to a different absolute token count on a 200k model than
-# on a 1M one — see _CONTEXT_DISTRIBUTION_THRESHOLD_ABS for the sibling
-# table expressed directly in absolute tokens instead. Source:
-# https://platform.claude.com/docs/en/about-claude/models/overview, fetched
-# 2026-08-03; re-verify by 2026-11-03. Verified 200k: Haiku 4.5, Sonnet 4.5,
-# Opus 4.5, Opus 4.1. Verified 1M: Fable 5, Mythos 5, Opus 5, Opus
-# 4.8/4.7/4.6, Sonnet 5, Sonnet 4.6. An unlisted ID takes the 1M default.
-_200K_CONTEXT_MODEL_PREFIXES: tuple[str, ...] = (
-    "claude-haiku-4-5",
-    "claude-sonnet-4-5",
-    "claude-opus-4-5",
-    "claude-opus-4-1",
-)
-_200K_CONTEXT_WINDOW = 200_000
-_DEFAULT_CONTEXT_WINDOW = 1_000_000
-
-# Candidate threshold percentages of a model's context window, for
-# context-distribution's crossing-count/session-share/dollar-share table.
-_CONTEXT_DISTRIBUTION_THRESHOLD_PCTS: tuple[int, ...] = (30, 40, 50, 60)
-
-# Candidate absolute-token thresholds, in the hook's own ESTIMATE unit (input
-# + cache_read + cache_creation + output — see _session_peak_context), for
-# context-distribution's own crossing-count/session-share/dollar-share table.
-# A candidate-threshold sweep like _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS, but
-# fixed rather than scaled per model's window. Not the same thing as
-# _CONTEXT_BUCKET_THRESHOLD above, which is a fixed *reporting* bucket edge
-# consumed by cost/cost-trend, not a candidate-threshold sweep. Spans the
-# 200k-model effective floor (80_000, 40% of 200k) through the 1M-model's
-# uncapped 40%-of-window value (400_000) and beyond, into the range where
-# 1M-model sessions have actually been observed firing. 360_000 is included
-# because it is the live 1M-model effective threshold today
-# (nudge-handoff-near-context-cap.sh's HANDOFF_NUDGE_ABS_CAP default) — a
-# re-run of this report must be able to show the value the hook is actually
-# configured to fire at, not just candidates for a future change.
-_CONTEXT_DISTRIBUTION_THRESHOLD_ABS: tuple[int, ...] = (
-    80_000, 135_000, 180_000, 250_000, 360_000, 400_000, 600_000, 800_000,
-)
-
-
-def _context_window_for_model(model: str) -> int:
-    """Context window in tokens for one model ID.
-
-    A prefix requires an exact match or a trailing "-" (dated-snapshot
-    suffix), not a bare trailing wildcard, so a longer numeral
-    (claude-opus-4-10) can't collide with a shorter one (claude-opus-4-1) by
-    string prefix alone — the same collision guard as the bash hook this
-    mirrors.
-    """
-    for prefix in _200K_CONTEXT_MODEL_PREFIXES:
-        if model == prefix or model.startswith(prefix + "-"):
-            return _200K_CONTEXT_WINDOW
-    return _DEFAULT_CONTEXT_WINDOW
-
-
-def _model_rates(model: str) -> dict[str, float] | None:
-    """Return per-MTok dollar rates for one model ID, or None if unpriced."""
-    base = _MODEL_BASE_INPUT_RATES.get(model)
-    if base is None:
-        return None
-    return {
-        "input": base,
-        "output": base * _OUTPUT_RATE_MULTIPLIER,
-        "cache_write_5m": base * _CACHE_WRITE_5M_MULTIPLIER,
-        "cache_write_1h": base * _CACHE_WRITE_1H_MULTIPLIER,
-        "cache_read": base * _CACHE_READ_MULTIPLIER,
-    }
-
-
-def _cache_write_split(usage: dict) -> tuple[int, int]:
-    """Return (ephemeral_1h_tokens, ephemeral_5m_tokens) for one usage record.
-
-    Prices the nested cache_creation.{ephemeral_1h,ephemeral_5m}_input_tokens
-    block when present. Falls back to the flat cache_creation_input_tokens
-    field as 5m-only when the nested block is absent — never counts both,
-    since the nested block's own two fields sum exactly to the flat field on
-    every real record that carries one.
-    """
-    nested = usage.get("cache_creation")
-    if nested is not None:
-        return int(nested.get("ephemeral_1h_input_tokens", 0)), int(nested.get("ephemeral_5m_input_tokens", 0))
-    return 0, int(usage.get("cache_creation_input_tokens", 0))
-
-
-def _context_at_turn(usage: dict) -> int:
-    """Total input-side tokens resident in the context at one assistant turn.
-
-    input_tokens + cache_read_input_tokens + ephemeral_1h + ephemeral_5m. This is
-    an absolute per-turn snapshot, not a turn-to-turn delta -- read-scope
-    differences consecutive snapshots within one context sequence to derive
-    prompt-token growth, which is why the sum lives here rather than inline in
-    _price_turn's pricing path.
-    """
-    eph_1h, eph_5m = _cache_write_split(usage)
-    return int(usage.get("input_tokens", 0)) + int(usage.get("cache_read_input_tokens", 0)) + eph_1h + eph_5m
-
-
-def _context_bucket(context_at_turn: int) -> str:
-    return _CONTEXT_BUCKET_OVER if context_at_turn >= _CONTEXT_BUCKET_THRESHOLD else _CONTEXT_BUCKET_UNDER
-
-
-def _dedup_turns_by_request_id(records: Sequence[dict]) -> list[dict]:
-    """Collapse consecutive same-requestId assistant records into one turn each.
-
-    Claude Code writes one JSONL record per assistant content block (thinking /
-    text / tool_use); every record from one API call shares one requestId.
-    Measured across 150 transcripts / 15,653 multi-record runs: input_tokens,
-    cache_creation_input_tokens, and cache_read_input_tokens are identical
-    across every record in a run, but output_tokens ascends within the run
-    and completes only on the run's last record (see _warn_if_run_usage_drift
-    for the runtime check on the input/cache invariant), so pricing or
-    counting per raw record inflates dollars and turn counts by however many
-    blocks the response split into, and taking usage from the run's first
-    record undercounts output tokens. This merges each run of consecutive
-    assistant records sharing one non-empty requestId into a single record:
-    message.content becomes the concatenation of the run's own content blocks
-    in original order (so a caller that classifies on content sees every
-    block, not just one); every other field is taken from the run's first
-    record except message.usage, which is taken from the run's last record.
-    A missing/null/empty requestId never merges with another missing one:
-    each such record stays its own one-record turn, since real transcripts
-    carry requestId-less records (synthetic all-zero-usage API-error
-    records) that must not
-    collapse into each other. Non-assistant records pass through unchanged
-    and end any run in progress. Callers must never concatenate records from
-    different sessions before calling this: requestId is unique per API call
-    and a run's own records are always contiguous, so concatenating one
-    session's main transcript with its own subagent transcripts is safe, but
-    mixing in another session's records is not. A run continues on
-    requestId equality alone (not also isSidechain/type), relying on
-    requestId uniqueness. Merging shifts --since semantics: a merged turn's
-    timestamp is its first block's, so "since" now means the turn started
-    after the cutoff, not that some block of it landed after the cutoff.
-    """
-    turns: list[dict] = []
-    run: list[dict] = []
-    run_key: str | None = None
-
-    for rec in records:
-        is_assistant = rec.get("type") == "assistant"
-        request_id = rec.get("requestId") if is_assistant else None
-        continues_run = is_assistant and request_id and request_id == run_key
-
-        if not continues_run and run:
-            turns.append(run[0] if len(run) == 1 else _merge_assistant_run(run))
-            run = []
-
-        if is_assistant:
-            run.append(rec)
-            run_key = request_id
-        else:
-            turns.append(rec)
-            run_key = None
-
-    if run:
-        turns.append(run[0] if len(run) == 1 else _merge_assistant_run(run))
-
-    return turns
-
-
-def _merge_assistant_run(run: list[dict]) -> dict:
-    """Merge one requestId run of assistant records into a single synthetic record.
-
-    message.content is the concatenation of every record's own content blocks,
-    in original order. Every other field (uuid, parentUuid, timestamp) is
-    taken from the run's first record -- the documented --since semantics
-    depend on the first block's timestamp. message.usage is taken from the
-    run's LAST record instead: input_tokens and the cache_* classes are
-    identical across a run, but output_tokens ascends within the run and
-    only reaches its billed value on the last record (measured across 150
-    transcripts / 15,653 multi-record runs -- see _warn_if_run_usage_drift).
-    """
-    _warn_if_run_usage_drift(run)
-    merged = dict(run[0])
-    merged_message = dict(merged.get("message") or {})
-    merged_content: list = []
-    for rec in run:
-        merged_content.extend((rec.get("message") or {}).get("content") or [])
-    merged_message["content"] = merged_content
-    merged_message["usage"] = (run[-1].get("message") or {}).get("usage")
-    merged["message"] = merged_message
-    return merged
-
-
-def _cache_miss_reason(message: dict) -> str | None:
-    """message.diagnostics.cache_miss_reason.type for one assistant turn's own
-    (possibly merged) record, or None when absent/malformed.
-
-    _merge_assistant_run takes every non-content, non-usage field from a
-    requestId run's first record unchanged, so a merged turn's "diagnostics"
-    already reflects the run's own opening call with no extra collapsing
-    logic needed here. cache_miss_reason is always a dict shaped
-    {"type": <str>, "cache_missed_input_tokens": <int>} across a 3,926-record
-    survey of real transcripts, with "cache_missed_input_tokens" absent only
-    for reason types "previous_message_not_found" and "unavailable" -- no
-    bare-string form was observed, so this does not fall back to one. Returns
-    None when "diagnostics" is missing or not a dict, or "cache_miss_reason"
-    is missing or not a dict, or its "type" is missing or not a string.
-    """
-    diagnostics = message.get("diagnostics")
-    if not isinstance(diagnostics, dict):
-        return None
-    reason = diagnostics.get("cache_miss_reason")
-    if not isinstance(reason, dict):
-        return None
-    reason_type = reason.get("type")
-    return reason_type if isinstance(reason_type, str) else None
-
-
-# Names the usage keys _warn_if_run_usage_drift treats as required-invariant
-# across a requestId run: measured identical in 15,653/15,653 multi-record
-# runs (see _dedup_turns_by_request_id's docstring). output_tokens is
-# deliberately excluded -- it ascends within a run by design, completing on
-# the last record, so divergence there is the documented norm, not drift.
-# cache_creation's nested ephemeral_1h/5m_input_tokens need no separate entry:
-# both measured invariant across the same 15,653 runs, and every run's first
-# and last record alike carried a cache_creation block.
-_USAGE_DRIFT_INVARIANT_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-
-# Rate-limits _warn_if_run_usage_drift to one line per process, mirroring
-# _warn_if_subagent_format_drift's pattern -- a whole-corpus scan should
-# surface one signal that the format changed, not one per occurrence.
-_usage_drift_warned = False
-
-
-def _warn_if_run_usage_drift(run: list[dict]) -> None:
-    """Emit one stderr warning per process when a requestId run's records
-    disagree on an input/cache usage class that's measured invariant across
-    a run (see _USAGE_DRIFT_INVARIANT_KEYS).
-
-    _merge_assistant_run relies on these classes being identical across every
-    record of one API call to price a merged turn correctly regardless of
-    which record's value it reads; this is the runtime canary for that
-    assumption. A warning rather than a raise, so one malformed session
-    doesn't abort a whole-corpus scan.
-    """
-    global _usage_drift_warned
-    if _usage_drift_warned:
-        return
-    first_usage = (run[0].get("message") or {}).get("usage") or {}
-    for rec in run[1:]:
-        rec_usage = (rec.get("message") or {}).get("usage") or {}
-        if any(rec_usage.get(key) != first_usage.get(key) for key in _USAGE_DRIFT_INVARIANT_KEYS):
-            print(
-                f"WARNING: requestId {run[0].get('requestId')!r} has non-identical "
-                "input/cache usage across its own records — _merge_assistant_run's "
-                "invariant-usage assumption may no longer hold (further occurrences "
-                "this run of the CLI are suppressed). The Claude Code transcript "
-                "format may have changed.",
-                file=sys.stderr,
-            )
-            _usage_drift_warned = True
-            return
-
-
-def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, int]:
-    """Price one assistant turn's usage against _MODEL_BASE_INPUT_RATES.
-
-    Returns (dollars_by_class, context_at_turn, unpriced_tokens):
-    - dollars_by_class holds one raw (unrounded) dollar amount per
-      _TOKEN_CLASSES entry when the model has a price-table entry, else
-      None — callers must check for None rather than treating a zero total
-      as "priced at $0".
-    - context_at_turn is input_tokens + cache_read_input_tokens + ephemeral_1h
-      + ephemeral_5m tokens for this turn, computed regardless of pricing.
-    - unpriced_tokens is the turn's total token count (input + output +
-      cache_read + ephemeral_1h + ephemeral_5m) when the model is unpriced,
-      else 0.
-    """
-    input_t = int(usage.get("input_tokens", 0))
-    output_t = int(usage.get("output_tokens", 0))
-    cache_read_t = int(usage.get("cache_read_input_tokens", 0))
-    eph_1h, eph_5m = _cache_write_split(usage)
-    # _cache_write_split runs twice for this turn (here and inside
-    # _context_at_turn). It is pure, and the per-class splits below need the two
-    # halves separately, so sharing the sum is the only deduplication available.
-    context_at_turn = _context_at_turn(usage)
-
-    rates = _model_rates(model)
-    if rates is None:
-        return None, context_at_turn, input_t + output_t + cache_read_t + eph_1h + eph_5m
-
-    dollars = {
-        "input": input_t / 1_000_000 * rates["input"],
-        "output": output_t / 1_000_000 * rates["output"],
-        "cache_read": cache_read_t / 1_000_000 * rates["cache_read"],
-        "cache_write_1h": eph_1h / 1_000_000 * rates["cache_write_1h"],
-        "cache_write_5m": eph_5m / 1_000_000 * rates["cache_write_5m"],
-    }
-    # usage.speed/usage.inference_geo report the API's settled outcome, not an
-    # echo of the request, so no per-model eligibility list is needed here.
-    # Neither field is in _USAGE_DRIFT_INVARIANT_KEYS, so a non-run-invariant
-    # value on either gets no runtime drift canary today -- a known, accepted gap.
-    if usage.get("speed") == "fast":
-        dollars = {cls: val * _FAST_MODE_RATE_MULTIPLIER for cls, val in dollars.items()}
-    if usage.get("inference_geo") == "us":
-        dollars = {cls: val * _INFERENCE_GEO_US_RATE_MULTIPLIER for cls, val in dollars.items()}
-    return dollars, context_at_turn, 0
-
-
-def _token_counts(usage: dict) -> dict[str, int]:
-    """Per-class raw token counts for one turn's usage, keyed like _TOKEN_CLASSES.
-
-    Mirrors _price_turn's own class breakdown (same fields, same
-    _cache_write_split reuse) so cost's Tokens column sums the same fields
-    its $ column already prices — callers apply it at the same point
-    _price_turn's dollar accumulation does, after a turn is confirmed priced,
-    so an unpriced model's tokens are excluded here too.
-    """
-    eph_1h, eph_5m = _cache_write_split(usage)
-    return {
-        "input": int(usage.get("input_tokens", 0)),
-        "output": int(usage.get("output_tokens", 0)),
-        "cache_read": int(usage.get("cache_read_input_tokens", 0)),
-        "cache_write_1h": eph_1h,
-        "cache_write_5m": eph_5m,
-    }
-
-
-def _session_peak_context(main_thread_turns: Sequence[tuple[int, int, int]]) -> tuple[float, int]:
-    """Track a session's peak context two ways over the same main-thread turns.
-
-    Each element of main_thread_turns is one turn's
-    (context_at_turn, output_tokens, context_window) — context_at_turn from
-    _price_turn (input + cache_read + ephemeral_1h + ephemeral_5m).
-
-    Returns (peak_pct, peak_abs_tokens):
-    - peak_pct is the session's maximum context_at_turn / context_window.
-    - peak_abs_tokens is the session's maximum context_at_turn + output_tokens
-      — the hook's own four-field ESTIMATE unit.
-
-    The two are tracked as independent per-turn maxima, never one derived
-    from the other (peak_abs_tokens != peak_pct * window): on a session that
-    mixes a 200k-window turn with a 1M-window turn, the turn with the
-    highest percentage of its own window is not necessarily the turn with
-    the highest absolute token count.
-    """
-    peak_pct = 0.0
-    peak_abs_tokens = 0
-    for context_at_turn, output_tokens, context_window in main_thread_turns:
-        pct = context_at_turn / context_window
-        if pct > peak_pct:
-            peak_pct = pct
-        abs_tokens = context_at_turn + output_tokens
-        if abs_tokens > peak_abs_tokens:
-            peak_abs_tokens = abs_tokens
-    return peak_pct, peak_abs_tokens
-
-
-def _pct_of(value: float, total: float) -> str:
-    """value/total as a percentage string; 0.0% (not an undefined dash) when total is zero."""
-    return f"{100 * value / total:.1f}%" if total else "0.0%"
-
-
-def _pct_value(value: float, total: float) -> float:
-    """value/total as a percentage float, matching _pct_of's 0.0-when-zero
-    convention -- for a caller (cost-ledger) that stores the number rather
-    than printing it."""
-    return 100 * value / total if total else 0.0
-
-
-def _context_distribution_rows(
-    thresholds: Sequence[float], peaks: Sequence[float], dollars: Sequence[float]
-) -> list[dict[str, object]]:
-    """For each threshold, in peaks' own unit, return a row of crossing-count,
-    session-share, crossed-dollars, and dollar-share — the arithmetic shared
-    by context-distribution's percentage table and its absolute-token table.
-
-    peaks and dollars are parallel per-session sequences (peaks[i] and
-    dollars[i] describe the same session). A session crosses a threshold
-    when peaks[i] >= threshold, matching the hook's own >=-shaped trigger
-    condition.
-    """
-    total_sessions = len(peaks)
-    total_dollars = sum(dollars)
-    rows: list[dict[str, object]] = []
-    for threshold in thresholds:
-        crossed_count = sum(1 for p in peaks if p >= threshold)
-        crossed_dollars = sum(d for p, d in zip(peaks, dollars, strict=True) if p >= threshold)
-        rows.append({
-            "sessions": crossed_count,
-            "session_share": _pct_of(crossed_count, total_sessions),
-            "dollars": crossed_dollars,
-            "dollar_share": _pct_of(crossed_dollars, total_dollars),
-        })
-    return rows
-
-
-_DO_NOT_PUBLISH_BANNER = (
-    "DO NOT PUBLISH — this output contains real project names and session IDs."
-)
-
-# Subcommands that resolve their own multi-root scan via their own
-# subcommand-level --config-dir (_resolve_cost_roots) instead of the
-# top-level --config-dir main() reassigns PROJECTS_DIR from — main() refuses
-# the top-level flag outright for each of these, so the two same-named flags
-# can never validate against two different accounts.
-_SUBCOMMANDS_WITH_OWN_CONFIG_DIR = (
-    "cost", "context-distribution", "context-composition", "edit-format", "read-scope",
-    "subagents", "subagent-mix", "cost-trend", "cache-rebuild", "plan-boundary",
-)
-
-
-def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> list[Path]:
-    """Assemble a subcommand's scan roots from the default config dir, every
-    declared_transcript_roots() entry, and any --config-dir extras, in that
-    order, deduped by resolved path.
-
-    Mirrors post-crash-sessions.py:1067-1111's --config-dir contract: exit 2
-    on a --config-dir extra that is not a directory or lacks a projects/
-    subdirectory. A declared_transcript_roots() entry never exits 2 on the
-    same defect -- that function already validated and skipped it (see its
-    own docstring) rather than exiting, since a stale roots-file line must not
-    break every invocation the way a bad command-line flag should.
-    --this-repo unions across every resolved root here, including
-    --config-dir extras: _iter_scoped_sessions matches by basename, and
-    _path_to_project_slug derives slugs from `git worktree list` alone, so
-    one checkout's slugs are root-independent. --no-redact on more than one
-    root would put one client's real project names into a report meant for
-    another — refused here, exit 2, rather than silently scoping to the
-    wrong thing. Returns each root's projects/ subdirectory, ready for
-    _resolve_project_scope's roots parameter.
-
-    `subcommand` labels the printed refusal messages (default "cost", cost's
-    own long-standing call sites and tests); context-distribution passes its
-    own name so a refusal is attributed to the subcommand the caller actually
-    invoked, not always "cost".
-
-    When `subcommand == "cost"` and args.summary is set, this returns
-    [config_dir() / "projects"] alone, skipping the declared-roots union
-    entirely -- --summary is a single-account, aggregate-only mode, and
-    unioning declared_transcript_roots() here would publish another
-    account's spend inside a PR authored under this one. Gated on
-    `subcommand` too, not just the flag: this function is shared by every
-    entry in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR, and only cost's argparser
-    defines --summary today, so a bare summary check would silently narrow
-    a future subcommand that happens to add a same-named flag.
-    """
-    if subcommand == "cost" and bool(getattr(args, "summary", False)):
-        return [config_dir() / "projects"]
-
-    extra_config_dirs: list[str] = getattr(args, "extra_config_dirs", None) or []
-
-    config_dirs: list[Path] = []
-    seen_resolved: set[Path] = set()
-    for candidate in (config_dir(), *declared_transcript_roots()):
-        resolved = candidate.resolve()
-        if resolved in seen_resolved:
-            continue
-        seen_resolved.add(resolved)
-        config_dirs.append(candidate)
-    for raw in extra_config_dirs:
-        candidate = Path(raw)
-        if not candidate.is_dir():
-            print(f"{subcommand}: --config-dir {raw!r} is not a directory", file=sys.stderr)
-            sys.exit(2)
-        if not (candidate / "projects").is_dir():
-            print(
-                f"{subcommand}: --config-dir {raw!r} rejected: no projects/ subdirectory found",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        resolved = candidate.resolve()
-        if resolved in seen_resolved:
-            continue
-        seen_resolved.add(resolved)
-        config_dirs.append(candidate)
-
-    if len(config_dirs) > 1 and getattr(args, "no_redact", False):
-        print(
-            f"{subcommand}: --no-redact is refused when more than one root is in scope"
-            " (--config-dir was given); drop --no-redact or scope to a single profile",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    return [d / "projects" for d in config_dirs]
-
-
-def _scan_root_transcripts(root: Path, projects_glob: str, slugs: Sequence[str] | None = None) -> tuple[int, int]:
-    """Count transcripts found vs. unreadable directly under one cost scan root.
-
-    A dedicated readability probe (open, discard) rather than routing through
-    _read_session_file, which swallows OSError into an empty record list
-    indistinguishable from a genuinely empty transcript — cmd_cost's per-root
-    summary line needs the two counted separately.
-
-    Raises PermissionError when `root` itself is not readable/searchable.
-    This is an explicit os.access probe, not reliance on Path.glob to raise —
-    verified empirically that glob silently swallows OSError while walking an
-    unreadable directory and returns no matches rather than propagating, so a
-    permission-restricted root would otherwise misreport as "0 transcripts
-    found," the same shape as a genuinely empty scope. An unreadable project
-    subdirectory nested under an otherwise-readable root is still silently
-    absorbed into the transcript count (glob's real behavior) — this probe
-    only covers the root itself, the realistic misconfigured-`--config-dir`
-    case. Callers scanning multiple untrusted roots catch this per root so
-    one bad root doesn't abort the whole report.
-
-    `slugs`, when given, restricts the scan to those exact project-dir names
-    (mirroring _iter_scoped_sessions' identity match, not a glob) instead of
-    `projects_glob` — required for --this-repo, whose _projects_glob(args) is
-    always "*" regardless of scope. Without this, the diagnostic line would
-    report the whole config dir's transcript count under --this-repo, masking
-    a genuinely-empty repo-scoped result behind an unrelated nonzero total —
-    the exact silent-zero failure Step 8 exists to surface. Both branches dedup
-    matched project dirs by resolved real path via _dedup_new_project_dirs, so
-    a project dir aliased to another (by symlink, whether reached by slug or
-    by glob) doesn't double-count in this diagnostic either.
-    """
-    if not os.access(root, os.R_OK | os.X_OK):
-        raise PermissionError(errno.EACCES, "Permission denied", str(root))
-    visited_dirs: set[Path] = set()
-    candidates = (root / slug for slug in slugs) if slugs is not None else sorted(root.glob(projects_glob))
-    jsonl_paths = [
-        jsonl
-        for proj_dir in _dedup_new_project_dirs(candidates, visited_dirs)
-        for jsonl in proj_dir.glob("*.jsonl")
-    ]
-    skipped = 0
-    for jsonl in jsonl_paths:
-        try:
-            with open(jsonl):
-                pass
-        except OSError:
-            skipped += 1
-    return len(jsonl_paths), skipped
-
-
-def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
-    """Return the 0-based index of the root under which jsonl was found.
-
-    `resolved_roots` must already be resolved (real, symlink-free) paths —
-    callers resolve the roots list once, outside cost's per-session loop,
-    since this runs once per session and re-resolving every root on every
-    call would be a per-element filesystem stat inside that loop.
-    `jsonl` is always a file path, so a root can only ever be one of its
-    ancestors, never equal to it — `resolved.parents` alone covers every case.
-
-    Returns the FIRST matching root by list order when one declared root is a
-    genuine filesystem descendant of another (not just a symlink alias back
-    to it, which the dedup guards upstream already collapse to one root's
-    worth of sessions) — attributing every session under the nested root to
-    whichever sorts earlier, always the default config dir. Untested and
-    low-realism given this repo's own per-account layout (sibling
-    directories under `~/.config/claude-accounts/`, never nested); revisit if
-    `--config-dir` is ever pointed at a directory nested inside another
-    declared root.
-    """
-    resolved = jsonl.resolve()
-    for idx, resolved_root in enumerate(resolved_roots):
-        if resolved_root in resolved.parents:
-            return idx
-    # Deliberately omits the raw jsonl path: main() has no top-level exception
-    # handler, so this message would otherwise reach stderr uncaught — the
-    # same reasoning and fix already applied to the redact-map-miss assertion
-    # a few lines below in the same loop (structural sibling, audited after a
-    # cumulative-diff review caught the fix hadn't been applied here too).
-    path_hash = hashlib.sha256(str(jsonl).encode()).hexdigest()[:12]
-    raise AssertionError(
-        f"cost: a session path (hash {path_hash}) matched no known scan root — roots list is"
-        " out of sync with the session iterator (a symlinked project dir resolving outside"
-        " every declared root is one way this can happen)"
-    )
-
-
 # The harness's ephemeral-isolation branch name for an `isolation: "worktree"`
 # subagent dispatch (see claude/.claude/CLAUDE.md's Agent Briefing section) —
 # not a claim about which branch the dispatched work belongs to.
@@ -5637,7 +4103,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = not bool(getattr(args, "no_redact", False))
 
-    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
     summary_mode: bool = bool(getattr(args, "summary", False))
@@ -6124,7 +4590,7 @@ def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path]
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
 
-    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
     # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
@@ -6422,7 +4888,7 @@ def _edit_notfound_cause(tool_use_id: str, err_text: str, edit_order: list[tuple
 
 
 def _scan_edit_format_session(records: list[dict]) -> dict:
-    """One session's (main thread + merged subagent files, per _read_session_file)
+    """One session's (main thread + merged subagent files, per read_session_file)
     Edit/Write/MultiEdit call and failure census, single pass.
 
     `ids` records every tool_use's id -> name, not just edit-family ones, so
@@ -6535,7 +5001,7 @@ def _edit_format_report(args: argparse.Namespace, roots: Sequence[Path] | None =
     PUBLISH banner as cost/context-distribution, for CLI parity.
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
     # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
@@ -6925,7 +5391,7 @@ def _scan_read_scope_session(records: list[dict], groups: list[list[dict]], sinc
     detection.
 
     `records` is the main thread + merged subagent files in flat, file-
-    concatenation order (per _read_session_file) — everything here except
+    concatenation order (per read_session_file) — everything here except
     growth and repeat-whole-file-read detection runs over it, since
     isSidechain is all that scope (main vs subagent) bucketing needs.
     `groups` is the same session's records kept separate per source file
@@ -7010,12 +5476,12 @@ def _scan_read_scope_session(records: list[dict], groups: list[list[dict]], sinc
                 cohort = owner["cohort"]
                 if cohort not in (_READ_SCOPE_COHORT_TARGETED, _READ_SCOPE_COHORT_WHOLE_FILE):
                     continue
-                scope = owner["scope"]
-                stats["cohort_scope_count"][(cohort, scope)] += 1
-                stats["cohort_scope_tokens"][(cohort, scope)] += result_tokens
+                thread_scope = owner["scope"]
+                stats["cohort_scope_count"][(cohort, thread_scope)] += 1
+                stats["cohort_scope_tokens"][(cohort, thread_scope)] += result_tokens
                 size_bucket = _read_scope_size_bucket(result_tokens)
-                stats["size_hist"][(cohort, scope, size_bucket)] += 1
-                stats["size_hist_tokens"][(cohort, scope, size_bucket)] += result_tokens
+                stats["size_hist"][(cohort, thread_scope, size_bucket)] += 1
+                stats["size_hist_tokens"][(cohort, thread_scope, size_bucket)] += result_tokens
 
     stats["unpaired"] = len(read_calls) - len(matched)
 
@@ -7062,7 +5528,7 @@ def _read_scope_report(args: argparse.Namespace, roots: Sequence[Path] | None = 
     CLI parity.
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
     # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
@@ -7114,8 +5580,8 @@ def _read_scope_cohort_bucket_token_total(stats: dict, cohort: str) -> int:
     the printing scope's own, smaller total."""
     bucket_labels = [label for _upper, label in _READ_SCOPE_SIZE_BUCKETS] + [_READ_SCOPE_SIZE_OVERFLOW_LABEL]
     return sum(
-        stats["size_hist_tokens"].get((cohort, scope, label), 0)
-        for scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
+        stats["size_hist_tokens"].get((cohort, thread_scope, label), 0)
+        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
         for label in bucket_labels
     )
 
@@ -7156,18 +5622,18 @@ def _print_read_scope_report(stats: dict, per_account: list[dict] | None, since_
         (_READ_SCOPE_COHORT_TARGETED, "targeted"),
         (_READ_SCOPE_COHORT_WHOLE_FILE, "whole_file"),
     ):
-        for scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
-            count = stats["cohort_scope_count"].get((cohort, scope), 0)
-            tokens = stats["cohort_scope_tokens"].get((cohort, scope), 0)
-            print(f"  {cohort_label:12} {scope:9} count={count:8,}  tokens=~{tokens:12,}")
+        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
+            count = stats["cohort_scope_count"].get((cohort, thread_scope), 0)
+            tokens = stats["cohort_scope_tokens"].get((cohort, thread_scope), 0)
+            print(f"  {cohort_label:12} {thread_scope:9} count={count:8,}  tokens=~{tokens:12,}")
 
     whole_file_tokens = sum(
-        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_WHOLE_FILE, scope), 0)
-        for scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
+        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_WHOLE_FILE, thread_scope), 0)
+        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
     )
     targeted_tokens = sum(
-        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_TARGETED, scope), 0)
-        for scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
+        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_TARGETED, thread_scope), 0)
+        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
     )
     result_tokens_total = whole_file_tokens + targeted_tokens
     print(f"\nwhole_file share of targeted+whole_file result tokens: {_pct_of(whole_file_tokens, result_tokens_total)}")
@@ -7181,12 +5647,12 @@ def _print_read_scope_report(stats: dict, per_account: list[dict] | None, since_
         (_READ_SCOPE_COHORT_WHOLE_FILE, "whole_file"),
     ):
         cohort_tokens = _read_scope_cohort_bucket_token_total(stats, cohort)
-        for scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
-            cohort_scope_count = stats["cohort_scope_count"].get((cohort, scope), 0)
-            print(f"  {cohort_label} / {scope}:")
+        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
+            cohort_scope_count = stats["cohort_scope_count"].get((cohort, thread_scope), 0)
+            print(f"  {cohort_label} / {thread_scope}:")
             for label in bucket_labels:
-                count = stats["size_hist"].get((cohort, scope, label), 0)
-                tokens = stats["size_hist_tokens"].get((cohort, scope, label), 0)
+                count = stats["size_hist"].get((cohort, thread_scope, label), 0)
+                tokens = stats["size_hist_tokens"].get((cohort, thread_scope, label), 0)
                 print(
                     f"    {label:10} {count:6,}  ({_pct_of(count, cohort_scope_count)})"
                     f"  ~{tokens:11,} tok  ({_pct_of(tokens, cohort_tokens)} of {cohort_label} tokens)"
@@ -7326,7 +5792,7 @@ def _split_context_sequences(records: list[dict]) -> list[list[dict]]:
 def _context_composition_turn_rate_scale(usage: dict) -> float:
     """Fast-mode (2x) / US-inference-geo (1.1x) multiplier scale for one turn, applied uniformly
     to every rate class that turn -- the same usage.get("speed")/"inference_geo" checks
-    _price_turn applies at its own dollar-scaling step (:5160-5163), reused here for the
+    _price_turn applies at its own dollar-scaling step, reused here for the
     multiplier-only (not dollar) context-composition weighting."""
     scale = 1.0
     if usage.get("speed") == "fast":
@@ -7531,7 +5997,7 @@ def _context_composition_report(args: argparse.Namespace, roots: Sequence[Path] 
     """Redaction contract mirrors context-distribution: no redact map, no per-root/per-account/per-project breakdown."""
     redact: bool = not bool(getattr(args, "no_redact", False))
 
-    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
     # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement point for this refusal,
@@ -7591,7 +6057,7 @@ def _context_composition_report(args: argparse.Namespace, roots: Sequence[Path] 
     for jsonl, _records in session_iter:
         # session_iter already read and parsed this file once internally (to decide whether to
         # yield it at all); this second, partitioned read is the cost of reusing
-        # _resolve_project_scope's shared iterator, the same tradeoff read-scope makes (:7038-7043).
+        # _resolve_project_scope's shared iterator, the same tradeoff _read_scope_report makes.
         groups = _read_session_file_partitioned(jsonl, include_subagents=True)
         _merge_context_composition_stats(stats, _scan_context_composition_session(groups, since_ts))
 
@@ -7955,7 +6421,7 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     cmd_cache_rebuild.
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
     # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
@@ -9743,11 +8209,11 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     _resolve_project_scope (not a flat glob), so a main session file only reaches
     this repo's own worktrees under --this-repo the same way every other
     subcommand does. --include-subagents additionally emits each split subagent
-    file's own path, found the same way _read_session_file (:394-407) locates
+    file's own path, found the same way read_session_file locates
     them for its own record merge -- <session>/subagents/*.jsonl under the main
     file's own directory -- rather than a flat glob across the whole scope, so a
     caller that reads only the emitted paths gets exactly the same file set
-    _read_session_file(include_subagents=True) would have merged, split back out
+    read_session_file(include_subagents=True) would have merged, split back out
     into individually readable files. The resolved-scope header goes to stderr,
     matching audit-routing-samples' convention — stdout here is meant to be
     piped to xargs/Read, not mixed with a header line.
@@ -10359,7 +8825,7 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
     so a reader can't mistake "spacing-only" for "everything."
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
     if not redact and multi_root:
@@ -10609,7 +9075,7 @@ def _plan_boundary_report(args: argparse.Namespace, today: date, roots: Sequence
     cmd_plan_boundary.
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
     # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
@@ -11623,8 +10089,7 @@ def main() -> None:
         # which reads parsed.config_dir directly for its override branch rather
         # than through this reassignment -- so this can no longer diverge from
         # a subcommand's actual scan roots the way it could before.
-        global PROJECTS_DIR
-        PROJECTS_DIR = Path(parsed.config_dir) / "projects"
+        scope.PROJECTS_DIR = Path(parsed.config_dir) / "projects"
     parsed.func(parsed)
 
 

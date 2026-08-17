@@ -231,7 +231,7 @@ class TestScopeDisclosureHeader:
         (plan mechanism 5)."""
         active_config = tmp_path / "active"
         (active_config / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active_config / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")
         monkeypatch.setattr(sys, "argv", ["analyze-context.py", "no-such-session"])
 
         with pytest.raises(SystemExit):
@@ -254,7 +254,7 @@ class TestScopeDisclosureHeader:
         (plan mechanism 5)."""
         active_config = tmp_path / "active"
         (active_config / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active_config / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")
         monkeypatch.setattr(sys, "argv", ["analyze-context.py"])
 
         with pytest.raises(SystemExit):
@@ -307,7 +307,7 @@ def test_main_scans_every_declared_root(monkeypatch, tmp_path, capsys):
     Finding E)."""
     active_config = tmp_path / "active"
     _write_session_meta(active_config, "session-active", "/repos/active-proj", 100)
-    monkeypatch.setattr(_mod._transcript_analysis, "PROJECTS_DIR", active_config / "projects")
+    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")
 
     declared_config = tmp_path / "declared-account"
     (declared_config / "projects").mkdir(parents=True)

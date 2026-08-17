@@ -19,28 +19,6 @@ sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
 
 
-@pytest.fixture()
-def fake_projects(tmp_path, monkeypatch):
-    """Duplicated from test_transcript_analysis.py's own fixture of the same name -- only the
-    six record-builder functions were extracted to conftest.py, not this fixture, so each test
-    file keeps its own copy (this repo's DAMP-for-tests precedent)."""
-    projects = tmp_path / "projects"
-    proj = projects / "-home-user-testrepo"
-    proj.mkdir(parents=True)
-    monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
-    monkeypatch.setattr(_mod, "config_dir", lambda: tmp_path)
-    return proj
-
-
-@pytest.fixture()
-def fake_config_dir_factory(tmp_path):
-    def _make(name: str) -> Path:
-        config_dir_path = tmp_path / name
-        (config_dir_path / "projects").mkdir(parents=True)
-        return config_dir_path
-    return _make
-
-
 def _context_composition_args(
     *,
     projects: str = "*",
@@ -669,7 +647,7 @@ class TestRedaction:
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
         self._seed_needle_session(default_dir / "projects")
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_context_composition(
@@ -701,7 +679,7 @@ class TestRedaction:
         ]
         records[1]["message"]["usage"] = {"input_tokens": 100}  # keeps the residual non-negative
         _write_jsonl(proj / f"{self._FAKE_SESSION_UUID}.jsonl", records)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
 
         _mod.cmd_context_composition(_context_composition_args(extra_config_dirs=[str(acct_b)]))
@@ -725,7 +703,7 @@ class TestRedaction:
         proj_a_recs = [_asst("claude-sonnet-5", content=[{"type": "text", "text": "hello"}], ts="2026-05-19T10:00:00.000Z")]
         proj_a_recs[0]["message"]["usage"] = {"input_tokens": 1}
         _write_jsonl(proj_a / "sess.jsonl", proj_a_recs)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
 
         _mod.cmd_context_composition(_context_composition_args(extra_config_dirs=[str(acct_b)]))
@@ -767,7 +745,7 @@ class TestConfigDirRouting:
             _mod.main()
 
         assert exc_info.value.code == 2
-        assert other_account / "projects" != _mod.PROJECTS_DIR
+        assert other_account / "projects" != _mod.scope.PROJECTS_DIR
         err = capsys.readouterr().err
         assert "--config-dir" in err
         assert "context-composition" in err
