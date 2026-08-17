@@ -9630,36 +9630,24 @@ class TestInstrumentAuthoring:
         assert main_count == 0
         assert subagent_count == 1
 
-    def test_cohort_arithmetic_sums_across_multiple_sessions(self, fake_projects, capsys):
-        """The load-bearing test: two zero-dispatch sessions carrying large
-        payloads plus two dispatched sessions carrying small ones must
-        produce the two cohort totals the go/no-go rule reads -- the one
-        computation this subcommand exists to produce, not exercised by any
-        single-session case."""
-        large_payload = "x" * 500
-        small_payload = "y" * 10
-        _write_jsonl(fake_projects / "sess-zero-1.jsonl", [
-            _opus([_bash_use("b1", f"python3 -c '{large_payload}'")]),
+    def test_cohort_lines_printed_for_a_zero_dispatch_and_a_dispatched_session(self, fake_projects, capsys):
+        """Report-level smoke test: a zero-dispatch and a dispatched session
+        each land in their own printed cohort line -- the arithmetic itself
+        is TestScanInstrumentAuthoringSession's
+        test_cohort_arithmetic_sums_across_multiple_sessions' job."""
+        _write_jsonl(fake_projects / "sess-zero.jsonl", [
+            _opus([_bash_use("b1", "python3 -c 'print(1)'")]),
         ])
-        _write_jsonl(fake_projects / "sess-zero-2.jsonl", [
-            _opus([_bash_use("b2", f"python3 -c '{large_payload}'")]),
-        ])
-        _write_jsonl(fake_projects / "sess-dispatched-1.jsonl", [
-            _opus([_bash_use("b3", f"python3 -c '{small_payload}'")]),
+        _write_jsonl(fake_projects / "sess-dispatched.jsonl", [
+            _opus([_bash_use("b2", "python3 -c 'print(1)'")]),
             _opus([_agent_use("a1", "general-purpose")]),
-        ])
-        _write_jsonl(fake_projects / "sess-dispatched-2.jsonl", [
-            _opus([_bash_use("b4", f"python3 -c '{small_payload}'")]),
-            _opus([_agent_use("a2", "code-writer", tool_name="Task")]),
         ])
         _mod._instrument_authoring_report(_instrument_authoring_args())
         out = capsys.readouterr().out
-        zero_sessions, zero_chars = _extract_instrument_authoring_cohort(out, "zero_dispatch")
-        dispatched_sessions, dispatched_chars = _extract_instrument_authoring_cohort(out, "dispatched")
-        assert zero_sessions == 2
-        assert dispatched_sessions == 2
-        assert zero_chars == 1000
-        assert dispatched_chars == 20
+        zero_sessions, _zero_chars = _extract_instrument_authoring_cohort(out, "zero_dispatch")
+        dispatched_sessions, _dispatched_chars = _extract_instrument_authoring_cohort(out, "dispatched")
+        assert zero_sessions == 1
+        assert dispatched_sessions == 1
 
     def test_size_histogram_bucket_wired_through_report(self, fake_projects, capsys):
         """The per-scan size bucket reaches the printed histogram section,
@@ -9673,6 +9661,23 @@ class TestInstrumentAuthoring:
         sentinel = "DISTINCTIVE-SENTINEL-PAYLOAD-MUST-NOT-LEAK"
         command = f"python3 -c 'print(\"{sentinel}\")'"
         _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", command)])])
+        _mod._instrument_authoring_report(_instrument_authoring_args())
+        out = capsys.readouterr().out
+        assert sentinel not in out
+
+    def test_no_heredoc_body_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
+        sentinel = "DISTINCTIVE-HEREDOC-SENTINEL-MUST-NOT-LEAK"
+        command = f"cat <<EOF > /tmp/instrument.py\n{sentinel}\nEOF\n"
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", command)])])
+        _mod._instrument_authoring_report(_instrument_authoring_args())
+        out = capsys.readouterr().out
+        assert sentinel not in out
+
+    def test_no_write_content_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
+        sentinel = "DISTINCTIVE-WRITE-SENTINEL-MUST-NOT-LEAK"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_write_use("w1", sentinel, path="/tmp/scratch/instrument.py")]),
+        ])
         _mod._instrument_authoring_report(_instrument_authoring_args())
         out = capsys.readouterr().out
         assert sentinel not in out
@@ -9795,6 +9800,33 @@ class TestScanInstrumentAuthoringSession:
         stats = _mod._scan_instrument_authoring_session(records)
         assert sum(stats["call_n"].values()) == 0
 
+    @pytest.mark.parametrize("command,inline_program", [
+        ("python3 -c 'print(1)'", "print(1)"),
+        ("python -c 'print(1)'", "print(1)"),
+        ("sh -c 'echo hi'", "echo hi"),
+        ("bash -c 'echo hi'", "echo hi"),
+        ("node -e 'console.log(1)'", "console.log(1)"),
+        ("perl -e 'print 1'", "print 1"),
+        ("ruby -e 'puts 1'", "puts 1"),
+    ])
+    def test_each_recognized_interpreter_matches_its_own_flag(self, command, inline_program):
+        """Every entry in _INSTRUMENT_AUTHORING_INLINE_INTERPRETER_FLAGS gets
+        a genuine positive match on its own flag, not just python3/node."""
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["payload_chars"][("bash", "main")] == len(inline_program)
+
+    @pytest.mark.parametrize("command", [
+        "bash -e deploy.sh",  # errexit, not inline-eval
+        "python3 -m pytest",  # module flag, not -c
+    ])
+    def test_recognized_interpreter_with_wrong_flag_not_counted(self, command):
+        """A recognized interpreter bound to a flag other than its own
+        inline-eval flag (bash -e, python3 -m) never counts."""
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert sum(stats["call_n"].values()) == 0
+
     def test_heredoc_dash_variant_with_quoted_delimiter_strips_leading_tabs(self):
         command = "cat <<-'EOF'\n\thello\n\tEOF\n"
         records = [_opus([_bash_use("b1", command)])]
@@ -9821,6 +9853,26 @@ class TestScanInstrumentAuthoringSession:
         assert stats["call_n"][("bash", "main")] == 1
         assert stats["payload_chars"][("bash", "main")] == len("first") + len("second")
 
+    def test_quoted_herestring_not_misparsed_as_heredoc(self):
+        """A bash here-string (`<<<`) with a quoted right-hand side is not
+        mistaken for a heredoc opener."""
+        command = 'cat <<< "$var"\necho after\n'
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert sum(stats["call_n"].values()) == 0
+
+    def test_unquoted_herestring_not_misparsed_as_heredoc(self):
+        """Regression test: `cat <<<EOF` (an unquoted here-string, not a
+        heredoc) must not match the heredoc-opener regex starting one
+        character into the `<<<` operator -- doing so would consume every
+        following line as a fake heredoc body since no line ever equals the
+        delimiter "EOF"."""
+        command = "cat <<<EOF\necho after\n"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert sum(stats["call_n"].values()) == 0
+        assert stats["payload_chars"][("bash", "main")] == 0
+
     def test_heredoc_body_containing_inline_program_shape_not_double_counted(self):
         """A heredoc body containing a line shaped like an inline-program
         invocation (e.g. example code written as data) is not counted a
@@ -9841,6 +9893,17 @@ class TestScanInstrumentAuthoringSession:
         command = 'python3 -c "print(1)"'
         records = [_opus([_bash_use("b1", command)])]
         stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["payload_chars"][("bash", "main")] == len("print(1)")
+
+    def test_versioned_python_interpreter_recognized(self):
+        """Regression test: `python3.11 -c '...'` must classify as authoring
+        -- a bare `\\bpython3\\b` word boundary fails between "3" and "."
+        (both word-adjacent-to-non-word), which previously blocked the match
+        entirely."""
+        command = "python3.11 -c 'print(1)'"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["call_n"][("bash", "main")] == 1
         assert stats["payload_chars"][("bash", "main")] == len("print(1)")
 
     def test_unparsed_bash_and_write_input_counted_in_own_cohort_not_dropped(self):
@@ -9882,6 +9945,28 @@ class TestScanInstrumentAuthoringSession:
     ])
     def test_instrument_authoring_size_bucket_boundaries(self, chars, expected_bucket):
         assert _mod._instrument_authoring_size_bucket(chars) == expected_bucket
+
+    def test_cohort_arithmetic_sums_across_multiple_sessions(self):
+        """The load-bearing computation: two zero-dispatch sessions carrying
+        large payloads plus two dispatched sessions carrying small ones must
+        produce the two cohort totals the go/no-go rule reads."""
+        def _session_stats(*, spawn_dispatch_n, main_payload_chars):
+            stats = _mod._new_instrument_authoring_stats()
+            stats["spawn_dispatch_n"] = spawn_dispatch_n
+            stats["main_payload_chars"] = main_payload_chars
+            return stats
+
+        sessions = [
+            _session_stats(spawn_dispatch_n=0, main_payload_chars=500),
+            _session_stats(spawn_dispatch_n=0, main_payload_chars=500),
+            _session_stats(spawn_dispatch_n=1, main_payload_chars=10),
+            _session_stats(spawn_dispatch_n=1, main_payload_chars=10),
+        ]
+        _stats, cohort_totals = _mod._aggregate_instrument_authoring_sessions(sessions)
+        assert cohort_totals["zero_dispatch"]["session_n"] == 2
+        assert cohort_totals["dispatched"]["session_n"] == 2
+        assert cohort_totals["zero_dispatch"]["payload_chars"] == 1000
+        assert cohort_totals["dispatched"]["payload_chars"] == 20
 
 
 # ---------------------------------------------------------------------------

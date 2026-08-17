@@ -5712,13 +5712,12 @@ def _print_read_scope_report(stats: dict, per_account: list[dict] | None, since_
 # See .claude/plans/delegate-instrument-authoring.md's "Detection design" for
 # the full spec this section implements.
 
-# A heredoc opener: <<EOF, <<'EOF', <<-EOF, <<-'EOF' (the -'s tab-stripped
-# form), matching the real delimiter word so a matching close is required
-# rather than any bare "<<". Double-quoted delimiters (<<"EOF") match too --
-# POSIX treats a quoted delimiter the same as single-quoted for body-scanning
-# purposes (only expansion inside the body differs, which this classifier
-# does not need).
-_INSTRUMENT_AUTHORING_HEREDOC_OPEN_RE = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+# A heredoc opener (<<EOF, <<'EOF', <<-EOF, <<-'EOF'), matching the real
+# delimiter word -- double-quoted delimiters (<<"EOF") count too since POSIX
+# treats a quoted delimiter the same as single-quoted for body-scanning
+# purposes -- with a negative lookbehind so a match never consumes the last
+# two `<` of a `<<<` here-string operator as if they were its own `<<`.
+_INSTRUMENT_AUTHORING_HEREDOC_OPEN_RE = re.compile(r"(?<!<)<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 # Inline-program interpreters this classifier recognizes, each mapped to the
 # flag letter that takes the inline program as its argument. sh/bash -c and
@@ -5729,12 +5728,14 @@ _INSTRUMENT_AUTHORING_INLINE_INTERPRETER_FLAGS: dict[str, str] = {
     "node": "e", "perl": "e", "ruby": "e",
 }
 
-# -c is overloaded (curl -c, tar -cf, ssh -c, mysql -c), so a bare "-c" never
-# matches -- only <interpreter> -c/-e bound to a recognized argv[0] does. The
-# trailing lookahead refuses a flag glued to further letters (-cf), so a
+# -c is overloaded (curl -c, tar -cf, ssh -c, mysql -c) so a bare "-c" never
+# matches -- only <interpreter> -c/-e bound to a recognized argv[0] does, and
+# the trailing lookahead refuses a flag glued to further letters (-cf) so a
 # non-interpreter flag combination never mimics an inline-program invocation.
+# python3/python also match a dotted version suffix (python3.11) -- stripped
+# before the flag-table lookup in _extract_inline_program_payloads.
 _INSTRUMENT_AUTHORING_INLINE_INTERPRETER_RE = re.compile(
-    r"\b(python3|python|node|perl|ruby|sh|bash)\b\s+-([a-zA-Z])(?=\s|$)"
+    r"\b(python3(?:\.\d+)?|python(?:\.\d+)?|node|perl|ruby|sh|bash)\b\s+-([a-zA-Z])(?=\s|$)"
 )
 
 _INSTRUMENT_AUTHORING_SCOPE_MAIN = "main"
@@ -5767,22 +5768,13 @@ def _instrument_authoring_size_bucket(chars: int) -> str:
 
 
 def _extract_heredoc_payloads(command: str) -> tuple[list[str], list[tuple[int, int]]]:
-    """Extract each heredoc body in a Bash command string, in the order the
-    heredocs open, one payload per heredoc.
-
-    Handles more than one heredoc opened on the same logical line -- a chain
-    like `cmd1 <<A && cmd2 <<B` -- by consuming their bodies in declaration
-    order, matching real shell behavior. A body line only terminates its
-    heredoc when the line, after stripping leading tabs for the `<<-` form,
-    exactly equals the delimiter -- the delimiter word appearing as data
-    within a longer line is never mistaken for the close.
-
-    Also returns each opener line's own [start, end) character span in
-    `command` covering everything it consumed (body lines plus terminator),
-    so a caller scanning the same string for another shape (e.g. inline
-    -c/-e invocations) can skip heredoc-body text -- data written inside a
-    heredoc, not a second, independent shell invocation.
-    """
+    """Extract each heredoc body in a Bash command string in the order the
+    heredocs open (handling multiple openers on one logical line, e.g.
+    `cmd1 <<A && cmd2 <<B`, by consuming bodies in declaration order), plus
+    each opener's own [start, end) character span so a caller scanning the
+    same string for another shape (e.g. inline -c/-e invocations) can skip
+    heredoc-body text rather than mistake it for a second, independent
+    invocation."""
     lines = command.split("\n")
     n = len(lines)
     line_starts = [0] * n
@@ -5864,7 +5856,7 @@ def _extract_inline_program_payloads(command: str, excluded_spans: Sequence[tupl
     for m in _INSTRUMENT_AUTHORING_INLINE_INTERPRETER_RE.finditer(command):
         if any(start <= m.start() < end for start, end in excluded_spans):
             continue
-        interpreter, flag = m.group(1), m.group(2)
+        interpreter, flag = m.group(1).split(".", 1)[0], m.group(2)
         if _INSTRUMENT_AUTHORING_INLINE_INTERPRETER_FLAGS.get(interpreter) != flag:
             continue
         payloads.append(_extract_shell_arg_at(command, m.end()))
@@ -5932,10 +5924,9 @@ def _scan_instrument_authoring_session(records: list[dict]) -> dict:
     include_subagents=True): classifies each Bash heredoc/inline-program call
     and each Write-to-scratchpad call as authoring, buckets its payload size
     by main/subagent scope, and counts this session's own main-thread
-    Agent/Task spawn-dispatch calls -- the count the cohort split reads.
-
-    Every returned figure is a pure aggregate (counts and char sums) -- no
-    command text, file content, file path, or session identifier is retained
+    Agent/Task spawn-dispatch calls -- the count the cohort split reads --
+    returning every figure as a pure aggregate (counts and char sums) with no
+    command text, file content, file path, or session identifier retained
     past this function or printed by any caller.
     """
     stats = _new_instrument_authoring_stats()
@@ -5992,6 +5983,23 @@ def _scan_instrument_authoring_session(records: list[dict]) -> dict:
     return stats
 
 
+def _aggregate_instrument_authoring_sessions(session_stats_iter: Iterable[dict]) -> tuple[dict, dict]:
+    """Reduce a stream of per-session instrument-authoring stats into merged
+    call/payload stats and zero_dispatch/dispatched cohort totals."""
+    stats = _new_instrument_authoring_stats()
+    cohort_totals = _new_instrument_authoring_cohort_totals()
+    for session_stats in session_stats_iter:
+        _merge_instrument_authoring_stats(stats, session_stats)
+        cohort = (
+            _INSTRUMENT_AUTHORING_COHORT_DISPATCHED
+            if session_stats["spawn_dispatch_n"] > 0
+            else _INSTRUMENT_AUTHORING_COHORT_ZERO_DISPATCH
+        )
+        cohort_totals[cohort]["session_n"] += 1
+        cohort_totals[cohort]["payload_chars"] += session_stats["main_payload_chars"]
+    return stats, cohort_totals
+
+
 def cmd_instrument_authoring(args: argparse.Namespace) -> None:
     """CLI entry point for the instrument-authoring subcommand.
 
@@ -6012,11 +6020,10 @@ def _instrument_authoring_report(args: argparse.Namespace, roots: Sequence[Path]
     (this module's own tests included) -- mirrors edit-format's and
     read-scope's own contract.
 
-    This report's own content is aggregate-only: it never includes raw
-    command text, file content, file paths, or session identifiers -- only
-    size buckets, counts, and cohort totals. Because it carries nothing
-    project-identifying, it needs no session-redact map and no --no-redact /
-    DO NOT PUBLISH gate, unlike cost/context-distribution.
+    This report's content is aggregate-only (size buckets, counts, cohort
+    totals -- never raw command text, file content, file paths, or session
+    identifiers), so unlike cost/context-distribution it needs no
+    session-redact map and no --no-redact / DO NOT PUBLISH gate.
     """
     scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
 
@@ -6025,19 +6032,9 @@ def _instrument_authoring_report(args: argparse.Namespace, roots: Sequence[Path]
     )
     _print_resolved_scope("instrument-authoring", scope_label, scan_roots)
 
-    stats = _new_instrument_authoring_stats()
-    cohort_totals = _new_instrument_authoring_cohort_totals()
-
-    for _jsonl, records in session_iter:
-        session_stats = _scan_instrument_authoring_session(records)
-        _merge_instrument_authoring_stats(stats, session_stats)
-        cohort = (
-            _INSTRUMENT_AUTHORING_COHORT_DISPATCHED
-            if session_stats["spawn_dispatch_n"] > 0
-            else _INSTRUMENT_AUTHORING_COHORT_ZERO_DISPATCH
-        )
-        cohort_totals[cohort]["session_n"] += 1
-        cohort_totals[cohort]["payload_chars"] += session_stats["main_payload_chars"]
+    stats, cohort_totals = _aggregate_instrument_authoring_sessions(
+        _scan_instrument_authoring_session(records) for _jsonl, records in session_iter
+    )
 
     _print_instrument_authoring_report(stats, cohort_totals)
 
