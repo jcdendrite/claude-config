@@ -580,30 +580,33 @@ The branch itself is never echoed in `--summary`'s text — it only narrows whic
 
 **Sample output (`--summary`, synthetic, illustrative counts only).**
 ```
-## Cost summary (all time)
+Cost summary (all time)
+
 Scope: this account only (6 transcripts scanned, 4 priced sessions, 812 priced turns) — dropping --summary reports every declared account too
+### Cost by token class
 
-## Cost by token class
+| Class | $ | Share | Tokens |
+|---|---|---|---|
+| cache_read | 612.19 | 48.9% | 6,121,900 |
+| cache_write_5m | 310.44 | 24.8% | 2,483,520 |
+| output | 270.02 | 21.6% | 540,040 |
+| input | 58.87 | 4.7% | 1,177,400 |
+| **total** | **1,251.52** | | |
 
-Class                       $   Share         Tokens
-cache_read              612.19   48.9%      6,121,900
-cache_write_5m          310.44   24.8%      2,483,520
-output                  270.02   21.6%        540,040
-input                    58.87    4.7%      1,177,400
-total                 1,251.52
+### Cost by model ID
 
-## Cost by model ID
-
-Model                                     $   Share
-claude-sonnet-5                    1,251.52  100.0%
+| Model | $ | Share |
+|---|---|---|
+| claude-sonnet-5 | 1,251.52 | 100.0% |
 
 Unpriced tokens: 0 tokens across 0 model IDs
 
-## Cost by thread
+### Cost by thread
 
-Thread          $   Share
-main            975.32   77.9%
-subagent        276.20   22.1%
+| Thread | $ | Share |
+|---|---|---|
+| main | 975.32 | 77.9% |
+| subagent | 276.20 | 22.1% |
 ```
 
 **Sample output (full report).**

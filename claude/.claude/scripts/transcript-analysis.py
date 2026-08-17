@@ -5554,8 +5554,19 @@ def _accumulate_per_account_turn(
 
 
 def _print_token_class_table(
-    class_totals: dict[str, float], class_token_totals: dict[str, int], grand_total: float
+    class_totals: dict[str, float], class_token_totals: dict[str, int], grand_total: float,
+    *, markdown: bool = False,
 ) -> None:
+    if markdown:
+        print("### Cost by token class\n")
+        print("| Class | $ | Share | Tokens |")
+        print("|---|---|---|---|")
+        for cls in _TOKEN_CLASSES:
+            val = class_totals[cls]
+            tok = class_token_totals[cls]
+            print(f"| {cls} | {val:,.2f} | {_pct_of(val, grand_total)} | {tok:,} |")
+        print(f"| **total** | **{grand_total:,.2f}** | | |")
+        return
     print("## Cost by token class\n")
     print(f"{'Class':<16} {'$':>14} {'Share':>7} {'Tokens':>14}")
     for cls in _TOKEN_CLASSES:
@@ -5565,11 +5576,32 @@ def _print_token_class_table(
     print(f"{'total':<16} {grand_total:>14,.2f}")
 
 
-def _print_model_id_table(model_totals: dict[str, float], grand_total: float) -> None:
+def _print_model_id_table(model_totals: dict[str, float], grand_total: float, *, markdown: bool = False) -> None:
+    if markdown:
+        print("\n### Cost by model ID\n")
+        print("| Model | $ | Share |")
+        print("|---|---|---|")
+        for model, val in sorted(model_totals.items(), key=lambda kv: kv[1], reverse=True):
+            print(f"| {model} | {val:,.2f} | {_pct_of(val, grand_total)} |")
+        return
     print("\n## Cost by model ID\n")
     print(f"{'Model':<28} {'$':>14} {'Share':>7}")
     for model, val in sorted(model_totals.items(), key=lambda kv: kv[1], reverse=True):
         print(f"{model:<28} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
+
+
+def _print_thread_table(main_total: float, subagent_total: float, grand_total: float, *, markdown: bool = False) -> None:
+    if markdown:
+        print("\n### Cost by thread\n")
+        print("| Thread | $ | Share |")
+        print("|---|---|---|")
+        print(f"| main | {main_total:,.2f} | {_pct_of(main_total, grand_total)} |")
+        print(f"| subagent | {subagent_total:,.2f} | {_pct_of(subagent_total, grand_total)} |")
+        return
+    print("\n## Cost by thread\n")
+    print(f"{'Thread':<10} {'$':>14} {'Share':>7}")
+    print(f"{'main':<10} {main_total:>14,.2f} {_pct_of(main_total, grand_total):>7}")
+    print(f"{'subagent':<10} {subagent_total:>14,.2f} {_pct_of(subagent_total, grand_total):>7}")
 
 
 # A root whose earliest in-scope turn is more than this many seconds newer
@@ -5952,7 +5984,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     title_since = f"last {since_label}" if since_label else "all time"
     if summary_mode:
-        print(f"\n## Cost summary ({title_since})\n")
+        print(f"\nCost summary ({title_since})\n")
         print(
             f"Scope: this account only ({total_transcripts_scanned:,} transcripts scanned, "
             f"{priced_session_count:,} priced sessions, {priced_turn_count:,} priced turns)"
@@ -5968,8 +6000,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing the figures below.\n"
         )
 
-    _print_token_class_table(class_totals, class_token_totals, grand_total)
-    _print_model_id_table(model_totals, grand_total)
+    _print_token_class_table(class_totals, class_token_totals, grand_total, markdown=summary_mode)
+    _print_model_id_table(model_totals, grand_total, markdown=summary_mode)
     total_unpriced_tokens = sum(unpriced_tokens.values())
     if summary_mode:
         # A dedicated, always-present line rather than the full report's
@@ -5991,10 +6023,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             val = bucket_totals.get(bucket, 0.0)
             print(f"{bucket:<8} {val:>14,.2f} {_pct_of(val, grand_total):>7}")
 
-    print("\n## Cost by thread\n")
-    print(f"{'Thread':<10} {'$':>14} {'Share':>7}")
-    print(f"{'main':<10} {main_total:>14,.2f} {_pct_of(main_total, grand_total):>7}")
-    print(f"{'subagent':<10} {subagent_total:>14,.2f} {_pct_of(subagent_total, grand_total):>7}")
+    _print_thread_table(main_total, subagent_total, grand_total, markdown=summary_mode)
 
     if summary_mode:
         return
