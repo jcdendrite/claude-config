@@ -1474,10 +1474,12 @@ class TestNudgeHandoffNearContextCap:
             call_log.append(payload["transcript_path"])
             return subprocess.CompletedProcess(args=[], returncode=0)
 
-        # small-arm calls take 0.1/0.2/0.3s, large-arm calls take
-        # 1.0/2.0/3.0s -- medians (0.2, 2.0) are unambiguous, and the
-        # assertions below fail if calls aren't truly alternating.
-        durations = [0.1, 1.0, 0.2, 2.0, 0.3, 3.0]
+        # small-arm calls take 0.3/0.1/0.2s in call order, large-arm calls
+        # take 3.0/1.0/2.0s -- each arm's raw call-order middle value (0.1,
+        # 1.0) differs from its true median (0.2, 2.0), so the assertions
+        # below fail both if calls aren't truly alternating and if sorting
+        # is skipped in favor of the chronologically-middle sample.
+        durations = [0.3, 3.0, 0.1, 1.0, 0.2, 2.0]
         clock = iter(_perf_counter_sequence(durations))
         monkeypatch.setattr(time, "perf_counter", lambda: next(clock))
         monkeypatch.setattr(sys.modules[__name__], "_run_hook", fake_run_hook)
