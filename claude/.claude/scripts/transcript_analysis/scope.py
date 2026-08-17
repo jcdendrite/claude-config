@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
@@ -646,3 +647,32 @@ def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
         " out of sync with the session iterator (a symlinked project dir resolving outside"
         " every declared root is one way this can happen)"
     )
+
+
+def _projects_glob(args: argparse.Namespace) -> str:
+    return getattr(args, "projects", None) or "*"
+
+
+def _branch_filter(args: argparse.Namespace) -> set[str] | None:
+    raw: str | None = getattr(args, "branches", None)
+    return {b for b in raw.split(",") if b} if raw else None
+
+
+def _parse_since_nd_arg(args: argparse.Namespace, subcommand: str) -> tuple[float | None, str | None]:
+    """Parse the shared --since Nd flag (e.g. "35d") into (since_ts, since_raw).
+
+    since_ts is None when --since is absent; since_raw is the raw flag value
+    (or None) so callers can derive their own display label. Exits 1 on a
+    malformed value, embedding `subcommand` in the error text to match each
+    subcommand's own --since error message.
+    """
+    since_raw: str | None = getattr(args, "since", None) or None
+    since_ts: float | None = None
+    if since_raw:
+        try:
+            days = float(since_raw.rstrip("d"))
+            since_ts = time.time() - days * 86400
+        except ValueError:
+            print(f"{subcommand}: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
+            sys.exit(1)
+    return since_ts, since_raw

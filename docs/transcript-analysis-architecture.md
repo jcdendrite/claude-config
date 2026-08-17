@@ -5,13 +5,19 @@ CLI reference: where each piece of `transcript-analysis.py`'s logic lives, not w
 
 `transcript-analysis.py` stays a plain top-level script at its own path — every existing caller
 (the hook nudge, the `/transcript-analysis` skill, a contributor's own shell history) keeps working
-unchanged. Its own body still holds `build_parser()`, `main()`, and every `cmd_*` subcommand handler.
-Leaf logic with no dependency on any `cmd_*` function has moved into the `transcript_analysis/`
-package (`claude/.claude/scripts/transcript_analysis/`), which the script imports from. Command
-groups (the `cmd_*` functions themselves) and `cli.py` (`build_parser()`/`main()`) are later-phase
-moves, once every command group has followed; splitting them out first would need the still-unmoved
-`cmd_*` functions to import back into the shim, a circular import this decomposition avoids by
-staying leafward-only for now.
+unchanged. Its own body still holds `build_parser()`, `main()`, and every not-yet-moved `cmd_*`
+subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus (starting with
+`cost.py`) whole command groups, have moved into the `transcript_analysis/` package
+(`claude/.claude/scripts/transcript_analysis/`), which the script imports from. `cli.py`
+(`build_parser()`/`main()`) is a later-phase move, once every command group has followed.
+
+Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
+circular import is possible while `cmd_*` functions remain split across both the shim and the
+package. `cost.py` is the one deliberate, temporary exception, in the opposite direction: cost-ledger
+(a later, still-unmigrated phase) calls `cost.py`'s `compute_cost_trend_data` from inside the shim,
+so the shim imports `cost.py` back for that one name. This resolves cleanly (`cost.py` itself has no
+import of the shim), but it means `cost.py`'s public surface is reachable from monolith code this
+phase left behind — expected to shrink to zero once cost-ledger's own phase moves.
 
 ## The package
 
@@ -59,6 +65,17 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 Small display-formatting helpers with no state of their own: model-family labels (`_fam`),
 markdown/table rendering, `_content_text`, `_fmt_usd`, `_pct_of`. Self-contained.
 
+### `cost.py`
+
+The cost command family: `cmd_cost`, `cmd_cost_trend`, and every helper used only by them —
+corpus-wide dollar-cost reporting by token class/model ID/thread/account/project
+(`_cost_report`), and per-ISO-week cost-trend accumulation (`compute_cost_trend_data`,
+`_cost_trend_report`). The first command-group module in the package, not a leaf: it imports
+`corpus`, `scope`, `redaction`, `pricing`, and `render` all by module (attribute access), matching
+the cross-module discipline every other package module already follows. `compute_cost_trend_data`
+is the one public (non-underscore-prefixed) name here, reached from the still-unmigrated
+cost-ledger code in the shim — see the one-directional exception noted above.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -72,7 +89,11 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised through
 `transcript-analysis.py`'s own existing test suite (`tests/test_transcript_analysis.py`), which
 calls into the shim exactly as before — the split is an internal reorganization, not a change to
-what's tested or how. `tests/conftest.py` carries the shared fixtures that reach across the
-shim/package boundary (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
-`cost_ledger_file`); see its own docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR`
-and the shim's still-independent `config_dir` binding.
+what's tested or how. `cost.py`'s own tests live in `tests/test_transcript_cost.py`, the first
+per-command-group test file the decomposition has produced; it loads its own independent copy of
+`transcript-analysis.py` via the same `spec_from_file_location` boilerplate
+`test_transcript_analysis.py` uses, rather than importing that file's `_mod`. `tests/conftest.py`
+carries the shared fixtures that reach across the shim/package boundary and across both test files
+(`fake_projects`, `fake_config_dir_factory`, `_table_cols`, `cost_ledger_file`); see its own
+docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR` and the shim's still-independent
+`config_dir` binding.

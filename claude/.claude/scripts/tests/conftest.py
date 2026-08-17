@@ -1,9 +1,10 @@
 """Shared git-repo scaffolding helpers for the worktree-cleanup script tests
 (test_cleanup_merged_branches.py, test_cleanup_idle_open_pr_worktrees.py),
 plus suite-wide transcript-corpus isolation (see the autouse fixture below),
-plus the transcript-record fixture builders shared by
-test_transcript_analysis.py and test_context_composition.py (see the
-extraction rationale on _write_jsonl below).
+plus the transcript-record fixture builders shared across
+test_transcript_analysis.py, test_transcript_cost.py, and
+test_context_composition.py (see the extraction rationale on _write_jsonl
+below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
 `tmp_path` (or a repo built from it) as an explicit argument rather than
@@ -72,6 +73,81 @@ def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", pr
         "name": tool_name,
         "input": {"subagent_type": subagent_type, "description": "x", "prompt": prompt},
     }
+
+
+def _opus(
+    content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T10:00:00.000Z",
+    request_id: str | None = None,
+) -> dict:
+    """Build an Opus assistant record with explicit usage values -- shared by
+    audit-routing's and cost's own tests."""
+    rec = _asst(
+        "claude-opus-4-7",
+        branch="main",
+        ts=ts,
+        content=content,
+        request_id=request_id,
+    )
+    rec["message"]["usage"] = {
+        "input_tokens": 50,
+        "output_tokens": out,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cr,
+    }
+    return rec
+
+
+def _priced(
+    model: str,
+    *,
+    input: int = 0,
+    cache_read: int = 0,
+    ephemeral_1h: int = 0,
+    ephemeral_5m: int = 0,
+    output: int = 0,
+    flat_cache_creation: int | None = None,
+    ts: str = "2026-05-19T10:00:00.000Z",
+    branch: str = "main",
+    request_id: str | None = None,
+    content: list | None = None,
+    speed: str | None = None,
+    inference_geo: str | None = None,
+) -> dict:
+    """Build an assistant record with explicit priced usage fields for cost tests.
+
+    flat_cache_creation=None (the default) emits the nested cache_creation
+    block from ephemeral_1h/ephemeral_5m, with the flat cache_creation_input_tokens
+    field set to their sum — matching every real usage record sampled, where the
+    two always agree. flat_cache_creation=N omits the nested block entirely and
+    emits only the flat field (the pre-nested-block fallback shape), ignoring
+    ephemeral_1h/ephemeral_5m. branch="main" by default so every pre-existing
+    call site (predating --branches) is unaffected. content=None (the default)
+    keeps every pre-existing call site's empty-content shape; rearm-backtest's
+    boundary-detection tests pass real tool_use/tool_result blocks instead,
+    needing both a realistic content shape and known, priced usage in one record.
+    speed/inference_geo default to None (field absent), matching every usage
+    record sampled outside fast-mode/data-residency requests.
+    """
+    rec = _asst(model, branch=branch, ts=ts, content=content if content is not None else [], request_id=request_id)
+    usage: dict = {
+        "input_tokens": input,
+        "output_tokens": output,
+        "cache_read_input_tokens": cache_read,
+    }
+    if flat_cache_creation is not None:
+        usage["cache_creation_input_tokens"] = flat_cache_creation
+    else:
+        usage["cache_creation_input_tokens"] = ephemeral_1h + ephemeral_5m
+        usage["cache_creation"] = {
+            "ephemeral_1h_input_tokens": ephemeral_1h,
+            "ephemeral_5m_input_tokens": ephemeral_5m,
+        }
+    if speed is not None:
+        usage["speed"] = speed
+    if inference_geo is not None:
+        usage["inference_geo"] = inference_geo
+    rec["message"]["usage"] = usage
+    return rec
 
 
 def _table_cols(out: str, *, header_contains: str, row_contains: str | list[str],
