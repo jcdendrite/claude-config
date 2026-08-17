@@ -7368,15 +7368,243 @@ class TestDedupTurnsByRequestId:
         rec2["requestId"] = ""
         assert _mod._dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
 
-    def test_user_record_between_same_request_id_records_prevents_merge(self):
-        """Grouping only merges *consecutive* assistant records — an
-        intervening user record ends any run in progress and passes through
-        unchanged in its original position."""
+    def test_non_contiguous_run_with_matching_usage_merges_across_user_record(self):
+        """A same-requestId assistant run interleaved with a user tool_result
+        record -- the harness's own shape for a multi-tool_use response
+        dispatched one tool call at a time -- merges into one turn when
+        every record's usage matches, with the intervening user record
+        passing through unchanged at its own position. Treating the
+        intervening user record as ending the run and never revisiting the
+        second assistant block would inflate turn counts and dollar totals
+        for this shape, the regression this test guards. This is the
+        canonical pin for dedup_turns_by_request_id's non-contiguous merge
+        behavior -- extend it rather than adding a second pin elsewhere."""
         rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        user = _user_msg("continue")
+        user = _user_msg([_tool_result("t1", "tool result")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        assert len(result) == 2
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
+        ]
+        assert result[0]["message"]["usage"] == {"input_tokens": 100, "output_tokens": 50}
+        assert result[1] == user
+
+    def test_non_contiguous_run_with_full_cache_usage_matching_merges(self):
+        """The merge-approval path exercised above uses a 2-key usage dict
+        (input_tokens/output_tokens only), where the two omitted keys
+        (cache_creation_input_tokens/cache_read_input_tokens) trivially
+        agree via None == None regardless of whether the comparison logic
+        actually checks them. This test populates all four
+        _NON_CONTIGUOUS_MERGE_REQUIRED_MATCH_KEYS with real matching values
+        -- the shape every real transcript record carries per this
+        function's own docstring -- so a regression that broke comparison
+        specifically for populated cache values on the merge-approval path
+        would fail here even though the 2-key tests above would not catch
+        it."""
+        usage = {
+            "input_tokens": 100, "cache_creation_input_tokens": 20,
+            "cache_read_input_tokens": 10, "output_tokens": 50,
+        }
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec1["message"]["usage"] = dict(usage)
+        user = _user_msg([_tool_result("t1", "tool result")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        rec2["message"]["usage"] = dict(usage)
+        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        assert len(result) == 2
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
+        ]
+
+    def test_non_contiguous_run_with_mismatched_output_tokens_does_not_merge(self):
+        """Two assistant records share a requestId but diverge on
+        output_tokens -- the signature of two genuinely separate API calls
+        that happen to collide on requestId (e.g. a hook-denial retry),
+        rather than one once-billed non-contiguous run. The corroboration
+        bar rejects the merge and all three records stay separate turns in
+        original order."""
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        user = _user_msg([_tool_result("t1", "continue")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 999}
+        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        assert result == [rec1, user, rec2]
+
+    def test_three_record_non_contiguous_run_merges(self):
+        """The merge isn't hardcoded to pairs: a 3-record non-contiguous run
+        with matching usage on every record merges into one turn, with both
+        intervening user records passing through unchanged."""
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        user1 = _user_msg([_tool_result("t1", "tool result 1")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        user2 = _user_msg([_tool_result("t2", "tool result 2")])
+        rec3 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
+        rec3["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        result = _mod._dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
+        assert len(result) == 3
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "b"}, {"type": "text", "text": "c"},
+        ]
+        assert result[1] == user1
+        assert result[2] == user2
+
+    def test_three_record_non_contiguous_run_with_one_divergent_member_does_not_merge(self):
+        """Pins that _non_contiguous_run_usage_matches compares every member
+        against the run's first record, not just adjacent pairs or a
+        majority: a 3-record non-contiguous run where two members match and
+        the third diverges on one invariant key (cache_read_input_tokens)
+        fails the corroboration bar, so all three records stay separate
+        turns regardless of the divergent member's position in the group."""
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec1["message"]["usage"] = {
+            "input_tokens": 100, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 10, "output_tokens": 50,
+        }
+        user1 = _user_msg([_tool_result("t1", "tool result 1")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        rec2["message"]["usage"] = {
+            "input_tokens": 100, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 10, "output_tokens": 50,
+        }
+        user2 = _user_msg([_tool_result("t2", "tool result 2")])
+        rec3 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
+        rec3["message"]["usage"] = {
+            "input_tokens": 100, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 999, "output_tokens": 50,
+        }
+        result = _mod._dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
+        assert result == [rec1, user1, rec2, user2, rec3]
+
+    def test_interleaved_different_request_id_group_leaves_other_run_record_untouched(self):
+        """Records ordered [A req-1, B req-2, C req-1], where req-1's usage
+        matches across A and C: the two-pass indexer groups by requestId
+        across the full input, so B -- a different run's own record sitting
+        between A and C -- passes through unchanged at its own position
+        while A and C merge at A's original position, pinning that indexing
+        by requestId across the full input doesn't disturb an unrelated
+        run's record that happens to sit between this run's members."""
+        rec_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        rec_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-2")
+        rec_b["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
+        rec_c = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
+        rec_c["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        result = _mod._dedup_turns_by_request_id([rec_a, rec_b, rec_c])
+        assert len(result) == 2
+        assert result[0]["requestId"] == "req-1"
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "c"},
+        ]
+        assert result[1] == rec_b
+
+    def test_two_multi_member_non_contiguous_groups_mutually_interleaved_both_merge(self):
+        """Records ordered [A1 req-1, B1 req-2, A2 req-1, B2 req-2] -- two
+        *each*-multi-member non-contiguous groups mutually interleaved,
+        rather than one multi-member group interleaved with a single-record
+        different-id record (the prior test's shape). Both groups merge
+        independently at their own first member's position, pinning that
+        merge_start_idx/skip_idx reconstruction handles two simultaneously
+        in-progress groups rather than only one."""
+        rec_a1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a1"}], request_id="req-1")
+        rec_a1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        rec_b1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b1"}], request_id="req-2")
+        rec_b1["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
+        rec_a2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a2"}], request_id="req-1")
+        rec_a2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        rec_b2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b2"}], request_id="req-2")
+        rec_b2["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
+        result = _mod._dedup_turns_by_request_id([rec_a1, rec_b1, rec_a2, rec_b2])
+        assert len(result) == 2
+        assert result[0]["requestId"] == "req-1"
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a1"}, {"type": "text", "text": "a2"},
+        ]
+        assert result[1]["requestId"] == "req-2"
+        assert result[1]["message"]["content"] == [
+            {"type": "text", "text": "b1"}, {"type": "text", "text": "b2"},
+        ]
+
+    def test_non_contiguous_merge_and_rejection_notices_are_independently_rate_limited(
+        self, monkeypatch, capsys
+    ):
+        """Both non-contiguous merge and rejection decisions log one stderr
+        NOTICE per process, independently rate-limited by decision kind
+        (_non_contiguous_merge_notices_logged) -- a merge NOTICE firing must
+        not suppress a later rejection NOTICE, and each message names its
+        own decision kind so the two are distinguishable by grep, not just a
+        generic 'NOTICE' substring. Also asserts the interpolated requestId
+        and record_count values, not just the decision-kind keyword -- the
+        NOTICE's stated purpose is auditing which run triggered which
+        decision, so a transposition bug in the f-string (wrong requestId,
+        wrong count) must fail this test even though the keyword-only
+        assertions would still pass.
+        _non_contiguous_merge_notices_logged is reset here since it's
+        rate-limited across the whole process and other tests in this
+        module-scoped run may have already tripped either kind (mirrors
+        test_non_identical_input_usage_within_run_emits_stderr_warning's
+        reset of _usage_drift_warned)."""
+        monkeypatch.setattr(_mod.pricing, "_non_contiguous_merge_notices_logged", set())
+
+        merge_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        merge_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        merge_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        merge_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        _mod._dedup_turns_by_request_id([merge_a, _user_msg([_tool_result("t1", "tool result")]), merge_b])
+        merge_stderr = capsys.readouterr().err
+        assert "NOTICE" in merge_stderr
+        assert "merged" in merge_stderr
+        assert "rejected" not in merge_stderr
+        assert "req-1" in merge_stderr
+        assert "2" in merge_stderr
+
+        reject_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "x"}], request_id="req-2")
+        reject_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        reject_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "y"}], request_id="req-2")
+        reject_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 999}
+        _mod._dedup_turns_by_request_id([reject_a, _user_msg([_tool_result("t2", "tool result")]), reject_b])
+        reject_stderr = capsys.readouterr().err
+        assert "NOTICE" in reject_stderr
+        assert "rejected" in reject_stderr
+        assert "req-2" in reject_stderr
+        assert "2" in reject_stderr
+
+    def test_non_contiguous_merge_notice_suppressed_on_repeat_same_kind(self, monkeypatch, capsys):
+        """A second non-contiguous merge (different requestId, same 'merged'
+        decision kind) after the first must not print a second NOTICE --
+        pinning the rate-limit half of 'independently rate-limited', not
+        just the cross-kind independence the prior test covers."""
+        monkeypatch.setattr(_mod.pricing, "_non_contiguous_merge_notices_logged", set())
+
+        first_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        first_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        first_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        first_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        _mod._dedup_turns_by_request_id([first_a, _user_msg([_tool_result("t1", "tool result")]), first_b])
+        capsys.readouterr()  # drain the first NOTICE
+
+        second_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "x"}], request_id="req-2")
+        second_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        second_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "y"}], request_id="req-2")
+        second_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        _mod._dedup_turns_by_request_id([second_a, _user_msg([_tool_result("t2", "tool result")]), second_b])
+        assert capsys.readouterr().err == ""
+
+    def test_non_contiguous_run_with_missing_usage_does_not_merge(self):
+        """Two same-requestId assistant records with no usage dict at all
+        have zero evidence to corroborate on -- treating that absence as
+        agreement (None == None on every key) would merge two records with
+        no actual usage match, the failure mode this test guards against."""
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        del rec1["message"]["usage"]
+        user = _user_msg([_tool_result("t1", "tool result")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        del rec2["message"]["usage"]
         result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
         assert result == [rec1, user, rec2]
 
@@ -7395,6 +7623,23 @@ class TestDedupTurnsByRequestId:
         _mod._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(4.00)
+
+    def test_non_contiguous_run_prices_once_through_cost_report(self, fake_projects, capsys):
+        """The motivating production bug: a session file where the harness
+        interleaves a tool_result between two same-requestId assistant
+        records prices as one turn through an actual downstream call site
+        (_cost_report), not two -- pinning the fix's real symptom end-to-end
+        rather than only the shared function's branch logic in isolation.
+        Before this fix, the interleaved second record priced as its own
+        turn, double-counting both the turn count and the dollar total."""
+        first = _priced("claude-sonnet-5", input=1_000_000, request_id="req-1")  # $2.00
+        second = _priced("claude-sonnet-5", input=1_000_000, request_id="req-1")  # $2.00, same usage as first
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            first, _user_msg([_tool_result("t1", "tool result")]), second,
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(2.00)
 
     def test_shared_request_id_merges_across_main_and_sidechain_records(self):
         """A requestId shared by a main-thread record and a sidechain record
