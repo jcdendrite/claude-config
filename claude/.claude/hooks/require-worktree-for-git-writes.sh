@@ -80,10 +80,9 @@
 #   - The collision guard's liveness check can't distinguish a dead PID from
 #     one owned by a different user on a shared machine — out of scope for
 #     this guardrail's single-developer-machine threat model.
-#   - A `git worktree lock` failure caused by something other than
-#     contention (an old git without worktree-lock support, a permission
-#     error) is diagnosed the same as a transient race and told to "retry",
-#     which is permanently wrong advice in that case.
+#   - A non-contention write failure (a permission error, or `bash` missing
+#     from PATH) is diagnosed the same as a transient race and told to
+#     "retry", which is permanently wrong advice in that case.
 #   - The collision guard makes a write into a linked worktree a
 #     conditional allow: it depends on _lib_resolve_claude_pid resolving
 #     this session's own live pid, which in turn depends on
