@@ -324,19 +324,16 @@ class TestConfigDirFlag:
         assert "--config-dir" in err
         assert "buckets" in err
 
-    @pytest.mark.parametrize(
-        "subcommand", ["cost", "context-distribution", "read-scope", "subagents", "subagent-mix", "cost-trend"]
-    )
+    @pytest.mark.parametrize("subcommand", _mod.scope._SUBCOMMANDS_WITH_OWN_CONFIG_DIR)
     def test_top_level_config_dir_refused_for_subcommands_with_their_own(
         self, monkeypatch, tmp_path, capsys, subcommand
     ):
-        """cost, context-distribution, read-scope, subagents, and
-        subagent-mix all resolve their own scan roots via their own
-        --config-dir (_resolve_cost_roots -> config_dir() +
-        declared_transcript_roots()), never reading the module-global
-        PROJECTS_DIR this top-level flag reassigns. Letting the top-level
-        flag through silently would reassign an unused global while the
-        actual scan root stays whatever config_dir() resolves to -- an
+        """Every subcommand in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR resolves its
+        own scan roots via its own --config-dir (_resolve_cost_roots ->
+        config_dir() + declared_transcript_roots()), never reading the
+        module-global PROJECTS_DIR this top-level flag reassigns. Letting the
+        top-level flag through silently would reassign an unused global while
+        the actual scan root stays whatever config_dir() resolves to -- an
         operator typing --config-dir /other-account cost would see no error
         and would silently scan their own default account instead. main()
         refuses the combination outright, matching every other subcommand's
@@ -344,7 +341,9 @@ class TestConfigDirFlag:
         unconditional on subcommand alone, checked before args.this_repo is
         ever read, so a bare subcommand invocation (no --this-repo) is the
         correct, strictly-scoped regression pin -- a --this-repo variant
-        would hit the identical check with no new branch coverage."""
+        would hit the identical check with no new branch coverage.
+        Parametrized directly off the tuple (not a hand-maintained list) so a
+        future entry is covered automatically."""
         other_account = tmp_path / "other-account"
         (other_account / "projects").mkdir(parents=True)
         active_config_dir = tmp_path / "active-account"
