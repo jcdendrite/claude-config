@@ -18,7 +18,11 @@ import importlib.util
 import io
 import json
 import os
+import re
+import shutil
+import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -331,14 +335,14 @@ class TestComputeNewDependencyNamesSanitizeSortCap:
 
 
 class TestParseManifestDependenciesPythonFloor:
-    def test_source_parses_under_python_3_9_syntax(self):
+    def test_source_parses_under_python_3_11_syntax(self):
         """ruff's target-version=py312 governs lint style repo-wide, not
-        this file's actual runtime floor (stock macOS /usr/bin/python3 is
-        3.9.6). A 3.10+ construct would lint clean and only fail on a stow
-        user's real interpreter, silently, since the hook fails open on any
-        helper error — this closes that gap mechanically."""
+        this file's actual runtime floor (Python >= 3.11, per its module
+        docstring). A 3.12-only construct would lint clean and only fail on
+        a stow user's 3.11 interpreter, silently, since the hook fails open
+        on any helper error — this closes that gap mechanically."""
         source = PARSER_PATH.read_text()
-        ast.parse(source, feature_version=(3, 9))  # raises SyntaxError on a 3.10+-only construct
+        ast.parse(source, feature_version=(3, 11))  # raises SyntaxError on a 3.12-only construct
 
 
 # ==========================================================================
@@ -558,6 +562,41 @@ def _package_json(tmp_path: Path, content: str, name: str = "package.json") -> P
     manifest = tmp_path / name
     manifest.write_text(content)
     return manifest
+
+
+def _python3_version_floor_shim(shim_dir: Path, *, meets_floor: bool) -> str:
+    """Build a PATH string whose `python3` intercepts only step 6's floor
+    probe (a `-c` call whose code mentions `version_info`), exiting
+    according to `meets_floor`, and delegates every other invocation --
+    including `-c ''` and the actual helper spawn in step 7 -- to the real
+    interpreter via `exec`. This is what makes the meets_floor=True case a
+    genuine ordinary-ask pairing rather than a no-op stub: the real helper
+    still runs and still needs to see real dependency data."""
+    real_python3 = shutil.which("python3")
+    assert real_python3, "python3 must be on PATH to build a usable shim"
+    shim = shim_dir / "python3"
+    version_exit = "0" if meets_floor else "1"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-c" ]; then\n'
+        '  case "$2" in\n'
+        f'    *version_info*) exit {version_exit} ;;\n'
+        "  esac\n"
+        "fi\n"
+        f'exec "{real_python3}" "$@"\n'
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    return f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
+def _extract_version_check_argument() -> str:
+    """Pull the literal `-c` argument of the version-floor probe out of the
+    hook's actual source (not a hand-retyped copy), so a test that runs it
+    proves the real comparison, not a stand-in string."""
+    source = DISCLOSURE_HOOK.read_text()
+    match = re.search(r"python3 -c '(import sys; sys\.exit\([^']*)'", source)
+    assert match, f"version-check -c argument not found in {DISCLOSURE_HOOK}"
+    return match.group(1)
 
 
 class TestHookFilterSteps:
@@ -846,6 +885,53 @@ class TestHookDegradedAskDistinguishedFromOrdinaryAsk:
         assert reason is not None
         assert "dependency delta could not be determined" in reason
         assert "@" not in reason
+
+    def test_below_floor_interpreter_degraded_ask_not_silent_allow(self, isolated_home, tmp_path):
+        """A present, usable python3 below the repo's Python >= 3.11 floor
+        is a broken install, not the absent/unusable-interpreter cases in
+        TestHookFilterSteps that silently allow — it must degrade to ask."""
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir()
+        below_floor_path = _python3_version_floor_shim(shim_dir, meets_floor=False)
+        manifest = _package_json(tmp_path, '{"dependencies":{}}')
+        payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
+        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home, extra_env={"PATH": below_floor_path})
+        assert reason is not None
+        assert "dependency delta could not be determined" in reason
+
+    def test_at_floor_interpreter_gets_the_ordinary_ask(self, isolated_home, tmp_path):
+        """Same shim shape as above but reporting a floor-meeting version,
+        proving the ordinary ask path still reaches the real helper through
+        a stubbed interpreter."""
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir()
+        at_floor_path = _python3_version_floor_shim(shim_dir, meets_floor=True)
+        manifest = _package_json(tmp_path, '{"dependencies":{}}')
+        payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
+        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home, extra_env={"PATH": at_floor_path})
+        assert reason is not None
+        assert "lodash@^4.0.0" in reason
+        assert "dependency delta could not be determined" not in reason
+
+
+class TestVersionCheckArgumentRealBoundary:
+    """The shim-based tests above key on `version_info` appearing in the
+    command text rather than evaluating it -- these tests run the literal
+    extracted `-c` argument with `sys.version_info` patched, so a weakened
+    floor tuple fails here even when it passes every shim-based test
+    above."""
+
+    def test_below_floor_boundary_fails(self):
+        argument = _extract_version_check_argument()
+        patched = f"import sys; sys.version_info = (3, 10, 9, 'final', 0)\n{argument}"
+        result = subprocess.run([sys.executable, "-c", patched], capture_output=True, check=False)
+        assert result.returncode != 0
+
+    def test_at_floor_boundary_passes(self):
+        argument = _extract_version_check_argument()
+        patched = f"import sys; sys.version_info = (3, 11, 0, 'final', 0)\n{argument}"
+        result = subprocess.run([sys.executable, "-c", patched], capture_output=True, check=False)
+        assert result.returncode == 0
 
 
 class TestHookEnvelopeIntegrity:

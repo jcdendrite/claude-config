@@ -2,14 +2,12 @@
 """Diff dependency key sets between a package.json's pre-write and
 post-write state, for ask-new-dependency-disclosure.sh.
 
-Targets Python 3.9 explicitly — stock macOS `/usr/bin/python3` is 3.9.6,
-with no `tomllib` and no `match` statement. No stdlib module added after
-3.9, no PEP 604 `X | Y` union in runtime position (annotation-position
-only, guarded by `from __future__ import annotations`). `ruff`'s
+Requires Python >= 3.11 — this repo's stated floor (see README.md's setup
+section and install.sh's preflight check). `ruff`'s
 `target-version = "py312"` governs lint style repo-wide, not this file's
-actual runtime floor — a 3.10+ construct here would lint clean and only
-fail on a stow user's real interpreter, silently, since the calling hook
-fails open on any helper error.
+actual runtime floor — a 3.12-only construct here would lint clean and
+only fail on a stow user's 3.11 interpreter, silently, since the calling
+hook fails open on any helper error.
 
 Reconstruction semantics (mirrors the table in
 ask-new-dependency-disclosure.sh's header):

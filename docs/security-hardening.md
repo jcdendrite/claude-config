@@ -282,10 +282,10 @@ verbatim) via `parse-manifest-dependencies.py`, diffs the
 `dependencies`/`devDependencies`/`peerDependencies`/`optionalDependencies`
 union against the on-disk pre-state, and asks — naming each
 `name@constraint` pair, capped at 10 with an "…and N more" marker — only
-when that diff is non-empty. `parse-manifest-dependencies.py` targets
-Python 3.9 explicitly: stock macOS `/usr/bin/python3` is 3.9.6, with no
-`tomllib` and no `match` statement, which is also why this hook covers only
-`package.json` and not `requirements.txt`/`go.mod` (see residuals below).
+when that diff is non-empty. `parse-manifest-dependencies.py` requires
+Python >= 3.11 (this repo's stated floor; see its own module docstring).
+It currently covers only `package.json`, not `requirements.txt`/`go.mod`
+(see residuals below).
 
 A hook-returned `ask` renders as an interactive prompt under `acceptEdits`
 and `bypassPermissions` (see the finding recorded above, under "WebFetch
