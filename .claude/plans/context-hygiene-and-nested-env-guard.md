@@ -1,281 +1,301 @@
-# Context hygiene guidance + nested env.* guard gap
+# Nested `env.*` guard gap, and closing Phase 4
 
 ## Context
 
-This is Phase 4 and Phase 5a of `.claude/plans/token-cost-reduction.md`
-(Phases 1–3 already shipped: PR #622, #630, #636). Both remaining phases
-are small, independent, mechanical edits the engineer confirmed doing
-together in one PR this session; Phase 5b (an `opusplan` routing
-investigation) and Phase 6 (dropped — superseded by PR #617's
-`cost-ledger` subcommand) are explicitly out of scope here.
+Ship the `guard-settings-session-keys.sh` nested-`env.*` bypass fix, and
+close Phase 4 of `.claude/plans/token-cost-reduction.md` as rejected
+rather than shipping it.
 
-**Phase 4** adds two guidance lines to `claude/.claude/CLAUDE.md` — a
-phase-boundary `/clear` nudge and a pre-idle `/compact` nudge — because
-the parent plan's own cost analysis identifies session length (average
-context, `C_bar`) as the dominant cost lever, and CLAUDE.md currently
-gives the engineer/agent no explicit guidance on when to reset it.
+This branch currently carries two phases of that parent plan. Phase 5a
+(the guard fix) is sound and uncontested. Phase 4 — two `## Working
+Style` bullets in `claude/.claude/CLAUDE.md` telling the agent to run
+`/clear` at a phase boundary and `/compact` before idling — was rejected
+on review. Re-evaluating it against the repo's own records finds four
+independent defects, so it is dropped rather than reworded.
 
-**Phase 5a** closes a real bypass in `guard-settings-session-keys.sh`:
-the hook's own parent plan (Approach section) states that committing
-`env.CLAUDE_CODE_EFFORT_LEVEL` or `env.ANTHROPIC_MODEL` to
-`claude/.claude/settings.json` would ship one machine's local
-model/effort override as everyone's shipped config — exactly the harm
-the existing top-level `model`/`effortLevel` guard exists to prevent —
-but the guard's key match is top-level-only, so the nested form
-currently evades it silently.
-
-Intended outcome: CLAUDE.md carries the two reviewed guidance lines, and
-`guard-settings-session-keys.sh` blocks the nested `env.*` forms with
-test coverage proving it, without changing behavior for any
-already-guarded top-level key.
+Intended outcome: `claude/.claude/CLAUDE.md` returns byte-identical to
+`main`; the guard fix and its tests ship unchanged; Phase 4's rejection
+is recorded where a later plan will find it instead of re-proposing it.
 
 ## Approach
+
+Delete the two bullets, record Phase 4 as rejected in the parent plan and
+in `docs/cost-levers-considered.md`, and ship Phase 5a alone. No
+replacement guidance is written, in CLAUDE.md or anywhere else: the
+canonical home for session-reset policy already exists and already says
+the opposite of what the bullets said.
+
+### Why the bullets fail — four independent reasons
+
+**Wrong actor.** `/clear` and `/compact` are harness built-in CLI
+commands with no tool binding. `claude/.claude/CLAUDE.md` is stowed to
+`~/.claude/CLAUDE.md` and loaded as the agent's prefix on every API call.
+Both bullets instruct a reader who cannot perform the action, and are
+re-read at full cost on every call to do it — inside a phase whose stated
+purpose is cost reduction.
+
+**The `/compact` bullet overrides an `[engineer-verified]` given in its
+own parent plan.** `token-cost-reduction.md:173-174` records "Compaction
+is not an acceptable mechanism in this workflow; handoff is the
+prescribed context-reset primitive. `[engineer-verified]`", and its
+Approach (`:73-92`) and Out-of-scope (`:419-421`) say the same. Phase 4's
+one-line Phases entry (`:303-304`) names `/compact` guidance anyway, so
+the entry contradicts the ledger row it sits under.
+
+**The `/clear` bullet re-proposes advice this repo already measured and
+rejected.** `docs/cost-levers-considered.md:54` records "'Always hand off
+before implementation' as blanket advice | Rejected as mispriced", and
+`:53` records "Automating the continue-vs-handoff decision via a hook |
+Rejected | A hook cannot see how much work remains, which is half of the
+breakeven calculation." A CLAUDE.md bullet is the prose form of the same
+blanket rule, and it inherits the same defect: neither a hook nor an
+agent can see how much work remains, so neither can tell a phase boundary
+worth resetting at from one worth continuing through.
+
+**Single source of truth.** Session-reset policy has a canonical home:
+`handoff/SKILL.md:15-17` states the continue-by-default position with its
+reason, `brief/SKILL.md`'s frontmatter description carries the cold-start
+routing, `nudge-handoff-near-context-cap.sh --check` supplies the
+mechanical warrant test, and `docs/cost-levers-considered.md` holds the
+measured verdicts. CLAUDE.md prose restating any of it is duplication by
+this repo's own rule, and the specific restatement was wrong in both
+halves.
+
+For the `/compact` bullet this reason is weaker — no live surface states
+the opposite position — so reasons one through three carry that half.
 
 ### Assumption ledger
 
 ```
-Root: two independently-scoped gaps in this repo's cost/config hygiene
-remain unaddressed by token-cost-reduction.md's shipped phases — CLAUDE.md
-gives no explicit guidance on when to reset session context, and
-guard-settings-session-keys.sh's key-matching is bypassable via a nested
-env.* path.
-Givens: which settings.json keys have a documented CLAUDE_CODE_*/
-ANTHROPIC_* env-var equivalent is fixed by Anthropic's own settings.json
-and environment-variables reference docs — beyond reach: this repo
-cannot add or remove which keys the Claude Code CLI itself treats as
-env-overridable; it can only guard the ones vendor docs confirm exist
-today (see Row 4).
+Root: PR #646 ships two claude/.claude/CLAUDE.md bullets (Phase 4 of
+token-cost-reduction.md) prescribing /clear and /compact — actions the
+agent cannot perform, advice this repo has already measured and rejected,
+and for /compact a direct override of an [engineer-verified] given in the
+same parent plan.
 
-Row 1 [mechanism]: dot-split path-traversal restructure of guarded_value
-(reduce-based, presence tracked separately from value) — anchors: root —
-closes the nested env.* bypass while preserving identical behavior for
-existing top-level keys (a single-segment path degenerates to the
-original has()/[] check).
-Row 2 [assumption]: guard-settings-session-keys.sh's guarded_value only
-matches top-level keys today (has($key) on $settings directly)
-[verified: read claude/.claude/hooks/guard-settings-session-keys.sh:107-119
-this session] — anchors: row1
-Row 3 [assumption]: env.CLAUDE_CODE_EFFORT_LEVEL and env.ANTHROPIC_MODEL
-are the two real env-var equivalents worth guarding, not a hypothetical
-pair [verified: docs/hooks.md:25 already documents these as the env-var
-equivalents of the guarded model/effortLevel keys] — anchors: row1
-Row 4 [assumption]: no other guarded top-level key
-(skipAutoPermissionPrompt, skipWorkflowUsageWarning, theme, tui) has a
-documented Claude-Code env-var equivalent that would also need guarding
-in this same pass [verified: Anthropic's settings.md "Settings and
-Environment Variable Equivalents" table and env-vars.md reference,
-checked this session — none of the four have one] — anchors: row1
-Row 5 [assumption]: claude/.claude/hooks/tests/test_guard_settings_session_keys.py
-already exists (473 lines, added by PR #573) — the parent
-token-cost-reduction.md plan's claim that "no test file exists for this
-hook today" is stale [verified: file present at that path this session;
-git log shows PR #573 added it, predating the parent plan] — anchors: row1
-Row 6 [mechanism]: two new Working Style bullets in CLAUDE.md
-(phase-boundary /clear, pre-idle /compact) — anchors: root — gives
-explicit session-hygiene guidance the parent plan's cost analysis
-identifies as the dominant lever (session length / C_bar) but CLAUDE.md
-currently doesn't state.
-Row 7 [assumption]: the "review markers survive across a /clear"
-mechanism is already stated under CLAUDE.md's existing "## Safety"
-section, so restating it in the new Phase 4 bullets would be duplication
-[verified: ai-instruction-and-memory-files review this session flagged
-and trimmed exactly this duplication from an earlier draft] — anchors: row6
-Row 8 [engineer-verified]: bundling Phase 4 and Phase 5a together into
-one PR, in this order, with Phase 5b and Phase 6 deferred — anchors: root
-— the engineer confirmed this ordering and scope explicitly this session.
+Givens:
+- Prompt-cache TTL cannot exceed 1 hour by any exposed setting; an idle
+  gap past it forces a full cache-write rebuild. Beyond reach: vendor-
+  imposed, no repo-side control exists.
+  [verified: token-cost-reduction.md:160-161, citing
+  code.claude.com/docs/en/prompt-caching]
+- /clear and /compact are harness built-in CLI commands with no tool
+  binding; only the human at the terminal can run them. Beyond reach:
+  Anthropic owns the harness command surface.
+  [verified: the Skill tool's own contract states "Built-in CLI commands
+  (/help, /clear, …) aren't skills"; no other tool in the session roster
+  executes a slash command]
+- Compaction is not an acceptable mechanism in this workflow; handoff is
+  the prescribed context-reset primitive. [engineer-verified] — carried
+  forward from token-cost-reduction.md:173-174 and re-affirmed by the
+  engineer's PR #646 review comment.
+- When a fresh session needs context the current one holds, /brief is the
+  preferred vehicle over a bare /clear. [engineer-verified] — engineer's
+  PR #646 inline comment on claude/.claude/CLAUDE.md.
+
+Row 1 [mechanism]: delete both bullets from claude/.claude/CLAUDE.md —
+anchors: root — deletion is the minimal primitive here; the heavier
+options are the ones being declined. Heavier alternatives enumerated and
+rejected: (a) reword into one agent-actionable /brief bullet — still
+duplicates brief/SKILL.md's own routing and still asserts a
+reset-at-boundary rule the register measured as net-negative
+(origin/main:67); (b) a PostToolUse hook firing on `gh pr create` to
+nudge a reset — inert for the same wrong-actor reason the bullets are,
+since no tool binds /clear for an agent to run, so a precisely-triggered
+nudge still cannot cause the reset it names. The register's standing
+hook rejection (origin/main:66, "a hook cannot see how much work
+remains") is *not* the reason here and must not be cited as one: it was
+measured against a hook deciding continue-vs-handoff in general, and a
+`gh pr create` trigger needs no such judgment; (c) move the guidance
+into handoff/SKILL.md or brief/SKILL.md — those bodies already state the
+opposite position, so the edit would be a contradiction rather than an
+addition.
+Row 2 [mechanism]: close Phase 4 in .claude/plans/token-cost-reduction.md
+(Phases entry, Approach, Out-of-scope) — anchors: root — this repo closes
+a superseded phase by editing the parent plan in place; PR #665
+(commit 2955d32) is the worked template.
+Row 2a [assumption]: editing that already-merged plan file is not an
+Axis-3 preserved-content violation, despite
+docs/cost-levers-considered.md:13-14 calling merged plan files "read-only
+historical records" [verified: PR #665 / commit 2955d32 edited exactly
+this file's Phases entry, Approach passage, and ledger row to close Phase
+5b, and was merged — so the operative convention is that an active plan's
+phase dispositions are updated in place. Axis 3's own test agrees: a
+Phases entry states intended future work, which is a description of
+current intent, not a record of something that happened] — anchors: row2
+Row 3 [mechanism]: add a `## From token-cost-reduction.md` section to
+docs/cost-levers-considered.md with two rows (Phase 4 rejected; idle-gap
+cache rebuild named, not solved) — anchors: root — the register exists so
+"a seventh plan doesn't re-measure ground already covered", and CLAUDE.md
+session-reset prose is precisely the shape that gets re-proposed.
+Row 4 [mechanism]: rewrite this branch's own plan file to drop its Phase
+4 sections — anchors: root — the plan ships in the same PR as the
+implementation, so a plan still prescribing Phase 4 would contradict the
+diff beside it.
+Row 5 [assumption]: `main` does not contain the two bullets, so the
+revert is a two-line deletion with no merge complication
+[verified: `git show main:claude/.claude/CLAUDE.md` — line 32 "Locate
+before a whole-file read" is immediately followed by line 33 "Scope
+discipline"] — anchors: row1
+Row 6 [assumption]: docs/cost-levers-considered.md already records both
+rejections the /clear bullet re-proposes — blanket boundary handoff, and
+hook-automated reset [verified: on origin/main these are
+docs/cost-levers-considered.md:66-67; the same two rows sit at :53-54 in
+this branch's stale pre-sync copy, which grew from ~92 to 267 lines
+across the 39-commit gap. Cite the post-sync numbers; match on row text,
+not line number] — anchors: row1, row3
+Row 7 [assumption]: handoff/SKILL.md already states the
+continue-by-default position canonically, so no skill body needs the
+guidance added [verified: handoff/SKILL.md:15-17 — "A handoff written
+*only* to shed context usually costs more than continuing until the
+session is actually past its threshold"] — anchors: row1
+Row 8 [assumption]: markers survive both /clear and /compact; review-
+narrative continuity does not [verified: claude/.claude/CLAUDE.md:98,
+docs/hooks.md:63, token-cost-reduction.md:76-84] — anchors: row3 — load-
+bearing because the register row must state the correct reason rather
+than the marker framing.
+Row 9 [assumption]: a /compact summary can fabricate an implied
+authorization a resumed session reads as pre-approved, which is a
+distinct harm from lossiness [verified: hook
+claude/.claude/hooks/restore-authorization-boundary-on-compact.sh exists
+on `main` for exactly this; it is absent from this branch's tree because
+the merge-base predates it] — anchors: row3
+Row 10 [assumption]: the idle-gap cache rebuild is the one cost effect
+Phase 4's /compact half targeted and nothing else in the parent plan
+addresses, so dropping Phase 4 orphans it [verified:
+token-cost-reduction.md:431-433 — "addressed only by the Phase 4 guidance
+line, not by a mechanism"] — anchors: row3
+Row 11 [assumption]: the parent plan's ~910K-token / ~$9 figure for that
+idle-gap rebuild is what the register row should attribute
+[verified: token-cost-reduction.md:431-432 states it; the figure is cited
+to its source plan, not independently re-derived this session] —
+anchors: row3
+Row 12 [assumption]: Phase 5a is uncontested and unaffected — PR #646
+carries exactly one inline review comment, on
+claude/.claude/CLAUDE.md, and `main` has not touched the guard hook since
+the merge-base [verified: `gh api .../pulls/646/comments` returns one
+comment at that path; `git log HEAD..origin/main --
+claude/.claude/hooks/guard-settings-session-keys.sh` is empty] —
+anchors: root
+Row 13 [assumption]: the branch is 39 commits behind origin/main with a
+conflict-free trial merge, so the sync is routine
+[verified: `git rev-list --count HEAD..origin/main` = 39;
+`git merge-tree --write-tree origin/main HEAD` returned a tree with no
+conflict report] — anchors: root
+Row 14 [engineer-verified]: drop Phase 4 entirely rather than reword it;
+keep PR #646 open shipping Phase 5a alone; record the rejection in
+docs/cost-levers-considered.md — anchors: root — chosen by the engineer
+this session from three presented dispositions.
 ```
 
-### Phase 4 — CLAUDE.md guidance lines
+### Phase 5a — Nested `env.*` guard (unchanged, already implemented)
 
-Two bullets under the existing `## Working Style` section, alongside the
-file's other single-bullet behavioral rules (`Default-consider
-delegation`, `Locate before a whole-file read`). Drafted and reviewed via
-the `ai-instruction-and-memory-files` skill this session before being
-finalized here — its review flagged one duplication (an earlier draft's
-justification clause restated the "review markers survive across a
-`/clear`" mechanism already stated under this same file's `## Safety`
-section) and one redundancy in the `/compact` bullet's phrasing, both
-trimmed in the text below.
-
-Final bullet text:
-
-> **Clear at phase boundaries.** Run `/clear` when a PR ships or before
-> starting unrelated work rather than continuing in the same session —
-> a fresh session starts near the input-token floor instead of carrying
-> finished work's context forward at cost-inflating scale.
->
-> **Compact before idling.** Before letting a session sit idle, run
-> `/compact` unless a review fix-loop is still open — a cache-cold
-> resume otherwise reprocesses full context at full price instead of a
-> cheap cached read, and compacting mid-loop risks losing findings not
-> yet settled.
-
-**Alternative considered and set aside:** a new `## Context Management`
-section header. Two bullets don't warrant a new header when
-`## Working Style` already holds behaviorally-similar single-bullet
-rules; a new section would add a heading line for no added clarity.
-
-**Alternative considered and set aside:** lowering the auto-compaction
-threshold instead of a manual pre-idle nudge. The parent plan's Approach
-section already declined this explicitly (review-narrative continuity
-is a real casualty of a lossy mid-loop summary); this phase's `/compact`
-bullet is deliberately scoped to a manual, pre-idle action, not a
-config change to the automatic trigger point.
-
-### Phase 5a — Nested env.* guard
-
-**Root problem:** `guarded_value`'s `$settings | has($key)` only ever
-tests a top-level key on `$settings`. A literal dotted string like
+`guarded_value`'s `$settings | has($key)` only ever tests a top-level key
+on `$settings`. A literal dotted string like
 `"env.CLAUDE_CODE_EFFORT_LEVEL"` in `GUARDED_KEYS_JSON` is itself just
-another top-level key name to `has()` — it will never match a value
-actually living at `.env.CLAUDE_CODE_EFFORT_LEVEL`, so appending it to
-the list as-is is a silent no-op. [verified: read
-`claude/.claude/hooks/guard-settings-session-keys.sh:107-119` this
-session]
-
-**Fix:** restructure `guarded_value` to split the key on `.` and walk
-the resulting path, tracking presence separately from value at each
-step (so an explicit `null`/`false` mid-path is still distinguishable
-from "key absent," matching the existing top-level test coverage's
-guarantee):
-
-```jq
-def guarded_value($settings; $key):
-  ($key | split(".")) as $path
-  | reduce $path[] as $seg
-      ({present: true, value: $settings};
-       if .present and (.value | type) == "object" and (.value | has($seg))
-       then {present: true, value: .value[$seg]}
-       else {present: false, value: null}
-       end)
-  | if .present then [.value] else [] end;
-```
-
-A single-segment path (any existing top-level key with no `.`) behaves
-identically to today's `has($key)` check — the `reduce` runs once over
-the one segment, so no existing guarded key's behavior changes. This is
-the reason to restructure the one shared function rather than add a
-second, nested-only code path: two code paths for "is this key
-guarded" would let them silently drift, which is exactly the shape
-CLAUDE.md's "audit structural siblings" rule warns about.
+another top-level key name to `has()` — it never matches a value living
+at `.env.CLAUDE_CODE_EFFORT_LEVEL`, so appending it as-is is a silent
+no-op. `guarded_value` therefore splits the key on `.` and walks the
+resulting path via `reduce`, tracking presence separately from value at
+each step, so an explicit `null`/`false` mid-path stays distinguishable
+from "key absent". A single-segment path degenerates to the original
+check, so no existing guarded key changes behavior.
 
 **Alternative considered and set aside:** jq's built-in `getpath`.
-`getpath($path)` on a missing path segment returns `null` directly,
-which is indistinguishable from a genuinely-set `null` value — the
-same ambiguity `guarded_value` was already written to avoid for
-top-level keys (`test_guarded_key_set_to_null_against_absent_denies`).
-Using `getpath` bare would silently regress that guarantee for the new
-nested keys; the explicit `reduce`-with-presence-flag above is the
-smallest change that keeps it.
+`getpath($path)` on a missing segment returns `null`, indistinguishable
+from a genuinely-set `null` — the same ambiguity `guarded_value` was
+already written to avoid for top-level keys
+(`test_guarded_key_set_to_null_against_absent_denies`).
 
-**`GUARDED_KEYS_JSON` addition:** append `"env.CLAUDE_CODE_EFFORT_LEVEL"`
-and `"env.ANTHROPIC_MODEL"` — the two keys the parent plan names as the
-bypass path for the guard's existing `model`/`effortLevel` entries.
-[verified: `docs/hooks.md:25` already documents `ANTHROPIC_MODEL`/
-`CLAUDE_CODE_EFFORT_LEVEL` as the env-var equivalents of the guarded
-`model`/`effortLevel` settings keys, corroborating these are the two
-real nested paths worth guarding, not a hypothetical pair] A
-`/plan-review` round raised whether the other four guarded top-level
-keys (`skipAutoPermissionPrompt`, `skipWorkflowUsageWarning`, `theme`,
-`tui`) have their own undocumented env-var equivalents that would need
-guarding in this same pass. [verified: Anthropic's `settings.md`
-"Settings and Environment Variable Equivalents" table and `env-vars.md`
-reference, checked this session — none of the four have a documented
-env-var equivalent.] No further `GUARDED_KEYS_JSON` entries needed.
-
-**Test file:** `claude/.claude/hooks/tests/test_guard_settings_session_keys.py`
-already exists (473 lines) — the parent plan's citation that "no test
-file exists for this hook today" is stale against current `main` and is
-corrected here rather than repeated. [verified: file present at that
-path this session, `git log` shows it added by PR #573, predating this
-plan] Add cases to the existing file, following its established
-`settings_repo` fixture + `stage_settings`/`run_hook` helper pattern.
-The first six mirror this file's own existing per-invariant top-level
-tests (`test_guarded_key_added_where_main_lacks_it_denies`,
-`test_guarded_key_set_to_null_against_absent_denies`,
-`test_guarded_key_set_to_false_against_absent_denies`,
-`test_both_changed_denies_commit`) at the nested level — a
-`/plan-review` round flagged their earlier absence as an inconsistent
-gap against this file's own house style, not a deliberate narrowing:
-- nested `env.CLAUDE_CODE_EFFORT_LEVEL` added where main lacks `env`
-  entirely → deny (the realistic shape: a fresh `env` block written by
-  `/effort`)
-- nested `env.CLAUDE_CODE_EFFORT_LEVEL` changed where main already has
-  a different value → deny
-- nested `env.ANTHROPIC_MODEL` added → deny
-- both nested keys changed in the same commit → deny (mirrors
-  `test_both_changed_denies_commit` at the nested level)
-- nested `env.CLAUDE_CODE_EFFORT_LEVEL` explicitly `null` where main's
-  `env` object lacks that leaf entirely → deny (mirrors
-  `test_guarded_key_set_to_null_against_absent_denies`; pins the
-  presence-vs-value distinction the `reduce` design exists to preserve)
-- the whole `env` key staged as a non-object (e.g. a string) where main
-  has a real `env.CLAUDE_CODE_EFFORT_LEVEL` value → deny (pins the
-  `(.value | type) == "object"` guard: a corrupted intermediate shape
-  must fall through to "absent," which still produces a deny when the
-  other side has a real value, not a silent allow)
-- an unrelated `env.SOME_OTHER_VAR` change, in two shapes: (a) added to
-  an `env` object that already exists on main, and (b) added via a
-  freshly-created `env` object main lacks entirely → both allow (must
-  not over-guard the whole `env` block, only the two named leaves; the
-  two shapes exercise different branches of the presence walk)
-- existing top-level-only test cases are re-run unmodified as the
-  regression check that the `guarded_value` restructure preserves
-  current behavior
-
-**Docs:** `docs/hooks.md:25`'s one-line description of this hook
-currently only names the top-level keys it guards. Update it in the
-same sentence to note the nested `env.*` equivalents are guarded too —
-in-file scope on a file this phase's own critical-files list already
-touches, and a current-behavior description (CLAUDE.md Axis 3), not a
-historical record.
+This work is committed and reviewed; this plan revision does not change
+it. Its full design record, including the `GUARDED_KEYS_JSON` addition,
+the four-other-keys check against Anthropic's settings and env-var
+reference docs, and the eleven test cases, is unchanged from the
+implementation on this branch.
 
 ## Critical files
 
 | Path | Change |
 | --- | --- |
-| `claude/.claude/CLAUDE.md` | Phase 4. Two new bullets under `## Working Style`, text above. |
-| `claude/.claude/hooks/guard-settings-session-keys.sh` | Phase 5a. Restructure `guarded_value` for path traversal; append the two nested keys to `GUARDED_KEYS_JSON`. |
-| `claude/.claude/hooks/tests/test_guard_settings_session_keys.py` | Phase 5a. Add the eight new cases above to the existing `TestGuardSettingsSessionKeys` class (the ninth bullet is the existing-tests regression check, not a new test); reuse `settings_repo`/`stage_settings`/`run_hook`, no new fixtures needed. |
-| `docs/hooks.md` | Phase 5a. One-sentence update to this hook's existing description line (`:25`) noting the nested `env.*` forms are also guarded. |
+| `claude/.claude/CLAUDE.md` | Delete the two `## Working Style` bullets (`:33-34` on this branch). The file must end byte-identical to `main`. |
+| `.claude/plans/token-cost-reduction.md` | Close Phase 4. Rewrite the Phases entry (`:303-304`) to record it as rejected-not-executed with the reason; adjust the Approach compaction passage and the Out-of-scope idle-gap line (`:431-433`) so neither still points at a Phase 4 that will not ship. **This file is the site that holds the reason in full.** |
+| `docs/cost-levers-considered.md` | New `## From token-cost-reduction.md` section with two rows: Phase 4's CLAUDE.md guidance (rejected) and the idle-gap cache rebuild (named, not solved). Each row is a verdict plus a one-clause measured reason naming its source plan — the register's preamble (`origin/main:17`) states it indexes source plans rather than restating them, so the argument stays in the plan file and the register points at it. State the `/compact` verdict's reason as loss of review-narrative continuity, not as loss of marker state: per Row 8, markers survive both commands and only the narrative does not. **Edit this file only after the sync (Verification step 1), and locate every anchor by matching row text rather than by line number:** it took three upstream edits in the 39-commit gap (#669, #676, #677) and roughly tripled in length, so every line number this plan cites for it is pre-sync. Its preamble wording also changed — a section whose lever was closed without a source plan now names the session date instead — so mirror the current phrasing, not this branch's copy. |
+| `.claude/plans/context-hygiene-and-nested-env-guard.md` | This file — already rewritten. |
+| `claude/.claude/hooks/guard-settings-session-keys.sh`, its test file, `docs/hooks.md` | **No change.** Phase 5a ships exactly as committed. |
 
-**Reuse:** the existing `settings_repo` fixture and `stage_settings`/
-`run_hook`/`run_hook_reason` helpers in the test file cover everything
-the new cases need — no new test infrastructure.
+**Reuse:** commit `2955d32` (PR #665, "Close Phase 5b") is the worked
+template for a phase closure — it edits the Phases entry, the Approach
+passage, and the ledger row in one commit, and nothing else. Follow its
+shape. `docs/cost-levers-considered.md`'s existing tables supply the
+column layout and the verdict vocabulary (`Rejected as mispriced`,
+`Named, not solved`, `Declined deliberately, kept in reach`); reuse those
+terms rather than inventing new verdicts.
+
+**Naming:** the branch and this plan file keep the
+`context-hygiene-and-nested-env-guard` slug. Renaming an open PR's branch
+to match a narrowed scope costs the PR's review history for a cosmetic
+gain; the PR title and body carry the corrected scope instead.
 
 ## Verification
 
-1. `../../../.venv/bin/pytest claude/.claude/ -k GuardSettingsSessionKeys -q`
-   — all existing cases still pass (regression check on the
-   `guarded_value` restructure) and the new nested-key cases pass.
-2. Full suite: `../../../.venv/bin/pytest claude/.claude/ -q`.
-3. `../../../.venv/bin/ruff check claude/.claude/` — no Python changes
-   expected to trip anything, run for completeness.
-4. `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck`
-   — covers the hook's shell edit.
-5. Manual: stage a `claude/.claude/settings.json` with
+1. Sync the branch onto current `origin/main` first (39 behind, trial
+   merge clean) via `git-feature-branch-sync`. This runs **before** every
+   check below, so no check reads a tree a later step rewrites.
+2. `git diff origin/main...HEAD -- claude/.claude/CLAUDE.md` produces
+   **empty output** — the direct proof the revert restored the file
+   rather than approximating it.
+3. `../../../.venv/bin/pytest claude/.claude/ -k GuardSettingsSessionKeys -q`
+   — the guard's 35 cases still pass untouched.
+4. `../../../.venv/bin/pytest claude/.claude/ -q` — full suite.
+5. `../../../.venv/bin/ruff check claude/.claude/`.
+6. `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck`.
+7. Manual guard check: stage a `claude/.claude/settings.json` carrying
    `{"env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}` against a `main`
-   lacking that key, attempt `git commit`, confirm deny; confirm an
-   unrelated `env` key still allows.
-6. `ai-instruction-and-memory-files` re-read of the final CLAUDE.md diff
-   as part of `/code-review`'s normal dispatch for CLAUDE.md changes,
-   confirming the trims from this session's pre-review pass landed.
+   lacking it, attempt `git commit`, confirm the deny; confirm an
+   unrelated `env` key still commits.
+8. `/code-review` on the cumulative PR-vs-`main` diff. The diff touches
+   `claude/.claude/CLAUDE.md` and two docs, so
+   `ai-instruction-and-memory-files` and `comment-discipline-reviewer`
+   are in its dispatch set; confirm both actually run.
+9. `/pr-description` to rewrite the PR body for the narrowed scope
+   (Phase 5a only).
+10. `/ready-for-review`, then `/respond-pr` to reply to the inline
+    comment and the review body.
 
 ## Out of scope
 
-- Phase 5b (`opusplan` model-routing investigation) and Phase 6 (cost
-  ledger) — separate phases, scheduled/dropped per the engineer's
-  decision this session, not touched here.
-- Any change to the auto-compaction threshold itself — declined by the
-  parent plan; Phase 4's `/compact` bullet is a manual pre-idle nudge
-  only.
-- Guarding any `env.*` key beyond the two named here. The parent plan
-  names exactly `CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_MODEL` as the
-  bypass path for existing guarded keys; guarding the entire `env`
-  block would block legitimate unrelated env-var commits with no
-  stated harm to prevent.
-- Redesigning `guard-settings-session-keys.sh`'s overall mechanism (a
-  git-commit gate diffing staged `settings.json` against `main` on a
-  fixed key allowlist). This plan extends the guard's key-matching only;
-  the gate's trigger/diff shape is this repo's existing, working
-  control and unrelated to closing the nested-key bypass.
+- **Any replacement for Phase 4** — in CLAUDE.md, in a skill body, or as
+  a hook. The engineer chose to drop it outright; the three replacement
+  shapes are enumerated under ledger Row 1 with the evidence against each.
+- **Solving the idle-gap cache rebuild.** It is real and now
+  unaddressed. The 1-hour TTL is vendor-capped and only the human decides
+  when a session idles, so nothing agent-side can close it. Recorded as
+  "Named, not solved" rather than left implicit.
+- **Reopening the auto-compaction threshold.** Declined by the parent
+  plan on an `[engineer-verified]` given; nothing here revisits it.
+- **Stating the compaction position on a live surface.** After this
+  change no skill, hook, or instruction file tells an agent that handoff
+  rather than compaction is this repo's reset primitive — the position
+  exists only in `token-cost-reduction.md:173-174` and in the register
+  row this plan adds. Named rather than left implicit, and deliberately
+  not acted on: the engineer's decision was to drop Phase 4 and add no
+  replacement guidance, and writing this position into CLAUDE.md or a
+  skill body would be a replacement.
+- **Any change to `guard-settings-session-keys.sh`, its tests, or
+  `docs/hooks.md`.** Phase 5a drew no review objection and `main` has not
+  moved underneath it.
+- **Renaming the branch or this plan file** to match the narrowed scope.
+- **`token-cost-reduction.md`'s dangling Reuse-note clause** — "reconcile
+  the compaction threshold with it" (`origin/main:340`) points at a
+  compaction threshold that plan's own Out-of-scope declined to change.
+  Pre-existing drift, unrelated to Phase 4's manual-`/compact` bullet, so
+  dropping Phase 4 neither creates nor resolves it. Raised for the
+  reviewer rather than fixed here.
+- **Phase 5b and Phase 6** of the parent plan. Neither is touched here.
+  5b was closed by PR #665. Phase 6 is **still open** — PR #617 narrowed
+  its scope (it must not recreate `docs/cost-ledger.md`) but did not
+  close it, and it remains blocked on the `cost-trend-ledger` prerequisite
+  decision. [verified: `git show origin/main:.claude/plans/token-cost-reduction.md`
+  — `:318` still reads "**Phase 6 — Measurement.**" unmodified, against
+  `:312-316` where Phase 5b was rewritten to "Superseded, not executed."]
+  No artifact this change writes may describe Phase 6 as dropped.
