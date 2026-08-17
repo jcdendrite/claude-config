@@ -142,8 +142,7 @@ principle — recorded for verification status, not treated as fixed):
   git-dir resolve only — the diagnosis reread already existed), each
   ~50-65ms locally; only the self-lock fast path (already-held lock, lines
   1001-1003) is untouched. Acceptable for a hook that fires on git writes,
-  not the hot per-tool-call path, but worth naming precisely rather than
-  as "one new subprocess."
+  not the hot per-tool-call path.
 
   Rewrite the function's preceding comment block (currently asserting
   "exclusive-create (verified empirically...)" as the exclusion mechanism)
