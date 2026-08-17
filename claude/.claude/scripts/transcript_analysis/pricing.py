@@ -158,60 +158,63 @@ def _context_bucket(context_at_turn: int) -> str:
 
 
 def dedup_turns_by_request_id(records: Sequence[dict]) -> list[dict]:
-    """Collapse consecutive same-requestId assistant records into one turn each.
+    """Collapse each run of same-requestId assistant records into one turn each.
 
-    Claude Code writes one JSONL record per assistant content block (thinking /
-    text / tool_use); every record from one API call shares one requestId.
-    Measured across 150 transcripts / 15,653 multi-record runs: input_tokens,
-    cache_creation_input_tokens, and cache_read_input_tokens are identical
-    across every record in a run, but output_tokens ascends within the run
-    and completes only on the run's last record (see _warn_if_run_usage_drift
-    for the runtime check on the input/cache invariant), so pricing or
-    counting per raw record inflates dollars and turn counts by however many
-    blocks the response split into, and taking usage from the run's first
-    record undercounts output tokens. This merges each run of consecutive
-    assistant records sharing one non-empty requestId into a single record:
-    message.content becomes the concatenation of the run's own content blocks
-    in original order (so a caller that classifies on content sees every
-    block, not just one); every other field is taken from the run's first
-    record except message.usage, which is taken from the run's last record.
-    A missing/null/empty requestId never merges with another missing one:
-    each such record stays its own one-record turn, since real transcripts
-    carry requestId-less records (synthetic all-zero-usage API-error
-    records) that must not
-    collapse into each other. Non-assistant records pass through unchanged
-    and end any run in progress. Callers must never concatenate records from
-    different sessions before calling this: requestId is unique per API call
-    and a run's own records are always contiguous, so concatenating one
-    session's main transcript with its own subagent transcripts is safe, but
-    mixing in another session's records is not. A run continues on
-    requestId equality alone (not also isSidechain/type), relying on
-    requestId uniqueness. Merging shifts --since semantics: a merged turn's
-    timestamp is its first block's, so "since" now means the turn started
-    after the cutoff, not that some block of it landed after the cutoff.
+    Claude Code writes one JSONL record per assistant content block (thinking
+    / text / tool_use); every record from one API call shares one requestId,
+    but a run's own records are not always contiguous -- the harness
+    sometimes interleaves a tool_result record between two same-requestId
+    assistant records while it executes one multi-tool_use response's tool
+    calls one at a time. A contiguous group always merges; a non-contiguous
+    group merges only when _non_contiguous_run_usage_matches agrees. A
+    merging group's turn is built by _merge_assistant_run and emitted at the
+    group's first member's original position; later members are dropped. A
+    missing/null/empty requestId never merges with another missing one,
+    since real transcripts carry requestId-less synthetic error records that
+    must not collapse into each other. Non-assistant records always pass
+    through unchanged in their own position. Grouping is on requestId
+    equality alone (not also isSidechain/type).
     """
+    # A non-contiguous group can span the entire input, so callers
+    # concatenating a session's main transcript with its own subagent
+    # transcripts rely on the usage-corroboration bar to keep that
+    # concatenation safe from a stray requestId collision; mixing in another
+    # session's records is still unsafe.
+    # A merged turn's --since timestamp is its first block's, so a
+    # non-contiguous group's staleness window can span the entire input.
+    groups: dict[str, list[int]] = {}
+    for idx, rec in enumerate(records):
+        if rec.get("type") != "assistant":
+            continue
+        request_id = rec.get("requestId")
+        if not request_id:
+            continue
+        groups.setdefault(request_id, []).append(idx)
+
+    merge_start_idx: dict[int, str] = {}
+    skip_idx: set[int] = set()
+    for request_id, idxs in groups.items():
+        if len(idxs) == 1:
+            continue
+        is_contiguous = idxs == list(range(idxs[0], idxs[0] + len(idxs)))
+        if not is_contiguous:
+            run = [records[i] for i in idxs]
+            if not _non_contiguous_run_usage_matches(run):
+                _log_non_contiguous_merge_decision(request_id, len(idxs), merged=False)
+                continue
+            _log_non_contiguous_merge_decision(request_id, len(idxs), merged=True)
+        merge_start_idx[idxs[0]] = request_id
+        skip_idx.update(idxs[1:])
+
     turns: list[dict] = []
-    run: list[dict] = []
-    run_key: str | None = None
-
-    for rec in records:
-        is_assistant = rec.get("type") == "assistant"
-        request_id = rec.get("requestId") if is_assistant else None
-        continues_run = is_assistant and request_id and request_id == run_key
-
-        if not continues_run and run:
-            turns.append(run[0] if len(run) == 1 else _merge_assistant_run(run))
-            run = []
-
-        if is_assistant:
-            run.append(rec)
-            run_key = request_id
-        else:
+    for idx, rec in enumerate(records):
+        if idx in skip_idx:
+            continue
+        request_id = merge_start_idx.get(idx)
+        if request_id is None:
             turns.append(rec)
-            run_key = None
-
-    if run:
-        turns.append(run[0] if len(run) == 1 else _merge_assistant_run(run))
+        else:
+            turns.append(_merge_assistant_run([records[i] for i in groups[request_id]]))
 
     return turns
 
@@ -275,6 +278,14 @@ def _cache_miss_reason(message: dict) -> str | None:
 # and last record alike carried a cache_creation block.
 _USAGE_DRIFT_INVARIANT_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
+# Usage keys a non-contiguous same-requestId run must agree on before
+# dedup_turns_by_request_id merges it: _USAGE_DRIFT_INVARIANT_KEYS plus
+# output_tokens. A genuinely once-billed non-contiguous run carries
+# byte-identical usage (including output_tokens) across every record --
+# unlike a contiguous run, where output_tokens ascends (12/12 observed
+# non-contiguous pairs).
+_NON_CONTIGUOUS_MERGE_REQUIRED_MATCH_KEYS = _USAGE_DRIFT_INVARIANT_KEYS + ("output_tokens",)
+
 # Rate-limits _warn_if_run_usage_drift to one line per process, mirroring
 # _warn_if_subagent_format_drift's pattern -- a whole-corpus scan should
 # surface one signal that the format changed, not one per occurrence.
@@ -309,6 +320,59 @@ def _warn_if_run_usage_drift(run: list[dict]) -> None:
             )
             _usage_drift_warned = True
             return
+
+
+def _non_contiguous_run_usage_matches(run: list[dict]) -> bool:
+    """Whether every record in a non-contiguous same-requestId run agrees with
+    the first record on all of _NON_CONTIGUOUS_MERGE_REQUIRED_MATCH_KEYS.
+
+    dedup_turns_by_request_id gates a non-contiguous merge on this: bare
+    requestId equality alone would also merge two distinct API calls that
+    happen to share a requestId (e.g. a hook-denial retry), so this compares
+    every member (not just adjacent pairs) against the run's first record.
+    A record with no usage dict at all has no evidence to corroborate on, so
+    it fails the match rather than vacuously agreeing with another empty one.
+    """
+    first_usage = (run[0].get("message") or {}).get("usage") or {}
+    if not first_usage:
+        return False
+    for rec in run[1:]:
+        rec_usage = (rec.get("message") or {}).get("usage") or {}
+        if not rec_usage or any(
+            rec_usage.get(key) != first_usage.get(key) for key in _NON_CONTIGUOUS_MERGE_REQUIRED_MATCH_KEYS
+        ):
+            return False
+    return True
+
+
+# Rate-limits _log_non_contiguous_merge_decision to one NOTICE per process
+# per decision kind ("merged" vs. "rejected"), mirroring _usage_drift_warned
+# generalized to two independently-rate-limited kinds.
+_non_contiguous_merge_notices_logged: set[str] = set()
+
+
+def _log_non_contiguous_merge_decision(request_id: str, record_count: int, *, merged: bool) -> None:
+    """Emit one stderr NOTICE per process per decision kind when
+    dedup_turns_by_request_id resolves a non-contiguous same-requestId run,
+    so a later audit can tell whether the usage-corroboration bar
+    (_NON_CONTIGUOUS_MERGE_REQUIRED_MATCH_KEYS) is miscalibrated without
+    re-deriving the empirical basis for its match keys from scratch.
+    """
+    kind = "merged" if merged else "rejected"
+    if kind in _non_contiguous_merge_notices_logged:
+        return
+    outcome = (
+        "merged into one turn (usage matched on every record)"
+        if merged
+        else "left as separate turns (usage did not match on every record)"
+    )
+    print(
+        f"NOTICE: non-contiguous requestId run {kind} -- requestId {request_id!r} has "
+        f"{record_count} non-contiguous assistant records, {outcome} (further "
+        f"{kind} occurrences this run of the CLI are suppressed).",
+        file=sys.stderr,
+    )
+    _non_contiguous_merge_notices_logged.add(kind)
 
 
 def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, int]:
