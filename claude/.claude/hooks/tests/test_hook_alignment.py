@@ -255,12 +255,12 @@ class TestHookClassHeader:
         """Every hook must declare # hook-class: <value>."""
         value = _hook_class(hook)
         assert value is not None, (
-            f"add `# hook-class: gate`, `# hook-class: informational`, or "
-            f"`# hook-class: turn-gate` header to {hook.name}"
+            f"add `# hook-class: gate`, `# hook-class: informational`, "
+            f"`# hook-class: turn-gate`, or `# hook-class: batch-gate` header to {hook.name}"
         )
 
     def test_hook_class_value_valid(self, hook: Path) -> None:
-        """hook-class value must be 'gate', 'informational', or 'turn-gate'.
+        """hook-class value must be 'gate', 'informational', 'turn-gate', or 'batch-gate'.
 
         'gate' fires PreToolUse and may deny a tool call. 'informational'
         fires PostToolUse/SessionStart/SessionEnd/etc. and never denies.
@@ -271,13 +271,18 @@ class TestHookClassHeader:
         PreToolUse-specific behavior checks, e.g.
         test_emit_deny_defined_before_lib_source, do not apply to it) or
         'informational' (which would be a false label on a hook that
-        blocks).
+        blocks). 'batch-gate' fires on PostToolBatch and may stop the
+        agentic loop before the next model call (exit 2, reason on stderr)
+        — PostToolBatch's own native block, distinct from both 'gate'
+        (PreToolUse deny, JSON envelope) and 'turn-gate' (Stop
+        block-to-force-continuation); Layer 2's PreToolUse-specific
+        behavior checks don't apply to it either.
         """
         value = _hook_class(hook)
         if value is None:
             pytest.skip("header absent — tested by test_hook_class_header_present")
-        assert value in ("gate", "informational", "turn-gate"), (
-            f"{hook.name}: expected one of: gate, informational, turn-gate; got '{value}'"
+        assert value in ("gate", "informational", "turn-gate", "batch-gate"), (
+            f"{hook.name}: expected one of: gate, informational, turn-gate, batch-gate; got '{value}'"
         )
 
     def test_gate_naming_convention_enforced(self, hook: Path) -> None:

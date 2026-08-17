@@ -1,6 +1,6 @@
 """Tests for nudge-handoff-near-context-cap.sh.
 
-The hook is a UserPromptSubmit and Stop hook that emits a
+The hook is a PostToolBatch and Stop hook that emits a
 hookSpecificOutput.additionalContext JSON payload when the estimated carried
 token count crosses the lesser of 40% of the resolved model's context window
 or an absolute-token cap (HANDOFF_NUDGE_ABS_CAP, default 360000). 200k models
@@ -9,7 +9,10 @@ unrecognized/missing model IDs, which default to the 1M window — are capped
 at 360000 rather than the raw 400000 (40% of 1M). The nudge re-arms at
 escalating token bands past the first fire — a marker file holds the
 triggering estimate and gates subsequent turns until the estimate advances
-HANDOFF_NUDGE_REARM_SPACING (default 80000) past it.
+HANDOFF_NUDGE_REARM_SPACING (default 80000) past it. Past
+HANDOFF_NUDGE_BLOCK_AFTER (default 3) ignored re-arms in one session, a
+further re-arm hard-blocks (stderr + exit 2) instead of emitting the
+advisory JSON.
 
 All tests sandbox $HOME via monkeypatch so markers and logs land in tmp_path
 rather than the real $HOME.
@@ -21,11 +24,12 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, TRAVERSAL_SESSION_ID
+from helpers import HOOKS_DIR, TRAVERSAL_SESSION_ID, build_path_without
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-handoff-near-context-cap.sh"
 
@@ -39,7 +43,15 @@ SESSION_ID = "test-session-nudge-001"
 # differ per event (the emitted hookEventName and event= log field) — gate
 # logic upstream of the event read (kill-switch, subagent, plan-mode,
 # already-fired) doesn't branch on it, so those tests stay unparametrized.
-HOOK_EVENT_NAMES = ["UserPromptSubmit", "Stop"]
+# UserPromptSubmit is no longer a registered event (dropped in favor of
+# PostToolBatch) -- its own fallback-label behavior is covered separately by
+# test_missing_hook_event_name_falls_back_to_user_prompt_submit and
+# test_unrecognized_event_falls_back_to_user_prompt_submit_and_bootstraps.
+HOOK_EVENT_NAMES = ["PostToolBatch", "Stop"]
+
+# HANDOFF_NUDGE_BLOCK_AFTER's shipped default -- the escalation ladder hard-
+# blocks once a session's ignored-re-arm count reaches this value.
+DEFAULT_BLOCK_AFTER = 3
 
 # Mirrors the hook's own window table so no test hand-computes a threshold.
 LARGE_WINDOW = 1_000_000
@@ -135,14 +147,30 @@ def _write_transcript(path: Path, records: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
 
+def _append_to_transcript(path: Path, records: list[dict]) -> None:
+    """Append records to an already-written transcript, matching how a real
+    Claude Code transcript only ever grows. A multi-fire test simulating a
+    session's next state must use this (not a second _write_transcript,
+    which replaces the whole file) once any fire has happened: the
+    incremental-read cache advances a byte offset past what it already read,
+    and a same-or-larger-sized rewrite with *different* content at that
+    offset is indistinguishable, from the offset alone, from real growth --
+    the hook has no way to tell "this session grew" from "this file was
+    replaced," so a test simulating growth must actually grow the file.
+    """
+    with path.open("a") as f:
+        for record in records:
+            f.write(json.dumps(record) + "\n")
+
+
 def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries this hook's fire path invokes
     (`cat`/`jq` for the payload/output JSON, `dirname` to locate _lib.sh,
-    `tail` for read_latest_usage, `mkdir`/`find`/`touch` for the marker
-    dir), omitting both timeout(1) and gtimeout(1). Skips (does not
-    silently under-symlink) when a needed real binary is itself absent
-    from the test machine."""
-    for tool in ("cat", "dirname", "find", "jq", "mkdir", "tail", "touch"):
+    `tail`/`wc`/`tr`/`head` for read_latest_usage_cached's incremental scan,
+    `mkdir`/`find`/`touch` for the marker dir), omitting both timeout(1) and
+    gtimeout(1). Skips (does not silently under-symlink) when a needed real
+    binary is itself absent from the test machine."""
+    for tool in ("cat", "dirname", "find", "head", "jq", "mkdir", "tail", "touch", "tr", "wc"):
         real = shutil.which(tool)
         if not real:
             pytest.skip(f"{tool} not found in PATH")
@@ -185,7 +213,7 @@ def _run_hook(
 def _base_payload(
     transcript_path: Path,
     session_id: str = SESSION_ID,
-    hook_event_name: str = "UserPromptSubmit",
+    hook_event_name: str = "PostToolBatch",
 ) -> dict:
     return {
         "session_id": session_id,
@@ -211,6 +239,35 @@ def _drift_marker_path(
 ) -> Path:
     base = config_dir if config_dir is not None else tmp_path / ".claude"
     return base / ".handoff-nudge-fired.d" / f"{session_id}-drift"
+
+
+def _scan_state_path(
+    tmp_path: Path, session_id: str = SESSION_ID, config_dir: Path | None = None
+) -> Path:
+    base = config_dir if config_dir is not None else tmp_path / ".claude"
+    return base / ".handoff-nudge-fired.d" / f"{session_id}-scan"
+
+
+def _ignored_marker_path(
+    tmp_path: Path, session_id: str = SESSION_ID, config_dir: Path | None = None
+) -> Path:
+    base = config_dir if config_dir is not None else tmp_path / ".claude"
+    return base / ".handoff-nudge-fired.d" / f"{session_id}-ignored"
+
+
+def _plant_stale_marker(
+    tmp_path: Path, name: str, *, days_old: int = 31, config_dir: Path | None = None
+) -> Path:
+    """Create a marker file under MARKER_DIR old enough (mtime) to qualify
+    for the hook's own 30-day sweep (`find ... -mtime +30 -delete`)."""
+    base = config_dir if config_dir is not None else tmp_path / ".claude"
+    marker_dir = base / ".handoff-nudge-fired.d"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    marker = marker_dir / name
+    marker.write_text("stale\n")
+    stale_time = time.time() - days_old * 86400
+    os.utime(marker, (stale_time, stale_time))
+    return marker
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +631,7 @@ class TestNudgeHandoffNearContextCap:
         first = _run_hook(_base_payload(transcript), tmp_path)
         assert first.stdout.strip() != ""
 
-        _write_transcript(
+        _append_to_transcript(
             transcript,
             [_record_totalling(LARGE_THRESHOLD + DEFAULT_REARM_SPACING - 40_000, model="claude-sonnet-5")],
         )
@@ -592,7 +649,7 @@ class TestNudgeHandoffNearContextCap:
         assert first.stdout.strip() != ""
 
         second_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING + 40_000
-        _write_transcript(transcript, [_record_totalling(second_estimate, model="claude-sonnet-5")])
+        _append_to_transcript(transcript, [_record_totalling(second_estimate, model="claude-sonnet-5")])
         second = _run_hook(_base_payload(transcript), tmp_path)
         assert second.returncode == 0
         assert second.stdout.strip() != ""
@@ -614,7 +671,7 @@ class TestNudgeHandoffNearContextCap:
         first = _run_hook(_base_payload(transcript), tmp_path)
         assert first.stdout.strip() != ""
 
-        _write_transcript(transcript, [_record_totalling(second_estimate, model="claude-sonnet-5")])
+        _append_to_transcript(transcript, [_record_totalling(second_estimate, model="claude-sonnet-5")])
         second = _run_hook(_base_payload(transcript), tmp_path)
         assert second.returncode == 0
         if expect_fire:
@@ -681,16 +738,455 @@ class TestNudgeHandoffNearContextCap:
         assert _marker_path(tmp_path).read_text() == f"{LARGE_THRESHOLD}\n"
 
         suppressed_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING - 1
-        _write_transcript(transcript, [_record_totalling(suppressed_estimate, model="claude-sonnet-5")])
+        _append_to_transcript(transcript, [_record_totalling(suppressed_estimate, model="claude-sonnet-5")])
         second = _run_hook(_base_payload(transcript), tmp_path)
         assert second.stdout.strip() == ""
         assert _marker_path(tmp_path).read_text() == f"{LARGE_THRESHOLD}\n"
 
         third_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING
-        _write_transcript(transcript, [_record_totalling(third_estimate, model="claude-sonnet-5")])
+        _append_to_transcript(transcript, [_record_totalling(third_estimate, model="claude-sonnet-5")])
         third = _run_hook(_base_payload(transcript), tmp_path)
         assert third.stdout.strip() != ""
         assert _marker_path(tmp_path).read_text() == f"{third_estimate}\n"
+
+    # -----------------------------------------------------------------------
+    # PostToolBatch migration: incremental-read cache
+    # -----------------------------------------------------------------------
+
+    def test_incremental_read_advances_offset_and_reuses_cached_estimate_when_no_new_usage(self, tmp_path):
+        """A transcript grown (appended to, not rewritten) between two fires:
+        the stored offset after the second call matches the transcript's byte
+        length at that point, and ESTIMATE is unchanged when the appended
+        delta carries no new usage block."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""
+
+        _append_to_transcript(transcript, [{"type": "user", "message": {"content": "continue"}}])
+        second = _run_hook(_base_payload(transcript), tmp_path)
+        assert second.returncode == 0
+
+        offset, estimate, _model = _scan_state_path(tmp_path).read_text().splitlines()
+        assert int(offset) == transcript.stat().st_size
+        assert int(estimate) == ABOVE_LARGE
+
+    def test_incremental_read_stops_offset_before_incomplete_trailing_line(self, tmp_path):
+        """A fire mid-write, where the transcript's newly appended bytes are
+        an incomplete JSON line: the stored offset must stop before it, and
+        the next fire -- once the line completes -- picks up the completed
+        record whole, not duplicated or dropped."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""
+        offset_after_first = transcript.stat().st_size
+
+        second_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING + 40_000
+        full_line = json.dumps(_record_totalling(second_estimate, model="claude-sonnet-5"))
+        split_at = len(full_line) // 2
+        with transcript.open("a") as f:
+            f.write(full_line[:split_at])  # no trailing newline: caught mid-write
+
+        second = _run_hook(_base_payload(transcript), tmp_path)
+        assert second.returncode == 0
+        offset, cached_estimate, _model = _scan_state_path(tmp_path).read_text().splitlines()
+        assert int(offset) == offset_after_first, "offset must not advance past the incomplete trailing line"
+        assert int(cached_estimate) == LARGE_THRESHOLD, "ESTIMATE must stay at the first fire's cached value"
+
+        with transcript.open("a") as f:
+            f.write(full_line[split_at:] + "\n")  # complete the line
+
+        third = _run_hook(_base_payload(transcript), tmp_path)
+        assert third.returncode == 0
+        assert third.stdout.strip() != "", "the completed record must fire once whole, not stay dropped"
+        offset2, estimate2, _model2 = _scan_state_path(tmp_path).read_text().splitlines()
+        assert int(estimate2) == second_estimate
+        assert int(offset2) == transcript.stat().st_size
+
+    def test_incremental_read_falls_back_to_bootstrap_when_stored_offset_exceeds_file_size(self, tmp_path):
+        """A stored -scan offset larger than the transcript's current size
+        (simulating rotation/truncation) resets to a fresh bootstrap scan
+        rather than erroring or silently trusting a stale cached estimate."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        scan_state = _scan_state_path(tmp_path)
+        scan_state.parent.mkdir(parents=True, exist_ok=True)
+        huge_offset = transcript.stat().st_size + 1_000_000
+        scan_state.write_text(f"{huge_offset}\n999\nclaude-sonnet-5\n")
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", (
+            "must fall back to a fresh bootstrap scan of the real transcript, not stay "
+            "silent trusting the stale cached estimate of 999"
+        )
+        offset, estimate, _model = scan_state.read_text().splitlines()
+        assert int(offset) == transcript.stat().st_size
+        assert int(estimate) == ABOVE_LARGE
+
+    def test_incremental_read_bootstraps_and_writes_scan_state_on_first_fire(self, tmp_path):
+        """No -scan file yet: the bootstrap path runs (today's bounded scan)
+        and writes a correctly-shaped 3-line state file (offset, estimate,
+        model) for the next fire to read incrementally."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        scan_state = _scan_state_path(tmp_path)
+        assert not scan_state.exists()
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        assert scan_state.exists()
+        lines = scan_state.read_text().splitlines()
+        assert len(lines) == 3
+        offset, estimate, model = lines
+        assert int(offset) == transcript.stat().st_size
+        assert int(estimate) == ABOVE_LARGE
+        assert model == "claude-sonnet-5"
+
+    def test_unrecognized_event_falls_back_to_user_prompt_submit_and_bootstraps(self, tmp_path):
+        """A HOOK_EVENT value that is neither Stop nor PostToolBatch --
+        simulating the exact landing-order failure mode this file's header
+        names (settings.json registering PostToolBatch before this case arm
+        supports it) -- falls back to the UserPromptSubmit label and still
+        takes the bootstrap scan path, pinning the described bug class as a
+        test rather than only avoiding it via commit discipline."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        result = _run_hook(
+            _base_payload(transcript, hook_event_name="SomeFutureHookEvent"), tmp_path
+        )
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+        log_text = _log_path(tmp_path).read_text()
+        assert "event=UserPromptSubmit" in log_text
+        assert _scan_state_path(tmp_path).exists()
+
+    def test_unconditional_sweep_runs_even_when_the_call_does_not_fire(self, tmp_path):
+        """The 30-day sweep now runs unconditionally near the top of the fire
+        path (moved out of the emit-on-fire block so it also bounds the new
+        -scan file's steady-state growth) -- a call that doesn't cross
+        threshold (no nudge emitted) still evicts every stale marker file,
+        across all four marker-file types, not just FIRED_MARKER/DRIFT_MARKER."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_assistant_record(input_tok=30000, output_tok=20000)])  # below threshold
+        other_session = "other-stale-session-001"
+        stale_fired = _plant_stale_marker(tmp_path, other_session)
+        stale_drift = _plant_stale_marker(tmp_path, f"{other_session}-drift")
+        stale_scan = _plant_stale_marker(tmp_path, f"{other_session}-scan")
+        stale_ignored = _plant_stale_marker(tmp_path, f"{other_session}-ignored")
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        for stale in (stale_fired, stale_drift, stale_scan, stale_ignored):
+            assert not stale.exists(), f"{stale.name} should have been swept by the unconditional 30-day sweep"
+
+    def test_jq_absent_fails_open_not_hard_blocked(self, tmp_path):
+        """batch-gate's escalation ladder can intentionally exit 2, but that
+        must only ever come from a real fire history -- with jq entirely
+        absent (and no prior cached state), the hook must still fail open
+        (exit 0, silent), never hard-block. GATE_HOOKS' auto-parametrized
+        jq-absent behavior tests (test_hook_alignment.py) don't cover this
+        hook -- its class is batch-gate, not gate -- so this is hand-written."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        farm_dir = tmp_path / "path-without-jq"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("jq", farm_dir)
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert result.stderr.strip() == ""
+
+    def test_wc_absent_fails_open_not_hard_blocked(self, tmp_path):
+        """The incremental-read offset math depends on `wc`; its absence must
+        also fail open like every other missing-dependency case in this
+        file, never hard-block."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        farm_dir = tmp_path / "path-without-wc"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("wc", farm_dir)
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert result.stderr.strip() == ""
+
+    def test_tail_absent_fails_open_not_hard_blocked(self, tmp_path):
+        """`tail` backs both read_latest_usage and
+        _advance_offset_past_complete_lines; its absence must fail open like
+        every other missing-dependency case in this file, never hard-block."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        farm_dir = tmp_path / "path-without-tail"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tail", farm_dir)
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert result.stderr.strip() == ""
+
+    def test_find_absent_still_fires_and_never_hard_blocks(self, tmp_path):
+        """`find` only backs the marker-directory sweep, not the read/decide
+        path -- unlike jq/wc/tail, its absence must not suppress a fire that
+        would otherwise happen. The sweep silently no-ops (`|| true`); the
+        hook still emits its advisory JSON, and never hard-blocks."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        farm_dir = tmp_path / "path-without-find"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("find", farm_dir)
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+
+    def test_mkdir_absent_still_fires_and_never_hard_blocks(self, tmp_path):
+        """`mkdir` backs the marker-directory sweep and
+        read_latest_usage_cached's state-directory creation, not the
+        read/decide path -- its absence must not suppress a fire that would
+        otherwise happen, and must never hard-block. Marker/state-file
+        writes into a directory that failed to be created silently no-op
+        (`|| true` / redirection failure), but OUTPUT is built and printed
+        regardless of whether those side-effect writes succeeded."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        farm_dir = tmp_path / "path-without-mkdir"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("mkdir", farm_dir)
+        result = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path}
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+
+    # -----------------------------------------------------------------------
+    # PostToolBatch migration: gate correctness under the new event
+    # -----------------------------------------------------------------------
+
+    def test_subagent_gate_under_post_tool_batch(self, tmp_path):
+        """The subagent gate still applies correctly under a
+        PostToolBatch-shaped payload -- verified live this session that
+        agent_type is present/absent exactly as it was under Stop/
+        UserPromptSubmit, so no fail-safe redesign was needed here."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        payload = _base_payload(transcript, hook_event_name="PostToolBatch")
+        payload["agent_type"] = "code-writer"
+        result = _run_hook(payload, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_plan_mode_gate_under_post_tool_batch(self, tmp_path):
+        """The plan-mode gate still applies correctly under a
+        PostToolBatch-shaped payload."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        payload = _base_payload(transcript, hook_event_name="PostToolBatch")
+        payload["permission_mode"] = "plan"
+        result = _run_hook(payload, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    # -----------------------------------------------------------------------
+    # Escalation ladder: advisory -> hard block after ignored re-arms
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.timing
+    def test_atomic_append_no_lost_writes_under_concurrency(self, tmp_path):
+        """Exercises the exact `printf '.' >> file` O_APPEND idiom the
+        escalation counter uses (see the hard-block's own source comment),
+        directly and repeatedly, decoupled from the hook's own gate-timing
+        logic. N processes append one byte each, spawned via subprocess.Popen
+        (non-blocking, so process-creation overhead alone produces genuine
+        overlapping execution windows -- no artificial synchronization
+        needed). POSIX O_APPEND write atomicity guarantees the final file
+        size is exactly N, with no write silently dropped -- the property
+        test_escalation_counter_concurrent_rearms_no_lost_update below
+        cannot itself prove, since a benign serialized execution and a real
+        lost update produce the same observable outcome at that layer."""
+        target = tmp_path / "concurrent-append-target"
+        target.touch()
+        n = 20
+        procs = [
+            subprocess.Popen(["sh", "-c", f"printf '.' >> {shlex.quote(str(target))}"]) for _ in range(n)
+        ]
+        for p in procs:
+            assert p.wait() == 0
+        assert target.stat().st_size == n
+
+    def test_escalation_counter_concurrent_rearms_no_lost_update(self, tmp_path):
+        """Two near-simultaneous PostToolBatch fires against the same
+        already-armed session: a smoke check that concurrent invocation
+        neither crashes nor over-counts past what any legitimate ordering
+        could produce. This test alone cannot prove the append is atomic --
+        see test_atomic_append_no_lost_writes_under_concurrency above for
+        that -- because a fully benign serialized ordering (thread A
+        completes, including its own FIRED_MARKER rewrite, before B starts)
+        produces the identical observable result (ignored_count == 1, both
+        exit 0) as a real lost update would: B's own ordinary rearm-spacing
+        gate suppresses it before it ever reaches the increment, and there
+        is no synchronization barrier here forcing genuine overlap instead.
+        Marked timing (run serially, -m timing -n0) since heavier xdist
+        parallel load skews which ordering is likelier, not because either
+        ordering is itself invalid."""
+        transcript = tmp_path / "t.jsonl"
+        first_estimate = LARGE_THRESHOLD
+        _write_transcript(transcript, [_record_totalling(first_estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""  # first fire: no increment (not a re-arm)
+
+        rearm_estimate = first_estimate + DEFAULT_REARM_SPACING + 40_000
+        _append_to_transcript(transcript, [_record_totalling(rearm_estimate, model="claude-sonnet-5")])
+
+        exit_codes: list[int | None] = [None, None]
+
+        def _run(i: int) -> None:
+            exit_codes[i] = _run_hook(_base_payload(transcript), tmp_path).returncode
+
+        threads = [threading.Thread(target=_run, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Both stay advisory under the default HANDOFF_NUDGE_BLOCK_AFTER=3
+        # regardless of ordering. ignored_count is 1 under full serialization
+        # (see docstring) or 2 under genuine overlap -- both are legitimate;
+        # anything outside {1, 2} would indicate corruption.
+        assert all(code == 0 for code in exit_codes)
+        ignored_count = _ignored_marker_path(tmp_path).stat().st_size
+        assert ignored_count in (1, 2), f"expected 1 or 2 ignored re-arms, got {ignored_count}"
+
+    def test_escalation_ladder_blocks_once_block_after_ignored_rearms_reached(self, tmp_path):
+        """Advisory nudges keep firing (stdout JSON, exit 0) until
+        HANDOFF_NUDGE_BLOCK_AFTER ignored re-arms are reached, at which
+        point the hook hard-blocks (stderr, exit 2) instead."""
+        transcript = tmp_path / "t.jsonl"
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": "2"}
+        estimate = LARGE_THRESHOLD
+        _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.returncode == 0
+        assert first.stdout.strip() != ""  # first fire: advisory, no increment
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert second.returncode == 0
+        assert second.stdout.strip() != ""  # first re-arm (ignored count -> 1): still advisory
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        third = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert third.returncode == 2, "second re-arm (ignored count -> 2) reaches HANDOFF_NUDGE_BLOCK_AFTER=2"
+        assert third.stdout.strip() == ""
+        assert third.stderr.strip() != ""
+        assert "/handoff" in third.stderr
+        assert _ignored_marker_path(tmp_path).stat().st_size == 2
+        assert _marker_path(tmp_path).read_text() == f"{estimate}\n"
+
+    def test_escalation_ladder_resets_when_ignored_marker_removed(self, tmp_path):
+        """Removing the -ignored marker (e.g. the handoff skill's conversion
+        step, per SKILL.md) resets the escalation ladder for that session --
+        the next re-arm is advisory again, not an immediate repeat block.
+        Uses HANDOFF_NUDGE_BLOCK_AFTER=2 rather than 1: at 1, any single
+        re-arm blocks regardless of whether the reset took effect, so the
+        two outcomes would be indistinguishable."""
+        transcript = tmp_path / "t.jsonl"
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": "2"}
+        estimate = LARGE_THRESHOLD
+        _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.stdout.strip() != ""
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert second.returncode == 0
+        assert second.stdout.strip() != "", "first re-arm (ignored count -> 1): still advisory"
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        third = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert third.returncode == 2, "second re-arm (ignored count -> 2) reaches HANDOFF_NUDGE_BLOCK_AFTER=2"
+
+        ignored_marker = _ignored_marker_path(tmp_path)
+        assert ignored_marker.exists()
+        ignored_marker.unlink()
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        fourth = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert fourth.returncode == 0
+        assert fourth.stdout.strip() != "", (
+            "advisory again after the ignored-count marker was removed -- without the "
+            "reset this re-arm would be the third ignored one, still >= HANDOFF_NUDGE_BLOCK_AFTER=2"
+        )
+
+    @pytest.mark.parametrize(
+        "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
+    )
+    def test_block_after_malformed_override_falls_back_to_default_not_zero(self, tmp_path, malformed_value):
+        """A malformed HANDOFF_NUDGE_BLOCK_AFTER (non-numeric, zero-padded,
+        empty, literal zero, negative, non-integer, or 10+ digits) must fall
+        back to the shipped default rather than degrade BLOCK_AFTER toward
+        0/unset/negative -- which would hard-block on the very first
+        re-arm, the opposite of "override ignored"."""
+        transcript = tmp_path / "t.jsonl"
+        estimate = LARGE_THRESHOLD
+        _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": malformed_value}
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.stdout.strip() != ""
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert second.returncode == 0
+        assert second.stdout.strip() != "", (
+            f"malformed HANDOFF_NUDGE_BLOCK_AFTER={malformed_value!r} should fall back to the "
+            "default, not hard-block on the first re-arm"
+        )
+
+    @pytest.mark.parametrize(
+        "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
+    )
+    def test_block_after_malformed_override_positive_control_blocks_at_default(self, tmp_path, malformed_value):
+        """Positive control for the test above: proves the fallback actually
+        lands on DEFAULT_BLOCK_AFTER and blocks once that many re-arms are
+        reached, not merely that it fails to block too early."""
+        transcript = tmp_path / "t.jsonl"
+        estimate = LARGE_THRESHOLD
+        _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": malformed_value}
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert result.stdout.strip() != ""
+
+        for _ in range(DEFAULT_BLOCK_AFTER - 1):
+            estimate += DEFAULT_REARM_SPACING
+            _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+            result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+            assert result.returncode == 0
+            assert result.stdout.strip() != ""
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert result.returncode == 2, (
+            f"malformed HANDOFF_NUDGE_BLOCK_AFTER={malformed_value!r} should fall back to the "
+            "default and block once that many re-arms are reached"
+        )
 
     def test_killswitch_suppresses(self, tmp_path):
         """Presence of ~/.claude/.handoff-nudge-disabled suppresses nudge and produces no log line."""
@@ -870,10 +1366,12 @@ class TestNudgeHandoffNearContextCap:
     def test_latency_under_500ms(self, tmp_path):
         """Hook completes in under 500ms even with a ~10 MB transcript (10000 valid JSONL lines).
 
-        The tail -n 200 in the hook prevents the read from being O(file_size),
-        so runtime is dominated by shell+jq startup (~25-50ms), not file size.
-        The 500ms bound guards against an accidental regression to full-file reads
-        while tolerating CI-runner jitter (bash+jq startup can reach 150-200ms
+        The bootstrap scan's tail -n 200 (and the incremental-read cache's own
+        offset/size checks via tail/wc/tr/head) keep every read bounded, not
+        O(file_size), so runtime is dominated by shell/jq/coreutils startup
+        across those several subprocess spawns, not file size. The 500ms bound
+        guards against an accidental regression to full-file reads while
+        tolerating CI-runner jitter (subprocess startup can reach 150-200ms
         under memory pressure on loaded runners).
         """
         transcript = tmp_path / "large.jsonl"
@@ -1200,12 +1698,12 @@ class TestNudgeHandoffNearContextCap:
         assert first.stdout.strip() != ""
 
         below = LARGE_THRESHOLD + custom_spacing - 1
-        _write_transcript(transcript, [_record_totalling(below, model="claude-sonnet-5")])
+        _append_to_transcript(transcript, [_record_totalling(below, model="claude-sonnet-5")])
         result_below = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert result_below.stdout.strip() == ""
 
         at_spacing = LARGE_THRESHOLD + custom_spacing
-        _write_transcript(transcript, [_record_totalling(at_spacing, model="claude-sonnet-5")])
+        _append_to_transcript(transcript, [_record_totalling(at_spacing, model="claude-sonnet-5")])
         result_at = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert result_at.stdout.strip() != ""
 
@@ -1225,7 +1723,7 @@ class TestNudgeHandoffNearContextCap:
         assert first.stdout.strip() != ""
 
         second_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING - 1
-        _write_transcript(transcript, [_record_totalling(second_estimate, model="claude-sonnet-5")])
+        _append_to_transcript(transcript, [_record_totalling(second_estimate, model="claude-sonnet-5")])
         second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert second.stdout.strip() == "", (
             f"malformed HANDOFF_NUDGE_REARM_SPACING={malformed_value!r} should fall back to "
@@ -1247,7 +1745,7 @@ class TestNudgeHandoffNearContextCap:
         assert first.stdout.strip() != ""
 
         third_estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING
-        _write_transcript(transcript, [_record_totalling(third_estimate, model="claude-sonnet-5")])
+        _append_to_transcript(transcript, [_record_totalling(third_estimate, model="claude-sonnet-5")])
         third = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert third.stdout.strip() != "", (
             f"malformed HANDOFF_NUDGE_REARM_SPACING={malformed_value!r} should fall back to "

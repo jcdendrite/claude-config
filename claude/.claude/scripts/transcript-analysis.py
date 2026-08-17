@@ -6858,7 +6858,7 @@ def _compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]],
 def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
     """Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.
 
-    Reuses _price_turn's per-turn pricing (same as cost) and cmd_handoff_ratio's
+    Reuses _price_turn's per-turn pricing (same as cost) and cmd_spend_over_threshold's
     ISO-week bucketing. Sidechain turns are included (include_subagents=True)
     for the same reason _cost_report includes them — most dispatched spend
     would otherwise be silently excluded. The most recent bucket is very
@@ -7964,98 +7964,88 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     print(f"cost-ledger: recorded {week_str} / {machine_label}")
 
 
-def cmd_handoff_ratio(args: argparse.Namespace) -> None:
-    """Per-week handoff-vs-compaction ratio.
+def cmd_spend_over_threshold(args: argparse.Namespace) -> None:
+    """Per-week share of session dollar spend earned at or above the handoff
+    nudge's own fire threshold.
 
-    Detects two events per session:
-    - handoff: main-thread assistant Skill tool_use where input.skill == "handoff"
-    - compaction: type == "system" and subtype == "compact_boundary"
-      (the record Claude Code writes when auto-compaction fires)
+    For each session, sums `actual_dollars` (via _extract_rearm_session_turns,
+    shared with rearm-backtest) across main-thread turns whose context_at_turn
+    is at or above that session's own _hook_effective_fire_threshold (from its
+    first main-thread turn's model), against the session's total main-thread
+    actual_dollars. A session with no main-thread turn carrying a usage block
+    (session_threshold is None) or with total_dollars == 0 (every turn
+    unpriced) is excluded from the report -- neither has a meaningful share to
+    report.
 
-    Output: per-ISO-week table with columns: week, handoffs, compactions, ratio.
-    Also reads ~/.claude/.handoff-nudge.log if present and reports schema-drift
-    count as a diagnostic footer.
+    Output: per-ISO-week table with columns: week, sessions, above-threshold
+    $, total $, share. Also reads ~/.claude/.handoff-nudge.log if present and
+    reports schema-drift count as a diagnostic footer.
     """
     since_str: str | None = getattr(args, "since", None) or None
     since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
-    debug_detector: bool = bool(getattr(args, "debug_detector", False))
     roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "handoff-ratio", roots=roots)
-    _print_resolved_scope("handoff-ratio", scope_label, roots)
+    session_iter, scope_label = _resolve_project_scope(args, "spend-over-threshold", roots=roots)
+    _print_resolved_scope("spend-over-threshold", scope_label, roots)
 
-    # week_str -> {"handoffs": int, "compactions": int}
-    data: dict[str, dict[str, int]] = defaultdict(lambda: {"handoffs": 0, "compactions": 0})
+    # week_str -> {"sessions": int, "above": float, "total": float}
+    data: dict[str, dict[str, float]] = defaultdict(lambda: {"sessions": 0.0, "above": 0.0, "total": 0.0})
 
-    for jsonl, records in session_iter:
-        session_has_handoff = False
-        session_has_compaction = False
-        # Use the first timestamp from a main-thread record for week bucketing.
-        session_first_ts: float | None = None
-
-        for rec in records:
-            rec_ts = _parse_ts(rec.get("timestamp"))
-            if since_ts is not None and rec_ts is not None and rec_ts < since_ts:
-                continue
-
-            # Track the earliest parseable timestamp for week bucketing.
-            if rec_ts is not None and session_first_ts is None:
-                session_first_ts = rec_ts
-
-            rec_type = rec.get("type", "")
-
-            # Handoff detection: main-thread assistant Skill tool_use with skill == "handoff".
-            if rec_type == "assistant" and not bool(rec.get("isSidechain")):
-                for block in ((rec.get("message") or {}).get("content") or []):
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
-                        and block.get("name") == "Skill"
-                        and (block.get("input") or {}).get("skill") == "handoff"
-                    ):
-                        session_has_handoff = True
-
-            # Compaction detection: system record with subtype == "compact_boundary".
-            # Shape confirmed from transcripts: {"type": "system", "subtype": "compact_boundary", ...}
-            if rec_type == "system" and rec.get("subtype") == "compact_boundary":
-                session_has_compaction = True
-                if debug_detector:
-                    print(f"[debug] compaction: {jsonl} ts={rec.get('timestamp')} keys={list(rec.keys())}")
-
-        if not (session_has_handoff or session_has_compaction):
+    for _jsonl, records in session_iter:
+        # A session's dollar totals depend on its full, un-truncated turn
+        # sequence (_extract_rearm_session_turns), so --since scopes whole
+        # sessions here (by first timestamp), not individual records within
+        # one -- matching _session_matches_rearm_scope's own convention for
+        # this same per-turn machinery.
+        first_ts = next((ts for r in records if (ts := _parse_ts(r.get("timestamp"))) is not None), None)
+        if since_ts is not None and (first_ts is None or first_ts < since_ts):
             continue
-        if session_first_ts is None:
+        if first_ts is None:
             continue
 
-        iso = datetime.fromtimestamp(session_first_ts, tz=UTC).isocalendar()
+        extracted = _extract_rearm_session_turns(records)
+        session_threshold = extracted["session_threshold"]
+        if session_threshold is None:
+            continue
+
+        above_dollars = 0.0
+        total_dollars = 0.0
+        for context_at_turn, _output_tokens, actual_dollars in extracted["main_thread_turns"]:
+            total_dollars += actual_dollars
+            if context_at_turn >= session_threshold:
+                above_dollars += actual_dollars
+        if total_dollars == 0:
+            continue
+
+        iso = datetime.fromtimestamp(first_ts, tz=UTC).isocalendar()
         week_str = f"{iso.year}-W{iso.week:02d}"
-        if session_has_handoff:
-            data[week_str]["handoffs"] += 1
-        if session_has_compaction:
-            data[week_str]["compactions"] += 1
+        data[week_str]["sessions"] += 1
+        data[week_str]["above"] += above_dollars
+        data[week_str]["total"] += total_dollars
 
     if not data:
-        print("No handoff or compaction events found.")
-        print("  (0 handoffs, 0 compactions — ratio is undefined)")
+        print("No sessions with a resolvable handoff-nudge threshold and priced spend were found.")
         _print_nudge_log_diagnostic()
         return
 
-    print(f"{'Week':<10} {'Handoffs':>9} {'Compactions':>12} {'Ratio':>7}")
-    print("-" * 43)
-    total_handoffs = total_compactions = 0
+    print(f"{'Week':<10} {'Sessions':>8} {'AboveUSD':>14} {'TotalUSD':>14} {'Share':>7}")
+    print("-" * 57)
+    total_sessions = 0
+    total_above = total_total = 0.0
     for week_str in sorted(data):
         d = data[week_str]
-        h = d["handoffs"]
-        c = d["compactions"]
-        total_handoffs += h
-        total_compactions += c
-        denom = h + c
-        ratio_str = f"{100.0 * h / denom:.1f}%" if denom else "—"
-        print(f"{week_str:<10} {h:>9} {c:>12} {ratio_str:>7}")
+        sessions = int(d["sessions"])
+        above = d["above"]
+        total = d["total"]
+        total_sessions += sessions
+        total_above += above
+        total_total += total
+        print(f"{week_str:<10} {sessions:>8} {above:>14,.2f} {total:>14,.2f} {_pct_of(above, total):>7}")
 
-    print("-" * 43)
-    all_denom = total_handoffs + total_compactions
-    all_ratio = f"{100.0 * total_handoffs / all_denom:.1f}%" if all_denom else "—"
-    print(f"{'Total':<10} {total_handoffs:>9} {total_compactions:>12} {all_ratio:>7}")
+    print("-" * 57)
+    print(
+        f"{'Total':<10} {total_sessions:>8} {total_above:>14,.2f} {total_total:>14,.2f} "
+        f"{_pct_of(total_above, total_total):>7}"
+    )
     _print_nudge_log_diagnostic()
 
 
@@ -10907,21 +10897,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cost_ledger.set_defaults(func=cmd_cost_ledger)
 
-    p_handoff_ratio = sub.add_parser(
-        "handoff-ratio",
+    p_spend_over_threshold = sub.add_parser(
+        "spend-over-threshold",
         help=(
-            "Per-week handoff-vs-compaction ratio: how often sessions use /handoff"
-            " versus waiting for auto-compaction."
+            "Per-week share of session dollar spend earned at or above the handoff nudge's"
+            " own fire threshold."
         ),
     )
-    _add_project_scope_args(p_handoff_ratio)
-    p_handoff_ratio.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
-    p_handoff_ratio.add_argument(
-        "--debug-detector",
-        action="store_true",
-        help="Print candidate compaction records for inspection (useful when schema is uncertain).",
+    _add_project_scope_args(p_spend_over_threshold)
+    p_spend_over_threshold.add_argument(
+        "--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)"
     )
-    p_handoff_ratio.set_defaults(func=cmd_handoff_ratio)
+    p_spend_over_threshold.set_defaults(func=cmd_spend_over_threshold)
 
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",
