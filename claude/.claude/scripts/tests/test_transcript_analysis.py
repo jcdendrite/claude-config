@@ -6609,6 +6609,40 @@ class TestCostMultiRootRedaction:
             _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
         assert "-home-user-secret-clientname" not in str(exc_info.value)
 
+    def test_single_root_subagent_only_project_gets_stable_label_not_miss_token(self, tmp_path, capsys):
+        """A project whose main .jsonl is empty but whose only priced content
+        lives in a subagent transcript still resolves to a real
+        private-project-N label instead of tripping the redact-map-miss
+        assertion — regression for the desync between
+        _sorted_distinct_proj_labels' (main-thread-only) label census and
+        cost's own subagent-merged session scan."""
+        root = _write_cost_root(tmp_path, "acct-a", "-home-user-secret-clientname", "sess-a", [])
+        _write_subagent_jsonl(root / "-home-user-secret-clientname", "sess-a", "agent-1",
+                               [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Session", row_contains="session-1")
+        assert cols["Proj"] == "private-project-1"
+        assert _mod._REDACT_MAP_MISS_TOKEN not in out
+        assert "-home-user-secret-clientname" not in out
+
+    def test_multi_root_subagent_only_project_gets_stable_label_not_miss_token(self, tmp_path, capsys):
+        """Multi-root counterpart, matching the original reported corpus
+        shape: the subagent-only project's own root alongside a second,
+        normal-project root."""
+        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-secret-clientname", "sess-a", [])
+        _write_subagent_jsonl(root_a / "-home-user-secret-clientname", "sess-a", "agent-1",
+                               [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        ordinal_a = _mod._redaction_ordinals([root_a, root_b])[root_a.resolve()]
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Session", row_contains="session-1")
+        assert cols["Proj"] == f"account-{ordinal_a}/private-project-1"
+        assert _mod._REDACT_MAP_MISS_TOKEN not in out
+        assert "-home-user-secret-clientname" not in out
+
     def test_root_index_lookup_failure_omits_raw_path(self, tmp_path):
         """_root_index_for_path's own 'no known scan root' AssertionError is a
         structural sibling of the redact-map-miss assertion above — found by
@@ -8045,16 +8079,11 @@ class TestCostWorktreeAgentBranchCarryForward:
         the worktree-agent-* record is counted in an unfiltered run but
         excluded from every --branches filter's total, the one case that
         stays genuinely unattributable (renders '?', GH-482's sentinel
-        convention reused). The main-thread record present here carries no
-        gitBranch of its own (branch="") — a wholly empty main file would
-        instead exercise a pre-existing, unrelated desync between
-        _build_redact_map's own (non-subagent-merged) scan basis and cost's
-        subagent-merged session iterator, not the carry-forward behavior
-        this test targets."""
+        convention reused)."""
         session_id = "sess-carry-d"
         agent_rec = _priced("claude-sonnet-5", input=1_000_000, branch="worktree-agent-abc123")  # $2.00
         agent_rec["isSidechain"] = True
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [_user_msg("hi", branch="")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
 
         _mod._cost_report(_cost_args(), date(2026, 8, 2))
@@ -17278,6 +17307,48 @@ class TestBuildRedactMapDirectUnit:
         assert redact_map == {
             (ordinal_a, "testrepo"): f"account-{ordinal_a}/private-project-1",
             (ordinal_b, "testrepo"): f"account-{ordinal_b}/private-project-1",
+        }
+
+    def test_subagent_only_project_with_unpriced_turns_still_shifts_sibling_ordinal(self, tmp_path):
+        """A project whose main .jsonl is empty and whose only subagent turn
+        carries no priced usage is still included in the label census
+        (iter_sessions only requires a non-empty records list, not priced
+        usage) — shifting a sorted-later priced sibling's ordinal even
+        though the phantom project itself is never looked up
+        (_cost_report's `if session_total:` gate skips zero-total
+        sessions)."""
+        root = tmp_path / "acct-a"
+        phantom = root / "-home-user-aaa-phantom"
+        phantom.mkdir(parents=True)
+        _write_jsonl(phantom / "sess-phantom.jsonl", [])
+        _write_subagent_jsonl(phantom, "sess-phantom", "agent-1", [_user_msg("hi")])
+
+        priced = root / "-home-user-zzz-priced"
+        priced.mkdir(parents=True)
+        _write_jsonl(priced / "sess-priced.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+
+        redact_map = _mod._build_redact_map([root])
+        assert redact_map["zzz-priced"] == "private-project-2"
+
+    def test_two_subagent_only_projects_get_distinct_sorted_labels(self, tmp_path):
+        """Sibling of the single-phantom ordinal-shift case above: two
+        projects visible only through subagent transcripts still get
+        distinct labels in sorted order, not a collision or a shared slot."""
+        root = tmp_path / "acct-a"
+        proj_a = root / "-home-user-aaa-phantom"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [])
+        _write_subagent_jsonl(proj_a, "sess-a", "agent-1", [_user_msg("hi")])
+
+        proj_b = root / "-home-user-zzz-phantom"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [])
+        _write_subagent_jsonl(proj_b, "sess-b", "agent-1", [_user_msg("hi")])
+
+        redact_map = _mod._build_redact_map([root])
+        assert redact_map == {
+            "aaa-phantom": "private-project-1",
+            "zzz-phantom": "private-project-2",
         }
 
 

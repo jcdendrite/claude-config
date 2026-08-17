@@ -82,9 +82,14 @@ def _sorted_distinct_proj_labels(root: Path) -> list[str]:
     outputs. iter_sessions (not a raw glob) is used because it already
     excludes zero-record transcripts; a raw glob would not, and that
     difference would shift every subsequent private-project-N index.
+
+    include_subagents=True so a project whose only priced content lives in a
+    subagent transcript still gets a stable placeholder — cost's own session
+    scan is itself subagent-inclusive, and a mismatch here is a redact-map
+    miss on that project's session row.
     """
     labels: list[str] = []
-    for jsonl, _records in iter_sessions(root, "*"):
+    for jsonl, _records in iter_sessions(root, "*", include_subagents=True):
         label = _derive_proj_label(jsonl)
         if label not in labels:
             labels.append(label)
