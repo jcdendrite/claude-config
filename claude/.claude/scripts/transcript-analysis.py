@@ -6025,7 +6025,7 @@ def _instrument_authoring_report(args: argparse.Namespace, roots: Sequence[Path]
     identifiers), so unlike cost/context-distribution it needs no
     session-redact map and no --no-redact / DO NOT PUBLISH gate.
     """
-    scan_roots: Sequence[Path] = roots if roots is not None else (PROJECTS_DIR,)
+    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
 
     session_iter, scope_label = _resolve_project_scope(
         args, "instrument-authoring", include_subagents=True, roots=roots
@@ -6048,10 +6048,10 @@ def _print_instrument_authoring_report(stats: dict, cohort_totals: dict[str, dic
         (_INSTRUMENT_AUTHORING_SHAPE_BASH, "Bash (heredoc/-c/-e)"),
         (_INSTRUMENT_AUTHORING_SHAPE_WRITE, "Write (scratchpad)"),
     ):
-        for scope in (_INSTRUMENT_AUTHORING_SCOPE_MAIN, _INSTRUMENT_AUTHORING_SCOPE_SUBAGENT):
-            count = call_n.get((shape, scope), 0)
-            chars = payload_chars.get((shape, scope), 0)
-            print(f"  {shape_label:22} {scope:9} count={count:8,}  chars=~{chars:12,}")
+        for call_scope in (_INSTRUMENT_AUTHORING_SCOPE_MAIN, _INSTRUMENT_AUTHORING_SCOPE_SUBAGENT):
+            count = call_n.get((shape, call_scope), 0)
+            chars = payload_chars.get((shape, call_scope), 0)
+            print(f"  {shape_label:22} {call_scope:9} count={count:8,}  chars=~{chars:12,}")
 
     unparsed_total = sum(stats["unparsed_n"].values())
     print(
@@ -6063,11 +6063,11 @@ def _print_instrument_authoring_report(stats: dict, cohort_totals: dict[str, dic
     bucket_labels = [label for _upper, label in _INSTRUMENT_AUTHORING_SIZE_BUCKETS] + [
         _INSTRUMENT_AUTHORING_SIZE_OVERFLOW_LABEL
     ]
-    for scope in (_INSTRUMENT_AUTHORING_SCOPE_MAIN, _INSTRUMENT_AUTHORING_SCOPE_SUBAGENT):
+    for call_scope in (_INSTRUMENT_AUTHORING_SCOPE_MAIN, _INSTRUMENT_AUTHORING_SCOPE_SUBAGENT):
         for label in bucket_labels:
-            count = stats["size_hist"].get((scope, label), 0)
-            chars = stats["size_hist_chars"].get((scope, label), 0)
-            print(f"  {scope:9} {label:10} count={count:6,}  chars=~{chars:10,}")
+            count = stats["size_hist"].get((call_scope, label), 0)
+            chars = stats["size_hist_chars"].get((call_scope, label), 0)
+            print(f"  {call_scope:9} {label:10} count={count:6,}  chars=~{chars:10,}")
 
     print("\n## Spawn-dispatch cohorts (this session's own main-thread Agent/Task count)\n")
     zero = cohort_totals[_INSTRUMENT_AUTHORING_COHORT_ZERO_DISPATCH]
