@@ -111,6 +111,8 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 13. **Test adequacy for security controls** — For code enforcing security invariants (access control, input validation, privilege boundaries), are there tests for both allow and deny paths? This overrides the general "add tests" exclusion — untested security controls are indistinguishable from absent ones. Check: for each boundary, is the unauthorized caller rejected AND the authorized caller accepted?
 
+13a. **Numeric fingerprint tied to one identifiable instance** — Does the diff add a precise duration, percentage, dollar figure, or count presented as an empirical result? Flag it unless it's a statistic over a population large or diverse enough that no single source dominates it, a publicly documented vendor/protocol constant, a configured/documented threshold, or already inside a `[verified: ...]` assumption-ledger tag — a figure attributable to one call, session, account, or private engagement can identify it even with no name attached, however the figure is phrased. See CLAUDE.md "Also redact numeric fingerprints".
+
 ### Scope discipline
 
 14. **Pre-existing issues in unchanged code** — If you notice issues in code NOT written or modified in this change, flag them in a separate "Pre-existing issues" section. Do NOT fix them — informational only, out of scope.
@@ -358,6 +360,7 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 | **12. Stripped WHY comments** | judgment (any reviewer) | — |
 | **12a. Comment/prose discipline on added or modified text** | `comment-discipline-reviewer` (when spawned) | judgment (any reviewer, via Step 1.5's inline tripwire) |
 | **13. Test adequacy for security controls** | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
+| **13a. Numeric fingerprint tied to one identifiable instance** | judgment (any reviewer) | `ciso-reviewer` (when already spawned) |
 | **14. Pre-existing issues in unchanged code** | judgment (any reviewer) | — |
 | **14a. Config-file change without stated intent** | judgment (any reviewer) | `staff-platform-engineer` (build/CI/IaC configs) |
 | **15–19. Infrastructure** (concurrency scoping, secret exposure, least-privilege, idempotency, trigger alignment) | `staff-platform-engineer` | `ciso-reviewer` (16 secret exposure, 17 least-privilege) |

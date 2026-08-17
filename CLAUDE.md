@@ -148,6 +148,19 @@ project even without names — a verbatim RLS policy, a rare
 column-naming pattern, an unusual error-code namespace. Generalize
 examples that would reveal the project via shape alone.
 
+### Also redact numeric fingerprints
+
+A precise duration, percentage, dollar figure, or count can identify one
+call, session, account, or private engagement even with no name attached.
+A statistic computed over a population large or diverse enough that no
+single source dominates or is inferable from it, a publicly documented
+vendor/protocol constant, a configured threshold, and a figure already
+inside a `[verified: ...]` assumption-ledger tag are not in this class; a
+figure — however phrased — attributable to one identifiable instance is.
+No mechanical detector covers this class — separating a small-population
+figure from a genuine aggregate needs semantic judgment a hook can't
+apply, so `/code-review`'s base checklist is the enforcement point.
+
 ### Secrets, tokens, credentials
 
 Not a redaction concern — a do-not-commit-ever concern. API keys,
