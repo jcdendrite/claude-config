@@ -22,16 +22,6 @@
       "Bash(pytest claude/.claude/)",
       "Bash(ruff check claude/.claude/)"
     ],
-    "ask": [
-      "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
-      "Bash(cleanup-merged-branches)",
-      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects)",
-      "Bash(cleanup-merged-branches --all-projects)",
-      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects --dry-run)",
-      "Bash(cleanup-merged-branches --all-projects --dry-run)",
-      "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
-      "Bash(cleanup-idle-open-pr-worktrees)"
-    ],
     "deny": [
       "Bash(sudo *)",
       "Bash(sudo)",
@@ -64,6 +54,16 @@
       "Bash(apk add *)",
       "Bash(zypper install *)",
       "EnterPlanMode"
+    ],
+    "ask": [
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
+      "Bash(cleanup-merged-branches)",
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects)",
+      "Bash(cleanup-merged-branches --all-projects)",
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects --dry-run)",
+      "Bash(cleanup-merged-branches --all-projects --dry-run)",
+      "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
+      "Bash(cleanup-idle-open-pr-worktrees)"
     ]
   },
   "model": "sonnet",
@@ -460,5 +460,7 @@
         "repo": "anthropics/claude-plugins-official"
       }
     }
-  }
+  },
+  "theme": "dark",
+  "tui": "fullscreen"
 }
