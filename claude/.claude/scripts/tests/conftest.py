@@ -16,10 +16,12 @@ a worktree is identical regardless of which script is under test.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
+from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -27,6 +29,27 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
     here (with _asst/_user_msg) so test_context_composition.py doesn't re-derive its own,
     possibly-drifting copy of the requestId run-merge shape _dedup_turns_by_request_id relies on."""
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+
+def _write_subagent_jsonl(
+    proj: Path, session_id: str, agent_id: str, records: list[dict]
+) -> None:
+    """Write records to the split subagent layout: <session_id>/subagents/<agent_id>.jsonl."""
+    subdir = proj / session_id / SUBAGENT_SUBDIR
+    subdir.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(subdir / f"{agent_id}.jsonl", records)
+
+
+def _write_cost_root(base: Path, name: str, proj_slug: str, session_id: str, records: list[dict]) -> Path:
+    """Build one --config-dir root's project-dir tree — same shape as
+    fake_projects' own PROJECTS_DIR (the root directly contains project-slug
+    subdirectories, no extra projects/ layer), parameterized so multi-root
+    tests can build more than one root under the same tmp_path."""
+    root = base / name
+    proj = root / proj_slug
+    proj.mkdir(parents=True)
+    _write_jsonl(proj / f"{session_id}.jsonl", records)
+    return root
 
 
 def _asst(
@@ -237,6 +260,80 @@ def _table_cols(out: str, *, header_contains: str, row_contains: str | list[str]
     values = rows[0].split()
     assert len(values) >= len(labels), f"row has fewer cells than labels: {rows[0]!r}"
     return dict(zip(labels, values, strict=False))
+
+
+def _extract_grand_total(out: str) -> float:
+    """Read cost's grand-total row ('total  $X.XX') from the token-class table."""
+    match = re.search(r"^total\s+([\d,]+\.\d\d)\s*$", out, re.MULTILINE)
+    assert match is not None, "grand total row not found in output"
+    return float(match.group(1).replace(",", ""))
+
+
+def _cost_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    top: int = 20,
+    no_redact: bool = False,
+    extra_config_dirs: list[str] | None = None,
+    by_project: bool = False,
+    branches: str | None = None,
+    summary: bool = False,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "top": top,
+        "no_redact": no_redact,
+        "extra_config_dirs": extra_config_dirs,
+        "by_project": by_project,
+        "branches": branches,
+        "summary": summary,
+    })()
+
+
+def _cost_trend_args(
+    *, projects: str = "*", this_repo: bool = False, extra_config_dirs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects, "this_repo": this_repo, "extra_config_dirs": extra_config_dirs,
+    })()
+
+
+def _context_distribution_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    no_redact: bool = False,
+    extra_config_dirs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "no_redact": no_redact,
+        "extra_config_dirs": extra_config_dirs,
+    })()
+
+
+def _audit_routing_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    top: int = 20,
+    redact: bool = False,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "top": top,
+        "redact": redact,
+    })()
 
 
 @pytest.fixture()

@@ -10,7 +10,22 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
-from conftest import _agent_use, _asst, _opus, _priced, _table_cols, _user_msg, _write_jsonl
+from conftest import (
+    _agent_use,
+    _asst,
+    _audit_routing_args,
+    _context_distribution_args,
+    _cost_args,
+    _cost_trend_args,
+    _extract_grand_total,
+    _opus,
+    _priced,
+    _table_cols,
+    _user_msg,
+    _write_cost_root,
+    _write_jsonl,
+    _write_subagent_jsonl,
+)
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
@@ -25,15 +40,6 @@ _spec.loader.exec_module(_mod)
 # ---------------------------------------------------------------------------
 # cost
 # ---------------------------------------------------------------------------
-
-
-def _write_subagent_jsonl(
-    proj: Path, session_id: str, agent_id: str, records: list[dict]
-) -> None:
-    """Write records to the split subagent layout: <session_id>/subagents/<agent_id>.jsonl."""
-    subdir = proj / session_id / _mod.SUBAGENT_SUBDIR
-    subdir.mkdir(parents=True, exist_ok=True)
-    _write_jsonl(subdir / f"{agent_id}.jsonl", records)
 
 
 def _md_table_cols(out: str, *, header_contains: str, row_contains: str | Sequence[str],
@@ -94,13 +100,6 @@ def _extract_unpriced_total(out: str) -> int:
     return int(match.group(1).replace(",", ""))
 
 
-def _extract_grand_total(out: str) -> float:
-    """Read cost's grand-total row ('total  $X.XX') from the token-class table."""
-    match = re.search(r"^total\s+([\d,]+\.\d\d)\s*$", out, re.MULTILINE)
-    assert match is not None, "grand total row not found in output"
-    return float(match.group(1).replace(",", ""))
-
-
 def _extract_md_grand_total(out: str) -> float:
     """Read --summary's bolded grand-total row ('| **total** | **X.XX** | | |')
     from the markdown token-class table."""
@@ -130,77 +129,6 @@ def _extract_summary_unpriced(out: str) -> tuple[int, int]:
     match = re.search(r"Unpriced tokens: ([\d,]+) tokens across (\d+) model IDs", out)
     assert match is not None, "summary unpriced-tokens line not found in output"
     return int(match.group(1).replace(",", "")), int(match.group(2))
-
-
-def _cost_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    top: int = 20,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-    by_project: bool = False,
-    branches: str | None = None,
-    summary: bool = False,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "top": top,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-        "by_project": by_project,
-        "branches": branches,
-        "summary": summary,
-    })()
-
-
-def _context_distribution_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-def _audit_routing_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    top: int = 20,
-    redact: bool = False,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "top": top,
-        "redact": redact,
-    })()
-
-
-def _write_cost_root(base: Path, name: str, proj_slug: str, session_id: str, records: list[dict]) -> Path:
-    """Build one --config-dir root's project-dir tree — same shape as
-    fake_projects' own PROJECTS_DIR (the root directly contains project-slug
-    subdirectories, no extra projects/ layer), parameterized so multi-root
-    tests can build more than one root under the same tmp_path."""
-    root = base / name
-    proj = root / proj_slug
-    proj.mkdir(parents=True)
-    _write_jsonl(proj / f"{session_id}.jsonl", records)
-    return root
 
 
 def _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:
@@ -244,14 +172,6 @@ def _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch) -> tuple[
 # ---------------------------------------------------------------------------
 # cost-trend
 # ---------------------------------------------------------------------------
-
-
-def _cost_trend_args(
-    *, projects: str = "*", this_repo: bool = False, extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects, "this_repo": this_repo, "extra_config_dirs": extra_config_dirs,
-    })()
 
 
 def _extract_cost_trend_row(out: str, week_label: str) -> dict[str, str] | None:

@@ -11,12 +11,28 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import _agent_use, _asst, _bash_use, _opus, _priced, _table_cols, _tool_result, _user_msg, _write_jsonl
+from conftest import (
+    _agent_use,
+    _asst,
+    _audit_routing_args,
+    _bash_use,
+    _context_distribution_args,
+    _cost_args,
+    _cost_trend_args,
+    _extract_grand_total,
+    _opus,
+    _priced,
+    _table_cols,
+    _tool_result,
+    _user_msg,
+    _write_cost_root,
+    _write_jsonl,
+    _write_subagent_jsonl,
+)
 from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
@@ -27,15 +43,6 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
-
-
-def _write_subagent_jsonl(
-    proj: Path, session_id: str, agent_id: str, records: list[dict]
-) -> None:
-    """Write records to the split subagent layout: <session_id>/subagents/<agent_id>.jsonl."""
-    subdir = proj / session_id / _mod.SUBAGENT_SUBDIR
-    subdir.mkdir(parents=True, exist_ok=True)
-    _write_jsonl(subdir / f"{agent_id}.jsonl", records)
 
 
 def _write_subagent_dispatch(
@@ -56,52 +63,6 @@ def _write_subagent_dispatch(
     if requested_model is not None:
         meta["model"] = requested_model
     (subdir / f"{agent_id}.meta.json").write_text(json.dumps(meta))
-
-
-def _md_table_cols(out: str, *, header_contains: str, row_contains: str | Sequence[str],
-                    occurrence: int | None = None) -> dict[str, str]:
-    """Map column-label -> cell value for the GFM pipe-table data row matching
-    `row_contains` -- the markdown-table counterpart to _table_cols, splitting
-    on `|` instead of whitespace since a markdown cell (a model ID, a share
-    percentage) may itself contain no whitespace token boundary to split on.
-
-    Mirrors _table_cols' anchoring (locates the section by the header line,
-    scoped through the next blank line or repeated header) and its
-    fail-loud-on-ambiguous-match semantics: exactly one header / one matching
-    data row must be found unless `occurrence` disambiguates a repeated
-    header. The `|---|---|...|` separator row never satisfies `row_contains`
-    (it has no cell text to match), so it needs no special-casing to stay
-    out of the returned row.
-    """
-    lines = out.splitlines()
-    header_indices = [i for i, ln in enumerate(lines) if header_contains in ln]
-    if occurrence is None:
-        assert len(header_indices) == 1, f"header match not unique for {header_contains!r}: {len(header_indices)}"
-        start = header_indices[0]
-    else:
-        assert len(header_indices) >= occurrence, (
-            f"header occurrence {occurrence} requested but only {len(header_indices)} "
-            f"found for {header_contains!r}"
-        )
-        start = header_indices[occurrence - 1]
-    end = len(lines)
-    for i in range(start + 1, len(lines)):
-        if not lines[i].strip() or header_contains in lines[i]:
-            end = i
-            break
-    section_lines = lines[start:end]
-
-    headers = [ln for ln in section_lines if header_contains in ln]
-    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
-    header = headers[0]
-
-    needles = (row_contains,) if isinstance(row_contains, str) else tuple(row_contains)
-    rows = [ln for ln in section_lines if ln != header and all(n in ln for n in needles)]
-    assert len(rows) == 1, f"row match not unique for {row_contains!r}: {len(rows)}"
-    labels = [c.strip() for c in header.strip().strip("|").split("|")]
-    values = [c.strip() for c in rows[0].strip().strip("|").split("|")]
-    assert len(values) >= len(labels), f"row has fewer cells than labels: {rows[0]!r}"
-    return dict(zip(labels, values, strict=False))
 
 
 def _sum_column_across_rows(out: str, *, header_contains: str, label: str, row_prefix: str) -> int:
@@ -133,25 +94,6 @@ def _sum_column_across_rows(out: str, *, header_contains: str, label: str, row_p
     return total
 
 
-def _extract_unpriced_total(out: str) -> int:
-    """Read cmd_cost's 'Unpriced tokens (unknown model IDs): N' line as an int.
-
-    A single named extractor for this one non-tabular summary line, matching
-    _table_cols' role for tabular output — one parse point to update if the
-    line's wording changes, instead of an inline regex at each call site.
-    """
-    match = re.search(r"Unpriced tokens \(unknown model IDs\): ([\d,]+)", out)
-    assert match is not None, "unpriced-tokens summary line not found in output"
-    return int(match.group(1).replace(",", ""))
-
-
-def _extract_grand_total(out: str) -> float:
-    """Read cost's grand-total row ('total  $X.XX') from the token-class table."""
-    match = re.search(r"^total\s+([\d,]+\.\d\d)\s*$", out, re.MULTILINE)
-    assert match is not None, "grand total row not found in output"
-    return float(match.group(1).replace(",", ""))
-
-
 def _extract_arm_dollars(out: str, arm_label: str) -> float:
     """Read plan-boundary's per-arm dollar figure (e.g. arm_label='C: fresh
     Sonnet handoff') by row-label prefix, not by the row's full formatted
@@ -159,37 +101,6 @@ def _extract_arm_dollars(out: str, arm_label: str) -> float:
     match = re.search(rf"^{re.escape(arm_label)}\s+([\d,]+\.\d\d)\s*$", out, re.MULTILINE)
     assert match is not None, f"no row found for arm {arm_label!r}"
     return float(match.group(1).replace(",", ""))
-
-
-def _extract_md_grand_total(out: str) -> float:
-    """Read --summary's bolded grand-total row ('| **total** | **X.XX** | | |')
-    from the markdown token-class table."""
-    match = re.search(r"^\|\s*\*\*total\*\*\s*\|\s*\*\*([\d,]+\.\d\d)\*\*\s*\|", out, re.MULTILINE)
-    assert match is not None, "markdown grand total row not found in output"
-    return float(match.group(1).replace(",", ""))
-
-
-def _extract_account_totals(out: str) -> dict[int, float]:
-    """Map account ordinal -> that account's own token-class 'total' row
-    dollar figure, by splitting cost's '## Cost by account' section on its
-    own '### account-N' sub-headers."""
-    totals: dict[int, float] = {}
-    for block in out.split("### account-")[1:]:
-        ordinal_str, _, rest = block.partition("\n")
-        match = re.search(r"^total\s+([\d,]+\.\d\d)\s*$", rest, re.MULTILINE)
-        assert match is not None, f"no total row found for account-{ordinal_str.strip()}"
-        totals[int(ordinal_str.strip())] = float(match.group(1).replace(",", ""))
-    return totals
-
-
-def _extract_summary_unpriced(out: str) -> tuple[int, int]:
-    """Read --summary's dedicated 'Unpriced tokens: N tokens across M model IDs'
-    line as (N, M) — distinct from the full report's own
-    'Unpriced tokens (unknown model IDs): N' line, which _extract_unpriced_total
-    reads."""
-    match = re.search(r"Unpriced tokens: ([\d,]+) tokens across (\d+) model IDs", out)
-    assert match is not None, "summary unpriced-tokens line not found in output"
-    return int(match.group(1).replace(",", "")), int(match.group(2))
 
 
 def _priced_sidechain_asst(
@@ -5043,56 +4954,6 @@ def _priced_opus(
     return rec
 
 
-def _cost_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    top: int = 20,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-    by_project: bool = False,
-    branches: str | None = None,
-    summary: bool = False,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "top": top,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-        "by_project": by_project,
-        "branches": branches,
-        "summary": summary,
-    })()
-
-
-def _cost_trend_args(
-    *, projects: str = "*", this_repo: bool = False, extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects, "this_repo": this_repo, "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-def _context_distribution_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-    })()
-
-
 _CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER = "## Peak absolute-token crossing thresholds"
 
 
@@ -5145,23 +5006,6 @@ def _exit_plan_mode(tool_id: str = "epm1") -> dict:
 
 def _thinking_block() -> dict:
     return {"type": "thinking", "thinking": "some thought"}
-
-
-def _audit_routing_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    top: int = 20,
-    redact: bool = False,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "top": top,
-        "redact": redact,
-    })()
 
 
 def _extract_corpus_class_tokens(out: str, cls: str) -> int:
@@ -5499,18 +5343,6 @@ class TestAuditRouting:
         with pytest.raises(SystemExit):
             _mod.cmd_audit_routing(_audit_routing_args(since="not-a-window"))
         assert "audit-routing: --since: expected Nd like '35d'" in capsys.readouterr().err
-
-
-def _write_cost_root(base: Path, name: str, proj_slug: str, session_id: str, records: list[dict]) -> Path:
-    """Build one --config-dir root's project-dir tree — same shape as
-    fake_projects' own PROJECTS_DIR (the root directly contains project-slug
-    subdirectories, no extra projects/ layer), parameterized so multi-root
-    tests can build more than one root under the same tmp_path."""
-    root = base / name
-    proj = root / proj_slug
-    proj.mkdir(parents=True)
-    _write_jsonl(proj / f"{session_id}.jsonl", records)
-    return root
 
 
 class TestScanRootTranscripts:

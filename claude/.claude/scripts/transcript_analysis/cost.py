@@ -88,15 +88,10 @@ def _attributed_branch(rec: dict, branch_index: Sequence[tuple[float, str]]) -> 
 def cmd_cost(args: argparse.Namespace) -> None:
     """CLI entry point for the cost subcommand.
 
-    Reads the wall-clock date exactly once, here, then delegates to
-    _cost_report, which takes `today` as an explicit parameter. The staleness
-    banner must never read the clock itself — otherwise every test asserting
-    cost's stdout would start failing the moment a rate's `expires` date passes.
-    UTC, matching _fmt_date's convention and the UTC-implicit _PRICING_FETCH_DATE
-    and _MODEL_RATE_EXPIRES dates — a local-time date.today() could shift the
-    staleness banner's boundary day by the operator's UTC offset. Root
-    resolution happens here, at the CLI boundary, rather than inside
-    _cost_report, so --config-dir validation exits before any scan work.
+    Reads the wall-clock date once, in UTC (matching _fmt_date/_MODEL_RATE_EXPIRES),
+    and passes it to _cost_report so the staleness banner never reads a live
+    clock under test. Root resolution happens here so --config-dir validation
+    exits before any scan work.
     """
     roots = scope._resolve_cost_roots(args)
     _cost_report(args, datetime.now(UTC).date(), roots)
@@ -177,25 +172,10 @@ _CORPUS_COVERAGE_WARNING_THRESHOLD_SECONDS = 86400
 def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | None = None) -> None:
     """Corpus-wide dollar-cost report by token class, model ID, and context-at-turn bucket.
 
-    Sidechain (subagent) turns are priced exactly once: iter_sessions is
-    called with include_subagents=True so subagent-dispatched spend is
-    counted toward the total, matching real billing — cmd_audit_routing's
-    Opus-only, main-thread-only scope would silently exclude most of it.
-
-    roots is None for every direct caller other than cmd_cost (this module's
-    own tests included) — that keeps the single-root report byte-for-byte
-    unchanged, including the absence of the per-root scan-summary lines below,
-    which only cmd_cost's CLI path (always passing an explicit roots list)
-    emits.
-
-    --summary renders a wholly separate, aggregate-only block (session and
-    priced-turn counts plus class/model/thread totals, never a per-session or
-    per-project row) instead of the full report below — see the summary_mode
-    branches threaded through this function. --branches filters the per-turn
-    loop on each record's *attributed* branch (_attributed_branch), not its
-    literal gitBranch: a worktree-agent-* record (an isolation:"worktree"
-    subagent dispatch) is resolved by carry-forward against its own
-    session's main-thread branch history instead.
+    Sidechain turns are included (include_subagents=True) so dispatched spend counts toward the total.
+    roots=None yields the single-root report with no per-root scan-summary lines (default for all direct callers but cmd_cost).
+    --summary renders an aggregate-only block; see summary_mode branches.
+    --branches filters on each record's carry-forward-attributed branch (_attributed_branch), not its literal gitBranch.
     """
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = not bool(getattr(args, "no_redact", False))
@@ -227,11 +207,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             )
             sys.exit(2)
         if multi_root:
-            # Defense-in-depth: _resolve_cost_roots is the CLI-level
-            # enforcement point for --summary's single-account scope, but
-            # every direct caller of _cost_report (including this module's
-            # own tests) bypasses that boundary — same rationale as the
-            # --no-redact guard below.
+            # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement point for --summary's
+            # single-account scope, but every direct caller of _cost_report (including this module's own tests)
+            # bypasses that boundary.
             print(
                 "cost: --summary resolved to more than one root — refusing to"
                 " report a multi-account total",
@@ -239,11 +217,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             )
             sys.exit(2)
 
-    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement point
-    # for this refusal, but every direct caller of _cost_report (including
-    # this module's own tests) bypasses that boundary — this function is the
-    # one that actually prints raw labels when redact is False, so it must
-    # not trust an already-validated `roots`/`no_redact` combination.
+    # Defense-in-depth, same rationale as the --summary multi-root check above.
     if not redact and multi_root:
         print(
             "cost: --no-redact is refused when more than one root is in scope"
@@ -465,12 +439,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 if redact:
                     proj_display = redaction._redact_proj_label(scoped_label, redact_map)
                     if proj_display == redaction._REDACT_MAP_MISS_TOKEN:
-                        # Deliberately omits raw_proj_label: main() has no top-level
-                        # exception handler, so this message would otherwise reach
-                        # stderr uncaught — re-leaking the exact client-identifying
-                        # string --redact exists to hide. A short hash (like
-                        # _corpus_fingerprint's) and the root ordinal are enough to
-                        # debug a desync without exposing the plaintext label.
+                        # Omits raw_proj_label deliberately — main() has no top-level handler, so this
+                        # message reaches stderr uncaught; the label hash + root ordinal are enough to
+                        # debug without leaking it.
                         root_ordinal = scoped_label[0] if isinstance(scoped_label, tuple) else None
                         label_hash = hashlib.sha256(raw_proj_label.encode()).hexdigest()[:12]
                         root_desc = f"root {root_ordinal}" if root_ordinal is not None else "the single scan root"
@@ -509,15 +480,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     grand_total = sum(class_totals.values())
 
-    # The three invariants below sum the same per-turn dollar increments (the
-    # same dollars_by_class value feeds class_totals, main/subagent,
-    # project_totals, and per_account in the same loop iteration) through a
-    # different accumulator split — they guard the partition/bucketing logic
-    # (a branch that double-counts, drops, or misroutes a turn), not
-    # _price_turn's dollar math itself, since a wrong per-turn price would
-    # move both sides of any comparison together. Any gap beyond float64
-    # summation noise (well under a millionth of a dollar here) still means a
-    # real bucketing bug, not rounding.
+    # Guards the accumulator split (double-count/drop/misroute), not _price_turn's math — a wrong
+    # price would move both sides together. Tolerance is float64 noise, not rounding slack.
     if abs(main_total + subagent_total - grand_total) > 1e-6:
         raise AssertionError(
             f"cost: main ({main_total:.6f}) + subagent ({subagent_total:.6f}) spend"
@@ -660,15 +624,9 @@ def compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]], 
     zeros — cost-ledger's own "no row for this week yet" gap detection
     relies on that absence.
 
-    context_over and context_class_dollars are two distinct metrics, not
-    two names for one: context_over is the dollar share of turns whose
-    context crossed the >=200k bucket (_context_bucket, what cost-trend's
-    own printed "Context%" column has always been); context_class_dollars
-    is the dollar share attributable to context-class token usage
-    (cache_read + both cache_write tiers, i.e. every _price_turn class
-    except output) regardless of bucket — GH-554 F1's "context is ~88% of
-    the bill" thesis. cost-ledger is the only consumer of
-    context_class_dollars; _cost_trend_report's printed table is unchanged.
+    context_over is bucket-based dollar share (_context_bucket); context_class_dollars is the
+    dollar share from context-class token pricing (cache_read + cache_write tiers) regardless of
+    bucket — cost-ledger's only consumer of the latter.
     """
     data: dict[str, dict[str, float]] = defaultdict(
         lambda: {"total": 0.0, "opus": 0.0, "context_over": 0.0, "context_class_dollars": 0.0}
