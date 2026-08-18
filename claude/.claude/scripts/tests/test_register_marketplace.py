@@ -208,6 +208,7 @@ class TestSettingsFileResolution:
 
         assert result.returncode != 0
         assert _read_log(add_log) == []
+        assert _read_log(remove_log) == []
         assert "$HOME is unset or empty" in result.stderr
 
     def test_exits_cleanly_when_settings_file_absent_at_either_location(self, tmp_path: Path) -> None:
