@@ -393,6 +393,8 @@ This writes the hash of the currently staged diff into `~/.claude/code-review-ma
 
 Run the command standalone, or chained only as `marker.sh write code-review && git commit …` — the invocation-shape gate denies every other chain tail. If it fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
 
+For a multi-line message use `git commit -F <file>` (not `-m` with a heredoc or command substitution, which the invocation-shape gate rejects), and keep that file outside any UUID-shaped path — e.g. not the session scratchpad — since the redaction gate's long-hex-identifier check denies a `-F` argument pointing there.
+
 **Do NOT write the marker if:**
 
 - The review found blockers or unresolved critical findings
