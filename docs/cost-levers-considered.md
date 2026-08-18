@@ -265,3 +265,10 @@ Full empirical record: [`case-studies/cold-cache-attribution.md`](case-studies/c
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | Cache TTL as a uniform, non-account-scoped property | Corrected, not a lever this repo can pull | Direct reads of `cache_creation.ephemeral_1h_input_tokens` across 22,290 turns on one account's main thread show zero one-hour-TTL tokens, while the other five accounts on the byte-identical stowed harness all show non-zero. The earlier "Cache-TTL selection (5-minute vs. 1-hour) as a configurable lever" row's "nothing in `settings.json`, hooks, or env vars exposes this field" premise still holds — this corrects only its "no lever exists" framing: a real, lever-shaped difference exists between accounts, but it tracks plan tier or usage-overage state, which is a vendor account question to resolve outside this repo, not a config gap inside it. |
+
+## From `token-cost-reduction.md` — "Token cost reduction: bound context growth"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| `CLAUDE.md` guidance telling the agent to `/clear` at a phase boundary and `/compact` before idling (that plan's Phase 4) | Rejected, written then dropped | `/clear` and `/compact` are harness built-in CLI commands with no tool binding, so `CLAUDE.md`'s only reader cannot execute either. The `/clear` half also re-proposed blanket reset-at-a-boundary advice already rejected as mispriced above (`handoff-boundary-decision-rule.md`); the `/compact` half contradicted that plan's own `[engineer-verified]` compaction stance. Full rationale in that plan's Phase 4 entry. |
+| The idle-gap cache rebuild | Named, not solved | Two events, ~910K tokens at cache-write rates, ~$9 of PR #609 as recorded by the source plan. The prompt-cache TTL cannot exceed 1 hour by any exposed setting, so an idle gap past it forces a full cache-write rebuild. The rejected Phase 4 guidance was the only thing aimed at it; nothing replaced it, and nothing agent-side can, because only the operator decides when a session sits idle. |

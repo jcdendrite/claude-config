@@ -300,8 +300,17 @@ runway without touching the threshold, and closes the deficiency
 this plan now supplies (four sessions fired 76K-161K past threshold, then ran on
 unwarned; PR #609 reached 551K after its single fire at 521K).
 
-**Phase 4 — Phase-boundary `/clear` and pre-idle `/compact` guidance** (one line
-each in `claude/.claude/CLAUDE.md`).
+**Phase 4 — Rejected, not executed.** The two `claude/.claude/CLAUDE.md` lines
+were written and then dropped. `/clear` and `/compact` are harness built-in CLI
+commands with no tool binding, so an agent cannot run either — CLAUDE.md is the
+agent's always-loaded prefix, making both lines instruction its only reader
+cannot act on. The `/compact` line also contradicted this plan's own
+`[engineer-verified]` given that compaction is not an acceptable mechanism here,
+and the `/clear` line re-proposed blanket reset-at-a-boundary advice
+`docs/cost-levers-considered.md` already records as measured and rejected.
+Session-reset policy stays where it already lives: `handoff/SKILL.md`,
+`brief/SKILL.md`, and `nudge-handoff-near-context-cap.sh`. See
+`.claude/plans/context-hygiene-and-nested-env-guard.md`.
 
 **Phase 5a — Close the `effortLevel` guard gap.** Independently shippable and
 revertible; carries no dependency on any cost measurement. Extend
@@ -329,7 +338,7 @@ investigation needed here.
 | `claude/.claude/hooks/tests/test_nudge_handoff_near_context_cap.py` | **Phase 3.** Test file already exists. Add cases: still fires at `360000` (unchanged); **re-arms at the next band rather than staying suppressed**; does not re-fire within a band; disable switch still wins. The re-arm case is the one guarding the actual defect. |
 | `docs/handoff-nudge.md` | **Phase 3.** Line 103 documents the one-shot tail as a known deferred issue. Update it to record what shipped and the evidence that closed it. This is a current-behavior description, not a historical record, so it is in scope to edit (CLAUDE.md Axis 3). |
 | `claude/.claude/hooks/guard-settings-session-keys.sh` | **Phase 5a.** Appending `"env.CLAUDE_CODE_EFFORT_LEVEL"` to `GUARDED_KEYS_JSON` **will not work**: `guarded_value` does `$settings \| has($key)` against top-level keys only, so a literal dotted key never matches a value living at `.env.CLAUDE_CODE_EFFORT_LEVEL` and the check silently never fires. Restructure `guarded_value` for path traversal (split the key, `getpath`). **No test file exists for this hook today** — an untested control extension is indistinguishable from a no-op, so add allow/deny cases asserting a nested `env.CLAUDE_CODE_EFFORT_LEVEL` / `env.ANTHROPIC_MODEL` commit is actually blocked. |
-| `claude/.claude/CLAUDE.md` | **Phase 4.** Two lines, drafted as literal text and run through `ai-instruction-and-memory-files` before implementation — this file is itself always-loaded prefix. |
+| `claude/.claude/CLAUDE.md` | **Phase 4 — not changed.** The two lines were written and then dropped; see the Phase 4 entry for why. This file is unchanged by this plan. |
 | `docs/cost-ledger.md` | **Phase 6.** **Already exists on `cost-trend-ledger` (48 lines) — do not create it.** Its schema there is a weekly aggregate and lacks the per-PR metric this plan's own verification needs; `usd_per_merged_pr` is that plan's Phase 2. Add that column to the existing file, on whichever branch the prerequisite decision settles on. |
 | `.claude/plans/cost-trend-ledger.md` | **Phase 6, disposition.** This file does not exist on `main`, so an agent told to "amend it" from a branch cut off `main` would write a fresh file and silently lose the content needing revision. If it is to be edited here, pull it across first (`git checkout cost-trend-ledger -- .claude/plans/cost-trend-ledger.md`). The larger question the prerequisite settles: what happens to that branch's unmerged 1,406-line implementation — merge, rebase, or supersede. |
 
@@ -430,7 +439,9 @@ Verification item 8's `handoff-ratio` is the check that would expose it.
   hook's internal `HOOK_EVENT` `case` (:67-70) must gain the new arm explicitly or
   the event silently mislabels as `UserPromptSubmit`.
 - **The idle-gap cache rebuild** (two events, ~910K tokens at cache-write rates,
-  ~$9 of PR #609). Real but vendor-capped at a 1h TTL — addressed only by the
-  Phase 4 guidance line, not by a mechanism.
+  ~$9 of PR #609). Real but vendor-capped at a 1h TTL. Phase 4's guidance line
+  was the only thing aimed at it, and Phase 4 was rejected — so nothing in this
+  plan addresses it. Only the operator controls when a session idles, so no
+  agent-side mechanism closes it either.
 - **Re-deriving the subagent share of the 2.1x inflation.** Flagged in the ledger;
   affects a headline figure's precision, no conclusion.
