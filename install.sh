@@ -311,7 +311,7 @@ fi
 # its own and will block on `read` forever against an open, never-closed
 # stdin. configure_machine_level_opt_ins below is the only sanctioned caller.
 _prompt_sentinel_opt_in() {
-  local sentinel_path="$1" human_name="$2" description="$3"
+  local sentinel_path="$1" human_name="$2" description="$3" answer
   # Defense-in-depth: both current call sites hardcode a safe path, but this
   # function performs unconditional touch/rm/mkdir on its first argument —
   # confine it to $HOME/.claude so a future call site with a
@@ -617,9 +617,9 @@ check_private_projects_file() {
     echo "     want leaking in commits/PRs. See README section 'Private-project redaction'."
   elif ! grep -Evq '^[[:space:]]*(#|$)' "$file" 2>/dev/null; then
     echo ""
-    echo "WARNING: ~/.claude/private-projects.md exists but contains no usable entries"
-    echo "         (only comments or blank lines). Either populate it or delete it —"
-    echo "         an empty file is the confusing state."
+    echo "NOTE: ~/.claude/private-projects.md exists but has no project names yet"
+    echo "      (only comments or blank lines) — a valid placeholder if you have"
+    echo "      nothing to list. Add names as you identify projects to redact."
   fi
 }
 
@@ -785,6 +785,45 @@ ensure_local_bin_on_path() {
 }
 # INSTALL_TEST_FIXTURE: local-bin-path — end
 
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: contributor-intent-prompt — start
+_print_default_contributor_hint() {
+  echo ""
+  echo "Done. Optional (contributors): run the hook test suite:"
+  echo "  ./install-dev.sh   # creates .venv from requirements-dev.txt"
+  echo "  .venv/bin/pytest claude/.claude/"
+}
+
+# Caller must check `[ -t 0 ]` before invoking this — it has no TTY guard of
+# its own and will block on `read` forever against an open, never-closed
+# stdin. prompt_contributor_intent below is the only sanctioned caller.
+_prompt_contributor_intent() {
+  local answer
+  read -r -p "Planning to contribute code or tests to claude-config? [y/N] " answer || answer=""
+  case "$answer" in
+    [Yy]*)
+      echo ""
+      echo "Contributor setup requires ~/.claude/private-projects.md to exist first"
+      echo "(see docs/private-project-redaction.md \"Opt-in: enable the blocklist\"),"
+      echo "then:"
+      echo "  ./install-dev.sh   # creates .venv from requirements-dev.txt"
+      echo "  .venv/bin/pytest claude/.claude/"
+      ;;
+    *) _print_default_contributor_hint ;;
+  esac
+}
+
+prompt_contributor_intent() {
+  if [ ! -t 0 ]; then
+    _print_default_contributor_hint
+    return 0
+  fi
+  _prompt_contributor_intent
+}
+# INSTALL_TEST_FIXTURE: contributor-intent-prompt — end
+
 if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
   # shellcheck disable=SC2016 # single-quoted for literal display text — the
   # backtick-quoted tokens are markdown-style formatting, not command
@@ -807,7 +846,4 @@ if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
   echo "      On Debian/Ubuntu, install it first: sudo apt install python3.12-venv"
 fi
 
-echo ""
-echo "Done. Optional (contributors): run the hook test suite:"
-echo "  ./install-dev.sh   # creates .venv from requirements-dev.txt"
-echo "  .venv/bin/pytest claude/.claude/"
+prompt_contributor_intent

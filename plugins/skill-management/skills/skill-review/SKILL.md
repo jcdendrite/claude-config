@@ -27,7 +27,7 @@ Optional frontmatter:
 - **`disable-model-invocation`** — `true` removes the description from the
   always-loaded skill-listing budget; Skill tool invocations still work.
   Use `true` on add-on skills (`.claude/skills/<parent>-<project>/SKILL.md`)
-  invoked by a parent via Glob+Skill-tool — `test-conventions`, `plan-review`,
+  loaded by a parent via Glob + the Read tool — `test-conventions`, `plan-review`,
   and `code-review` all use this pattern; auto-trigger is not needed.
 
 Description text is always-loaded context budget; body text is conditional — so overspend in the description costs more than overspend in the body.
@@ -141,7 +141,7 @@ platform-genericness) do.
    and contains both `TRIGGER when:` and `DO NOT TRIGGER when:`
    blocks. `allowed-tools` and `user-invocable` only if needed. Add
    `disable-model-invocation: true` on add-on skills loaded by a parent
-   via Glob+Skill-tool (`.claude/skills/<parent>-<project>/SKILL.md`).
+   via Glob + the Read tool (`.claude/skills/<parent>-<project>/SKILL.md`).
 2. **Description scope** — the description's TRIGGER list matches
    what the body actually covers. An overpromising description fires
    on turns the body can't help with.
@@ -192,7 +192,7 @@ platform-genericness) do.
 If the review is clean (table above has no N rows, no other
 blockers), record completion by running this command exactly once:
 
-<!-- HOOK_TEST_FIXTURE: skill-review-marker-write — the hook-alignment test suite reads this exact fenced block from this file (plugins/skill-review/skills/skill-review/SKILL.md) to verify it matches require-skill-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: skill-review-marker-write — the hook-alignment test suite reads this exact fenced block from this file (plugins/skill-management/skills/skill-review/SKILL.md) to verify it matches require-skill-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh write skill-review
 ```
