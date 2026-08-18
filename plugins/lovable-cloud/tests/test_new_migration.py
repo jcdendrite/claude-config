@@ -130,6 +130,22 @@ class TestNewMigrationTokenSideEffect:
             "Token must not also land under $HOME/.claude when CLAUDE_CONFIG_DIR is set"
         )
 
+    def test_relative_config_dir_exits_nonzero_writes_no_token(self, tmp_path):
+        """A relative CLAUDE_CONFIG_DIR makes token-path.sh set an empty
+        MIGRATION_TOKEN_DIR — the generator must fail closed (its own error,
+        not a root-path mkdir/touch attempt), matching the guard already
+        present in both hooks for the identical empty-dir condition."""
+        home = tmp_path / "home"
+        home.mkdir()
+        result = subprocess.run(
+            [str(GENERATOR), "add co-parent index"],
+            capture_output=True,
+            text=True,
+            env=_env(home, CLAUDE_CONFIG_DIR="relative-profile"),
+        )
+        assert result.returncode != 0
+        assert "could not resolve the migration-token directory" in result.stderr
+
     def test_same_second_same_slug_double_gen_is_idempotent(self, tmp_path):
         # Two generator calls with the same slug at the same UTC second must
         # produce the same filename and leave exactly one token file — the
