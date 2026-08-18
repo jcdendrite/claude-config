@@ -93,8 +93,8 @@ Keep a paragraph here per tripwire. When Step 4 gains a rule and this section do
 
 Two hooks mechanically enforce ROUTING.md consultation during plan-review:
 
-- **`log-routing-read.sh`** (PostToolUse on Read): writes `~/.claude/.plan-review-routing-read.d/$SESSION_ID` when ROUTING.md is read during an active plan-review session. Observation-only; always exits 0.
-- **`require-routing-read.sh`** (PreToolUse on Agent): denies sub-agent spawning if no fresh (<60 min) routing-read marker exists for the session. Only fires when `~/.claude/.plan-review-active.d/$SESSION_ID` is present.
+- **`log-routing-read.sh`** (PostToolUse on Read): writes `<config-dir>/.plan-review-routing-read.d/$SESSION_ID` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) when ROUTING.md is read during an active plan-review session. Observation-only; always exits 0.
+- **`require-routing-read.sh`** (PreToolUse on Agent): denies sub-agent spawning if no fresh (<60 min) routing-read marker exists for the session. Only fires when `<config-dir>/.plan-review-active.d/$SESSION_ID` is present.
 
 The output format also requires listing spawned agents with their checklist item IDs (from ROUTING.md's Item ownership table). Item-to-agent mappings only exist in ROUTING.md, so correct attribution requires consulting the table — making the rationale a de-facto smoke test on every plan-review run.
 

@@ -119,7 +119,8 @@ root) rather than another judgment call.
 Root: a plan revision can silently contradict a fact the same session
 already verified, because attention is captured by whatever finding is
 currently active.
-Givens: plan-review markers live under ~/.claude/plan-review-markers/ —
+Givens: plan-review markers live under <config-dir>/plan-review-markers/
+(<config-dir> means $CLAUDE_CONFIG_DIR when set, else ~/.claude) —
 beyond reach: the marker directory is a fixed harness convention this
 plan does not touch.
 

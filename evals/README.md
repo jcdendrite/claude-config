@@ -257,7 +257,7 @@ once per sample because priming is shared. The priming prompt **forbids delegati
 (`Do NOT spawn any subagents`) — a priming turn that delegates fills a subagent's
 context, not the parent's, defeating the warm-up purpose.
 
-**Session cleanup.** Session files are stored externally at `~/.claude/projects/<hash>/`
+**Session cleanup.** Session files are stored externally at `<config-dir>/projects/<hash>/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`)
 where `<hash>` is the dispatch project's absolute path with `/` replaced by `-`. The
 harness cleans this directory in its `finally` block for both warm and cold runs (cold
 runs also accumulate session files that `shutil.rmtree` on the tempdir does not reach).

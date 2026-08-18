@@ -199,15 +199,20 @@ case "$TOOL_NAME" in
     # network home) would otherwise block the tool call with no backstop.
     EXPANDED_TARGET="${TARGET_PATH/#\~/$HOME}"
     NORMALIZED_TARGET=$(_lib_realpath_m "$EXPANDED_TARGET" 2>/dev/null)
-    # The `.claude/`-shape match above assumes marker state always sits under
-    # a `.claude` path segment, which is true for the default $HOME/.claude
-    # resolution but not for a CLAUDE_CONFIG_DIR value with no `.claude`
-    # segment (e.g. ~/.config/claude-accounts/<account>) — marker.sh still
-    # resolves and writes there via _lib_config_dir(), so this second arm
-    # closes that gap. Skipped (not denied) when _lib_config_dir() itself
-    # can't resolve, matching this repo's fail-toward-existing-behavior
-    # posture for an unresolvable config dir.
-    CONFIG_DIR_RESOLVED=$(_lib_config_dir 2>/dev/null) || CONFIG_DIR_RESOLVED=""
+    # Second arm: catches CLAUDE_CONFIG_DIR values with no `.claude` segment
+    # (e.g. ~/.config/claude-accounts/<account>), which the pattern above
+    # misses. Denies rather than skips when _lib_config_dir() can't resolve,
+    # matching this file's declared fail-closed posture and the sibling gate
+    # hooks that deny on the identical resolver failure.
+    if ! CONFIG_DIR_RESOLVED=$(_lib_config_dir 2>/dev/null); then
+      emit_deny "Marker write denied: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty) to verify '$TARGET_PATH' is not a review-marker path."
+      exit 0
+    fi
+    # _lib_config_dir() returns CLAUDE_CONFIG_DIR (or $HOME/.claude) verbatim,
+    # not realpath-normalized — realpath it too, mirroring NORMALIZED_TARGET
+    # above, or a symlink/stow-fold alias of the config dir evades this arm
+    # the same way it would evade the .claude-shape arm.
+    CONFIG_DIR_REALPATH=$(_lib_realpath_m "$CONFIG_DIR_RESOLVED" 2>/dev/null)
     for candidate_path in "$EXPANDED_TARGET" "$NORMALIZED_TARGET"; do
       [ -n "$candidate_path" ] || continue
       case "$candidate_path" in
@@ -220,10 +225,16 @@ case "$TOOL_NAME" in
 $GATE_RELEASE_DENIAL_GUIDANCE"
           exit 0
           ;;
+        "$CONFIG_DIR_RESOLVED"/*-markers/*|"$CONFIG_DIR_RESOLVED"/.*-active.d/*)
+          emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate by writing '$TARGET_PATH'.
+
+$GATE_RELEASE_DENIAL_GUIDANCE"
+          exit 0
+          ;;
       esac
-      if [ -n "$CONFIG_DIR_RESOLVED" ]; then
+      if [ -n "$CONFIG_DIR_REALPATH" ]; then
         case "$candidate_path" in
-          "$CONFIG_DIR_RESOLVED"/*-markers/*|"$CONFIG_DIR_RESOLVED"/.*-active.d/*)
+          "$CONFIG_DIR_REALPATH"/*-markers/*|"$CONFIG_DIR_REALPATH"/.*-active.d/*)
             emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate by writing '$TARGET_PATH'.
 
 $GATE_RELEASE_DENIAL_GUIDANCE"

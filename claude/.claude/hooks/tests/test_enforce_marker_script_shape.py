@@ -1142,6 +1142,50 @@ class TestGateReleaseAuthorityUnderCustomConfigDir:
             == "allow"
         )
 
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_marker_write_denied_when_config_dir_unresolvable(self, agent_type, tmp_path):
+        """CLAUDE_CONFIG_DIR set to a relative value makes _lib_config_dir()
+        fail — the arm must deny rather than silently skip, matching this
+        file's declared fail-closed posture and the sibling gate hooks that
+        deny on the identical resolver failure."""
+        home = tmp_path / "home"
+        home.mkdir()
+        target = tmp_path / "somewhere" / "code-review-markers" / "deadbeef.session"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(target), agent_type=agent_type),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": "relative-profile"},
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_marker_write_denied_when_config_dir_is_a_symlink(self, agent_type, tmp_path):
+        """_lib_config_dir() returns CLAUDE_CONFIG_DIR verbatim, not
+        realpath-normalized — a symlink/stow-fold alias of a config dir with
+        no `.claude` segment must not evade this arm the way it would evade
+        the .claude-shape arm above."""
+        home = tmp_path / "home"
+        home.mkdir()
+        physical = tmp_path / "physical-profile"
+        (physical / "code-review-markers").mkdir(parents=True)
+        symlinked = tmp_path / "symlinked-profile"
+        symlinked.symlink_to(physical)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(
+                    str(physical / "code-review-markers/deadbeef.session"),
+                    agent_type=agent_type,
+                ),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(symlinked)},
+            )
+            == "deny"
+        )
+
 
 class TestPrescriptionAllowlistAlignment:
     """Every tilde-form marker.sh (subcommand, argument) shape the hook

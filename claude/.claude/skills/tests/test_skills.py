@@ -2184,13 +2184,12 @@ class TestTranscriptAnalysisScopeConfirmationContract:
 _PER_ACCOUNT_STATE_PATH_RE = re.compile(
     r"(~|\$HOME|\$\{HOME\})/\.claude/"
     r"(handoffs/|briefs/|plans/|projects/|sessions/"
-    r"|[^/\s\"'`]*-markers/|\.[^/\s\"'`]*-active\.d/|output-preferences\.md"
+    r"|[^/\s\"'`]*-markers/|\.[^/\s\"'`]*\.d/|output-preferences\.md"
     r"|pii-patterns\.md|credential-file-guard\.md|credential-value-patterns\.md"
     r"|data-file-read-guard\.md|private-projects\.md|track-permission-prompts"
     r"|\.permission-prompt-log\.jsonl"
-    r"|\.error-mode-nudge-enabled|\.error-mode-nudge-fired\.d/"
-    r"|\.error-mode-nudge-checkpoint\.d/|\.error-mode-nudge\.log"
-    r"|\.handoff-nudge-disabled|\.handoff-nudge-fired\.d/|\.handoff-nudge\.log"
+    r"|\.error-mode-nudge-enabled|\.error-mode-nudge\.log"
+    r"|\.handoff-nudge-disabled|\.handoff-nudge\.log"
     r"|\.commit-stall-block-disabled|\.commit-stall-block\.log"
     r"|\.cost-ledger-enabled|\.consume-durable-continuity-disabled"
     r"|\.session-title-disabled)"
@@ -2239,9 +2238,10 @@ def _strip_yaml_frontmatter(text: str) -> str:
 
 
 def _all_doc_paths() -> list[Path]:
-    """Every prose doc file the state-path contract covers: docs/**/*.md
-    plus the repo-root README/CONTRIBUTING/SECURITY files. docs/reports/**
-    and docs/case-studies/** hold preserved historical records (CLAUDE.md
+    """Every prose doc file the state-path contract covers: docs/**/*.md,
+    every co-located skill REFERENCES.md, evals/README.md, and the
+    repo-root README/CONTRIBUTING/SECURITY files. docs/reports/** and
+    docs/case-studies/** hold preserved historical records (CLAUDE.md
     Axis 3) and are excluded, matching the plan's Out of scope list."""
     repo_root = SKILLS_DIR.parent.parent.parent
     docs_root = repo_root / "docs"
@@ -2251,10 +2251,16 @@ def _all_doc_paths() -> list[Path]:
         if "reports" not in path.relative_to(docs_root).parts
         and "case-studies" not in path.relative_to(docs_root).parts
     ]
+    paths += sorted(SKILLS_DIR.glob("**/REFERENCES.md"))
+    if _PLUGINS_DIR.exists():
+        paths += sorted(_PLUGINS_DIR.glob("*/skills/**/REFERENCES.md"))
     for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md"):
         candidate = repo_root / name
         if candidate.exists():
             paths.append(candidate)
+    evals_readme = repo_root / "evals" / "README.md"
+    if evals_readme.exists():
+        paths.append(evals_readme)
     return paths
 
 

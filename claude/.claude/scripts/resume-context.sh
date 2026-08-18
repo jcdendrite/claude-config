@@ -160,10 +160,9 @@ fi
 # both the not-found hint and the move below share one definition.
 TMPDIR_ROOT="${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}"
 
-# A continuity file predating CLAUDE_CONFIG_DIR support may still sit at
-# the legacy $HOME/.claude path — check there before giving up, mirroring
-# this repo's "union, not swap" guard-config fallbacks. Trailing slash
-# stripped to match _lib_config_dir's ${VAR%/} convention (_lib.sh:114).
+# Also check the legacy $HOME/.claude path before giving up, mirroring this
+# repo's "union, not swap" guard-config fallbacks. Trailing slash stripped
+# to match _lib_config_dir's ${VAR%/} convention (_lib.sh:114).
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CONFIG_DIR="${CONFIG_DIR%/}"
 if [ ! -f "$SRC" ] && [ "$CONFIG_DIR" != "$HOME/.claude" ]; then
