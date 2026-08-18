@@ -103,6 +103,13 @@ parent hands its children the main checkout. Naming a working
 directory in the agent's prompt does not change where its commands
 run.
 
+The write check re-evaluates the parent's current anchor for the whole
+dispatch, not just at launch: re-anchoring mid-dispatch gets a
+subagent's `Write` and `Edit` calls denied outright rather than
+redirected, unless it was pinned at launch by `isolation: worktree` or
+an explicit cwd. Hold the anchor still for the life of any
+write-capable dispatch.
+
 The anchor is session-scoped. A resumed session starts unanchored, so
 re-enter the worktree before running *any* other command or
 dispatching subagents — a read-only lookup counts too, since it's the
