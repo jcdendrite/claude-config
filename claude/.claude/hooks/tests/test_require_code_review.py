@@ -1,7 +1,12 @@
 """Tests for require-code-review.sh."""
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import subprocess
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 from conftest import _seed_session
@@ -12,6 +17,7 @@ from helpers import (
     bash_input,
     edit_input,
     extract_skill_command,
+    git_toplevel,
     marker_path,
     run_hook,
     run_skill_command,
@@ -531,5 +537,165 @@ class TestRequireCodeReviewHonorsConfigDir:
                 extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
             )
             == "deny"
+        )
+
+
+class TestRequireCodeReviewComplianceLog:
+    """Non-blocking `.review-ledger-compliance.log` line appended at both of
+    this hook's exit paths. Never affects the gate's own decision."""
+
+    COMPLIANCE_LOG = "review-ledger-compliance.log"
+
+    def _log_path(self, isolated_home: Path) -> Path:
+        return isolated_home / ".claude" / f".{self.COMPLIANCE_LOG}"
+
+    def _ledger_file_path(self, isolated_home: Path, repo: Path, session_id: str) -> Path:
+        repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+        return (
+            isolated_home
+            / ".claude"
+            / "review-narrative-ledger"
+            / f"{repo_hash}.{session_id}.jsonl"
+        )
+
+    def test_log_line_appended_on_match(self, isolated_home, git_repo):
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=DEFAULT_TEST_SESSION_ID)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+        lines = self._log_path(isolated_home).read_text().splitlines()
+        assert len(lines) == 1
+        assert "marker=matched" in lines[0]
+        assert "ledger=absent" in lines[0]
+
+    def test_log_line_appended_on_deny(self, isolated_home, git_repo):
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+        lines = self._log_path(isolated_home).read_text().splitlines()
+        assert len(lines) == 1
+        assert "marker=unmatched" in lines[0]
+        assert "ledger=absent" in lines[0]
+
+    def test_log_line_reports_ledger_present(self, isolated_home, git_repo):
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=DEFAULT_TEST_SESSION_ID)
+        ledger = self._ledger_file_path(isolated_home, git_repo, DEFAULT_TEST_SESSION_ID)
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text('{"finding":"f","disposition":"ADDRESS","rationale":"r","source":"n/a"}\n')
+
+        run_hook(
+            CODE_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+
+        lines = self._log_path(isolated_home).read_text().splitlines()
+        assert "ledger=present" in lines[0]
+
+    def test_log_line_has_iso8601_timestamp(self, isolated_home, git_repo):
+        run_hook(
+            CODE_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        line = self._log_path(isolated_home).read_text().splitlines()[0]
+        timestamp = line.split(" ", 1)[0]
+        # Raises ValueError (failing the test) if not a well-formed
+        # UTC ISO-8601 timestamp of the form the hook writes.
+        datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_exit_code_unaffected_by_log_write_failure(self, isolated_home, git_repo):
+        """An unwritable config dir (log append fails) must not change the
+        gate's own allow/deny decision."""
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=DEFAULT_TEST_SESSION_ID)
+        config_dir = isolated_home / ".claude"
+        config_dir.chmod(0o555)
+        try:
+            decision = run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+        finally:
+            config_dir.chmod(0o755)
+        assert decision == "allow"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unwritable_log_dir_does_not_hang(self, isolated_home, git_repo):
+        """_lib_capped's timeout wraps the compliance-log append; an
+        unwritable directory must fail fast rather than hang the gate.
+        subprocess.run's own timeout is the test's hang-guard: a regression
+        that reintroduced a blocking write would raise TimeoutExpired here
+        instead of hanging the test suite indefinitely."""
+        config_dir = isolated_home / ".claude"
+        config_dir.chmod(0o555)
+        env = {**os.environ, "HOME": str(isolated_home)}
+        try:
+            result = subprocess.run(
+                [str(CODE_REVIEW_HOOK)],
+                input=json.dumps(bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID)),
+                cwd=git_repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        finally:
+            config_dir.chmod(0o755)
+        # _lib_emit_deny prints a JSON deny payload and returns 0 rather than
+        # calling exit 2 itself (see run_hook's own docstring) — parse the
+        # payload the same way run_hook does rather than asserting exit code.
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny", (
+            "no marker exists, so the gate must still deny"
+        )
+        assert not self._log_path(isolated_home).exists()
+
+    def test_fifo_compliance_log_does_not_hang(self, isolated_home, git_repo):
+        """A compliance-log target whose `>>` open() itself blocks (no
+        reader) is the genuine hang this gate must be protected against —
+        distinct from test_unwritable_log_dir_does_not_hang above, which
+        only proves the EACCES case fails fast and cannot tell "fails fast"
+        apart from "actually timeout-protected". subprocess.run's own
+        timeout is the hang-guard: a regression that reintroduced an
+        unprotected `>>` redirect would raise TimeoutExpired here instead of
+        hanging the test suite indefinitely."""
+        write_marker(
+            isolated_home, git_repo, staged_diff_hash(git_repo), session_id=DEFAULT_TEST_SESSION_ID
+        )
+        log_path = self._log_path(isolated_home)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(log_path)
+        env = {**os.environ, "HOME": str(isolated_home)}
+        try:
+            result = subprocess.run(
+                [str(CODE_REVIEW_HOOK)],
+                input=json.dumps(bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID)),
+                cwd=git_repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        finally:
+            log_path.unlink()
+        # A matched marker's allow path is silent (empty stdout, exit 0) —
+        # see run_hook's own docstring for this same empty-stdout mapping.
+        assert result.stdout.strip() == "" and result.returncode == 0, (
+            f"a matching marker exists, so the gate must still silently "
+            f"allow despite the compliance-log append being unable to "
+            f"complete; got returncode={result.returncode}, "
+            f"stdout={result.stdout!r}, stderr={result.stderr!r}"
         )
 

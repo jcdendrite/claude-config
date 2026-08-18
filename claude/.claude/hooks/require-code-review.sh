@@ -106,14 +106,43 @@ if ! CONFIG_DIR=$(_lib_config_dir); then
   exit 0
 fi
 
+# Compliance backstop: non-blocking log line recording ledger presence +
+# marker outcome at both exit paths; never affects this gate's decision. See
+# docs/hooks.md's require-code-review.sh entry for the accepted-risk rationale.
+LEDGER_SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+LEDGER_STATE="absent"
+if [ -n "$LEDGER_SESSION_ID" ] && _lib_valid_session_id_component "$LEDGER_SESSION_ID" \
+  && [ -f "$CONFIG_DIR/review-narrative-ledger/$REPO_HASH.$LEDGER_SESSION_ID.jsonl" ]; then
+  LEDGER_STATE="present"
+fi
+COMPLIANCE_LOG="$CONFIG_DIR/.review-ledger-compliance.log"
+
+# Appends one compliance line, end to end timeout-bounded. A bare `>>` on
+# this script's own shell opens the target before _lib_capped's internal
+# timeout ever starts (bash sets up a function call's redirect before
+# entering the function body) — forking the redirect into its own `bash -c`
+# under _lib_capped moves that open() into the timeout-supervised subprocess.
+_log_compliance_line() {
+  local outcome="$1"
+  local line
+  line=$(_lib_capped printf '%s marker=%s ledger=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$outcome" "$LEDGER_STATE")
+  # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2 are the
+  # nested bash -c script's own positional params, meant to expand there, not
+  # in this outer shell.
+  _lib_capped bash -c 'printf "%s\n" "$1" >> "$2"' _ "$line" "$COMPLIANCE_LOG" 2>/dev/null || true
+}
+
 # Allow when any marker under this repo-hash holds the currently staged
 # diff's hash. The stored hash is the authorization — it proves a review
 # covered exactly this diff — so the question is "has this diff been
 # reviewed?", not "did this session review it?". An empty CURRENT_HASH
 # (sha256sum unavailable) never matches, so a hashing failure denies.
 if _lib_marker_value_present "$CONFIG_DIR/code-review-markers" "$CURRENT_HASH" "$REPO_HASH."; then
+  _log_compliance_line matched
   exit 0
 fi
+
+_log_compliance_line unmatched
 
 # No marker, or marker hash does not match the current staged state.
 # Build the reason as a bash variable so the conditional marker-chain
