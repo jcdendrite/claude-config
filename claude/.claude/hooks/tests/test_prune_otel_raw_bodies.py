@@ -68,26 +68,40 @@ def _write_capture_file(
     return path
 
 
+# The hook probes GNU coreutils stat (-c '%Y %s %n') first, BSD/macOS (-f
+# '%m %z %N') as fallback -- these shims must intercept whichever shape the
+# stat on the test runner's own PATH makes the hook select, or the fault
+# injection silently never fires and the shim degrades to a real,
+# unmodified stat call (the exact CI-only failure this pair of shims
+# originally missed: BSD-shaped locally, GNU-shaped on Linux CI).
+_STAT_LISTING_FMT_CONDITION = (
+    '{ [ "$1" = "-f" ] && [ "$2" = "%m %z %N" ]; } '
+    '|| { [ "$1" = "-c" ] && [ "$2" = "%Y %s %n" ]; }'
+)
+
+
 def _path_with_stat_emitting_malformed_size(farm_dir: Path, target_name: str) -> str:
     """Build a PATH whose `stat` emits a non-numeric size field for
-    `target_name` only, when invoked with the hook's own `%m %z %N`
-    size-pass format string -- standing in for a raced or truncated real
-    stat read. Every other file in the same batched `stat -f ... {} +`
-    call, and every other stat invocation (the hook's own `%z`-only
-    post-prune tally), passes through to the real binary untouched.
+    `target_name` only, when invoked with the hook's own size-pass format
+    string (BSD `-f '%m %z %N'` or GNU `-c '%Y %s %n'`) -- standing in for
+    a raced or truncated real stat read. Every other file in the same
+    batched call, and every other stat invocation (the hook's own
+    size-only post-prune tally), passes through to the real binary
+    untouched.
     """
     farm_dir.mkdir(parents=True, exist_ok=True)
     real_stat = shutil.which("stat")
     wrapper = farm_dir / "stat"
     wrapper.write_text(
         "#!/bin/bash\n"
-        'if [ "$1" = "-f" ] && [ "$2" = "%m %z %N" ]; then\n'
+        f"if {_STAT_LISTING_FMT_CONDITION}; then\n"
+        '  fmt_flag="$1"; fmt_str="$2"\n'
         "  shift 2\n"
         '  for f in "$@"; do\n'
         f'    if [ "$(basename "$f")" = "{target_name}" ]; then\n'
         '      echo "1700000000 notanumber $f"\n'
         "    else\n"
-        f'      "{real_stat}" -f "%m %z %N" "$f"\n'
+        f'      "{real_stat}" "$fmt_flag" "$fmt_str" "$f"\n'
         "    fi\n"
         "  done\n"
         "else\n"
@@ -99,37 +113,80 @@ def _path_with_stat_emitting_malformed_size(farm_dir: Path, target_name: str) ->
 
 
 def _path_with_stat_omitting_one_file(farm_dir: Path, missing_name: str) -> str:
-    """Build a PATH whose `stat` reproduces real BSD stat's actual
-    partial-batch-failure shape (verified empirically: `stat -f '%m %z %N'
-    present.txt missing.txt` prints a well-formed line for every file it
-    can still see and only errors -- to stderr, exit 1 -- for the one that
-    vanished, rather than corrupting that file's line or dropping the rest
-    of the batch) -- the real race the hook's own size-pass comment
-    describes ("A file stat can no longer see... drops out of the listing
-    rather than aborting the walk"), as opposed to
+    """Build a PATH whose `stat` reproduces real stat's actual
+    partial-batch-failure shape (verified empirically on both BSD and GNU:
+    `stat ... present.txt missing.txt` prints a well-formed line for every
+    file it can still see and only errors -- to stderr, exit 1 -- for the
+    one that vanished, rather than corrupting that file's line or
+    dropping the rest of the batch) -- the real race the hook's own
+    size-pass comment describes ("A file stat can no longer see... drops
+    out of the listing rather than aborting the walk"), as opposed to
     `_path_with_stat_emitting_malformed_size` above, which pins a
     different, non-race code path (a defensively-guarded corrupted field).
     `missing_name` is silently omitted from stdout; every other file in the
-    same batched `stat -f ... {} +` call passes through to the real binary
-    untouched.
+    same batched call passes through to the real binary untouched.
     """
     farm_dir.mkdir(parents=True, exist_ok=True)
     real_stat = shutil.which("stat")
     wrapper = farm_dir / "stat"
     wrapper.write_text(
         "#!/bin/bash\n"
-        'if [ "$1" = "-f" ] && [ "$2" = "%m %z %N" ]; then\n'
+        f"if {_STAT_LISTING_FMT_CONDITION}; then\n"
+        '  fmt_flag="$1"; fmt_str="$2"\n'
         "  shift 2\n"
         '  for f in "$@"; do\n'
         f'    if [ "$(basename "$f")" = "{missing_name}" ]; then\n'
         '      echo "stat: missing (simulated race)" >&2\n'
         "    else\n"
-        f'      "{real_stat}" -f "%m %z %N" "$f"\n'
+        f'      "{real_stat}" "$fmt_flag" "$fmt_str" "$f"\n'
         "    fi\n"
         "  done\n"
         "else\n"
         f'  exec "{real_stat}" "$@"\n'
         "fi\n"
+    )
+    wrapper.chmod(0o755)
+    return f"{farm_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
+def _path_forcing_stat_probe(farm_dir: Path, gnu: bool) -> str:
+    """Build a PATH whose `stat` forces the hook's own portable-stat probe
+    (`stat -c '%s' .`) to succeed or fail as directed, then serves every
+    real listing/size call via Python's `os.stat()` directly rather than
+    by shelling out to the host's actual stat binary -- makes both of the
+    hook's branches machine-verifiable on any host regardless of which
+    stat dialect is actually installed there, closing the gap where this
+    repo's CI (ubuntu-24.04 only) never naturally exercises the BSD
+    branch and a contributor's local macOS run never naturally exercises
+    the GNU branch.
+    """
+    farm_dir.mkdir(parents=True, exist_ok=True)
+    wrapper = farm_dir / "stat"
+    wrapper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        f"PROBE_EXIT = {0 if gnu else 1}\n"
+        "args = sys.argv[1:]\n"
+        "if len(args) == 3 and args[0] == '-c' and args[1] == '%s' and args[2] == '.':\n"
+        "    sys.exit(PROBE_EXIT)\n"
+        "if len(args) < 2 or args[0] not in ('-c', '-f'):\n"
+        "    sys.exit(1)\n"
+        "fmt, files = args[1], args[2:]\n"
+        "had_error = False\n"
+        "for f in files:\n"
+        "    try:\n"
+        "        st = os.stat(f)\n"
+        "    except OSError:\n"
+        "        print(f'stat: cannot stat {f!r}: No such file or directory', file=sys.stderr)\n"
+        "        had_error = True\n"
+        "        continue\n"
+        "    if fmt in ('%Y %s %n', '%m %z %N'):\n"
+        "        print(f'{int(st.st_mtime)} {st.st_size} {f}')\n"
+        "    elif fmt in ('%s', '%z'):\n"
+        "        print(st.st_size)\n"
+        "    else:\n"
+        "        sys.exit(1)\n"
+        "sys.exit(1 if had_error else 0)\n"
     )
     wrapper.chmod(0o755)
     return f"{farm_dir}{os.pathsep}{os.environ.get('PATH', '')}"
@@ -294,12 +351,12 @@ class TestPruneOtelRawBodies:
     def test_missing_stat_line_mid_batch_does_not_abort_the_hook(self, isolated_home):
         """The actual race the hook's size-pass comment describes: a file
         present in find's snapshot is gone by the time the batched
-        `stat -f ... {} +` call reaches it, so its line is silently absent
-        from stdout (real BSD stat's verified behavior for a missing file
-        mid-batch -- stderr-only, exit 1, every other file's line still
-        printed). The missing file is invisible to size accounting and
-        survives unconditionally; a well-formed sibling in the same batch
-        is still evaluated and evicted normally."""
+        `stat ... {} +` call reaches it, so its line is silently absent
+        from stdout (real stat's verified behavior on both BSD and GNU for
+        a missing file mid-batch -- stderr-only, exit 1, every other
+        file's line still printed). The missing file is invisible to size
+        accounting and survives unconditionally; a well-formed sibling in
+        the same batch is still evaluated and evicted normally."""
         capture_dir = _capture_dir(isolated_home)
         raced_away = _write_capture_file(
             capture_dir, "raced-away-uuid.request.json", days_ago=1, size_bytes=100
@@ -316,6 +373,35 @@ class TestPruneOtelRawBodies:
         assert result.returncode == 0
         assert raced_away.exists()
         assert not healthy.exists()
+
+    # ------------------------------------------------------------------ #
+    # Both stat branches, forced, regardless of host                      #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize("gnu", [True, False], ids=["gnu-stat", "bsd-stat"])
+    def test_pruning_works_under_forced_stat_flavor(self, isolated_home, gnu):
+        """Forces the hook's portable-stat probe down each branch in turn,
+        via a host-independent stat shim backed by os.stat() rather than
+        the host's own real stat binary, so both the GNU and BSD code
+        paths are machine-verified on every run regardless of which stat
+        dialect the host actually has installed -- this repo's CI
+        (ubuntu-24.04 only) never naturally exercises the BSD branch, and
+        a contributor's local macOS run never naturally exercises the GNU
+        one; this test exercises whichever branch isn't the host's native
+        one at least once every run."""
+        capture_dir = _capture_dir(isolated_home)
+        old = _write_capture_file(capture_dir, "old-uuid.request.json", days_ago=9, size_bytes=100)
+        recent = _write_capture_file(
+            capture_dir, "recent-uuid.request.json", days_ago=1, size_bytes=100
+        )
+        farm_dir = isolated_home / f"forced-stat-{'gnu' if gnu else 'bsd'}"
+        path_with_shim = _path_forcing_stat_probe(farm_dir, gnu=gnu)
+        result = _run_hook(isolated_home, extra_env={"PATH": path_with_shim})
+        assert result.returncode == 0
+        assert not old.exists()
+        assert recent.exists()
+        payload = json.loads(result.stdout)
+        assert "ceiling 5120 MiB" in payload["systemMessage"]
 
     # ------------------------------------------------------------------ #
     # Production ceiling literal                                          #
