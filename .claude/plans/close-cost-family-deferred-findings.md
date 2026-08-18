@@ -67,16 +67,10 @@ constraint.
    `context_class_dollars` distinction for `compute_cost_trend_data`.
    `anchors: root`.
    - [verified: CLAUDE.md's own caveat clause, confirmed at `/plan-review`]
-     Reframing "one line, not a paragraph" as "one sentence per
-     independently load-bearing fact, no blank-line paragraph breaks" —
-     rather than forcing all facts into a single sentence and dropping
-     three of them — reads correctly against the rule's own caveat ("a
-     compressed comment that drops the actual constraint is worse than a
-     verbose one that keeps it"). No repo precedent exists either way for
-     a docstring carrying multiple independent facts, so this is a
-     judgment call, not a citable pattern — but it's the reading that
-     avoids dropping load-bearing facts, which the rule itself prioritizes
-     over line-count minimalism.
+     Reframing "one line, not a paragraph" as "one sentence per load-bearing
+     fact, no blank-line breaks" (not one line total) is justified by the
+     CLAUDE.md caveat that a compressed comment dropping a constraint is
+     worse than a verbose one that keeps it.
 3. In `test_token_analyzer.py`: delete the local `_write_subagent_jsonl`
    definition (lines 459–463) and its now-unused `SUBAGENT_SUBDIR` import
    (line 10 — its only other use is inside the deleted function), replacing
