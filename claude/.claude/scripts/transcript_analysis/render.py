@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 
 
 def _fam(model: str) -> str:
@@ -46,6 +46,10 @@ def _pct_value(value: float, total: float) -> float:
     convention -- for a caller (cost-ledger) that stores the number rather
     than printing it."""
     return 100 * value / total if total else 0.0
+
+
+def _fmt_date(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%d")
 
 
 def _context_distribution_rows(
