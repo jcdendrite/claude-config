@@ -1378,6 +1378,46 @@ def _print_deny_summary(
     )
 
 
+def _print_review_trace_cost(
+    hook_dollars: dict[str, float],
+    hook_unpriced_counts: dict[str, int],
+    corpus_min_ts: float | None,
+    corpus_max_ts: float | None,
+) -> None:
+    """Print --cost's per-hook/gate denial dollar report.
+
+    Each denial's dollar figure double-counts when two denials share a
+    blocked/retry turn -- an attribution instrument, not a strict partition;
+    see _compute_review_trace_cost_data's docstring.
+    """
+    if corpus_min_ts is not None and corpus_max_ts is not None:
+        print(f"\nCorpus window: {_fmt_date(corpus_min_ts)} to {_fmt_date(corpus_max_ts)}")
+
+    total = sum(hook_dollars.values())
+    print(f"\n## Denial cost by hook/gate ({_fmt_usd(total)} total)\n")
+    print(f"{'Hook/gate':<40} {'Cost':>12}")
+    print("-" * 53)
+    for label, dollars in sorted(hook_dollars.items(), key=lambda kv: (-kv[1], kv[0])):
+        print(f"{_sanitize_table_cell(label):<40} {_fmt_usd(dollars):>12}")
+
+    unpriced_total = sum(hook_unpriced_counts.values())
+    if unpriced_total:
+        print(
+            f"\n{unpriced_total} denial(s) could not be priced (unpriced model, or no"
+            " locatable blocked-call turn) and are excluded from the total above:\n"
+        )
+        print(f"{'Hook/gate':<40} {'Count':>6}")
+        print("-" * 47)
+        for label, count in sorted(hook_unpriced_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"{_sanitize_table_cell(label):<40} {count:>6}")
+
+    print(
+        "\nMain-thread denials only: this report never reads subagent transcripts,"
+        " so the share of denials dispatched reviewers and code-writer trigger via"
+        " their own tool calls is unmeasured, not negligible."
+    )
+
+
 def _review_trace_session_events(
     records: list[dict],
     since_ts: float | None,
@@ -1686,6 +1726,123 @@ def _compute_deny_summary_data(
     }
 
 
+def _index_assistant_turns(records: list[dict]) -> tuple[dict[str, int], list[int]]:
+    """Map each tool_use id to its assistant record's position in `records`,
+    and list every assistant record's position in ascending order -- both
+    built once per session so --cost's blocked-turn/next-turn lookups don't
+    rescan the whole session per denial.
+    """
+    tool_use_position: dict[str, int] = {}
+    assistant_positions: list[int] = []
+    for idx, rec in enumerate(records):
+        if rec.get("type") != "assistant":
+            continue
+        assistant_positions.append(idx)
+        for block in ((rec.get("message") or {}).get("content") or []):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                tid = block.get("id")
+                if tid:
+                    tool_use_position[tid] = idx
+    return tool_use_position, assistant_positions
+
+
+def _turn_output_dollars(rec: dict) -> float | None:
+    """One assistant record's own output-dollar cost via _price_turn, or
+    None when its model carries no _MODEL_BASE_INPUT_RATES entry."""
+    message = rec.get("message") or {}
+    dollars_by_class, _context_at_turn, _unpriced_tokens = _price_turn(
+        message.get("model", ""), message.get("usage") or {},
+    )
+    return None if dollars_by_class is None else dollars_by_class["output"]
+
+
+def _compute_review_trace_cost_data(
+    session_iter,
+    since_ts: float | None = None,
+    until_ts: float | None = None,
+    branch_filter: set[str] | None = None,
+) -> dict:
+    """Corpus-wide --cost accumulation: prices each denial as its blocked
+    call's assistant-turn output-dollar cost plus the immediately-following
+    assistant turn's, grouped by _denial_hook_label.
+
+    Dedups its own copy of each session's records via
+    _dedup_turns_by_request_id -- never applied to the shared walk
+    _compute_deny_summary_data drives, since that would corrupt that walk's
+    own --since/--until boundary inclusion (output_tokens only reaches its
+    billed value on a multi-block response's last record).
+    A denial with no locatable following assistant turn (the session ended
+    or is still open) prices its blocked turn alone. Two denials sharing one
+    blocked or retry turn (a batch tool call both of whose calls were
+    denied) each get that turn's full output-dollar cost independently --
+    this double-counts the shared turn's cost across both denials' hook
+    buckets, a per-denial attribution instrument rather than a strict cost
+    partition.
+    """
+    hook_dollars: dict[str, float] = defaultdict(float)
+    hook_unpriced_counts: dict[str, int] = defaultdict(int)
+    corpus_min_ts: float | None = None
+    corpus_max_ts: float | None = None
+    any_session_matched = False
+
+    for _jsonl, records in session_iter:
+        deduped = _dedup_turns_by_request_id(records)
+        events, _tool_use_commands, _pre_regime = _review_trace_session_events(
+            deduped, since_ts, until_ts, branch_filter,
+        )
+        if not events:
+            continue
+        any_session_matched = True
+
+        for evt in events:
+            evt_ts = _parse_ts(evt.get("ts"))
+            if evt_ts is None:
+                continue
+            if corpus_min_ts is None or evt_ts < corpus_min_ts:
+                corpus_min_ts = evt_ts
+            if corpus_max_ts is None or evt_ts > corpus_max_ts:
+                corpus_max_ts = evt_ts
+
+        denial_events = [e for e in events if e["kind"] == "denial"]
+        if not denial_events:
+            continue
+
+        tool_use_position, assistant_positions = _index_assistant_turns(deduped)
+
+        for evt in denial_events:
+            hook_label = _denial_hook_label(evt["hook_name"], evt["message"])
+            blocked_pos = tool_use_position.get(evt["tool_use_id"])
+            if blocked_pos is None:
+                # No indexed tool_use block for this denial's id -- e.g. a
+                # legacy attachment denial that recorded no toolUseID.
+                hook_unpriced_counts[hook_label] += 1
+                continue
+
+            blocked_dollars = _turn_output_dollars(deduped[blocked_pos])
+            if blocked_dollars is None:
+                hook_unpriced_counts[hook_label] += 1
+                continue
+
+            next_dollars = 0.0
+            next_idx = bisect.bisect_right(assistant_positions, blocked_pos)
+            if next_idx < len(assistant_positions):
+                retry_dollars = _turn_output_dollars(deduped[assistant_positions[next_idx]])
+                if retry_dollars is None:
+                    hook_unpriced_counts[hook_label] += 1
+                    continue
+                next_dollars = retry_dollars
+
+            hook_dollars[hook_label] += blocked_dollars + next_dollars
+
+    return {
+        "hook_dollars": hook_dollars,
+        "hook_unpriced_counts": hook_unpriced_counts,
+        "corpus_min_ts": corpus_min_ts,
+        "corpus_max_ts": corpus_max_ts,
+        "any_session_matched": any_session_matched,
+    }
+
+
 def cmd_review_trace(args: argparse.Namespace) -> None:
     """Emit an ordered review-event timeline per session.
 
@@ -1719,10 +1876,18 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     _compute_deny_summary_data instead of running its own pass over
     session_iter, so the corpus-wide grouped-count report and cost-ledger's
     per-week denial count can never drift apart.
+
+    --cost is a separate, dollar-valued report over the same denial
+    population, computed by _compute_review_trace_cost_data — a distinct
+    accumulation, not a --deny-summary variant, since it needs
+    _dedup_turns_by_request_id applied to its own copy of each session's
+    records (see that function's docstring for why the shared walk above
+    must never see deduped records).
     """
     branch_filter = _branch_filter(args)
     deny_only: bool = bool(getattr(args, "deny_only", False))
     deny_summary: bool = bool(getattr(args, "deny_summary", False))
+    cost_flag: bool = bool(getattr(args, "cost", False))
     skill_filter: str | None = getattr(args, "skill", None) or None
     roots = _resolve_scan_roots(args)
     session_iter, scope_label = _resolve_project_scope(args, "review-trace", roots=roots)
@@ -1755,6 +1920,24 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         elif data["any_session_matched"]:
             # Sessions matched but none carried a denial — distinct from the
             # scope matching no sessions at all, which the else covers.
+            print("\nNo denials found in scope.")
+        else:
+            print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
+        return
+
+    if cost_flag:
+        # Ahead of the scan, matching --deny-summary's own arm above: a crash
+        # partway through the corpus still leaves the scanned scope on stdout.
+        _print_resolved_scope("review-trace", scope_label, roots)
+        data = _compute_review_trace_cost_data(
+            session_iter, since_ts=since_ts, until_ts=until_epoch, branch_filter=branch_filter,
+        )
+        if data["hook_dollars"] or data["hook_unpriced_counts"]:
+            _print_review_trace_cost(
+                data["hook_dollars"], data["hook_unpriced_counts"],
+                data["corpus_min_ts"], data["corpus_max_ts"],
+            )
+        elif data["any_session_matched"]:
             print("\nNo denials found in scope.")
         else:
             print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
@@ -9734,13 +9917,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--deny-only", action="store_true",
         help="Restrict output to sessions that contain at least one hook denial.",
     )
-    p_review_trace.add_argument(
+    p_review_trace_report = p_review_trace.add_mutually_exclusive_group()
+    p_review_trace_report.add_argument(
         "--deny-summary", action="store_true",
         help=(
             "Replace the per-session event listing with grouped denial-count"
             " tables — by originating hook/gate, by attempted command shape"
             " (git commit / git checkout / git push / other), and a cross-tab"
             " of the two — plus the corpus date window covered."
+        ),
+    )
+    p_review_trace_report.add_argument(
+        "--cost", action="store_true",
+        help=(
+            "Replace the per-session event listing with a corpus-wide denial-cost"
+            " report, grouped by originating hook/gate — each denial priced as its"
+            " blocked call's assistant-turn output-dollar cost plus the next assistant"
+            " turn's. Main-thread denials only; see docs/transcript-analysis.md."
         ),
     )
     p_review_trace.add_argument(

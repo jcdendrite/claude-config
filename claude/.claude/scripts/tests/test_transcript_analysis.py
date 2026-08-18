@@ -3674,6 +3674,7 @@ def _review_trace_args(
     until: str | None = None,
     deny_only: bool = False,
     deny_summary: bool = False,
+    cost: bool = False,
     skill: str | None = None,
 ) -> object:
     return type("A", (), {
@@ -3684,6 +3685,7 @@ def _review_trace_args(
         "until": until,
         "deny_only": deny_only,
         "deny_summary": deny_summary,
+        "cost": cost,
         "skill": skill,
     })()
 
@@ -4930,6 +4932,236 @@ class TestReviewTrace:
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
         assert data["command_shape_counts"].get(_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
         assert data["hook_counts"].get(_mod._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
+
+    def test_cost_groups_by_hook_and_sums_blocked_plus_next_turn_output_dollars(self):
+        """--cost prices one denial as its blocked call's own output-dollar
+        cost plus the immediately-following assistant turn's, and a second
+        denial (a different hook, no retry turn before the session ends) as
+        its blocked call's cost alone — grouped under two separate hook
+        labels, each summed independently."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                tool_id="b1", ts="2026-07-01T10:00:01.000Z"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:02.000Z", content=[]),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:03.000Z",
+                  content=[_bash_use("b2", "git push origin main")]),
+            _hook_deny_current("Push blocked by ready-for-review gate.",
+                                tool_id="b2", ts="2026-07-01T10:00:04.000Z"),
+        ]
+        records[0]["message"]["usage"] = {"input_tokens": 10, "output_tokens": 1000, "cache_read_input_tokens": 0}
+        records[2]["message"]["usage"] = {"input_tokens": 10, "output_tokens": 500, "cache_read_input_tokens": 0}
+        records[3]["message"]["usage"] = {"input_tokens": 10, "output_tokens": 2000, "cache_read_input_tokens": 0}
+
+        blocked1, _ctx1, _u1 = _mod._price_turn("claude-sonnet-4-6", records[0]["message"]["usage"])
+        next1, _ctx2, _u2 = _mod._price_turn("claude-sonnet-4-6", records[2]["message"]["usage"])
+        blocked2, _ctx3, _u3 = _mod._price_turn("claude-sonnet-4-6", records[3]["message"]["usage"])
+
+        data = _mod._compute_review_trace_cost_data([("sess.jsonl", records)])
+        assert dict(data["hook_dollars"]) == {
+            "code-review": pytest.approx(blocked1["output"] + next1["output"]),
+            "ready-for-review": pytest.approx(blocked2["output"]),
+        }
+        assert dict(data["hook_unpriced_counts"]) == {}
+
+    def test_cost_two_denials_sharing_one_blocked_turn_each_get_its_full_cost(self):
+        """A batch tool call whose two blocks are both denied (one blocked
+        assistant turn, two tool_use ids) prices each denial independently at
+        the shared turn's full output-dollar cost -- the double-counting
+        _compute_review_trace_cost_data's own docstring documents, not the
+        shared turn's cost split or counted once."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x"), _bash_use("b2", "git push origin main")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                tool_id="b1", ts="2026-07-01T10:00:01.000Z"),
+            _hook_deny_current("Push blocked by ready-for-review gate.",
+                                tool_id="b2", ts="2026-07-01T10:00:02.000Z"),
+        ]
+        records[0]["message"]["usage"] = {"input_tokens": 10, "output_tokens": 1000, "cache_read_input_tokens": 0}
+
+        blocked, _ctx, _u = _mod._price_turn("claude-sonnet-4-6", records[0]["message"]["usage"])
+
+        data = _mod._compute_review_trace_cost_data([("sess.jsonl", records)])
+        assert dict(data["hook_dollars"]) == {
+            "code-review": pytest.approx(blocked["output"]),
+            "ready-for-review": pytest.approx(blocked["output"]),
+        }
+
+    def test_cost_dedup_reads_last_record_output_tokens_not_intermediate_block(self):
+        """A denial's blocked call spans a 3-record same-requestId run whose
+        output_tokens ascends 100 -> 200 -> 300 (only the last record carries
+        the billed value) -- --cost's own accumulation must dedup its copy of
+        the records before pricing, reading 300, not 100 (the block the
+        tool_use itself lives in) and not 600 (a naive sum of the three)."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")], request_id="req1"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:01.000Z",
+                  content=[], request_id="req1"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:02.000Z",
+                  content=[], request_id="req1"),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                tool_id="b1", ts="2026-07-01T10:00:03.000Z"),
+        ]
+        records[0]["message"]["usage"] = {"input_tokens": 10, "output_tokens": 100, "cache_read_input_tokens": 0}
+        records[1]["message"]["usage"] = {"input_tokens": 10, "output_tokens": 200, "cache_read_input_tokens": 0}
+        records[2]["message"]["usage"] = {"input_tokens": 10, "output_tokens": 300, "cache_read_input_tokens": 0}
+
+        expected, _ctx, _unpriced = _mod._price_turn("claude-sonnet-4-6", records[2]["message"]["usage"])
+
+        data = _mod._compute_review_trace_cost_data([("sess.jsonl", records)])
+        assert dict(data["hook_dollars"]) == {"code-review": pytest.approx(expected["output"])}
+
+    def test_cost_denial_with_no_locatable_tool_use_counted_as_unpriced_not_dropped(self):
+        """A denial recorded an empty tool_use_id, per hook_denial_key's own
+        contract -- with no tool_use block to look up, --cost can't locate a
+        blocked-call turn to price at all, and must count it as unpriced
+        rather than silently dropping it from both tables. tool_id="" here
+        (not a legacy attachment's raw hookName, which _denial_hook_label
+        never trusts) keeps the hook label resolving to "code-review" via
+        the denial message's own text, so the unpriced count is provably
+        caused by the missing tool_use block, not a hook-label mismatch."""
+        record = _hook_deny_current(
+            "Commit blocked by code-review gate: run /code-review.", tool_id="",
+        )
+        data = _mod._compute_review_trace_cost_data([("sess.jsonl", [record])])
+        assert dict(data["hook_dollars"]) == {}
+        assert dict(data["hook_unpriced_counts"]) == {"code-review": 1}
+
+    def test_cost_main_thread_only_excludes_subagent_denials_and_states_caveat(self, fake_projects, capsys):
+        """A denial recorded only in a subagent's own transcript file never
+        reaches --cost's total, since review-trace's session_iter (no
+        include_subagents) never reads subagents/*.jsonl -- and the printed
+        report states that gap as unmeasured, not negligible."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True, ts="2026-07-01T10:05:00.000Z",
+                  content=[_bash_use("s1", "git push")]),
+            _hook_deny_current("Push blocked by worktree-enforcement gate.", tool_id="s1", branch="main"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(cost=True))
+        out = capsys.readouterr().out
+        assert "code-review" in out
+        assert "worktree-enforcement" not in out
+        assert "unmeasured, not negligible" in out
+
+    def test_cost_unpriced_model_denial_counted_separately_not_as_zero_dollars(self):
+        """A denial whose blocked call ran on a model outside
+        _MODEL_BASE_INPUT_RATES (claude-opus-4-7, per _priced_opus's own
+        note that it's deliberately unpriced) lands in hook_unpriced_counts,
+        never silently folded into hook_dollars as $0."""
+        records = [
+            _opus([_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ]
+        data = _mod._compute_review_trace_cost_data([("sess.jsonl", records)])
+        assert dict(data["hook_dollars"]) == {}
+        assert dict(data["hook_unpriced_counts"]) == {"code-review": 1}
+
+    def test_cost_unpriced_retry_turn_counts_whole_denial_as_unpriced(self):
+        """The blocked call itself prices fine, but the retry (next assistant
+        turn) ran on an unpriced model -- the denial is counted as unpriced
+        as a whole, not partially priced from the blocked call alone."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+        ]
+        records[0]["message"]["usage"] = {"input_tokens": 10, "output_tokens": 1000, "cache_read_input_tokens": 0}
+        records.append(_hook_deny_current(
+            "Commit blocked by code-review gate: run /code-review.",
+            tool_id="b1", ts="2026-07-01T10:00:01.000Z",
+        ))
+        records.append(_opus([], ts="2026-07-01T10:00:02.000Z"))
+
+        data = _mod._compute_review_trace_cost_data([("sess.jsonl", records)])
+        assert dict(data["hook_dollars"]) == {}
+        assert dict(data["hook_unpriced_counts"]) == {"code-review": 1}
+
+    def test_cost_with_matching_session_but_zero_denials_prints_explicit_message(self, fake_projects, capsys):
+        """A scope with a matching session (a skill event, no denial) under
+        --cost prints the same 'no denials found' message --deny-summary
+        uses for this state, not a bespoke one."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(cost=True))
+        out = capsys.readouterr().out
+        assert "No denials found in scope." in out
+        assert "Denial cost by hook/gate" not in out
+
+    def test_cost_accumulation_never_dedups_records_the_shared_walk_reads(self):
+        """--cost's own dedup pass must never leak into
+        _compute_deny_summary_data's shared walk: a 2-record same-requestId
+        run whose first block predates --since and whose second block (a
+        Skill invocation, timestamped on --since) is the run's real payload
+        must still surface that skill event at its own true timestamp. If
+        dedup were (wrongly) applied to the shared walk, the merged record's
+        timestamp would fall back to the first block's (before --since),
+        dropping the skill event and pushing the reported corpus window's
+        start to the later denial event instead."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T09:00:00.000Z",
+                  content=[], request_id="req1"),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-02T09:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")], request_id="req1"),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                ts="2026-07-02T09:01:00.000Z"),
+        ]
+        since_ts, until_epoch = _since_until_epochs("2026-07-02", None)
+        data = _mod._compute_deny_summary_data(
+            [("sess.jsonl", records)], since_ts=since_ts, until_ts=until_epoch,
+        )
+        assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-02T09:00:00.000Z")
+
+    def test_cost_since_ts_excludes_denials_before_the_boundary(self):
+        """since_ts threads through to _review_trace_session_events, not
+        silently dropped -- a denial before the boundary is excluded from
+        the accumulation, one on/after it is kept."""
+        records = [
+            _opus([_bash_use("b1", "git commit -m x")], ts="2026-07-01T09:00:00.000Z"),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                tool_id="b1", ts="2026-07-01T09:00:01.000Z"),
+            _opus([_bash_use("b2", "git push origin main")], ts="2026-07-02T09:00:00.000Z"),
+            _hook_deny_current("Push blocked by ready-for-review gate.",
+                                tool_id="b2", ts="2026-07-02T09:00:01.000Z"),
+        ]
+        unfiltered = _mod._compute_review_trace_cost_data([("sess.jsonl", records)])
+        assert dict(unfiltered["hook_unpriced_counts"]) == {"code-review": 1, "ready-for-review": 1}
+
+        since_ts, _until_epoch = _since_until_epochs("2026-07-02", None)
+        filtered = _mod._compute_review_trace_cost_data(
+            [("sess.jsonl", records)], since_ts=since_ts,
+        )
+        assert dict(filtered["hook_unpriced_counts"]) == {"ready-for-review": 1}
+
+
+class TestPrintReviewTraceCost:
+    def test_prints_dollar_rows_descending_then_alphabetical_plus_unpriced_table(self, capsys):
+        """Direct-call coverage of the printer: two hook_dollars buckets of
+        different amounts render highest-first (sorted by -dollars, label),
+        a nonzero hook_unpriced_counts entry renders its own count table, and
+        the corpus window prints from corpus_min_ts/corpus_max_ts."""
+        corpus_min_ts = _mod._parse_ts("2026-07-01T00:00:00.000Z")
+        corpus_max_ts = _mod._parse_ts("2026-07-02T00:00:00.000Z")
+        _mod._print_review_trace_cost(
+            {"ready-for-review": 10.0, "code-review": 5.0},
+            {"marker.sh": 3},
+            corpus_min_ts,
+            corpus_max_ts,
+        )
+        out = capsys.readouterr().out
+        assert "Corpus window: 2026-07-01 to 2026-07-02" in out
+        assert "Denial cost by hook/gate ($15.00 total)" in out
+        assert out.index("ready-for-review") < out.index("code-review")
+        assert "3 denial(s) could not be priced" in out
+        assert "marker.sh" in out
 
 
 # ---------------------------------------------------------------------------
@@ -12725,6 +12957,11 @@ class TestBuildParser:
         assert parsed.projects == "*"
         assert parsed.this_repo is True
 
+    def test_deny_summary_and_cost_mutually_exclusive_on_review_trace(self):
+        parser = _mod.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["review-trace", "--deny-summary", "--cost"])
+
 
 class TestIterSessionsOrdering:
     """iter_sessions must yield in a single flat sort over full file paths, NOT
@@ -14873,6 +15110,21 @@ class TestAllSubcommandsSingleRootHeader:
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
         _mod.cmd_review_trace(_review_trace_args(deny_summary=True, branches="no-such-branch"))
+        out, err = capsys.readouterr()
+        assert "REVIEW TRACE SOURCES (" in out
+        assert self._HEADER_SUFFIX in out
+        assert "No sessions matched in scope." in out
+        assert "No denials found in scope." not in out, (
+            "zero sessions matched is a different state from matched-but-no-denials"
+        )
+        assert "scanning root" not in out + err
+
+    def test_review_trace_cost_zero_match_still_states_its_scope(self, fake_projects, capsys):
+        """--cost's own zero-sessions-matched state, mirroring --deny-summary's."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(cost=True, branches="no-such-branch"))
         out, err = capsys.readouterr()
         assert "REVIEW TRACE SOURCES (" in out
         assert self._HEADER_SUFFIX in out

@@ -394,6 +394,7 @@ CLASSIFICATION SUMMARY
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
 - `--deny-only` — restrict to sessions containing at least one hook denial
 - `--deny-summary` — replace the per-session event listing with corpus-wide denial-count tables and a friction-kind breakout (see "`--deny-summary`" below)
+- `--cost` — replace the per-session event listing with a corpus-wide denial-cost report, in dollars (see "`--cost`" below)
 - `--skill NAME` — restrict skill-invocation matching to one skill name
 
 Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. An event whose branch or model cannot be resolved renders `?`.
@@ -465,6 +466,32 @@ interrupted                    1
 - **Friction events are a different axis from denials.** A `denial` event is a hook or `permissions.allow` block, matched by message text. A `friction` event is one of four other reasons a tool call didn't go through, read from the record's own `toolDenialKind` field: `user-rejected` (a permission prompt the user declined), `automode-blocked`, `automode-unavailable`, or `interrupted` (`[Request interrupted by user for tool use]`). A `toolDenialKind` value outside that four-value set prints as `other-kind` rather than being echoed raw. Friction events never change `has_denial`, the per-session `denials=N` header, or `--deny-only`'s session-selection — those three stay denial-kind-only. `--deny-summary` is the only surface that tallies friction into a table; without it, the default per-session timeline still renders a `friction` line for each one, but nothing counts them.
 - **Combined with `--deny-only`.** Friction counts are tallied from a session's full event list before the `--deny-only` session filter is applied, so a session whose only events are friction (no denials at all) still contributes to the friction breakout even though `--deny-only` alone wouldn't select that session for the default timeline view.
 - **Corpus window and the pre-regime caveat.** The printed window is the earliest/latest timestamp among in-scope events, after `--branches`/`--since`/`--until` are applied. `toolDenialKind` was not recorded on any transcript before 2026-07-20, so an errored, non-gate tool result timestamped earlier than that can't be classified into the friction breakdown at all. Those records are counted separately, on the line under the friction table, rather than folded into the breakdown as zero friction.
+
+### `--cost`
+
+Replaces the per-session event listing with a corpus-wide denial-cost report, grouped by the same hook/gate label `--deny-summary` uses: each denial prices as its blocked call's assistant-turn output-dollar cost plus the immediately-following assistant turn's, via `_price_turn`. A denial whose blocked call ran on an unpriced model, or whose blocked call can't be located at all, is counted separately rather than folded into the total as $0. Scope is main-thread only — subagent transcripts (dispatched reviewers, `code-writer`) are never read, so the share of denials this omits is unmeasured, not negligible, and the printed report states that gap explicitly. Combine with `--branches`, `--since`/`--until` to bound the window the same way as any other `review-trace` run. Inherits the publish-safety caveat above.
+
+**Sample output** (synthetic, illustrative figures only).
+```
+Corpus window: 2026-06-24 to 2026-08-05
+
+## Denial cost by hook/gate ($4.87 total)
+
+Hook/gate                                        Cost
+-----------------------------------------------------
+worktree-enforcement                            $2.10
+marker-script-shape                             $1.75
+unmatched                                       $1.02
+
+3 denial(s) could not be priced (unpriced model, or no locatable blocked-call turn) and are excluded from the total above:
+
+Hook/gate                                 Count
+-----------------------------------------------
+worktree-enforcement                          2
+unmatched                                     1
+
+Main-thread denials only: this report never reads subagent transcripts, so the share of denials dispatched reviewers and code-writer trigger via their own tool calls is unmeasured, not negligible.
+```
 
 ---
 
