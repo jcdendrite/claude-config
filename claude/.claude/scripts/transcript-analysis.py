@@ -8020,6 +8020,10 @@ def cmd_turn_shape(args: argparse.Namespace) -> None:
 # precision/recall figures, not from this constant.
 _TURN_SHAPE_SAMPLES_MIN_STREAK_LEN = 2
 
+# The unflagged (holdout) population is exactly the streaks turn-shape-samples
+# excludes — length == 1, not >= 2.
+_TURN_SHAPE_HOLDOUT_STREAK_LEN = 1
+
 
 def cmd_turn_shape_samples(args: argparse.Namespace) -> None:
     """Emit a random sample of flagged turn-shape streaks (length >=
@@ -8054,6 +8058,79 @@ def cmd_turn_shape_samples(args: argparse.Namespace) -> None:
     print(_DO_NOT_PUBLISH_BANNER)
     print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
     for candidate in candidates:
+        streak = candidate["streak"]
+        dollars = sum(t["dollars"] for t in streak)
+        print(
+            f"\n--- {candidate['rule']} streak, length={len(streak)}, "
+            f"{_fmt_usd(dollars)}, session={streak[0]['session_id']} ---"
+        )
+        for i, turn in enumerate(streak, 1):
+            detail = f": {turn['command']}" if turn["command"] else ""
+            print(f"  {i}. {turn['tool_name']}{detail}")
+
+
+def cmd_turn_shape_holdout_samples(args: argparse.Namespace) -> None:
+    """Emit a random sample of unflagged turn-shape streaks (length ==
+    _TURN_SHAPE_HOLDOUT_STREAK_LEN) as plain text, for manual recall
+    calibration of the batching and delegation rules — the complement of
+    cmd_turn_shape_samples's flagged population.
+
+    --seed defaults to a fixed constant (not None, unlike turn-shape-samples):
+    --offset pages this same shuffled population across repeated invocations,
+    which is only coherent if every invocation shuffles it identically.
+    """
+    since_ts, _since_raw = _parse_since_nd_arg(args, "turn-shape-holdout-samples")
+    sample_n: int = getattr(args, "sample", 30)
+    if sample_n is None:
+        sample_n = 30
+    seed: int = getattr(args, "seed", 0)
+    offset: int = getattr(args, "offset", 0)
+    if offset < 0:
+        print(
+            "turn-shape-holdout-samples: --offset must not be negative",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if sample_n < 0:
+        print(
+            "turn-shape-holdout-samples: --sample must not be negative",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(args, "turn-shape-holdout-samples", roots=roots)
+    # stderr, not stdout: stdout is this subcommand's plain-text data stream.
+    _print_resolved_scope("turn-shape-holdout-samples", scope_label, roots, file=sys.stderr)
+
+    candidates: list[dict] = []
+    for jsonl, records in session_iter:
+        session_turns = _turn_shape_session_turns(records, since_ts, jsonl.stem)
+        for rule, require_bash in (("batching", False), ("delegation", True)):
+            for streak in _turn_shape_streaks(session_turns, require_bash=require_bash):
+                if len(streak) == _TURN_SHAPE_HOLDOUT_STREAK_LEN:
+                    candidates.append({"rule": rule, "streak": streak})
+
+    rng = random.Random(seed)
+    rng.shuffle(candidates)
+    total_candidates = len(candidates)
+    window = candidates[offset:offset + sample_n]
+    # Keyed on offset vs. total_candidates, not on window emptiness: a
+    # window can also be empty because --sample=0, which is not "past the end".
+    if total_candidates and offset >= total_candidates:
+        print(
+            f"turn-shape-holdout-samples: --offset={offset} is past the end of the"
+            f" {total_candidates} unflagged candidates in scope",
+            file=sys.stderr,
+        )
+    print(
+        f"(offset={offset}, window={len(window)} of {total_candidates} unflagged candidates)",
+        file=sys.stderr,
+    )
+
+    print(_DO_NOT_PUBLISH_BANNER)
+    print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+    for candidate in window:
         streak = candidate["streak"]
         dollars = sum(t["dollars"] for t in streak)
         print(
@@ -10222,6 +10299,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Random seed for reproducible sampling.",
     )
     p_turn_shape_samples.set_defaults(func=cmd_turn_shape_samples)
+
+    p_turn_shape_holdout_samples = sub.add_parser(
+        "turn-shape-holdout-samples",
+        help=(
+            "Emit a random sample of unflagged turn-shape streaks (length == 1) as plain"
+            " text, for manual recall calibration of the batching and delegation rules."
+        ),
+    )
+    _add_project_scope_args(p_turn_shape_holdout_samples)
+    p_turn_shape_holdout_samples.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
+    )
+    p_turn_shape_holdout_samples.add_argument(
+        "--sample", type=int, default=30, metavar="N",
+        help="Maximum number of sample streaks to emit (default: 30).",
+    )
+    p_turn_shape_holdout_samples.add_argument(
+        "--seed", type=int, default=0, metavar="N",
+        help=(
+            "Random seed for reproducible sampling (default: 0, not OS entropy — "
+            "so --offset pages the same shuffle across repeated invocations)."
+        ),
+    )
+    p_turn_shape_holdout_samples.add_argument(
+        "--offset", type=int, default=0, metavar="N",
+        help="Skip the first N candidates of the shuffled population (for paging).",
+    )
+    p_turn_shape_holdout_samples.set_defaults(func=cmd_turn_shape_holdout_samples)
 
     p_sessions = sub.add_parser(
         "sessions",

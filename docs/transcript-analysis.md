@@ -1101,3 +1101,37 @@ DO NOT PUBLISH — this output contains real project names and session IDs.
 ```
 
 **When to reach for it.** Classify a flagged sample as genuine violation or legitimate sequential work, then compare the resulting precision/recall against the pre-registered floors before deciding whether either rule's detector ships. Raters must recognize a same-tool batch issued together for an unrelated reason (`pytest`, `ruff check`, `shellcheck` in one batch) as a legitimate true-negative, not a violation.
+
+---
+
+## turn-shape-holdout-samples
+
+**Purpose.** Emit a random sample of unflagged turn-shape streaks (length == 1) as plain text, for manual recall calibration of the batching and delegation rules — the complement of `turn-shape-samples`'s flagged (length >= 2) population, needed to measure how many genuine violations the streak-length threshold misses.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
+- `--since Nd` — limit to the last N days (e.g. `35d`)
+- `--sample N` — maximum candidates to emit (default: 30)
+- `--seed N` — random seed (default: `0`, fixed rather than OS entropy, so repeated invocations shuffle the same population identically — required for `--offset` to page without overlap or gaps)
+- `--offset N` — skip the first N candidates of the shuffled population (default: 0)
+
+**Sample output.**
+```
+DO NOT PUBLISH — this output contains real project names and session IDs.
+
+--- batching streak, length=1, $0.0021, session=abc12345-test ---
+  1. Bash: git log
+
+--- delegation streak, length=1, $0.0021, session=abc12345-test ---
+  1. Bash: git log
+```
+
+A single isolated, non-mutating-git Bash turn qualifies as a length-1 streak under *both* the batching and delegation rules, so it renders as two candidates — one `batching`, one `delegation` — for the same session and turn, as in the example above (the same `git log` call). Recognize this as one repeated run when rating, not two independent candidates toward the sizing tally.
+
+**When to reach for it.** Page through the unflagged population to count how many genuine violations the streak-length threshold lets through — the recall half of the batching/delegation calibration `turn-shape-samples` alone can't produce.
+
+- **Paging protocol:** run, rate the page, note how many pages have been seen, then re-invoke with `--offset` advanced by the prior `--sample` size (the fixed default `--seed` guarantees the same shuffle each time) — no tool-side bookkeeping needed.
+- **Inter-rater agreement:** two raters sharing one `--seed` and paging the same `--offset`/`--sample` sequence land on identical runs at each step.
+- **No persisted state:** the rater's own running tally of true violations and total runs reviewed lives only in their notes across invocations — this subcommand writes no file.
+- **Stable population:** keep one rating pass's invocations within a single `--since` window so the candidate population doesn't shift mid-pass as new sessions land.
