@@ -231,3 +231,60 @@ def test_transcript_analysis_cost_trend_subprocess_finds_seeded_session(tmp_path
 
     assert result.returncode == 0, result.stderr
     assert "2026-W21" in result.stdout  # ISO week of the seeded 2026-05-19 timestamp
+
+
+def test_transcript_analysis_reviewer_yield_help_exits_zero():
+    result = _run("transcript-analysis.py", "reviewer-yield", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since" in result.stdout
+
+
+def _seed_reviewer_dispatch_account(tmp_path: Path) -> Path:
+    """Build a single-account config dir with one reviewer-agent dispatch and
+    its paired subagent transcript -- reviewer-yield's join needs both the
+    main-thread Agent tool_use and subagents/<id>.meta.json."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    session_id = "s"
+    proj.mkdir(parents=True)
+    tool_use_id = "t1"
+    main_record = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "timestamp": "2026-05-19T10:00:00.000Z",
+        "message": {
+            "model": "claude-opus-4-7",
+            "content": [{
+                "type": "tool_use", "id": tool_use_id, "name": "Agent",
+                "input": {"subagent_type": "staff-backend-engineer", "description": "review", "prompt": "review it"},
+            }],
+            "usage": {},
+        },
+    }
+    (proj / f"{session_id}.jsonl").write_text(json.dumps(main_record) + "\n")
+
+    subagent_dir = proj / session_id / "subagents"
+    subagent_dir.mkdir(parents=True)
+    subagent_record = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": True,
+        "message": {"model": "claude-sonnet-4-6", "content": [{"type": "text", "text": "No concerns found."}], "usage": {}},
+    }
+    (subagent_dir / "agent-t1.jsonl").write_text(json.dumps(subagent_record) + "\n")
+    meta = {"agentType": "staff-backend-engineer", "description": "review", "toolUseId": tool_use_id, "spawnDepth": 1}
+    (subagent_dir / "agent-t1.meta.json").write_text(json.dumps(meta))
+    return config_dir
+
+
+def test_transcript_analysis_reviewer_yield_subprocess_finds_seeded_dispatch(tmp_path):
+    """Proves `from transcript_analysis import reviewer_yield` resolves under a
+    real subprocess -- no in-process `_mod.cmd_reviewer_yield(...)` test can see
+    a broken re-export in the real shim entrypoint."""
+    config_dir = _seed_reviewer_dispatch_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "reviewer-yield")
+
+    assert result.returncode == 0, result.stderr
+    assert "staff-backend-engineer" in result.stdout

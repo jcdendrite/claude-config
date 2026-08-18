@@ -10,7 +10,7 @@ import contextlib
 import errno
 import fcntl
 import fnmatch
-import hashlib
+import hashlib  # noqa: F401 -- read only via _mod.hashlib from test files
 import json
 import math
 import os
@@ -31,10 +31,11 @@ from pathlib import Path, PurePosixPath
 
 from _config_dir import config_dir
 
-# corpus/cost/pricing/redaction/render are read only via _mod.<module> from test files
-# (unit-testing a private helper, or patching module-owned state like scope.PROJECTS_DIR
-# below) -- scope is the only one this file's own code reads bare, as scope.PROJECTS_DIR.
-from transcript_analysis import corpus, cost, pricing, redaction, render, scope  # noqa: F401
+# corpus/cost/pricing/redaction/render/reviewer_yield are read only via _mod.<module> from
+# test files (unit-testing a private helper, or patching module-owned state like
+# scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads bare, as
+# scope.PROJECTS_DIR.
+from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
 from transcript_analysis.corpus import SUBAGENT_SUBDIR, _parse_ts, _read_session_file_partitioned, iter_sessions
 from transcript_analysis.cost import (
     # The eight names below are read only via _mod.<name> from test files (unit-testing a
@@ -103,6 +104,26 @@ from transcript_analysis.render import (
     _recent_tool_trail,
     _sanitize_table_cell,
 )
+from transcript_analysis.reviewer_yield import (
+    # The seven names below are read only via _mod.<name> from test files (unit-testing a
+    # private helper directly) -- cmd_reviewer_yield, _is_reviewer_subagent_type,
+    # _index_subagent_dispatches, and the two _REVIEWER_VERDICT_* names below are also read
+    # bare by this file's own still-monolithic code (p_reviewer_yield.set_defaults,
+    # _review_trace_session_events, cmd_subagent_mix, and _reviewer_gap_pp respectively).
+    _CITED_PATH_CANDIDATE_MAX_CHARS,  # noqa: F401
+    _REVIEWER_VERDICT_FINDINGS_FOUND,
+    _REVIEWER_VERDICT_ZERO_FINDING,
+    _build_tool_result_ts_map,  # noqa: F401
+    _dispatch_self_reference_keys,  # noqa: F401
+    _extract_cited_paths,  # noqa: F401
+    _index_parent_edits,  # noqa: F401
+    _index_subagent_dispatches,
+    _is_reviewer_subagent_type,
+    _normalize_cited_path,  # noqa: F401
+    _reviewer_yield_cited_keys,  # noqa: F401
+    cmd_reviewer_yield,
+)
+from transcript_analysis.reviewer_yield import compute_reviewer_yield_data as _compute_reviewer_yield_data
 from transcript_analysis.scope import (
     _DO_NOT_PUBLISH_BANNER,
     _SUBCOMMANDS_WITH_OWN_CONFIG_DIR,
@@ -955,12 +976,6 @@ AUDIT_JUDGMENT_SKILLS: frozenset[str] = frozenset({
     "agent-review", "security-review", "respond-pr", "ultrareview", "plan-it",
 })
 
-# Exact-name reviewers (no staff- prefix) counted in review-trace and reviewer-yield.
-_REVIEWER_PREFIX = "staff-"
-_REVIEWER_EXACT_NAMES: frozenset[str] = frozenset(
-    {"ciso-reviewer", "comment-discipline-reviewer", "skill-fidelity-reviewer"}
-)
-
 # Shared bound for every hook-name/label capture below (detection and
 # extraction alike): a name-shaped character class (word chars, spaces, '.',
 # '-') capped at this many characters, matching every hook's own static
@@ -1699,7 +1714,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
       marks non-gate friction (user-rejected, automode-blocked,
       automode-unavailable, interrupted) — see _is_nongate_friction_kind.
       Deduped by tool_use_id in its own set, independent of denial dedup.
-    - reviewer: Agent/Task spawn where subagent_type matches _REVIEWER_PREFIX or is in _REVIEWER_EXACT_NAMES
+    - reviewer: Agent/Task spawn where subagent_type is a reviewer type per
+      _is_reviewer_subagent_type
 
     denial and friction are deliberately separate event kinds: has_denial,
     denials=N, and --deny-only's session-selection all stay denial-kind-only,
@@ -2472,79 +2488,6 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         print(f"\n  ({total_meta_read_errors:,} meta.json files failed to parse, excluded)")
 
 
-# Reviewer verdict-text patterns for reviewer-yield's dispatch-outcome join.
-# Loosened from each reviewer agent's documented `**No X concerns**` /
-# `Found <N> issues.` / `**Approve with concerns**` / `**Request changes**`
-# contract (claude/.claude/agents/*.md) to tolerate markdown-bold,
-# singular/plural, and case variance.
-_REVIEWER_NO_CONCERNS_GAP_MAX_CHARS = 40  # bounds "no <...> concerns" to one short phrase, not a whole paragraph
-_REVIEWER_NO_CONCERNS_RE = re.compile(
-    rf"\bno\b[\w\s/-]{{0,{_REVIEWER_NO_CONCERNS_GAP_MAX_CHARS}}}?\bconcerns\b", re.IGNORECASE
-)
-_REVIEWER_FOUND_ISSUES_RE = re.compile(r"found\s+(\d+)\s+issues?\b", re.IGNORECASE)
-_REVIEWER_APPROVE_WITH_CONCERNS_RE = re.compile(r"\bapprove with concerns\b", re.IGNORECASE)
-_REVIEWER_REQUEST_CHANGES_RE = re.compile(r"\brequest changes\b", re.IGNORECASE)
-
-# _classify_reviewer_verdict's bucket labels, shared with cmd_reviewer_yield's
-# aggregation branch — named so a typo in either can't silently fall through
-# to the "unclassified" bucket.
-_REVIEWER_VERDICT_FINDINGS_FOUND = "findings-found"
-_REVIEWER_VERDICT_ZERO_FINDING = "zero-finding"
-_REVIEWER_VERDICT_UNCLASSIFIED = "unclassified"
-
-# Table 2's minimum Active count per (agent type, bucket) row before Rate is
-# reportable — GH-558 (Part B)'s decision 4.
-_REVIEWER_YIELD_ACTIVE_FLOOR = 10
-
-
-def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str | None]], int]:
-    """Map each subagent dispatch's toolUseId to (its paired .jsonl path,
-    requested model), for one session.
-
-    Reads subagents/*.meta.json directly rather than through iter_sessions'
-    include_subagents merge — that merge flattens every subagent file's
-    records into one list with no per-file boundary, which cannot answer
-    "this specific dispatch's own last assistant text." The requested model
-    is meta.json's own "model" key (absent when the dispatch carried no
-    explicit model request) — reading it here, alongside the toolUseId this
-    function already parses meta.json for, avoids a second per-dispatch
-    meta.json read in subagent-mix's model-mix join.
-
-    Returns (index, meta_read_errors): meta_read_errors counts *.meta.json
-    files present but unusable — invalid JSON, valid JSON missing a
-    string-typed toolUseId, or valid JSON whose "model" key is present but
-    not a string — distinct from a dispatch with no meta.json at all (the
-    caller's own, separately-documented exclusion path). meta.json is
-    written by Claude Code's own harness, not by this repo, so its "model"
-    and "toolUseId" fields are external input: a non-string value for either
-    (a future harness change, or a corrupted file) is excluded here rather
-    than reaching a caller that would use it as a dict key and crash with an
-    uncaught TypeError.
-    """
-    subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
-    index: dict[str, tuple[Path, str | None]] = {}
-    meta_read_errors = 0
-    if not subagent_dir.is_dir():
-        return index, meta_read_errors
-    for meta_path in sorted(subagent_dir.glob("*.meta.json")):
-        try:
-            meta = json.loads(meta_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            meta_read_errors += 1
-            continue
-        tool_use_id = meta.get("toolUseId")
-        if not isinstance(tool_use_id, str) or not tool_use_id:
-            meta_read_errors += 1
-            continue
-        requested_model = meta.get("model")
-        if requested_model is not None and not isinstance(requested_model, str):
-            meta_read_errors += 1
-            continue
-        agent_id = meta_path.name.removesuffix(".meta.json")
-        index[tool_use_id] = (meta_path.parent / f"{agent_id}.jsonl", requested_model)
-    return index, meta_read_errors
-
-
 _AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
 
 
@@ -2718,555 +2661,6 @@ def _dispatch_usage_summary(
         observed, actual_dollars, dict(dollars_by_class), counterfactual_dollars,
         unpriced_turns, unpriced_tokens, stale_models,
     )
-
-
-def _scan_reviewer_transcript(jsonl_path: Path) -> tuple[str, list[str], list[str], str, bool]:
-    """Walk one transcript file once, collecting all reviewer-yield join inputs.
-
-    Returns (last_assistant_text, write_content_blobs, write_target_paths,
-    transcript_cwd, read_error):
-      - last_assistant_text: the last non-empty assistant text block, or ''.
-        A trailing assistant record with no text (e.g. a final tool-only turn)
-        does not blank out an earlier one — this walks the whole file and
-        keeps the most recent non-empty text seen, matching "last assistant
-        text block" rather than "last assistant record's text, possibly
-        empty."
-      - write_content_blobs: every Write tool_use's input.content string
-        found along the same walk, in file order.
-      - write_target_paths: every Write tool_use's input.file_path found
-        along the same walk, in file order — this dispatch's own findings
-        file is almost always among them, giving the caller a
-        path-normalized set-membership exclusion (see
-        _dispatch_self_reference_keys) instead of fragile free-text-prose
-        matching against the dispatching prompt.
-      - transcript_cwd: the cwd field from the first record in this
-        transcript that carries one, or '' if none do. Reviewer-cited
-        relative paths were written from the reviewer subagent's own
-        working directory, not the dispatching parent's, which can diverge
-        under an isolation:worktree reviewer dispatch (ledger row A).
-      - read_error: True on OSError opening/reading jsonl_path. A read
-        failure is not a legitimate zero-citation transcript, so the caller
-        must exclude it from a coverage denominator rather than count it as
-        one — every other field is ("", [], [], "") in this case, matching
-        the prior ''-on-OSError contract for the text.
-    """
-    last_text = ""
-    write_content_blobs: list[str] = []
-    write_target_paths: list[str] = []
-    transcript_cwd = ""
-    try:
-        with open(jsonl_path) as fh:
-            for raw in fh:
-                try:
-                    rec = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if not transcript_cwd:
-                    rec_cwd = rec.get("cwd")
-                    if isinstance(rec_cwd, str) and rec_cwd:
-                        transcript_cwd = rec_cwd
-                if rec.get("type") != "assistant":
-                    continue
-                content = (rec.get("message") or {}).get("content", "")
-                if isinstance(content, list):
-                    for block in content:
-                        if not isinstance(block, dict) or block.get("type") != "tool_use":
-                            continue
-                        if block.get("name") != "Write":
-                            continue
-                        block_input = block.get("input") or {}
-                        blob = block_input.get("content")
-                        if isinstance(blob, str):
-                            write_content_blobs.append(blob)
-                        target = block_input.get("file_path")
-                        if isinstance(target, str) and target:
-                            write_target_paths.append(target)
-                text = _content_text(content)
-                if text.strip():
-                    last_text = text
-    except OSError:
-        return "", [], [], "", True
-    return last_text, write_content_blobs, write_target_paths, transcript_cwd, False
-
-
-def _classify_reviewer_verdict(text: str) -> tuple[str, int]:
-    """Classify one reviewer subagent's final verdict text.
-
-    Returns (bucket, findings): bucket is one of _REVIEWER_VERDICT_FINDINGS_FOUND,
-    _REVIEWER_VERDICT_ZERO_FINDING, or _REVIEWER_VERDICT_UNCLASSIFIED; findings
-    is the parsed N for a findings-found verdict, else 0.
-    "Found 0 issues" is a zero-finding verdict, not findings-found, despite
-    matching the found-issues pattern. "Approve with concerns"/"Request
-    changes" verdicts carry real findings but no derivable count, so they
-    land in findings-found with 0 — the caller's total-findings sum is a
-    lower bound, not every findings-found dispatch's true count.
-    """
-    m = _REVIEWER_FOUND_ISSUES_RE.search(text)
-    if m:
-        n = int(m.group(1))
-        return (_REVIEWER_VERDICT_FINDINGS_FOUND, n) if n > 0 else (_REVIEWER_VERDICT_ZERO_FINDING, 0)
-    if _REVIEWER_NO_CONCERNS_RE.search(text):
-        return (_REVIEWER_VERDICT_ZERO_FINDING, 0)
-    if _REVIEWER_APPROVE_WITH_CONCERNS_RE.search(text) or _REVIEWER_REQUEST_CHANGES_RE.search(text):
-        return (_REVIEWER_VERDICT_FINDINGS_FOUND, 0)
-    return (_REVIEWER_VERDICT_UNCLASSIFIED, 0)
-
-
-# Generous bound for any realistic cited path (worktree prefix + repo-relative
-# suffix); still a hard cap so a run of pathish characters (a code-fence
-# border, `tree` output) can't grow one match unboundedly.
-_CITED_PATH_CANDIDATE_MAX_CHARS = 300
-# One flat, bounded character class — no group is itself quantified, unlike
-# the natural "(?:[\w.-]+/)+[\w.-]+" shape, which backtracks catastrophically
-# on a long non-matching slash run. Same safety property as
-# _DENIAL_HOOK_NAME_RE, copied for the same reason. Deliberately unselective:
-# a bare word matches too (no `/` or `.` required here) — separator and
-# extension filtering happens in _normalize_cited_path, not in extraction.
-_CITED_PATH_CANDIDATE_RE = re.compile(rf"[\w./~:-]{{1,{_CITED_PATH_CANDIDATE_MAX_CHARS}}}")
-
-
-def _extract_cited_paths(text: str) -> set[str]:
-    """Extract raw candidate path strings from one blob of reviewer prose.
-
-    Returns every run matched by _CITED_PATH_CANDIDATE_RE, deduplicated —
-    including runs that turn out to be plain prose words or bare filenames.
-    _normalize_cited_path is what decides whether a candidate is a real,
-    join-able path; this function only tokenizes.
-    """
-    return set(_CITED_PATH_CANDIDATE_RE.findall(text))
-
-
-# Strips a trailing ":line" or ":line:col" suffix (e.g. "foo.py:42" or
-# "foo.py:42:7") — normalization step 1.
-_CITED_PATH_LINE_SUFFIX_RE = re.compile(r":\d+(?::\d+)?$")
-# Matches one ".claude/worktrees/<branch>/" segment, anywhere in the path —
-# normalization step 6. `[^/]+` takes only the branch's first path segment,
-# a documented bias toward under-stripping on a slash-containing branch slug
-# (see _normalize_cited_path's docstring); this is not losslessly decidable
-# from the path alone with zero filesystem access.
-_CITED_PATH_WORKTREE_PREFIX_RE = re.compile(r"\.claude/worktrees/[^/]+/")
-
-
-def _normalize_cited_path(candidate: str, cwd: str) -> str | None:
-    """Normalize one raw candidate from _extract_cited_paths into a join key,
-    or None if the candidate is discarded.
-
-    Lexical only: no Path.resolve(), os.path.realpath, or stat — those chase
-    symlinks (e.g. macOS's /tmp -> /private/tmp) and would make the join key
-    depend on where each analyst's clone lives, and an OSError from that
-    traversal would embed the offending path in its message with no
-    top-level handler to catch it. The one exception is os.path.expanduser's
-    own pwd.getpwnam lookup for an "~otheruser" candidate (step 3, below) —
-    that candidate is discarded regardless of whether the lookup succeeds, so
-    it never affects the key of a candidate this function actually resolves.
-
-    Ordered steps (an implementer will get the order wrong otherwise):
-      1. Strip a trailing ":line" or ":line:col" suffix.
-      2. Reject a candidate with no directory separator — a bare "SKILL.md"
-         is ordinary prose, not a path, and resolving it against `cwd` would
-         manufacture a false in-repo match.
-      3. Expand a leading "~" lexically (os.path.expanduser). A candidate
-         still starting with "~" afterward is the unexpandable "~otheruser"
-         form and is discarded, not resolved via a directory-service lookup.
-         This runs before step 4 (relative-path resolution) because a
-         "~"-prefixed candidate is neither absolute nor genuinely relative —
-         expanduser is a no-op on a non-leading "~", so this must expand it
-         before anything joins it to `cwd`.
-      4. Resolve ".." and relative segments against the **unstripped** `cwd`,
-         for a candidate still relative after step 3. Must precede step 6:
-         "../../../.venv/bin/pytest" (this repo's own CLAUDE.md idiom) means
-         three levels above the worktree, and resolving it against an
-         already-worktree-stripped `cwd` would silently change what
-         directory it names.
-      5. Collapse a leading "/private/tmp" to "/tmp" (macOS-only aliasing;
-         inert on Linux, where that prefix cannot appear in a transcript).
-      6. Strip ".claude/worktrees/<branch>/" to fixpoint, not once, so a
-         nested worktree (an isolation:worktree agent under a
-         worktree-anchored parent) doesn't leave a dangling second segment.
-    """
-    path = _CITED_PATH_LINE_SUFFIX_RE.sub("", candidate)  # 1
-
-    if "/" not in path:  # 2
-        return None
-
-    if path.startswith("~"):  # 3
-        path = os.path.expanduser(path)
-        if path.startswith("~"):
-            return None  # unexpandable "~otheruser/..." form
-
-    if not path.startswith("/"):  # 4 — still relative after step 3
-        path = os.path.normpath(os.path.join(cwd, path))
-
-    if path.startswith("/private/tmp"):  # 5
-        path = "/tmp" + path[len("/private/tmp"):]
-
-    while True:  # 6 — to fixpoint
-        stripped = _CITED_PATH_WORKTREE_PREFIX_RE.sub("", path)
-        if stripped == path:
-            break
-        path = stripped
-
-    return hashlib.sha256(path.encode()).hexdigest()[:16]
-
-
-def _is_reviewer_subagent_type(stype: str) -> bool:
-    """True for a subagent_type in the shared reviewer-agent set
-    (_REVIEWER_PREFIX/_REVIEWER_EXACT_NAMES), used by the
-    dispatch-classification loop to decide which Agent/Task tool_use blocks
-    to aggregate."""
-    return stype.startswith(_REVIEWER_PREFIX) or stype in _REVIEWER_EXACT_NAMES
-
-
-def _code_write_target_path(tool_input: dict) -> str | None:
-    """A code-write tool_use's target path. NotebookEdit carries
-    notebook_path instead of file_path; MultiEdit's single file_path already
-    covers its own case."""
-    return tool_input.get("file_path") or tool_input.get("notebook_path")
-
-
-def _build_tool_result_ts_map(records: list[dict], since_ts: float | None) -> dict[str, float]:
-    """Map each tool_use_id to its tool_result record's timestamp, for one
-    session's already-materialized records — no new file I/O. tool_result
-    blocks live on user-type records, not the assistant-type records the
-    rest of reviewer-yield's loop filters to. A tool_result whose own
-    timestamp is missing/unparseable, or outside the --since window, is
-    omitted — the caller then treats that dispatch's Active/Edited ordering
-    as undecidable rather than guessing at it.
-    """
-    tool_result_ts: dict[str, float] = {}
-    for rec in records:
-        if rec.get("type") != "user":
-            continue
-        rec_ts = _parse_ts(rec.get("timestamp"))
-        if rec_ts is None:
-            continue
-        if since_ts is not None and rec_ts < since_ts:
-            continue
-        content = (rec.get("message") or {}).get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
-                continue
-            tid = block.get("tool_use_id")
-            if tid:
-                tool_result_ts[tid] = rec_ts
-    return tool_result_ts
-
-
-def _index_parent_edits(records: list[dict], since_ts: float | None) -> dict[str, float]:
-    """Parent-main-thread code-write edit index for one session: normalized
-    path key -> latest edit timestamp. A second pass over the same
-    already-materialized records list iter_sessions handed the caller — no
-    new parent-side file I/O.
-
-    A record with no cwd field indexes its edit under a key normalized
-    against "" rather than being skipped, so it can silently miss a join
-    against a citation whose own cwd is a real path — low-likelihood, since
-    Claude Code populates cwd on essentially every record, and not currently
-    tested.
-    """
-    index: dict[str, float] = {}
-    for rec in records:
-        if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
-            continue
-        rec_ts = _parse_ts(rec.get("timestamp"))
-        if rec_ts is None:
-            continue
-        if since_ts is not None and rec_ts < since_ts:
-            continue
-        cwd = rec.get("cwd") or ""
-        for block in (rec.get("message") or {}).get("content") or []:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            if block.get("name") not in _CODE_WRITE_TOOLS:
-                continue
-            raw_path = _code_write_target_path(block.get("input") or {})
-            if not raw_path:
-                continue
-            key = _normalize_cited_path(raw_path, cwd)
-            if key is not None:
-                index[key] = max(index.get(key, float("-inf")), rec_ts)
-    return index
-
-
-# Both "~/.claude/plans/x.md" and a repo-relative ".claude/plans/x.md" share
-# this literal tail, so a substring check needs no cwd or normalization.
-_CITED_PATH_PLAN_FILE_MARKER = ".claude/plans/"
-
-
-def _is_plan_file_candidate(candidate: str) -> bool:
-    """True for a candidate citing a plan file under ~/.claude/plans/ or an
-    in-repo .claude/plans/ — a /plan-review dispatch routinely cites the very
-    plan the parent session then edits, a guaranteed self-match that would
-    otherwise inflate the cited/edited overlap with no fix-work signal."""
-    return _CITED_PATH_PLAN_FILE_MARKER in candidate
-
-
-def _dispatch_self_reference_keys(write_target_paths: list[str], transcript_cwd: str) -> set[str]:
-    """Normalized keys of this dispatch's own Write targets (its findings
-    file and any other file it wrote) — a path-normalized set-membership
-    exclusion, not free-text prose matching. The dispatching parent's prompt
-    routinely names the very files under review ("review foo.py, bar.py"),
-    so extracting candidates from that prompt text and excluding all of them
-    would silently drop legitimate citations of files that really were the
-    ones with the issue; the reviewer's own recorded Write targets carry no
-    such false-positive risk.
-    """
-    keys: set[str] = set()
-    for target in write_target_paths:
-        key = _normalize_cited_path(target, transcript_cwd)
-        if key is not None:
-            keys.add(key)
-    return keys
-
-
-def _reviewer_yield_cited_keys(
-    last_assistant_text: str, write_content_blobs: list[str], cwd: str, self_ref_keys: set[str]
-) -> set[str]:
-    """Normalized citation keys for one reviewer dispatch: candidates from
-    both the last assistant text and every Write blob (deduplicated via set
-    union), minus plan-file self-matches and the dispatch's own
-    self-referenced paths (see _is_plan_file_candidate and
-    _dispatch_self_reference_keys)."""
-    raw_candidates = _extract_cited_paths(last_assistant_text)
-    for blob in write_content_blobs:
-        raw_candidates |= _extract_cited_paths(blob)
-    keys: set[str] = set()
-    for candidate in raw_candidates:
-        if _is_plan_file_candidate(candidate):
-            continue
-        key = _normalize_cited_path(candidate, cwd)
-        if key is None or key in self_ref_keys:
-            continue
-        keys.add(key)
-    return keys
-
-
-def _compute_reviewer_yield_data(
-    session_iter,
-    since_ts: float | None = None,
-    until_ts: float | None = None,
-) -> dict:
-    """Corpus-wide reviewer-dispatch accumulation behind both
-    cmd_reviewer_yield's own report and cost-ledger's per-week
-    reviewer_gap_pp, extracted so the two share one pass over session_iter
-    instead of two implementations kept in sync by hand.
-
-    since_ts/until_ts are explicit epoch-second boundaries (until_ts
-    exclusive) rather than _parse_since_nd_arg's relative-day CLI parsing,
-    which has no until concept, so a caller can bound an exact week. Only
-    the reviewer-dispatch detection loop applies until_ts — the paired
-    tool_result/edit-index helpers below it stay since_ts-only, matching
-    cmd_reviewer_yield's own pre-existing (unwindowed) use of them.
-    """
-    # agent_type -> {dispatches, findings_found, zero_finding, unclassified, total_findings}
-    agg: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"dispatches": 0, "findings_found": 0, "zero_finding": 0, "unclassified": 0, "total_findings": 0}
-    )
-    # (agent_type, bucket) -> {cited, active, edited}
-    agg2: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: {"cited": 0, "active": 0, "edited": 0})
-    meta_read_errors = 0
-    transcript_read_errors = 0
-
-    for jsonl, records in session_iter:
-        dispatch_index, session_meta_read_errors = _index_subagent_dispatches(jsonl)
-        meta_read_errors += session_meta_read_errors
-
-        tool_result_ts = _build_tool_result_ts_map(records, since_ts)
-        # Subagent-transcript edit reads measured ~16.2s slower than a parent-only
-        # scan on a --since 30d corpus run — parent-only index shipped; see
-        # docs/transcript-analysis.md for the tradeoff.
-        edit_index = _index_parent_edits(records, since_ts)
-        overall_max_edit_ts = max(edit_index.values()) if edit_index else None
-
-        for rec in records:
-            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
-                continue
-            if since_ts is not None or until_ts is not None:
-                rec_ts = _parse_ts(rec.get("timestamp"))
-                if rec_ts is None:
-                    continue
-                if since_ts is not None and rec_ts < since_ts:
-                    continue
-                if until_ts is not None and rec_ts >= until_ts:
-                    continue
-            for block in ((rec.get("message") or {}).get("content") or []):
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                if block.get("name") not in _SPAWN_TOOL_NAMES:
-                    continue
-                block_input = block.get("input") or {}
-                stype = block_input.get("subagent_type") or ""
-                if not _is_reviewer_subagent_type(stype):
-                    continue
-                tool_use_id = block.get("id") or ""
-                paired = dispatch_index.get(tool_use_id)
-                if paired is None:
-                    continue  # no matching meta.json — excluded entirely, not "unclassified"
-                paired_jsonl, _requested_model = paired
-                last_assistant_text, write_content_blobs, write_target_paths, transcript_cwd, read_error = (
-                    _scan_reviewer_transcript(paired_jsonl)
-                )
-                if read_error:
-                    transcript_read_errors += 1
-                bucket, n = _classify_reviewer_verdict(last_assistant_text)
-                row = agg[stype]
-                row["dispatches"] += 1
-                if bucket == _REVIEWER_VERDICT_FINDINGS_FOUND:
-                    row["findings_found"] += 1
-                    row["total_findings"] += n
-                elif bucket == _REVIEWER_VERDICT_ZERO_FINDING:
-                    row["zero_finding"] += 1
-                else:
-                    row["unclassified"] += 1
-
-                if bucket == _REVIEWER_VERDICT_UNCLASSIFIED:
-                    continue  # table 2 reports "excluded" for this bucket — no citation scoring
-
-                self_ref_keys = _dispatch_self_reference_keys(write_target_paths, transcript_cwd)
-                cited_keys = _reviewer_yield_cited_keys(
-                    last_assistant_text, write_content_blobs, transcript_cwd, self_ref_keys
-                )
-                if not cited_keys:
-                    continue
-                row2 = agg2[(stype, bucket)]
-                row2["cited"] += 1
-
-                threshold = tool_result_ts.get(tool_use_id)
-                if threshold is None:
-                    continue  # no paired tool_result, or its timestamp was unparseable — ordering undecidable
-                if overall_max_edit_ts is None or overall_max_edit_ts <= threshold:
-                    continue  # no qualifying edit anywhere in the session after this dispatch returned
-                row2["active"] += 1
-                if any(edit_index.get(k, float("-inf")) > threshold for k in cited_keys):
-                    row2["edited"] += 1
-
-    return {
-        "agg": agg,
-        "agg2": agg2,
-        "meta_read_errors": meta_read_errors,
-        "transcript_read_errors": transcript_read_errors,
-    }
-
-
-def cmd_reviewer_yield(args: argparse.Namespace) -> None:
-    """Per-reviewer-agent-type dispatch-to-verdict yield, plus cited-path edit overlap.
-
-    Joins each main-thread reviewer-agent dispatch (Agent/Task tool_use with
-    subagent_type in the reviewer set — _REVIEWER_PREFIX/_REVIEWER_EXACT_NAMES)
-    to its own subagent
-    transcript via subagents/<id>.meta.json's toolUseId field, then
-    classifies that transcript's last assistant text block as findings-found,
-    zero-finding, or unclassified. A dispatch with no matching meta.json is
-    excluded entirely (not counted as unclassified) — meta.json is the only
-    signal that a subagent transcript for this dispatch exists at all. A
-    second, distinct exclusion path is a meta.json file that exists but is
-    unreadable (invalid JSON) or missing toolUseId — also excluded entirely,
-    and corpus-wide counted in the printed meta-read-errors line.
-
-    A "findings-found" verdict comes from either a numeric "Found <N>
-    issues" verdict (contributes N to the Findings column) or a bulleted
-    "Approve with concerns"/"Request changes" verdict with no derivable
-    count (contributes 0) — the printed Findings total is therefore a lower
-    bound on actual findings, not an exact count.
-
-    A second table reports, per (agent type, bucket), whether the dispatch's
-    own cited paths were later edited: Cited (>=1 extracted citation after
-    excluding the dispatch's own self-referenced/plan-file candidates),
-    Active (of those, the session recorded ANY code edit afterward, the null
-    control for "was the session still working at all"), and Edited (of the
-    Active ones, a cited path itself was among the edited paths). Rate =
-    Edited / Active, so it cannot exceed 100%. Active/Edited currently
-    reflect parent-main-thread edits only — subagent-transcript edit reads
-    were measured against Verification 7(a)'s cost gate (delta ~16.2s over
-    the inherited 13.5s baseline) and excluded under the gate's own
-    pre-committed fallback, so this undercounts real fix work whenever it
-    happened inside a code-writer dispatch, which this repo's own CLAUDE.md
-    mandates for implementation work. The unclassified
-    bucket is not scored (prints "excluded" for Cited/Active/Edited/Rate) —
-    an unreadable subagent transcript lands there via its empty verdict text
-    and is separately counted in the printed read-error line, never entered
-    as a legitimate zero-citation dispatch.
-
-    --redact is accepted for CLI parity with cost/audit-routing. Cited-path
-    candidates are held only as sha256 digests (_normalize_cited_path), never
-    as raw paths, so no path can reach this subcommand's aggregate-only
-    output by construction — this does not cover the pre-existing
-    --projects scope-header line (_print_resolved_scope), a separate,
-    unfixed channel shared by every subcommand.
-
-    Delegates its entire accumulation to _compute_reviewer_yield_data instead
-    of running its own pass over session_iter, so this report and
-    cost-ledger's per-week reviewer_gap_pp can never drift apart.
-    """
-    since_ts, since_raw = _parse_since_nd_arg(args, "reviewer-yield")
-    since_label = since_raw or ""
-
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "reviewer-yield", roots=roots)
-    _print_resolved_scope("reviewer-yield", scope_label, roots)
-
-    data = _compute_reviewer_yield_data(session_iter, since_ts=since_ts)
-    agg = data["agg"]
-    agg2 = data["agg2"]
-    meta_read_errors = data["meta_read_errors"]
-    transcript_read_errors = data["transcript_read_errors"]
-
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Reviewer-agent yield ({title_since})\n")
-
-    if not agg:
-        print("No reviewer-agent dispatches found.")
-        if meta_read_errors:
-            print(f"  ({meta_read_errors:,} meta.json files failed to parse, excluded)")
-        return
-
-    # Findings is a lower bound: it sums parsed "Found <N> issues" counts plus
-    # 0 for each uncounted "Approve with concerns"/"Request changes" verdict.
-    header = f"{'AgentType':<28} {'Dispatches':>10} {'Found':>7} {'Zero':>6} {'Unclass':>8} {'Findings':>9}"
-    print(header)
-    print("-" * len(header))
-    for stype in sorted(agg):
-        row = agg[stype]
-        print(
-            f"{stype:<28} {row['dispatches']:>10} {row['findings_found']:>7} "
-            f"{row['zero_finding']:>6} {row['unclassified']:>8} {row['total_findings']:>9}"
-        )
-    if meta_read_errors:
-        print(f"\n  ({meta_read_errors:,} meta.json files failed to parse, excluded)")
-
-    print(f"\n## Reviewer-agent cited-path edit overlap ({title_since})\n")
-    header2 = (
-        f"{'AgentType':<28} {'Bucket':<15} {'Dispatches':>10} {'Cited':>6} {'Active':>6} {'Edited':>6} {'Rate':>12}"
-    )
-    print(header2)
-    print("-" * len(header2))
-    for stype in sorted(agg):
-        row = agg[stype]
-        for bucket, dispatches in (
-            (_REVIEWER_VERDICT_FINDINGS_FOUND, row["findings_found"]),
-            (_REVIEWER_VERDICT_ZERO_FINDING, row["zero_finding"]),
-            (_REVIEWER_VERDICT_UNCLASSIFIED, row["unclassified"]),
-        ):
-            if dispatches == 0:
-                continue
-            if bucket == _REVIEWER_VERDICT_UNCLASSIFIED:
-                cited_s = active_s = edited_s = rate_s = "excluded"
-            else:
-                row2 = agg2[(stype, bucket)]
-                cited_s, active_s, edited_s = str(row2["cited"]), str(row2["active"]), str(row2["edited"])
-                rate_s = (
-                    "insufficient"
-                    if row2["active"] < _REVIEWER_YIELD_ACTIVE_FLOOR
-                    else f"{row2['edited'] / row2['active']:>6.1%}"
-                )
-            print(
-                f"{stype:<28} {bucket:<15} {dispatches:>10} {cited_s:>6} {active_s:>6} {edited_s:>6} {rate_s:>12}"
-            )
-    print("\n  (Active/Edited count parent-main-thread edits only; see docs for the cost-gate fallback.)")
-    if transcript_read_errors:
-        print(f"\n  ({transcript_read_errors:,} reviewer transcripts failed to read, excluded from Cited)")
 
 
 def cmd_skill_pair(args: argparse.Namespace) -> None:
@@ -3606,7 +3000,6 @@ _AUDIT_CLASSES: tuple[str, ...] = (
 )
 
 _ORCHESTRATION_TOOLS: frozenset[str] = frozenset({"Agent", "Task"})
-_CODE_WRITE_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 _CODE_READ_TOOLS: frozenset[str] = frozenset({"Read", "Grep", "Glob", "Bash"})
 
 
@@ -3632,7 +3025,7 @@ def _classify_opus_turn(
         return "orchestration"
     if in_judgment_span or plan_mode_active:
         return "judgment"
-    if tool_names & _CODE_WRITE_TOOLS:
+    if tool_names & corpus._CODE_WRITE_TOOLS:
         return "code-write"
     if tool_use_blocks and tool_names <= _CODE_READ_TOOLS:
         return "code-read"

@@ -40,6 +40,34 @@ def _write_subagent_jsonl(
     _write_jsonl(subdir / f"{agent_id}.jsonl", records)
 
 
+def _write_subagent_dispatch(
+    proj: Path, session_id: str, agent_id: str, tool_use_id: str, records: list[dict],
+    *, agent_type: str = "staff-backend-engineer", description: str = "review",
+    requested_model: str | None = None,
+) -> None:
+    """Write both the .jsonl and its paired .meta.json for a synthetic subagent
+    dispatch — _write_subagent_jsonl (above) writes only the .jsonl, never the
+    meta.json sidecar reviewer-yield's and subagent-mix's dispatch joins read.
+    Matches the real on-disk shape: {"agentType", "description", "toolUseId",
+    "spawnDepth"}. requested_model, when given, adds meta.json's own "model"
+    key — absent by default, matching a dispatch that requested no explicit
+    model."""
+    _write_subagent_jsonl(proj, session_id, agent_id, records)
+    subdir = proj / session_id / SUBAGENT_SUBDIR
+    meta = {"agentType": agent_type, "description": description, "toolUseId": tool_use_id, "spawnDepth": 1}
+    if requested_model is not None:
+        meta["model"] = requested_model
+    (subdir / f"{agent_id}.meta.json").write_text(json.dumps(meta))
+
+
+def _edit_use(tool_id: str, *, path: str = "/foo.py") -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Edit", "input": {"file_path": path}}
+
+
+def _write_use(tool_id: str, content: str, *, path: str = "/scratch/findings.md") -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Write", "input": {"file_path": path, "content": content}}
+
+
 def _write_cost_root(base: Path, name: str, proj_slug: str, session_id: str, records: list[dict]) -> Path:
     """Build one --config-dir root's project-dir tree — same shape as
     fake_projects' own PROJECTS_DIR (the root directly contains project-slug
@@ -332,6 +360,21 @@ def _audit_routing_args(
         "this_repo": this_repo,
         "since": since,
         "top": top,
+        "redact": redact,
+    })()
+
+
+def _reviewer_yield_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    redact: bool = False,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
         "redact": redact,
     })()
 

@@ -13,11 +13,15 @@ subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus 
 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
 circular import is possible while `cmd_*` functions remain split across both the shim and the
-package. `cost.py` is the one deliberate, temporary exception, in the opposite direction: cost-ledger
-(a later, still-unmigrated phase) calls `cost.py`'s `compute_cost_trend_data` from inside the shim,
-so the shim imports `cost.py` back for that one name. This resolves cleanly (`cost.py` itself has no
-import of the shim), but it means `cost.py`'s public surface is reachable from monolith code this
-phase left behind — expected to shrink to zero once cost-ledger's own phase moves.
+package. `cost.py` and `reviewer_yield.py` are the two deliberate, temporary exceptions, in the
+opposite direction: cost-ledger (a later, still-unmigrated phase) calls `cost.py`'s
+`compute_cost_trend_data` and `reviewer_yield.py`'s `compute_reviewer_yield_data` from inside the
+shim, and review-trace/subagent-mix (also not yet migrated) call `reviewer_yield.py`'s
+`_is_reviewer_subagent_type`/`_index_subagent_dispatches` the same way — so the shim imports each
+module back for those names. This resolves cleanly (neither `cost.py` nor `reviewer_yield.py`
+imports the shim), but it means both modules' public surface is reachable from monolith code these
+phases left behind — expected to shrink to zero once cost-ledger's, review-trace's, and
+subagent-mix's own phases move.
 
 ## The package
 
@@ -75,6 +79,18 @@ corpus-wide dollar-cost reporting by token class/model ID/thread/account/project
 the cross-module discipline every other package module already follows. `compute_cost_trend_data`
 is the one public (non-underscore-prefixed) name here, reached from the still-unmigrated
 cost-ledger code in the shim — see the one-directional exception noted above.
+
+### `reviewer_yield.py`
+
+The reviewer-yield command family: `cmd_reviewer_yield` and every helper used only by it —
+joining each main-thread reviewer-agent dispatch to its own subagent transcript, classifying its
+verdict (findings-found/zero-finding/unclassified), and scoring cited-path edit overlap
+(`compute_reviewer_yield_data`). Imports `corpus`, `pricing`, `render`, and `scope` all by module
+(attribute access), matching `cost.py`'s convention. `compute_reviewer_yield_data` is the one
+public name here, reached from the still-unmigrated cost-ledger code in the shim;
+`_is_reviewer_subagent_type` and `_index_subagent_dispatches` are also reached bare from
+still-unmigrated review-trace and subagent-mix code respectively — see the two-module exception
+noted above.
 
 ## Sibling scripts
 

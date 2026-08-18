@@ -116,3 +116,9 @@ def _parse_ts(ts_str: str | None) -> float | None:
         return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
     except (ValueError, TypeError):
         return None
+
+
+# Tool names that write code to disk, classifying a tool_use block's record
+# shape -- used by both reviewer-yield's parent-edit index and audit-routing's
+# per-turn classifier.
+_CODE_WRITE_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
