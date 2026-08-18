@@ -130,22 +130,22 @@ no-network builds that this literal still denies, an accepted over-deny, not
 a restore collision); see
 [`docs/auto-mode.md`](auto-mode.md#hard-floor-deny-rules) for that table.
 
-`deny-network-installs.sh` matches on token *presence*
-(`_lib_fragment_has_token`), not on resolving "the" leading command through
-wrappers. Position-based resolution has three failure modes this design
-avoids entirely: `_lib_fragment_command_word`'s runner-skip list resolves
-`pnpm add lodash` to the command word `add`, not the manager name; `bash -c
-"$(curl …)"` produces a `curl` fragment with nothing after it, so any
-adjacency-based check misses it; and a hand-curated wrapper list (`sudo`,
-`env`, `timeout`, …) is easy to leave incomplete. Presence is immune to that
-whole bug class, since no wrapper removes a token from the command string.
+`deny-network-installs.sh` matches on token *presence* — verbs and flags via
+`_lib_fragment_has_token`, manager names via `_install_word_matches_name`
+(`NAME` or `*/NAME`, so a path-prefixed invocation matches too) — not on
+resolving "the" leading command through wrappers. Position-based resolution
+has three failure modes this design avoids entirely: `_lib_fragment_command_word`'s
+runner-skip list resolves `pnpm add lodash` to the command word `add`, not
+the manager name; `bash -c "$(curl …)"` produces a `curl` fragment with
+nothing after it, so any adjacency-based check misses it; and a
+hand-curated wrapper list (`sudo`, `env`, `timeout`, …) is easy to leave
+incomplete. Presence is immune to that whole bug class, since no wrapper
+removes a token from the command string.
 
 **Named residuals, accepted rather than chased with more parsing:**
 - Bare `npx`/`bunx`/`uvx`/`pipx` (no `-y`/`--yes`) — disambiguating "runs an
   already-installed local tool, no network call" from "fetches a new one"
   needs lockfile/`package.json` awareness this hook does not have.
-- A path-prefixed manager invocation (`/opt/homebrew/bin/npm install x`) —
-  token-presence matching never sees `npm` inside the longer token.
 - `pip install -e <VCS-URL>` — the editable-install marker's value is always
   skipped, whether it's a local path or a fetchable URL.
 - An unrecognized value-taking flag (`--registry <url>`, `--prefix <path>`)
@@ -173,6 +173,24 @@ whole bug class, since no wrapper removes a token from the command string.
   written then executed separately, `eval $(echo … | base64 -d)`, a
   session-defined alias (see `deny-repo-relocation.sh`'s header for the
   precedent this mirrors).
+- `_lib_split_fragments` splits on any literal `|`, including the one inside
+  bash's `>|` (noclobber-override) redirect operator — a redirect placed
+  before a trailing package-name argument (`npm install >|/tmp/x evil-pkg`)
+  separates the manager+verb fragment from the package-name fragment and
+  evades this hook. Fixing it means changing shared `_lib_split_fragments`,
+  used by every hook in this suite — out of scope for a single-hook
+  matching fix.
+- A manager binary whose own filename contains a space, invoked quoted
+  (`"/tmp/n pm" install x`), allows — `_lib_strip_shell_quotes` removes the
+  quotes before word-splitting, so the quoted single token becomes two
+  unquoted words and neither matches the manager name. Pre-existing under
+  exact-token matching too; fixing it means quote-position tracking through
+  shared `_lib_strip_shell_quotes`, used by every hook in this suite.
+- The path-prefix matcher widens the curl/wget-interpreter co-occurrence
+  check (above) to also fire on a path-prefixed interpreter *reference*
+  (`curl ... && ls ~/.nvm/.../bin/node`), not just an actual invocation —
+  the same accepted over-deny direction, extended to reference-only
+  mentions.
 
 **Out of scope for this hook:** `brew`/`gem`/`cargo`/`go`/`gh extension`/
 `mas`/`pipx`/`apt(-get)`/`yum`/`dnf`/`apk`/`zypper` are covered only by the
