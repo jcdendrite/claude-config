@@ -3,10 +3,7 @@ only by them -- corpus-wide dollar-cost reporting by token class/model
 ID/thread/account/project, and per-ISO-week cost-trend accumulation.
 
 Imports scope, corpus, pricing, render, and redaction by module (attribute
-access), not by name -- this module's own reassignable state is limited to
-what those modules expose, and reading them by attribute keeps a test's
-monkeypatch.setattr(scope, "PROJECTS_DIR", ...) (or any other cross-module
-patch) visible here the same way it is everywhere else in the package.
+access, not by name) -- see scope.py's own top-of-file comment for why.
 """
 from __future__ import annotations
 
