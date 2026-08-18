@@ -184,10 +184,14 @@ access, not by name)"]`.
    `_UNCONDITIONAL_HEADER_CASES` (a table used by tests that themselves stay
    in the legacy file until the final phase, per the governing plan's
    Out-of-scope section) references `_reviewer_yield_args` at
-   `test_transcript_analysis.py:14565`. **Resolution:** DAMP-duplicate a
-   small copy of `_reviewer_yield_args` in the legacy test file — the same
-   disposition Phase 2 gave `_cost_args` for the identical shape.
-   `[verified: staff-sdet plan-review pass this session confirmed line 14565's content verbatim]` anchors: row5
+   `test_transcript_analysis.py:14565`. **Resolution:** promote
+   `_reviewer_yield_args` to `conftest.py`, matching Phase 2's actual
+   disposition for `_cost_args` — this row's earlier draft cited `_cost_args`
+   as a DAMP-duplicated case, but `_cost_args` is itself defined once in
+   `conftest.py` and imported (not duplicated) into
+   `test_transcript_analysis.py:23`; there is no DAMP-duplicated copy of it
+   anywhere in the tree. Same shape as rows 7/9 below.
+   `[verified: staff-backend-engineer's ready-for-review cumulative code-review pass this session, re-checked _cost_args's actual definition site directly]` anchors: row5
 
 7. **`_n_cited_reviewer_dispatches` depends on `_write_subagent_dispatch`**
    (defined at `test_transcript_analysis.py:61`), a shared record-builder
@@ -310,11 +314,10 @@ treatment.
   `_CODE_WRITE_TOOLS: frozenset[str] = frozenset({"Edit", "Write",
   "MultiEdit", "NotebookEdit"})`, verbatim value from its current home.
 - `claude/.claude/scripts/tests/test_transcript_analysis.py` — remove the
-  moved test classes/helpers (row 5); add a small DAMP-duplicated copy of
-  `_reviewer_yield_args` for the `_UNCONDITIONAL_HEADER_CASES` table
-  reference (row 6); no change needed for `TestCostLedgerRecordParity`
-  (row 8) since the shim alias keeps `_mod._compute_reviewer_yield_data`
-  working.
+  moved test classes/helpers (row 5); import the promoted `_reviewer_yield_args`
+  from `conftest.py` for the `_UNCONDITIONAL_HEADER_CASES` table reference
+  (row 6); no change needed for `TestCostLedgerRecordParity` (row 8) since
+  the shim alias keeps `_mod._compute_reviewer_yield_data` working.
 - `claude/.claude/scripts/tests/conftest.py` — promote `_write_subagent_dispatch`
   (row 7) and `_edit_use`/`_write_use` (row 9) here. `_write_subagent_dispatch`'s
   body needs editing (`_mod.SUBAGENT_SUBDIR` → the already-imported bare
