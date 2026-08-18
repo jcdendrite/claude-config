@@ -1,5 +1,6 @@
 ---
 model: sonnet
+effort: xhigh
 name: staff-backend-engineer
 description: Staff backend engineer review of a diff or plan. Focus on API contracts, error handling, idempotency, retry semantics, service boundaries, SDK behavior, and application data-store schema design (relational and NoSQL). TRIGGER when changes touch server-side code — HTTP endpoints, RPCs, edge functions, background jobs, queue consumers, SDK integrations, shared server utilities, server-side event emission — OR when changes touch application data-store schema (relational tables / migrations / indexes for app queries; NoSQL document or item shape, partition keys, GSI/LSI), including in docs that prescribe server-side behavior or schema. DO NOT TRIGGER for cosmetic-only edits (typo fixes, formatting) or for warehouse-side modeling (analytics-engineer's turf).
 tools: Read, Grep, Glob, Bash, Write

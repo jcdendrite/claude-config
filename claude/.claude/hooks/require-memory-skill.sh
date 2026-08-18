@@ -78,21 +78,26 @@ REAL_PATH=$(_lib_realpath_m "$FILE_PATH")
 # Classify path — only proceed for memory files.
 IS_CANDIDATE=0
 
-# An unresolvable config dir (empty/unset $HOME, no CLAUDE_CONFIG_DIR) fails
-# open: no candidate is classified, mirroring the fail-open precedent below
-# for an absent SESSION_ID rather than blocking every Write/Edit/MultiEdit.
-CONFIG_DIR=$(_lib_config_dir) && REAL_CONFIG_DIR=$(_lib_realpath_m "$CONFIG_DIR") || REAL_CONFIG_DIR=""
+# Fails open on an unresolvable config dir (empty/unset $HOME, no
+# CLAUDE_CONFIG_DIR), mirroring the SESSION_ID fail-open below — a
+# merely-missing-but-resolvable projects/ (fresh install) is fine since
+# realpath -m tolerates a missing path.
+#
+# Resolves config_dir/projects, not config_dir alone — a setup that symlinks
+# projects/ independently of its parent needs the full target resolved to
+# share a prefix with REAL_PATH.
+CONFIG_DIR=$(_lib_config_dir) && REAL_PROJECTS_DIR=$(_lib_realpath_m "$CONFIG_DIR/projects") || REAL_PROJECTS_DIR=""
 
-if [ -n "$REAL_CONFIG_DIR" ]; then
+if [ -n "$REAL_PROJECTS_DIR" ]; then
   # Class (a): MEMORY.md index — always gated regardless of tool or existence.
-  if [[ "$REAL_PATH" == "$REAL_CONFIG_DIR/projects/"*"/memory/MEMORY.md" ]]; then
+  if [[ "$REAL_PATH" == "$REAL_PROJECTS_DIR/"*"/memory/MEMORY.md" ]]; then
     IS_CANDIDATE=1
   fi
 
   # Class (b): new topic file — Write only, file must not exist yet.
   if [ "$IS_CANDIDATE" -eq 0 ] && \
      [ "$TOOL_NAME" = "Write" ] && \
-     [[ "$REAL_PATH" == "$REAL_CONFIG_DIR/projects/"* ]] && \
+     [[ "$REAL_PATH" == "$REAL_PROJECTS_DIR/"* ]] && \
      [[ "$REAL_PATH" == *"/memory/"* ]] && \
      [ ! -e "$FILE_PATH" ]; then
     IS_CANDIDATE=1

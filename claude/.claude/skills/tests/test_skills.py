@@ -1949,10 +1949,10 @@ _FOUNDATION_RULES_HEADING = "## Foundation-tripwire rules — surfacing incident
 _TRIPWIRE_BULLET_RE = re.compile(r"^\s{2,}-\s+\*\*(?P<name>[^*]+)\.\*\*")
 _MAPPING_ROW_RE = re.compile(r"^\|\s*(?P<name>[^|]+?)\s*\|")
 
-# Bumping this is the point of the ratchet: a seventh tripwire must also
+# Bumping this is the point of the ratchet: an eighth tripwire must also
 # gain a mapping-table row and a provenance paragraph, or this constant
 # stays stale and the count assertion below catches the omission.
-_EXPECTED_TRIPWIRE_COUNT = 6
+_EXPECTED_TRIPWIRE_COUNT = 7
 
 
 def _section_between(

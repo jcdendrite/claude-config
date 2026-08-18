@@ -12,21 +12,21 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from conftest import _agent_use, _asst, _bash_use, _table_cols, _tool_result, _user_msg, _write_jsonl
 from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
+# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
+# alone doesn't register it), so it can't shadow the real transcript_analysis package --
+# switching to the standard importlib recipe (which does register in sys.modules) would.
 _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
-
-
-def _write_jsonl(path: Path, records: list[dict]) -> None:
-    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
 
 def _write_subagent_jsonl(
@@ -58,55 +58,20 @@ def _write_subagent_dispatch(
     (subdir / f"{agent_id}.meta.json").write_text(json.dumps(meta))
 
 
-def _table_cols(out: str, *, header_contains: str, row_contains: str | Sequence[str],
-                drop_leading_labels: int = 0,
-                max_labels: int | None = None,
-                row_startswith: bool = False,
-                occurrence: int | None = None) -> dict[str, str]:
-    """Map column-label -> cell value for the data row matching `row_contains`.
+def _md_table_cols(out: str, *, header_contains: str, row_contains: str | Sequence[str],
+                    occurrence: int | None = None) -> dict[str, str]:
+    """Map column-label -> cell value for the GFM pipe-table data row matching
+    `row_contains` -- the markdown-table counterpart to _table_cols, splitting
+    on `|` instead of whitespace since a markdown cell (a model ID, a share
+    percentage) may itself contain no whitespace token boundary to split on.
 
-    Anchors column positions to the header row (the line containing
-    `header_contains`) instead of hard-coding indices, so a column reorder in
-    the source output fails meaningfully rather than silently reading the wrong
-    column.
-
-    Precondition: every asserted column's header label AND cell value is a
-    single whitespace token (true for all leading label/count columns; trailing
-    free-text columns like "Top subagent types" are not assertable this way and
-    are not asserted by any test). `drop_leading_labels` lets a caller declare
-    that the row deliberately suppresses N leading left-aligned labels (the only
-    case: cmd_subagents continuation rows blank the Branch column,
-    transcript-analysis.py:688) — declared explicitly per call, never inferred.
-    `max_labels` limits labels to only the first N single-token columns, required
-    for tables whose header contains a trailing multi-word column name (e.g.,
-    cmd_subagent_mix's "Top subagent types") whose tokens would otherwise inflate
-    the label count beyond the data row's token count.
-    `row_startswith=True` matches only lines where `row_contains` appears at
-    column 0, filtering out indented summary/annotation lines that also contain
-    the same text (e.g., cmd_skill_invocation summary section).
-
-    Row search is always scoped to one table's own section -- from its header
-    line through the next blank line or the next header-containing line -- so
-    a second table elsewhere in the same output that happens to share row
-    text (e.g. both tables use "main"/"sidechain" thread labels, or both
-    start "AgentType") is never mistaken for this one's data. Without
-    `occurrence`, `header_contains` must match exactly one line in the whole
-    output. `occurrence` scopes to the Nth (1-indexed) line containing
-    `header_contains` instead, for a header substring that legitimately
-    repeats across tables (e.g. reviewer-yield's Table 1 and Table 2 both
-    start "AgentType"). A table's own rule line ("-" * len(header), printed
-    immediately after the header) is pure dashes, so it never matches a
-    blank-line or header-match boundary check and needs no special-casing to
-    stay inside the section.
-    `row_contains` accepts a single string or a sequence of strings, all of
-    which must appear on the matched line — needed once a table can hold more
-    than one row per entity (e.g. two bucket rows per agent type), where a
-    bare entity-name substring would match more than one line even within a
-    single table's section.
-
-    Fails loudly (AssertionError) when exactly one header / data row isn't
-    found, or when token counts don't line up — a silent mismatch would
-    reintroduce the GH-363 bug class under a new cause.
+    Mirrors _table_cols' anchoring (locates the section by the header line,
+    scoped through the next blank line or repeated header) and its
+    fail-loud-on-ambiguous-match semantics: exactly one header / one matching
+    data row must be found unless `occurrence` disambiguates a repeated
+    header. The `|---|---|...|` separator row never satisfies `row_contains`
+    (it has no cell text to match), so it needs no special-casing to stay
+    out of the returned row.
     """
     lines = out.splitlines()
     header_indices = [i for i, ln in enumerate(lines) if header_contains in ln]
@@ -131,18 +96,10 @@ def _table_cols(out: str, *, header_contains: str, row_contains: str | Sequence[
     header = headers[0]
 
     needles = (row_contains,) if isinstance(row_contains, str) else tuple(row_contains)
-    if row_startswith:
-        rows = [
-            ln for ln in section_lines
-            if ln != header and ln.startswith(needles[0]) and all(n in ln for n in needles)
-        ]
-    else:
-        rows = [ln for ln in section_lines if ln != header and all(n in ln for n in needles)]
+    rows = [ln for ln in section_lines if ln != header and all(n in ln for n in needles)]
     assert len(rows) == 1, f"row match not unique for {row_contains!r}: {len(rows)}"
-    labels = header.split()[drop_leading_labels:]
-    if max_labels is not None:
-        labels = labels[:max_labels]
-    values = rows[0].split()
+    labels = [c.strip() for c in header.strip().strip("|").split("|")]
+    values = [c.strip() for c in rows[0].strip().strip("|").split("|")]
     assert len(values) >= len(labels), f"row has fewer cells than labels: {rows[0]!r}"
     return dict(zip(labels, values, strict=False))
 
@@ -195,6 +152,23 @@ def _extract_grand_total(out: str) -> float:
     return float(match.group(1).replace(",", ""))
 
 
+def _extract_arm_dollars(out: str, arm_label: str) -> float:
+    """Read plan-boundary's per-arm dollar figure (e.g. arm_label='C: fresh
+    Sonnet handoff') by row-label prefix, not by the row's full formatted
+    text -- survives cosmetic changes to column width/precision."""
+    match = re.search(rf"^{re.escape(arm_label)}\s+([\d,]+\.\d\d)\s*$", out, re.MULTILINE)
+    assert match is not None, f"no row found for arm {arm_label!r}"
+    return float(match.group(1).replace(",", ""))
+
+
+def _extract_md_grand_total(out: str) -> float:
+    """Read --summary's bolded grand-total row ('| **total** | **X.XX** | | |')
+    from the markdown token-class table."""
+    match = re.search(r"^\|\s*\*\*total\*\*\s*\|\s*\*\*([\d,]+\.\d\d)\*\*\s*\|", out, re.MULTILINE)
+    assert match is not None, "markdown grand total row not found in output"
+    return float(match.group(1).replace(",", ""))
+
+
 def _extract_account_totals(out: str) -> dict[int, float]:
     """Map account ordinal -> that account's own token-class 'total' row
     dollar figure, by splitting cost's '## Cost by account' section on its
@@ -216,52 +190,6 @@ def _extract_summary_unpriced(out: str) -> tuple[int, int]:
     match = re.search(r"Unpriced tokens: ([\d,]+) tokens across (\d+) model IDs", out)
     assert match is not None, "summary unpriced-tokens line not found in output"
     return int(match.group(1).replace(",", "")), int(match.group(2))
-
-
-def _asst(
-    model: str,
-    *,
-    branch: str = "main",
-    sidechain: bool = False,
-    ts: str | None = None,
-    content: list | None = None,
-    request_id: str | None = None,
-) -> dict:
-    rec: dict = {
-        "type": "assistant",
-        "gitBranch": branch,
-        "isSidechain": sidechain,
-        "message": {"model": model, "content": content or [], "usage": {}},
-    }
-    if ts:
-        rec["timestamp"] = ts
-    if request_id is not None:
-        rec["requestId"] = request_id
-    return rec
-
-
-def _user_msg(content, *, branch: str = "main", ts: str | None = None) -> dict:
-    rec: dict = {"type": "user", "gitBranch": branch, "message": {"content": content}}
-    if ts:
-        rec["timestamp"] = ts
-    return rec
-
-
-def _bash_use(tool_id: str, command: str) -> dict:
-    return {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
-
-
-def _tool_result(tool_id: str, text: str) -> dict:
-    return {"type": "tool_result", "tool_use_id": tool_id, "content": text}
-
-
-def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", prompt: str = "y") -> dict:
-    return {
-        "type": "tool_use",
-        "id": tool_id,
-        "name": tool_name,
-        "input": {"subagent_type": subagent_type, "description": "x", "prompt": prompt},
-    }
 
 
 def _priced_sidechain_asst(
@@ -299,52 +227,31 @@ def _mcp_use(tool_id: str, server: str, tool: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": f"mcp__{server}__{tool}", "input": {}}
 
 
-@pytest.fixture()
-def fake_projects(tmp_path, monkeypatch):
-    projects = tmp_path / "projects"
-    proj = projects / "-home-user-testrepo"
-    proj.mkdir(parents=True)
-    monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
-    # _resolve_cost_roots (subagents, subagent-mix, cost, context-distribution)
-    # derives its default root from a fresh config_dir() call, not from the
-    # PROJECTS_DIR patch above — without this, a subcommand routed through
-    # _resolve_cost_roots would silently fall back to this machine's real
-    # config dir instead of this fixture's isolated tmp_path.
-    monkeypatch.setattr(_mod, "config_dir", lambda: tmp_path)
-    return proj
-
-
-@pytest.fixture()
-def fake_config_dir_factory(tmp_path):
-    """Factory for extra --config-dir roots: each call builds a fresh config
-    dir (with its own projects/ subdirectory) under tmp_path, independent of
-    fake_projects' own PROJECTS_DIR — cost's multi-root tests use this to
-    build a second (and third) account profile."""
-    def _make(name: str) -> Path:
-        config_dir_path = tmp_path / name
-        (config_dir_path / "projects").mkdir(parents=True)
-        return config_dir_path
-    return _make
-
-
 def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
-    """PROJECTS_DIR is computed at import time from config_dir(); a fresh
-    import with CLAUDE_CONFIG_DIR set resolves under that directory instead
-    of ~/.claude."""
+    """scope.PROJECTS_DIR is computed at import time from config_dir(); a fresh
+    import of transcript_analysis.scope with CLAUDE_CONFIG_DIR set resolves
+    under that directory instead of ~/.claude.
+
+    Loaded by path (not a plain `import transcript_analysis.scope`, which
+    would hit sys.modules' already-imported copy) for the same reason _mod
+    above is: the module-level PROJECTS_DIR assignment only re-runs on a
+    genuinely fresh exec.
+    """
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    spec = importlib.util.spec_from_file_location("transcript_analysis_config_dir_case", _SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert tmp_path / "projects" == mod.PROJECTS_DIR
+    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    spec = importlib.util.spec_from_file_location("transcript_analysis_scope_config_dir_case", scope_path)
+    scope_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scope_mod)
+    assert tmp_path / "projects" == scope_mod.PROJECTS_DIR
 
 
 class TestConfigDirFlag:
-    """--config-dir reassigns the module-level PROJECTS_DIR after argument
-    parsing, distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
+    """--config-dir reassigns scope.PROJECTS_DIR after argument parsing,
+    distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
     test_projects_dir_honors_claude_config_dir covers above. Every test here
-    registers _mod.PROJECTS_DIR with monkeypatch before calling main() (even
-    when just re-setting it to its current value) so main()'s direct
-    `global PROJECTS_DIR` reassignment — which bypasses monkeypatch — is
+    registers _mod.scope.PROJECTS_DIR with monkeypatch before calling main()
+    (even when just re-setting it to its current value) so main()'s direct
+    `scope.PROJECTS_DIR = ...` reassignment — which bypasses monkeypatch — is
     still restored to its pre-test value at teardown, protecting the rest of
     this shared, once-imported module from leaking state across tests."""
 
@@ -358,7 +265,7 @@ class TestConfigDirFlag:
         session-iteration path captured PROJECTS_DIR into a local before
         main()'s post-parse reassignment, silently reporting zero sessions
         (the exact regression class this feature exists to close)."""
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", _mod.PROJECTS_DIR)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", _mod.scope.PROJECTS_DIR)
         config_dir = tmp_path / "other-account"
         proj = config_dir / "projects" / "-home-user-testrepo"
         proj.mkdir(parents=True)
@@ -367,7 +274,7 @@ class TestConfigDirFlag:
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "--config-dir", str(config_dir), "buckets"])
         _mod.main()
 
-        assert config_dir / "projects" == _mod.PROJECTS_DIR
+        assert config_dir / "projects" == _mod.scope.PROJECTS_DIR
         out = capsys.readouterr().out
         assert "feat-config-dir" in out, (
             f"the seeded session's branch never surfaced in `buckets` output: {out!r}"
@@ -380,19 +287,19 @@ class TestConfigDirFlag:
         main() performs after parsing, e.g. an unguarded `Path(None)`."""
         fixture_projects_dir = tmp_path / "projects"
         fixture_projects_dir.mkdir()
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", fixture_projects_dir)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", fixture_projects_dir)
 
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "buckets"])
         _mod.main()
 
-        assert fixture_projects_dir == _mod.PROJECTS_DIR
+        assert fixture_projects_dir == _mod.scope.PROJECTS_DIR
 
     def test_this_repo_loud_error_on_zero_matches(self, monkeypatch, tmp_path, capsys):
         """--config-dir + --this-repo, resolved against a config dir with no
         matching project directories, errors loudly instead of silently
         reporting an empty scope -- closes the original reported symptom
         (declaring no sessions exist for a container that has them)."""
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", _mod.PROJECTS_DIR)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", _mod.scope.PROJECTS_DIR)
         config_dir = tmp_path / "other-account"
         (config_dir / "projects").mkdir(parents=True)  # exists, but empty
 
@@ -417,19 +324,16 @@ class TestConfigDirFlag:
         assert "--config-dir" in err
         assert "buckets" in err
 
-    @pytest.mark.parametrize(
-        "subcommand", ["cost", "context-distribution", "read-scope", "subagents", "subagent-mix", "cost-trend"]
-    )
+    @pytest.mark.parametrize("subcommand", _mod.scope._SUBCOMMANDS_WITH_OWN_CONFIG_DIR)
     def test_top_level_config_dir_refused_for_subcommands_with_their_own(
         self, monkeypatch, tmp_path, capsys, subcommand
     ):
-        """cost, context-distribution, read-scope, subagents, and
-        subagent-mix all resolve their own scan roots via their own
-        --config-dir (_resolve_cost_roots -> config_dir() +
-        declared_transcript_roots()), never reading the module-global
-        PROJECTS_DIR this top-level flag reassigns. Letting the top-level
-        flag through silently would reassign an unused global while the
-        actual scan root stays whatever config_dir() resolves to -- an
+        """Every subcommand in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR resolves its
+        own scan roots via its own --config-dir (_resolve_cost_roots ->
+        config_dir() + declared_transcript_roots()), never reading the
+        module-global PROJECTS_DIR this top-level flag reassigns. Letting the
+        top-level flag through silently would reassign an unused global while
+        the actual scan root stays whatever config_dir() resolves to -- an
         operator typing --config-dir /other-account cost would see no error
         and would silently scan their own default account instead. main()
         refuses the combination outright, matching every other subcommand's
@@ -437,7 +341,9 @@ class TestConfigDirFlag:
         unconditional on subcommand alone, checked before args.this_repo is
         ever read, so a bare subcommand invocation (no --this-repo) is the
         correct, strictly-scoped regression pin -- a --this-repo variant
-        would hit the identical check with no new branch coverage."""
+        would hit the identical check with no new branch coverage.
+        Parametrized directly off the tuple (not a hand-maintained list) so a
+        future entry is covered automatically."""
         other_account = tmp_path / "other-account"
         (other_account / "projects").mkdir(parents=True)
         active_config_dir = tmp_path / "active-account"
@@ -452,7 +358,7 @@ class TestConfigDirFlag:
             _mod.main()
 
         assert exc_info.value.code == 2
-        assert other_account / "projects" != _mod.PROJECTS_DIR  # refusal happens before reassignment
+        assert other_account / "projects" != _mod.scope.PROJECTS_DIR  # refusal happens before reassignment
         err = capsys.readouterr().err
         assert "--config-dir" in err
         assert subcommand in err
@@ -731,7 +637,7 @@ class TestBuckets:
         proj_a.mkdir(parents=True)
         _write_jsonl(proj_a / "sess1.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
         _write_jsonl(proj_a / "sess2.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
 
         args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
         _mod.cmd_buckets(args)
@@ -748,7 +654,7 @@ class TestBuckets:
         proj_b.mkdir(parents=True)
         _write_jsonl(proj_a / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
         _write_jsonl(proj_b / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
 
         args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
         _mod.cmd_buckets(args)
@@ -766,7 +672,7 @@ class TestBuckets:
 def _collect_runs(target_branch: str) -> list[tuple[str, int]]:
     """Extract (model_family, failed_count) pairs for target_branch using the module's core logic."""
     runs: list[tuple[str, int]] = []
-    for _jsonl, records in _mod.iter_sessions(_mod.PROJECTS_DIR):
+    for _jsonl, records in _mod.iter_sessions(_mod.scope.PROJECTS_DIR):
         pending: dict[str, str] = {}
         current_branch: str = ""
         for rec in records:
@@ -1699,11 +1605,11 @@ class TestSubagentMixMultiRoot:
         therefore always sorts first regardless — that shared setup cannot
         catch this regression class, the same blind spot PR #603's own
         pre-fix edit-format test had."""
-        monkeypatch.setattr(_mod, "declared_transcript_roots", lambda: [])
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         active_proj = active / "projects" / "-home-user-active-repo"
         active_proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: active)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
         _write_jsonl(active_proj / "sess-active.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
         ])
@@ -1780,7 +1686,40 @@ def _n_cited_reviewer_dispatches(
     return records
 
 
+class TestIsReviewerSubagentType:
+    def test_recognizes_prefix_and_all_exact_names(self):
+        """staff- prefix, plus each of the three exact-name reviewers sharing
+        _REVIEWER_EXACT_NAMES with review-trace's own detection."""
+        assert _mod._is_reviewer_subagent_type("staff-backend-engineer")
+        assert _mod._is_reviewer_subagent_type("ciso-reviewer")
+        assert _mod._is_reviewer_subagent_type("comment-discipline-reviewer")
+        assert _mod._is_reviewer_subagent_type("skill-fidelity-reviewer")
+        assert not _mod._is_reviewer_subagent_type("general-purpose")
+
+
 class TestReviewerYield:
+    def test_comment_discipline_reviewer_joins_and_classifies_zero_finding(self, fake_projects, capsys):
+        """comment-discipline-reviewer is a newly-eligible _REVIEWER_EXACT_NAMES
+        member (previously recognized by neither review-trace nor
+        reviewer-yield) — this exercises its dispatch-to-verdict join
+        end-to-end, not just the _is_reviewer_subagent_type predicate."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "comment-discipline-reviewer")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No comment-discipline concerns**"}])],
+            agent_type="comment-discipline-reviewer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(
+            out, header_contains="AgentType", row_contains="comment-discipline-reviewer",
+            row_startswith=True, occurrence=1,
+        )
+        assert cols["Dispatches"] == "1"
+        assert cols["Zero"] == "1"
+
     def test_no_concerns_verdict_adjacent_to_bold_markers_classified_zero_finding(self, fake_projects, capsys):
         """`\\b` word-boundary anchors match identically next to whitespace or
         markdown punctuation (`**`), so a verdict wrapped in bold markers
@@ -3838,73 +3777,17 @@ def _review_trace_args(
     })()
 
 
-def _event_suffix_branch_model(line: str) -> tuple[str, str]:
-    """Parse the trailing '(branch=X model=Y)' suffix off a review-trace event line."""
-    m = re.search(r"\(branch=(\S+) model=(\S+)\)", line)
-    assert m, f"no branch/model suffix found in line: {line!r}"
-    return m.group(1), m.group(2)
-
-
-def _extract_deny_summary_count(out: str, label: str) -> int:
-    """Parse one label's count from a --deny-summary grouped-count table.
-
-    Row labels may be multi-word (e.g. 'git commit'), so _table_cols' one-
-    token-per-column assumption doesn't apply here — this matches the label
-    as a literal line prefix and reads the trailing count.
-    """
-    for line in out.splitlines():
-        if line.startswith(label):
-            rest = line[len(label):].strip()
-            if rest.isdigit():
-                return int(rest)
-    return 0
-
-
-def _extract_pre_regime_count(out: str) -> int:
-    """Read --deny-summary's 'N errored, non-gate tool result(s) predate...' count.
-
-    Regex-extracts and int-compares rather than substring-containing on the
-    prefix (matching _extract_unpriced_total's pattern) — a plain 'in out'
-    check on '1 errored' would also pass for a count of 11.
-    """
-    match = re.search(r"(\d+) errored, non-gate tool result\(s\) predate", out)
-    assert match is not None, "pre-regime count line not found in output"
-    return int(match.group(1))
-
-
-def _extract_cross_tab_count(out: str, hook: str, shape: str) -> int:
-    """Read one (hook, shape) cell from --deny-summary's hook x command-shape
-    cross-tab table.
-
-    Both the hook-label and shape-label columns can carry a single internal
-    space (e.g. 'git commit', 'plan-review routing'), so whitespace-token
-    splitting doesn't apply — columns are separated by >=2 spaces by
-    construction (_print_deny_summary's col_width is always at least 2 wider
-    than the longest shape label), so splitting on runs of 2+ spaces keeps
-    each multi-word label intact as one column. The cross-tab's own header
-    ("  Hook  ...") is indented two spaces, unlike the marginal hook/gate
-    table's identically-worded row labels — this locates the header by its
-    unique two-space-indented "Hook" lead cell, then scopes the row search to
-    the block of two-space-indented lines directly beneath it, so a hook
-    label shared with the marginal table's own row (e.g. "code-review") never
-    matches the wrong table.
-    """
-    lines = out.splitlines()
-    header_idxs = [i for i, ln in enumerate(lines) if re.split(r"\s{2,}", ln.strip())[:1] == ["Hook"]]
-    assert len(header_idxs) == 1, f"cross-tab header not found uniquely: {len(header_idxs)}"
-    header_idx = header_idxs[0]
-    header_cols = re.split(r"\s{2,}", lines[header_idx].strip())
-    assert shape in header_cols, f"shape {shape!r} not a cross-tab column: {header_cols}"
-    shape_idx = header_cols.index(shape)
-    table_rows = []
-    for ln in lines[header_idx + 1:]:
-        if not ln.startswith("  "):
-            break
-        table_rows.append(ln)
-    matches = [ln for ln in table_rows if re.split(r"\s{2,}", ln.strip())[:1] == [hook]]
-    assert len(matches) == 1, f"cross-tab row not found uniquely for {hook!r}: {len(matches)}"
-    row_cols = re.split(r"\s{2,}", matches[0].strip())
-    return int(row_cols[shape_idx])
+def _since_until_epochs(since: str | None, until: str | None) -> tuple[float | None, float | None]:
+    """Mirror cmd_review_trace's own --since/--until date-string -> epoch-second
+    boundary conversion, so a test calling _review_trace_session_events directly
+    passes boundaries in the same form the CLI itself would compute."""
+    since_ts = _mod._parse_ts(f"{since}T00:00:00Z") if since else None
+    until_epoch = None
+    if until:
+        day_start = _mod._parse_ts(f"{until}T00:00:00Z")
+        if day_start is not None:
+            until_epoch = day_start + 86400
+    return since_ts, until_epoch
 
 
 class TestDropDenialCommandFlagValues:
@@ -4020,59 +3903,51 @@ class TestSanitizeTableCell:
 
 
 class TestReviewTrace:
-    def test_skill_invocation_appears_in_output(self, fake_projects, capsys):
-        """Main-thread Skill call for a review skill produces a 'skill' event in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_skill_invocation_appears_in_output(self):
+        """Main-thread Skill call for a review skill produces a 'skill' event."""
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "skill" in out
-        assert "code-review" in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+        assert events[0]["skill"] == "code-review"
 
-    def test_denial_dict_blockingError_parsed(self, fake_projects, capsys):
+    def test_denial_dict_blockingError_parsed(self):
         """hook_blocking_error with blockingError as a dict produces a denial event."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny("require-code-review", stringified=False),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "denial" in out
-        assert "require-code-review" in out
+        records = [_hook_deny("require-code-review", stringified=False)]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
+        assert events[0]["hook_name"] == "require-code-review"
 
-    def test_denial_stringified_blockingError_parsed_identically(self, fake_projects, capsys):
-        """hook_blocking_error with blockingError as a JSON string produces identical output to dict form."""
-        _write_jsonl(fake_projects / "dict_form.jsonl", [
-            _hook_deny("require-code-review", stringified=False),
-        ])
-        _write_jsonl(fake_projects / "str_form.jsonl", [
-            _hook_deny("require-code-review", stringified=True),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        # Event lines have leading whitespace followed by a timestamp bracket.
-        sections = out.split("### ")
-        dict_section = next((s for s in sections if "dict_form" in s), "")
-        str_section = next((s for s in sections if "str_form" in s), "")
-        # Each section should have exactly one event line tagged 'denial'.
-        dict_denial_lines = [ln for ln in dict_section.splitlines() if ln.startswith("  [") and "denial" in ln]
-        str_denial_lines = [ln for ln in str_section.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(dict_denial_lines) == 1
-        assert len(str_denial_lines) == 1
-        # The hook name and message content should be identical between both forms.
-        assert "require-code-review" in dict_denial_lines[0]
-        assert "require-code-review" in str_denial_lines[0]
+    def test_denial_stringified_blockingError_parsed_identically(self):
+        """hook_blocking_error with blockingError as a JSON string produces
+        an identical denial event to the dict form."""
+        dict_events, _tuc1, _pr1 = _mod._review_trace_session_events(
+            [_hook_deny("require-code-review", stringified=False)], None, None, None,
+        )
+        str_events, _tuc2, _pr2 = _mod._review_trace_session_events(
+            [_hook_deny("require-code-review", stringified=True)], None, None, None,
+        )
+        assert len(dict_events) == 1
+        assert len(str_events) == 1
+        assert dict_events[0]["hook_name"] == "require-code-review"
+        assert str_events[0]["hook_name"] == "require-code-review"
         # The human-readable message text must appear in both forms, not a dict repr.
-        assert "blocked the operation" in dict_denial_lines[0]
-        assert "blocked the operation" in str_denial_lines[0]
-        # Must NOT be showing a raw dict repr.
-        assert "{'blockingError'" not in dict_denial_lines[0]
-        assert "{'blockingError'" not in str_denial_lines[0]
+        assert "blocked the operation" in dict_events[0]["message"]
+        assert "blocked the operation" in str_events[0]["message"]
+        assert "{'blockingError'" not in dict_events[0]["message"]
+        assert "{'blockingError'" not in str_events[0]["message"]
 
-    def test_hook_non_blocking_error_produces_zero_denial_events(self, fake_projects, capsys):
-        """hook_non_blocking_error records must NOT appear as denial events."""
+    def test_hook_non_blocking_error_produces_zero_denial_events(self):
+        """hook_non_blocking_error records must NOT produce a denial event."""
         non_blocking_rec = {
             "type": "attachment",
             "attachment": {
@@ -4082,67 +3957,85 @@ class TestReviewTrace:
                 "blockingError": {"message": "non-fatal"},
             },
         }
-        _write_jsonl(fake_projects / "sess.jsonl", [non_blocking_rec])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        # No sessions should be emitted — the non-blocking record is not a review event.
-        assert "denial" not in out
-        assert "denials=1" not in out
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [non_blocking_rec], None, None, None,
+        )
+        assert events == []
 
-    def test_reviewer_spawn_detected_general_purpose_excluded(self, fake_projects, capsys):
-        """staff-backend-engineer spawn appears; general-purpose spawn is excluded."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_reviewer_spawn_detected_general_purpose_excluded(self):
+        """staff-backend-engineer spawn produces a reviewer-spawn event; general-purpose does not."""
+        records = [
             _asst("claude-opus-4-7", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
                   content=[
                       _agent_use("a1", "staff-backend-engineer"),
                       _agent_use("a2", "general-purpose"),
                   ]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert "staff-backend-engineer" in out
-        assert "general-purpose" not in out
-        # Exactly one reviewer-spawn event (event lines start with "  [").
-        reviewer_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "reviewer" in ln]
-        assert len(reviewer_lines) == 1
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        reviewer_events = [e for e in events if e["kind"] == "reviewer-spawn"]
+        assert len(reviewer_events) == 1
+        assert reviewer_events[0]["subagent_type"] == "staff-backend-engineer"
 
-    def test_sidechain_skill_invocation_excluded(self, fake_projects, capsys):
-        """A code-review Skill call inside a sidechain record must not appear as a skill event."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_reviewer_spawn_detected_comment_discipline_and_skill_fidelity(self):
+        """comment-discipline-reviewer and skill-fidelity-reviewer are exact-name
+        reviewer-spawn matches, not just the staff- prefix or ciso-reviewer."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[
+                      _agent_use("a1", "comment-discipline-reviewer"),
+                      _agent_use("a2", "skill-fidelity-reviewer"),
+                  ]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        reviewer_types = {e["subagent_type"] for e in events if e["kind"] == "reviewer-spawn"}
+        assert reviewer_types == {"comment-discipline-reviewer", "skill-fidelity-reviewer"}
+
+    def test_sidechain_skill_invocation_excluded(self):
+        """A code-review Skill call inside a sidechain record must not produce a skill event."""
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
                   sidechain=True,
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        # Sidechain skill produces no events → the session block is not printed at all.
-        assert out.strip() == ""
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
 
-    def test_since_boundary_inclusive_record_included(self, fake_projects, capsys):
+    def test_since_boundary_inclusive_record_included(self):
         """A record whose timestamp matches exactly --since is included."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T00:00:00Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(since="2026-05-19"))
-        out = capsys.readouterr().out
-        assert "skill" in out
-        assert "code-review" in out
+        ]
+        since_ts, until_epoch = _since_until_epochs("2026-05-19", None)
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, since_ts, until_epoch, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
 
-    def test_until_boundary_inclusive_record_included(self, fake_projects, capsys):
+    def test_until_boundary_inclusive_record_included(self):
         """A record whose timestamp matches exactly --until is included."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T23:59:59Z",
                   content=[_skill_use("s1", "plan-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(until="2026-05-19"))
-        out = capsys.readouterr().out
-        assert "skill" in out
-        assert "plan-review" in out
+        ]
+        since_ts, until_epoch = _since_until_epochs(None, "2026-05-19")
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, since_ts, until_epoch, None,
+        )
+        assert len(events) == 1
+        assert events[0]["skill"] == "plan-review"
 
     def test_record_with_no_timestamp_excluded_no_crash(self, fake_projects, capsys):
         """A record with no parseable timestamp is excluded when a date filter is active; no crash."""
@@ -4155,37 +4048,38 @@ class TestReviewTrace:
         # No crash; output may be empty (no matching events survive the date filter).
         capsys.readouterr()  # consume; success if no exception raised above
 
-    def test_deny_only_restricts_to_denial_sessions(self, fake_projects, capsys):
-        """--deny-only: only sessions with at least one hook denial appear."""
-        # Session A: has a denial.
-        _write_jsonl(fake_projects / "with_denial.jsonl", [
-            _hook_deny("require-code-review"),
-        ])
-        # Session B: only a reviewer spawn, no denial.
-        _write_jsonl(fake_projects / "no_denial.jsonl", [
-            _asst("claude-opus-4-7", branch="feat",
-                  ts="2026-05-19T10:00:00.000Z",
-                  content=[_agent_use("a1", "staff-backend-engineer")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_only=True))
-        out = capsys.readouterr().out
-        assert "with_denial" in out
-        assert "no_denial" not in out
+    def test_deny_only_restricts_to_denial_sessions(self):
+        """--deny-only retains sessions with a denial event; a session with a
+        reviewer spawn but no denial does not qualify."""
+        session_a, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [_hook_deny("require-code-review")], None, None, None,
+        )
+        session_b, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [
+                _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                      content=[_agent_use("a1", "staff-backend-engineer")]),
+            ],
+            None, None, None,
+        )
+        assert any(e["kind"] == "denial" for e in session_a)
+        assert not any(e["kind"] == "denial" for e in session_b)
 
-    def test_until_subsecond_record_included(self, fake_projects, capsys):
+    def test_until_subsecond_record_included(self):
         """A record at T23:59:59.500Z on the --until date IS included (sub-second gap fix)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-10T23:59:59.500Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(until="2026-05-10"))
-        out = capsys.readouterr().out
-        assert "skill" in out
-        assert "code-review" in out
+        ]
+        since_ts, until_epoch = _since_until_epochs(None, "2026-05-10")
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, since_ts, until_epoch, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
 
-    def test_denial_blockingError_key_used_for_display_message(self, fake_projects, capsys):
-        """Denial message displays the nested blockingError string, not a dict repr."""
+    def test_denial_blockingError_key_used_for_display_message(self):
+        """Denial event's message carries the nested blockingError string, not a dict repr."""
         human_message = "Hook 'require-code-review' blocked the operation"
         error_dict = {"blockingError": human_message, "command": "git commit -m x"}
         denial_rec = {
@@ -4197,56 +4091,53 @@ class TestReviewTrace:
                 "blockingError": error_dict,
             },
         }
-        _write_jsonl(fake_projects / "sess.jsonl", [denial_rec])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if "denial" in ln and ln.startswith("  [")]
-        assert len(denial_lines) == 1
-        # Human-readable text must appear, not a raw dict repr.
-        assert "blocked the operation" in denial_lines[0]
-        assert "{'blockingError'" not in denial_lines[0]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [denial_rec], None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["message"] == human_message
+        assert "{'blockingError'" not in events[0]["message"]
 
-    def test_no_match_session_produces_no_output(self, fake_projects, capsys):
-        """A session with only non-review tool_use (Bash) produces no output block."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_no_match_session_produces_no_output(self):
+        """A session with only non-review tool_use (Bash) produces no events."""
+        records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git status")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert out.strip() == ""
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
 
-    def test_current_format_denial_detected(self, fake_projects, capsys):
-        """A current-format is_error tool_result with a hook-denial signature is a denial."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 1
-        assert "code-review gate" in denial_lines[0]
+    def test_current_format_denial_detected(self):
+        """A current-format is_error tool_result with a hook-denial signature produces a denial event."""
+        records = [_hook_deny_current("Commit blocked by code-review gate: run /code-review.")]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
+        assert "code-review gate" in events[0]["message"]
 
-    def test_current_format_ordinary_error_is_not_a_denial(self, fake_projects, capsys):
-        """An is_error tool_result without a hook-denial signature is NOT a denial."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("npm ERR! command failed with exit code 1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert out.strip() == ""
+    def test_current_format_ordinary_error_is_not_a_denial(self):
+        """An is_error tool_result without a hook-denial signature produces no events."""
+        records = [_hook_deny_current("npm ERR! command failed with exit code 1")]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
 
-    def test_current_format_denial_text_without_is_error_ignored(self, fake_projects, capsys):
-        """A tool_result with denial-shaped text but no is_error flag is NOT a denial."""
+    def test_current_format_denial_text_without_is_error_ignored(self):
+        """A tool_result with denial-shaped text but no is_error flag produces no events."""
         rec = _hook_deny_current("Blocked by worktree-enforcement hook: not allowed.")
         rec["message"]["content"][0]["is_error"] = False
-        _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        assert out.strip() == ""
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [rec], None, None, None,
+        )
+        assert events == []
 
-    def test_legacy_and_current_shapes_deduped_by_tool_use_id(self, fake_projects, capsys):
+    def test_legacy_and_current_shapes_deduped_by_tool_use_id(self):
         """A denial recorded as both an attachment and an is_error tool_result for one
         tool_use_id collapses to one event. Dedup keeps whichever record appears first
         in the transcript; here the attachment is written ahead of its twin, so the
@@ -4256,185 +4147,202 @@ class TestReviewTrace:
             "Blocked by worktree-enforcement hook: 'git add' not allowed.",
             tool_id="toolu_worktree",
         )
-        _write_jsonl(fake_projects / "sess.jsonl", [attach, twin])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 1
-        assert "denials=1" in out
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [attach, twin], None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
         # Dedup retains the first-seen record. The attachment is written ahead of the
         # current-format twin above, so the retained event carries hook=worktree; had
-        # the twin come first, hook= would be empty.
-        assert "hook=worktree" in denial_lines[0]
+        # the twin come first, hook_name would be empty.
+        assert events[0]["hook_name"] == "worktree"
 
-    def test_multiple_distinct_current_format_denials_each_counted(self, fake_projects, capsys):
+    def test_multiple_distinct_current_format_denials_each_counted(self):
         """Two current-format denials with distinct tool_use_ids count as two events —
         dedup collapses same-id pairs, not distinct denials."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
             _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="toolu_b"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 2
-        assert "denials=2" in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_events = [e for e in events if e["kind"] == "denial"]
+        assert len(denial_events) == 2
 
-    def test_current_format_denial_with_list_content_detected(self, fake_projects, capsys):
+    def test_current_format_denial_with_list_content_detected(self):
         """A current-format denial whose tool_result content is a list of text blocks
-        (not a bare string) is still detected."""
+        (not a bare string) is still detected — hook_denial_key's signature match
+        relies on _content_text to decode the list shape before matching."""
         rec = _hook_deny_current("placeholder")
         rec["message"]["content"][0]["content"] = [
             {"type": "text", "text": "Commit blocked by code-review gate: run /code-review."},
         ]
-        _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 1
-        assert "code-review gate" in denial_lines[0]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [rec], None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
+        assert "code-review gate" in events[0]["message"]
 
-    def test_deny_only_matches_current_format_denial(self, fake_projects, capsys):
+    def test_deny_only_matches_current_format_denial(self):
         """--deny-only retains a session whose only denial is current-format."""
-        _write_jsonl(fake_projects / "cur.jsonl", [
-            _hook_deny_current("Push to a branch blocked by ready-for-review gate."),
+        denial_events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [_hook_deny_current("Push to a branch blocked by ready-for-review gate.")], None, None, None,
+        )
+        no_denial_events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [
+                _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                      content=[_agent_use("a1", "staff-sdet")]),
+            ],
+            None, None, None,
+        )
+        assert any(e["kind"] == "denial" for e in denial_events)
+        assert not any(e["kind"] == "denial" for e in no_denial_events)
+
+    def test_deny_only_plain_timeline_restricts_to_denial_sessions(self, fake_projects, capsys):
+        """--deny-only's session-skip (the `if deny_only and not has_denial:
+        continue` gate inside cmd_review_trace itself, not either accessor) drops
+        a session with a matched event but no denial from the plain (non-
+        --deny-summary) timeline — a session with a denial still prints."""
+        _write_jsonl(fake_projects / "denial-session.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
         ])
-        _write_jsonl(fake_projects / "none.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
-                  content=[_agent_use("a1", "staff-sdet")]),
+        _write_jsonl(fake_projects / "skill-only-session.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
         ])
         _mod.cmd_review_trace(_review_trace_args(deny_only=True))
         out = capsys.readouterr().out
-        assert "cur.jsonl" in out
-        assert "none.jsonl" not in out
+        assert "denial-session.jsonl" in out
+        assert "skill-only-session.jsonl" not in out
 
     # -----------------------------------------------------------------------
     # GH-482: per-record branch/model attribution
     # -----------------------------------------------------------------------
 
-    def test_gh482_events_attributed_to_own_branch_not_session_first_branch(self, fake_projects, capsys):
+    def test_gh482_events_attributed_to_own_branch_not_session_first_branch(self):
         """A session opening on one branch, then moving to another before any review
         event fires, must attribute every event to its own (later) branch — and
-        --branches must select by that per-event value, not the session's first
+        branch_filter must select by that per-event value, not the session's first
         record's branch (the 53-session class from row 4 of the GH-482 plan)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
             _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:05:00.000Z",
                   content=[_agent_use("a1", "staff-backend-engineer")]),
-        ])
+        ]
 
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
-        assert len(event_lines) == 2
-        for ln in event_lines:
-            branch, _model = _event_suffix_branch_model(ln)
-            assert branch == "feature-x", f"event must attribute to feature-x, not main: {ln!r}"
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 2
+        for evt in events:
+            assert evt["branch"] == "feature-x", f"event must attribute to feature-x, not main: {evt!r}"
 
-        _mod.cmd_review_trace(_review_trace_args(branches="feature-x"))
-        out_feature = capsys.readouterr().out
-        assert "skill" in out_feature
-        assert "reviewer" in out_feature
+        events_feature_x, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, {"feature-x"},
+        )
+        assert {e["kind"] for e in events_feature_x} == {"skill", "reviewer-spawn"}
 
-        _mod.cmd_review_trace(_review_trace_args(branches="main"))
-        out_main = capsys.readouterr().out
-        assert out_main.strip() == "", "the session's first-record branch must return zero events"
+        events_main_only, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, {"main"},
+        )
+        assert events_main_only == [], "the session's first-record branch must return zero events"
 
-    def test_header_branches_and_models_are_distinct_sorted_sets(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_header_branches_and_models_are_distinct_sorted_sets(self):
+        """The per-event branch/model values a session contributes are the distinct
+        set cmd_review_trace's header line joins and sorts, not a single session-wide value."""
+        records = [
             _asst("claude-sonnet-4-6", branch="feat-a", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
             _asst("claude-opus-4-7", branch="feat-b", ts="2026-05-19T10:05:00.000Z",
                   content=[_agent_use("a1", "staff-backend-engineer")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        header = next(ln for ln in out.splitlines() if ln.startswith("branches="))
-        branches = re.search(r"branches=(\S+)", header).group(1).split(",")
-        models = re.search(r"models=(\S+)", header).group(1).split(",")
-        assert set(branches) == {"feat-a", "feat-b"}
-        assert set(models) == {"sonnet", "opus"}
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert {e["branch"] for e in events} == {"feat-a", "feat-b"}
+        assert {e["model"] for e in events} == {"sonnet", "opus"}
 
-    def test_denial_stamped_with_its_own_branch_not_carried_forward(self, fake_projects, capsys):
+    def test_denial_stamped_with_its_own_branch_not_carried_forward(self):
         """An attachment denial record carrying its own gitBranch, differing from the
         carried-forward branch, is stamped with the record's own value."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z"),
             _hook_deny("require-code-review", branch="feature-y", ts="2026-05-19T10:05:00.000Z"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_line = next(ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln)
-        branch, _model = _event_suffix_branch_model(denial_line)
-        assert branch == "feature-y"
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_event = next(e for e in events if e["kind"] == "denial")
+        assert denial_event["branch"] == "feature-y"
 
-    def test_denial_inherits_last_assistant_model_not_other(self, fake_projects, capsys):
+    def test_denial_inherits_last_assistant_model_not_other(self):
         """A denial carries no message.model of its own — it must inherit the last
         main-thread assistant model family, not render 'other'."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z"),
             _hook_deny("require-code-review", branch="main", ts="2026-05-19T10:05:00.000Z"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_line = next(ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln)
-        _branch, model = _event_suffix_branch_model(denial_line)
-        assert model == "opus"
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_event = next(e for e in events if e["kind"] == "denial")
+        assert denial_event["model"] == "opus"
 
-    def test_unresolvable_branch_renders_sentinel(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_unresolvable_branch_renders_sentinel(self):
+        records = [
             _asst("claude-sonnet-4-6", branch="", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_line = next(ln for ln in out.splitlines() if ln.startswith("  ["))
-        branch, _model = _event_suffix_branch_model(event_line)
-        assert branch == "?"
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events[0]["branch"] == "?"
 
-    def test_branch_carry_forward_crosses_since_boundary(self, fake_projects, capsys):
+    def test_branch_carry_forward_crosses_since_boundary(self):
         """An in-window event with no gitBranch of its own inherits the branch of an
         out-of-window record — carry-forward crosses the --since boundary."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="old-branch", ts="2026-05-01T10:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(since="2026-05-10"))
-        out = capsys.readouterr().out
-        event_line = next(ln for ln in out.splitlines() if ln.startswith("  ["))
-        branch, _model = _event_suffix_branch_model(event_line)
-        assert branch == "old-branch"
+        ]
+        since_ts, until_epoch = _since_until_epochs("2026-05-10", None)
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, since_ts, until_epoch, None,
+        )
+        assert len(events) == 1
+        assert events[0]["branch"] == "old-branch"
 
-    def test_deny_only_with_branches_filters_before_gating(self, fake_projects, capsys):
-        """The sole denial sits on a branch --branches excludes: no block is emitted
-        (filter-then-deny), not a block that still prints because the session
-        qualified for --deny-only before filtering was applied."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny("require-code-review", branch="wrong-branch"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_only=True, branches="right-branch"))
-        out = capsys.readouterr().out
-        assert out.strip() == ""
+    def test_deny_only_with_branches_filters_before_gating(self):
+        """The sole denial sits on a branch the filter excludes: branch filtering
+        drops it before deny_only's has_denial check ever sees it (filter-then-deny),
+        not a session that still qualifies because it had a denial before filtering."""
+        records = [_hook_deny("require-code-review", branch="wrong-branch")]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, {"right-branch"},
+        )
+        assert events == []
 
-    def test_dedup_before_branch_filter_pins_ordering(self, fake_projects, capsys):
+    def test_dedup_before_branch_filter_pins_ordering(self):
         """A duplicate-id denial recorded on two different branches must still
-        collapse to one event when --branches includes both branches — dedup (step 3)
+        collapse to one event when both branches are in scope — dedup (step 3)
         is global and runs before branch filtering (step 5), not scoped per branch."""
         attach = _hook_deny("worktree", branch="branch-a")
         twin = _hook_deny_current(
             "Blocked by worktree-enforcement hook: 'git add' not allowed.",
             tool_id="toolu_worktree", branch="branch-b",
         )
-        _write_jsonl(fake_projects / "sess.jsonl", [attach, twin])
+        records = [attach, twin]
 
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        assert len(denial_lines) == 1
-        assert "denials=1" in out
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_events = [e for e in events if e["kind"] == "denial"]
+        assert len(denial_events) == 1
 
         # attach (branch-a) is the first-occurring record, so dedup collapses the
         # pair to a single event attributed to branch-a — filtering to branch-b
@@ -4442,19 +4350,16 @@ class TestReviewTrace:
         # event entirely. A filter-before-dedup implementation would instead
         # exclude attach before dedup ever runs, letting twin (branch-b) through
         # undeduped and yielding one event — the regression this pins against.
-        _mod.cmd_review_trace(_review_trace_args(branches="branch-b"))
-        out_branch_b_only = capsys.readouterr().out
-        denial_lines_branch_b_only = [
-            ln for ln in out_branch_b_only.splitlines() if ln.startswith("  [") and "denial" in ln
-        ]
-        assert len(denial_lines_branch_b_only) == 0
-        assert out_branch_b_only == ""
+        events_branch_b_only, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, {"branch-b"},
+        )
+        assert events_branch_b_only == []
 
-    def test_deny_summary_groups_by_hook_and_command_shape(self, fake_projects, capsys):
+    def test_deny_summary_groups_by_hook_and_command_shape(self):
         """--deny-summary groups denials by hook/gate name and by attempted command
         shape, mixing multiple hook names (code-review x2, ready-for-review x1) and
         multiple git-command shapes (git commit x2, git push x1)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
@@ -4464,104 +4369,75 @@ class TestReviewTrace:
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:02:00.000Z",
                   content=[_bash_use("b3", "git commit -m y")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b3"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cr = _table_cols(out, header_contains="Hook/gate", row_contains="code-review", row_startswith=True)
-        assert hook_cr["Count"] == "2"
-        hook_rfr = _table_cols(out, header_contains="Hook/gate", row_contains="ready-for-review", row_startswith=True)
-        assert hook_rfr["Count"] == "1"
-        assert _extract_deny_summary_count(out, "git commit") == 2
-        assert _extract_deny_summary_count(out, "git push") == 1
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {"code-review": 2, "ready-for-review": 1}
+        assert dict(data["command_shape_counts"]) == {"git commit": 2, "git push": 1}
 
-    def test_deny_summary_command_shape_empty_command_bucketed_as_other(self, fake_projects, capsys):
+    def test_deny_summary_command_shape_empty_command_bucketed_as_other(self):
         """A denial with an enumerated hook name but no paired Bash tool_use (an
         empty command string) still lands the command-shape axis in 'other' — the
         shape-axis counterpart to test_deny_summary_unmatched_hook_name_bucketed_not_dropped,
         isolated from that test's hook-axis unmatched-ness."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "other") == 1
+        records = [_hook_deny_current("Commit blocked by code-review gate: run /code-review.")]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
-    def test_deny_summary_git_dash_c_flag_value_dropped_bucketed_as_true_subcommand(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_git_dash_c_flag_value_dropped_bucketed_as_true_subcommand(self):
         """'git -C <path> commit' buckets as 'git commit', not 'other' and not a
         naive misread of <path> as the subcommand — -C is
         require-worktree-for-git-writes.sh's own resolution mechanism for a
         compliant worktree write, so this is the dominant separate-token flag
         shape in the worktree-enforcement denial category. The path itself never
-        appears in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        appears in the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git -C ~/repo commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git commit") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "~/repo" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
-    def test_deny_summary_git_dash_lowercase_c_flag_value_dropped_bucketed_as_true_subcommand(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_git_dash_lowercase_c_flag_value_dropped_bucketed_as_true_subcommand(self):
         """'git -c key=value commit' (a separate-token config override, the value
         itself containing '=') buckets as 'git commit', not 'other'."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git -c user.name=eng commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git commit") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
-    def test_deny_summary_git_dir_equals_attached_flag_value_dropped_bucketed_as_true_subcommand(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_git_dir_equals_attached_flag_value_dropped_bucketed_as_true_subcommand(self):
         """'git --git-dir=<path> status' (an =-attached flag, consuming only its
-        own token) buckets as 'git status', not 'other'. The path never appears
-        in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        own token) buckets as 'git status', not 'other'. The path never leaks
+        into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git --git-dir=~/repo/.git status")]),
             _hook_deny_current("Blocked by worktree-enforcement gate: not in a linked worktree.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git status") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "~/repo" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git status": 1}
 
-    def test_deny_summary_work_tree_separate_token_flag_value_dropped_bucketed_as_true_subcommand(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_work_tree_separate_token_flag_value_dropped_bucketed_as_true_subcommand(self):
         """'git --work-tree <path> commit' (a separate-token flag) buckets as
-        'git commit', not 'other'. The path never appears in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        'git commit', not 'other'. The path never leaks into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git --work-tree ~/repo commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git commit") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "~/repo" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
-    def test_deny_summary_env_assignment_prefix_stripped_before_classification(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_env_assignment_prefix_stripped_before_classification(self):
         """A leading NAME=VALUE environment-assignment prefix (the corpus shape
         wrapping a marker.sh invocation with a live per-machine token) is
-        stripped before classification — the denial buckets as 'marker.sh write'
-        and the env value never appears in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        stripped before classification — the denial buckets as 'marker.sh
+        write' and the env value never leaks into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use(
                       "b1",
@@ -4573,21 +4449,15 @@ class TestReviewTrace:
                 "Command (truncated): ~/.claude/scripts/marker.sh write code-review",
                 tool_id="b1",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "marker.sh write") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "CLAUDE_CONFIG_DIR" not in out
-        assert "claude-accounts" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"marker.sh write": 1}
 
-    def test_deny_summary_absolute_marker_script_path_basenamed_not_leaked(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_absolute_marker_script_path_basenamed_not_leaked(self):
         """An absolute marker.sh invocation path (rather than the tilde form) is
         basenamed before classification — the denial buckets as 'marker.sh
-        activate', and the home-rooted path never appears in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        activate', with no home-rooted path surviving into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "~/.claude/scripts/marker.sh activate plan-review")]),
             _hook_deny_current(
@@ -4595,133 +4465,105 @@ class TestReviewTrace:
                 "Command (truncated): ~/.claude/scripts/marker.sh activate plan-review",
                 tool_id="b1",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "marker.sh activate") == 1
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert "~/.claude/scripts" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"marker.sh activate": 1}
 
-    def test_deny_summary_unenumerated_attached_flag_before_subcommand_falls_to_other_no_leak(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_unenumerated_attached_flag_before_subcommand_falls_to_other_no_leak(self):
         """A git global flag outside the named value-taking set (e.g.
         --exec-path=<path>) is left in place by _drop_denial_command_flag_values,
-        but since it looks like a flag it must never be read as, and printed as,
+        but since it looks like a flag it must never be read as, and bucketed as,
         the subcommand — the denial falls to 'other' rather than leaking the
-        attached path into the command-shape table."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        attached path into the returned shape counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git --exec-path=~/secret-tools status")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "other") == 1
-        assert "~/secret-tools" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
-    def test_deny_summary_esc_byte_in_trailing_argument_never_reaches_stdout(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_esc_byte_in_trailing_argument_never_reaches_stdout(self):
         """An ESC byte embedded in an argument past the subcommand (e.g. a commit
-        message) never survives to stdout — the classifier only ever prints the
-        command and one subcommand token, so the denial buckets as 'git commit'
-        with the control byte discarded along with the rest of the argument."""
+        message) never survives into the returned command-shape data — the
+        classifier only ever keeps the command and one subcommand token, so the
+        denial buckets as 'git commit' with the control byte discarded along with
+        the rest of the argument."""
         esc_message = "\x1b[31mFAKE PROMPT\x1b[0m"
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", f'git commit -m "{esc_message}"')]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "git commit") == 1
-        assert "\x1b" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
-    def test_deny_summary_unenumerated_non_flag_subcommand_token_falls_to_other_no_leak(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_unenumerated_non_flag_subcommand_token_falls_to_other_no_leak(self):
         """A credential-shaped token occupying the subcommand position itself
         (not a flag, not a member of _DENIAL_COMMAND_SUBCOMMANDS) must never be
-        read as, and printed as, the subcommand — the denial falls to 'other'
-        and the token never appears anywhere in --deny-summary output."""
+        read as, and bucketed as, the subcommand — the denial falls to 'other'
+        and the token never appears as a key in the returned shape counts."""
         credential_token = "AKIA_FAKE_SECRET_ACCESS_KEY_ABCDEFGHIJKL"
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", f"git {credential_token} status")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "other") == 1
-        assert credential_token not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
-    def test_deny_summary_unmatched_hook_name_bucketed_not_dropped(self, fake_projects, capsys):
+    def test_deny_summary_unmatched_hook_name_bucketed_not_dropped(self):
         """A denial matched via _HOOK_DENIAL_SIGNATURE's 'invocation denied' alternative,
         which names no hook, lands in the 'unmatched' bucket rather than being silently
         dropped from --deny-summary's total. Its unresolvable tool_use_id also lands in
         the command-shape grouping's 'other' bucket."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("Skill invocation denied."),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
-        assert hook_cols["Count"] == "1"
-        assert _extract_deny_summary_count(out, "other") == 1
+        records = [_hook_deny_current("Skill invocation denied.")]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {_mod._DENY_SUMMARY_UNMATCHED_HOOK: 1}
+        assert dict(data["command_shape_counts"]) == {_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
-    def test_deny_summary_covers_marker_invocation_denied_wording(self, fake_projects, capsys):
+    def test_deny_summary_covers_marker_invocation_denied_wording(self):
         """enforce-marker-script-shape.sh's 'marker.sh invocation denied ...' wording
         names no hook via the 'blocked by <name> hook/gate' idiom, but the
         '<name> invocation denied' pattern extracts 'marker.sh' as an enumerated
-        label rather than dropping it into 'unmatched'."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        label rather than falling to unmatched."""
+        records = [
             _hook_deny_current(
                 "marker.sh invocation denied (path traversal '..' detected). "
                 "Command (truncated): ~/.claude/scripts/marker.sh write ../foo"
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="marker.sh", row_startswith=True)
-        assert hook_cols["Count"] == "1"
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {"marker.sh": 1}
 
-    def test_deny_summary_covers_self_labeled_gate_colon_wording(self, fake_projects, capsys):
+    def test_deny_summary_covers_self_labeled_gate_colon_wording(self):
         """check-skill-length.sh states its own label as the message's own prefix
         ('Skill length gate: ...') rather than via 'blocked by' — the
         '<name> gate:' pattern extracts 'Skill length' as an enumerated label."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current(
                 "Skill length gate: one or more SKILL.md files grew past their "
                 "per-skill limit. Reduce to the limit or fewer lines before committing."
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        # "Skill length" is a two-word label; _table_cols assumes single-token
-        # cells (see its docstring), so this reads the row the same way the
-        # existing "git commit"/"git push" multi-word-label assertions do.
-        assert _extract_deny_summary_count(out, "Skill length") == 1
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {"Skill length": 1}
 
-    def test_deny_summary_unenumerated_colon_wording_falls_to_unmatched_no_leak(self, fake_projects, capsys):
+    def test_deny_summary_unenumerated_colon_wording_falls_to_unmatched_no_leak(self):
         """deny-credential-file-reads.sh's 'Read of '<path>' denied by the
         credential-file read gate: ...' wording now matches _HOOK_DENIAL_SIGNATURE's
         colon-anchored alternative (previously invisible), but the captured span
         includes the 'denied by the' prefix and so isn't an enumerated label —
-        it falls to 'unmatched' rather than fabricating a new hook row, and the
-        credential-shaped path never appears in --deny-summary's output at all."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        it falls to 'unmatched' rather than fabricating a new hook bucket, and the
+        credential-shaped path never appears as a key in the returned hook counts."""
+        records = [
             _hook_deny_current(
                 "Read of './secrets/.netrc' denied by the credential-file "
                 "read gate: the path is credential-shaped."
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
-        assert hook_cols["Count"] == "1"
-        assert ".netrc" not in out
-        assert "secrets" not in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {_mod._DENY_SUMMARY_UNMATCHED_HOOK: 1}
 
     @pytest.mark.parametrize(
         "message_template",
@@ -4731,36 +4573,24 @@ class TestReviewTrace:
             "{name} gate: some detail.",
         ],
     )
-    def test_deny_summary_over_max_chars_hook_name_candidate_falls_to_unmatched_no_leak(
-        self, fake_projects, capsys, message_template
-    ):
+    def test_deny_summary_over_max_chars_hook_name_candidate_falls_to_unmatched_no_leak(self, message_template):
         """A candidate hook-name span longer than _DENIAL_HOOK_NAME_MAX_CHARS
         (40) across each of the three extraction patterns never yields an
         enumerated label — it falls to 'unmatched', and the credential-shaped
-        name never appears anywhere in --deny-summary's output."""
+        name is never returned as the label."""
         over_cap_name = "AKIA_FAKE_SECRET_ACCESS_KEY_" + "X" * 20  # 48 chars, over the 40-char cap
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current(message_template.format(name=over_cap_name)),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
-        assert hook_cols["Count"] == "1"
-        assert over_cap_name not in out
+        records = [_hook_deny_current(message_template.format(name=over_cap_name))]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {_mod._DENY_SUMMARY_UNMATCHED_HOOK: 1}
 
-    def test_deny_summary_attachment_hookname_not_enumerated_falls_to_unmatched(self, fake_projects, capsys):
+    def test_deny_summary_attachment_hookname_not_enumerated_falls_to_unmatched(self):
         """The legacy attachment branch's hookName field is bounded the same way as
         the regex-extracted branch: an unenumerated hookName (legacy transcripts
         predate this bound, so any historical value is unverified) is not echoed
-        verbatim into --deny-summary's hook/gate table — it falls to 'unmatched'."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny("legacy-hook-slug"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        hook_cols = _table_cols(out, header_contains="Hook/gate", row_contains="unmatched", row_startswith=True)
-        assert hook_cols["Count"] == "1"
-        assert "legacy-hook-slug" not in out
+        verbatim into the returned hook counts — it falls to 'unmatched'."""
+        records = [_hook_deny("legacy-hook-slug")]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {_mod._DENY_SUMMARY_UNMATCHED_HOOK: 1}
 
     def test_deny_summary_replaces_per_session_listing(self, fake_projects, capsys):
         """--deny-summary suppresses the normal per-session event listing entirely —
@@ -4790,49 +4620,43 @@ class TestReviewTrace:
         assert "No denials found in scope." in out
         assert "Denials by hook/gate" not in out
 
-    def test_absent_toolDenialKind_produces_no_friction_event(self, fake_projects, capsys):
+    def test_absent_toolDenialKind_produces_no_friction_event(self):
         """A current-format denial with no toolDenialKind field produces only a
         `denial` event — no `friction` event, since a falsy toolDenialKind means
         the field is absent, not friction."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _hook_deny_current("Commit blocked by code-review gate: run /code-review."),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
-        assert len(event_lines) == 1
-        assert "denial" in event_lines[0]
-        assert "friction" not in event_lines[0]
+        records = [_hook_deny_current("Commit blocked by code-review gate: run /code-review.")]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
 
-    def test_already_gate_denied_record_produces_denial_not_friction(self, fake_projects, capsys):
+    def test_already_gate_denied_record_produces_denial_not_friction(self):
         """A record whose text matches the hook-denial signature AND carries a
         non-gate toolDenialKind produces only a `denial` event, never also a
         `friction` one — already_gate_denied short-circuits
         _is_nongate_friction_kind so one record can't double-count across both
         axes."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current(
                 "Commit blocked by code-review gate: run /code-review.",
                 tool_id="toolu_both", tool_denial_kind="user-rejected",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
-        assert len(event_lines) == 1
-        assert "denial" in event_lines[0]
-        assert "friction" not in event_lines[0]
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
 
-    def test_multi_block_record_produces_one_friction_event_for_the_errored_block_only(
-        self, fake_projects, capsys
-    ):
+    def test_multi_block_record_produces_one_friction_event_for_the_errored_block_only(self):
         """toolDenialKind lives once on the parent user record, but a parallel
         tool call can carry multiple tool_result blocks under it — only the
         block whose own is_error is True is the one the interruption applies
         to. A sibling successful block (is_error False) must not also be
         promoted to its own spurious friction event carrying its unrelated
         successful output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             {
                 "type": "user",
                 "gitBranch": "main",
@@ -4845,35 +4669,36 @@ class TestReviewTrace:
                      "content": "some unrelated successful output", "is_error": False},
                 ]},
             },
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(friction_lines) == 1
-        assert "id=toolu_errored" in friction_lines[0]
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(friction_events) == 1
+        assert friction_events[0]["tool_use_id"] == "toolu_errored"
 
-    def test_legacy_attachment_denial_and_friction_kind_coexist(self, fake_projects, capsys):
+    def test_legacy_attachment_denial_and_friction_kind_coexist(self):
         """A legacy attachment denial and a separate current-format friction
         record (distinct tool_use_ids) in the same session produce one denial
         event and one friction event — the legacy shape never carries
         toolDenialKind, so it cannot itself become friction, and the two axes
         don't interfere with each other."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny("require-code-review"),
             _hook_deny_current(
                 "Request interrupted by user for tool use", tool_id="toolu_interrupt",
                 tool_denial_kind="interrupted",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(denial_lines) == 1
-        assert len(friction_lines) == 1
-        assert "denials=1" in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        denial_events = [e for e in events if e["kind"] == "denial"]
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(denial_events) == 1
+        assert len(friction_events) == 1
 
-    def test_friction_dedup_set_independent_of_denial_dedup_set(self, fake_projects, capsys):
+    def test_friction_dedup_set_independent_of_denial_dedup_set(self):
         """A legacy attachment denial and a current-format record sharing the
         SAME tool_use_id, where the current-format record carries a non-gate
         toolDenialKind and non-signature-matching text, still produces a
@@ -4886,20 +4711,20 @@ class TestReviewTrace:
             "Request interrupted by user for tool use", tool_id=shared_id,
             tool_denial_kind="interrupted",
         )
-        _write_jsonl(fake_projects / "sess.jsonl", [attach, friction_twin])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        denial_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "denial" in ln]
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(denial_lines) == 1
-        assert len(friction_lines) == 1
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [attach, friction_twin], None, None, None,
+        )
+        denial_events = [e for e in events if e["kind"] == "denial"]
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(denial_events) == 1
+        assert len(friction_events) == 1
 
-    def test_friction_event_with_empty_tool_use_id_not_deduped_against_others(self, fake_projects, capsys):
+    def test_friction_event_with_empty_tool_use_id_not_deduped_against_others(self):
         """Multiple friction records with no tool_use_id (empty string) each
         still produce their own event — an empty id is falsy and so is never
         added to seen_friction_ids, matching hook_denial_key's own 'empty
         string is a valid id' contract for denials."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current(
                 "Request interrupted by user for tool use", tool_id="",
                 tool_denial_kind="interrupted",
@@ -4908,71 +4733,71 @@ class TestReviewTrace:
                 "Request interrupted by user for tool use", tool_id="",
                 tool_denial_kind="interrupted", ts="2026-05-19T10:01:00.000Z",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(friction_lines) == 2
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(friction_events) == 2
 
-    def test_unrecognized_toolDenialKind_prints_as_other_kind_not_raw_value(self, fake_projects, capsys):
+    def test_unrecognized_toolDenialKind_prints_as_other_kind_not_raw_value(self):
         """A toolDenialKind value outside the closed four-value enumeration
-        still produces a friction event, but prints as `other-kind` — the raw
-        field value is never echoed verbatim."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        still produces a friction event, carrying the raw field value verbatim
+        on the returned event — _friction_kind_label (already unit-tested
+        separately) is what maps it to `other-kind` at print/count time, not
+        the accessor itself."""
+        records = [
             _hook_deny_current(
                 "Some new denial shape not yet enumerated.", tool_id="toolu_future",
                 tool_denial_kind="some-future-kind",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        friction_lines = [ln for ln in out.splitlines() if ln.startswith("  [") and "friction" in ln]
-        assert len(friction_lines) == 1
-        assert "kind=other-kind" in friction_lines[0]
-        assert "some-future-kind" not in friction_lines[0]
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        friction_events = [e for e in events if e["kind"] == "friction"]
+        assert len(friction_events) == 1
+        assert friction_events[0]["friction_kind"] == "some-future-kind"
 
-    def test_friction_only_session_survives_deny_only_with_deny_summary(self, fake_projects, capsys):
+    def test_friction_only_session_survives_deny_only_with_deny_summary(self):
         """A session with only friction events (no denial-kind events at all) is
         not dropped by --deny-only when --deny-summary also runs: the friction
         tally reads the full per-session events list before deny_only's
         has_denial skip is applied."""
-        _write_jsonl(fake_projects / "friction_only.jsonl", [
+        records = [
             _hook_deny_current(
                 "Request interrupted by user for tool use", tool_id="toolu_a",
                 tool_denial_kind="interrupted",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_only=True, deny_summary=True))
-        out = capsys.readouterr().out
-        assert "No denials found in scope." not in out
-        friction_cols = _table_cols(out, header_contains="Kind", row_contains="interrupted", row_startswith=True)
-        assert friction_cols["Count"] == "1"
+        ]
+        data = _mod._compute_deny_summary_data(
+            [("friction_only.jsonl", records)], deny_only=True,
+        )
+        assert data["any_session_matched"] is True
+        assert dict(data["friction_counts"]) == {"interrupted": 1}
 
-    def test_friction_only_session_renders_timeline_line_default_output(self, fake_projects, capsys):
-        """Without --deny-summary, the same friction-only session's default
-        timeline renders a `friction` line rather than an empty denials=0
-        header with nothing under it — and, pinning the flip side, no
-        `denial`-kind line renders and denials=0 stays accurate, since
-        has_denial and --deny-only's own session-selection semantics stay
-        denial-kind-only."""
-        _write_jsonl(fake_projects / "friction_only.jsonl", [
+    def test_friction_only_session_renders_timeline_line_default_output(self):
+        """Without --deny-summary, a friction-only session's events list carries
+        a `friction`-kind event rather than nothing, and pinning the flip side,
+        no `denial`-kind event is present — has_denial and --deny-only's own
+        session-selection semantics stay denial-kind-only."""
+        records = [
             _hook_deny_current(
                 "Request interrupted by user for tool use", tool_id="toolu_a",
                 tool_denial_kind="interrupted",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        out = capsys.readouterr().out
-        event_lines = [ln for ln in out.splitlines() if ln.startswith("  [")]
-        assert len(event_lines) == 1
-        assert "friction" in event_lines[0]
-        assert "denial" not in event_lines[0]
-        assert "denials=0" in out
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "friction"
+        assert not any(e["kind"] == "denial" for e in events)
 
-    def test_deny_summary_prints_corpus_window(self, fake_projects, capsys):
-        """--deny-summary reports the earliest/latest in-scope record
-        timestamp as the corpus window, not just the grouped-count tables."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+    def test_deny_summary_prints_corpus_window(self):
+        """--deny-summary computes the earliest/latest in-scope event
+        timestamp as the corpus window, not just the grouped counts."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
                   content=[_bash_use("b1", "git commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
@@ -4981,20 +4806,18 @@ class TestReviewTrace:
                   content=[_bash_use("b2", "git push origin main")]),
             _hook_deny_current("Push blocked by ready-for-review gate.",
                                 tool_id="b2", ts="2026-07-15T09:00:01.000Z"),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert "Corpus window: 2026-07-01 to 2026-07-15" in out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
+        assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-15T09:00:01.000Z")
 
-    def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(
-        self, fake_projects, capsys
-    ):
+    def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(self):
         """An errored, non-gate-signature tool_result timestamped before
         toolDenialKind's 2026-07-20 introduction structurally cannot carry
         the field — it produces neither a denial nor a friction event (the
         exact record shape this design would silently read as zero friction),
-        but --deny-summary reports it in a separate pre-regime count rather
-        than folding it into a zero. A same-shaped record dated inside the
+        but pre_regime_tool_result_count reports it separately rather than
+        folding it into a zero. A same-shaped record dated inside the
         regime with a real toolDenialKind is included as a control, pinning
         that the pre-regime count is date-gated, not 'every non-denial
         record'. A gate-matching denial dated before the regime is also
@@ -5002,7 +4825,7 @@ class TestReviewTrace:
         correctly classified on the hook/gate axis regardless of era — are
         excluded from the pre-regime count, which counts only the population
         whose kind is genuinely unknowable, not every old record."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _hook_deny_current(
                 "Request interrupted by user for tool use",
                 tool_id="pre_regime", ts="2026-06-25T10:00:00.000Z",
@@ -5016,22 +4839,20 @@ class TestReviewTrace:
                 tool_id="in_regime", tool_denial_kind="interrupted",
                 ts="2026-07-25T10:00:00.000Z",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_pre_regime_count(out) == 1
-        friction_cols = _table_cols(out, header_contains="Kind", row_contains="interrupted", row_startswith=True)
-        assert friction_cols["Count"] == "1"
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["pre_regime_tool_result_count"] == 1
+        assert dict(data["friction_counts"]) == {"interrupted": 1}
 
-    def test_deny_summary_cross_tab_shows_joint_counts_not_just_marginals(self, fake_projects, capsys):
+    def test_deny_summary_cross_tab_shows_joint_counts_not_just_marginals(self):
         """Two hooks each deny two command shapes with symmetric marginals
         (code-review: 2 commits + 1 checkout = 3; worktree-enforcement: 1
         commit + 2 checkouts = 3; git commit: 2+1=3; git checkout: 1+2=3) —
-        the marginal hook and shape tables alone can't distinguish which hook
-        denied which shape how many times. The cross-tab must show the true
-        joint counts (code-review x git commit = 2, worktree-enforcement x
-        git checkout = 2), not the marginal-implied even split."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        the marginal hook and shape counts alone can't distinguish which hook
+        denied which shape how many times. hook_shape_counts must carry the
+        true joint counts (code-review x git commit = 2, worktree-enforcement
+        x git checkout = 2), not the marginal-implied even split."""
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
                   content=[_bash_use("b1", "git commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
@@ -5059,19 +4880,17 @@ class TestReviewTrace:
                 "Blocked by worktree-enforcement hook: 'git checkout' is not on the read-only allowlist.",
                 tool_id="b6",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
         # Marginals confirm the symmetric setup (both hooks 3, both shapes 3).
-        assert _extract_deny_summary_count(out, "git commit") == 3
-        assert _extract_deny_summary_count(out, "git checkout") == 3
+        assert dict(data["command_shape_counts"]) == {"git commit": 3, "git checkout": 3}
         # The cross-tab is what actually distinguishes the two hooks' shapes.
-        assert _extract_cross_tab_count(out, "code-review", "git commit") == 2
-        assert _extract_cross_tab_count(out, "code-review", "git checkout") == 1
-        assert _extract_cross_tab_count(out, "worktree-enforcement", "git commit") == 1
-        assert _extract_cross_tab_count(out, "worktree-enforcement", "git checkout") == 2
+        assert data["hook_shape_counts"][("code-review", "git commit")] == 2
+        assert data["hook_shape_counts"][("code-review", "git checkout")] == 1
+        assert data["hook_shape_counts"][("worktree-enforcement", "git commit")] == 1
+        assert data["hook_shape_counts"][("worktree-enforcement", "git checkout")] == 2
 
-    def test_deny_summary_real_corpus_shapes_all_classify_no_other_or_unmatched(self, fake_projects, capsys):
+    def test_deny_summary_real_corpus_shapes_all_classify_no_other_or_unmatched(self):
         """A fixture drawn from real transcript-analysis.py corpus denials —
         realistic multi-line/chained commands and full hook-message wording,
         not minimal strings copied from A3's own allowlist — across both of
@@ -5084,7 +4903,7 @@ class TestReviewTrace:
         in the first place — hook_counts/command_shape_counts are populated
         only from `denial`-kind events, never `friction`-kind ones — so they
         are irrelevant to, not merely absent from, this fixture."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
+        records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z", content=[_bash_use(
                 "b1", "git checkout main && git pull --ff-only && git worktree add "
                       ".claude/worktrees/some-feature -b some-feature",
@@ -5196,11 +5015,10 @@ class TestReviewTrace:
                 "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo.",
                 tool_id="b14",
             ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
-        out = capsys.readouterr().out
-        assert _extract_deny_summary_count(out, "other") == 0
-        assert _extract_deny_summary_count(out, "unmatched") == 0
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["command_shape_counts"].get(_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
+        assert data["hook_counts"].get(_mod._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -5259,6 +5077,8 @@ def _priced(
     branch: str = "main",
     request_id: str | None = None,
     content: list | None = None,
+    speed: str | None = None,
+    inference_geo: str | None = None,
 ) -> dict:
     """Build an assistant record with explicit priced usage fields for cost tests.
 
@@ -5272,6 +5092,8 @@ def _priced(
     keeps every pre-existing call site's empty-content shape; rearm-backtest's
     boundary-detection tests pass real tool_use/tool_result blocks instead,
     needing both a realistic content shape and known, priced usage in one record.
+    speed/inference_geo default to None (field absent), matching every usage
+    record sampled outside fast-mode/data-residency requests.
     """
     rec = _asst(model, branch=branch, ts=ts, content=content if content is not None else [], request_id=request_id)
     usage: dict = {
@@ -5287,6 +5109,10 @@ def _priced(
             "ephemeral_1h_input_tokens": ephemeral_1h,
             "ephemeral_5m_input_tokens": ephemeral_5m,
         }
+    if speed is not None:
+        usage["speed"] = speed
+    if inference_geo is not None:
+        usage["inference_geo"] = inference_geo
     rec["message"]["usage"] = usage
     return rec
 
@@ -5827,6 +5653,28 @@ class TestCost:
         assert sonnet5["$"] == "2.00"
         assert sonnet46["$"] == "3.00"
 
+    def test_claude_sonnet_4_5_prices_at_vendor_rate(self):
+        """claude-sonnet-4-5's five derived rates match the vendor table ($3
+        input / $15 output / $3.75 5m-write / $6 1h-write / $0.30 cache-read),
+        via the same _model_rates derivation every other model in the table
+        uses."""
+        rates = _mod._model_rates("claude-sonnet-4-5")
+        assert rates is not None
+        assert rates["input"] == pytest.approx(3.00)
+        assert rates["output"] == pytest.approx(15.00)
+        assert rates["cache_write_5m"] == pytest.approx(3.75)
+        assert rates["cache_write_1h"] == pytest.approx(6.00)
+        assert rates["cache_read"] == pytest.approx(0.30)
+
+    def test_claude_sonnet_4_5_dated_snapshot_unpriced_but_200k_bucketed(self):
+        """_MODEL_BASE_INPUT_RATES is an exact-match dict: a dated-snapshot
+        variant of claude-sonnet-4-5 still 200k-context-buckets correctly
+        (prefix match) but prices as unpriced (exact-match miss) -- pins the
+        asymmetry documented on the pricing-table entry."""
+        dated_model = "claude-sonnet-4-5-20260115"
+        assert _mod._model_rates(dated_model) is None
+        assert _mod._context_window_for_model(dated_model) == 200_000
+
     def test_unknown_model_id_surfaced_and_excluded_from_total(self, fake_projects, capsys):
         """Unknown model IDs are named in the model table and their tokens counted
         separately, never silently folded into the priced total at $0."""
@@ -5894,10 +5742,11 @@ class TestCost:
         assert "(no priced turns in range)" in out
 
     def test_staleness_banner_fires_when_today_past_expires(self, fake_projects, capsys):
-        """today past Sonnet 5's 2026-08-31 expiry: the banner fires in the same
-        output block as the dollar tables, not a separate log line."""
+        """today past the default fetch-date+90d re-verify-by date: the banner
+        fires in the same output block as the dollar tables, not a separate
+        log line."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        _mod._cost_report(_cost_args(), date(2026, 9, 1))
+        _mod._cost_report(_cost_args(), date(2026, 11, 1))
         out = capsys.readouterr().out
         assert "STALE PRICING" in out
         assert "claude-sonnet-5" in out.split("## Cost by token class")[0]
@@ -5907,6 +5756,16 @@ class TestCost:
         if the banner always printed."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
         _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "STALE PRICING" not in out
+
+    def test_sonnet_5_no_longer_flagged_stale_by_cancelled_promo_expiry_date(self, fake_projects, capsys):
+        """The vendor cancelled Sonnet 5's Sept 1, 2026 rate increase, so
+        today=2026-09-01 (past the old, now-removed 2026-08-31 promo-expiry
+        date) must not fire the banner -- Sonnet 5 uses the same
+        _DEFAULT_REVERIFY_BY schedule as every other model now."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
+        _mod._cost_report(_cost_args(), date(2026, 9, 1))
         out = capsys.readouterr().out
         assert "STALE PRICING" not in out
 
@@ -5938,7 +5797,7 @@ class TestCost:
         """
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -5963,7 +5822,7 @@ class TestCost:
         out = capsys.readouterr().out
         # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
         # not $6.00 for pricing the group's usage three times over.
-        assert _extract_grand_total(out) == pytest.approx(2.00)
+        assert _extract_md_grand_total(out) == pytest.approx(2.00)
         # Three content-block records collapse into one priced turn, not three.
         assert "1 priced turns" in out
 
@@ -6009,8 +5868,8 @@ class TestCost:
         opaque token, never the raw session ID."""
         session_map = {"sess-real-id": "session-1"}  # "sess-other-id" deliberately absent
         assert _mod._redact_session_id("sess-real-id", session_map) == "session-1"
-        assert _mod._redact_session_id("sess-other-id", session_map) == _mod._REDACT_SESSION_MISS_TOKEN
-        assert _mod._REDACT_SESSION_MISS_TOKEN != "sess-other-id"
+        assert _mod._redact_session_id("sess-other-id", session_map) == _mod.redaction._REDACT_SESSION_MISS_TOKEN
+        assert _mod.redaction._REDACT_SESSION_MISS_TOKEN != "sess-other-id"
 
     def test_redact_proj_label_claude_config_passthrough_preserved(self):
         """claude-config still passes through unredacted after the fail-closed rewrite."""
@@ -6110,7 +5969,7 @@ class TestCost:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -6154,7 +6013,7 @@ class TestCost:
         mine_solo = solo_projects / "-repo-main"
         mine_solo.mkdir(parents=True)
         _write_jsonl(mine_solo / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", solo_projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", solo_projects)
         _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
         solo_out = capsys.readouterr().out
         assert "private-project-1" in solo_out
@@ -6169,7 +6028,7 @@ class TestCost:
         other.mkdir(parents=True)
         _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", shared_projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", shared_projects)
         _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
         shared_out = capsys.readouterr().out
         assert "private-project-2" in shared_out
@@ -6201,7 +6060,7 @@ class TestCost:
         other.mkdir(parents=True)
         _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", shared_projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", shared_projects)
         _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "private-project-1" in out
@@ -6233,14 +6092,14 @@ class TestCostResolveRoots:
     def test_default_root_alone_when_no_extra_config_dirs(self, tmp_path, monkeypatch):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         roots = _mod._resolve_cost_roots(_cost_args())
         assert roots == [default_dir / "projects"]
 
     def test_single_extra_config_dir_allowed(self, tmp_path, monkeypatch, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         roots = _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects", acct_b / "projects"]
@@ -6248,7 +6107,7 @@ class TestCostResolveRoots:
     def test_extra_roots_appended_in_argument_order(self, tmp_path, monkeypatch, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         acct_c = fake_config_dir_factory("acct-c")
         roots = _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b), str(acct_c)]))
@@ -6257,7 +6116,7 @@ class TestCostResolveRoots:
     def test_duplicate_root_deduped_by_resolve_not_string_equality(self, tmp_path, monkeypatch, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         # Same directory, supplied twice under different (but equal-once-
         # resolved) spellings — the dedup guard is by .resolve(), not string
@@ -6270,7 +6129,7 @@ class TestCostResolveRoots:
     def test_nonexistent_root_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         missing = tmp_path / "does-not-exist"
         with pytest.raises(SystemExit) as exc_info:
             _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(missing)]))
@@ -6280,7 +6139,7 @@ class TestCostResolveRoots:
     def test_root_without_projects_subdir_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         bogus = tmp_path / "bogus"
         bogus.mkdir()
         with pytest.raises(SystemExit) as exc_info:
@@ -6301,7 +6160,7 @@ class TestCostResolveRoots:
         _resolve_project_scope."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         roots = _mod._resolve_cost_roots(_cost_args(this_repo=True, extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects", acct_b / "projects"]
@@ -6309,7 +6168,7 @@ class TestCostResolveRoots:
     def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod._resolve_cost_roots(_cost_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
@@ -6320,7 +6179,7 @@ class TestCostResolveRoots:
         """--no-redact with no --config-dir (single root) is unaffected."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         roots = _mod._resolve_cost_roots(_cost_args(no_redact=True))
         assert roots == [default_dir / "projects"]
 
@@ -6334,8 +6193,8 @@ class TestCostResolveRoots:
         forms."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
-        monkeypatch.setattr(_mod, "declared_transcript_roots", lambda: [tmp_path / "declared-account"])
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [tmp_path / "declared-account"])
         acct_b = fake_config_dir_factory("acct-b")
         roots = _mod._resolve_cost_roots(_cost_args(summary=True, extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects"]
@@ -6387,7 +6246,7 @@ class TestCostMultiRootReport:
         (root / "-home-user-this-repo").mkdir()
         args = _cost_args(this_repo=True)
         args._this_repo_slugs = ["-home-user-this-repo"]
-        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
 
         _mod._cost_report(args, date(2026, 8, 2), roots=[root])
         out = capsys.readouterr().out
@@ -6525,6 +6384,84 @@ class TestCostMultiRootReport:
         # by account" section this multi-root fixture also emits.
         cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=1)
         assert cols["$"] == "2.00"
+
+
+class TestCostCorpusCoverageWarning:
+    """--since window vs. a root's actual earliest turn: a root whose local
+    corpus starts well after the requested window start must warn, not
+    silently under-report -- one line per short root, never masked by a
+    sibling root's full coverage."""
+
+    def test_warning_fires_when_root_short_of_since_window(self, fake_projects, monkeypatch, capsys):
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        earliest_ts = since_ts + 3 * 86400  # 3 days after window start, well over the 1-day threshold
+        earliest_iso = datetime.fromtimestamp(earliest_ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=earliest_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost: account-1: earliest turn found is" in out
+        assert _mod._fmt_date(earliest_ts) in out
+        assert _mod._fmt_date(since_ts) in out
+
+    def test_warning_silent_when_root_fully_covers_window(self, fake_projects, monkeypatch, capsys):
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        earliest_iso = datetime.fromtimestamp(since_ts - 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=earliest_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost:" not in out
+
+    def test_warning_silent_when_since_not_given(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000, ts="2020-01-01T00:00:00.000Z"),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost:" not in out
+
+    def test_boundary_exactly_24h_short_is_silent(self, fake_projects, monkeypatch, capsys):
+        """Exactly 1 day after the window start is not "more than" 1 day
+        short -- the inclusive edge of the no-warning side."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        boundary_iso = datetime.fromtimestamp(since_ts + 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=boundary_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost:" not in out
+
+    def test_boundary_24h_plus_epsilon_short_fires(self, fake_projects, monkeypatch, capsys):
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        over_iso = datetime.fromtimestamp(since_ts + 86400 + 1, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=over_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "WARNING: cost: account-1: earliest turn found is" in out
+
+    def test_two_root_case_names_short_root_not_masked_by_covered_root(self, tmp_path, monkeypatch, capsys):
+        """acct-covered sorts before acct-short (resolved-path ordering), so
+        acct-covered is account-1 and acct-short is account-2 -- the
+        well-covered root's account-1 label must not appear in the warning."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        since_ts = fixed_now - 5 * 86400
+        covered_iso = datetime.fromtimestamp(since_ts - 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        short_iso = datetime.fromtimestamp(since_ts + 3 * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        root_covered = _write_cost_root(tmp_path, "acct-covered", "-home-user-repo-a", "sess-a",
+                                         [_priced("claude-sonnet-5", input=1_000, ts=covered_iso)])
+        root_short = _write_cost_root(tmp_path, "acct-short", "-home-user-repo-b", "sess-b",
+                                       [_priced("claude-sonnet-5", input=1_000, ts=short_iso)])
+        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[root_covered, root_short])
+        out = capsys.readouterr().out
+        assert "WARNING: cost: account-2: earliest turn found is" in out
+        assert "WARNING: cost: account-1:" not in out
 
 
 class TestScanRootTranscripts:
@@ -6671,6 +6608,40 @@ class TestCostMultiRootRedaction:
             _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
         assert "-home-user-secret-clientname" not in str(exc_info.value)
 
+    def test_single_root_subagent_only_project_gets_stable_label_not_miss_token(self, tmp_path, capsys):
+        """A project whose main .jsonl is empty but whose only priced content
+        lives in a subagent transcript still resolves to a real
+        private-project-N label instead of tripping the redact-map-miss
+        assertion — regression for the desync between
+        _sorted_distinct_proj_labels' (main-thread-only) label census and
+        cost's own subagent-merged session scan."""
+        root = _write_cost_root(tmp_path, "acct-a", "-home-user-secret-clientname", "sess-a", [])
+        _write_subagent_jsonl(root / "-home-user-secret-clientname", "sess-a", "agent-1",
+                               [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Session", row_contains="session-1")
+        assert cols["Proj"] == "private-project-1"
+        assert _mod._REDACT_MAP_MISS_TOKEN not in out
+        assert "-home-user-secret-clientname" not in out
+
+    def test_multi_root_subagent_only_project_gets_stable_label_not_miss_token(self, tmp_path, capsys):
+        """Multi-root counterpart, matching the original reported corpus
+        shape: the subagent-only project's own root alongside a second,
+        normal-project root."""
+        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-secret-clientname", "sess-a", [])
+        _write_subagent_jsonl(root_a / "-home-user-secret-clientname", "sess-a", "agent-1",
+                               [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        ordinal_a = _mod._redaction_ordinals([root_a, root_b])[root_a.resolve()]
+        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Session", row_contains="session-1")
+        assert cols["Proj"] == f"account-{ordinal_a}/private-project-1"
+        assert _mod._REDACT_MAP_MISS_TOKEN not in out
+        assert "-home-user-secret-clientname" not in out
+
     def test_root_index_lookup_failure_omits_raw_path(self, tmp_path):
         """_root_index_for_path's own 'no known scan root' AssertionError is a
         structural sibling of the redact-map-miss assertion above — found by
@@ -6694,12 +6665,13 @@ class TestCostMultiRootRedaction:
         assert "external-unrelated-secret-clientname" not in str(exc_info.value)
         assert "-home-user-escaped" not in str(exc_info.value)
 
-    def test_no_redact_refused_by_cost_report_itself_even_when_called_directly(self, tmp_path):
+    def test_no_redact_refused_by_cost_report_itself_even_when_called_directly(self, tmp_path, capsys):
         """Defense-in-depth: _cost_report is the function that actually prints
         raw labels when redact is False, so it must refuse the multi-root +
         --no-redact combination itself rather than trusting that
         _resolve_cost_roots already validated it — every test in this class
-        calls _cost_report directly, bypassing that CLI-level boundary."""
+        calls _cost_report directly, bypassing that CLI-level boundary.
+        Refusal happens before any output is printed."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
@@ -6707,11 +6679,12 @@ class TestCostMultiRootRedaction:
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_report(_cost_args(no_redact=True), date(2026, 8, 2), roots=[root_a, root_b])
         assert exc_info.value.code == 2
+        assert capsys.readouterr().out == ""
 
     def test_no_redact_refused_at_cmd_cost_when_config_dir_given(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         args = _cost_args(no_redact=True, extra_config_dirs=[str(acct_b)])
         with pytest.raises(SystemExit) as exc_info:
@@ -6727,7 +6700,7 @@ class TestCostMultiRootRedaction:
         value is proving no path still reaches the report bypassing the
         (now-removed) guard."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         slug = "-home-user-this-repo"
         proj_default = default_dir / "projects" / slug
         proj_default.mkdir(parents=True)
@@ -6738,7 +6711,7 @@ class TestCostMultiRootRedaction:
         proj_b.mkdir(parents=True)
         _write_jsonl(proj_b / "sess-b.jsonl", [_priced("claude-sonnet-5", input=2_000_000)])  # $4.00
 
-        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
 
         args = _cost_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         _mod.cmd_cost(args)
@@ -6775,7 +6748,7 @@ class TestCostByProject:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -6848,7 +6821,7 @@ class TestCostByProject:
         proj_b = projects / "-home-user-testrepo--claude-worktrees-branch-b"
         proj_a.mkdir(parents=True)
         proj_b.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(proj_a / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
         _write_jsonl(proj_b / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000)])    # $1.00
 
@@ -6923,7 +6896,7 @@ class TestCostByProject:
         coincidental = projects / "-home-user-shared-family--claude-worktrees-fake"
         unrelated.mkdir(parents=True)
         coincidental.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(unrelated / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])    # $2.00
         _write_jsonl(coincidental / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000)])   # $1.00
 
@@ -7140,6 +7113,82 @@ class TestCostThreadSplit:
         subagent_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("subagent"))
         assert float(subagent_line.split()[-2].replace(",", "")) == pytest.approx(2.00)  # not 0.00
 
+    def test_sidechain_fast_mode_multiplier_reflected_in_subagent_accumulator(self, fake_projects, capsys):
+        """A speed:"fast" sidechain turn's 2x multiplier (already pinned at the
+        unit level by TestPriceTurnSpeedGeoMultipliers) survives the isSidechain
+        main/subagent split and stdout table rendering end-to-end."""
+        session_id = "sess-sidechain-fast"
+        subagent_rec = _priced("claude-sonnet-4-5", input=1_000_000, speed="fast")  # 2x: $6.00
+        subagent_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-4-5", input=1_000_000),  # main: $3.00
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+
+        grand_total = _extract_grand_total(out)
+        assert grand_total == pytest.approx(9.00)  # 3.00 + 6.00
+
+        thread_section = out.split("## Cost by thread")[1].split("## Top")[0]
+        main_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("main"))
+        subagent_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("subagent"))
+        assert float(main_line.split()[-2].replace(",", "")) == pytest.approx(3.00)
+        assert float(subagent_line.split()[-2].replace(",", "")) == pytest.approx(6.00)  # not 3.00
+
+    def test_print_thread_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
+        """Direct unit coverage of _print_thread_table's markdown branch,
+        called with known args rather than relying solely on full-report
+        integration coverage to catch a wiring bug (wrong argument order,
+        wrong _pct_of denominator)."""
+        _mod._print_thread_table(3.00, 1.00, 4.00, markdown=True)
+        out = capsys.readouterr().out
+        assert out == (
+            "\n### Cost by thread\n\n"
+            "| Thread | $ | Share |\n"
+            "|---|---|---|\n"
+            "| main | 3.00 | 75.0% |\n"
+            "| subagent | 1.00 | 25.0% |\n"
+        )
+
+
+class TestCostMarkdownTablePrinters:
+    """Direct unit coverage of _print_token_class_table's and
+    _print_model_id_table's markdown branches, mirroring
+    TestCostThreadSplit's _print_thread_table unit test -- pins each
+    function's own formatting invariants without paying --summary's full
+    _cost_report fixture cost."""
+
+    def test_print_token_class_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
+        class_totals = {cls: 0.0 for cls in _mod._TOKEN_CLASSES}
+        class_token_totals = {cls: 0 for cls in _mod._TOKEN_CLASSES}
+        class_totals["input"] = 3.00
+        class_token_totals["input"] = 1_500_000
+        _mod._print_token_class_table(class_totals, class_token_totals, 3.00, markdown=True)
+        out = capsys.readouterr().out
+        assert out == (
+            "### Cost by token class\n\n"
+            "| Class | $ | Share | Tokens |\n"
+            "|---|---|---|---|\n"
+            "| cache_read | 0.00 | 0.0% | 0 |\n"
+            "| cache_write_5m | 0.00 | 0.0% | 0 |\n"
+            "| cache_write_1h | 0.00 | 0.0% | 0 |\n"
+            "| output | 0.00 | 0.0% | 0 |\n"
+            "| input | 3.00 | 100.0% | 1,500,000 |\n"
+            "| **total** | **3.00** | | |\n"
+        )
+
+    def test_print_model_id_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
+        _mod._print_model_id_table({"claude-sonnet-5": 3.00, "claude-opus-5": 1.00}, 4.00, markdown=True)
+        out = capsys.readouterr().out
+        assert out == (
+            "\n### Cost by model ID\n\n"
+            "| Model | $ | Share |\n"
+            "|---|---|---|\n"
+            "| claude-sonnet-5 | 3.00 | 75.0% |\n"
+            "| claude-opus-5 | 1.00 | 25.0% |\n"
+        )
+
 
 class TestPriceTurnArity:
     def test_price_turn_returns_exactly_three_values(self):
@@ -7171,6 +7220,48 @@ class TestPriceTurnArity:
         }
         _dollars, context_at_turn, _unpriced_tokens = _mod._price_turn("claude-sonnet-5", usage)
         assert context_at_turn == 100 + 50 + 10 + 5
+
+
+class TestPriceTurnSpeedGeoMultipliers:
+    """_price_turn's speed:"fast" (2x) and inference_geo:"us" (1.1x) dollar
+    multipliers -- vendor-billed outcome fields, applied regardless of the
+    model's own fast-mode/data-residency eligibility (see the regression-
+    anchor test below)."""
+
+    def test_speed_fast_multiplies_dollars_by_two(self):
+        usage = _priced("claude-sonnet-5", input=1_000_000, speed="fast")["message"]["usage"]
+        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        assert unpriced == 0
+        assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 2)
+
+    def test_inference_geo_us_multiplies_dollars_by_1_1(self):
+        usage = _priced("claude-sonnet-5", input=1_000_000, inference_geo="us")["message"]["usage"]
+        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        assert unpriced == 0
+        assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 1.1)
+
+    def test_speed_and_inference_geo_stack_multiplicatively(self):
+        """Both multipliers present on the same turn compose to 2 * 1.1 = 2.2x,
+        not just the larger of the two."""
+        usage = _priced(
+            "claude-sonnet-5", input=1_000_000, speed="fast", inference_geo="us",
+        )["message"]["usage"]
+        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        assert unpriced == 0
+        assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 2.2)
+
+    def test_multiplier_applies_regardless_of_model_eligibility(self):
+        """Regression anchor, not a new runtime check: _price_turn trusts the
+        API's own reported speed/inference_geo outcome rather than
+        hand-maintaining a per-model eligibility list, so a model that isn't
+        actually fast-mode/data-residency-eligible still gets the multiplier
+        if the usage record carries the field."""
+        usage = _priced(
+            "claude-sonnet-4-6", input=1_000_000, speed="fast", inference_geo="us",
+        )["message"]["usage"]
+        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-4-6", usage)
+        assert unpriced == 0
+        assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
 
 
 class TestDedupTurnsByRequestId:
@@ -7237,7 +7328,7 @@ class TestDedupTurnsByRequestId:
         _usage_drift_warned is reset here since the canary is rate-limited to
         one warning per process (see _warn_if_run_usage_drift) and other
         tests in this module-scoped process may have already tripped it."""
-        monkeypatch.setattr(_mod, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
         rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
@@ -7250,7 +7341,7 @@ class TestDedupTurnsByRequestId:
         input_tokens and the cache_* classes stay identical -- never fires
         the drift canary; an ascending output_tokens is the documented norm,
         not drift."""
-        monkeypatch.setattr(_mod, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
         rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
@@ -7277,15 +7368,243 @@ class TestDedupTurnsByRequestId:
         rec2["requestId"] = ""
         assert _mod._dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
 
-    def test_user_record_between_same_request_id_records_prevents_merge(self):
-        """Grouping only merges *consecutive* assistant records — an
-        intervening user record ends any run in progress and passes through
-        unchanged in its original position."""
+    def test_non_contiguous_run_with_matching_usage_merges_across_user_record(self):
+        """A same-requestId assistant run interleaved with a user tool_result
+        record -- the harness's own shape for a multi-tool_use response
+        dispatched one tool call at a time -- merges into one turn when
+        every record's usage matches, with the intervening user record
+        passing through unchanged at its own position. Treating the
+        intervening user record as ending the run and never revisiting the
+        second assistant block would inflate turn counts and dollar totals
+        for this shape, the regression this test guards. This is the
+        canonical pin for dedup_turns_by_request_id's non-contiguous merge
+        behavior -- extend it rather than adding a second pin elsewhere."""
         rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        user = _user_msg("continue")
+        user = _user_msg([_tool_result("t1", "tool result")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        assert len(result) == 2
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
+        ]
+        assert result[0]["message"]["usage"] == {"input_tokens": 100, "output_tokens": 50}
+        assert result[1] == user
+
+    def test_non_contiguous_run_with_full_cache_usage_matching_merges(self):
+        """The merge-approval path exercised above uses a 2-key usage dict
+        (input_tokens/output_tokens only), where the two omitted keys
+        (cache_creation_input_tokens/cache_read_input_tokens) trivially
+        agree via None == None regardless of whether the comparison logic
+        actually checks them. This test populates all four
+        _NON_CONTIGUOUS_MERGE_REQUIRED_MATCH_KEYS with real matching values
+        -- the shape every real transcript record carries per this
+        function's own docstring -- so a regression that broke comparison
+        specifically for populated cache values on the merge-approval path
+        would fail here even though the 2-key tests above would not catch
+        it."""
+        usage = {
+            "input_tokens": 100, "cache_creation_input_tokens": 20,
+            "cache_read_input_tokens": 10, "output_tokens": 50,
+        }
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec1["message"]["usage"] = dict(usage)
+        user = _user_msg([_tool_result("t1", "tool result")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        rec2["message"]["usage"] = dict(usage)
+        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        assert len(result) == 2
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
+        ]
+
+    def test_non_contiguous_run_with_mismatched_output_tokens_does_not_merge(self):
+        """Two assistant records share a requestId but diverge on
+        output_tokens -- the signature of two genuinely separate API calls
+        that happen to collide on requestId (e.g. a hook-denial retry),
+        rather than one once-billed non-contiguous run. The corroboration
+        bar rejects the merge and all three records stay separate turns in
+        original order."""
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        user = _user_msg([_tool_result("t1", "continue")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 999}
+        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        assert result == [rec1, user, rec2]
+
+    def test_three_record_non_contiguous_run_merges(self):
+        """The merge isn't hardcoded to pairs: a 3-record non-contiguous run
+        with matching usage on every record merges into one turn, with both
+        intervening user records passing through unchanged."""
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        user1 = _user_msg([_tool_result("t1", "tool result 1")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        user2 = _user_msg([_tool_result("t2", "tool result 2")])
+        rec3 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
+        rec3["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        result = _mod._dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
+        assert len(result) == 3
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "b"}, {"type": "text", "text": "c"},
+        ]
+        assert result[1] == user1
+        assert result[2] == user2
+
+    def test_three_record_non_contiguous_run_with_one_divergent_member_does_not_merge(self):
+        """Pins that _non_contiguous_run_usage_matches compares every member
+        against the run's first record, not just adjacent pairs or a
+        majority: a 3-record non-contiguous run where two members match and
+        the third diverges on one invariant key (cache_read_input_tokens)
+        fails the corroboration bar, so all three records stay separate
+        turns regardless of the divergent member's position in the group."""
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec1["message"]["usage"] = {
+            "input_tokens": 100, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 10, "output_tokens": 50,
+        }
+        user1 = _user_msg([_tool_result("t1", "tool result 1")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        rec2["message"]["usage"] = {
+            "input_tokens": 100, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 10, "output_tokens": 50,
+        }
+        user2 = _user_msg([_tool_result("t2", "tool result 2")])
+        rec3 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
+        rec3["message"]["usage"] = {
+            "input_tokens": 100, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 999, "output_tokens": 50,
+        }
+        result = _mod._dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
+        assert result == [rec1, user1, rec2, user2, rec3]
+
+    def test_interleaved_different_request_id_group_leaves_other_run_record_untouched(self):
+        """Records ordered [A req-1, B req-2, C req-1], where req-1's usage
+        matches across A and C: the two-pass indexer groups by requestId
+        across the full input, so B -- a different run's own record sitting
+        between A and C -- passes through unchanged at its own position
+        while A and C merge at A's original position, pinning that indexing
+        by requestId across the full input doesn't disturb an unrelated
+        run's record that happens to sit between this run's members."""
+        rec_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        rec_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        rec_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-2")
+        rec_b["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
+        rec_c = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
+        rec_c["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        result = _mod._dedup_turns_by_request_id([rec_a, rec_b, rec_c])
+        assert len(result) == 2
+        assert result[0]["requestId"] == "req-1"
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "c"},
+        ]
+        assert result[1] == rec_b
+
+    def test_two_multi_member_non_contiguous_groups_mutually_interleaved_both_merge(self):
+        """Records ordered [A1 req-1, B1 req-2, A2 req-1, B2 req-2] -- two
+        *each*-multi-member non-contiguous groups mutually interleaved,
+        rather than one multi-member group interleaved with a single-record
+        different-id record (the prior test's shape). Both groups merge
+        independently at their own first member's position, pinning that
+        merge_start_idx/skip_idx reconstruction handles two simultaneously
+        in-progress groups rather than only one."""
+        rec_a1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a1"}], request_id="req-1")
+        rec_a1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        rec_b1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b1"}], request_id="req-2")
+        rec_b1["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
+        rec_a2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a2"}], request_id="req-1")
+        rec_a2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        rec_b2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b2"}], request_id="req-2")
+        rec_b2["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
+        result = _mod._dedup_turns_by_request_id([rec_a1, rec_b1, rec_a2, rec_b2])
+        assert len(result) == 2
+        assert result[0]["requestId"] == "req-1"
+        assert result[0]["message"]["content"] == [
+            {"type": "text", "text": "a1"}, {"type": "text", "text": "a2"},
+        ]
+        assert result[1]["requestId"] == "req-2"
+        assert result[1]["message"]["content"] == [
+            {"type": "text", "text": "b1"}, {"type": "text", "text": "b2"},
+        ]
+
+    def test_non_contiguous_merge_and_rejection_notices_are_independently_rate_limited(
+        self, monkeypatch, capsys
+    ):
+        """Both non-contiguous merge and rejection decisions log one stderr
+        NOTICE per process, independently rate-limited by decision kind
+        (_non_contiguous_merge_notices_logged) -- a merge NOTICE firing must
+        not suppress a later rejection NOTICE, and each message names its
+        own decision kind so the two are distinguishable by grep, not just a
+        generic 'NOTICE' substring. Also asserts the interpolated requestId
+        and record_count values, not just the decision-kind keyword -- the
+        NOTICE's stated purpose is auditing which run triggered which
+        decision, so a transposition bug in the f-string (wrong requestId,
+        wrong count) must fail this test even though the keyword-only
+        assertions would still pass.
+        _non_contiguous_merge_notices_logged is reset here since it's
+        rate-limited across the whole process and other tests in this
+        module-scoped run may have already tripped either kind (mirrors
+        test_non_identical_input_usage_within_run_emits_stderr_warning's
+        reset of _usage_drift_warned)."""
+        monkeypatch.setattr(_mod.pricing, "_non_contiguous_merge_notices_logged", set())
+
+        merge_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        merge_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        merge_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        merge_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        _mod._dedup_turns_by_request_id([merge_a, _user_msg([_tool_result("t1", "tool result")]), merge_b])
+        merge_stderr = capsys.readouterr().err
+        assert "NOTICE" in merge_stderr
+        assert "merged" in merge_stderr
+        assert "rejected" not in merge_stderr
+        assert "req-1" in merge_stderr
+        assert "2" in merge_stderr
+
+        reject_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "x"}], request_id="req-2")
+        reject_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        reject_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "y"}], request_id="req-2")
+        reject_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 999}
+        _mod._dedup_turns_by_request_id([reject_a, _user_msg([_tool_result("t2", "tool result")]), reject_b])
+        reject_stderr = capsys.readouterr().err
+        assert "NOTICE" in reject_stderr
+        assert "rejected" in reject_stderr
+        assert "req-2" in reject_stderr
+        assert "2" in reject_stderr
+
+    def test_non_contiguous_merge_notice_suppressed_on_repeat_same_kind(self, monkeypatch, capsys):
+        """A second non-contiguous merge (different requestId, same 'merged'
+        decision kind) after the first must not print a second NOTICE --
+        pinning the rate-limit half of 'independently rate-limited', not
+        just the cross-kind independence the prior test covers."""
+        monkeypatch.setattr(_mod.pricing, "_non_contiguous_merge_notices_logged", set())
+
+        first_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        first_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        first_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        first_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        _mod._dedup_turns_by_request_id([first_a, _user_msg([_tool_result("t1", "tool result")]), first_b])
+        capsys.readouterr()  # drain the first NOTICE
+
+        second_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "x"}], request_id="req-2")
+        second_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        second_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "y"}], request_id="req-2")
+        second_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
+        _mod._dedup_turns_by_request_id([second_a, _user_msg([_tool_result("t2", "tool result")]), second_b])
+        assert capsys.readouterr().err == ""
+
+    def test_non_contiguous_run_with_missing_usage_does_not_merge(self):
+        """Two same-requestId assistant records with no usage dict at all
+        have zero evidence to corroborate on -- treating that absence as
+        agreement (None == None on every key) would merge two records with
+        no actual usage match, the failure mode this test guards against."""
+        rec1 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
+        del rec1["message"]["usage"]
+        user = _user_msg([_tool_result("t1", "tool result")])
+        rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
+        del rec2["message"]["usage"]
         result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
         assert result == [rec1, user, rec2]
 
@@ -7304,6 +7623,23 @@ class TestDedupTurnsByRequestId:
         _mod._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(4.00)
+
+    def test_non_contiguous_run_prices_once_through_cost_report(self, fake_projects, capsys):
+        """The motivating production bug: a session file where the harness
+        interleaves a tool_result between two same-requestId assistant
+        records prices as one turn through an actual downstream call site
+        (_cost_report), not two -- pinning the fix's real symptom end-to-end
+        rather than only the shared function's branch logic in isolation.
+        Before this fix, the interleaved second record priced as its own
+        turn, double-counting both the turn count and the dollar total."""
+        first = _priced("claude-sonnet-5", input=1_000_000, request_id="req-1")  # $2.00
+        second = _priced("claude-sonnet-5", input=1_000_000, request_id="req-1")  # $2.00, same usage as first
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            first, _user_msg([_tool_result("t1", "tool result")]), second,
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(2.00)
 
     def test_shared_request_id_merges_across_main_and_sidechain_records(self):
         """A requestId shared by a main-thread record and a sidechain record
@@ -7480,7 +7816,7 @@ class TestCostSummary:
     def test_summary_refuses_by_project_in_combination(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7497,7 +7833,7 @@ class TestCostSummary:
     def test_summary_refuses_no_redact_in_combination(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7514,7 +7850,7 @@ class TestCostSummary:
     def test_summary_refuses_config_dir_in_combination(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7546,7 +7882,7 @@ class TestCostSummary:
         mine.mkdir(parents=True)
         other = projects / "-home-user-otherrepo"
         other.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess-mine.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])    # $2.00
         _write_jsonl(other / "sess-other.jsonl", [_priced("claude-sonnet-5", input=5_000_000)])  # $10.00
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
@@ -7572,13 +7908,13 @@ class TestCostSummary:
         assert "sess-mine" not in out
         assert "sess-other" not in out
         assert "private-project" not in out
-        assert _extract_grand_total(out) == pytest.approx(2.00)  # not 12.00 — other project's $10 excluded
+        assert _extract_md_grand_total(out) == pytest.approx(2.00)  # not 12.00 — other project's $10 excluded
 
     def test_summary_never_prints_session_or_project_sections(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -7603,7 +7939,7 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [
             _priced("<synthetic>", input=1_000_000, output=500_000),  # unpriced
             _priced("claude-sonnet-5", input=100_000),                 # priced
@@ -7623,7 +7959,7 @@ class TestCostSummary:
         unpriced_tokens, unpriced_models = _extract_summary_unpriced(out)
         assert unpriced_tokens == 1_000_000 + 500_000
         assert unpriced_models == 1
-        input_cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        input_cols = _md_table_cols(out, header_contains="Class", row_contains="input")
         assert int(input_cols["Tokens"].replace(",", "")) == 100_000  # unpriced turn excluded
 
     def test_summary_unpriced_line_present_even_when_zero(self, tmp_path, monkeypatch, capsys):
@@ -7633,7 +7969,7 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -7655,7 +7991,7 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -7667,7 +8003,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 9, 1))
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 11, 1))
         out = capsys.readouterr().out
         assert "STALE PRICING" in out
 
@@ -7675,7 +8011,7 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -7704,7 +8040,7 @@ class TestCostSummary:
         _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
         _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
         out = capsys.readouterr().out
-        assert _extract_grand_total(out) == pytest.approx(2.00)  # not 12.00 -- other account excluded
+        assert _extract_md_grand_total(out) == pytest.approx(2.00)  # not 12.00 -- other account excluded
         assert out.count("cost: account-1: scanned") == 1
 
     def test_without_summary_the_same_fixture_still_unions_both_accounts(
@@ -7781,7 +8117,7 @@ class TestCostSummary:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7807,7 +8143,7 @@ class TestCostSummary:
         so this repo's own slug dir is left with zero transcripts."""
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -7824,6 +8160,87 @@ class TestCostSummary:
         assert "/Users/" not in out
         assert "/home/" not in out
         assert str(tmp_path) not in out
+
+    def test_summary_model_id_markdown_table_well_formed_with_zero_transcripts(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A zero-transcript --summary run still renders a well-formed GFM
+        model-ID table -- header and separator rows present even though no
+        model ever priced a turn to produce a data row."""
+        projects = tmp_path / "projects"
+        (projects / "-repo-main").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        header_idx = next(i for i, ln in enumerate(lines) if ln == "| Model | $ | Share |")
+        assert lines[header_idx + 1] == "|---|---|---|"
+        assert lines[header_idx + 2].strip() == ""  # no data rows -- blank line ends the table
+
+    def test_summary_token_class_total_row_renders_exact_bolded_gfm_shape(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The token-class table's closing row renders as the exact bolded
+        GFM shape '| **total** | **X.XX** | | |' -- not just a numerically
+        correct total, since a formatting regression (missing bold markers,
+        wrong column count) would still pass a value-only pytest.approx
+        check on the parsed number."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        # $2.00 -- claude-sonnet-5's $2/MTok input rate on 1M input tokens, hand-computed.
+        assert "| **total** | **2.00** | | |" in out
+        assert _extract_md_grand_total(out) == pytest.approx(2.00)
+
+    def test_summary_title_line_is_bare_prose_not_a_markdown_heading(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The --summary title line renders as bare prose ('Cost summary
+        (...)'), not a '## '-prefixed heading -- it sits inside the
+        pr-description skill's own '## Cost' heading, so a '##' here would
+        collide with that wrapper. A future edit re-adding '## ' would
+        silently reintroduce that collision without this pin."""
+        projects = tmp_path / "projects"
+        (projects / "-repo-main").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        assert "\nCost summary (all time)\n" in out
+        assert "## Cost summary" not in out
 
 
 class TestCostWorktreeAgentBranchCarryForward:
@@ -7908,16 +8325,11 @@ class TestCostWorktreeAgentBranchCarryForward:
         the worktree-agent-* record is counted in an unfiltered run but
         excluded from every --branches filter's total, the one case that
         stays genuinely unattributable (renders '?', GH-482's sentinel
-        convention reused). The main-thread record present here carries no
-        gitBranch of its own (branch="") — a wholly empty main file would
-        instead exercise a pre-existing, unrelated desync between
-        _build_redact_map's own (non-subagent-merged) scan basis and cost's
-        subagent-merged session iterator, not the carry-forward behavior
-        this test targets."""
+        convention reused)."""
         session_id = "sess-carry-d"
         agent_rec = _priced("claude-sonnet-5", input=1_000_000, branch="worktree-agent-abc123")  # $2.00
         agent_rec["isSidechain"] = True
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [_user_msg("hi", branch="")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
 
         _mod._cost_report(_cost_args(), date(2026, 8, 2))
@@ -8034,7 +8446,7 @@ class TestContextDistribution:
         scope, mirroring cost's own refusal exactly."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_context_distribution(
@@ -8467,7 +8879,7 @@ class TestEditFormat:
         in scope, mirroring cost's and context-distribution's own refusal."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_edit_format(_edit_format_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
@@ -8554,13 +8966,14 @@ class TestEditFormat:
         assert "mean old_string chars/edit: n/a" in out
         assert "old_string share of Edit payload: 0.0%" in out
 
-    def test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly(self, tmp_path):
+    def test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly(self, tmp_path, capsys):
         """Defense-in-depth: _edit_format_report must refuse the multi-root +
         --no-redact combination itself rather than trusting that
         _resolve_cost_roots already validated it, mirroring
         test_no_redact_refused_by_cost_report_itself_even_when_called_directly
         — the in-function guard's own docstring claims this module's tests
-        exercise it directly; prior to this test, none did."""
+        exercise it directly; prior to this test, none did. Refusal happens
+        before any output is printed."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
             _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
         ])
@@ -8570,6 +8983,7 @@ class TestEditFormat:
         with pytest.raises(SystemExit) as exc_info:
             _mod._edit_format_report(_edit_format_args(no_redact=True), roots=[root_a, root_b])
         assert exc_info.value.code == 2
+        assert capsys.readouterr().out == ""
 
 
 class TestScanEditFormatSession:
@@ -8898,7 +9312,7 @@ class TestReadScope:
     def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_read_scope(_read_scope_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
@@ -8915,11 +9329,12 @@ class TestReadScope:
         assert _mod._DO_NOT_PUBLISH_BANNER in out
         assert _extract_read_total(out) == 1
 
-    def test_no_redact_refused_by_read_scope_report_itself_even_when_called_directly(self, tmp_path):
+    def test_no_redact_refused_by_read_scope_report_itself_even_when_called_directly(self, tmp_path, capsys):
         """Defense-in-depth: _read_scope_report must refuse the multi-root +
         --no-redact combination itself rather than trusting that
         _resolve_cost_roots already validated it, mirroring
-        test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly."""
+        test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly.
+        Refusal happens before any output is printed."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
             _opus([_read_tool_use("r1", file_path="/a.py")]),
         ])
@@ -8929,6 +9344,7 @@ class TestReadScope:
         with pytest.raises(SystemExit) as exc_info:
             _mod._read_scope_report(_read_scope_args(no_redact=True), roots=[root_a, root_b])
         assert exc_info.value.code == 2
+        assert capsys.readouterr().out == ""
 
     def test_since_flag_filters_growth_deltas_at_report_level(self, fake_projects, capsys):
         records = [
@@ -9293,7 +9709,7 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r2", file_path="/b.py")]),
             _opus([_read_tool_use("r3", file_path="/c.py")]),
         ]
-        assert _mod._read_session_file(jsonl, include_subagents=True) == expected
+        assert _mod.corpus.read_session_file(jsonl, include_subagents=True) == expected
 
     def test_read_session_file_partitioned_keeps_empty_main_group_ahead_of_subagents(self, fake_projects):
         """A readable-but-empty main file still yields its own empty group
@@ -9432,6 +9848,748 @@ class TestScanReadScopeSession:
 
 
 # ---------------------------------------------------------------------------
+# instrument-authoring
+# ---------------------------------------------------------------------------
+
+
+def _instrument_authoring_args(
+    *, projects: str = "*", this_repo: bool = False, extra_config_dirs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects, "this_repo": this_repo, "extra_config_dirs": extra_config_dirs,
+    })()
+
+
+def _extract_instrument_authoring_call(out: str, shape_label: str, scope: str) -> tuple[int, int]:
+    """Read one census line's (count, chars) -- e.g. "Bash (heredoc/-c/-e)   main      count=...  chars=~..."."""
+    match = re.search(
+        rf"^\s*{re.escape(shape_label)}\s+{re.escape(scope)}\s+count=\s*([\d,]+)\s+chars=~\s*([\d,]+)",
+        out, re.MULTILINE,
+    )
+    assert match is not None, f"{shape_label}/{scope} census line not found in output"
+    return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
+
+
+def _extract_instrument_authoring_bucket_count(out: str, scope: str, label: str) -> int:
+    match = re.search(
+        rf"^\s*{re.escape(scope)}\s+{re.escape(label)}\s+count=\s*([\d,]+)",
+        out, re.MULTILINE,
+    )
+    assert match is not None, f"{scope}/{label} bucket line not found in output"
+    return int(match.group(1).replace(",", ""))
+
+
+def _extract_instrument_authoring_cohort(out: str, cohort_label: str) -> tuple[int, int]:
+    """Read one cohort line's (session_n, payload_chars)."""
+    match = re.search(
+        rf"^\s*{re.escape(cohort_label)}\s+sessions=\s*([\d,]+).*?chars=~\s*([\d,]+)",
+        out, re.MULTILINE,
+    )
+    assert match is not None, f"{cohort_label} cohort line not found in output"
+    return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
+
+
+class TestInstrumentAuthoring:
+    def test_subagent_authoring_shapes_attributed_to_subagent_cohort_not_main(self, fake_projects, capsys):
+        """The same authoring shapes on a subagent (isSidechain: true) record
+        attribute to the subagent scope, not main -- exercised through a real
+        merged main+subagent transcript pair, pinning include_subagents=True."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_bash_use("m1", "git log --oneline -5")]),
+        ])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [
+            _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
+                _bash_use("s1", "python3 -c 'print(1)'"),
+            ]),
+        ])
+        _mod._instrument_authoring_report(_instrument_authoring_args())
+        out = capsys.readouterr().out
+        main_count, _ = _extract_instrument_authoring_call(out, "Bash (heredoc/-c/-e)", "main")
+        subagent_count, _ = _extract_instrument_authoring_call(out, "Bash (heredoc/-c/-e)", "subagent")
+        assert main_count == 0
+        assert subagent_count == 1
+
+    def test_cohort_lines_printed_for_a_zero_dispatch_and_a_dispatched_session(self, fake_projects, capsys):
+        """Report-level smoke test: a zero-dispatch and a dispatched session
+        each land in their own printed cohort line -- the arithmetic itself
+        is TestScanInstrumentAuthoringSession's
+        test_cohort_arithmetic_sums_across_multiple_sessions' job."""
+        _write_jsonl(fake_projects / "sess-zero.jsonl", [
+            _opus([_bash_use("b1", "python3 -c 'print(1)'")]),
+        ])
+        _write_jsonl(fake_projects / "sess-dispatched.jsonl", [
+            _opus([_bash_use("b2", "python3 -c 'print(1)'")]),
+            _opus([_agent_use("a1", "general-purpose")]),
+        ])
+        _mod._instrument_authoring_report(_instrument_authoring_args())
+        out = capsys.readouterr().out
+        zero_sessions, _zero_chars = _extract_instrument_authoring_cohort(out, "zero_dispatch")
+        dispatched_sessions, _dispatched_chars = _extract_instrument_authoring_cohort(out, "dispatched")
+        assert zero_sessions == 1
+        assert dispatched_sessions == 1
+
+    def test_size_histogram_bucket_wired_through_report(self, fake_projects, capsys):
+        """The per-scan size bucket reaches the printed histogram section,
+        not just _scan_instrument_authoring_session's own returned dict."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", "python3 -c 'print(1)'")])])
+        _mod._instrument_authoring_report(_instrument_authoring_args())
+        out = capsys.readouterr().out
+        assert _extract_instrument_authoring_bucket_count(out, "main", "0-99") == 1
+
+    def test_no_authored_payload_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
+        sentinel = "DISTINCTIVE-SENTINEL-PAYLOAD-MUST-NOT-LEAK"
+        command = f"python3 -c 'print(\"{sentinel}\")'"
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", command)])])
+        _mod._instrument_authoring_report(_instrument_authoring_args())
+        out = capsys.readouterr().out
+        assert sentinel not in out
+
+    def test_no_heredoc_body_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
+        sentinel = "DISTINCTIVE-HEREDOC-SENTINEL-MUST-NOT-LEAK"
+        command = f"cat <<EOF > /tmp/instrument.py\n{sentinel}\nEOF\n"
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", command)])])
+        _mod._instrument_authoring_report(_instrument_authoring_args())
+        out = capsys.readouterr().out
+        assert sentinel not in out
+
+    def test_no_write_content_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
+        sentinel = "DISTINCTIVE-WRITE-SENTINEL-MUST-NOT-LEAK"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _opus([_write_use("w1", sentinel, path="/tmp/scratch/instrument.py")]),
+        ])
+        _mod._instrument_authoring_report(_instrument_authoring_args())
+        out = capsys.readouterr().out
+        assert sentinel not in out
+
+    def test_zero_calls_prints_zeroes_without_division_error(self, fake_projects, capsys):
+        """An empty scope (no authoring calls anywhere) prints a zero census
+        and 0.0% cohort shares rather than raising ZeroDivisionError."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
+        _mod._instrument_authoring_report(_instrument_authoring_args())
+        out = capsys.readouterr().out
+        assert "zero_dispatch  sessions=     1 (100.0% of sessions)" in out
+        assert "dispatched     sessions=     0 (0.0% of sessions)" in out
+        assert "(0.0% of authored mass)" in out
+
+
+class TestScanInstrumentAuthoringSession:
+    """Direct unit tests for _scan_instrument_authoring_session's returned
+    stats dict, mirroring TestScanEditFormatSession's role: classification
+    invariants asserted directly on the dict, cheaper and more precise than
+    TestInstrumentAuthoring's report-level assertions."""
+
+    def test_heredoc_bash_call_counted_with_body_only_payload(self):
+        command = "cat <<EOF > /tmp/instrument.py\nprint('hi')\nEOF\n"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["call_n"][("bash", "main")] == 1
+        assert stats["payload_chars"][("bash", "main")] == len("print('hi')")
+
+    def test_inline_python_one_liner_lands_in_smallest_bucket(self):
+        records = [_opus([_bash_use("b1", "python3 -c 'print(1)'")])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["call_n"][("bash", "main")] == 1
+        assert stats["size_hist"][("main", "0-99")] == 1
+
+    def test_write_scratchpad_paths_counted_repo_path_not_counted(self):
+        """Both /tmp/... and /private/tmp/... scratchpad forms count; an
+        ordinary repo file path does not."""
+        records = [
+            _opus([_write_use("w1", "x" * 40, path="/tmp/scratch/instrument.py")]),
+            _opus([_write_use("w2", "y" * 40, path="/private/tmp/scratch/instrument.py")]),
+            _opus([_write_use("w3", "z" * 40, path="/repo/src/module.py")]),
+        ]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["call_n"][("write", "main")] == 2
+        assert stats["payload_chars"][("write", "main")] == 80
+
+    def test_write_scratchpad_path_component_outside_tmp_root_counted(self):
+        """A 'scratchpad' path segment counts even when the path isn't
+        rooted under /tmp or /private/tmp; a segment that only contains
+        'scratchpad' as a substring of a different directory name does not."""
+        records = [
+            _opus([_write_use("w1", "x" * 40, path="/repo/scratchpad/notes.py")]),
+            _opus([_write_use("w2", "y" * 40, path="/repo/scratchpad_utils.py")]),
+        ]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["call_n"][("write", "main")] == 1
+        assert stats["payload_chars"][("write", "main")] == 40
+
+    def test_spawn_count_from_both_agent_and_task_tool_names(self):
+        records = [
+            _opus([_agent_use("a1", "general-purpose", tool_name="Agent")]),
+            _opus([_agent_use("a2", "code-writer", tool_name="Task")]),
+        ]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["spawn_dispatch_n"] == 2
+
+    def test_subagent_spawn_dispatch_excluded_and_authoring_call_scoped_to_subagent(self):
+        """A subagent's own Agent/Task tool_use (isSidechain: true) must not
+        increment this session's main-thread spawn_dispatch_n -- only
+        main-thread dispatches decide the cohort split -- and a Bash
+        authoring call in the same sidechain record attributes to the
+        subagent scope, pinned directly on the scan dict rather than only
+        through the heavier report-level fixture test."""
+        subagent_records = [
+            _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
+                _agent_use("a1", "general-purpose", tool_name="Agent"),
+                _bash_use("b1", "python3 -c 'print(1)'"),
+            ]),
+        ]
+        stats = _mod._scan_instrument_authoring_session(subagent_records)
+        assert stats["spawn_dispatch_n"] == 0
+        assert stats["call_n"][("bash", "subagent")] == 1
+        assert stats["call_n"][("bash", "main")] == 0
+
+        main_records = [_opus([_agent_use("a2", "general-purpose", tool_name="Task")])]
+        main_stats = _mod._scan_instrument_authoring_session(main_records)
+        assert main_stats["spawn_dispatch_n"] == 1
+
+    def test_main_payload_chars_excludes_subagent_scope_authoring(self):
+        """main_payload_chars feeds cohort_totals[...]['payload_chars']
+        directly -- the reported "authored mass" figure -- so it must sum
+        only main-thread authoring calls, never subagent ones."""
+        records = [
+            _opus([_bash_use("b1", "python3 -c 'main-payload'")]),
+            _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
+                _bash_use("b2", "python3 -c 'subagent-payload-much-longer'"),
+            ]),
+        ]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["main_payload_chars"] == len("main-payload")
+
+    def test_ordinary_bash_call_not_classified_as_authoring(self):
+        records = [
+            _opus([_bash_use("b1", "git log --oneline -10")]),
+            _opus([_bash_use("b2", "pytest claude/.claude/scripts/tests/")]),
+        ]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert sum(stats["call_n"].values()) == 0
+
+    def test_adversarial_dash_c_false_positives_not_counted(self):
+        """-c bound to a non-interpreter argv[0] (curl, tar, ssh) never
+        counts, mirroring TestEditFormat's
+        test_non_edit_tool_error_with_matching_text_not_counted's discipline
+        against substring-only matching."""
+        records = [
+            _opus([_bash_use("b1", "curl -c cookies.txt https://example.com")]),
+            _opus([_bash_use("b2", "tar -cf out.tar .")]),
+            _opus([_bash_use("b3", "ssh -c aes256-ctr host 'ls'")]),
+        ]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert sum(stats["call_n"].values()) == 0
+
+    @pytest.mark.parametrize("command,inline_program", [
+        ("python3 -c 'print(1)'", "print(1)"),
+        ("python -c 'print(1)'", "print(1)"),
+        ("sh -c 'echo hi'", "echo hi"),
+        ("bash -c 'echo hi'", "echo hi"),
+        ("node -e 'console.log(1)'", "console.log(1)"),
+        ("perl -e 'print 1'", "print 1"),
+        ("ruby -e 'puts 1'", "puts 1"),
+    ])
+    def test_each_recognized_interpreter_matches_its_own_flag(self, command, inline_program):
+        """Every entry in _INSTRUMENT_AUTHORING_INLINE_INTERPRETER_FLAGS gets
+        a genuine positive match on its own flag, not just python3/node."""
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["payload_chars"][("bash", "main")] == len(inline_program)
+
+    @pytest.mark.parametrize("command", [
+        "bash -e deploy.sh",  # errexit, not inline-eval
+        "python3 -m pytest",  # module flag, not -c
+    ])
+    def test_recognized_interpreter_with_wrong_flag_not_counted(self, command):
+        """A recognized interpreter bound to a flag other than its own
+        inline-eval flag (bash -e, python3 -m) never counts."""
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert sum(stats["call_n"].values()) == 0
+
+    def test_heredoc_dash_variant_with_quoted_delimiter_strips_leading_tabs(self):
+        command = "cat <<-'EOF'\n\thello\n\tEOF\n"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["payload_chars"][("bash", "main")] == len("hello")
+
+    def test_heredoc_non_eof_delimiter_recognized(self):
+        command = "cat <<PAYLOAD\nbody text\nPAYLOAD\n"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["payload_chars"][("bash", "main")] == len("body text")
+
+    def test_heredoc_body_containing_delimiter_word_as_data_does_not_truncate(self):
+        command = "cat <<EOF\nfirst line\nEOF is mentioned here, not a real terminator\nlast line\nEOF\n"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        expected_body = "first line\nEOF is mentioned here, not a real terminator\nlast line"
+        assert stats["payload_chars"][("bash", "main")] == len(expected_body)
+
+    def test_two_heredocs_chained_with_and_sum_payloads(self):
+        command = "cat <<A > /tmp/a.txt && cat <<B > /tmp/b.txt\nfirst\nA\nsecond\nB\n"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["call_n"][("bash", "main")] == 1
+        assert stats["payload_chars"][("bash", "main")] == len("first") + len("second")
+
+    def test_quoted_herestring_not_misparsed_as_heredoc(self):
+        """A bash here-string (`<<<`) with a quoted right-hand side is not
+        mistaken for a heredoc opener."""
+        command = 'cat <<< "$var"\necho after\n'
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert sum(stats["call_n"].values()) == 0
+
+    def test_unquoted_herestring_not_misparsed_as_heredoc(self):
+        """Regression test: `cat <<<EOF` (an unquoted here-string, not a
+        heredoc) must not match the heredoc-opener regex starting one
+        character into the `<<<` operator -- doing so would consume every
+        following line as a fake heredoc body since no line ever equals the
+        delimiter "EOF"."""
+        command = "cat <<<EOF\necho after\n"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert sum(stats["call_n"].values()) == 0
+        assert stats["payload_chars"][("bash", "main")] == 0
+
+    def test_heredoc_body_containing_inline_program_shape_not_double_counted(self):
+        """A heredoc body containing a line shaped like an inline-program
+        invocation (e.g. example code written as data) is not counted a
+        second time as its own separate authoring invocation -- the body's
+        own char count already includes it once."""
+        inline_example_line = "python3 -c 'foo'"
+        command = f"cat <<EOF > /tmp/instrument.py\nprint('hi')\n{inline_example_line}\nEOF\n"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        expected_body = f"print('hi')\n{inline_example_line}"
+        assert stats["call_n"][("bash", "main")] == 1
+        assert stats["payload_chars"][("bash", "main")] == len(expected_body)
+
+    def test_double_quoted_inline_program_argument_strips_quotes(self):
+        """_extract_shell_arg_at's double-quoted branch (vs. the single-
+        quoted/bare forms every other inline-program test here uses) also
+        strips the surrounding quotes from the payload it measures."""
+        command = 'python3 -c "print(1)"'
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["payload_chars"][("bash", "main")] == len("print(1)")
+
+    def test_versioned_python_interpreter_recognized(self):
+        """Regression test: `python3.11 -c '...'` must classify as authoring
+        -- a bare `\\bpython3\\b` word boundary fails between "3" and "."
+        (both word-adjacent-to-non-word), which previously blocked the match
+        entirely."""
+        command = "python3.11 -c 'print(1)'"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["call_n"][("bash", "main")] == 1
+        assert stats["payload_chars"][("bash", "main")] == len("print(1)")
+
+    def test_unparsed_bash_and_write_input_counted_in_own_cohort_not_dropped(self):
+        records = [
+            _opus([{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"__unparsedToolInput": "x"}}]),
+            _opus([{"type": "tool_use", "id": "w1", "name": "Write", "input": {"__unparsedToolInput": "y"}}]),
+        ]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["unparsed_n"]["main"] == 2
+        assert sum(stats["call_n"].values()) == 0
+
+    def test_parallel_tool_use_blocks_in_one_turn_both_counted(self):
+        records = [
+            _opus([
+                _bash_use("b1", "python3 -c 'print(1)'"),
+                _bash_use("b2", "node -e 'console.log(2)'"),
+            ]),
+        ]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["call_n"][("bash", "main")] == 2
+
+    def test_bucket_boundary_at_largest_finite_bucket_edge(self):
+        """A payload of exactly 9999 chars (the largest finite bucket's own
+        upper edge) lands in "2000-9999", not the 10000+ overflow -- pins the
+        exclusive-upper-bound convention against an off-by-one."""
+        payload = "x" * 9999
+        command = f"python3 -c '{payload}'"
+        records = [_opus([_bash_use("b1", command)])]
+        stats = _mod._scan_instrument_authoring_session(records)
+        assert stats["size_hist"][("main", "2000-9999")] == 1
+        assert stats["size_hist"][("main", "10000+")] == 0
+
+    @pytest.mark.parametrize("chars,expected_bucket", [
+        (0, "0-99"), (99, "0-99"),
+        (100, "100-499"), (499, "100-499"),
+        (500, "500-1999"), (1999, "500-1999"),
+        (2000, "2000-9999"), (9999, "2000-9999"),
+        (10000, "10000+"), (50000, "10000+"),
+    ])
+    def test_instrument_authoring_size_bucket_boundaries(self, chars, expected_bucket):
+        assert _mod._instrument_authoring_size_bucket(chars) == expected_bucket
+
+    def test_cohort_arithmetic_sums_across_multiple_sessions(self):
+        """The load-bearing computation: two zero-dispatch sessions carrying
+        large payloads plus two dispatched sessions carrying small ones must
+        produce the two cohort totals the go/no-go rule reads."""
+        def _session_stats(*, spawn_dispatch_n, main_payload_chars):
+            stats = _mod._new_instrument_authoring_stats()
+            stats["spawn_dispatch_n"] = spawn_dispatch_n
+            stats["main_payload_chars"] = main_payload_chars
+            return stats
+
+        sessions = [
+            _session_stats(spawn_dispatch_n=0, main_payload_chars=500),
+            _session_stats(spawn_dispatch_n=0, main_payload_chars=500),
+            _session_stats(spawn_dispatch_n=1, main_payload_chars=10),
+            _session_stats(spawn_dispatch_n=1, main_payload_chars=10),
+        ]
+        _stats, cohort_totals = _mod._aggregate_instrument_authoring_sessions(sessions)
+        assert cohort_totals["zero_dispatch"]["session_n"] == 2
+        assert cohort_totals["dispatched"]["session_n"] == 2
+        assert cohort_totals["zero_dispatch"]["payload_chars"] == 1000
+        assert cohort_totals["dispatched"]["payload_chars"] == 20
+
+
+# ---------------------------------------------------------------------------
+# cache-efficiency
+# ---------------------------------------------------------------------------
+
+
+def _cache_efficiency_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    no_redact: bool = False,
+    extra_config_dirs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "no_redact": no_redact,
+        "extra_config_dirs": extra_config_dirs,
+    })()
+
+
+class TestCachePrefixTotal:
+    """Direct unit tests for _cache_prefix_total's usage-dict traversal --
+    the read-collapse classifier's prior-turn denominator."""
+
+    def test_excludes_input_tokens(self):
+        """input_tokens must not contribute to the prefix total -- only
+        cache_read_input_tokens and both cache_creation tiers count, per the
+        function's own documented differentiator from _context_at_turn. A
+        prior turn carrying only input_tokens (no cache fields at all) must
+        report a prefix total of zero, not the input_tokens value."""
+        usage = _priced("claude-sonnet-5", input=50_000, cache_read=0)["message"]["usage"]
+        assert _mod._cache_prefix_total(usage) == 0
+
+    def test_sums_read_and_both_cache_write_tiers(self):
+        usage = _priced("claude-sonnet-5", cache_read=1000, ephemeral_1h=200, ephemeral_5m=300)["message"]["usage"]
+        assert _mod._cache_prefix_total(usage) == 1500
+
+
+class TestCacheEfficiencyClassifier:
+    """Direct unit tests for the read-collapse classifier
+    (docs/case-studies/cold-cache-attribution.md), scored at
+    T=_COLD_READ_COLLAPSE_MARGIN=0.50 -- the margin the case study measured
+    as the maximum Youden's J across every threshold tested there."""
+
+    def test_margin_boundary_exactly_at_t_is_not_cold(self):
+        """collapse == T (not strictly greater than T) stays warm: prior
+        prefix 100, this turn's read 50 -> exactly 0.50 collapse."""
+        assert _mod._is_cold_read_collapse(100, 50) is False
+
+    def test_margin_boundary_just_past_t_is_cold(self):
+        """One token further past the same prior prefix flips the
+        classification: prior prefix 100, read 49 -> 0.51 collapse."""
+        assert _mod._is_cold_read_collapse(100, 49) is True
+
+    def test_zero_prior_prefix_is_never_cold(self):
+        """No prefix to collapse from -- covers both a prior turn whose own
+        prefix total was genuinely zero and (via _scan_cache_efficiency_group
+        below) a session's first turn, which has no prior turn at all."""
+        assert _mod._is_cold_read_collapse(0, 0) is False
+
+
+class TestCacheEfficiencyGroupScan:
+    """Direct unit tests for _scan_cache_efficiency_group's classification
+    over one source-file group -- the layer TestCacheEfficiencyClassifier's
+    pure-function tests can't reach, since the first-turn carve-out depends
+    on the per-session prior-turn chain, not the margin comparison alone."""
+
+    def test_first_turn_of_session_with_zero_read_is_not_cold(self):
+        """A session's first assistant turn has no predecessor, so a
+        first-turn read==0 (e.g. a genuinely fresh context) must not be
+        misread as a cold re-write -- the first-turn carve-out."""
+        records = [_priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100)]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["turns"] == 1
+        assert stats["main"]["cold_events"] == 0
+
+    def test_non_first_turn_with_zero_read_after_nonzero_prior_is_cold(self):
+        """The non-first-turn counterpart to the carve-out above: a turn
+        following a real prior prefix, whose own read collapses to zero,
+        must classify cold."""
+        records = [
+            _priced("claude-sonnet-5", cache_read=1000, request_id="r1"),
+            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r2"),
+        ]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["cold_events"] == 1
+        assert stats["main"]["cold_tokens"] == 500
+
+    def test_compact_boundary_resets_the_chain(self):
+        """A compact_boundary record resets the prior-turn chain -- the turn
+        immediately after compaction is treated as a first turn (not cold),
+        since the pre-compaction prefix it would otherwise be compared
+        against no longer exists."""
+        records = [
+            _priced("claude-sonnet-5", cache_read=100_000, request_id="r1"),
+            _compact_boundary_rec(),
+            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2"),
+        ]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["cold_events"] == 0
+
+    def test_input_heavy_prior_turn_not_treated_as_cache_prefix(self):
+        """A prior turn with a large input_tokens value but zero cache
+        fields contributes nothing to the prior-prefix chain (per
+        _cache_prefix_total's documented exclusion) -- the next turn's own
+        cache_read must not be misclassified as a collapse against that
+        input-heavy, uncached prefix. A buggy _cache_prefix_total that
+        folded input_tokens back in would see a 50,000-token prior prefix
+        and flag turn 2 as cold; this expects no such collapse."""
+        records = [
+            _priced("claude-sonnet-5", input=50_000, cache_read=0, request_id="r1"),
+            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2"),
+        ]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["cold_events"] == 0
+
+    def test_return_value_counts_sidechain_assistant_records_read(self):
+        """The int return value counts isSidechain assistant records seen in
+        this group, independent of stats['sidechain']['turns'] -- feeds the
+        drift canary via _cache_efficiency_report's total_sidechain_turns
+        accumulation."""
+        side_rec = _priced("claude-sonnet-5", cache_read=100)
+        side_rec["isSidechain"] = True
+        records = [_priced("claude-sonnet-5", cache_read=50), side_rec]
+        stats = _mod._new_cache_efficiency_stats()
+        sidechain_turns_read = _mod._scan_cache_efficiency_group(records, stats)
+        assert sidechain_turns_read == 1
+
+    def test_second_session_first_turn_does_not_inherit_first_sessions_chain(self):
+        """The carve-out is keyed by sessionId, not by turn position within
+        the group: a second session's first turn must not inherit a first
+        session's already-built prior-prefix chain, even though both turns
+        appear in the same source-file group."""
+        session_a_turn = _priced("claude-sonnet-5", cache_read=10_000, request_id="r1")
+        session_a_turn["sessionId"] = "session-a"
+        session_b_first_turn = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2")
+        session_b_first_turn["sessionId"] = "session-b"
+        records = [session_a_turn, session_b_first_turn]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["cold_events"] == 0
+
+    def test_sidechain_turn_buckets_separately_from_main(self):
+        """isSidechain routes a turn into its own thread bucket, mirroring
+        cost's and subagents' own main/sidechain split."""
+        side_rec = _priced("claude-sonnet-5", cache_read=200)
+        side_rec["isSidechain"] = True
+        records = [_priced("claude-sonnet-5", cache_read=100), side_rec]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["main"]["turns"] == 1
+        assert stats["main"]["read_tokens"] == 100
+        assert stats["sidechain"]["turns"] == 1
+        assert stats["sidechain"]["read_tokens"] == 200
+
+    def test_sidechain_first_turn_does_not_inherit_mains_prior_prefix(self):
+        """The prior-prefix chain is keyed by (sessionId, thread), not
+        sessionId alone: a sidechain record sharing the main record's
+        sessionId (the real-world shape -- a subagent file's records carry
+        the parent session's sessionId) must not inherit the main thread's
+        prior prefix. Values are chosen so cross-thread contamination would
+        flip the verdict: main's prefix (10,000) vastly exceeds the
+        sidechain's own read (0), so a shared chain would misclassify the
+        sidechain's first turn as a cold collapse."""
+        main_rec = _priced("claude-sonnet-5", cache_read=10_000)
+        main_rec["sessionId"] = "session-a"
+        side_rec = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100)
+        side_rec["isSidechain"] = True
+        side_rec["sessionId"] = "session-a"
+        records = [main_rec, side_rec]
+        stats = _mod._new_cache_efficiency_stats()
+        _mod._scan_cache_efficiency_group(records, stats)
+        assert stats["sidechain"]["cold_events"] == 0
+
+
+class TestCacheEfficiency:
+    def test_turn_and_token_totals_and_cold_share_hand_computed(self, fake_projects, capsys):
+        """End-to-end report totals against a small hand-computed fixture:
+        turn 1 (no predecessor) is never cold; turn 2 is a warm append
+        (read stays at turn 1's full prefix); turn 3's read collapses to
+        zero against turn 2's 1,200-token prefix -- cold, contributing its
+        own 500 write-5m tokens as cold tokens."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=1000, request_id="r1"),
+            _priced("claude-sonnet-5", cache_read=1000, ephemeral_5m=200, request_id="r2"),
+            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r3"),
+        ])
+        _mod._cache_efficiency_report(_cache_efficiency_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Turns"] == "3"
+        assert cols["Read"] == "2,000"
+        assert cols["Write5m"] == "700"
+        assert cols["ColdTok"] == "500"
+        assert cols["ColdEvts"] == "1"
+
+    def test_multi_record_turn_split_across_jsonl_lines_not_misread_cold(self, fake_projects, capsys):
+        """Claude Code writes one JSONL record per assistant content block
+        (thinking/text/tool_use), all sharing one requestId and identical
+        cache_read/cache_creation usage (_dedup_turns_by_request_id's own
+        documented invariant). Without deduping each source-file group
+        before classification, the second record of that same turn would
+        read as a second turn whose read 'collapsed' against the first
+        record's own (identical) usage -- a false cold event on a turn that
+        never actually ended. Guards _cache_efficiency_report's per-group
+        _dedup_turns_by_request_id call."""
+        rec1 = _priced("claude-sonnet-5", cache_read=100, ephemeral_5m=10_000, request_id="req-1")
+        rec2 = _priced("claude-sonnet-5", cache_read=100, ephemeral_5m=10_000, request_id="req-1")
+        _write_jsonl(fake_projects / "sess.jsonl", [rec1, rec2])
+        _mod._cache_efficiency_report(_cache_efficiency_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Turns"] == "1"
+        assert cols["ColdEvts"] == "0"
+
+    def test_no_assistant_turns_prints_zeroes_without_division_error(self, fake_projects, capsys):
+        """A session with no assistant turns at all (e.g. only a user
+        message) prints a clean zero-state row rather than raising
+        ZeroDivisionError -- mirrors edit-format's own zero-state coverage."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
+        _mod._cache_efficiency_report(_cache_efficiency_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Turns"] == "0"
+        assert cols["Cold/Wr"] == "0.0%"
+
+    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+        """--no-redact is refused when --config-dir puts more than one root
+        in scope, mirroring cost's/edit-format's/read-scope's own refusal."""
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cache_efficiency(_cache_efficiency_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
+        assert exc_info.value.code == 2
+        assert "--no-redact" in capsys.readouterr().err
+
+    def test_no_redact_allowed_alone_with_single_root_content_unchanged(self, fake_projects, capsys):
+        """--no-redact with no --config-dir (single root) is unaffected —
+        this report's content never varies with redact, since it carries no
+        project name or session ID, but the banner still prints for CLI
+        parity with cost/edit-format/read-scope."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        _mod._cache_efficiency_report(_cache_efficiency_args(no_redact=True))
+        out = capsys.readouterr().out
+        assert _mod._DO_NOT_PUBLISH_BANNER in out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Turns"] == "1"
+
+    def test_no_redact_refused_by_report_itself_even_when_called_directly(self, tmp_path, capsys):
+        """Defense-in-depth: _cache_efficiency_report must refuse the
+        multi-root + --no-redact combination itself rather than trusting
+        that _resolve_cost_roots already validated it, mirroring
+        test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly.
+        Refusal happens before any output is printed."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
+            _priced("claude-sonnet-5", cache_read=200),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cache_efficiency_report(_cache_efficiency_args(no_redact=True), roots=[root_a, root_b])
+        assert exc_info.value.code == 2
+        assert capsys.readouterr().out == ""
+
+    def test_per_account_breakdown_uses_account_n_labels_not_raw_paths(self, tmp_path, capsys):
+        """Per-account figures are emitted through account-N labels — never
+        the raw config-dir path or account-identifying directory name — the
+        same discipline edit-format's own per-account breakdown carries."""
+        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
+            _priced("claude-sonnet-5", cache_read=200),
+            _priced("claude-sonnet-5", cache_read=300),
+        ])
+        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert "acct-alice-clientwork" not in out
+        assert "acct-bob-clientwork" not in out
+        assert str(root_a) not in out
+        assert str(root_b) not in out
+        account_1 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=2)
+        account_2 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=3)
+        assert account_1["Turns"] == "1"
+        assert account_2["Turns"] == "2"
+
+    def test_per_account_breakdown_attributes_cold_events_to_the_correct_account(self, tmp_path, capsys):
+        """A cold event originating in one account's session must land in
+        that account's own per_account[ordinal] bucket, not leak into the
+        other account's bucket or only the aggregate. A bug in the
+        redact_ordinals/root_position lookup could pass a turn-counts-only
+        check while still misattributing cold figures across accounts."""
+        root_a_turn = _priced("claude-sonnet-5", cache_read=100)
+        root_a_turn["sessionId"] = "sess-a"
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [root_a_turn])
+
+        root_b_turn_1 = _priced("claude-sonnet-5", cache_read=1000, request_id="r1")
+        root_b_turn_1["sessionId"] = "sess-b"
+        root_b_turn_2 = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r2")
+        root_b_turn_2["sessionId"] = "sess-b"
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [root_b_turn_1, root_b_turn_2])
+        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        account_1 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=2)
+        account_2 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=3)
+        assert account_1["ColdEvts"] == "0"
+        assert account_1["ColdTok"] == "0"
+        assert account_2["ColdEvts"] == "1"
+        assert account_2["ColdTok"] == "500"
+
+
+class TestCacheEfficiencyArgparseWiring:
+    """Round-trips the real argparser, mirroring
+    TestPlanBoundaryArgparseWiring -- every other new test in this section
+    builds args via the hand-rolled _cache_efficiency_args() factory, which
+    cannot catch a dest= typo or missing set_defaults in the real parser."""
+
+    def test_registers_cache_efficiency_subcommand_with_expected_defaults(self):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["cache-efficiency"])
+        assert args.extra_config_dirs is None
+        assert args.no_redact is False
+        assert args.func == _mod.cmd_cache_efficiency
+
+    def test_config_dir_and_no_redact_wire_to_expected_attributes(self):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["cache-efficiency", "--config-dir", "X", "--no-redact"])
+        assert args.func is _mod.cmd_cache_efficiency
+        assert args.extra_config_dirs == ["X"]
+        assert args.no_redact is True
+
+
+# ---------------------------------------------------------------------------
 # cost-trend
 # ---------------------------------------------------------------------------
 
@@ -9565,7 +10723,7 @@ class TestCostTrendConfigDir:
     def test_default_root_alone_when_no_extra_config_dirs(self, tmp_path, monkeypatch):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         roots = _mod._resolve_cost_roots(_cost_trend_args(), subcommand="cost-trend")
         assert roots == [default_dir / "projects"]
 
@@ -9574,7 +10732,7 @@ class TestCostTrendConfigDir:
     ):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         acct_c = fake_config_dir_factory("acct-c")
         roots = _mod._resolve_cost_roots(
@@ -9587,7 +10745,7 @@ class TestCostTrendConfigDir:
     ):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         roots = _mod._resolve_cost_roots(
             _cost_trend_args(extra_config_dirs=[str(acct_b), str(acct_b) + "/."]), subcommand="cost-trend"
@@ -9597,7 +10755,7 @@ class TestCostTrendConfigDir:
     def test_nonexistent_root_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         missing = tmp_path / "does-not-exist"
         with pytest.raises(SystemExit) as exc_info:
             _mod._resolve_cost_roots(_cost_trend_args(extra_config_dirs=[str(missing)]), subcommand="cost-trend")
@@ -9611,7 +10769,7 @@ class TestCostTrendConfigDir:
     def test_root_without_projects_subdir_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         bogus = tmp_path / "bogus"
         bogus.mkdir()
         with pytest.raises(SystemExit) as exc_info:
@@ -9625,7 +10783,7 @@ class TestCostTrendConfigDir:
         """--config-dir + --this-repo end-to-end through cmd_cost_trend,
         mirroring TestCostMultiRootRedaction's own this-repo-composition test."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         slug = "-home-user-this-repo"
         proj_default = default_dir / "projects" / slug
         proj_default.mkdir(parents=True)
@@ -9638,7 +10796,7 @@ class TestCostTrendConfigDir:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _priced("claude-sonnet-5", input=2_000_000, ts="2026-06-01T10:00:00.000Z"),  # $4.00
         ])
-        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
 
         args = _cost_trend_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         _mod.cmd_cost_trend(args)
@@ -9652,7 +10810,7 @@ class TestCostTrendConfigDir:
         """The new per-root scan diagnostic labels each root account-N (not
         the raw config-dir path), matching cost's own labeling convention."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         proj_default = default_dir / "projects" / "-home-user-repo-a"
         proj_default.mkdir(parents=True)
         _write_jsonl(proj_default / "sess-a.jsonl", [
@@ -9677,7 +10835,7 @@ class TestCostTrendConfigDir:
         (Mechanism 2 step 4's new per-root diagnostic, cost-trend's own
         counterpart to cost's own per-root-empty-state coverage)."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         (default_dir / "projects").mkdir(parents=True)  # exists, holds no project dirs
         acct_b = fake_config_dir_factory("acct-b")
         proj_b = acct_b / "projects" / "-home-user-repo-b"
@@ -9703,7 +10861,7 @@ class TestCostTrendConfigDir:
         pinning the diagnostic's presence ties the absence-of-leak claim to
         the code path it's meant to guard."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         proj_default = default_dir / "projects" / "-home-user-secret-clientname-a"
         proj_default.mkdir(parents=True)
         _write_jsonl(proj_default / "sess-a.jsonl", [
@@ -9738,7 +10896,7 @@ class TestCostTrendConfigDir:
         PermissionError, so the redact-suppression logic here was analyzed
         but never actually exercised."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         (default_dir / "projects").mkdir(parents=True)
         acct_b = fake_config_dir_factory("acct-b")
         proj_b = acct_b / "projects" / "-home-user-repo-b"
@@ -9781,26 +10939,12 @@ class TestCostTrendConfigDir:
 
 
 @pytest.fixture()
-def cost_ledger_file(tmp_path, monkeypatch):
-    """Isolated docs/cost-ledger.md: a fresh file with the canonical header/
-    separator and zero data rows, matching the real committed file's own
-    shape. _cost_ledger_path is monkeypatched so every test in this section
-    reads/writes this file, never this repo's own tracked ledger."""
-    ledger_path = tmp_path / "cost-ledger.md"
-    ledger_path.write_text(
-        "# Cost-trend ledger\n\n"
-        + _mod._COST_LEDGER_HEADER_LINE + "\n"
-        + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
-    )
-    monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: ledger_path)
-    return ledger_path
-
-
-@pytest.fixture()
 def cost_ledger_enabled(tmp_path, monkeypatch):
-    """Isolated config dir carrying the cost-ledger opt-in sentinel, wired
-    the same way TestCostResolveRoots isolates config_dir() for --config-dir
-    tests."""
+    """Isolated config dir carrying the cost-ledger opt-in sentinel. Patches
+    _mod's own config_dir binding, not scope.config_dir: cost-ledger isn't in
+    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR, so its sentinel check
+    (config_dir() / ".cost-ledger-enabled") reads the shim's own import,
+    never scope.py's _resolve_cost_roots."""
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
@@ -9836,6 +10980,440 @@ def _cost_ledger_row(**overrides) -> dict:
     }
     row.update(overrides)
     return row
+
+
+# ---------------------------------------------------------------------------
+# cache-rebuild
+# ---------------------------------------------------------------------------
+
+
+def _cache_rebuild_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    threshold: int | None = None,
+    no_redact: bool = False,
+    extra_config_dirs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "threshold": threshold,
+        "no_redact": no_redact,
+        "extra_config_dirs": extra_config_dirs,
+    })()
+
+
+def _extract_cache_rebuild_summary(out: str) -> dict[str, str]:
+    """Read cache-rebuild's 'Calls scanned: N' / 'Calls writing >= T tokens:
+    N' summary lines as {"scanned": ..., "tail": ...}."""
+    scanned = re.search(r"Calls scanned: ([\d,]+)", out)
+    tail = re.search(r"Calls writing >= [\d,]+ tokens: ([\d,]+)", out)
+    assert scanned is not None, "'Calls scanned' line not found in output"
+    assert tail is not None, "'Calls writing >= ... tokens' line not found in output"
+    return {"scanned": scanned.group(1).replace(",", ""), "tail": tail.group(1).replace(",", "")}
+
+
+def _extract_cache_rebuild_row(out: str, row_label: str) -> tuple[int, str]:
+    """Read one (count, dollars) row from cache-rebuild's cause-breakdown,
+    concurrency-split, or per-account table by its leading label -- labels
+    may contain spaces, so this matches the row as a literal line prefix
+    rather than reusing _table_cols' one-token-per-column model. The
+    cause-breakdown table has no dollars column, so a 1-cell row is read as
+    (count, "")."""
+    for line in out.splitlines():
+        if line.startswith(row_label):
+            rest = line[len(row_label):].split()
+            if len(rest) == 1:
+                return int(rest[0].replace(",", "")), ""
+            if len(rest) == 2:
+                return int(rest[0].replace(",", "")), rest[1]
+    raise AssertionError(f"row not found for {row_label!r}")
+
+
+class TestCacheRebuildExcessPricing:
+    """Direct unit coverage for _cache_rebuild_excess_dollars -- new pricing
+    logic (the counterfactual warm-read leg) not exercised by any of
+    _price_turn's own existing tests."""
+
+    def test_fast_mode_multiplier_applies_to_both_write_and_warm_read_dollars(self):
+        """Mirrors _price_turn's own fast-mode multiplier on the
+        counterfactual warm-read leg too, not just the actual write leg --
+        otherwise a fast-mode call's excess would overstate the gap between
+        what was paid and what a warm hit would have cost."""
+        usage = _priced("claude-sonnet-5", ephemeral_5m=1_000_000, speed="fast")["message"]["usage"]
+        excess, unpriced_tokens = _mod._cache_rebuild_excess_dollars("claude-sonnet-5", usage)
+        # write: 1,000,000/1e6 * 2.00*1.25*2(fast) = 5.00; warm read:
+        # 1,000,000/1e6 * 2.00*0.10*2(fast) = 0.40; excess = 4.60.
+        assert excess == pytest.approx(4.60)
+        assert unpriced_tokens == 0
+
+    def test_unpriced_model_returns_none_excess_not_a_silent_zero(self):
+        """A model absent from _MODEL_BASE_INPUT_RATES must not silently
+        price its excess as $0 -- callers distinguish 'unpriced' from
+        'priced at zero' via the None sentinel, matching _price_turn's own
+        unpriced-model contract."""
+        usage = _priced("claude-unknown-model", ephemeral_5m=1_000_000, input=10, output=5)["message"]["usage"]
+        excess, unpriced_tokens = _mod._cache_rebuild_excess_dollars("claude-unknown-model", usage)
+        assert excess is None
+        assert unpriced_tokens > 0
+
+
+class TestCacheRebuildClassification:
+    """Direct coverage for _cache_rebuild_report's per-call cause
+    classification and priced excess, against a single hand-built
+    transcript exercising every case Verification item 1 in
+    .claude/plans/context-cost-root-cause.md names."""
+
+    def test_dedup_synthetic_exclusion_cause_classification_and_priced_excess(
+        self, fake_projects, capsys
+    ):
+        """One transcript combining: a multi-record requestId run (must
+        dedup to one small, non-tail call), a requestId-less <synthetic>
+        entry (must be excluded from both pricing and the i/prev_ts/
+        prev_model bookkeeping), the transcript's own first call (must
+        classify session start, never an idle bucket), a flat-field
+        cache_creation fallback (classifies unexplained at a sub-5-minute
+        gap; its pricing-as-5m-only is covered separately by
+        test_flat_cache_creation_fallback_priced_as_5m_only), a record with
+        no timestamp at all and,
+        separately, a negative-gap clock-skew pair and a genuinely garbled
+        (non-empty) timestamp string (all three must classify as the
+        explicit timestamp-anomaly bucket, never silently folded into idle
+        or unexplained), a 6-minute gap (idle 5m-1h, with its priced excess
+        hand-computed below), and a model switch at a sub-5-minute gap
+        (classifies model switch, not unexplained)."""
+        run_ts = "2026-08-01T10:01:00.000Z"
+        records = [
+            # i=0: first call ever -- session start, regardless of tail size.
+            _priced("claude-sonnet-5", ephemeral_5m=150_000, ts="2026-08-01T10:00:00.000Z", request_id="req-first"),
+            # Three raw records sharing one requestId: one JSONL record per
+            # content block, dedup must collapse this run to one logical
+            # call. Small (non-tail) so it doesn't add a 4th tail call.
+            _priced("claude-sonnet-5", ephemeral_5m=500, ts=run_ts, request_id="req-multi", output=3),
+            _priced("claude-sonnet-5", ephemeral_5m=500, ts=run_ts, request_id="req-multi", output=3),
+            _priced("claude-sonnet-5", ephemeral_5m=500, ts=run_ts, request_id="req-multi", output=50),
+            # requestId-less synthetic entry, large enough that its wrongful
+            # inclusion would be obvious in the cause-breakdown totals below.
+            _priced("<synthetic>", ephemeral_5m=500_000, ts="2026-08-01T10:02:00.000Z"),
+            # gap from the merged run (10:01:00) is 120s: not idle, same
+            # model -- unexplained. Flat-field fallback (no nested
+            # cache_creation block) -- see test_flat_cache_creation_fallback_priced_as_5m_only
+            # for the pricing-as-5m-only coverage this fixture shape doesn't
+            # itself price.
+            _priced(
+                "claude-sonnet-5", flat_cache_creation=180_000,
+                ts="2026-08-01T10:03:00.000Z", request_id="req-flat",
+            ),
+            # No timestamp at all -- distinct from the clock-skew case below
+            # (both endpoints present but out of order): here the call's own
+            # endpoint is missing, so no gap can be computed either way.
+            _priced("claude-sonnet-5", ephemeral_5m=210_000, ts="", request_id="req-absentts"),
+            # Clock skew: 30s BEFORE req-flat's own timestamp (the absent-ts
+            # record above never updates the tracked "previous timestamp") --
+            # negative gap, must classify as the explicit anomaly bucket too.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=250_000,
+                ts="2026-08-01T10:02:30.000Z", request_id="req-negts",
+            ),
+            # 6-minute gap from the clock-skew record's own (still valid)
+            # timestamp -- idle 5m-1h. Excess hand-computed below.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=300_000,
+                ts="2026-08-01T10:08:30.000Z", request_id="req-idle",
+            ),
+            # 60s gap (not idle) but a different, still-priced model --
+            # model switch, not unexplained.
+            _priced(
+                "claude-opus-5", ephemeral_5m=220_000,
+                ts="2026-08-01T10:09:30.000Z", request_id="req-switch",
+            ),
+            # Genuinely garbled, non-empty timestamp string -- distinct from
+            # the absent-timestamp case above, must land in the same
+            # explicit anomaly bucket rather than raising or silently
+            # excluding the call from the scan entirely.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=150_000,
+                ts="not-a-date", request_id="req-malformed-ts",
+            ),
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        # Dedup: 11 raw records collapse to 8 logical calls (the 3-record
+        # run counts once); the synthetic entry is excluded entirely (not 9).
+        summary = _extract_cache_rebuild_summary(out)
+        assert summary["scanned"] == "8"
+        assert summary["tail"] == "7"
+
+        # Cause-breakdown rows are (count, share%) -- only the count is
+        # asserted here, per-cause share formatting is not this test's concern.
+        assert _extract_cache_rebuild_row(out, "session start")[0] == 1
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
+        assert _extract_cache_rebuild_row(out, "idle >1h")[0] == 0
+        assert _extract_cache_rebuild_row(out, "model switch")[0] == 1
+        assert _extract_cache_rebuild_row(out, "unexplained")[0] == 1
+        # The absent-timestamp, negative-gap, and malformed-timestamp
+        # records all land here.
+        assert _extract_cache_rebuild_row(out, "excluded (timestamp anomaly)")[0] == 3
+
+        # 300,000 5m-tier cache-write tokens at claude-sonnet-5's $2.00/MTok
+        # base: write $0.75 (1.25x), warm-read-equivalent $0.06 (0.1x),
+        # excess $0.69. Single-transcript fixture: no other session was ever
+        # active, so this lands in "everything idle", not "another session".
+        assert _extract_cache_rebuild_row(out, "Everything idle (a break)") == (1, "0.69")
+        assert _extract_cache_rebuild_row(out, "Another session active") == (0, "0.00")
+
+
+class TestCacheRebuildGroupBoundary:
+    """Verification item 1 (.claude/plans/context-cost-root-cause.md):
+    is_first_call/gap_seconds/model_changed must reset at every
+    _read_session_file_partitioned group boundary, not just once at the top
+    of the whole flattened (main thread + subagent files) session."""
+
+    def test_subagent_groups_own_first_call_never_inherits_main_threads_gap(
+        self, fake_projects, capsys
+    ):
+        """A subagent group's own first call is a large (>=threshold)
+        cache-write landing only 6 minutes after the main thread's own
+        (small) first call -- in flattened file-concatenation order this
+        would fall inside the main thread's own idle-5m-1h gap window.
+        Classified per group instead, the subagent's own first call has no
+        predecessor within its own group and must classify session start,
+        never an idle-gap/model-switch/unexplained cause carried over from
+        the main thread's prior call."""
+        session_id = "sess-boundary"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+        ])
+        subagent_rec = _priced(
+            "claude-sonnet-5", ephemeral_5m=200_000,
+            ts="2026-08-01T10:06:00.000Z", request_id="sub-1",
+        )
+        subagent_rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_cache_rebuild_summary(out)
+        assert summary["scanned"] == "2"
+        assert summary["tail"] == "1"
+
+        assert _extract_cache_rebuild_row(out, "session start")[0] == 1
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
+        assert _extract_cache_rebuild_row(out, "model switch")[0] == 0
+        assert _extract_cache_rebuild_row(out, "unexplained")[0] == 0
+
+
+class TestCacheRebuildCacheTierGapMismatch:
+    """Verification item 4: a call's cache-write tier, not just its elapsed
+    gap, gates the idle-5m-1h cause -- a purely ephemeral_1h-tier write
+    inside a <1h gap cannot have been forced by that gap's TTL expiry, since
+    the 1h-tier cache would still be warm."""
+
+    def test_pure_1h_tier_write_in_5m_1h_gap_reclassifies_unexplained(self, fake_projects, capsys):
+        """A 6-minute gap whose tail write is entirely ephemeral_1h-tier
+        (no ephemeral_5m tokens at all) falls to unexplained, not idle
+        5m-1h -- the 1h-TTL cache can't have expired inside 6 minutes."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=200_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="r2-pure-1h",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
+        assert _extract_cache_rebuild_row(out, "unexplained")[0] == 1
+
+    def test_mixed_tier_write_in_5m_1h_gap_still_classifies_idle(self, fake_projects, capsys):
+        """The same 6-minute gap, but the tail write carries SOME
+        ephemeral_5m tokens alongside its ephemeral_1h tokens -- the
+        5m-tier portion could genuinely have been forced by the gap, so
+        this stays idle 5m-1h, not unexplained."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=50_000, ephemeral_5m=150_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="r2-mixed",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
+        assert _extract_cache_rebuild_row(out, "unexplained")[0] == 0
+
+
+class TestCacheRebuildThresholdBoundary:
+    def test_exactly_threshold_tokens_counts_as_tail_one_below_does_not(self, fake_projects, capsys):
+        """A call writing exactly the default 100,000-token threshold counts
+        as a large rebuild; one writing 99,999 does not -- the >= boundary
+        the corpus's own tail-call figures depend on."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=99_999, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
+            _priced("claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:00:01.000Z", request_id="r2"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        summary = _extract_cache_rebuild_summary(capsys.readouterr().out)
+        assert summary["scanned"] == "2"
+        assert summary["tail"] == "1"
+
+
+class TestCacheRebuildConcurrencySplit:
+    def test_own_subagent_activity_never_self_matches_and_cross_root_activity_flags_concurrent(
+        self, tmp_path, capsys
+    ):
+        """Three-root fixture (Verification item 3): root A's own session
+        has two idle-gap tail calls, and between them a subagent record
+        whose own timestamp falls INSIDE the first gap despite being
+        processed after both main-thread calls (subagent files are appended
+        after the main thread in _read_session_file's file-concatenation
+        order, not re-sorted by timestamp) -- proving a transcript's own
+        later record never counts as "another session" even when it lands
+        chronologically inside its own gap. Root B's own call falls inside
+        the SECOND gap, correctly flagging that gap concurrent. Root C is
+        valid but holds no transcripts at all -- the realistic state of a
+        rarely-used account, exercised here for no crash and no false
+        signal on either other root's classification."""
+        proj_slug = "-home-user-repo"
+        root_a = _write_cost_root(tmp_path, "acct-a", proj_slug, "sess-a", [
+            _priced("claude-sonnet-5", ephemeral_5m=500, ts="2026-08-01T10:00:00.000Z", request_id="a-1"),
+            # gap from a-1 is 600s -- idle 5m-1h. Window (10:00:00, 10:10:00).
+            _priced("claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:10:00.000Z", request_id="a-2"),
+            # gap from a-2 is 3,900s -- idle >1h. Window (10:10:00, 11:15:00).
+            _priced("claude-sonnet-5", ephemeral_1h=150_000, ts="2026-08-01T11:15:00.000Z", request_id="a-3"),
+        ])
+        subagent_rec = _priced(
+            "claude-sonnet-5", ephemeral_5m=500, ts="2026-08-01T10:05:00.000Z", request_id="a-sub",
+        )
+        subagent_rec["isSidechain"] = True
+        _write_subagent_jsonl(root_a / proj_slug, "sess-a", "agent-1", [subagent_rec])
+
+        # Falls inside the SECOND gap's window -- that gap must flag concurrent.
+        root_b = _write_cost_root(tmp_path, "acct-b", proj_slug, "sess-b", [
+            _priced("claude-sonnet-5", ephemeral_5m=500, ts="2026-08-01T10:35:00.000Z", request_id="b-1"),
+        ])
+
+        root_c = tmp_path / "acct-c"
+        root_c.mkdir()  # valid directory, no project dirs or transcripts at all
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[root_a, root_b, root_c])
+        out = capsys.readouterr().out
+
+        assert "[unverified]" in out
+
+        # 200,000 5m-tier tokens: write $0.50, warm read $0.04, excess $0.46.
+        assert _extract_cache_rebuild_row(out, "Everything idle (a break)") == (1, "0.46")
+        # 150,000 1h-tier tokens: write $0.60, warm read $0.03, excess $0.57.
+        assert _extract_cache_rebuild_row(out, "Another session active") == (1, "0.57")
+
+        # account-1 = acct-a (both idle-gap rebuilds live here, including
+        # the one whose own gap contained its own subagent's activity);
+        # account-2 = acct-b (its own call is other-session activity, never
+        # itself a rebuild); account-3 = acct-c (valid but empty).
+        assert _extract_cache_rebuild_row(out, "account-1") == (2, "1.03")
+        assert _extract_cache_rebuild_row(out, "account-2") == (0, "0.00")
+        assert _extract_cache_rebuild_row(out, "account-3") == (0, "0.00")
+
+
+class TestCacheRebuildMultiRootRegression:
+    def test_hand_computed_rebuild_count_and_dollar_total_match_the_union_across_two_roots(
+        self, tmp_path, capsys
+    ):
+        """Verification item 4: a generated corpus of known composition
+        (150 calls per root, 300 total), split across two synthetic roots.
+        Every 5th call after the first is a large (150,000-token, 5m-tier)
+        idle-gap rebuild, reached by a 400-second gap (inside the 5m-1h
+        idle bucket); every other call is a small, closely-spaced (10s)
+        filler that never crosses the threshold. Regresses against the
+        UNION total across both roots, not one root's own count --
+        aggregation across roots is exactly what this subcommand adds, and
+        a running total or requestId dedup scoped per-root instead of
+        post-union would hide here."""
+        calls_per_root = 150
+        idle_gap_indices = range(5, calls_per_root, 5)  # 5, 10, ..., 145 -> 29 per root
+        base_ts = datetime(2026, 8, 1, 0, 0, 0, tzinfo=UTC)
+
+        def _build_records(root_label: str) -> list[dict]:
+            records = []
+            ts = base_ts
+            for i in range(calls_per_root):
+                if i > 0:
+                    ts += timedelta(seconds=400 if i % 5 == 0 else 10)
+                is_rebuild = i > 0 and i % 5 == 0
+                records.append(_priced(
+                    "claude-sonnet-5",
+                    ephemeral_5m=150_000 if is_rebuild else 100,
+                    ts=ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    request_id=f"{root_label}-{i}",
+                ))
+            return records
+
+        root_x = _write_cost_root(tmp_path, "acct-x", "-home-user-repo", "sess-x", _build_records("x"))
+        root_y = _write_cost_root(tmp_path, "acct-y", "-home-user-repo", "sess-y", _build_records("y"))
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[root_x, root_y])
+        out = capsys.readouterr().out
+
+        expected_rebuilds = len(idle_gap_indices) * 2
+        # 150,000 5m-tier tokens at $2.00/MTok base: write $0.375, warm read
+        # $0.03, excess $0.345 per rebuild.
+        expected_excess = expected_rebuilds * 0.345
+
+        summary = _extract_cache_rebuild_summary(out)
+        assert summary["tail"] == str(expected_rebuilds)
+
+        idle_rebuilds, _idle_excess = _extract_cache_rebuild_row(out, "Everything idle (a break)")
+        concurrent_rebuilds, _concurrent_excess = _extract_cache_rebuild_row(out, "Another session active")
+        assert idle_rebuilds + concurrent_rebuilds == expected_rebuilds
+
+        total_rebuilds, total_excess = _extract_cache_rebuild_row(out, "Total idle-gap rebuilds")
+        assert total_rebuilds == expected_rebuilds
+        assert total_excess == f"{expected_excess:,.2f}"
+
+
+class TestCacheRebuildNoRedactMultiRootRefusal:
+    def test_no_redact_refused_by_cache_rebuild_report_itself_even_when_called_directly(self, tmp_path):
+        """Defense-in-depth, mirroring _cost_report's own version of this
+        test: _cache_rebuild_report must refuse the multi-root + --no-redact
+        combination itself rather than trusting that _resolve_cost_roots
+        already validated it -- every test in this module calls
+        _cache_rebuild_report directly, bypassing that CLI-level boundary."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cache_rebuild_report(_cache_rebuild_args(no_redact=True), roots=[root_a, root_b])
+        assert exc_info.value.code == 2
+
+
+class TestCacheRebuildArgparseWiring:
+    def test_parses_since_threshold_and_extra_config_dirs(self):
+        """cache-rebuild's real argparse wiring, not just the hand-rolled
+        _cache_rebuild_args() test shim -- --since defaults to
+        _CACHE_REBUILD_DEFAULT_SINCE ('30d'), unlike the shim's own
+        since=None default, so a caller relying on the shim alone would
+        never catch the two drifting apart."""
+        parser = _mod.build_parser()
+        args = parser.parse_args(["cache-rebuild"])
+        assert args.since == _mod._CACHE_REBUILD_DEFAULT_SINCE
+        assert args.threshold == _mod._CACHE_REBUILD_DEFAULT_THRESHOLD
+        assert args.extra_config_dirs is None
+
+        args = parser.parse_args([
+            "cache-rebuild", "--since", "7d", "--threshold", "50000",
+            "--config-dir", "/tmp/acct-b",
+        ])
+        assert args.since == "7d"
+        assert args.threshold == 50_000
+        assert args.extra_config_dirs == ["/tmp/acct-b"]
 
 
 def _reviewer_dispatch_records(
@@ -10438,7 +12016,7 @@ class TestCostLedgerPublishSafety:
         projects = tmp_path / "projects"
         proj = projects / "SENTINEL-PROJECT-marker"
         proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(proj / "SENTINEL-SESSION-marker.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -10617,14 +12195,14 @@ class TestCostLedgerSentinelGate:
         err = capsys.readouterr().err
         assert "must match" in err
 
-    def test_record_refuses_when_more_than_one_root_in_scope(
+    def test_record_refuses_when_multi_root_and_ledger_path_git_tracked(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
     ):
-        """Mechanism 8: --record refuses when a second account is in scope
-        via the declared-roots file, appending no row -- refusing this call
-        shape is what keeps mechanism 7's install.sh nudge from arming a
-        union commit to docs/cost-ledger.md, a public git-tracked file,
-        before the ledger's storage location is redesigned."""
+        """--record refuses when a second account is in scope via the
+        declared-roots file AND the resolved ledger path sits inside a git
+        working tree, appending no row -- refusing this call shape is what
+        keeps a union commit from landing in a path git could commit/push."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -10642,6 +12220,279 @@ class TestCostLedgerSentinelGate:
         assert exc_info.value.code == 2
         assert "more than one root is in scope" in capsys.readouterr().err
         assert cost_ledger_file.read_text() == before
+
+    def test_record_succeeds_when_multi_root_and_ledger_path_not_git_tracked(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """The ledger's default path is not git-tracked, so a second
+        declared account does not block --record -- only a git-tracked
+        destination does (see the git-tracked case above)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+        )
+        capsys.readouterr()
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+
+    def test_record_succeeds_when_multi_root_and_ledger_path_in_bare_repo(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """git rev-parse --is-inside-work-tree exits 0 with stdout "false"
+        for a bare repository (tracked by git, but not a work tree) -- pins
+        that this is treated the same as "not git-tracked", not misrouted
+        into the fail-closed branch."""
+        subprocess.run(["git", "init", "-q", "--bare"], cwd=tmp_path, check=True)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+        )
+        capsys.readouterr()
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+
+    def test_record_refuses_when_git_tracked_check_times_out(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """A timed-out git-tracked check fails closed (refuses) rather than
+        treating a hung check as "not tracked"."""
+        def _raise_timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=["git"], timeout=10)
+        monkeypatch.setattr(_mod.subprocess, "run", _raise_timeout)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_refuses_when_git_tracked_check_binary_missing(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """A missing git binary (FileNotFoundError, e.g. git absent from
+        PATH) fails closed (refuses) rather than raising past both except
+        clauses uncaught."""
+        def _raise_not_found(*args, **kwargs):
+            raise FileNotFoundError("git")
+        monkeypatch.setattr(_mod.subprocess, "run", _raise_not_found)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_refuses_when_git_tracked_check_stderr_has_invalid_utf8(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """Non-UTF-8 bytes on the git-tracked check's stderr (e.g. a
+        non-ASCII ancestor path in a permission-denied message) decode via
+        errors="replace" rather than raising UnicodeDecodeError uncaught,
+        which would otherwise crash --record instead of failing closed. A
+        fake `git` on PATH emits invalid UTF-8 so this doesn't depend on the
+        host's locale or filesystem permission semantics."""
+        fake_bin = tmp_path / "fake-git-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text("#!/bin/sh\nprintf '\\377\\376 permission denied\\n' >&2\nexit 128\n")
+        fake_git.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_refuses_when_git_tracked_check_exits_nonzero_unexpectedly(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """A non-zero git exit whose stderr doesn't match the expected "not
+        a git repository" text fails closed -- the branch most likely to
+        silently flip if that stderr text ever changes."""
+        def _fake_permission_denied(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: permission denied\n")
+        monkeypatch.setattr(_mod.subprocess, "run", _fake_permission_denied)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_refuses_when_multi_root_and_ledger_path_in_linked_worktree(
+        self, fake_projects, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """A linked worktree's directory contains a `.git` file (a worktree
+        pointer), not a `.git` directory -- this repo's own convention
+        (.claude/worktrees/<branch>/) makes that the dominant real-world
+        layout, and no other case here exercises it."""
+        main_repo = tmp_path / "main-repo"
+        subprocess.run(["git", "init", "-q", str(main_repo)], check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=main_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=main_repo, check=True)
+        (main_repo / "README.md").write_text("x\n")
+        subprocess.run(["git", "add", "README.md"], cwd=main_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=main_repo, check=True)
+        worktree_dir = tmp_path / "linked-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", str(worktree_dir), "-b", "wt-branch"],
+            cwd=main_repo, check=True,
+        )
+        ledger_path = worktree_dir / "cost-ledger.md"
+        ledger_path.write_text(
+            "# Cost-trend ledger\n\n"
+            + _mod._COST_LEDGER_HEADER_LINE + "\n"
+            + _mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+        )
+        monkeypatch.setattr(_mod, "_cost_ledger_path", lambda: ledger_path)
+
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = ledger_path.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert ledger_path.read_text() == before
+
+    def test_record_refuses_when_multi_root_and_ledger_path_git_tracked_even_with_force(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
+    ):
+        """Regression: --force skips the duplicate-(week, machine)-row check
+        in _upsert_cost_ledger_row, not the multi-root git-tracked refusal
+        above it -- pins that ordering against a future change that
+        special-cases --force to bypass this guard too."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(
+                _cost_ledger_args(record=True, machine_label="tstm1", force=True), date(2026, 6, 3)
+            )
+        assert exc_info.value.code == 2
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_succeeds_when_single_root_and_ledger_path_git_tracked(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path
+    ):
+        """The git-tracked check only runs when more than one root is in
+        scope -- a single declared account still succeeds against a
+        git-tracked ledger path, pinning that boundary against a future
+        edit to the `len(roots) > 1 and ...` guard."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+        )
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+
+    def test_record_not_redirected_by_inherited_git_dir_env(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch
+    ):
+        """An operator's shell exporting GIT_DIR/GIT_WORK_TREE for an
+        unrelated repo must not redirect the git-tracked check to that
+        repo's tracked status -- the check has to see the ledger path's own
+        (untracked) ancestor, not whatever the caller's env points at.
+        GIT_WORK_TREE is set to the ledger's own ancestor (not a sibling
+        directory) specifically so an unstripped env would answer "true"
+        (wrongly tracked) while the stripped env correctly answers "false" --
+        a sibling GIT_WORK_TREE answers "false" either way and wouldn't
+        discriminate the two behaviors."""
+        unrelated_repo = tmp_path / "unrelated-repo"
+        unrelated_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=unrelated_repo, check=True)
+        monkeypatch.setenv("GIT_DIR", str(unrelated_repo / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod._cost_ledger_report(
+            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+        )
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
 
 
 class TestCostLedgerDefaultPathCliWiring:
@@ -10667,7 +12518,7 @@ class TestCostLedgerDefaultPathCliWiring:
         projects = tmp_path / "projects"
         proj = projects / "-home-user-testrepo"
         proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(proj / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -11572,14 +13423,14 @@ class TestAuditRoutingSamples:
         match = re.search(r"\*\*Bash:\*\* `([^`]*)`", out)
         assert match is not None
         rendered_command = match.group(1)
-        assert rendered_command == "a" * _mod._BASH_COMMAND_DISPLAY_CHARS + "…"
+        assert rendered_command == "a" * _mod.render._BASH_COMMAND_DISPLAY_CHARS + "…"
 
     def test_format_md_fallback_for_unknown_tool(self):
         """_pretty_tool_call renders an unrecognised tool name using the **<Name>:** fallback."""
         # SomeOtherTool is not in _CODE_READ_TOOLS, so a turn using only it would never
         # be classified as code-read and would not reach _pretty_tool_call via the full
         # pipeline.  Testing the helper directly exercises the fallback rendering path.
-        rendered = _mod._pretty_tool_call({"name": "SomeOtherTool", "input": {"x": 1}})
+        rendered = _mod.render._pretty_tool_call({"name": "SomeOtherTool", "input": {"x": 1}})
         assert "**SomeOtherTool:**" in rendered
 
     def test_format_md_blockquotes_multiline_user_message(self, fake_projects, capsys):
@@ -11650,7 +13501,7 @@ class TestAuditRoutingSamples:
 
     def test_pretty_tool_call_bash_with_description(self):
         """_pretty_tool_call renders Bash with description as 'description — `cmd`'."""
-        result = _mod._pretty_tool_call({
+        result = _mod.render._pretty_tool_call({
             "name": "Bash",
             "input": {"command": "grep -rn foo bar/", "description": "Find foo"},
         })
@@ -11658,7 +13509,7 @@ class TestAuditRoutingSamples:
 
     def test_pretty_tool_call_bash_without_description(self):
         """_pretty_tool_call Bash without description falls back to bare command."""
-        result = _mod._pretty_tool_call({
+        result = _mod.render._pretty_tool_call({
             "name": "Bash",
             "input": {"command": "ls /tmp"},
         })
@@ -11850,6 +13701,345 @@ class TestAuditRoutingSamples:
         assert len(records) == 1
         assert records[0]["turn_index"] == 0
         assert records[0]["assistant_tool_call"] == {"name": "Read", "input": {"file_path": "/a.py"}}
+
+
+# ---------------------------------------------------------------------------
+# turn-shape / turn-shape-samples
+# ---------------------------------------------------------------------------
+
+
+def _turn_shape_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+    })()
+
+
+def _turn_shape_samples_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    sample: int = 100,
+    seed: int | None = 42,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "sample": sample,
+        "seed": seed,
+    })()
+
+
+class TestBashCommandIsMutatingGit:
+    """Direct unit tests for _bash_command_is_mutating_git — the delegation-rule
+    streak's mutating-git exclusion classifier."""
+
+    @pytest.mark.parametrize("subcommand", sorted(_mod._TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS))
+    def test_every_enumerated_mutating_subcommand_classifies_as_mutating(self, subcommand):
+        assert _mod._bash_command_is_mutating_git(f"git {subcommand} extra-arg") is True
+
+    @pytest.mark.parametrize(("command", "expected"), [
+        ("git status", False),
+        ("git log", False),
+        ("ls -la", False),
+        # Existing normalization (sudo-strip, env-prefix-strip, flag-value-drop)
+        # must keep classifying these as mutating once the segment-split refactor lands.
+        ("sudo git commit -m x", True),
+        ("FOO=bar git commit -m x", True),
+        ("git -C /some/path commit -m x", True),
+    ])
+    def test_read_only_and_normalization_edge_cases(self, command, expected):
+        assert _mod._bash_command_is_mutating_git(command) is expected
+
+    def test_mutating_git_after_shell_and_operator_still_classifies_as_mutating(self):
+        """"cd worktree && git commit -m wip" — the mutating git call isn't at
+        shlex.split's index 0/1 of the whole command, so a first-segment-only
+        check would miss it."""
+        assert _mod._bash_command_is_mutating_git("cd worktree && git commit -m wip") is True
+
+    def test_read_only_git_before_shell_and_operator_does_not_classify_as_mutating(self):
+        assert _mod._bash_command_is_mutating_git("git status && echo done") is False
+
+    def test_mutating_git_only_in_later_chained_segment_still_classifies_as_mutating(self):
+        """A segment where only a later chained command is mutating still trips
+        the classifier — every segment is checked, not just the first."""
+        assert _mod._bash_command_is_mutating_git("echo hi && git commit -m x") is True
+
+    def test_env_prefix_on_a_later_chained_segment_still_classifies_as_mutating(self):
+        """"cd dir && FOO=bar git commit" — the env-prefix strip must apply
+        per segment, not only once at the start of the whole command, or a
+        chained segment's own env-var assignment hides its mutating git call."""
+        assert _mod._bash_command_is_mutating_git("cd dir && FOO=bar git commit -m x") is True
+
+
+class TestTurnShapeBuckets:
+    """Boundary tests for the call-count and streak-length bucket ladders."""
+
+    @pytest.mark.parametrize(("call_count", "expected_bucket"), [
+        (3, "2-3"), (4, "4-7"), (7, "4-7"), (8, "8+"),
+    ])
+    def test_call_count_bucket_boundaries(self, call_count, expected_bucket):
+        assert _mod._turn_shape_call_count_bucket(call_count) == expected_bucket
+
+    @pytest.mark.parametrize(("streak_len", "expected_bucket"), [
+        (2, "2"), (3, "3-5"), (5, "3-5"), (6, "6-10"), (10, "6-10"), (11, "11+"),
+    ])
+    def test_streak_bucket_boundaries(self, streak_len, expected_bucket):
+        assert _mod._turn_shape_streak_bucket(streak_len) == expected_bucket
+
+
+class TestTurnShapeSessionTurns:
+    """Direct unit tests for _turn_shape_session_turns — the per-turn population
+    builder shared by cmd_turn_shape and cmd_turn_shape_samples."""
+
+    def test_same_request_id_records_merge_into_one_turn_with_summed_call_count(self):
+        """Three tool_use blocks split across three same-requestId records merge into
+        one turn with call_count=3 — the fixture uses separate records sharing one
+        requestId, not three blocks in a single record, so the dedup merge path is
+        actually exercised."""
+        records = [
+            _priced("claude-sonnet-5", input=10, output=5, request_id="req-1",
+                     content=[_bash_use("b1", "ls")]),
+            _priced("claude-sonnet-5", input=10, output=5, request_id="req-1",
+                     content=[_bash_use("b2", "pwd")]),
+            _priced("claude-sonnet-5", input=10, output=5, request_id="req-1",
+                     content=[_bash_use("b3", "whoami")]),
+        ]
+        turns = _mod._turn_shape_session_turns(records, None, "sess")
+        assert len(turns) == 1
+        assert turns[0]["call_count"] == 3
+
+    def test_dollar_field_matches_price_turn_for_the_turns_own_usage(self):
+        """A turn's own "dollars" field equals _price_turn's own price for that
+        turn's exact usage."""
+        rec = _priced("claude-sonnet-5", input=1000, output=500, cache_read=200,
+                        content=[_bash_use("b1", "ls")])
+        expected_dollars_by_class, _, _ = _mod._price_turn("claude-sonnet-5", rec["message"]["usage"])
+        turns = _mod._turn_shape_session_turns([rec], None, "sess")
+        assert turns[0]["dollars"] == sum(expected_dollars_by_class.values())
+
+    def test_zero_tool_call_turn_has_call_count_zero(self):
+        """A turn with no tool_use blocks (a text-only reply) has call_count 0, which
+        _turn_shape_call_count_bucket maps to bucket "0", not "1"."""
+        rec = _priced("claude-sonnet-5", input=10, output=5,
+                        content=[{"type": "text", "text": "just a reply"}])
+        turns = _mod._turn_shape_session_turns([rec], None, "sess")
+        assert turns[0]["call_count"] == 0
+        assert _mod._turn_shape_call_count_bucket(turns[0]["call_count"]) == "0"
+
+    def test_sidechain_turns_excluded_entirely(self):
+        """A session made entirely of isSidechain turns yields no entries at all,
+        regardless of how many tool_use blocks it carries or how they'd otherwise
+        bucket."""
+        rec = _asst("claude-sonnet-5", sidechain=True, content=[_bash_use("b1", "git status")],
+                     request_id="req-1")
+        rec["message"]["usage"] = {
+            "input_tokens": 10, "output_tokens": 5,
+            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+        }
+        turns = _mod._turn_shape_session_turns([rec], None, "sess")
+        assert turns == []
+
+    def test_null_git_branch_normalizes_the_same_as_empty_string(self):
+        """A record whose gitBranch is JSON null must normalize to the same "branch"
+        value as one whose gitBranch is "" — regression test for the
+        rec.get("gitBranch", "") vs rec.get("gitBranch") or "" divergence, which
+        only shows up when the key is present with an explicit null."""
+        rec1 = _priced("claude-sonnet-5", input=10, output=5, branch="",
+                         content=[_bash_use("b1", "ls")], request_id="r1")
+        rec2 = _priced("claude-sonnet-5", input=10, output=5, branch="",
+                         content=[_bash_use("b2", "pwd")], request_id="r2")
+        rec2["gitBranch"] = None
+        turns = _mod._turn_shape_session_turns([rec1, rec2], None, "sess")
+        assert turns[0]["branch"] == turns[1]["branch"] == ""
+        streaks = _mod._turn_shape_streaks(turns, require_bash=False)
+        assert [len(s) for s in streaks] == [2]
+
+    def test_since_ts_excludes_turns_before_cutoff_and_turns_with_no_timestamp(self):
+        """since_ts drops a turn timestamped before the cutoff and a turn with no
+        "timestamp" key at all (_parse_ts returns None for a missing timestamp,
+        which must not compare as in-scope)."""
+        before_cutoff = _priced("claude-sonnet-5", ts="2026-01-01T00:00:00.000Z", input=10, output=5,
+                                  content=[_bash_use("b1", "ls")], request_id="r1")
+        after_cutoff = _priced("claude-sonnet-5", ts="2026-06-01T00:00:00.000Z", input=10, output=5,
+                                 content=[_bash_use("b2", "pwd")], request_id="r2")
+        no_timestamp = _priced("claude-sonnet-5", ts="", input=10, output=5,
+                                 content=[_bash_use("b3", "whoami")], request_id="r3")
+        cutoff = _mod._parse_ts("2026-03-01T00:00:00.000Z")
+        turns = _mod._turn_shape_session_turns([before_cutoff, after_cutoff, no_timestamp], cutoff, "sess")
+        assert [t["command"] for t in turns] == ["pwd"]
+
+
+class TestTurnShapeStreaks:
+    """Direct unit tests for _turn_shape_streaks — the batching- and
+    delegation-rule streak builder."""
+
+    def test_gitbranch_change_ends_the_current_streak(self):
+        """Two single-call turns on branch A followed by two on branch B produce two
+        separate length-2 streaks, not one length-4 streak."""
+        records = [
+            _priced("claude-sonnet-5", input=10, output=5, branch="main",
+                     content=[_bash_use("b1", "git status")], request_id="r1"),
+            _priced("claude-sonnet-5", input=10, output=5, branch="main",
+                     content=[_bash_use("b2", "git status")], request_id="r2"),
+            _priced("claude-sonnet-5", input=10, output=5, branch="feature",
+                     content=[_bash_use("b3", "git status")], request_id="r3"),
+            _priced("claude-sonnet-5", input=10, output=5, branch="feature",
+                     content=[_bash_use("b4", "git status")], request_id="r4"),
+        ]
+        turns = _mod._turn_shape_session_turns(records, None, "sess")
+        streaks = _mod._turn_shape_streaks(turns, require_bash=False)
+        assert [len(s) for s in streaks] == [2, 2]
+
+    def test_mutating_git_breaks_delegation_streak_but_not_batching_streak(self):
+        """git commit is in the mutating-git set, so it does not extend the
+        delegation streak, but still extends the batching streak; git status
+        extends both."""
+        records = [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git status")], request_id="r1"),
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b2", "git commit -m msg")], request_id="r2"),
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b3", "git status")], request_id="r3"),
+        ]
+        turns = _mod._turn_shape_session_turns(records, None, "sess")
+        batching_streaks = _mod._turn_shape_streaks(turns, require_bash=False)
+        delegation_streaks = _mod._turn_shape_streaks(turns, require_bash=True)
+        # Batching streak: all three turns qualify regardless of Bash subcommand.
+        assert [len(s) for s in batching_streaks] == [3]
+        # Delegation streak: git commit breaks it into two length-1 streaks.
+        assert [len(s) for s in delegation_streaks] == [1, 1]
+
+
+class TestCmdTurnShape:
+    """Thin integration checks that cmd_turn_shape wires the pure functions above
+    into its printed tables and unpriced-turn caveat correctly — branch and
+    boundary coverage lives in TestTurnShapeSessionTurns/TestTurnShapeStreaks/
+    TestTurnShapeBuckets above, not here."""
+
+    def test_prints_call_count_and_streak_tables_from_the_same_corpus(self, fake_projects, capsys):
+        """A 3-call turn lands in the "2-3" call-count bucket with its priced dollar
+        total, and the same corpus's two single-call turns form one length-2
+        batching streak — confirms cmd_turn_shape's table rendering reads the same
+        population/aggregation the pure functions above compute. r3 is a mutating
+        git command so the batching and delegation streak tables diverge
+        numerically (batching counts both single-call turns; delegation excludes
+        r3 and sees only r4) — a fixture where both tables end up identical would
+        pass even if cmd_turn_shape swapped which population feeds which table."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5, request_id="req-1",
+                     content=[_bash_use("b1", "ls"), _bash_use("b2", "pwd")]),
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b3", "git commit -m x")], request_id="r3"),
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b4", "git log")], request_id="r4"),
+        ])
+        expected_dollars_by_class, _, _ = _mod._price_turn(
+            "claude-sonnet-5",
+            {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0,
+             "cache_creation_input_tokens": 0},
+        )
+        expected_turn_dollars = sum(expected_dollars_by_class.values())
+        _mod.cmd_turn_shape(_turn_shape_args())
+        out = capsys.readouterr().out
+        call_cols = _table_cols(
+            out, header_contains="Bucket", row_contains="2-3", row_startswith=True, occurrence=1,
+        )
+        assert call_cols["Turns"] == "1"
+        assert call_cols["$"] == _mod._fmt_usd(expected_turn_dollars)
+        batching_cols = _table_cols(
+            out, header_contains="Bucket", row_contains="2", row_startswith=True, occurrence=2,
+        )
+        assert batching_cols["Streaks"] == "1"
+        assert batching_cols["$"] == _mod._fmt_usd(expected_turn_dollars * 2)
+        # Delegation table (occurrence=3): r3's mutating git commit excludes it,
+        # so only r4 qualifies — a length-1 streak, not length-2. "1 " (with a
+        # trailing space) disambiguates the "1" bucket row from "11+", which
+        # also starts with the character "1".
+        delegation_len1_cols = _table_cols(
+            out, header_contains="Bucket", row_contains="1 ", row_startswith=True, occurrence=3,
+        )
+        assert delegation_len1_cols["Streaks"] == "1"
+        assert delegation_len1_cols["$"] == _mod._fmt_usd(expected_turn_dollars)
+        delegation_len2_cols = _table_cols(
+            out, header_contains="Bucket", row_contains="2", row_startswith=True, occurrence=3,
+        )
+        assert delegation_len2_cols["Streaks"] == "0"
+
+    def test_prints_unpriced_turn_caveat_beneath_the_tables(self, fake_projects, capsys):
+        """A turn priced under an unrecognized model contributes $0.00 silently to
+        every bucket unless surfaced via the "(N unpriced turns / M tokens
+        excluded from priced spend)" caveat every sibling dollar-weighted
+        subcommand prints — claude-opus-4-7 is deliberately unpriced (see _opus's
+        own docstring)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-opus-4-7", input=100, output=400, cache_read=0,
+                     content=[_bash_use("b1", "ls")], request_id="r1"),
+        ])
+        _mod.cmd_turn_shape(_turn_shape_args())
+        out = capsys.readouterr().out
+        assert "1 unpriced turns / 500 tokens excluded from priced spend" in out
+
+
+class TestTurnShapeSamples:
+    def test_banner_present_and_no_file_written(self, fake_projects, tmp_path, capsys):
+        """--samples output is stamped with the DO NOT PUBLISH banner and never
+        writes a file, verified by a before/after directory-tree diff."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git status")], request_id="r1"),
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b2", "git log")], request_id="r2"),
+        ])
+        before = set(tmp_path.rglob("*"))
+        _mod.cmd_turn_shape_samples(_turn_shape_samples_args())
+        out = capsys.readouterr().out
+        after = set(tmp_path.rglob("*"))
+        assert out.startswith(_mod._DO_NOT_PUBLISH_BANNER)
+        assert before == after
+
+    def test_no_exception_on_empty_flagged_population(self, fake_projects, capsys):
+        """A corpus with no streak of length >= 2 emits only the banner, with no
+        candidates and no exception."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5, content=[
+                {"type": "tool_use", "id": "e1", "name": "Edit", "input": {}},
+                {"type": "tool_use", "id": "e2", "name": "Edit", "input": {}},
+            ], request_id="r1"),
+        ])
+        _mod.cmd_turn_shape_samples(_turn_shape_samples_args())
+        out = capsys.readouterr().out
+        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
+
+    def test_candidate_body_renders_rule_length_dollars_session_and_turn_detail(self, fake_projects, capsys):
+        """The rendered candidate body — the exact text a calibration rater reads —
+        carries the rule name, streak length, dollar total, session id, and one
+        "N. tool_name: command" line per turn, for a hand-computed 2-turn streak.
+        Both turns invoke mutating git, so only a "batching" candidate forms (the
+        delegation streak excludes mutating git entirely), keeping the assertion
+        unambiguous."""
+        rec1 = _priced("claude-sonnet-5", input=10, output=5,
+                         content=[_bash_use("b1", "git commit -m a")], request_id="r1")
+        rec2 = _priced("claude-sonnet-5", input=10, output=5,
+                         content=[_bash_use("b2", "git commit -m b")], request_id="r2")
+        _write_jsonl(fake_projects / "sess.jsonl", [rec1, rec2])
+        expected_dollars_by_class, _, _ = _mod._price_turn("claude-sonnet-5", rec1["message"]["usage"])
+        expected_total = _mod._fmt_usd(sum(expected_dollars_by_class.values()) * 2)
+        _mod.cmd_turn_shape_samples(_turn_shape_samples_args())
+        out = capsys.readouterr().out
+        assert f"--- batching streak, length=2, {expected_total}, session=sess ---" in out
+        assert "1. Bash: git commit -m a" in out
+        assert "2. Bash: git commit -m b" in out
+        assert "delegation streak" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -12403,7 +14593,7 @@ class TestSkillInvocation:
         proj_b = projects / "-home-user-repoB"
         proj_a.mkdir(parents=True)
         proj_b.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         # repoA has a skill invocation; repoB has a different skill
         rec_a = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("ta1", "code-review")])
         rec_b = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tb1", "plan-review")])
@@ -12535,7 +14725,7 @@ class TestSkillInvocation:
         proj_b = projects / "-home-user-repoB"
         proj_a.mkdir(parents=True)
         proj_b.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         rec_a = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tc1", "code-review")])
         rec_b = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tc2", "code-review")])
         _write_jsonl(proj_a / "s_a.jsonl", [rec_a])
@@ -12754,7 +14944,7 @@ class TestSkillInvocationRepoScope:
         theirs = projects / "-other-project"
         mine.mkdir(parents=True)
         theirs.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [
             _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("x1", "code-review")]),
         ])
@@ -12824,7 +15014,7 @@ class TestSkillInvocationRepoScope:
         theirs = projects / "-home-u-rX-main"     # a wildcard on 'mine' would match this
         mine.mkdir(parents=True)
         theirs.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [
             _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("y1", "code-review")]),
         ])
@@ -12859,7 +15049,7 @@ class TestSkillInvocationRepoScope:
         linked_dir = projects / "-repo--claude-worktrees-feat"  # slug of the linked worktree
         main_dir.mkdir(parents=True)
         linked_dir.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(main_dir / "s.jsonl", [
             _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("m1", "code-review")]),
         ])
@@ -12932,7 +15122,7 @@ class TestRepoScopedProjectSlugsGuard:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         slugs = _mod._repo_scoped_project_slugs("duration")
-        assert slugs == [_mod._path_to_project_slug("/repo")]
+        assert slugs == [_mod.scope._path_to_project_slug("/repo")]
 
     def test_sibling_repo_sharing_string_prefix_is_rejected(self, monkeypatch, capsys):
         """cwd inside a sibling path sharing the same string prefix (<repo>-fork)
@@ -13006,7 +15196,7 @@ class TestResolveProjectScope:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="main")])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -13033,7 +15223,7 @@ class TestResolveProjectScope:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
@@ -13107,18 +15297,18 @@ class TestPathToProjectSlug:
     """The slug transform and its known, accepted lossiness."""
 
     def test_main_repo_path(self):
-        assert _mod._path_to_project_slug("/home/u/repo") == "-home-u-repo"
+        assert _mod.scope._path_to_project_slug("/home/<user>/repo") == "-home-<user>-repo"
 
     def test_worktree_path(self):
-        assert (_mod._path_to_project_slug("/home/u/repo/.claude/worktrees/b")
-                == "-home-u-repo--claude-worktrees-b")
+        assert (_mod.scope._path_to_project_slug("/home/<user>/repo/.claude/worktrees/b")
+                == "-home-<user>-repo--claude-worktrees-b")
 
     def test_known_slug_collision_is_accepted(self):
         """`/` and `.` both map to `-`, so distinct paths can collapse to one slug.
         This is Claude Code's own dir-naming scheme, not ours to change; the repo
         scoping accepts this residual (see _repo_scoped_project_slugs). Pinned so a
         later refactor cannot silently assume injectivity."""
-        assert _mod._path_to_project_slug("/home/u/a/b") == _mod._path_to_project_slug("/home/u/a.b")
+        assert _mod.scope._path_to_project_slug("/home/<user>/a/b") == _mod.scope._path_to_project_slug("/home/<user>/a.b")
 
 
 # ---------------------------------------------------------------------------
@@ -13601,11 +15791,11 @@ class TestSubagentsMultiRoot:
         therefore always sorts first regardless — that shared setup cannot
         catch this regression class, the same blind spot PR #603's own
         pre-fix edit-format test had."""
-        monkeypatch.setattr(_mod, "declared_transcript_roots", lambda: [])
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         active_proj = active / "projects" / "-home-user-active-repo"
         active_proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: active)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
         _write_jsonl(active_proj / "sess-active.jsonl", [
             _asst("claude-opus-4-7", branch="feat"),
         ])
@@ -13733,6 +15923,125 @@ class TestFormatDriftCanary:
         # The drift canary fires: spawns=1 (main-thread Agent), sidechain_turns=0
         # (subagent record has no isSidechain field → not counted as sidechain).
         assert "WARNING" in captured.err
+
+    def test_drift_warning_also_fires_in_cost(self, fake_projects, capsys):
+        """cmd_cost also emits the drift warning when spawns have no
+        sidechain turns -- _cost_report now accumulates total_spawns/
+        total_sidechain_turns through its own per-session loop instead of
+        never calling _warn_if_subagent_format_drift at all."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_no_warning_in_cost_on_healthy_corpus(self, fake_projects, capsys):
+        """A corpus with no subagent spawns at all draws no drift warning
+        from cmd_cost -- the negative counterpart, so the canary is known to
+        stay silent on ordinary data rather than firing unconditionally."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_drift_warning_also_fires_in_cache_efficiency(self, fake_projects, capsys):
+        """cmd_cache_efficiency also emits the drift warning when spawns
+        have no sidechain turns."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_no_warning_in_cache_efficiency_on_healthy_corpus(self, fake_projects, capsys):
+        """The negative counterpart for cmd_cache_efficiency: no spawns, no
+        warning."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cache_efficiency_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
+        """The true no-drift case: a spawn paired with an actual sidechain
+        assistant turn in the subagents/ file. The spawn-only case above
+        (sidechain=0) and the no-spawn case (sidechain=0) both leave
+        total_sidechain_turns at 0 regardless of whether
+        _scan_cache_efficiency_group's return value is summed correctly --
+        only this spawn=1/sidechain=1 case proves the accumulation actually
+        works, since a dropped or off-by-one return value would still print
+        no warning in the other two cases but would wrongly warn here."""
+        session_id = "sess-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        side_rec = _priced("claude-sonnet-5", cache_read=100)
+        side_rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
+        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cost_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
+        """The cmd_cost counterpart to
+        test_no_warning_in_cache_efficiency_with_spawn_and_real_sidechain_turn
+        above: a spawn paired with an actual priced sidechain turn is the
+        true no-drift case and must not warn."""
+        session_id = "sess-side-cost"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        side_rec = _priced("claude-sonnet-5", cache_read=100)
+        side_rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cost_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
+        """The sidechain-turn count in _cost_report happens before the
+        usage-presence check (per that code's own comment), so an unpriced
+        sidechain assistant turn -- message.usage == {}, via _asst's default,
+        never _priced -- must still count toward total_sidechain_turns and
+        keep the canary silent. The priced-sidechain test above cannot catch
+        a regression that moves the count after the usage check, since a
+        priced turn passes either ordering."""
+        session_id = "sess-unpriced-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [
+            _asst("claude-opus-4-7", branch="main", sidechain=True),
+        ])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cache_efficiency_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
+        """The cache-efficiency counterpart to the cost test above: an
+        unpriced sidechain assistant turn must still count toward
+        _scan_cache_efficiency_group's returned sidechain_turns_read, since
+        that count happens before the group scan's own `if not usage:
+        continue` guard."""
+        session_id = "sess-unpriced-side-ce"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [
+            _asst("claude-opus-4-7", branch="main", sidechain=True),
+        ])
+        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" not in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -15037,11 +17346,11 @@ def _fake_gh_pr_list_run(cmd, *a, **k):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
-# (cli_name, header_name, cmd_func, zero-arg args factory) for the 22
+# (cli_name, header_name, cmd_func, zero-arg args factory) for the 23
 # subcommands whose resolved-scope header prints unconditionally, even over
-# an empty scope — the 23rd and 24th funnel sites (review-trace,
-# skill-invocation) defer their header print until something is found, so
-# they get their own seeded-session tests below instead.
+# an empty scope. review-trace and skill-invocation print unconditionally
+# too, but carry zero-match message text and branches the other 23 don't, so
+# they get their own tests below rather than a row here.
 _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("buckets", "BUCKETS", _mod.cmd_buckets,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
@@ -15065,7 +17374,12 @@ _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("audit-routing", "AUDIT ROUTING", _mod.cmd_audit_routing, _audit_routing_args),
     ("cost", "COST", _mod.cmd_cost, _cost_args),
     ("context-distribution", "CONTEXT DISTRIBUTION", _mod.cmd_context_distribution, _context_distribution_args),
+    ("context-composition", "CONTEXT COMPOSITION", _mod.cmd_context_composition,
+     lambda: type("A", (), {
+         "projects": "*", "this_repo": False, "since": None, "no_redact": False, "extra_config_dirs": None,
+     })()),
     ("cost-trend", "COST TREND", _mod.cmd_cost_trend, _cost_trend_args),
+    ("cache-rebuild", "CACHE REBUILD", _mod.cmd_cache_rebuild, _cache_rebuild_args),
     ("handoff-ratio", "HANDOFF RATIO", _mod.cmd_handoff_ratio, _handoff_args),
     ("audit-routing-shape", "AUDIT ROUTING SHAPE", _mod.cmd_audit_routing_shape, _audit_routing_shape_args),
     ("audit-routing-samples", "AUDIT ROUTING SAMPLES", _mod.cmd_audit_routing_samples, _audit_routing_samples_args),
@@ -15074,7 +17388,13 @@ _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
      lambda: type("A", (), {"projects": "*", "this_repo": False, "no_redact": False, "extra_config_dirs": None})()),
     ("read-scope", "READ SCOPE", _mod.cmd_read_scope,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "no_redact": False, "extra_config_dirs": None})()),
+    ("instrument-authoring", "INSTRUMENT AUTHORING", _mod.cmd_instrument_authoring,
+     lambda: type("A", (), {"projects": "*", "this_repo": False, "extra_config_dirs": None})()),
     ("cost-ledger", "COST LEDGER", _mod.cmd_cost_ledger, _cost_ledger_args),
+    ("plan-boundary", "PLAN BOUNDARY", _mod.cmd_plan_boundary,
+     lambda: type("A", (), {
+         "projects": "*", "this_repo": False, "since": None, "no_redact": False, "extra_config_dirs": None,
+     })()),
     ("sessions", "SESSIONS", _mod.cmd_sessions,
      lambda: type("A", (), {
          "projects": "*", "this_repo": False, "paths": True, "include_subagents": False,
@@ -15104,9 +17424,9 @@ class TestAllSubcommandsSingleRootHeader:
         assert "scanning root" not in combined, f"{subcommand}: a single-root run must not print a per-root progress line"
 
     def test_review_trace_header_states_one_root_once_a_session_matches(self, fake_projects, capsys):
-        """review-trace defers its header print until the first emitted event
-        block, so an empty scope prints nothing at all (unchanged, long-
-        standing behavior) — seed one qualifying session to reach the header."""
+        """review-trace prints its header before the scan regardless of match
+        count; seed one qualifying session so the matched path is covered here
+        (the zero-match path has its own test)."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
@@ -15118,8 +17438,8 @@ class TestAllSubcommandsSingleRootHeader:
         assert "scanning root" not in combined
 
     def test_skill_invocation_header_states_one_root_once_a_skill_matches(self, fake_projects, capsys):
-        """skill-invocation also defers its header print until at least one
-        skill invocation is found (pre-existing behavior, unchanged here)."""
+        """skill-invocation prints its header before the zero-match return;
+        this covers the matched path (the zero-match path has its own test)."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
@@ -15129,6 +17449,117 @@ class TestAllSubcommandsSingleRootHeader:
         assert "SKILL INVOCATION SOURCES (" in combined
         assert self._HEADER_SUFFIX in combined
         assert "scanning root" not in combined
+
+    def test_review_trace_zero_match_still_states_its_scope(self, fake_projects, capsys):
+        """A zero-match run is the case the header exists for: at one root no
+        per-root progress line prints either, so without this the run is
+        byte-for-byte silent and a mis-scoped scan reads as a genuine empty."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(branches="no-such-branch"))
+        out, err = capsys.readouterr()
+        assert "REVIEW TRACE SOURCES (" in out
+        assert self._HEADER_SUFFIX in out
+        assert "No sessions matched in scope." in out
+        assert "### " not in out, "no session block should be emitted on a zero-match run"
+        assert "scanning root" not in out + err
+
+    def test_review_trace_deny_summary_zero_match_still_states_its_scope(self, fake_projects, capsys):
+        """--deny-summary's third state — scope matched no sessions at all, as
+        distinct from matching sessions that carried no denial."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True, branches="no-such-branch"))
+        out, err = capsys.readouterr()
+        assert "REVIEW TRACE SOURCES (" in out
+        assert self._HEADER_SUFFIX in out
+        assert "No sessions matched in scope." in out
+        assert "No denials found in scope." not in out, (
+            "zero sessions matched is a different state from matched-but-no-denials"
+        )
+        assert "scanning root" not in out + err
+
+    def test_skill_invocation_zero_match_still_states_its_scope(self, fake_projects, capsys):
+        """The not-found message alone cannot distinguish a wrongly-scoped scan
+        from a correctly-scoped empty one; the header is what separates them."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_skill_invocation(_skill_inv_args(branches="no-such-branch"))
+        out, err = capsys.readouterr()
+        assert "SKILL INVOCATION SOURCES (" in out
+        assert self._HEADER_SUFFIX in out
+        assert "No skill invocations found." in out
+        assert "scanning root" not in out + err
+
+    def test_skill_invocation_zero_match_header_names_the_subagent_thread_scope(
+        self, fake_projects, capsys
+    ):
+        """The thread-scope clause is part of what a zero-match run must disclose —
+        'searched main+subagents and found nothing' is a different claim from
+        'searched the main thread and found nothing'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_skill_invocation(
+            _skill_inv_args(branches="no-such-branch", include_subagents=True)
+        )
+        out = capsys.readouterr().out
+        assert "main+subagents" in out
+        assert "No skill invocations found." in out
+
+    _DISTINCTIVE_GLOB = "-home-user-somerepo-worktrees-somebranch"
+
+    def test_review_trace_zero_match_header_echoes_an_explicit_projects_glob_verbatim(
+        self, fake_projects, capsys
+    ):
+        """review-trace's scope label IS the glob, so an operator's own --projects
+        value reaches stdout even at zero matches — the reason the section's
+        not-publish-safe warning has to cover empty runs. Pinned so a later
+        'redact the empty case to be safe' change breaks a test, not a promise."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(
+            _review_trace_args(projects=self._DISTINCTIVE_GLOB, branches="no-such-branch")
+        )
+        out = capsys.readouterr().out
+        assert "REVIEW TRACE SOURCES (" in out
+        assert self._DISTINCTIVE_GLOB in out
+
+    def test_skill_invocation_zero_match_header_does_not_echo_the_projects_glob(
+        self, fake_projects, capsys
+    ):
+        """skill-invocation labels the escape hatch ('explicit --projects
+        (not repo-scoped)') instead of interpolating the glob, so its output stays
+        free of the operator's path even under --projects. That divergence from
+        review-trace is a minimization property, not an oversight."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_skill_invocation(
+            _skill_inv_args(projects=self._DISTINCTIVE_GLOB, branches="no-such-branch")
+        )
+        out = capsys.readouterr().out
+        assert "explicit --projects (not repo-scoped)" in out
+        assert self._DISTINCTIVE_GLOB not in out
+
+    def test_review_trace_deny_only_does_not_mask_which_zero_match_state_was_reached(
+        self, fake_projects, capsys
+    ):
+        """`any_session_matched` is set before the --deny-only skip, so a run whose
+        sessions matched but carried no denial must still say 'No denials found',
+        not 'No sessions matched'. Moving that assignment below the skip would
+        silently misreport scope coverage as empty."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True, deny_only=True))
+        out = capsys.readouterr().out
+        assert "No denials found in scope." in out
+        assert "No sessions matched in scope." not in out
 
 
 def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
@@ -15145,7 +17576,7 @@ def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
     (acct_a / "projects").mkdir(parents=True)
     acct_b = tmp_path / "acct-b"
     (acct_b / "projects").mkdir(parents=True)
-    monkeypatch.setattr(_mod, "PROJECTS_DIR", acct_a / "projects")
+    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
     roots_file = tmp_path / "roots"
     roots_file.write_text(f"{acct_b}\n")
@@ -15289,7 +17720,7 @@ class TestRootsThreadingSpy:
 
         _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*", single root (fake_projects' PROJECTS_DIR)
 
-        assert calls == [_mod.PROJECTS_DIR]
+        assert calls == [_mod.scope.PROJECTS_DIR]
 
 
 class TestThisRepoUnionsAcrossRoots:
@@ -15360,8 +17791,8 @@ class TestThisRepoUnionsAcrossRoots:
         same slug -- under --this-repo, both are admitted. A future change to
         slug derivation that silently alters this posture, in either
         direction, must fail this test."""
-        this_repo_slug = _mod._path_to_project_slug("/a/b/c")
-        foreign_path_slug = _mod._path_to_project_slug("/a/b.c")
+        this_repo_slug = _mod.scope._path_to_project_slug("/a/b/c")
+        foreign_path_slug = _mod.scope._path_to_project_slug("/a/b.c")
         assert this_repo_slug == foreign_path_slug == "-a-b-c"  # the collision this test pins
 
         root_a = tmp_path / "acct-a"
@@ -15377,7 +17808,7 @@ class TestThisRepoUnionsAcrossRoots:
 
         args = type("A", (), {"projects": "*", "this_repo": True})()
         args._this_repo_slugs = [this_repo_slug]
-        monkeypatch.setattr(_mod, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
 
         session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
@@ -15392,7 +17823,7 @@ class TestThisRepoUnionsAcrossRoots:
         proj_a = root_a / "-repo-main"
         proj_a.mkdir(parents=True)
         _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="feat-in-root-a")])
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", root_a)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", root_a)
 
         root_b = tmp_path / "acct-b-config"
         proj_b = root_b / "projects" / "-repo-main"
@@ -15492,7 +17923,7 @@ class TestPoisonedProjectsDirGlobal:
     def test_sessions_found_via_declared_root_despite_nonexistent_projects_dir(
         self, tmp_path, monkeypatch, capsys
     ):
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "nonexistent-active-profile" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "nonexistent-active-profile" / "projects")
         real_root = tmp_path / "real-account"
         proj = real_root / "projects" / "-home-user-testrepo"
         proj.mkdir(parents=True)
@@ -15521,7 +17952,7 @@ class TestMultiRootFormatOutliers:
         default_proj = default_config / "projects" / "-home-user-repo-a"
         default_proj.mkdir(parents=True)
         _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_config)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_config)
 
         declared_config = tmp_path / "declared-account"
         declared_proj = declared_config / "projects" / "-home-user-repo-b"
@@ -15658,12 +18089,12 @@ class TestResolveScanRoots:
     many such fixtures)."""
 
     def test_no_config_dir_no_declared_roots_returns_projects_dir_alone(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         args = argparse.Namespace(config_dir=None)
         assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
 
     def test_no_config_dir_with_declared_roots_unions_both(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         declared = tmp_path / "declared-account"
         (declared / "projects").mkdir(parents=True)
         roots_file = tmp_path / "roots"
@@ -15681,7 +18112,7 @@ class TestResolveScanRoots:
         """The flagship precedence rule: an explicit --config-dir wins outright,
         returning that one directory's projects/ subdirectory alone — the
         declared-roots file's entries are not unioned in on top of it."""
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         declared = tmp_path / "declared-account"
         (declared / "projects").mkdir(parents=True)
         roots_file = tmp_path / "roots"
@@ -15696,7 +18127,7 @@ class TestResolveScanRoots:
         """A hand-built test `args` Namespace that predates the top-level
         --config-dir flag (this file's many such fixtures) must not raise
         AttributeError -- its absence means "not passed," the real default."""
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         args = type("A", (), {})()  # no config_dir attribute at all
         assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
 
@@ -15708,7 +18139,7 @@ class TestResolveScanRoots:
         active profile is deduped, not double-listed."""
         active_config = tmp_path / "active-account"
         (active_config / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "PROJECTS_DIR", active_config / "projects")
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{active_config}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
@@ -15808,7 +18239,7 @@ class TestRootCountDescDirectUnit:
 
     def test_one_root_absent_roots_file_states_no_declared_roots_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
-        assert _mod._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+        assert _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
             "1 root (no ~/.claude/transcript-config-dirs declared)"
         )
 
@@ -15819,7 +18250,7 @@ class TestRootCountDescDirectUnit:
         roots_file = tmp_path / "roots"
         roots_file.write_text("# just a comment\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
-        desc = _mod._root_count_desc([tmp_path / "acct-a" / "projects"])
+        desc = _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"])
         assert "no ~/.claude/transcript-config-dirs declared" not in desc
         assert "~/.claude/transcript-config-dirs" in desc
 
@@ -15834,7 +18265,7 @@ class TestRootCountDescDirectUnit:
         roots_file_as_dir = tmp_path / "roots-is-a-directory"
         roots_file_as_dir.mkdir()
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file_as_dir))
-        assert _mod._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+        assert _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
             "1 root (~/.claude/transcript-config-dirs present but unreadable)"
         )
 
@@ -15843,8 +18274,8 @@ class TestRootCountDescDirectUnit:
         file, so the >1-root branch must not name the file at all."""
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
         roots = [tmp_path / "acct-a" / "projects", tmp_path / "acct-b" / "projects"]
-        assert _mod._root_count_desc(roots) == "2 roots"
-        assert "transcript-config-dirs" not in _mod._root_count_desc(roots)
+        assert _mod.scope._root_count_desc(roots) == "2 roots"
+        assert "transcript-config-dirs" not in _mod.scope._root_count_desc(roots)
 
     def test_absent_state_literal_appears_in_both_skill_files(self, tmp_path, monkeypatch):
         """Contract test, a tripwire not a full guarantee: derives
@@ -15855,7 +18286,7 @@ class TestRootCountDescDirectUnit:
         verbatim positive pin on its own scope-confirmation sentence (see
         each skill's dedicated tests) is the real contract."""
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
-        literal = _mod._root_count_desc([tmp_path / "acct-a" / "projects"])
+        literal = _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"])
         for skill_name in ("transcript-analysis", "transcript-narrative"):
             skill_text = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
             assert literal in skill_text, f"{skill_name}/SKILL.md does not quote _root_count_desc()'s literal"
@@ -15925,6 +18356,48 @@ class TestBuildRedactMapDirectUnit:
         assert redact_map == {
             (ordinal_a, "testrepo"): f"account-{ordinal_a}/private-project-1",
             (ordinal_b, "testrepo"): f"account-{ordinal_b}/private-project-1",
+        }
+
+    def test_subagent_only_project_with_unpriced_turns_still_shifts_sibling_ordinal(self, tmp_path):
+        """A project whose main .jsonl is empty and whose only subagent turn
+        carries no priced usage is still included in the label census
+        (iter_sessions only requires a non-empty records list, not priced
+        usage) — shifting a sorted-later priced sibling's ordinal even
+        though the phantom project itself is never looked up
+        (_cost_report's `if session_total:` gate skips zero-total
+        sessions)."""
+        root = tmp_path / "acct-a"
+        phantom = root / "-home-user-aaa-phantom"
+        phantom.mkdir(parents=True)
+        _write_jsonl(phantom / "sess-phantom.jsonl", [])
+        _write_subagent_jsonl(phantom, "sess-phantom", "agent-1", [_user_msg("hi")])
+
+        priced = root / "-home-user-zzz-priced"
+        priced.mkdir(parents=True)
+        _write_jsonl(priced / "sess-priced.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+
+        redact_map = _mod._build_redact_map([root])
+        assert redact_map["zzz-priced"] == "private-project-2"
+
+    def test_two_subagent_only_projects_get_distinct_sorted_labels(self, tmp_path):
+        """Sibling of the single-phantom ordinal-shift case above: two
+        projects visible only through subagent transcripts still get
+        distinct labels in sorted order, not a collision or a shared slot."""
+        root = tmp_path / "acct-a"
+        proj_a = root / "-home-user-aaa-phantom"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [])
+        _write_subagent_jsonl(proj_a, "sess-a", "agent-1", [_user_msg("hi")])
+
+        proj_b = root / "-home-user-zzz-phantom"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [])
+        _write_subagent_jsonl(proj_b, "sess-b", "agent-1", [_user_msg("hi")])
+
+        redact_map = _mod._build_redact_map([root])
+        assert redact_map == {
+            "aaa-phantom": "private-project-1",
+            "zzz-phantom": "private-project-2",
         }
 
 
@@ -16428,3 +18901,606 @@ class TestRearmBacktestReport:
         # abs= accounts for the table's own 2-decimal-place rounding
         # ($X,XXX.XX), not slack in the expected computation itself.
         assert total == pytest.approx(expected_total, abs=0.005)
+
+
+# ---------------------------------------------------------------------------
+# plan-boundary
+# ---------------------------------------------------------------------------
+
+
+class TestExtractRearmSessionTurnsModelAndPosition:
+    """main_thread_models / main_thread_record_positions are new parallel
+    lists alongside main_thread_turns, not a widening of its own 3-tuple
+    shape -- _ramp_curve_from_corpus, _simulate_rearm_spacing, and
+    _rearm_backtest_report all positionally unpack that tuple as
+    Sequence[tuple[int, int, float]]."""
+
+    def test_models_and_positions_are_parallel_to_main_thread_turns(self):
+        records = [
+            _priced("claude-opus-5", input=100, output=50, ts="2026-05-19T10:00:00.000Z"),
+            _user_msg("go", ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-sonnet-5", input=200, output=75, ts="2026-05-19T10:00:02.000Z"),
+        ]
+        data = _mod._extract_rearm_session_turns(records)
+        assert data["main_thread_models"] == ["claude-opus-5", "claude-sonnet-5"]
+        assert len(data["main_thread_record_positions"]) == len(data["main_thread_turns"])
+        for turn_index, record_index in enumerate(data["main_thread_record_positions"]):
+            rec = data["deduped"][record_index]
+            assert rec["message"]["model"] == data["main_thread_models"][turn_index]
+
+    def test_record_positions_skip_sidechain_and_no_usage_records(self):
+        """A no-usage synthetic record and a sidechain turn both advance
+        "deduped"'s own index but must not appear in
+        main_thread_record_positions -- that list only indexes usage-carrying
+        main-thread turns, mirroring _hook_observable_boundaries' own
+        desync guard."""
+        records = [
+            _asst("claude-opus-5", ts="2026-05-19T10:00:00.000Z"),  # no usage block
+            _priced_sidechain_asst("claude-opus-5", output_tokens=10, ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-opus-5", input=100, output=50, ts="2026-05-19T10:00:02.000Z"),
+        ]
+        data = _mod._extract_rearm_session_turns(records)
+        assert data["main_thread_record_positions"] == [2]
+
+
+class TestCacheMissReason:
+    """_cache_miss_reason parses message.diagnostics.cache_miss_reason."""
+
+    def test_returns_reason_when_present(self):
+        message = {
+            "diagnostics": {
+                "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 12345},
+            }
+        }
+        assert _mod._cache_miss_reason(message) == "model_changed"
+
+    def test_returns_none_when_diagnostics_absent(self):
+        assert _mod._cache_miss_reason({}) is None
+
+    def test_returns_none_when_diagnostics_not_a_dict(self):
+        assert _mod._cache_miss_reason({"diagnostics": "oops"}) is None
+
+    def test_returns_none_when_cache_miss_reason_absent(self):
+        assert _mod._cache_miss_reason({"diagnostics": {}}) is None
+
+    def test_returns_none_when_cache_miss_reason_not_a_dict(self):
+        assert _mod._cache_miss_reason({"diagnostics": {"cache_miss_reason": 42}}) is None
+
+    def test_returns_none_when_cache_miss_reason_type_not_a_string(self):
+        message = {"diagnostics": {"cache_miss_reason": {"type": 42}}}
+        assert _mod._cache_miss_reason(message) is None
+
+    def test_previous_message_not_found_reason_has_no_cache_missed_input_tokens_field(self):
+        """The previous_message_not_found variant carries no
+        cache_missed_input_tokens field at all -- the parser must not assume
+        its presence."""
+        message = {"diagnostics": {"cache_miss_reason": {"type": "previous_message_not_found"}}}
+        assert _mod._cache_miss_reason(message) == "previous_message_not_found"
+
+    def test_unavailable_reason_has_no_cache_missed_input_tokens_field(self):
+        """The unavailable variant also carries no cache_missed_input_tokens
+        field -- the parser must not assume its presence."""
+        message = {"diagnostics": {"cache_miss_reason": {"type": "unavailable"}}}
+        assert _mod._cache_miss_reason(message) == "unavailable"
+
+    def test_merged_run_takes_cache_miss_reason_from_first_record(self):
+        """_merge_assistant_run takes every non-content, non-usage field from
+        a requestId run's first record unchanged -- a merged turn's own
+        diagnostics survives with no extra collapsing logic added for it."""
+        rec_a = _priced("claude-opus-5", output=10, request_id="req-1")
+        rec_a["message"]["diagnostics"] = {
+            "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 999},
+        }
+        rec_b = _priced("claude-opus-5", output=20, request_id="req-1")
+        rec_b["message"]["diagnostics"] = {"cache_miss_reason": {"type": "something_else"}}
+        merged = _mod._dedup_turns_by_request_id([rec_a, rec_b])
+        assert len(merged) == 1
+        assert _mod._cache_miss_reason(merged[0]["message"]) == "model_changed"
+
+
+def _plan_boundary_turn_index(records: list[dict]) -> int | None:
+    """Run _extract_rearm_session_turns + _plan_boundary_turn_index end to
+    end -- the shape _plan_boundary_report itself uses."""
+    data = _mod._extract_rearm_session_turns(records)
+    return _mod._plan_boundary_turn_index(data["deduped"], data["main_thread_record_positions"])
+
+
+class TestPlanBoundaryTurnIndex:
+    def test_exit_plan_mode_signal_marks_the_boundary_turn(self):
+        records = [
+            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", output=20, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-opus-5", output=30, ts="2026-05-19T10:00:02.000Z"),
+        ]
+        assert _plan_boundary_turn_index(records) == 1
+
+    def test_plan_review_skill_invocation_signal_marks_the_boundary_turn(self):
+        records = [
+            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", output=20, content=[_skill_use("s1", "plan-review")], ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-opus-5", output=30, ts="2026-05-19T10:00:02.000Z"),
+        ]
+        assert _plan_boundary_turn_index(records) == 1
+
+    def test_no_boundary_signal_returns_none(self):
+        records = [
+            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", output=20, ts="2026-05-19T10:00:01.000Z"),
+        ]
+        assert _plan_boundary_turn_index(records) is None
+
+    def test_boundary_as_the_session_final_turn_still_resolves_a_turn_index(self):
+        """The divide-by-zero guard against zero post-boundary turns lives in
+        the report, not here -- this function must still return the correct
+        index when the boundary turn is the session's last one."""
+        records = [
+            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", output=20, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
+        ]
+        assert _plan_boundary_turn_index(records) == 1
+
+    def test_boundary_inside_sidechain_is_ignored(self):
+        records = [
+            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-opus-5", sidechain=True, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-opus-5", output=20, content=[_exit_plan_mode("epm2")], ts="2026-05-19T10:00:02.000Z"),
+        ]
+        assert _plan_boundary_turn_index(records) == 1
+
+    def test_multiple_boundaries_first_occurrence_wins(self):
+        """A session's later ExitPlanMode/plan-review calls are re-planning
+        inside work this measurement already treats as post-boundary -- the
+        first occurrence is the boundary, not the last."""
+        records = [
+            _priced("claude-opus-5", output=10, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", output=20, ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-opus-5", output=30, content=[_skill_use("s1", "plan-review")], ts="2026-05-19T10:00:02.000Z"),
+        ]
+        assert _plan_boundary_turn_index(records) == 0
+
+    def test_no_usage_record_before_boundary_does_not_desync_boundary_index(self):
+        """A main-thread assistant record with no usage block sitting before
+        the real boundary turn must not shift the boundary's own mapped
+        main_thread_turns index -- main_thread_record_positions gives
+        the boundary's own "deduped" record index directly, so no manual
+        turn-counting desync (the class of bug
+        test_synthetic_no_usage_record_does_not_desync_boundaries_from_main_thread_turns
+        guards in the sibling rearm-backtest code) is possible here."""
+        records = [
+            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-opus-5", ts="2026-05-19T10:00:01.000Z"),  # no usage block
+            _priced("claude-opus-5", output=20, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:02.000Z"),
+            _priced("claude-opus-5", output=30, ts="2026-05-19T10:00:03.000Z"),
+        ]
+        assert _plan_boundary_turn_index(records) == 1
+
+    def test_no_usage_record_at_the_trigger_itself_cannot_be_mapped_and_returns_none(self):
+        """A boundary signal on a record with no usage block has no entry in
+        main_thread_record_positions to map onto -- undetectable, not
+        silently mapped to the wrong main_thread_turns index."""
+        records = [
+            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-opus-5", content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),  # no usage
+            _priced("claude-opus-5", output=20, ts="2026-05-19T10:00:02.000Z"),
+        ]
+        assert _plan_boundary_turn_index(records) is None
+
+
+class TestArmBBoundaryPlusOneDollars:
+    def test_charges_sonnet_cache_write_over_boundary_context_and_own_new_tokens_no_cache_read(self):
+        """Component-level pin: expected values derive from
+        _model_rates("claude-sonnet-5") per token class, never a hardcoded
+        multiplier -- a hardcoded value would pass even if the price table
+        drifted."""
+        usage = {
+            "input_tokens": 500, "output_tokens": 1000,
+            "cache_read_input_tokens": 999_000,  # must be ignored entirely, never scaled
+            "cache_creation_input_tokens": 0,
+        }
+        boundary_context_tokens = 200_000
+        result = _mod._arm_b_boundary_plus_one_dollars(usage, boundary_context_tokens)
+
+        rates = _mod._model_rates("claude-sonnet-5")
+        expected = (
+            boundary_context_tokens / 1_000_000 * rates["cache_write_5m"]
+            + 500 / 1_000_000 * rates["input"]
+            + 1000 / 1_000_000 * rates["output"]
+        )
+        assert result == pytest.approx(expected)
+
+    def test_cache_read_never_changes_the_result(self):
+        """Regression guard against scaling the observed cache-read and also
+        charging a cache-write over the same tokens -- double-billing them
+        as both a read and a write."""
+        usage_no_read = {"input_tokens": 500, "output_tokens": 1000, "cache_read_input_tokens": 0}
+        usage_high_read = {"input_tokens": 500, "output_tokens": 1000, "cache_read_input_tokens": 500_000}
+        assert _mod._arm_b_boundary_plus_one_dollars(usage_no_read, 200_000) == pytest.approx(
+            _mod._arm_b_boundary_plus_one_dollars(usage_high_read, 200_000)
+        )
+
+
+class TestArmBLaterTurnDollars:
+    def test_prices_observed_read_write_split_at_sonnet_rates(self):
+        """Component-level pin: every turn after boundary+1 carries the
+        observed read/write split forward, priced at Sonnet rates via
+        _model_rates, not the turn's real (Opus) model."""
+        usage = {
+            "input_tokens": 200, "output_tokens": 800,
+            "cache_read_input_tokens": 50_000,
+            "cache_creation_input_tokens": 3_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 1_000, "ephemeral_5m_input_tokens": 2_000},
+        }
+        result = _mod._arm_b_later_turn_dollars(usage)
+
+        rates = _mod._model_rates("claude-sonnet-5")
+        expected = (
+            200 / 1_000_000 * rates["input"]
+            + 800 / 1_000_000 * rates["output"]
+            + 50_000 / 1_000_000 * rates["cache_read"]
+            + 1_000 / 1_000_000 * rates["cache_write_1h"]
+            + 2_000 / 1_000_000 * rates["cache_write_5m"]
+        )
+        assert result == pytest.approx(expected)
+
+    def test_zero_cache_creation_prices_cleanly(self):
+        usage = {
+            "input_tokens": 100, "output_tokens": 100,
+            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+        }
+        rates = _mod._model_rates("claude-sonnet-5")
+        expected = 100 / 1_000_000 * rates["input"] + 100 / 1_000_000 * rates["output"]
+        assert _mod._arm_b_later_turn_dollars(usage) == pytest.approx(expected)
+
+
+class TestArmCTurnDollars:
+    def test_prices_via_multiply_back_convention(self):
+        """Arm C prices (output_tokens/1000) * the ramp curve's own bucket
+        rate -- never a scaled actual-dollars figure, which would double-
+        count the model-price gap already embedded in the observed dollars."""
+        ramp_curve = {"0-5": {"rate": 3.5, "mean_context": 10_000}}
+        assert _mod._arm_c_turn_dollars(2_000, 0, ramp_curve) == pytest.approx((2_000 / 1000) * 3.5)
+
+    def test_falls_back_to_zero_rate_when_ramp_curve_has_no_bucket_entry(self):
+        assert _mod._arm_c_turn_dollars(1_000, 0, {}) == 0.0
+
+
+class TestPlanBoundaryWorkInflationBreakeven:
+    def test_breakeven_pin_against_hand_computed_delta(self):
+        """Hand-computed fixture: a $6 cheaper arm with a $4 delta over 100
+        post-boundary turns / 10,000 output tokens absorbs pct=4/6 more work
+        (~66.67 extra turns, ~6,666.7 extra output tokens) before the
+        advantage disappears."""
+        result = _mod._plan_boundary_work_inflation_breakeven(6.0, 4.0, 100, 10_000)
+        assert result["pct"] == pytest.approx(4.0 / 6.0)
+        assert result["extra_turns"] == pytest.approx(100 * (4.0 / 6.0))
+        assert result["extra_output_tokens"] == pytest.approx(10_000 * (4.0 / 6.0))
+
+    def test_zero_cheaper_dollars_returns_none_fields(self):
+        result = _mod._plan_boundary_work_inflation_breakeven(0.0, 4.0, 100, 10_000)
+        assert result == {"pct": None, "extra_turns": None, "extra_output_tokens": None}
+
+
+def _plan_boundary_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    no_redact: bool = False,
+    extra_config_dirs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "no_redact": no_redact,
+        "extra_config_dirs": extra_config_dirs,
+    })()
+
+
+def _opus_boundary_session(*, boundary_content: list | None = None) -> list[dict]:
+    """One Opus-anchored session with a plan boundary at main-thread turn
+    index 1 and two post-boundary turns -- the shared fixture for
+    plan-boundary's end-to-end report tests."""
+    boundary_content = boundary_content if boundary_content is not None else [_exit_plan_mode("epm1")]
+    return [
+        _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
+        _user_msg("approve the plan", ts="2026-05-19T10:00:01.000Z"),
+        _priced("claude-opus-5", input=2000, output=200, cache_read=100_000, content=boundary_content,
+                ts="2026-05-19T10:00:02.000Z"),
+        _user_msg("go", ts="2026-05-19T10:00:03.000Z"),
+        _priced("claude-opus-5", input=500, output=300, cache_read=150_000, ts="2026-05-19T10:00:04.000Z"),
+        _user_msg("go", ts="2026-05-19T10:00:05.000Z"),
+        _priced("claude-opus-5", input=500, output=400, cache_read=155_000, ts="2026-05-19T10:00:06.000Z"),
+    ]
+
+
+class TestPlanBoundaryReport:
+    def test_unpriced_sonnet_model_fails_at_report_start_not_mid_scan(self, fake_projects, monkeypatch, capsys):
+        """Arms B and C reprice every post-boundary turn at
+        _PLAN_BOUNDARY_SONNET_MODEL's rates; an unpriced model must fail the
+        whole report up front with a named message, not crash mid-scan on an
+        arbitrary turn."""
+        monkeypatch.setattr(_mod, "_PLAN_BOUNDARY_SONNET_MODEL", "claude-sonnet-5-unpriced-test-double")
+        _write_jsonl(fake_projects / "sess.jsonl", _opus_boundary_session())
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        assert exc_info.value.code != 0
+        assert "claude-sonnet-5-unpriced-test-double" in capsys.readouterr().err
+
+    def test_redacts_by_default(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", _opus_boundary_session())
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert _mod._DO_NOT_PUBLISH_BANNER not in out
+
+    def test_no_redact_prints_do_not_publish_banner(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", _opus_boundary_session())
+        _mod._plan_boundary_report(_plan_boundary_args(no_redact=True), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert _mod._DO_NOT_PUBLISH_BANNER in out
+
+    def test_no_redact_refused_by_report_itself_when_multi_root(self, tmp_path):
+        """Defense-in-depth, mirroring _cache_rebuild_report's own version of
+        this test: every test in this module calls _plan_boundary_report
+        directly, bypassing _resolve_cost_roots' CLI-level enforcement."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _opus_boundary_session())
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", _opus_boundary_session())
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._plan_boundary_report(_plan_boundary_args(no_redact=True), date(2026, 8, 16), roots=[root_a, root_b])
+        assert exc_info.value.code == 2
+
+    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+        """CLI-level enforcement, mirroring the sibling cost/context-distribution/
+        edit-format/subagent-mix tests of the same name: cmd_plan_boundary itself
+        (via _resolve_cost_roots), not just _plan_boundary_report, refuses the
+        combination."""
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_plan_boundary(_plan_boundary_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
+        assert exc_info.value.code == 2
+        assert "--no-redact" in capsys.readouterr().err
+
+    def test_output_never_contains_plan_text_or_plan_file_path(self, fake_projects, capsys):
+        """Negative assertion: a fixture record carrying plan text and
+        planFilePath must never surface in this report's output, redacted or
+        not -- boundary records are consumed for type and position only."""
+        secret_plan_text = "REDACT-ME-PLAN-BODY"
+        secret_plan_file_path = "REDACT-ME-PLAN-FILE-PATH"
+        session = _opus_boundary_session(
+            boundary_content=[{
+                "type": "tool_use", "id": "epm1", "name": "ExitPlanMode",
+                "input": {"plan": secret_plan_text, "planFilePath": secret_plan_file_path},
+            }]
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", session)
+        for no_redact in (False, True):
+            _mod._plan_boundary_report(
+                _plan_boundary_args(no_redact=no_redact), date(2026, 8, 16), roots=[fake_projects.parent]
+            )
+            out = capsys.readouterr().out
+            assert secret_plan_text not in out
+            assert secret_plan_file_path not in out
+            assert "planFilePath" not in out
+
+    def test_output_never_contains_a_per_session_breakdown(self, fake_projects, tmp_path, monkeypatch, capsys):
+        """Aggregate-only claim: across the whole argument surface (default
+        redact, --no-redact, --since, multi-root, --this-repo), no output
+        ever names an individual session."""
+        _write_jsonl(fake_projects / "sess-one.jsonl", _opus_boundary_session())
+        _write_jsonl(fake_projects / "sess-two.jsonl", _opus_boundary_session())
+        single_root = [fake_projects.parent]
+
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _opus_boundary_session())
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", _opus_boundary_session())
+        multi_root = [root_a, root_b]
+
+        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: ["-home-user-testrepo"])
+
+        for kwargs, roots in (
+            ({}, single_root),
+            ({"no_redact": True}, single_root),
+            ({"since": "365d"}, single_root),
+            ({}, multi_root),
+            ({"this_repo": True}, single_root),
+        ):
+            _mod._plan_boundary_report(_plan_boundary_args(**kwargs), date(2026, 8, 16), roots=roots)
+            out = capsys.readouterr().out
+            assert "sess-one" not in out
+            assert "sess-two" not in out
+            assert "sess-a" not in out
+            assert "sess-b" not in out
+            assert "session-" not in out  # _redact_session_id's own placeholder shape
+
+    def test_unpriced_post_boundary_model_lands_in_unpriced_turns_not_priced_at_zero(self, fake_projects, capsys):
+        """A post-boundary turn on a model with no price-table entry is
+        excluded from arm A's own dollar total and counted as unpriced, not
+        silently priced at $0 and folded in as if genuinely free."""
+        session = [
+            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", input=2000, output=200, cache_read=100_000,
+                    content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-opus-4-9-unpriced", input=500, output=300, ts="2026-05-19T10:00:02.000Z"),
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", session)
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "Plan-boundary sessions repriced: 1" in out
+        assert "1 unpriced turns" in out
+
+    def test_unpriced_post_boundary_turn_contributes_zero_dollars_to_every_arm_symmetrically(
+        self, fake_projects, capsys
+    ):
+        """An unpriced post-boundary turn among priced ones must be excluded
+        from arms B and C the same way it's already excluded from arm A --
+        repricing it from raw tokens would bias every dollar comparison
+        toward arm A."""
+        boundary_turn = _priced(
+            "claude-opus-5", input=2000, output=200, cache_read=100_000,
+            content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z",
+        )
+        priced_offset0 = _priced(
+            "claude-opus-5", input=500, output=300, cache_read=150_000, ts="2026-05-19T10:00:02.000Z"
+        )
+        unpriced_offset1 = _priced(
+            "claude-opus-4-9-unpriced", input=600, output=400, cache_read=99_000, ts="2026-05-19T10:00:03.000Z"
+        )
+        priced_offset2 = _priced(
+            "claude-opus-5", input=500, output=250, cache_read=160_000, ts="2026-05-19T10:00:04.000Z"
+        )
+        session = [
+            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
+            boundary_turn,
+            priced_offset0,
+            unpriced_offset1,
+            priced_offset2,
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", session)
+        ramp_curve, _ramp_tokens = _ramp_curve_from_records(session)
+        boundary_context_tokens = _mod._context_at_turn(boundary_turn["message"]["usage"])
+
+        def priced_dollars(rec: dict) -> float:
+            dollars_by_class, _c, _u = _mod._price_turn("claude-opus-5", rec["message"]["usage"])
+            return sum(dollars_by_class.values())
+
+        expected_arm_a = priced_dollars(priced_offset0) + priced_dollars(priced_offset2)
+        expected_arm_b = (
+            _mod._arm_b_boundary_plus_one_dollars(priced_offset0["message"]["usage"], boundary_context_tokens)
+            + _mod._arm_b_later_turn_dollars(priced_offset2["message"]["usage"])
+        )
+        expected_arm_c = _mod._arm_c_turn_dollars(300, 0, ramp_curve) + _mod._arm_c_turn_dollars(250, 2, ramp_curve)
+
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "1 unpriced turns" in out
+        assert _extract_arm_dollars(out, "A: continue on Opus") == pytest.approx(expected_arm_a, abs=0.005)
+        assert _extract_arm_dollars(out, "B: switch to Sonnet") == pytest.approx(expected_arm_b, abs=0.005)
+        assert _extract_arm_dollars(out, "C: fresh Sonnet handoff") == pytest.approx(expected_arm_c, abs=0.005)
+
+    def test_boundary_as_final_turn_is_excluded_without_dividing_by_zero(self, fake_projects, capsys):
+        session = [
+            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", input=2000, output=200, cache_read=100_000,
+                    content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", session)
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "final main-thread turn (excluded, no post-boundary work): 1" in out
+        assert "No plan-boundary sessions with post-boundary work found in scope." in out
+
+    def test_no_boundary_session_is_excluded_and_counted(self, fake_projects, capsys):
+        session = [
+            _priced("claude-opus-5", input=1000, output=100, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", input=2000, output=200, ts="2026-05-19T10:00:01.000Z"),
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", session)
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "No plan boundary detected: 1" in out
+
+    def test_multiple_post_boundary_model_switches_do_not_break_ground_truth_check(self, fake_projects, capsys):
+        """A session with more than one post-boundary model switch must not
+        crash or miscount the boundary+1 ground-truth check, which looks
+        only at the single boundary_index -> boundary_index+1 transition."""
+        session = [
+            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", input=2000, output=200, cache_read=100_000,
+                    content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-sonnet-5", input=500, output=300, cache_read=0, ts="2026-05-19T10:00:02.000Z"),
+            _priced("claude-opus-5", input=500, output=300, cache_read=150_000, ts="2026-05-19T10:00:03.000Z"),
+            _priced("claude-sonnet-5", input=500, output=300, cache_read=0, ts="2026-05-19T10:00:04.000Z"),
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", session)
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "Sessions with a real model change observed at boundary+1: 1 of 1" in out
+
+    def test_ground_truth_buckets_previous_message_not_found_reason(self, fake_projects, capsys):
+        """A missing/malformed cache_miss_reason, including the
+        previous_message_not_found variant (which carries no
+        cache_missed_input_tokens field), must be reported rather than
+        raising or silently dropped."""
+        boundary_plus_one = _priced(
+            "claude-sonnet-5", input=500, output=300, cache_read=0, ts="2026-05-19T10:00:02.000Z"
+        )
+        boundary_plus_one["message"]["diagnostics"] = {"cache_miss_reason": {"type": "previous_message_not_found"}}
+        session = [
+            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-opus-5", input=2000, output=200, cache_read=100_000,
+                    content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
+            boundary_plus_one,
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", session)
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "previous_message_not_found: 1" in out
+
+    def test_zero_sessions_in_scope_prints_zero_state_without_crashing(self, fake_projects, capsys):
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "Sessions scanned: 0" in out
+        assert "No plan-boundary sessions with post-boundary work found in scope." in out
+
+    def test_arm_c_ramp_curve_is_scoped_to_sonnet_anchored_sessions_not_pooled(self, fake_projects, capsys):
+        """Arm C models a fresh Sonnet handoff, so its ramp curve must come
+        from Sonnet-anchored ramp sessions only -- a curve pooled across both
+        families would misprice arm C toward Opus's own rate."""
+        opus_ramp_session = [
+            _priced("claude-opus-5", input=1000, output=1000, cache_read=50_000, ts="2026-05-19T09:00:00.000Z"),
+            _priced("claude-opus-5", input=1000, output=1000, cache_read=50_000, ts="2026-05-19T09:00:01.000Z"),
+        ]
+        sonnet_ramp_session = [
+            _priced("claude-sonnet-5", input=1000, output=1000, cache_read=50_000, ts="2026-05-19T09:01:00.000Z"),
+            _priced("claude-sonnet-5", input=1000, output=1000, cache_read=50_000, ts="2026-05-19T09:01:01.000Z"),
+        ]
+        boundary_session = _opus_boundary_session()
+        _write_jsonl(fake_projects / "ramp-opus.jsonl", opus_ramp_session)
+        _write_jsonl(fake_projects / "ramp-sonnet.jsonl", sonnet_ramp_session)
+        _write_jsonl(fake_projects / "boundary.jsonl", boundary_session)
+
+        sonnet_only_curve, _sonnet_only_tokens = _ramp_curve_from_records(sonnet_ramp_session)
+        pooled_curve, _pooled_tokens = _ramp_curve_from_records(opus_ramp_session, sonnet_ramp_session, boundary_session)
+        # Sanity check: if the two curves' "0-5" rates happened to agree, this
+        # test couldn't distinguish Sonnet-only scoping from pooling.
+        assert sonnet_only_curve["0-5"]["rate"] != pooled_curve["0-5"]["rate"]
+
+        # _opus_boundary_session's two post-boundary turns (output 300, 400)
+        # both fall in the "0-5" turns-since-boundary bucket.
+        expected_arm_c_dollars = (
+            _mod._arm_c_turn_dollars(300, 0, sonnet_only_curve)
+            + _mod._arm_c_turn_dollars(400, 1, sonnet_only_curve)
+        )
+
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert _extract_arm_dollars(out, "C: fresh Sonnet handoff") == pytest.approx(expected_arm_c_dollars, abs=0.005)
+
+    def test_sonnet_anchored_session_is_excluded_from_opus_anchored_count(self, fake_projects, capsys):
+        """A session whose first main-thread turn is on Sonnet, not Opus, is
+        excluded from repricing entirely -- Opus-anchored-only scope is this
+        measurement's own design choice, not a general corpus convention."""
+        session = [
+            _priced("claude-sonnet-5", input=1000, output=100, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=2000, output=200, content=[_exit_plan_mode("epm1")],
+                    ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-sonnet-5", input=500, output=300, ts="2026-05-19T10:00:02.000Z"),
+        ]
+        _write_jsonl(fake_projects / "sess.jsonl", session)
+        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+        assert "Sessions scanned: 1" in out
+        assert "Opus-anchored: 0" in out
+        assert "No plan-boundary sessions with post-boundary work found in scope." in out
+
+
+class TestPlanBoundaryArgparseWiring:
+    def test_registers_plan_boundary_subcommand_with_expected_defaults(self):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["plan-boundary"])
+        assert args.since is None
+        assert args.extra_config_dirs is None
+        assert args.no_redact is False
+        assert args.func == _mod.cmd_plan_boundary

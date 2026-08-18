@@ -68,16 +68,32 @@
 - **A prescribed dispatch is an authorized dispatch.** Some sessions carry a system-prompt constraint of the form "Do not call the AgentTool unless the user requested it." When a skill body, a CLAUDE.md rule, or an agent description you are following prescribes a subagent dispatch, the user put that instruction in play by invoking the skill or running the session under that configuration — the prescription is the request. Dispatch normally: do not cite the constraint as a reason to run a prescribed dispatch inline, and never silently downgrade a specialist review to a generalist one. The constraint still governs fan-out you originate yourself with no prescription behind it.
 - When spawning sub-agents with `isolation: "worktree"`, do NOT include an explicit `Working directory: /path/to/repo` line. The harness sets the agent's CWD to the isolated worktree automatically; naming the main repo path causes the agent to use `git -C <main-path>` operations that bypass isolation and mutate the main working tree directly.
 - Before delegating execution to a sub-agent from a session in plan mode, call `ExitPlanMode` in the parent first. A spawned sub-agent receives the plan-mode system-reminder and a typical agent honors it — declining to execute and returning a plan file even when the prompt says "execute, do not plan." This is the agent obeying an instruction, not a hard harness block, so the symptom is a polite refusal, not a tool error. Exit plan mode in the parent before delegating execution work.
+- **Do not enter harness plan mode on your own initiative.** Entering it
+  escalates downstream subagent dispatches to Opus, overriding the Model
+  Routing rules below (see `docs/auto-mode.md`'s plan-mode subsection for
+  the measurement). Plan on a feature branch instead — `plan-it` Step 1's
+  "Otherwise" branch derives a slug, creates the worktree, and writes the
+  plan file with no plan mode involved. This governs only entry you
+  initiate yourself — via `EnterPlanMode` or by writing
+  `permissions.defaultMode: "plan"`; a human's own `Shift+Tab`, `/plan`
+  prefix, or `defaultMode` choice is untouched, as is planning this way
+  when the user asks you to.
 - In a repo with worktree enforcement opt-in (`.claude/worktree-required` committed, or machine-level `~/.claude/worktree-required`), Edit and Write must also target the worktree path — the hook blocks main-tree file writes, but resolving paths to `.claude/worktrees/<branch>/...` up front avoids the round-trip denial.
 - `isolation: "worktree"` is an **ephemeral-isolation** primitive, not a feature-branch primitive. The harness creates the worktree on a harness-generated branch name (`worktree-agent-<hash>`), so the `branch-management` skill never runs. Use it only for work that will NOT become a named PR branch — parallel exploration, reviewer agents, throwaway spikes. For PR-bound implementation work, create the worktree yourself first: pick a slug per the `branch-management` skill, run `git worktree add .claude/worktrees/<slug> -b <slug>` (allowed on the main tree even under worktree enforcement), then dispatch the agent **without** `isolation: "worktree"`. Anchor the parent session in that worktree before dispatching — a `Working directory:` line in the prompt does not override where a child's commands actually run. `branch-management` covers why and how.
 
-## Model Routing
+## Model & Effort Routing
 
-- **Opus:** judgment-heavy reasoning, plan-mode planning, and parent-dispatcher orchestration.
+- **Opus:** judgment-heavy reasoning and parent-dispatcher orchestration. For Opus planning turns, start the session with `--model opus` and run `/plan-it` (see Agent Briefing).
 - **Sonnet (default):** all code reading, code writing, and specialist reviewer agents. Pass an explicit `model: sonnet` on every dispatch, even ones with a `model:` pin — both are requests, not guarantees, and resolution doesn't always follow them; it costs nothing either way (see `docs/auto-mode.md` for the current measurement).
 - **Haiku:** narrow, deterministic skills only. Never for code authoring or judgment.
 - **Delegated code-writing dispatches to `code-writer`.** When implementation work is handed to a subagent — feature code, fixes, refactors, migrations, schema, scripts — dispatch the `code-writer` agent, not `general-purpose`. It carries `model: sonnet` frontmatter and self-reviews its own diff against the `staff-*` reviewer angles before returning, catching review-finding-class defects in its own context instead of as a parent round-trip. This is a substitution for the code-writing path only — it does not change when the parent delegates versus writes inline.
 - **Always dispatch `general-purpose` with an explicit `model`.** Its routine remaining use is discovery and research dispatches (whole-file exploration per Codebase discovery); code-writing now routes to `code-writer`. It is the one routinely-dispatched built-in with no model of its own, so it inherits the parent — and a session cannot detect its own permission mode or which model the parent is anchored to. Default to `model: sonnet`: a no-op when the parent is already Sonnet, and it keeps delegated work off Opus when the parent is not. Pass `model: opus` only when the delegated task genuinely needs Opus-level reasoning. `Explore` is pinned to Sonnet via `claude/.claude/agents/Explore.md`; `staff-*` / `ciso-reviewer` / `code-writer` carry their own `model:` frontmatter. Pass `model: sonnet` on those dispatches too (see above).
+- **Effort:** pin `effort:` frontmatter per agent to the task's shape, not the invoking session's — the same task-fit-over-inheritance reasoning as `model:` above. It overrides the session's effort level in both directions, not only as a floor (see `docs/design-decisions.md` §24).
+  - **`low`:** fast, narrow, high-frequency lookups with no exhaustiveness requirement (e.g. `Explore`).
+  - **`medium`:** closed-form or bounded-input reviewers documented as cheap by design (see `docs/design-decisions.md` §9).
+  - **`high` (the default):** work spanning a wide difficulty range rather than uniformly hard problems, especially when a separate downstream pass already backstops it (e.g. `code-writer`; see `docs/design-decisions.md` §24).
+  - **`xhigh`, not `max`:** single-pass reviewers with no second pass to catch a shallow miss, where thoroughness is uniformly required rather than concentrated in a hard subset (e.g. `ciso-reviewer`; see `docs/design-decisions.md` §24 for why `xhigh` and not `max`).
+  - Current per-agent assignments live in `EXPECTED_EFFORT` (`claude/.claude/hooks/tests/test_agent_roster.py`) — that test is the source of truth, not this bullet.
 
 ## Safety
 

@@ -120,8 +120,8 @@ PR #605's U-shape analysis (see Phase 3) removes that assumption. What remains:
   additional session also pays the 3.55x rebuild ramp over its first five turns.
 - **Model routing.** Opus cache-read is $0.50/MTok against Sonnet's $0.20 — up to 2.5x
   on affected turns, and the main thread (72.8% of this session's spend) billed 100%
-  Opus. Blended, call it ~1.5-1.7x, pending Phase 5b establishing why `opusplan` did
-  not route execution to Sonnet.
+  Opus. Blended, call it ~1.5-1.7x. PR #631 (see Phase 5b) later established the
+  cause: harness plan mode overrides `model:` routing regardless of `opusplan`.
 
 Against the corrected **$128.02** baseline, the traceable range is the product of
 those two bands: `2.4 x 1.5 = 3.6x -> $36`, `3.0 x 1.7 = 5.1x -> $25`. So **$25-36**,
@@ -201,8 +201,8 @@ full on every API call, making cost quadratic in session length.
   models a *perfect-compliance ceiling*, not the expected outcome; Verification item
   8 measures realized compliance via `handoff-ratio` rather than assuming it.
 - `opusplan` did not route implementation to Sonnet in PR #609 — the main thread
-  billed 100% Opus. `[unverified]` — cause not established; Phase 5b investigates
-  before changing the setting.
+  billed 100% Opus. `[verified: PR #631]` — harness plan mode overrides `model:`
+  routing regardless of `opusplan` (see Phase 5b).
 
 ## Phases
 
@@ -309,10 +309,11 @@ revertible; carries no dependency on any cost measurement. Extend
 `env.ANTHROPIC_MODEL` forms cannot bypass the top-level guard — a gap this plan's
 own earlier draft found by walking into it.
 
-**Phase 5b — Model routing investigation.** Establish *why* PR #609's main thread
-billed 100% Opus under `model: opusplan` before changing any routing setting. This
-is an investigation with no guaranteed code change; keeping it separate from 5a
-keeps a security-control fix from being gated behind a cost question.
+**Phase 5b — Superseded, not executed.** PR #631 independently established the
+cause: the override is gated on `permissionMode == "plan"`, not on the parent
+session's model. PR #647 shipped the fix (keep agent-initiated planning out of
+harness plan mode); PR #654 re-verified it at higher confidence. No further
+investigation needed here.
 
 **Phase 6 — Measurement.**
 

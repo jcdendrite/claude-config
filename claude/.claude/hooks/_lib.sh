@@ -932,35 +932,34 @@ _lib_worktree_lock_pid() {
 # returns 0. On failure, prints a human-readable reason to stdout (for the
 # caller to fold into its own deny message) and returns 1.
 #
-# Reads lock state before writing: if TARGET_PATH's worktree is already
-# locked with our own live PID (from an earlier write this session), this
-# returns 0 with no `git worktree lock` call at all — the common case once a
-# session is anchored in a worktree costs one read, not a write attempt
-# expected to fail.
+# Read-only fast path: an already-self-held lock (from an earlier write this
+# session) returns 0 with no write attempt.
 #
-# Otherwise attempts `git worktree lock`. This write is the sole exclusion
-# point for the contended case: two sessions that both read "unlocked" and
-# both then call `lock` are resolved by the lock file write itself being
-# exclusive-create (verified empirically — a second concurrent `lock` call
-# against an already-locked worktree fails "already locked" every time, in a
-# 20-way concurrent-process race with exactly one winner; see
-# .claude/plans/worktree-collision-guard.md), not by anything this function
-# does. A failed lock re-reads porcelain to diagnose who holds it and denies
-# unconditionally — this function never calls `git worktree unlock`: that
-# command has no ownership check (verified empirically — it unconditionally
-# removes whatever lock exists, regardless of who set it or when), so an
+# Otherwise acquires via an O_EXCL create (bash `noclobber`) against the
+# worktree's own `<git-dir>/locked` file, not `git worktree lock` -- git's
+# own lock write is not atomic (source citation and the CI race this fixes:
+# .claude/plans/atomic-worktree-lock-acquisition.md). The write targets
+# git's own lock-file path and format, so `git worktree list --porcelain`/
+# `unlock`/`remove` all still read and act on it correctly. A successful
+# write is re-read via porcelain to confirm our own pid before returning 0,
+# fail-closed on mismatch. A failed write (contended) re-reads porcelain to
+# diagnose the holder and denies -- this function never calls `git worktree
+# unlock` (verified empirically to have no ownership check), since an
 # in-function evict-then-relock would itself be racy against a second
-# evictor in exactly the way this guard exists to prevent. A dead-PID lock
-# is diagnosed as such in the deny message with a one-line manual remedy
-# (`git worktree unlock <path>`) instead.
+# evictor.
 #
-# Known gaps: the liveness check (`kill -0`) can't distinguish a genuinely
-# dead PID from one owned by a different user on a shared machine — out of
-# scope for this guard's single-developer-machine threat model. A `git
-# worktree lock` failure caused by something other than contention (an old
-# git without worktree-lock support, a permission error) is diagnosed the
-# same as a transient race and told to "retry", which is permanently wrong
-# advice in that case.
+# Known gaps (single-developer-machine threat model, not an adversarial
+# boundary):
+# - `kill -0` can't distinguish a dead PID from one owned by another user.
+# - A non-contention write failure (a permission error, or `bash` missing
+#   from PATH) is misdiagnosed as a transient race and told to "retry" --
+#   permanently wrong advice in that case.
+# - A write killed mid-write (the 5s `_lib_capped` timeout) can leave a
+#   truncated `locked` file, misdiagnosed as a foreign manual lock instead
+#   of our own timed-out write.
+# - O_EXCL/`noclobber` exclusivity is not guaranteed atomic on older
+#   NFS-mounted git-dirs, which would silently defeat this function's core
+#   guarantee -- out of scope for this threat model.
 _lib_worktree_collision_guard() {
   local target_path="$1" repo_git_common_dir="$2"
   local worktree_root
@@ -1002,8 +1001,28 @@ _lib_worktree_collision_guard() {
     return 0
   fi
 
-  if _lib_capped git -C "$worktree_root" worktree lock "$worktree_root" --reason "claude-code pid $my_pid" >/dev/null 2>&1; then
-    return 0
+  local wt_git_dir
+  wt_git_dir=$(_lib_capped git -C "$worktree_root" rev-parse --path-format=absolute --git-dir 2>/dev/null) || {
+    printf 'could not resolve the worktree-specific git-dir for %s' "$worktree_root"
+    return 1
+  }
+  if [ "$wt_git_dir" = "$wt_common_dir" ]; then
+    printf '%s is the main working tree, not a linked worktree — refusing to evaluate its lock state' "$worktree_root"
+    return 1
+  fi
+
+  # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2 must resolve as the inner bash's own positional parameters, not expand in this shell before exec -- double-quoting would either expand to nothing ($my_pid isn't exported) or open a shell-injection surface via $wt_git_dir.
+  if _lib_capped bash -c 'set -o noclobber; printf "claude-code pid %s\n" "$1" > "$2/locked"' _ "$my_pid" "$wt_git_dir" 2>/dev/null; then
+    porcelain=$(_lib_capped git -C "$worktree_root" worktree list --porcelain 2>/dev/null) || {
+      printf 'could not confirm the worktree lock for %s after acquiring it' "$worktree_root"
+      return 1
+    }
+    locked_pid=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
+    if [ "$state" -eq 0 ] && [ "$locked_pid" = "$my_pid" ]; then
+      return 0
+    fi
+    printf 'the worktree lock for %s could not be confirmed after acquiring it — treating as unresolved' "$worktree_root"
+    return 1
   fi
 
   porcelain=$(_lib_capped git -C "$worktree_root" worktree list --porcelain 2>/dev/null) || {

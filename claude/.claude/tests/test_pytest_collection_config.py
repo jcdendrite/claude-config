@@ -114,6 +114,24 @@ class TestNorecursedirsDefaultsPreserved:
         assert "worktrees" in configured, "norecursedirs no longer excludes nested worktree checkouts"
 
 
+class TestPythonpathIncludesScriptsDir:
+    """Pins that claude/.claude/scripts is on pytest's pythonpath, so
+    `from transcript_analysis.corpus import ...`-style imports resolve
+    without each test file inserting the directory itself."""
+
+    def test_pythonpath_contains_scripts_dir(self):
+        import tomllib
+
+        with (REPO_ROOT / "pyproject.toml").open("rb") as f:
+            config = tomllib.load(f)
+        pythonpath = config["tool"]["pytest"]["ini_options"]["pythonpath"]
+
+        assert "claude/.claude/scripts" in pythonpath, (
+            "pythonpath dropped claude/.claude/scripts — the transcript_analysis "
+            "package (and any test importing it directly) would no longer resolve"
+        )
+
+
 class TestAddoptsConfiguresXdistAndStrictMarkers:
     """Pins that pyproject.toml's addopts actually carries -n auto and
     --strict-markers, and that --strict-markers really enforces what it's

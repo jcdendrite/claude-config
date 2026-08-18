@@ -14,7 +14,7 @@ Every subcommand below accepts `--this-repo` as a mutually exclusive alternative
 
 The default differs by subcommand: `skill-invocation` defaults to repo-scoped (safe-by-default) and treats `--this-repo` as a no-op; every other subcommand defaults to machine-wide (unsafe-by-default) and requires `--this-repo` to opt into repo scoping.
 
-**`review-trace` output is not publish-safe under the default machine-wide scope** — each event line's branch string can carry a ticket ID or project name. `--this-repo` does not guarantee single-account output either: once `~/.claude/transcript-config-dirs` declares more than one root, or an explicit `--config-dir` extra is combined with `--this-repo`, it unions across every resolved root the same way the default scope does (see "Corpus scope: the declared-roots file" below). No flag on `review-trace` narrows output to one account short of an explicit single top-level `--config-dir PATH`; use that before quoting output anywhere public.
+**`review-trace` output is not publish-safe under the default machine-wide scope** — each event line's branch string can carry a ticket ID or project name. `--this-repo` does not guarantee single-account output either: once `~/.claude/transcript-config-dirs` declares more than one root, or an explicit `--config-dir` extra is combined with `--this-repo`, it unions across every resolved root the same way the default scope does (see "Corpus scope: the declared-roots file" below). No flag on `review-trace` narrows output to one account short of an explicit single top-level `--config-dir PATH`; use that before quoting output anywhere public. This applies to a zero-match run too: its scope header echoes an explicit `--projects` glob verbatim, so a glob naming a private project reaches the output even when no session matched.
 
 **What `--this-repo` does not cover, and the documented fallback:**
 
@@ -37,14 +37,16 @@ All four gaps are silent under-coverage, not an error: a narrower-than-expected 
 
 ## Corpus scope: the declared-roots file
 
-Every subcommand's default scan corpus is a **union**, not a single account — except `cost --summary`, which resolves to the active account's config dir only (see the `cost` section's `--summary` entry below). List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's. The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several — except `review-trace` and `skill-invocation`, which defer their header print until a match is found, and `cost --summary`, which prints no header at all and states its single-account scope on its own `Scope:` line instead. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
+Every subcommand's default scan corpus is a **union**, not a single account — except `cost --summary`, which resolves to the active account's config dir only (see the `cost` section's `--summary` entry below). List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's. The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except `cost --summary`, which prints no header at all and states its single-account scope on its own `Scope:` line instead. `review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
 
 This union amplifies two costs, both linearly in the number of declared roots:
 
-- **Scan time.** Measured on one workstation: ~9s per root at top-level scope, ~16s per root with `--include-subagents`. A four-root union runs roughly 35–65s against ~9s at one root — expect a per-root progress line on stderr above one root so a long-running scan doesn't read as hung. The one narrowing control, if a given invocation needs to run faster or scope to fewer accounts: pass an explicit single top-level `--config-dir PATH`, which overrides the union back to exactly one root (see "Scoping to this repo" above and the `cost`/`context-distribution` sections below for their own separate, repeatable `--config-dir`).
+- **Scan time.** Measured on one workstation: ~9s per root at top-level scope, ~16s per root with `--include-subagents`. A four-root union runs roughly 35–65s against ~9s at one root — expect a per-root progress line on stderr above one root so a long-running scan doesn't read as hung. The one narrowing control, if a given invocation needs to run faster or scope to fewer accounts: pass an explicit single top-level `--config-dir PATH`, which overrides the union back to exactly one root (see "Scoping to this repo" above and the `cost`/`context-distribution`/`context-composition` sections below for their own separate, repeatable `--config-dir`).
 - **Redaction's ordinal fingerprint.** `cost` and `audit-routing --redact` already read every project's transcript bytes to build their redact map, even under `--this-repo` (see the `cost` section's `--config-dir` contract below) — a structural fingerprint of the operator's other local projects. A declared-roots union multiplies both the bytes read and that fingerprint's information content: the ordinals now encode which projects exist across every declared account, not just one. Two redacted reports built from the **same** declared-roots file assign the same `account-N` to the same physical root regardless of which profile produced either report, which makes them correlatable by ordinal across time — a property that did not exist before this file was populated. This is a privacy tradeoff to weigh before posting a second public report from an unchanged roots file: an operator who posts two redacted reports months apart gives a reader no way to learn `account-2`'s name, but does hand them a way to tell that both posts came from the same underlying account. Two reports built from **different** declared-roots files are not comparable; a changed root set can renumber every ordinal. This comparability guarantee excludes `cost --summary`: it always resolves to exactly one root, so its own per-root `cost: account-N: scanned …` line has no second root in the same run to be ordinally consistent against, and its `account-N` for the active root is not guaranteed to match the ordinal a full (non-`--summary`) report built from the same declared-roots file assigns that same physical root.
 
 Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` labels — is not uniform across the three subcommands that mention it. `cost` and `audit-routing` build the redact map and print per-project or per-account labels. `context-distribution` prints the same banner and refuses `--no-redact` above one root, but never builds the redact map and emits no project label at all, so there is nothing in its output to actually redact. Every other subcommand — `audit-routing-samples`, `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, and `pr-link` — has no redaction of any kind and prints raw branch names, paths, or prior-user text under the default union; none of them narrows the union to one account short of the `--config-dir` escape hatch above. `cost --summary` is now a second narrowing path, but it applies to `cost` specifically, not to any subcommand in this list.
+
+`context-composition` matches `context-distribution`'s own contract exactly: same banner, same multi-root `--no-redact` refusal, no redact map, and no per-root/per-account/per-project breakdown of its category ranking — only the per-root scan-summary line (`context-composition: account-N: scanned … transcripts`) every multi-root subcommand above already prints.
 
 ---
 
@@ -341,7 +343,7 @@ bin          sessions   turns  skill-inv  skill/1k commits  w-skill  wo-skill  n
 
 **Purpose.** Per-skill invocation-source tally for a scoped set of projects (this repo by default), split into three buckets: `top-level` (description-triggered Skill tool_use on a main-thread turn with no parent skill active), `routed` (Skill tool_use fired while another skill's body was active — `attributionSkill` is non-empty), and `user-slash` (user record containing `<command-name>/skillname</command-name>`, the `/slash` invocation path). The classification summary at the bottom identifies routed-only candidates (name-only eligible) and slash-only candidates (disable-model-invocation eligible) for skill-description budget analysis.
 
-**Scope defaults to this repo.** With `--projects` unset, the read is scoped to *this repository's own worktrees*, derived from `git worktree list` and matched by exact directory identity. This is a minimization control: the output is routinely quoted into public PR descriptions, and skill names on the machine can themselves be private-project identifiers. It fails closed (error, no output) rather than falling back to a machine-wide read if the repo scope cannot be derived. Passing an explicit `--projects` glob is an escape hatch for corpus analysis — the output is then no longer scoped to this repo.
+**Scope defaults to this repo.** With `--projects` unset, the read is scoped to *this repository's own worktrees*, derived from `git worktree list` and matched by exact directory identity. This is a minimization control: the output is routinely quoted into public PR descriptions, and skill names on the machine can themselves be private-project identifiers. It fails closed (error, no output) rather than falling back to a machine-wide read if the repo scope cannot be derived. Passing an explicit `--projects` glob is an escape hatch for corpus analysis — the output is then no longer scoped to this repo. The header labels that state as `explicit --projects (not repo-scoped)` rather than interpolating the glob, so the glob itself never reaches stdout; `review-trace`, whose scope label is the glob, differs here.
 
 **Flags.**
 - `--projects GLOB` — project directory glob. Default: this repo's own worktrees only (publish-safe); an explicit glob is the escape hatch (not repo-scoped).
@@ -553,13 +555,17 @@ An Opus turn whose model ID has no pricing-table entry is excluded from the doll
 
 Pricing is looked up per exact model ID (Sonnet 5 and Sonnet 4.6 price differently), derived from one base input rate per model plus the pricing page's stated multipliers (output 5×, 5m cache write 1.25×, 1h cache write 2×, cache read 0.1×). Each model ID carries a re-verify-by date; when the current date is past it, a `STALE PRICING` banner prints inside the same output block as the dollar tables — never a separate log line a copy-paste of the tables could drop. An unrecognized model ID (e.g. `<synthetic>`) is never silently priced at $0: it gets its own row and its tokens are counted in a separate "Unpriced tokens" total, excluded from every dollar figure. Sidechain (subagent-dispatched) turns are priced — `cost` reads with `include_subagents=True`, unlike `audit-routing`'s main-thread-only scope, since subagent spend is real spend.
 
+Two further multipliers apply on top of the per-model rate, read from the usage record itself rather than a per-model eligibility list: `usage.speed == "fast"` doubles every class's dollars (2×, the vendor's fast-mode rate), and `usage.inference_geo == "us"` multiplies every class's dollars by 1.1× (the vendor's data-residency surcharge). Both compose multiplicatively when present on the same turn (2.2× total) and apply regardless of whether the turn's model is actually eligible for fast mode or data residency — `speed`/`inference_geo` report the API's own settled outcome, not an echo of the request, so a turn that carries either field is trusted as-is.
+
+Like `subagents` and `skill-pair`, `cost` calls `_warn_if_subagent_format_drift` after its own scan: a corpus with subagent spawns but zero `isSidechain` assistant turns read back prints a `WARNING` on stderr, since that signature means the `subagents/*.jsonl` split-file format has drifted rather than that no subagent work happened.
+
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); mutually exclusive with `--projects`
 - `--branches B1,B2,...` — filter to specific branches (default: all). Per-record, not per-session: a single session routinely spans branches, so a session-level filter would misprice it in both directions. A `worktree-agent-*` subagent record's own literal `gitBranch` is not what `--branches` filters on — see "Worktree-isolated subagent attribution" below.
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), on top of the default corpus already described in "Corpus scope: the declared-roots file" above (the active profile plus every root declared in `~/.claude/transcript-config-dirs`). Each `--config-dir` extra must also contain its own `projects/` subdirectory or the run is rejected. Composes with `--this-repo`: its worktree-identity match is root-independent, so `--this-repo` unions across the default corpus and every `--config-dir` extra the same way it does under the declared-roots file alone. Refused together with `--no-redact` (more than one root in scope would put one profile's real project names into a report meant to also cover another).
 - `--by-project` — add a per-project cost breakdown, keyed on (account root, project family); composes with both `--projects` and `--this-repo`. One repo's own worktrees collapse into a single family row instead of fragmenting per branch. When `--config-dir` puts more than one root in scope, each row also carries an `Account` column using the same `account-N` labeling the per-root scan-summary lines use. Under `--no-redact` (single-root only — see below), the Project column shows the raw, suffix-collapsed directory name instead of a `private-project-N` placeholder, same as every other section of this report. Refused together with `--summary`.
-- `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`)
+- `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`). When given, each scanned root's actual earliest in-scope turn is tracked (regardless of the filter) and compared against the requested window start: a root whose earliest turn is more than a day newer prints its own `WARNING: cost: <root>: earliest turn found is …` line, naming that date and the requested window start, so a corpus that starts partway through the requested window is visible instead of silently under-reporting. One warning per short root — a well-covered root never suppresses a sibling root's own warning.
 - `--top N` — maximum per-session rows in the top-N-by-dollars section (default: 20)
 - `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output. Refused when `--config-dir` puts more than one root in scope, and refused together with `--summary`.
 - `--summary` — a distinct, aggregate-only rendering mode meant to be embedded directly in a PR body (see the `pr-description` skill's `## Cost` section). Requires `--this-repo` and refuses any other scope flag, including a non-default `--projects` glob — every project-directory slug is absolute-path-derived and therefore starts with `-`, so a glob like `-*` would otherwise be machine-wide despite not being the literal default `*`. Resolves to the active config dir only, skipping the declared-roots union entirely — see "Corpus scope: the declared-roots file" above. Also refuses `--by-project`, `--no-redact`, and `--config-dir` in combination — each drives an identity-bearing code path (`## Cost by project`, raw labels, multi-root scan-summary lines) `--summary` structurally never reaches. Separately, it refuses outright (exit 2) if more than one root is ever in scope when `--summary` is set — this guard is load-bearing for `--summary`'s scope guarantee, not incidental dead-code protection: root resolution is enforced at the CLI boundary, but any direct caller of the report function (this module's own tests included) bypasses that boundary, so the multi-root guard is what actually keeps a direct call's aggregate scoped to one account. It never builds or reads the redact map, never prints the `DO NOT PUBLISH` banner, and never emits a per-root raw-path label — nothing it prints is keyed by project or session identity. It does print the scan-count diagnostic ("scanned N transcripts, M skipped") and the zero-scope `WARNING`, since those are identity-free under single-root `--this-repo` scope and are what makes an empty or under-scanned corpus visible instead of a silent `$0.00`. Always prints "Unpriced tokens: N tokens across M model IDs", even at zero. Carries the `STALE PRICING` banner in the same block as the dollar tables, same as the full report.
@@ -576,30 +582,33 @@ The branch itself is never echoed in `--summary`'s text — it only narrows whic
 
 **Sample output (`--summary`, synthetic, illustrative counts only).**
 ```
-## Cost summary (all time)
+Cost summary (all time)
+
 Scope: this account only (6 transcripts scanned, 4 priced sessions, 812 priced turns) — dropping --summary reports every declared account too
+### Cost by token class
 
-## Cost by token class
+| Class | $ | Share | Tokens |
+|---|---|---|---|
+| cache_read | 612.19 | 48.9% | 6,121,900 |
+| cache_write_5m | 310.44 | 24.8% | 2,483,520 |
+| output | 270.02 | 21.6% | 540,040 |
+| input | 58.87 | 4.7% | 1,177,400 |
+| **total** | **1,251.52** | | |
 
-Class                       $   Share         Tokens
-cache_read              612.19   48.9%      6,121,900
-cache_write_5m          310.44   24.8%      2,483,520
-output                  270.02   21.6%        540,040
-input                    58.87    4.7%      1,177,400
-total                 1,251.52
+### Cost by model ID
 
-## Cost by model ID
-
-Model                                     $   Share
-claude-sonnet-5                    1,251.52  100.0%
+| Model | $ | Share |
+|---|---|---|
+| claude-sonnet-5 | 1,251.52 | 100.0% |
 
 Unpriced tokens: 0 tokens across 0 model IDs
 
-## Cost by thread
+### Cost by thread
 
-Thread          $   Share
-main            975.32   77.9%
-subagent        276.20   22.1%
+| Thread | $ | Share |
+|---|---|---|
+| main | 975.32 | 77.9% |
+| subagent | 276.20 | 22.1% |
 ```
 
 **Sample output (full report).**
@@ -656,6 +665,38 @@ session-2        private-project-2                189.07
 
 ---
 
+## cache-efficiency
+
+**Purpose.** Per-thread (main/sidechain) cold-cache read-collapse census: assistant turn counts, `cache_read_input_tokens` and both `cache_creation` tiers, and cold-write volume/rate. `cost` buckets spend by token class only and never distinguishes a cold prefix re-write from an ordinary incremental append; `cache-efficiency` is the subcommand that draws that line, using the classifier validated in [`case-studies/cold-cache-attribution.md`](case-studies/cold-cache-attribution.md).
+
+**Classifier.** A turn is **cold** when this turn's `cache_read_input_tokens` collapses more than `T = 0.50` below the prior turn's own prefix total (`cache_read_input_tokens` plus both `cache_creation` tiers) — read-collapse rule R2, adopted over the incumbent `cache_creation > cache_read_input_tokens` rule (R1) after scoring 100% true-positive / 4.5% false-positive against two ground-truth-constructed cache states, the maximum Youden's J across every threshold tested. A session/thread's first turn has no predecessor and is never classified cold — see the case study for the full validation. A cold turn's own `cache_creation` tokens (both tiers) are counted as that turn's cold tokens.
+
+The prior-turn chain is scoped per source-file group (the main transcript, or one subagent file — `_read_session_file_partitioned`, not the flattened `--include-subagents` merge) and per `sessionId` within a group, mirroring `read-scope`'s own prompt-token growth chain: a subagent's own cache prefix is not continuous with the main thread's, or with a sibling subagent's, so comparing across that boundary would misclassify a fresh subagent dispatch's first turn as a cold re-write of an unrelated prefix. The chain also resets at each `compact_boundary` record, since the pre-compaction prefix no longer exists to collapse from.
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`, all projects)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); mutually exclusive with `--projects`
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir` (see the `cost` section above). Refused together with `--no-redact`.
+- `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity. Refused when `--config-dir` puts more than one root in scope.
+
+**Per-account breakdown.** When `--config-dir` puts more than one root in scope, a `## Cache efficiency by account` section follows the global table: one `### account-N` block per scanned root, using the same `account-N` labeling `cost`'s and `edit-format`'s own per-account breakdowns use — never a raw project name or config-dir path.
+
+Like `cost`, `subagents`, and `skill-pair`, `cache-efficiency` calls `_warn_if_subagent_format_drift` after its own scan.
+
+**Sample output (synthetic, illustrative counts only).**
+```
+## Cache efficiency by thread
+
+Thread          Turns             Read        Write1h        Write5m          ColdTok     Cold/Wr    Cold/Rd   ColdEvts     AvgEvt
+main              812        6,000,000        400,000      2,600,000        1,500,000       50.0%      25.0%         10    150,000
+sidechain         240          500,000              0      1,000,000          250,000       25.0%      50.0%          4     62,500
+```
+`Write1h`/`Write5m` are the two `cache_creation` tiers (1-hour and 5-minute ephemeral). `Cold/Wr` is cold tokens as a share of that thread's total write tokens (`Write1h + Write5m`); `Cold/Rd` is cold tokens as a share of that thread's total `Read`. `AvgEvt` is `ColdTok / ColdEvts`, `0` when `ColdEvts` is `0`.
+
+**When to reach for it.** Answer "how much of this account's cache-write spend is a genuine cold re-write, versus an ordinary incremental append" before proposing a prefix-trimming or breakpoint-placement fix — `cost`'s own token-class table cannot separate the two. See the case study for what the validated classifier found: cold re-writes are real and large (60.6%–76.4% of cache-write tokens on the two accounts measured there), but a harness-side fix is not guaranteed to exist for most of it — a 15-session wire-level-capture sample found roughly two-thirds of cold events unexplained by any transcript-visible signal.
+
+---
+
 ## cost-trend
 
 **Purpose.** Per-ISO-week dollar spend, Opus-family share, and `>=200k` context-bucket share — the standing week-over-week view neither `cost` (a single-window snapshot) nor `audit-routing` provides on its own. Reuses `cost`'s `_price_turn` pricing and `handoff-ratio`'s ISO-week bucketing rather than introducing a second date-bucketing convention.
@@ -681,6 +722,76 @@ The most recent bucket is very likely a partial week — it is labeled `(partial
 A turn whose model ID has no pricing-table entry is excluded from every week's totals and counted separately — a `(N unpriced turns / M tokens excluded from priced spend)` line appears under the table whenever the window contains one, mirroring `audit-routing`'s unpriced-turns convention.
 
 **When to reach for it.** Answer "is spend climbing week over week, and is the composition (Opus share, long-context share) shifting" as a standing instrument, rather than re-running `cost --since 30d` by hand and eyeballing the delta against a stale snapshot.
+
+---
+
+## cache-rebuild
+
+**Purpose.** Measure idle-gap prompt-cache TTL-expiry rebuilds: how much of the tail of large cache-write calls (`>=` a token threshold) is a full-prefix rewrite forced by a gap since the transcript's previous call outliving the vendor's 5-minute or 1-hour cache TTL — billed at the 1.25x/2x cache-write rate instead of the 0.1x warm-read rate it replaces — and whether those gaps are concurrent-session switching or genuine idle breaks. Reuses `cost`'s `_price_turn`, `_cache_write_split`, and `_dedup_turns_by_request_id`.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir`: composes with `--this-repo`, and `--no-redact` is refused once this puts more than one root in scope
+- `--since Nd` — limit to calls with timestamp in the last N days (e.g. `35d`). Default: `30d`.
+- `--threshold TOKENS` — minimum cache-write tokens (`ephemeral_1h + ephemeral_5m`) for a call to count as a large rebuild. Default: `100,000`.
+- `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
+
+**Sample output.**
+```
+CACHE REBUILD SOURCES (*; 6 roots)
+
+## Cache-rebuild report (last 30d, threshold >= 100,000 cache-write tokens)
+
+Calls scanned: 165,303
+Calls writing >= 100,000 tokens: 2,261 (1.4% of calls)
+Per-call write distribution: min=100,297  median=265,334  p90=531,575  max=910,239
+
+## Cause breakdown
+
+Cause                               Calls   Share
+session start                           0    0.0%
+idle 5m-1h                            985   43.6%
+idle >1h                              592   26.2%
+model switch                           81    3.6%
+unexplained                           603   26.7%
+excluded (timestamp anomaly)            0    0.0%
+
+## Idle-gap concurrency split [unverified]
+
+Classifies each idle-gap rebuild by whether any other transcript, in any
+account, had a call inside the gap window. This is an association, not proof
+the operator was attending that other session. [unverified]
+
+                              Rebuilds     Excess $
+Another session active           1,465     1,406.52
+Everything idle (a break)          112       107.03
+Total idle-gap rebuilds          1,577     1,513.55
+
+## Idle-gap excess by account
+
+Account           Rebuilds     Excess $
+account-1                9        11.41
+account-2               57        88.15
+account-3                2         2.35
+account-4              432       421.68
+account-5                1         0.44
+account-6            1,076       989.52
+```
+
+Excess $ figures throughout this report are list-price estimates against
+`claude-sonnet-5` rates — what the excess would cost at the vendor's posted
+per-token rate, not the operator's actual (possibly discounted or contracted)
+bill.
+
+**Cause classification.** `session start` is a transcript's first call (no prior cache to have hit, never bucketed as idle). `idle 5m-1h` and `idle >1h` are TTL-expiry rebuilds — the only two causes that feed the concurrency split and priced excess below. `model switch` and `unexplained` are large writes inside the 5-minute TTL window that aren't gap-driven. `excluded (timestamp anomaly)` covers a missing or out-of-order timestamp pair (clock skew), kept as its own row rather than silently folded into an idle bucket.
+
+**Idle-gap excess by account** prints only under a multi-root scope (`--config-dir` or a populated `~/.claude/transcript-config-dirs`), one zero-seeded row per account ordinal so a valid-but-empty root still renders instead of vanishing from the breakdown.
+
+**Rule of thumb.** At list `claude-sonnet-5` rates ($2.00/MTok base input), the per-token excess is the gap between the cache-write rate and the 0.1x warm-read rate it replaces: 1.15x base for a pure 5-minute-tier rebuild (roughly $1 per 435k tokens abandoned and rebuilt) and 1.9x base for a pure 1-hour-tier rebuild (roughly $1 per 263k tokens — costlier per token, since the 1-hour cache-write multiplier is wider). A `cache-rebuild` dollar total mixes both tiers, so dividing by a single tier's per-token figure over- or under-states the tokens involved; as a corpus-wide blended average across both tiers, **$1 per ~250k tokens** is a reasonable estimate to divide by when a per-tier breakdown isn't available.
+
+Wall-clock scales with corpus size: ~3 minutes was observed against a ~165k-call, 6-root corpus. Each session's file is read twice — once by the shared scope iterator, once more to recover the per-group (main thread vs. subagent) boundaries classification needs to avoid comparing timestamps across unrelated conversations — the same tradeoff `read-scope` already accepts for the same reason. `--since` only gates whether a threshold-crossing call is counted into the report, never whether it can see its own prior turn, and the concurrency check binary-searches one corpus-wide, pre-sorted call-timeline index rather than re-scanning per gap.
+
+**When to reach for it.** Answer "how much does idle-gap cache rebuild cost, and is it caused by switching between concurrent sessions or by real breaks" — see `docs/cost-levers-considered.md`'s entry on the killed cache-invalidation hypothesis this subcommand was built to re-test.
 
 ---
 
@@ -775,6 +886,64 @@ A `nudged` log line whose session id has no match in the resolved scope (a since
 
 ---
 
+## plan-boundary
+
+**Purpose.** Re-price each Opus-anchored session's own post-plan-boundary main-thread turn sequence under three pricing arms — the report's own labels for continuing on Opus, switching the session to Sonnet in place, and handing off to a fresh Sonnet session — holding the observed work (turns, output tokens) fixed and varying only the price schedule and the context-rebuild penalty. A session is Opus-anchored when its first main-thread turn's model family is Opus. Its plan boundary is the first main-thread (non-sidechain) assistant turn that calls `ExitPlanMode` (harness plan mode) or invokes the `plan-review` Skill (the non-plan-mode path) — a later occurrence of either signal in the same session is re-planning inside work this measurement already treats as post-boundary, not a second transition to price separately. A session with no such turn, or where the boundary is the session's own final main-thread turn (no post-boundary work to reprice), is excluded from the repriced total but counted in the report's own breakdown.
+
+- **Arm A — continue on Opus.** The turn sequence's own actually-observed pricing; today's default behavior.
+- **Arm B — switch to Sonnet in place.** The turn immediately after the boundary charges a Sonnet cache-write over the context that existed at the boundary, plus Sonnet input/output on that turn's own new tokens — never a scaled cache-read, since the prompt cache is model-keyed and a model switch forces a full cache miss rather than reusing the prefix. Every later post-boundary turn carries its observed cache read/write split forward, repriced at Sonnet rates instead of the turn's real (Opus) model.
+- **Arm C — fresh Sonnet handoff.** Each post-boundary turn is priced from a context-rebuild ramp curve (dollars per 1,000 output tokens, bucketed by turn position since a fresh session start), re-derived from the current corpus every run — never by scaling the turn's actual observed dollars, which already embed both the model-price gap and the context-growth gap. The curve is derived from the corpus's own Sonnet-anchored sessions specifically, not pooled across model families: the Opus/Sonnet per-turn-position cost ratio varies across turn-position buckets rather than sitting at a fixed multiple of the vendor price ratio, so a family-pooled curve mis-prices this arm. Falls back to the pooled corpus only when the Sonnet-anchored slice in scope has no priced output tokens to derive a curve from.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir`: composes with `--this-repo`, and `--no-redact` is refused once this puts more than one root in scope
+- `--since Nd` — limit to sessions with a first timestamp in the last N days (e.g. `35d`); whole-session scope, not per-turn — a post-boundary turn sequence's own turn-position indexing depends on the session's full turn sequence staying intact
+- `--no-redact` — this report's output is aggregate-only (no project names, session IDs, plan text, or `planFilePath`), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
+
+**Sample output (synthetic, illustrative counts only).**
+```
+## Plan boundary report (last 90d, generated 2026-08-16)
+
+Sessions scanned: 340
+Opus-anchored: 58
+  No plan boundary detected: 12
+  Boundary is the session's final main-thread turn (excluded, no post-boundary work): 1
+  Plan-boundary sessions repriced: 45
+
+Post-boundary main-thread turns repriced: 5,805
+Post-boundary output tokens repriced: 6,340,000
+
+Arm                            $
+------------------------------------
+A: continue on Opus         1,205.40
+B: switch to Sonnet           910.15
+C: fresh Sonnet handoff       845.60
+
+## Work-inflation breakeven
+
+How much extra Sonnet work (post-boundary turns/output tokens) the cheaper arm in each pair could absorb before its dollar advantage disappears -- the mitigation for the unverifiable assumption that Sonnet completes the same post-boundary work Opus did.
+A vs B: B cheaper by $295.25 -- breakeven at +32.4% more work (~1,881 extra turns, ~2,055,000 extra output tokens)
+A vs C: C cheaper by $359.80 -- breakeven at +42.5% more work (~2,468 extra turns, ~2,695,000 extra output tokens)
+B vs C: C cheaper by $64.55 -- breakeven at +7.6% more work (~442 extra turns, ~483,000 extra output tokens)
+
+## Ground truth: real model switch at boundary+1
+
+Sessions with a real model change observed at boundary+1: 5 of 45
+cache_miss_reason at boundary+1, for those sessions:
+  model_changed: 4
+  previous_message_not_found: 1
+```
+
+**Work-inflation breakeven.** For each arm pair, the cheaper arm's dollar advantage is expressed as a percentage: how much its own post-boundary turns/output tokens would have to grow, at its own observed $/turn rate, before that advantage closes to zero. This exists because "Sonnet completes the same post-boundary work Opus did, in the same turns and tokens" is not a claim this measurement can verify from transcripts — the corpus has no matched-task pairs to test it against — so instead of asserting the assumption silently inside a bare dollar comparison, the report turns it into a reported sensitivity: how wrong that assumption would have to be before the dollar totals above stop being decisive.
+
+**Ground truth: real model switch at boundary+1.** Counts the subset of repriced sessions where the turn immediately after the boundary shows an actually recorded model change (not a repricing arm — a real switch the operator or `/model` command made), cross-checked against that turn's own `cache_miss_reason` diagnostic field. Reported for context only; it is never fed back into Arm B's repricing formula above.
+
+**Redaction.** Aggregate-only, like `rearm-backtest` and `cache-rebuild`: no per-session row, no plan text, and no `planFilePath` ever leave the boundary-detection walk — boundary records are consumed for type and position only.
+
+**When to reach for it.** Decide whether an Opus-anchored session should continue past its own plan boundary on Opus, switch to Sonnet in place, or hand off to a fresh Sonnet session — see `docs/cost-levers-considered.md`'s entry on this measurement for the recorded verdict.
+
+---
+
 ## audit-routing-shape
 
 **Purpose.** Turn-shape distributions for Opus code-read turns across three dimensions: files-Read per turn (D1), code-read streak lengths (D2), and read-then-edit ratio (D3).
@@ -856,3 +1025,79 @@ neither           2,167       1,762,987
 Verdict meanings: `true (delegate)` — the reads sat in context with no immediate consumer, delegation would have saved tokens; `false (inline correct)` — the reads fed an immediate edit or comprehension-driven response; `skip` — ambiguous or noise.
 
 **When to reach for it.** Build a labeled training set for delegation-rule calibration. Use `--seed` for reproducible samples across sessions; use `--format md` for human curation review; use `--format json` to feed a downstream scoring script.
+
+---
+
+## turn-shape
+
+**Purpose.** Retrospective measurement for the tool-call batching and delegation-discipline rules: per-turn tool-call-count distribution, plus streak-length distributions for consecutive single-call turns (the batching rule's signal) and consecutive Bash-only single-call turns excluding mutating-git commands (the delegation rule's signal), each dollar-weighted. Independent of `audit-routing-shape`: population is every assistant turn with usage, across every model, not only Opus code-read turns outside judgment spans.
+
+isSidechain turns are excluded. A streak resets on a mid-session `gitBranch` change or on any turn that doesn't qualify for that streak's population. The mutating-git exclusion — `commit`, `push`, `merge`, `rebase`, `cherry-pick`, `reset`, `revert`, `stash`, `tag`, `checkout`, `switch`, `restore`, `add`, `rm`, `mv`, `branch`, `clean`, `remote`, `fetch`, `reflog`, `symbolic-ref`, `fsck`, `worktree` — applies only to the delegation streak; a single `git commit` still extends the batching streak (any single-call turn does).
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
+- `--since Nd` — limit to the last N days (e.g. `35d`)
+
+**Sample output.**
+```
+## Turn shape (last 7d)
+
+### Tool calls per turn
+
+Bucket      Turns            $
+────────────────────────────────
+0            1,958      $421.10
+1            2,407      $198.42
+2-3             49       $30.55
+4-7              1        $0.42
+8+               0        $0.00
+
+### Single-call streak length (batching rule)
+
+Bucket    Streaks            $
+────────────────────────────────
+1           2,205      $172.90
+2              49       $12.30
+3-5             1        $0.95
+
+### Bash-only single-call streak length, excluding mutating git (delegation rule)
+
+Bucket    Streaks            $
+────────────────────────────────
+1             980       $61.20
+2              22        $5.60
+```
+
+**When to reach for it.** Establish a re-derivable, dollar-weighted baseline for how often sessions violate the batching and delegation rules, before setting any nudge threshold — see `.claude/plans/tool-call-compliance-enforcement.md`.
+
+---
+
+## turn-shape-samples
+
+**Purpose.** Emit a random sample of flagged turn-shape streaks (length >= 2) as plain text, for manual precision/recall calibration of the batching and delegation rules against `turn-shape`'s aggregate.
+
+Plain text, not JSON — unlike `audit-routing-samples`, this output is stamped with the `DO NOT PUBLISH` banner, and prepending a banner line would corrupt a JSON stream. (`audit-routing-samples` never stamps this banner at all, a pre-existing gap in that subcommand.)
+
+**Flags.**
+- `--projects GLOB` — project directory glob (default: `*`)
+- `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
+- `--since Nd` — limit to the last N days (e.g. `35d`)
+- `--sample N` — maximum streaks to emit (default: 30)
+- `--seed N` — random seed for reproducible sampling
+
+**Sample output.**
+```
+DO NOT PUBLISH — this output contains real project names and session IDs.
+
+--- delegation streak, length=3, $0.0456, session=abc12345-test ---
+  1. Bash: git log
+  2. Bash: git diff HEAD~1
+  3. Bash: git show HEAD
+
+--- batching streak, length=2, $0.1230, session=def67890-test ---
+  1. Bash: pytest claude/.claude/
+  2. Read: (no command)
+```
+
+**When to reach for it.** Classify a flagged sample as genuine violation or legitimate sequential work, then compare the resulting precision/recall against the pre-registered floors before deciding whether either rule's detector ships. Raters must recognize a same-tool batch issued together for an unrelated reason (`pytest`, `ruff check`, `shellcheck` in one batch) as a legitimate true-negative, not a violation.

@@ -715,13 +715,14 @@ class TestRequireWorktreeForGitWrites:
         (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate
         _lib.sh/the parser, `git`, `python3` for the command parser, `ps`
         and `tr` for _lib_worktree_collision_guard's session-identity
-        ancestor walk on the worktree-allow path), omitting both
-        timeout(1) and gtimeout(1). Mirrors test_python3_absent_denies's
-        shape; skips (does not silently under-symlink) when a needed real
-        binary is itself absent."""
+        ancestor walk on the worktree-allow path, `bash` for the guard's own
+        noclobber lock-acquisition write), omitting both timeout(1) and
+        gtimeout(1). Mirrors test_python3_absent_denies's shape; skips (does
+        not silently under-symlink) when a needed real binary is itself
+        absent."""
         stub_bin = tmp_path / "_stub_bin"
         stub_bin.mkdir()
-        for tool in ("cat", "dirname", "git", "jq", "ps", "python3", "tr"):
+        for tool in ("bash", "cat", "dirname", "git", "jq", "ps", "python3", "tr"):
             real_path = shutil.which(tool)
             if not real_path:
                 pytest.skip(f"{tool} not found in PATH")

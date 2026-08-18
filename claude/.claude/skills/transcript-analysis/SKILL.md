@@ -1,6 +1,16 @@
 ---
 name: transcript-analysis
-description: Analyze Claude Code transcripts — model comparison by branch, test-failure convergence sequences, correction-signal frequency, active-vs-idle duration, subagent-vs-main turn split, PR-to-branch mapping, per-session review-activity timelines (skill invocations, hook denials, reviewer spawns), a per-session narrative of typed prompts classified as initial/followup/explicit correction, or a corpus-wide census of denial/friction shapes. For token-cost, cache-efficiency, or branch/repo-scoped dollar cost use the `cost` subcommand.
+description: >
+  Analyze Claude Code transcripts for cost, behavior, and review-activity
+  statistics; the `cost` subcommand covers token cost, cache efficiency, and
+  branch- or repo-scoped dollar cost.
+  TRIGGER when: needing any statistic derived from Claude Code transcripts —
+  cost, cache efficiency, model mix, subagent-vs-main split, test-failure
+  convergence, session or branch history, a denial/friction census, or a
+  per-session record of typed prompts and corrections.
+  DO NOT TRIGGER when: the ask is a case study or annotated timeline built
+  on top of these metrics (use `transcript-narrative`), or the number was
+  already produced by this toolkit earlier in the session.
 ---
 
 The toolkit lives at `scripts/transcript-analysis.py` under the active Claude Code config dir (`$CLAUDE_CONFIG_DIR`, or `~/.claude`). Run it directly from the shell.
@@ -8,6 +18,8 @@ The toolkit lives at `scripts/transcript-analysis.py` under the active Claude Co
 ## Scope confirmation
 
 Before quoting a corpus-wide statistic from this toolkit's output, include the resolved-scope header line verbatim in what you report, and if that line reads "1 root (no ~/.claude/transcript-config-dirs declared)", ask the user whether other Claude accounts exist before treating the number as complete.
+
+**"I found nothing" is one of those statistics.** A zero-match run is the case most likely to be a scoping failure rather than a real result, so quote its header too before reporting the absence — never report an empty result without stating the corpus it was empty across.
 
 `cost --summary` prints no resolved-scope header — it is always scoped to the active account only, and states so on its own `Scope: this account only (...)` line instead; quote that line rather than asking about other accounts.
 
@@ -28,6 +40,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | What prompts did I write, and where did I redirect Claude? | `user-input` |
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | Which lever costs the most in actual dollars — cache read/write, output, or input? | `cost --since 30d` |
+| How much does idle-gap prompt-cache TTL-expiry rebuild cost, and is it concurrent-session switching or real breaks? | `cache-rebuild --since 30d` |
 | What did this branch cost, as a publish-ready aggregate for a PR body? | `cost --this-repo --branches <branch> --summary` |
 | Are reviewer dispatches producing real findings, and do sessions then edit what was cited? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
@@ -66,7 +79,7 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 
 ## Caveats
 
-- Every subcommand's default scope is a union across every config dir listed in `~/.claude/transcript-config-dirs` (see `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section), not just the active profile — except `cost --summary`, which resolves to the active config dir only. The resolved-scope header states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — see "Scope confirmation" above — except `review-trace` and `skill-invocation`, which defer their header print until a match is found, and `cost --summary`, which prints no header at all. Redaction covers `cost`, `cost-trend`, `context-distribution`, and `audit-routing` only; every other subcommand prints raw project labels, branch names, or paths under this same union.
+- Every subcommand's default scope is a union across every config dir listed in `~/.claude/transcript-config-dirs` (see `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section), not just the active profile — except `cost --summary`, which resolves to the active config dir only. The resolved-scope header states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared and even when the run matched nothing — see "Scope confirmation" above — except `cost --summary`, which prints no header at all. Redaction covers `cost`, `cost-trend`, `context-distribution`, `audit-routing`, and `cache-rebuild` only; every other subcommand prints raw project labels, branch names, or paths under this same union.
 - `--branches` filters records by `gitBranch` string only, never by project dir or root — under a multi-root scope it pools same-named branches across every declared account into one tally, with no per-account signal.
 - The `N failed` count is a coarse proxy: it matches any `N failed` in tool output, including pre-existing failures and intentional baseline runs. Treat the sequence view as the primary read; the aggregate rate is corroborating.
 - Subagent (`isSidechain`) turns are excluded from `fail-seq` and `struggle` — reviewer, `Explore`, and `code-writer` agents are not the debugging surface these subcommands measure.

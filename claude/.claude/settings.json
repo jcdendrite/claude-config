@@ -61,10 +61,11 @@
       "Bash(yum install *)",
       "Bash(dnf install *)",
       "Bash(apk add *)",
-      "Bash(zypper install *)"
+      "Bash(zypper install *)",
+      "EnterPlanMode"
     ]
   },
-  "model": "opusplan",
+  "model": "sonnet",
   "skillOverrides": {
     "brief": "name-only",
     "handoff": "name-only",
@@ -127,6 +128,15 @@
             "command": "~/.claude/hooks/set-session-title-from-branch.sh"
           }
         ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/restore-authorization-boundary-on-compact.sh"
+          }
+        ]
       }
     ],
     "SubagentStart": [
@@ -153,6 +163,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/nudge-worktree-anchor.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-unexpanded-skill-mention.sh"
           }
         ]
       }
@@ -398,6 +412,15 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/redact-credential-values.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-transcript-toolkit.sh"
           }
         ]
       }

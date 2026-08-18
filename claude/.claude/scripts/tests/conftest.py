@@ -1,6 +1,9 @@
 """Shared git-repo scaffolding helpers for the worktree-cleanup script tests
 (test_cleanup_merged_branches.py, test_cleanup_idle_open_pr_worktrees.py),
-plus suite-wide transcript-corpus isolation (see the autouse fixture below).
+plus suite-wide transcript-corpus isolation (see the autouse fixture below),
+plus the transcript-record fixture builders shared by
+test_transcript_analysis.py and test_context_composition.py (see the
+extraction rationale on _write_jsonl below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
 `tmp_path` (or a repo built from it) as an explicit argument rather than
@@ -11,10 +14,215 @@ a worktree is identical regardless of which script is under test.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    """Write records as one-JSON-object-per-line, transcript-analysis.py's on-disk shape -- shared
+    here (with _asst/_user_msg) so test_context_composition.py doesn't re-derive its own,
+    possibly-drifting copy of the requestId run-merge shape _dedup_turns_by_request_id relies on."""
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+
+def _asst(
+    model: str,
+    *,
+    branch: str = "main",
+    sidechain: bool = False,
+    ts: str | None = None,
+    content: list | None = None,
+    request_id: str | None = None,
+) -> dict:
+    rec: dict = {
+        "type": "assistant",
+        "gitBranch": branch,
+        "isSidechain": sidechain,
+        "message": {"model": model, "content": content or [], "usage": {}},
+    }
+    if ts:
+        rec["timestamp"] = ts
+    if request_id is not None:
+        rec["requestId"] = request_id
+    return rec
+
+
+def _user_msg(content, *, branch: str = "main", ts: str | None = None) -> dict:
+    rec: dict = {"type": "user", "gitBranch": branch, "message": {"content": content}}
+    if ts:
+        rec["timestamp"] = ts
+    return rec
+
+
+def _bash_use(tool_id: str, command: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
+
+
+def _tool_result(tool_id: str, text: str) -> dict:
+    return {"type": "tool_result", "tool_use_id": tool_id, "content": text}
+
+
+def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", prompt: str = "y") -> dict:
+    return {
+        "type": "tool_use",
+        "id": tool_id,
+        "name": tool_name,
+        "input": {"subagent_type": subagent_type, "description": "x", "prompt": prompt},
+    }
+
+
+def _table_cols(out: str, *, header_contains: str, row_contains: str | list[str],
+                drop_leading_labels: int = 0,
+                max_labels: int | None = None,
+                row_startswith: bool = False,
+                occurrence: int | None = None) -> dict[str, str]:
+    """Map column-label -> cell value for the data row matching `row_contains`.
+
+    Anchors column positions to the header row (the line containing
+    `header_contains`) instead of hard-coding indices, so a column reorder in
+    the source output fails meaningfully rather than silently reading the wrong
+    column.
+
+    Precondition: every asserted column's header label AND cell value is a
+    single whitespace token (true for all leading label/count columns; trailing
+    free-text columns like "Top subagent types" are not assertable this way and
+    are not asserted by any test). `drop_leading_labels` lets a caller declare
+    that the row deliberately suppresses N leading left-aligned labels (the only
+    case: cmd_subagents continuation rows blank the Branch column) — declared
+    explicitly per call, never inferred.
+    `max_labels` limits labels to only the first N single-token columns, required
+    for tables whose header contains a trailing multi-word column name (e.g.,
+    cmd_subagent_mix's "Top subagent types") whose tokens would otherwise inflate
+    the label count beyond the data row's token count.
+    `row_startswith=True` matches only lines where `row_contains` appears at
+    column 0, filtering out indented summary/annotation lines that also contain
+    the same text (e.g., cmd_skill_invocation summary section).
+
+    Row search is always scoped to one table's own section -- from its header
+    line through the next blank line or the next header-containing line -- so
+    a second table elsewhere in the same output that happens to share row
+    text (e.g. both tables use "main"/"sidechain" thread labels, or both
+    start "AgentType") is never mistaken for this one's data. Without
+    `occurrence`, `header_contains` must match exactly one line in the whole
+    output. `occurrence` scopes to the Nth (1-indexed) line containing
+    `header_contains` instead, for a header substring that legitimately
+    repeats across tables (e.g. reviewer-yield's Table 1 and Table 2 both
+    start "AgentType"). A table's own rule line ("-" * len(header), printed
+    immediately after the header) is pure dashes, so it never matches a
+    blank-line or header-match boundary check and needs no special-casing to
+    stay inside the section.
+    `row_contains` accepts a single string or a sequence of strings, all of
+    which must appear on the matched line — needed once a table can hold more
+    than one row per entity (e.g. two bucket rows per agent type), where a
+    bare entity-name substring would match more than one line even within a
+    single table's section.
+
+    Fails loudly (AssertionError) when exactly one header / data row isn't
+    found, or when token counts don't line up — a silent mismatch would
+    reintroduce the GH-363 bug class under a new cause.
+    """
+    lines = out.splitlines()
+    header_indices = [i for i, ln in enumerate(lines) if header_contains in ln]
+    if occurrence is None:
+        assert len(header_indices) == 1, f"header match not unique for {header_contains!r}: {len(header_indices)}"
+        start = header_indices[0]
+    else:
+        assert len(header_indices) >= occurrence, (
+            f"header occurrence {occurrence} requested but only {len(header_indices)} "
+            f"found for {header_contains!r}"
+        )
+        start = header_indices[occurrence - 1]
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if not lines[i].strip() or header_contains in lines[i]:
+            end = i
+            break
+    section_lines = lines[start:end]
+
+    headers = [ln for ln in section_lines if header_contains in ln]
+    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
+    header = headers[0]
+
+    needles = (row_contains,) if isinstance(row_contains, str) else tuple(row_contains)
+    if row_startswith:
+        rows = [
+            ln for ln in section_lines
+            if ln != header and ln.startswith(needles[0]) and all(n in ln for n in needles)
+        ]
+    else:
+        rows = [ln for ln in section_lines if ln != header and all(n in ln for n in needles)]
+    assert len(rows) == 1, f"row match not unique for {row_contains!r}: {len(rows)}"
+    labels = header.split()[drop_leading_labels:]
+    if max_labels is not None:
+        labels = labels[:max_labels]
+    values = rows[0].split()
+    assert len(values) >= len(labels), f"row has fewer cells than labels: {rows[0]!r}"
+    return dict(zip(labels, values, strict=False))
+
+
+@pytest.fixture()
+def fake_projects(tmp_path, monkeypatch, request):
+    """Isolated single-account corpus: patches scope.PROJECTS_DIR and
+    scope.config_dir on the calling test file's own loaded transcript-analysis.py
+    module (`request.module._mod`) -- every test file loads its own independent
+    copy via spec_from_file_location, but each copy's `from transcript_analysis
+    import scope` resolves to the one process-wide transcript_analysis.scope
+    module, so patching `mod.scope` here is visible regardless of which file's
+    `_mod` requested the fixture.
+
+    _resolve_cost_roots (subagents, subagent-mix, cost, context-distribution)
+    derives its default root from a fresh config_dir() call, not from the
+    PROJECTS_DIR patch above — without this, a subcommand routed through
+    _resolve_cost_roots would silently fall back to this machine's real
+    config dir instead of this fixture's isolated tmp_path. cost-ledger,
+    handoff-ratio, and rearm-backtest stay in the shim (not yet moved into
+    the package) and call config_dir() via their own separate import, so
+    mod.config_dir is patched too -- two bindings of the same initial value,
+    each the sole read path for its own still-independent call sites.
+    """
+    mod = request.module._mod
+    projects = tmp_path / "projects"
+    proj = projects / "-home-user-testrepo"
+    proj.mkdir(parents=True)
+    monkeypatch.setattr(mod.scope, "PROJECTS_DIR", projects)
+    monkeypatch.setattr(mod.scope, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod, "config_dir", lambda: tmp_path)
+    return proj
+
+
+@pytest.fixture()
+def fake_config_dir_factory(tmp_path):
+    """Factory for extra --config-dir roots: each call builds a fresh config
+    dir (with its own projects/ subdirectory) under tmp_path, independent of
+    fake_projects' own PROJECTS_DIR — cost's multi-root tests use this to
+    build a second (and third) account profile."""
+    def _make(name: str) -> Path:
+        config_dir_path = tmp_path / name
+        (config_dir_path / "projects").mkdir(parents=True)
+        return config_dir_path
+    return _make
+
+
+@pytest.fixture()
+def cost_ledger_file(tmp_path, monkeypatch, request):
+    """Isolated docs/cost-ledger.md: a fresh file with the canonical header/
+    separator and zero data rows, matching the real committed file's own
+    shape. _cost_ledger_path is monkeypatched (on the calling test file's own
+    `_mod` -- see fake_projects above for why `request.module._mod`) so every
+    test in this section reads/writes this file, never this repo's own
+    tracked ledger."""
+    mod = request.module._mod
+    ledger_path = tmp_path / "cost-ledger.md"
+    ledger_path.write_text(
+        "# Cost-trend ledger\n\n"
+        + mod._COST_LEDGER_HEADER_LINE + "\n"
+        + mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+    )
+    monkeypatch.setattr(mod, "_cost_ledger_path", lambda: ledger_path)
+    return ledger_path
 
 
 @pytest.fixture(autouse=True)
