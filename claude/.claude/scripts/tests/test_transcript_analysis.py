@@ -10995,6 +10995,25 @@ def _turn_shape_samples_args(
     })()
 
 
+def _turn_shape_holdout_samples_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    since: str | None = None,
+    sample: int = 100,
+    seed: int = 0,
+    offset: int = 0,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "since": since,
+        "sample": sample,
+        "seed": seed,
+        "offset": offset,
+    })()
+
+
 class TestBashCommandIsMutatingGit:
     """Direct unit tests for _bash_command_is_mutating_git — the delegation-rule
     streak's mutating-git exclusion classifier."""
@@ -11297,6 +11316,171 @@ class TestTurnShapeSamples:
         assert "1. Bash: git commit -m a" in out
         assert "2. Bash: git commit -m b" in out
         assert "delegation streak" not in out
+
+
+class TestTurnShapeHoldoutSamples:
+    """Unit tests for cmd_turn_shape_holdout_samples — the unflagged (length-1
+    streak) complement of TestTurnShapeSamples above."""
+
+    def test_banner_present_and_no_file_written(self, fake_projects, tmp_path, capsys):
+        """--samples output is stamped with the DO NOT PUBLISH banner and never
+        writes a file, verified by a before/after directory-tree diff."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
+        ])
+        before = set(tmp_path.rglob("*"))
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
+        out = capsys.readouterr().out
+        after = set(tmp_path.rglob("*"))
+        assert out.startswith(_mod._DO_NOT_PUBLISH_BANNER)
+        assert before == after
+
+    def test_no_exception_on_empty_holdout_population(self, fake_projects, capsys):
+        """A corpus with no streak of length == 1 (only a length-2 call turn) emits
+        only the banner, with no candidates and no exception."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5, content=[
+                {"type": "tool_use", "id": "e1", "name": "Edit", "input": {}},
+                {"type": "tool_use", "id": "e2", "name": "Edit", "input": {}},
+            ], request_id="r1"),
+        ])
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
+        out = capsys.readouterr().out
+        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
+
+    def test_candidate_body_renders_rule_length_dollars_session_and_turn_detail(self, fake_projects, capsys):
+        """The rendered candidate body carries the rule name, streak length,
+        dollar total, session id, and one "N. tool_name: command" line, for a
+        hand-computed length-1 streak. The turn invokes mutating git, so only a
+        "batching" candidate forms (mutating git never qualifies for the
+        delegation streak), keeping the assertion unambiguous."""
+        rec = _priced("claude-sonnet-5", input=10, output=5,
+                        content=[_bash_use("b1", "git commit -m a")], request_id="r1")
+        _write_jsonl(fake_projects / "sess.jsonl", [rec])
+        expected_dollars_by_class, _, _ = _mod._price_turn("claude-sonnet-5", rec["message"]["usage"])
+        expected_total = _mod._fmt_usd(sum(expected_dollars_by_class.values()))
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
+        out = capsys.readouterr().out
+        assert f"--- batching streak, length=1, {expected_total}, session=sess ---" in out
+        assert "1. Bash: git commit -m a" in out
+        assert "delegation streak" not in out
+
+    def test_length_2_streak_excluded_from_holdout_population(self, fake_projects, capsys):
+        """A length-2 streak is the exact complement of the holdout population
+        (length == 1, not a range) — it must not appear here even though it
+        would appear in turn-shape-samples's flagged population."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b2", "git commit -m b")], request_id="r2"),
+        ])
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
+        out = capsys.readouterr().out
+        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
+
+    def test_offset_pages_the_shuffled_population_without_overlap(self, fake_projects, capsys):
+        """Same seed, offset=0/sample=1 and offset=1/sample=1 yield two distinct
+        sessions, and offset=0/sample=2 yields both — --offset pages a
+        deterministic shuffle rather than re-shuffling per invocation."""
+        _write_jsonl(fake_projects / "s1.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
+        ])
+        _write_jsonl(fake_projects / "s2.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git commit -m b")], request_id="r1"),
+        ])
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=0, sample=1))
+        first_page = capsys.readouterr().out
+        assert first_page.count("--- batching streak") == 1
+        assert ("session=s1" in first_page) != ("session=s2" in first_page)
+
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=1, sample=1))
+        second_page = capsys.readouterr().out
+        assert second_page.count("--- batching streak") == 1
+        assert ("session=s1" in second_page) != ("session=s2" in second_page)
+        assert ("session=s1" in first_page) != ("session=s1" in second_page)
+
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=0, sample=2))
+        both_page = capsys.readouterr().out
+        assert both_page.count("--- batching streak") == 2
+        assert "session=s1" in both_page
+        assert "session=s2" in both_page
+
+    def test_offset_past_end_of_nonempty_population_emits_banner_and_diagnostic(self, fake_projects, capsys):
+        """offset=5 against 2 candidates emits the banner and a stderr diagnostic
+        distinguishing "paged past the end" from a genuinely empty population,
+        with no exception."""
+        _write_jsonl(fake_projects / "s1.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
+        ])
+        _write_jsonl(fake_projects / "s2.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git commit -m b")], request_id="r1"),
+        ])
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=5, sample=30))
+        out, err = capsys.readouterr()
+        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
+        assert "--offset=5 is past the end of the 2 unflagged candidates" in err
+
+    def test_offset_partial_final_page_returns_exactly_the_remainder(self, fake_projects, capsys):
+        """3 candidates, offset=2/sample=2 returns exactly 1 candidate — the
+        boundary case the offset-pagination logic exists to get right."""
+        for i in range(3):
+            _write_jsonl(fake_projects / f"s{i}.jsonl", [
+                _priced("claude-sonnet-5", input=10, output=5,
+                         content=[_bash_use("b1", f"git commit -m {i}")], request_id="r1"),
+            ])
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=2, sample=2))
+        out = capsys.readouterr().out
+        assert out.count("--- batching streak") == 1
+
+    def test_negative_offset_exits_2_with_stderr_message(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=-1))
+        assert exc_info.value.code == 2
+        assert "--offset must not be negative" in capsys.readouterr().err
+
+    def test_negative_sample_exits_2_with_stderr_message(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(sample=-1))
+        assert exc_info.value.code == 2
+        assert "--sample must not be negative" in capsys.readouterr().err
+
+    def test_sample_zero_returns_no_candidates_without_past_end_diagnostic(self, fake_projects, capsys):
+        """--sample 0 against a non-empty, non-past-end offset must not trip the
+        "offset past the end" diagnostic — that message means the offset itself
+        exceeds the population, not that the caller asked for a zero-length page."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
+        ])
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=0, sample=0))
+        out, err = capsys.readouterr()
+        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
+        assert "is past the end" not in err
+        assert "(offset=0, window=0 of 1 unflagged candidates)" in err
+
+    def test_isolated_non_mutating_bash_turn_renders_as_both_batching_and_delegation(
+        self, fake_projects, capsys
+    ):
+        """A single isolated, non-mutating-git Bash turn qualifies as a length-1
+        streak under both require_bash=False and require_bash=True, so it
+        renders as two candidates — one "batching", one "delegation" — for the
+        same session/turn. A rater who sees this pair must recognize it as one
+        repeated run, not two independent violations toward the sizing tally."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git log")], request_id="r1"),
+        ])
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
+        out = capsys.readouterr().out
+        assert "--- batching streak, length=1" in out
+        assert "--- delegation streak, length=1" in out
+        assert out.count("session=sess") == 2
 
 
 # ---------------------------------------------------------------------------
