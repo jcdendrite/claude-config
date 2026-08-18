@@ -12539,88 +12539,147 @@ class TestCostLedgerDefaultPathCliWiring:
 
 
 # ---------------------------------------------------------------------------
-# handoff-ratio
+# spend-over-threshold
 # ---------------------------------------------------------------------------
 
 
-def _handoff_skill_block() -> dict:
-    """Build a Skill tool_use block for /handoff."""
-    return {"type": "tool_use", "id": "tool-handoff-1", "name": "Skill", "input": {"skill": "handoff"}}
+def _spend_over_threshold_args(since: str | None = None, projects: str = "*") -> argparse.Namespace:
+    return type("A", (), {"projects": projects, "this_repo": False, "since": since})()
 
 
-def _compaction_record(ts: str = "2026-05-19T10:00:00.000Z") -> dict:
-    """Build a compact_boundary system record (the shape Claude Code writes on auto-compaction)."""
-    return {
-        "type": "system",
-        "subtype": "compact_boundary",
-        "content": "Conversation compacted",
-        "timestamp": ts,
-        "compactMetadata": {"trigger": "auto", "preTokens": 160000, "postTokens": 11000, "durationMs": 145000},
-    }
-
-
-def _handoff_args(since: str | None = None, projects: str = "*") -> argparse.Namespace:
-    return type("A", (), {
-        "projects": projects, "this_repo": False, "since": since, "debug_detector": False,
-    })()
-
-
-class TestHandoffRatio:
-    def test_handoff_ratio_counts_handoffs_and_compactions(self, fake_projects, capsys):
-        """Sessions with handoff skill calls and compaction events are counted correctly."""
-        # Session 1: has handoff
-        _write_jsonl(fake_projects / "sess1.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-11T09:00:00.000Z",
-                  content=[_handoff_skill_block()]),
+class TestSpendOverThreshold:
+    def test_session_entirely_under_threshold_reports_zero_share(self, fake_projects, capsys):
+        """Every main-thread turn's context_at_turn stays below the session's
+        own fire threshold (360,000 for claude-sonnet-5): above-threshold
+        dollars is 0, share is 0.0%."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=50_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=60_000, output=1_000, ts="2026-05-19T10:01:00.000Z"),
         ])
-        # Session 2: has compaction
-        _write_jsonl(fake_projects / "sess2.jsonl", [
-            _compaction_record("2026-05-11T10:00:00.000Z"),
-        ])
-        # Session 3: both handoff and compaction (counts in both columns)
-        _write_jsonl(fake_projects / "sess3.jsonl", [
-            _asst("claude-opus-4-7", branch="main", ts="2026-05-11T10:00:00.000Z",
-                  content=[_handoff_skill_block()]),
-            _compaction_record("2026-05-11T11:00:00.000Z"),
-        ])
-        _mod.cmd_handoff_ratio(_handoff_args())
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
-        assert "Handoffs" in out
-        assert "Compactions" in out
-        # Totals row: 2 handoffs, 2 compactions, 50% ratio.
-        cols = _table_cols(out, header_contains="Handoffs", row_contains="Total")
-        assert int(cols["Handoffs"]) == 2, "Expected 2 handoffs in Total row"
-        assert int(cols["Compactions"]) == 2, "Expected 2 compactions in Total row"
-        assert "50.0%" in out
+        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert int(cols["Sessions"]) == 1
+        assert cols["Share"] == "0.0%"
 
-    def test_handoff_ratio_empty_corpus_no_divide_by_zero(self, fake_projects, capsys):
-        """Empty corpus (no handoffs or compactions) prints a graceful 'no data' message."""
-        # Write a session with no handoff or compaction records.
-        _write_jsonl(fake_projects / "plain.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z"),
+    def test_session_entirely_over_threshold_reports_full_share(self, fake_projects, capsys):
+        """Every main-thread turn's context_at_turn is at or above the
+        session's own fire threshold: share is 100.0%."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=450_000, output=1_000, ts="2026-05-19T10:01:00.000Z"),
         ])
-        _mod.cmd_handoff_ratio(_handoff_args())
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
-        assert "No handoff or compaction events found" in out
+        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert cols["Share"] == "100.0%"
 
-    def test_handoff_ratio_since_filter_excludes_older(self, fake_projects, capsys):
-        """Events with timestamps before --since are excluded from counts."""
-        # Old session: before cutoff
+    def test_mixed_session_reports_partial_share(self, fake_projects, capsys):
+        """One turn under threshold, one turn at/above it: the reported
+        share is exactly the above-threshold turn's own dollar fraction of
+        the session's total -- a hand-computed value, not just a nonzero
+        check."""
+        under = _priced("claude-sonnet-5", input=50_000, output=1_000, ts="2026-05-19T10:00:00.000Z")
+        over = _priced("claude-sonnet-5", input=400_000, output=2_000, ts="2026-05-19T10:01:00.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [under, over])
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+
+        rates = _mod._model_rates("claude-sonnet-5")
+        under_dollars = 50_000 / 1_000_000 * rates["input"] + 1_000 / 1_000_000 * rates["output"]
+        over_dollars = 400_000 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
+        expected_share = 100.0 * over_dollars / (under_dollars + over_dollars)
+
+        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert cols["Share"] == f"{expected_share:.1f}%"
+
+    def test_session_with_no_main_thread_usage_block_is_excluded(self, fake_projects, capsys):
+        """A session with no main-thread turn carrying a usage block has no
+        session_threshold to be above or below -- excluded from the report
+        entirely, not shown with an undefined/blank share."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-5", branch="main", ts="2026-05-19T10:00:00.000Z"),  # usage={}
+        ])
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+        assert "No sessions with a resolvable handoff-nudge threshold" in out
+
+    def test_session_with_all_unpriced_turns_is_excluded_not_a_zero_division(self, fake_projects, capsys):
+        """Every turn's model has no price-table entry (session_threshold is
+        still resolvable -- pricing and context-window resolution are
+        independent), so total_dollars is 0: the session is excluded from
+        the report rather than raising ZeroDivisionError or reporting an
+        undefined share."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-opus-4-7", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+        assert "No sessions with a resolvable handoff-nudge threshold" in out
+
+    def test_multiple_qualifying_sessions_aggregate_correctly_within_and_across_weeks(
+        self, fake_projects, capsys
+    ):
+        """Two qualifying sessions in the same ISO week (2026-W21): the
+        week row's Sessions/AboveUSD/TotalUSD reflect the sum of both, not
+        just one -- an accumulation bug (data[week_str] reset instead of
+        incremented, a wrong dict key, or the Total row summed from the
+        wrong per-week field) would slip through every single-session test
+        above."""
+        under = _priced("claude-sonnet-5", input=50_000, output=1_000, ts="2026-05-19T10:00:00.000Z")
+        over = _priced("claude-sonnet-5", input=400_000, output=2_000, ts="2026-05-21T10:00:00.000Z")
+        _write_jsonl(fake_projects / "sess_a.jsonl", [under])
+        _write_jsonl(fake_projects / "sess_b.jsonl", [over])
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+
+        rates = _mod._model_rates("claude-sonnet-5")
+        under_dollars = 50_000 / 1_000_000 * rates["input"] + 1_000 / 1_000_000 * rates["output"]
+        over_dollars = 400_000 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
+        expected_total = under_dollars + over_dollars
+        expected_share = 100.0 * over_dollars / expected_total
+
+        week_cols = _table_cols(out, header_contains="Sessions", row_contains="2026-W21")
+        assert int(week_cols["Sessions"]) == 2
+        assert float(week_cols["AboveUSD"].replace(",", "")) == pytest.approx(over_dollars, rel=1e-4)
+        assert float(week_cols["TotalUSD"].replace(",", "")) == pytest.approx(expected_total, rel=1e-4)
+        assert week_cols["Share"] == f"{expected_share:.1f}%"
+
+        total_cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert int(total_cols["Sessions"]) == 2
+        assert float(total_cols["AboveUSD"].replace(",", "")) == pytest.approx(over_dollars, rel=1e-4)
+        assert float(total_cols["TotalUSD"].replace(",", "")) == pytest.approx(expected_total, rel=1e-4)
+
+    def test_context_at_turn_exactly_equal_to_threshold_counts_as_above(self, fake_projects, capsys):
+        """context_at_turn == session_threshold exactly -- the boundary the
+        `>=` comparison in cmd_spend_over_threshold governs, and the same
+        point the real hook fires at -- counts toward AboveUSD. An off-by-one
+        (`>` written instead of `>=`) would silently misclassify this turn as
+        under, since no other test in this class exercises the exact
+        boundary (all use values far below or far above it)."""
+        exactly_at_threshold = _priced(
+            "claude-sonnet-5", input=360_000, output=1_000, ts="2026-05-19T10:00:00.000Z"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [exactly_at_threshold])
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert cols["Share"] == "100.0%"
+
+    def test_since_filter_excludes_whole_sessions_before_cutoff(self, fake_projects, capsys):
+        """--since scopes whole sessions (by first timestamp), matching
+        _session_matches_rearm_scope's own convention for this shared
+        per-turn machinery -- not individual records within one session."""
         _write_jsonl(fake_projects / "old.jsonl", [
-            _compaction_record("2026-01-15T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-01-15T10:00:00.000Z"),
         ])
-        # New session: after cutoff
         _write_jsonl(fake_projects / "new.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
-                  content=[_handoff_skill_block()]),
+            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.cmd_handoff_ratio(_handoff_args(since="2026-05-01"))
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args(since="2026-05-01"))
         out = capsys.readouterr().out
-        # Only the new session (handoff) should appear; old compaction excluded.
-        assert "Handoffs" in out
-        cols = _table_cols(out, header_contains="Handoffs", row_contains="Total")
-        assert int(cols["Handoffs"]) == 1, "Expected 1 handoff in Total row"
-        assert int(cols["Compactions"]) == 0, "Expected 0 compactions in Total row"
+        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert int(cols["Sessions"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -17380,7 +17439,7 @@ _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
      })()),
     ("cost-trend", "COST TREND", _mod.cmd_cost_trend, _cost_trend_args),
     ("cache-rebuild", "CACHE REBUILD", _mod.cmd_cache_rebuild, _cache_rebuild_args),
-    ("handoff-ratio", "HANDOFF RATIO", _mod.cmd_handoff_ratio, _handoff_args),
+    ("spend-over-threshold", "SPEND OVER THRESHOLD", _mod.cmd_spend_over_threshold, _spend_over_threshold_args),
     ("audit-routing-shape", "AUDIT ROUTING SHAPE", _mod.cmd_audit_routing_shape, _audit_routing_shape_args),
     ("audit-routing-samples", "AUDIT ROUTING SAMPLES", _mod.cmd_audit_routing_samples, _audit_routing_samples_args),
     ("judgment-pair", "JUDGMENT PAIR", _mod.cmd_judgment_pair, _judgment_pair_args),
