@@ -27,12 +27,11 @@ def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
     """Build one session's sorted (timestamp, gitBranch) index from its own
     main-thread (non-sidechain) records — the carry-forward source
     _attributed_branch resolves a worktree-agent-* record's branch against.
-
     Built fresh per session, from that session's records alone: this is new
-    machinery, not an extension of GH-482's position-based carry-forward
-    (cmd_review_trace/cmd_judgment_pair), which never crosses the main-file/
-    subagents-subdirectory boundary. A record with no parseable timestamp
-    cannot be placed in timestamp order and is excluded.
+    machinery, not an extension of cmd_review_trace's position-based
+    carry-forward convention (see its docstring), which never crosses the
+    main-file/subagents-subdirectory boundary. A record with no parseable
+    timestamp cannot be placed in timestamp order and is excluded.
     """
     index: list[tuple[float, str]] = []
     for main_rec in records:
@@ -50,21 +49,18 @@ def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
 
 
 def _attributed_branch(rec: dict, branch_index: Sequence[tuple[float, str]]) -> str | None:
-    """Resolve one record's branch for --branches filtering.
-
-    A record whose own gitBranch starts with _WORKTREE_AGENT_BRANCH_PREFIX is
-    resolved instead against branch_index (see _session_branch_index): the
-    entry with the largest timestamp <= the record's own, falling forward to
-    the index's earliest entry when none precedes it (dispatched before any
+    """Resolve one record's branch for --branches filtering. A record whose
+    own gitBranch starts with _WORKTREE_AGENT_BRANCH_PREFIX is resolved
+    instead against branch_index (see _session_branch_index): the entry with
+    the largest timestamp <= the record's own, falling forward to the
+    index's earliest entry when none precedes it (dispatched before any
     main-thread activity in the session, or the record itself carries no
-    parseable timestamp) — the dispatching session's branch active at that
-    moment, correctly resolving through a mid-session branch switch. Every
-    other record's own gitBranch is returned unchanged.
-
-    Returns None — the "?" sentinel case, reusing GH-482's convention for "no
-    signal to carry forward" — when branch_index is empty (no main-thread
-    branch-bearing record anywhere in the session) or when rec itself carries
-    no gitBranch at all.
+    parseable timestamp), correctly resolving through a mid-session branch
+    switch. Every other record's own gitBranch is returned unchanged.
+    Returns None — the "?" sentinel case (see cmd_review_trace's docstring
+    for the carry-forward convention this reuses) — when branch_index is
+    empty (no main-thread branch-bearing record anywhere in the session) or
+    when rec itself carries no gitBranch at all.
     """
     raw_branch = rec.get("gitBranch") or ""
     if not raw_branch.startswith(_WORKTREE_AGENT_BRANCH_PREFIX):
@@ -628,17 +624,14 @@ def compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]], 
     """Per-ISO-week $/opus-share/>=200k-context-share accumulation behind
     both cost-trend's own report and cost-ledger's per-week row, extracted
     so the two share one scan instead of two implementations kept in sync
-    by hand.
-
-    Returns (week_str -> {"total": $, "opus": $, "context_over": $,
-    "context_class_dollars": $}, unpriced_turns, unpriced_tokens). A week
+    by hand. Returns (week_str -> {"total": $, "opus": $, "context_over": $,
+    "context_class_dollars": $}, unpriced_turns, unpriced_tokens); a week
     with zero priced turns is simply absent as a key, not present with
     zeros — cost-ledger's own "no row for this week yet" gap detection
-    relies on that absence.
-
-    context_over is bucket-based dollar share (_context_bucket); context_class_dollars is the
-    dollar share from context-class token pricing (cache_read + cache_write tiers) regardless of
-    bucket — cost-ledger's only consumer of the latter.
+    relies on that absence. context_over is bucket-based dollar share
+    (_context_bucket); context_class_dollars is the dollar share from
+    context-class token pricing (cache_read + cache_write tiers) regardless
+    of bucket — cost-ledger's only consumer of the latter.
     """
     data: dict[str, dict[str, float]] = defaultdict(
         lambda: {"total": 0.0, "opus": 0.0, "context_over": 0.0, "context_class_dollars": 0.0}
@@ -681,23 +674,16 @@ def compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]], 
 
 
 def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
-    """Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.
-
-    Reuses _price_turn's per-turn pricing (same as cost) and cmd_spend_over_threshold's
-    ISO-week bucketing. Sidechain turns are included (include_subagents=True)
-    for the same reason _cost_report includes them — most dispatched spend
-    would otherwise be silently excluded. The most recent bucket is very
-    likely a partial week; it is labeled "(partial)" rather than presented as
-    a complete week's total, since a corpus only a few weeks deep would
-    otherwise misread a partial trailing week as a real week-over-week drop.
-    Turns whose model ID has no _MODEL_BASE_INPUT_RATES entry are excluded
-    from every week's totals and counted corpus-wide (mirrors
-    cmd_audit_routing's unpriced-turns convention) so they don't silently
-    vanish from the reported spend.
-
-    Roots resolve via _resolve_cost_roots (cost's own --config-dir contract),
-    not the generic _resolve_scan_roots -- this is the one funnel that
-    understands a repeatable --config-dir/extra_config_dirs.
+    """Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket
+    share. Reuses _price_turn's per-turn pricing (same as cost) and
+    cmd_spend_over_threshold's ISO-week bucketing. Sidechain turns are
+    included (include_subagents=True). The most recent bucket is labeled
+    "(partial)" rather than presented as a complete week's total. Turns whose
+    model ID has no _MODEL_BASE_INPUT_RATES entry are excluded from every
+    week's totals and counted corpus-wide (mirrors cmd_audit_routing's
+    unpriced-turns convention). Roots resolve via _resolve_cost_roots (cost's
+    own --config-dir contract), not the generic _resolve_scan_roots -- the
+    one funnel that understands a repeatable --config-dir/extra_config_dirs.
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
     roots = scope._resolve_cost_roots(args, subcommand="cost-trend")

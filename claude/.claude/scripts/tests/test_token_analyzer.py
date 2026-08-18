@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
-from transcript_analysis.corpus import SUBAGENT_SUBDIR
+from conftest import _write_subagent_jsonl
 
 # Load token-analyzer as a module without it being on sys.path as a package.
 _SCRIPT = Path(__file__).parent.parent / "token-analyzer.py"
@@ -454,13 +454,6 @@ def test_malformed_timestamp_record_skipped(fake_projects):
     assert len(sessions) == 1
     assert sessions[0]["out"] == 150    # bad record's 999 tokens excluded
     assert ft["opus"]["out"] == 150
-
-
-def _write_subagent_jsonl(proj: Path, session_id: str, agent_id: str, records: list[dict]) -> None:
-    """Write records to the split subagent layout: <session_id>/subagents/<agent_id>.jsonl."""
-    subdir = proj / session_id / SUBAGENT_SUBDIR
-    subdir.mkdir(parents=True, exist_ok=True)
-    _write_jsonl(subdir / f"{agent_id}.jsonl", records)
 
 
 def test_walk_credits_subagent_dispatched_cache_tokens(fake_projects):
