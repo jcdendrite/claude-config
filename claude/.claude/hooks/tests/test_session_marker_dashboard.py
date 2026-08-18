@@ -1,16 +1,20 @@
 """Tests for session-marker-dashboard.sh.
 
-The hook is a SessionStart hook (matcher: startup|clear|compact) that emits
-hookSpecificOutput.additionalContext — the harness injects this JSON payload
-into the agent's conversation context on session start, /clear, and /compact.
-It surfaces existing active-marker state so Claude can see which review-skill
-gates are currently bypassed when resuming after compaction.
+The hook is a SessionStart hook (matcher: startup|clear|compact|resume) that
+emits hookSpecificOutput.additionalContext — the harness injects this JSON
+payload into the agent's conversation context on session start, /clear,
+/compact, and a genuine session resume. It surfaces existing active-marker
+state, and a review-narrative ledger summary, so Claude can see which
+review-skill gates are currently bypassed and what the ledger recorded when
+resuming after compaction.
 
 Output is emitted only when at least one active marker is present or
-stale — an all-absent state (normal fresh session) produces no output.
+stale, or the ledger has content to summarize — an all-absent state
+(normal fresh session) produces no output.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -21,6 +25,7 @@ from helpers import (
     CANARY_CONTENT,
     HOOKS_DIR,
     TRAVERSAL_SESSION_ID,
+    git_toplevel,
     plant_traversal_canary,
 )
 
@@ -28,7 +33,10 @@ SESSION_MARKER_DASHBOARD_HOOK = HOOKS_DIR / "session-marker-dashboard.sh"
 
 
 def _run_dashboard(
-    payload: dict, isolated_home: Path, extra_env: dict | None = None
+    payload: dict,
+    isolated_home: Path,
+    extra_env: dict | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess:
     env = {**os.environ, "HOME": str(isolated_home)}
     if extra_env:
@@ -39,7 +47,15 @@ def _run_dashboard(
         capture_output=True,
         text=True,
         env=env,
+        cwd=cwd,
         check=False,
+    )
+
+
+def _ledger_path(isolated_home: Path, repo: Path, session_id: str) -> Path:
+    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+    return (
+        isolated_home / ".claude" / "review-narrative-ledger" / f"{repo_hash}.{session_id}.jsonl"
     )
 
 
@@ -228,3 +244,154 @@ class TestSessionMarkerDashboard:
         assert result.returncode == 0
         assert result.stdout == ""
         assert canary.read_text() == CANARY_CONTENT
+
+
+class TestSessionMarkerDashboardLedgerSummary:
+    """The review-narrative ledger extension: reads this session's ledger
+    file (keyed the same way review-ledger.sh keys writes) and folds a
+    compact summary into the existing additionalContext output."""
+
+    def _write_ledger(self, isolated_home: Path, repo: Path, sid: str, *records: dict) -> None:
+        ledger = _ledger_path(isolated_home, repo, sid)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text("".join(json.dumps(r) + "\n" for r in records))
+
+    def test_ledger_present_and_non_empty_appends_summary(self, isolated_home, git_repo):
+        """A non-empty ledger for this session folds a summary into the
+        existing marker-status output (regression guard: marker text stays
+        present alongside it)."""
+        sid = "sess-ledger-present"
+        marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        self._write_ledger(
+            isolated_home,
+            git_repo,
+            sid,
+            {"finding": "f1", "disposition": "ADDRESS", "rationale": "r", "source": "n/a"},
+            {"finding": "f2", "disposition": "DEFER", "rationale": "r", "source": "n/a"},
+        )
+        result = _run_dashboard({"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=git_repo)
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "2 findings recorded this session" in ctx
+        assert "1 addressed" in ctx
+        assert "1 deferred" in ctx
+        assert "plan-review-active" in ctx, "existing marker-status output must be unchanged"
+
+    def test_ledger_present_but_empty_adds_no_summary(self, isolated_home, git_repo):
+        """An empty (zero-byte) ledger file for this session must not be
+        treated as content to summarize."""
+        sid = "sess-ledger-empty"
+        ledger = _ledger_path(isolated_home, git_repo, sid)
+        ledger.parent.mkdir(parents=True)
+        ledger.touch()
+        result = _run_dashboard({"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=git_repo)
+        assert result.returncode == 0
+        assert result.stdout == "", (
+            "an empty ledger, with no active markers either, must produce no output"
+        )
+
+    def test_ledger_absent_leaves_existing_marker_behavior_unchanged(self, isolated_home, git_repo):
+        """Regression guard: with no ledger file at all, output is
+        identical to the pre-ledger marker-only dashboard."""
+        sid = "sess-no-ledger"
+        marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        result = _run_dashboard({"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=git_repo)
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "respond-pr-active: present" in ctx
+        assert "findings recorded" not in ctx
+
+    def test_kill_switch_suppresses_only_ledger_portion(self, isolated_home, git_repo):
+        """The kill switch gates the new ledger-summary behavior only —
+        the existing marker-status reporting stays always-on."""
+        sid = "sess-ledger-killswitch"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        self._write_ledger(
+            isolated_home,
+            git_repo,
+            sid,
+            {"finding": "f1", "disposition": "ADDRESS", "rationale": "r", "source": "n/a"},
+        )
+        (isolated_home / ".claude" / ".review-narrative-ledger-disabled").touch()
+
+        result = _run_dashboard({"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=git_repo)
+
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "ready-for-review-active: present" in ctx, (
+            "marker-status reporting must stay unaffected by the ledger kill switch"
+        )
+        assert "findings recorded" not in ctx, (
+            "the kill switch must suppress the ledger summary"
+        )
+
+    def test_ledger_summary_alone_triggers_output_with_no_active_markers(
+        self, isolated_home, git_repo
+    ):
+        """A ledger with content, but no active bypass markers at all, must
+        still produce output — the all-absent early exit must account for
+        the ledger, not just the three marker statuses."""
+        sid = "sess-ledger-only"
+        self._write_ledger(
+            isolated_home,
+            git_repo,
+            sid,
+            {"finding": "f1", "disposition": "ADDRESS", "rationale": "r", "source": "n/a"},
+        )
+        result = _run_dashboard({"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=git_repo)
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "1 findings recorded this session" in ctx
+
+    def test_ledger_summary_resolves_against_payload_cwd_not_process_cwd(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Worktree-drift regression: process cwd (an unrelated repo with no
+        ledger) differs from the payload's declared `.cwd` (git_repo, which
+        has this session's ledger). A hook that read process cwd instead of
+        the payload would compute the wrong repo-hash and find nothing."""
+        other_repo = tmp_path / "other-repo"
+        other_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
+
+        sid = "sess-payload-cwd-drift"
+        self._write_ledger(
+            isolated_home,
+            git_repo,
+            sid,
+            {"finding": "f1", "disposition": "ADDRESS", "rationale": "r", "source": "n/a"},
+        )
+        result = _run_dashboard(
+            {"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=other_repo
+        )
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "1 findings recorded this session" in ctx
+
+    def test_ledger_summary_absent_when_payload_cwd_is_not_a_git_repo(
+        self, isolated_home, tmp_path
+    ):
+        """A payload `.cwd` outside any git repo must not block the
+        always-on marker-status half of this hook — only the ledger-summary
+        portion is skipped."""
+        sid = "sess-payload-cwd-not-a-repo"
+        marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+
+        result = _run_dashboard({"session_id": sid, "cwd": str(non_repo)}, isolated_home)
+
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "plan-review-active" in ctx
+        assert "findings recorded" not in ctx

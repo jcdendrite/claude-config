@@ -314,6 +314,10 @@ Format: inline `ADDRESS:` / `DEFER (<criterion>):` tags when there are ≤2 find
 
 If you find yourself tagging 3+ findings DEFER in a single review, re-read the criteria — the default is ADDRESS, and a heavy DEFER list is usually a sign the criteria are being stretched.
 
+## Review-narrative ledger
+
+Immediately once dispositions are finalized — before DEFER persistence below — call `~/.claude/scripts/review-ledger.sh append code-review --finding "<summary>" --disposition ADDRESS|DEFER --rationale "<one line>" [--source "<file:line>"]` once per finding, on every invocation, regardless of whether the disposition step used inline `ADDRESS:`/`DEFER (<criterion>):` tags (≤2 findings) or the four-column table (3+). Unlike the marker write at the end of this skill, this runs whether or not the review is clean — a mid-loop review that is not yet clean is exactly the case this ledger exists to preserve across a compaction or session resume. A finding rejected by the script for an over-length `--finding`/`--rationale` should be summarized more tightly and retried, not skipped.
+
 ## DEFER persistence
 
 When the disposition step produces ≥1 DEFER finding, persist the DEFER rows (and only the DEFER rows) to the PR description as a `## Deferred review findings` section. ADDRESS findings are not persisted — they are visible in the diff the reviewer is reading.
