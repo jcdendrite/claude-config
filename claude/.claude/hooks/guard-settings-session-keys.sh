@@ -81,14 +81,17 @@ else
 fi
 
 # The keys holding one machine's own state, which must never ship as the
-# config every stow user receives.
+# config every stow user receives. A dotted key (e.g. "env.FOO") is guarded
+# via path traversal, not a literal top-level match — see guarded_value below.
 GUARDED_KEYS_JSON='[
   "model",
   "effortLevel",
   "skipAutoPermissionPrompt",
   "skipWorkflowUsageWarning",
   "theme",
-  "tui"
+  "tui",
+  "env.CLAUDE_CODE_EFFORT_LEVEL",
+  "env.ANTHROPIC_MODEL"
 ]'
 
 # Name the guarded keys whose staged value differs from main. Notes:
@@ -96,10 +99,10 @@ GUARDED_KEYS_JSON='[
 #   spawn-per-key loop would not hold the per-fire latency budget.
 # - _lib_jq, not bare jq: a wedged jq would otherwise hang the gated commit
 #   indefinitely, the same risk _lib_capped covers for git above.
-# - Each value is wrapped as [value] when the key is present and [] when it is
-#   absent, so an explicit false or null stays distinguishable from no key at
-#   all; jq's own != then compares structurally, which is type-strict on
-#   scalars and key-order-independent on objects.
+# - guarded_value walks a dot-split path, so a nested key (e.g.
+#   "env.CLAUDE_CODE_EFFORT_LEVEL") is guarded exactly like a top-level one —
+#   including the null/false-vs-absent distinction — and a non-object
+#   mid-path segment degrades to "not present" instead of erroring.
 # - Content that does not parse degrades to {}, so keys the other side does
 #   have still register as changed. Only a jq that cannot run at all yields no
 #   names, and that path warns below rather than passing silently.
@@ -109,7 +112,14 @@ if ! CHANGED_KEYS=$(_lib_jq -rn \
   --arg staged "$STAGED_CONTENT" \
   --arg main "$MAIN_CONTENT" \
   'def guarded_value($settings; $key):
-     if $settings | has($key) then [$settings[$key]] else [] end;
+     ($key | split(".")) as $path
+     | reduce $path[] as $seg
+         ({present: true, value: $settings};
+          if .present and (.value | type) == "object" and (.value | has($seg))
+          then {present: true, value: .value[$seg]}
+          else {present: false, value: null}
+          end)
+     | if .present then [.value] else [] end;
    (($staged | fromjson?) // {}) as $staged_settings
    | (($main | fromjson?) // {}) as $main_settings
    | [ $guarded[]
