@@ -97,6 +97,15 @@ TRANSCRIPT_SCALING_RATIO = 3.0
 # already established this pattern for the same "cost shouldn't scale with N"
 # property.
 TRANSCRIPT_SCALING_SLACK_SECONDS = 1.0
+# Absolute ceiling on the small-transcript arm alone, catching a uniform-
+# overhead regression (an added fork, an unconditional sleep) that the ratio
+# above can't see -- inflating both arms equally moves the ratio toward 1.0
+# rather than tripping it. Margin above observed unregressed latency under
+# real load; well under the 600s platform timeout for this hook's registered
+# events (PostToolBatch and Stop). Catches severe/order-of-magnitude
+# regressions only -- moderate or intermittent ones can slip past a
+# median-of-3 check.
+SMALL_TRANSCRIPT_ABSOLUTE_CEILING_SECONDS = 45.0
 
 # Literal, not derived from the production ternary formula — mirroring that
 # formula here would make the two threshold tests below tautological on
@@ -1430,7 +1439,9 @@ class TestNudgeHandoffNearContextCap:
         ratio rather than an absolute bound, since wall-clock time on this
         hook varies orders of magnitude with machine load: a regression to a
         full-file read inflates the large/small runtime ratio to ~6x, while
-        correct O(1) behavior stays near 1x.
+        correct O(1) behavior stays near 1x. A second, independent absolute
+        ceiling on the small-transcript arm alone catches a uniform-overhead
+        regression that the ratio can't -- see SMALL_TRANSCRIPT_ABSOLUTE_CEILING_SECONDS.
         """
         single_line = json.dumps(_assistant_record(input_tok=5000, output_tok=1000))
         small_transcript = tmp_path / "small.jsonl"
@@ -1455,6 +1466,13 @@ class TestNudgeHandoffNearContextCap:
             f"{small_seconds:.3f}s for {SMALL_TRANSCRIPT_LINES} lines -- over the "
             f"allowed {allowed:.3f}s. Runtime is scaling with transcript size, which "
             "suggests a regression to a full-file read (tail -n 200 should keep it flat)."
+        )
+        assert small_seconds < SMALL_TRANSCRIPT_ABSOLUTE_CEILING_SECONDS, (
+            f"{SMALL_TRANSCRIPT_LINES}-line transcript took {small_seconds:.3f}s -- over "
+            f"the {SMALL_TRANSCRIPT_ABSOLUTE_CEILING_SECONDS:.0f}s absolute ceiling. A "
+            "uniform-overhead regression affects every invocation regardless of "
+            "transcript size, so it wouldn't move the ratio assertion above -- this "
+            "ceiling only reliably catches a severe, order-of-magnitude regression."
         )
 
     def test_interleaved_median_seconds_alternates_calls_and_picks_true_median(
