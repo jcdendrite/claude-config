@@ -182,10 +182,15 @@ constraint.
   `asname`-vs-`alias.name` implementation mistake): (1) temporarily add a
   second, unaliased name to the shim's back-import line (or a second
   public function to `cost.py`), confirm the new test fails, then revert;
-  (2) temporarily add a second name via an alias (e.g., `from
-  transcript_analysis.cost import _cost_report as _sneaky`), confirm the
-  new test still fails, then revert. Passing both proves the guard
-  actually guards before it ships silently green.
+  (2) temporarily add a second *public* function to `cost.py` and import it
+  aliased to an underscore-prefixed local name (e.g. `as _sneaky`), confirm
+  the new test still fails — reporting the real export name, not the
+  private-looking local alias — then revert. (An already-`_`-prefixed name
+  like `_cost_report` doesn't exercise this case: it's filtered out on
+  `alias.name` too, so it produces no red state either way — the aliased
+  variant needs a genuinely public source name to distinguish the two
+  filtering choices.) Passing both proves the guard actually guards before
+  it ships silently green.
 - Docstring changes (mechanisms 1–2) are behavior-inert; no new test
   coverage is needed for them beyond the existing suite continuing to pass
   unchanged.

@@ -2,9 +2,9 @@
 (test_cleanup_merged_branches.py, test_cleanup_idle_open_pr_worktrees.py),
 plus suite-wide transcript-corpus isolation (see the autouse fixture below),
 plus the transcript-record fixture builders shared across
-test_transcript_analysis.py, test_transcript_cost.py, and
-test_context_composition.py (see the extraction rationale on _write_jsonl
-below).
+test_transcript_analysis.py, test_transcript_cost.py, test_token_analyzer.py,
+and test_context_composition.py (see the extraction rationale on
+_write_jsonl below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
 `tmp_path` (or a repo built from it) as an explicit argument rather than
