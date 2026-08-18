@@ -689,6 +689,36 @@ class TestGuardSettingsSessionKeys:
             == "deny"
         )
 
+    def test_env_on_main_as_non_object_against_real_staged_value_denies(self, settings_repo):
+        """Mirror of the above with the sides swapped: a corrupted `env` on
+        main must also fall through to "leaf absent" rather than erroring —
+        and must still deny here, since the staged side has a real guarded
+        value."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "env": "corrupted"}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with corrupted env"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'stage real env value'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     def test_unrelated_nested_env_key_change_allows_existing_env_object(self, settings_repo):
         """Must not over-guard the whole `env` block — only the two named
         leaves. Shape: `env` already exists on main."""
