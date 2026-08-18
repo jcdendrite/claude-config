@@ -816,6 +816,29 @@ Wall-clock scales with corpus size: ~3 minutes was observed against a ~165k-call
 
 ---
 
+## pr-cost
+
+**Purpose.** Read or append a local, per-account ledger file (`$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv` by default, overridable via `PR_COST_LEDGER_PATH`) of this repo's own per-PR AI-tooling dollar cost, joined against GitHub PR size, rework, and review-surface data via `gh` — the per-unit-of-shipped-work figure the weekly `cost-ledger` can't provide, since its rows are aggregate-only. Requires `gh`. See `docs/pr-cost.md` for the full row schema, the re-record contract, and the redaction caveats — this section covers only the essentials.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). Refuses (exit 2) whenever more than one root resolves, since this subcommand durably writes.
+- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the opt-in sentinel `~/.claude/.pr-cost-enabled` and `--machine-label`.
+- `--pr N` — target exactly one PR number instead of every branch with local corpus activity.
+- `--machine-label LABEL` — required with `--record`: an opaque per-machine token matching `^[a-z0-9]{1,8}$`, rejected case-insensitively against this machine's hostname. Also narrows read mode's uncaptured-PR listing to one machine.
+- `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing.
+- `--asof-window-days DAYS` — close-out window a merged PR must clear before it's eligible for capture (default `3`, a provisional placeholder — see `docs/pr-cost.md`).
+- `--plan-file-glob GLOB` — glob checked against a PR's added files for the plan-slug join cross-check (default `.claude/plans/*.md`).
+- `--risk-surface-glob GLOB` — glob pattern considered risk surface for the `risk_surface_flag` proxy (repeatable; replaces the claude-config defaults entirely when given).
+
+**Default (read) output.** Every row currently in the ledger file, followed by every merged PR with local-corpus activity that no row has captured yet — the gap between "recorded" and "still recoverable," mirroring `cost-ledger`'s own uncaptured-week listing.
+
+**Two modes, one sentinel.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind `~/.claude/.pr-cost-enabled` precisely because it durably writes branch names and a repo identifier to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both sentinels together.
+
+**When to reach for it.** Run in read mode routinely to catch merged PRs about to age out of the local transcript window; run `--record` once a PR clears the as-of window to capture its row permanently before that happens.
+
+---
+
 ## handoff-ratio
 
 **Purpose.** Per-week ratio of explicit `/handoff` invocations versus auto-compaction events.

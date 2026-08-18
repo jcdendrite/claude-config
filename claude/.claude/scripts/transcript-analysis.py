@@ -5893,7 +5893,7 @@ def _cost_ledger_path() -> Path:
     return config_dir() / "cost-ledger.md"
 
 
-def _ledger_path_is_git_tracked(ledger_path: Path) -> bool:
+def _ledger_path_is_git_tracked(ledger_path: Path, subcommand: str = "cost-ledger") -> bool:
     """Return True iff the nearest existing ancestor of ledger_path sits
     inside a git working tree -- scopes --record's multi-root refusal to
     paths git could actually commit/push, not every ledger destination.
@@ -5901,7 +5901,9 @@ def _ledger_path_is_git_tracked(ledger_path: Path) -> bool:
     timeout, or a non-zero exit that isn't git's clean "not a git
     repository" signal (a bare repository, for instance, exits 0 with
     stdout "false" -- tracked by git but not a work tree, so this returns
-    False for it)."""
+    False for it). `subcommand` labels this function's own stderr
+    diagnostics (default "cost-ledger", its original caller); pr-cost passes
+    its own name so a git-tracked check failure isn't misattributed."""
     ancestor = ledger_path.parent
     while not ancestor.exists():
         ancestor = ancestor.parent
@@ -5932,10 +5934,10 @@ def _ledger_path_is_git_tracked(ledger_path: Path) -> bool:
         # Not exc's str(): TimeoutExpired renders the full argv, which
         # includes `ancestor` -- a home-rooted path this module otherwise
         # never echoes to stderr.
-        print("cost-ledger: git-tracked check timed out", file=sys.stderr)
+        print(f"{subcommand}: git-tracked check timed out", file=sys.stderr)
         return True
     except OSError as exc:
-        print(f"cost-ledger: git-tracked check failed ({exc})", file=sys.stderr)
+        print(f"{subcommand}: git-tracked check failed ({exc})", file=sys.stderr)
         return True
     if proc.returncode == 0:
         # git only ever emits "true"/"false" here on success; anything else
@@ -5944,7 +5946,7 @@ def _ledger_path_is_git_tracked(ledger_path: Path) -> bool:
     if "not a git repository" in proc.stderr:
         return False
     print(
-        f"cost-ledger: git-tracked check exited {proc.returncode} unexpectedly",
+        f"{subcommand}: git-tracked check exited {proc.returncode} unexpectedly",
         file=sys.stderr,
     )
     return True
@@ -6513,6 +6515,1121 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
     print(f"cost-ledger: recorded {week_str} / {machine_label}")
+
+
+# ---------------------------------------------------------------------------
+# pr-cost: per-PR AI-tooling dollar cost, joined against gh PR size, rework,
+# and review-surface data. See docs/pr-cost.md for the full row schema and
+# design rationale. Unlike cost-ledger, this ledger's rows carry
+# branch and repo values, so every stdout/stderr path routes them through
+# _assign_root_scoped_redact_label before printing -- never raw.
+# ---------------------------------------------------------------------------
+
+_PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
+    # Key.
+    "repo", "pr_number", "machine",
+    # Identity / provenance.
+    "head_branch", "merged_at", "rate_stamp", "captured_at",
+    "join_confidence", "supersedes", "status",
+    # Dollars and tokens by class, in _TOKEN_CLASSES order.
+    "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
+    "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
+    "unpriced_turns", "unpriced_tokens",
+    "turn_count", "session_count",
+    "opus_dollars", "opus_dollar_share_pct",
+    "sum_context_at_turn", "mean_context_at_turn",
+    # gh-sourced PR size/rework.
+    "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
+    # Mechanical review-surface proxies -- configurable, with claude-config defaults.
+    "distinct_top_level_dirs", "distinct_file_extensions",
+    "tests_changed", "plan_file_added", "risk_surface_flag",
+)
+_PR_COST_LEDGER_HEADER_LINE = "\t".join(_PR_COST_LEDGER_COLUMNS)
+
+_PR_COST_FLOAT_COLUMNS = (
+    "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
+    "opus_dollars", "opus_dollar_share_pct", "mean_context_at_turn",
+)
+# Excludes pr_number, part of the key and parsed separately alongside repo/machine.
+_PR_COST_INT_COLUMNS = (
+    "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
+    "unpriced_turns", "unpriced_tokens", "turn_count", "session_count", "sum_context_at_turn",
+    "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
+    "distinct_top_level_dirs", "distinct_file_extensions",
+)
+_PR_COST_BOOL_COLUMNS = ("tests_changed", "plan_file_added", "risk_surface_flag")
+
+# status is a fixed enum carrying no embedded gh diagnostic text --
+# _GH_CALL_DEGRADED_AUTH from _gh_call_with_backoff folds into
+# _PR_COST_STATUS_DEGRADED_NETWORK here, since a mid-run auth failure and a
+# generic transient one both just mean "this row's enrichment is
+# incomplete," not two distinguishable data states.
+_PR_COST_STATUS_OK = "ok"
+_PR_COST_STATUS_DEGRADED_RATE_LIMIT = "degraded_rate_limit"
+_PR_COST_STATUS_DEGRADED_NETWORK = "degraded_network"
+_PR_COST_STATUS_VALUES = (_PR_COST_STATUS_OK, _PR_COST_STATUS_DEGRADED_RATE_LIMIT, _PR_COST_STATUS_DEGRADED_NETWORK)
+
+# "high": direct headRefName match corroborated by plan-slug or SHA overlap.
+# "medium": direct match, uncorroborated. "low": resolved only via the
+# branch-reuse tie-break (highest commit-SHA overlap, most recent
+# mergedAt), or unresolved (no row written).
+_PR_COST_JOIN_CONFIDENCE_HIGH = "high"
+_PR_COST_JOIN_CONFIDENCE_MEDIUM = "medium"
+_PR_COST_JOIN_CONFIDENCE_LOW = "low"
+_PR_COST_JOIN_CONFIDENCE_VALUES = (
+    _PR_COST_JOIN_CONFIDENCE_HIGH, _PR_COST_JOIN_CONFIDENCE_MEDIUM, _PR_COST_JOIN_CONFIDENCE_LOW,
+)
+
+# The gh-call-level outcome _gh_call_with_backoff itself returns on an
+# auth-shaped failure -- never a ledger status value; every caller folds it
+# into _PR_COST_STATUS_DEGRADED_NETWORK before it reaches a row (see above).
+_GH_CALL_DEGRADED_AUTH = "degraded_auth"
+
+# Provisional placeholder ("As-of rule"): a merged PR's branch keeps
+# accruing local transcript activity for a while after merge, so
+# capturing too early understates its cost. A future measurement pass is
+# expected to replace this default with a percentile of (last priced turn
+# - mergedAt) across the surviving corpus; 3 days is a defensible guess
+# pending that measurement, not a validated figure -- see docs/pr-cost.md.
+_PR_COST_ASOF_WINDOW_DAYS_DEFAULT = 3.0
+
+_DEFAULT_PR_COST_PLAN_FILE_GLOB = ".claude/plans/*.md"
+
+# Provisional default risk-surface globs for claude-config itself (paths
+# whose review stakes are higher than an average file change: hooks gate
+# operations, install scripts run with the operator's own shell, CI
+# workflows run with repo secrets, and permission rules govern what future
+# agents can do). Not empirically validated against this repo's own
+# incident history -- overridable via --risk-surface-glob for another repo.
+_DEFAULT_PR_COST_RISK_SURFACE_GLOBS: tuple[str, ...] = (
+    "claude/.claude/hooks/**",
+    "claude/.claude/settings*.json",
+    ".github/workflows/**",
+    "install*.sh",
+    "claude/.claude/rules/**",
+)
+
+# Best-effort, ecosystem-generic test-file heuristic (a tests/ path segment,
+# a test_/_test.py Python name, or a .test./.spec. JS/TS suffix) -- not
+# claude-config-specific, unlike the risk-surface globs above.
+_PR_COST_TEST_FILE_RE = re.compile(
+    r"(^|/)tests?/|(^|/)test_[^/]+\.py$|_test\.py$|\.test\.[jt]sx?$|\.spec\.[jt]sx?$"
+)
+
+_PR_COST_GH_TIMEOUT_S = 30.0  # Operational default: gh publishes no single
+# per-call timeout recommendation, so this is a considered guess generous
+# enough for one REST round trip, not a network SLA citation.
+_PR_COST_RATE_LIMIT_MIN_BACKOFF_S = 60.0  # GitHub REST API docs, "Rate
+# limits for the REST API" -- secondary-rate-limit guidance: wait at least
+# one minute between retries when no Retry-After header is present.
+_PR_COST_RATE_LIMIT_MAX_ATTEMPTS = 5  # Operational default, not vendor-specified:
+# GitHub's rate-limit guidance above bounds the per-retry wait, not how many
+# retries to attempt before giving up on one gh call.
+_PR_COST_RATE_LIMIT_MAX_ELAPSED_S = 15 * 60  # Operational default, not
+# vendor-specified: a per-call ceiling generous enough to ride out one
+# secondary-rate-limit window without letting a single gh call stall the run.
+_PR_COST_GH_PR_LIST_LIMIT = 1000  # gh pr list's own default (30) silently
+# truncates any larger population with no error. This repo's own population
+# is a few hundred merged PRs; 1000 is a generous fixed ceiling, not a
+# per-run population count -- --limit is a
+# pagination bound, not a network timeout, so no vendor citation applies here
+# the way it does to the backoff constants above.
+
+_GIT_REMOTE_ORIGIN_TIMEOUT_S = 10  # Matches this file's other local git
+# calls (_ledger_path_is_git_tracked, _repo_scoped_project_slugs): no
+# network/credential work, so this only bounds a wedged invocation.
+# Anchored at the start (after an optional scheme/git@ prefix) so github.com
+# must be the URL's actual host, never merely a substring appearing later in
+# a malicious or misconfigured remote (e.g. https://attacker.example/github.com/x/y).
+_GIT_REMOTE_OWNER_REPO_RE = re.compile(
+    r"^(?:https?://|git://|ssh://(?:git@)?|git@)?github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
+)
+_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+# Best-effort classification of a failed gh call's stderr text -- gh has no
+# structured error-kind field on stderr, so this is pattern matching against
+# gh's own documented error phrasing, not a guarantee.
+_GH_AUTH_ERROR_RE = re.compile(r"not logged into|gh auth login|authentication failed|http\s?401", re.IGNORECASE)
+_GH_RATE_LIMIT_ERROR_RE = re.compile(r"rate limit|http\s?429|http\s?403", re.IGNORECASE)
+_GH_RETRY_AFTER_RE = re.compile(r"retry.{0,3}after[:\s]+(\d+)", re.IGNORECASE)
+
+
+class _PrCostLedgerParseError(Exception):
+    """Raised by _parse_pr_cost_ledger_file_text on any malformed pr-cost
+    ledger content -- the canonical parser fails loud rather than mis-parsing
+    a hand-edited or corrupted row."""
+
+
+def _pr_cost_ledger_path() -> Path:
+    """Active pr-cost ledger path: $PR_COST_LEDGER_PATH if set (must be
+    absolute), else config_dir() / "pr-cost-ledger.tsv"."""
+    override = os.environ.get("PR_COST_LEDGER_PATH")
+    if override:
+        path = Path(override)
+        if not path.is_absolute():
+            raise ValueError(f"PR_COST_LEDGER_PATH must be an absolute path, got: {override!r}")
+        return path
+    return config_dir() / "pr-cost-ledger.tsv"
+
+
+def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
+    """Validate and coerce one already-split, already-tab-separated data
+    row's cells into a typed row dict. Raises _PrCostLedgerParseError naming
+    the offending line on any field that doesn't match its column's
+    contract."""
+    if len(cells) != len(_PR_COST_LEDGER_COLUMNS):
+        raise _PrCostLedgerParseError(
+            f"line {line_no}: expected {len(_PR_COST_LEDGER_COLUMNS)} columns, got {len(cells)}"
+        )
+    row = dict(zip(_PR_COST_LEDGER_COLUMNS, cells, strict=True))
+
+    if not row["repo"] or row["repo"] != row["repo"].lower():
+        raise _PrCostLedgerParseError(
+            f"line {line_no}: malformed repo value (must be lowercase owner/name) -- value omitted from"
+            " this diagnostic since the ledger's repo column is never scrubbed at rest"
+        )
+    try:
+        row["pr_number"] = int(row["pr_number"])
+    except ValueError:
+        raise _PrCostLedgerParseError(f"line {line_no}: non-numeric pr_number {row['pr_number']!r}") from None
+    if not _MACHINE_LABEL_RE.match(row["machine"]):
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed machine label {row['machine']!r}")
+    for required_col in ("head_branch", "merged_at", "captured_at"):
+        if not row[required_col]:
+            raise _PrCostLedgerParseError(f"line {line_no}: {required_col} must not be empty")
+    # _latest_pr_cost_row picks the "latest" row via a lexicographic string
+    # max() on captured_at, which silently misresolves on a malformed ISO8601 value.
+    for ts_col in ("merged_at", "captured_at"):
+        try:
+            datetime.fromisoformat(row[ts_col].replace("Z", "+00:00"))
+        except ValueError:
+            raise _PrCostLedgerParseError(f"line {line_no}: malformed {ts_col} {row[ts_col]!r}") from None
+    try:
+        datetime.strptime(row["rate_stamp"], "%Y-%m-%d")
+    except ValueError:
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed rate_stamp {row['rate_stamp']!r}") from None
+    if row["join_confidence"] not in _PR_COST_JOIN_CONFIDENCE_VALUES:
+        raise _PrCostLedgerParseError(f"line {line_no}: unknown join_confidence {row['join_confidence']!r}")
+    if row["status"] not in _PR_COST_STATUS_VALUES:
+        raise _PrCostLedgerParseError(f"line {line_no}: unknown status {row['status']!r}")
+
+    for float_col in _PR_COST_FLOAT_COLUMNS:
+        try:
+            row[float_col] = float(row[float_col])
+        except ValueError:
+            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {float_col} {row[float_col]!r}") from None
+        if math.isnan(row[float_col]) or math.isinf(row[float_col]):
+            raise _PrCostLedgerParseError(f"line {line_no}: non-finite {float_col} {row[float_col]!r}")
+
+    for int_col in _PR_COST_INT_COLUMNS:
+        try:
+            row[int_col] = int(row[int_col])
+        except ValueError:
+            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {int_col} {row[int_col]!r}") from None
+
+    for bool_col in _PR_COST_BOOL_COLUMNS:
+        if row[bool_col] not in ("true", "false"):
+            raise _PrCostLedgerParseError(
+                f"line {line_no}: malformed {bool_col} {row[bool_col]!r} (expected true/false)"
+            )
+        row[bool_col] = row[bool_col] == "true"
+
+    return row
+
+
+def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
+    """Canonical parser for the pr-cost ledger's tab-separated content.
+
+    Unlike the weekly cost-ledger's markdown table, this format has no
+    preamble: line 1 must be exactly _PR_COST_LEDGER_HEADER_LINE, and every
+    following non-blank line is one tab-separated data row. Fails loud
+    (_PrCostLedgerParseError) on an unresolved git merge-conflict marker
+    (reusing _COST_LEDGER_CONFLICT_MARKERS -- a generic git marker, not
+    specific to the weekly ledger's own format), a missing/mismatched
+    header, or a row with the wrong column count or a malformed cell --
+    never silently misparses a malformed or hand-edited row.
+    """
+    lines = text.splitlines()
+    for marker in _COST_LEDGER_CONFLICT_MARKERS:
+        for line_no, line in enumerate(lines, start=1):
+            if line.startswith(marker):
+                raise _PrCostLedgerParseError(f"line {line_no}: unresolved merge-conflict marker {marker!r}")
+
+    if not lines or lines[0] != _PR_COST_LEDGER_HEADER_LINE:
+        raise _PrCostLedgerParseError("missing or mismatched pr-cost ledger header row")
+
+    rows: list[dict] = []
+    for line_no, line in enumerate(lines[1:], start=2):
+        if not line.strip():
+            continue
+        rows.append(_parse_pr_cost_ledger_row_cells(line.split("\t"), line_no))
+    return rows
+
+
+def _format_pr_cost_ledger_row(row: dict) -> str:
+    """Render one row dict as its tab-separated line -- the exact inverse of
+    _parse_pr_cost_ledger_row_cells. Refuses (raises _PrCostLedgerParseError)
+    to render any cell containing a tab or newline, which would corrupt the
+    row's own column structure -- every free-text-shaped cell here is
+    program-generated (a redacted placeholder, or an ISO8601 timestamp this
+    module itself formatted), never raw external text, so this should never
+    fire in practice; it exists as a last-resort guard against writing a
+    corrupt row rather than as an expected code path."""
+    cells: list[str] = []
+    for col in _PR_COST_LEDGER_COLUMNS:
+        value = row[col]
+        if col in _PR_COST_BOOL_COLUMNS:
+            cell = "true" if value else "false"
+        elif col in _PR_COST_FLOAT_COLUMNS:
+            cell = f"{value:.6f}"
+        else:
+            cell = str(value)
+        if "\t" in cell or "\n" in cell or "\r" in cell:
+            raise _PrCostLedgerParseError(
+                f"column {col!r} value {cell!r} contains a tab or newline -- refusing to write a corrupt row"
+            )
+        cells.append(cell)
+    return "\t".join(cells)
+
+
+def _latest_pr_cost_row(rows: Sequence[dict], repo: str, pr_number: int, machine_label: str | None) -> dict | None:
+    """Latest row (by captured_at) matching (repo, pr_number[, machine_label]).
+
+    machine_label=None matches any machine -- read mode's default (an
+    operator checking "has any machine captured this PR yet" doesn't care
+    which one); --record always passes its own resolved machine_label,
+    matching the ledger's own (repo, pr_number, machine) key.
+    """
+    matches = [
+        r for r in rows
+        if r["repo"] == repo and r["pr_number"] == pr_number
+        and (machine_label is None or r["machine"] == machine_label)
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda r: r["captured_at"])
+
+
+def _append_pr_cost_ledger_row(existing_rows: list[dict], new_row: dict, already: dict | None, force: bool) -> list[dict]:
+    """Append new_row to existing_rows, keyed by (repo, pr_number, machine).
+
+    Unlike the weekly ledger's in-place replace, a duplicate key with
+    --force APPENDS a new row (carrying new_row["supersedes"], already set
+    by the caller to the prior latest row's own captured_at) rather than
+    overwriting -- this ledger is append-only by design, so a correction
+    keeps the full history instead of losing everything before the latest
+    edit. Refuses (raises ValueError) on a duplicate key without --force. `already`
+    is the caller's own _latest_pr_cost_row lookup, passed in rather than
+    re-derived here so there is one call site for that lookup per write.
+    """
+    if already is not None and not force:
+        raise ValueError(
+            f"a row for pr_number={new_row['pr_number']} machine={new_row['machine']}"
+            " already exists -- pass --force with --pr to append a correcting row"
+        )
+    return [*existing_rows, new_row]
+
+
+def _write_pr_cost_ledger_file(ledger_path: Path, rows: list[dict]) -> None:
+    """Crash-safe write mirroring _write_cost_ledger_file's temp-file/
+    read-back/atomic-replace pattern, adapted for this ledger's plain-TSV
+    format (no markdown preamble) and its own 0600 creation mode -- these
+    rows carry branch/repo data the public weekly ledger's rows don't, so a
+    freshly created file gets 0600 explicitly (an existing file's mode bits
+    are preserved instead, matching _write_cost_ledger_file's own rationale)
+    rather than silently depending on tempfile.mkstemp's own default.
+    """
+    new_text = "\n".join([_PR_COST_LEDGER_HEADER_LINE] + [_format_pr_cost_ledger_row(r) for r in rows]) + "\n"
+    fd, tmp_name = tempfile.mkstemp(dir=str(ledger_path.parent), prefix=".pr-cost-ledger-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(new_text)
+        written_text = Path(tmp_name).read_text()
+        if written_text != new_text:
+            raise _PrCostLedgerParseError("write verification mismatch -- refusing to publish")
+        _parse_pr_cost_ledger_file_text(written_text)  # fails loud on the canonical parser before publishing
+        if ledger_path.exists():
+            os.chmod(tmp_name, stat.S_IMODE(ledger_path.stat().st_mode))
+        else:
+            os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, ledger_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+
+
+def _acquire_pr_cost_ledger_lock(lock_f) -> None:
+    """Acquire an exclusive, non-blocking lock on lock_f, retrying at
+    _COST_LEDGER_LOCK_POLL_INTERVAL_S intervals until
+    _COST_LEDGER_LOCK_TIMEOUT_S elapses -- the same local-lock convenience
+    bound the weekly ledger uses (_acquire_cost_ledger_lock), reused here
+    since it guards the same kind of wait (a local read-check-write window
+    against another --record), not a network call.
+    """
+    deadline = time.monotonic() + _COST_LEDGER_LOCK_TIMEOUT_S
+    while True:
+        try:
+            fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                raise
+            if time.monotonic() >= deadline:
+                print(
+                    "pr-cost: another pr-cost --record appears to be running (lock held on the"
+                    " ledger's own .lock sibling file) -- timed out after"
+                    f" {_COST_LEDGER_LOCK_TIMEOUT_S:.0f}s",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            time.sleep(_COST_LEDGER_LOCK_POLL_INTERVAL_S)
+
+
+def _git_remote_origin_owner_repo() -> str:
+    """Case-folded owner/name parsed from this invocation's own
+    `git remote get-url origin` -- the corpus-root side of _resolve_pinned_gh_repo's
+    identity comparison, run from cwd (this subcommand's own worktree) rather
+    than against the ~/.claude/projects/ transcript scan root, which is never
+    a git repository itself. github.com hosts only; a GitHub Enterprise
+    remote is not recognized and fails this parse.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=_GIT_REMOTE_ORIGIN_TIMEOUT_S, check=True,
+            encoding="utf-8", errors="replace",
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        print("pr-cost: could not resolve this repo's own remote (git remote get-url origin failed)", file=sys.stderr)
+        sys.exit(1)
+    m = _GIT_REMOTE_OWNER_REPO_RE.search(proc.stdout.strip())
+    if not m:
+        print("pr-cost: this repo's origin remote is not a recognizable github.com owner/repo URL", file=sys.stderr)
+        sys.exit(1)
+    return f"{m.group('owner')}/{m.group('repo')}".lower()
+
+
+_GH_ERROR_KIND_AUTH = "auth"
+_GH_ERROR_KIND_RATE_LIMIT = "rate_limit"
+_GH_ERROR_KIND_NETWORK = "network"
+
+
+def _classify_gh_error(stderr: str) -> str:
+    """Best-effort classification of a failed gh call's stderr text into
+    one of the _GH_ERROR_KIND_* constants."""
+    if _GH_AUTH_ERROR_RE.search(stderr):
+        return _GH_ERROR_KIND_AUTH
+    if _GH_RATE_LIMIT_ERROR_RE.search(stderr):
+        return _GH_ERROR_KIND_RATE_LIMIT
+    return _GH_ERROR_KIND_NETWORK
+
+
+def _parse_gh_retry_after_seconds(stderr: str) -> float | None:
+    """Seconds to wait before retrying, parsed from a "retry after N" /
+    "retry-after: N" phrase in gh's own stderr text when present, else None
+    (caller falls back to the exponential backoff base)."""
+    m = _GH_RETRY_AFTER_RE.search(stderr)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _gh_call_with_backoff(argv: Sequence[str], *, label: str) -> tuple[subprocess.CompletedProcess | None, str]:
+    """Run one gh call, retrying a rate-limit- or network-shaped failure with
+    exponential backoff (starting at _PR_COST_RATE_LIMIT_MIN_BACKOFF_S,
+    doubling each attempt, honoring a parsed "retry after" hint from gh's own
+    stderr when present) up to _PR_COST_RATE_LIMIT_MAX_ATTEMPTS attempts or
+    _PR_COST_RATE_LIMIT_MAX_ELAPSED_S total elapsed -- a budget local to this
+    one call (attempt/elapsed/backoff are all function-local state), not
+    shared across the run: a --record sweep over many PRs can spend up to
+    that budget on each one in the worst case. An auth-shaped failure is
+    never retried: gh auth status already ran as a preflight, so a later one
+    is not expected to self-resolve by waiting.
+
+    Returns (proc, "") on success. On exhaustion, returns (None, status)
+    with status one of _GH_CALL_DEGRADED_AUTH, _PR_COST_STATUS_DEGRADED_RATE_LIMIT,
+    _PR_COST_STATUS_DEGRADED_NETWORK -- callers with no row yet to degrade
+    (repo-identity resolution, discovery) abort the whole run on any
+    non-empty status; per-PR enrichment instead marks that row's own status
+    column (folding _GH_CALL_DEGRADED_AUTH into _PR_COST_STATUS_DEGRADED_NETWORK
+    there -- see _PR_COST_STATUS_VALUES).
+    """
+    attempt = 0
+    elapsed = 0.0
+    backoff = _PR_COST_RATE_LIMIT_MIN_BACKOFF_S
+    while True:
+        stderr = ""
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=_PR_COST_GH_TIMEOUT_S,
+                encoding="utf-8", errors="replace",
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            kind = _GH_ERROR_KIND_NETWORK
+        else:
+            if proc.returncode == 0:
+                return proc, ""
+            stderr = proc.stderr or ""
+            kind = _classify_gh_error(stderr)
+
+        attempt += 1
+        if kind == _GH_ERROR_KIND_AUTH:
+            print(f"pr-cost: {label} failed ({kind}), not retrying (auth failures don't self-resolve)", file=sys.stderr)
+            return None, _GH_CALL_DEGRADED_AUTH
+        if attempt >= _PR_COST_RATE_LIMIT_MAX_ATTEMPTS or elapsed >= _PR_COST_RATE_LIMIT_MAX_ELAPSED_S:
+            print(f"pr-cost: {label} failed ({kind}), giving up after {attempt} attempt(s)", file=sys.stderr)
+            return None, (
+                _PR_COST_STATUS_DEGRADED_RATE_LIMIT if kind == _GH_ERROR_KIND_RATE_LIMIT
+                else _PR_COST_STATUS_DEGRADED_NETWORK
+            )
+        # Capped to the remaining elapsed budget: an unbounded or malformed
+        # "retry after" hint from gh's own stderr must not let one sleep
+        # jump past _PR_COST_RATE_LIMIT_MAX_ELAPSED_S in a single call.
+        sleep_for = min(_parse_gh_retry_after_seconds(stderr) or backoff, _PR_COST_RATE_LIMIT_MAX_ELAPSED_S - elapsed)
+        print(f"pr-cost: {label} failed ({kind}), retrying in {sleep_for:g}s (attempt {attempt})...", file=sys.stderr)
+        time.sleep(sleep_for)
+        elapsed += sleep_for
+        backoff *= 2
+
+
+def _pr_cost_abort_on_gh_failure(label: str, degraded: str) -> None:
+    """Print a run-abort message and exit(1) for a gh call that has no row
+    yet to degrade into (repo-identity resolution, or discovery) -- only
+    these two calls abort the whole run; every later per-PR `gh pr view`
+    failure degrades that row's status instead (see _pr_cost_report's main
+    loop). Never echoes gh's own raw stderr text (the underlying diagnostic
+    gh emits, which can itself echo the queried repo verbatim) -- only this
+    module's own `degraded` classification reaches stdout/stderr.
+    """
+    print(f"pr-cost: {label} failed ({degraded}) before any row could be captured", file=sys.stderr)
+    sys.exit(1)
+
+
+def _gh_auth_preflight_ok() -> bool:
+    """A single, non-retried `gh auth status` check, run before anything
+    else in this subcommand -- an auth failure caught here is cheaper than
+    one surfacing mid-run after a local corpus scan and gh discovery call."""
+    try:
+        proc = subprocess.run(
+            ["gh", "auth", "status"], capture_output=True, text=True, timeout=_PR_COST_GH_TIMEOUT_S,
+            encoding="utf-8", errors="replace",
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return proc.returncode == 0
+
+
+def _resolve_pinned_gh_repo() -> tuple[str, int, dict]:
+    """Resolve gh's effective repo identity once, refuse (exit 2) if it
+    disagrees (case-folded) with this repo's own git remote identity, and
+    return the confirmed owner/name to pin on every subsequent gh call this
+    run makes -- gh's ambient target repo (a stale GH_REPO, `gh repo
+    set-default`, or an ambient cwd mismatch) can otherwise silently diverge
+    from the repo this invocation's own corpus and git remote actually
+    belong to. Also returns the single-root redact ordinal and a fresh
+    repo-kind redact map, used to scrub this same repo value at every later
+    print site this run needs (this subcommand always refuses more than one
+    scan root, so there is only ever one ordinal to assign).
+    """
+    corpus_repo = _git_remote_origin_owner_repo()
+    proc, degraded = _gh_call_with_backoff(["gh", "repo", "view", "--json", "nameWithOwner"], label="repo view")
+    if degraded:
+        _pr_cost_abort_on_gh_failure("gh repo view", degraded)
+    try:
+        gh_repo = str(json.loads(proc.stdout or "{}")["nameWithOwner"]).lower()
+    except (json.JSONDecodeError, KeyError, TypeError):
+        print("pr-cost: gh repo view returned unparseable JSON -- no row was captured", file=sys.stderr)
+        sys.exit(1)
+
+    ordinal = 1  # pr-cost always refuses more than one scan root, so this
+    # is the only ordinal _assign_root_scoped_redact_label ever assigns.
+    repo_map: dict[tuple[int, str], str] = {}
+    if gh_repo != corpus_repo:
+        print(
+            "pr-cost: gh's effective target repo does not match this repo's own git remote identity"
+            f" ({_assign_root_scoped_redact_label('repo', ordinal, gh_repo, repo_map)} vs."
+            f" {_assign_root_scoped_redact_label('repo', ordinal, corpus_repo, repo_map)}) -- check"
+            " GH_REPO, `gh repo set-default`, or an ambient cwd mismatch",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return gh_repo, ordinal, repo_map
+
+
+def _gh_discover_merged_prs(pinned_repo: str) -> list[dict]:
+    """Bulk-discover every merged PR for the pinned repo in one call, with
+    an explicit --limit -- never gh's own 30-item default, which would
+    silently truncate a larger population with no error. Auth/config-shaped
+    failures abort the whole run immediately (no retry); rate-limit/network
+    failures retry under the shared backoff budget before aborting the same
+    way -- discovery has no per-row granularity to degrade into.
+    """
+    argv = [
+        "gh", "pr", "list", "--repo", pinned_repo, "--state", "merged",
+        "--limit", str(_PR_COST_GH_PR_LIST_LIMIT),
+        "--json", "number,headRefName,additions,deletions,changedFiles,mergedAt",
+    ]
+    proc, degraded = _gh_call_with_backoff(argv, label="pr list")
+    if degraded:
+        _pr_cost_abort_on_gh_failure("gh pr list", degraded)
+    try:
+        return json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError:
+        print("pr-cost: gh pr list returned unparseable JSON -- no row was captured", file=sys.stderr)
+        sys.exit(1)
+
+
+def _gh_pr_view_enrichment(pinned_repo: str, pr_number: int) -> tuple[dict | None, str]:
+    """Per-PR enrichment call: commits/reviews/files, none of which
+    `gh pr list` returns. Returns (payload, _PR_COST_STATUS_OK) on success,
+    else (None, degraded) with degraded one of _gh_call_with_backoff's own
+    status strings -- the caller folds _GH_CALL_DEGRADED_AUTH into
+    _PR_COST_STATUS_DEGRADED_NETWORK before it reaches a ledger row's status
+    column.
+    """
+    argv = ["gh", "pr", "view", str(pr_number), "--repo", pinned_repo, "--json", "commits,reviews,files"]
+    proc, degraded = _gh_call_with_backoff(argv, label=f"pr view {pr_number}")
+    if degraded:
+        return None, degraded
+    try:
+        return json.loads(proc.stdout or "{}"), _PR_COST_STATUS_OK
+    except json.JSONDecodeError:
+        return None, _PR_COST_STATUS_DEGRADED_NETWORK
+
+
+def _local_git_object_exists_batch(shas: Sequence[str]) -> set[str]:
+    """Which of `shas` resolve to a real local git commit object, checked
+    via one `git cat-file --batch-check` call fed the whole list over
+    stdin -- avoids one subprocess per SHA. Non-hex-shaped entries are
+    dropped before the call: SHAs come from gh's own JSON (commits[].oid),
+    and while they're git-generated (hex digits can't start with "-", so
+    they're inherently safe in an option position), a malformed API response
+    feeding a non-SHA line into the batch-check stdin stream could desync
+    this function's own line-based output parsing below.
+    """
+    valid_shas = [s for s in shas if _GIT_SHA_RE.match(s)]
+    if not valid_shas:
+        return set()
+    try:
+        proc = subprocess.run(
+            ["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+            input="\n".join(valid_shas) + "\n",
+            capture_output=True, text=True, timeout=_GIT_REMOTE_ORIGIN_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    found: set[str] = set()
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == "commit":
+            found.add(parts[0])
+    return found
+
+
+def _pr_cost_sha_overlap(commits_payload) -> int:
+    """Count of a PR's pre-squash commit SHAs (gh pr view's own `commits`
+    field) that still resolve to a real local git object. GitHub's squash
+    merges leave these SHAs unreachable from any live ref once the source
+    branch is deleted, but a commit fetched into this clone during the work
+    itself can survive as a dangling object until git gc reaps it, giving
+    the branch-to-PR join a corroboration signal independent of headRefName
+    even after the source branch ref is gone.
+    """
+    shas = [c.get("oid", "") for c in (commits_payload or []) if isinstance(c, dict)]
+    return len(_local_git_object_exists_batch(shas))
+
+
+def _pr_cost_plan_slug_from_files(file_paths: Sequence[str], plan_glob: str) -> str | None:
+    """The added plan file's slug (filename minus extension) when a PR's
+    changed-file list matches plan_glob exactly once. Measured against this
+    repo's own recent PR history: the overwhelming majority of in-window PRs
+    add exactly one such file and none add more than one, so more than one
+    match is treated as no usable slug rather than guessed.
+    """
+    matches = [p for p in file_paths if fnmatch.fnmatch(p, plan_glob)]
+    if len(matches) != 1:
+        return None
+    return PurePosixPath(matches[0]).stem
+
+
+def _direct_headref_matches(branch: str, merged_prs: Sequence[dict]) -> list[dict]:
+    """Every merged PR whose own headRefName equals `branch` -- gh's
+    headRefName is this join's authoritative signal. Normally at most one;
+    more than one means a branch name was reused across two merged PRs,
+    resolved by _resolve_branch_pr.
+    """
+    return [pr for pr in merged_prs if pr.get("headRefName") == branch]
+
+
+def _pr_cost_join_corroborated(branch: str, enrichment: dict | None, plan_glob: str) -> bool:
+    """True when either independent cross-check corroborates a direct
+    headRefName match: the PR's own added plan-file slug equals `branch`, or
+    at least one of its pre-squash commit SHAs still resolves locally
+    (_pr_cost_sha_overlap). False when enrichment itself could not be
+    fetched -- there is no data to corroborate with.
+    """
+    if enrichment is None:
+        return False
+    files = [f.get("path", "") for f in (enrichment.get("files") or []) if isinstance(f, dict)]
+    if _pr_cost_plan_slug_from_files(files, plan_glob) == branch:
+        return True
+    return _pr_cost_sha_overlap(enrichment.get("commits")) > 0
+
+
+def _resolve_branch_pr(
+    branch: str, matches: Sequence[dict], enrichment_by_pr_number: dict[int, dict], plan_glob: str,
+) -> tuple[dict | None, str]:
+    """Join one branch already known to have >=1 direct headRefName match in
+    `matches` (see _direct_headref_matches) to the merged PR it belongs to.
+    A single match is "high" confidence when either cross-check corroborates
+    it, else "medium" -- gh's headRefName is authoritative either way;
+    corroboration only grades confidence. More than one match means this
+    branch name was reused across two merged PRs: highest SHA overlap wins,
+    ties broken by most recent mergedAt; a remaining tie returns no resolved
+    PR with join_confidence "low". Rename/alias detection for a branch with
+    *no* direct match at all is a separate, manual audit step, not
+    automated here.
+    """
+    if len(matches) == 1:
+        pr = matches[0]
+        corroborated = _pr_cost_join_corroborated(branch, enrichment_by_pr_number.get(pr["number"]), plan_glob)
+        return pr, (_PR_COST_JOIN_CONFIDENCE_HIGH if corroborated else _PR_COST_JOIN_CONFIDENCE_MEDIUM)
+
+    def _overlap(pr: dict) -> int:
+        enrichment = enrichment_by_pr_number.get(pr["number"])
+        return _pr_cost_sha_overlap(enrichment.get("commits") if enrichment else None)
+
+    best = max(matches, key=lambda pr: (_overlap(pr), pr["mergedAt"]))
+    tied = [pr for pr in matches if (_overlap(pr), pr["mergedAt"]) == (_overlap(best), best["mergedAt"])]
+    if len(tied) > 1:
+        return None, _PR_COST_JOIN_CONFIDENCE_LOW
+    return best, _PR_COST_JOIN_CONFIDENCE_LOW
+
+
+def _top_level_dir(path: str) -> str:
+    """First path segment of a changed-file path, or the bare filename when
+    it has none (a repo-root file counts as its own single-item bucket)."""
+    return path.split("/", 1)[0]
+
+
+def _pr_cost_mechanical_proxies(file_paths: Sequence[str], *, plan_glob: str, risk_globs: Sequence[str]) -> dict:
+    """Mechanical review-surface proxies, computed once from one PR's
+    changed-file path list (gh pr view --json files)."""
+    return {
+        "distinct_top_level_dirs": len({_top_level_dir(p) for p in file_paths}),
+        "distinct_file_extensions": len({PurePosixPath(p).suffix for p in file_paths}),
+        "tests_changed": any(_PR_COST_TEST_FILE_RE.search(p) for p in file_paths),
+        "plan_file_added": any(fnmatch.fnmatch(p, plan_glob) for p in file_paths),
+        "risk_surface_flag": any(fnmatch.fnmatch(p, glob) for p in file_paths for glob in risk_globs),
+    }
+
+
+def _new_pr_cost_agg() -> dict:
+    """Zero-valued per-branch aggregate shape accumulated by
+    _compute_pr_cost_branch_totals, and reused as the zero-cost default for
+    a merged PR whose branch carries no local corpus activity at all."""
+    return {
+        "dollars": dict.fromkeys(_TOKEN_CLASSES, 0.0),
+        "tokens": dict.fromkeys(_TOKEN_CLASSES, 0),
+        "unpriced_turns": 0, "unpriced_tokens": 0,
+        "turn_count": 0, "sessions": set(), "opus_dollars": 0.0, "sum_context_at_turn": 0,
+    }
+
+
+def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]:
+    """Single local corpus pass: every main+subagent turn's dollars/tokens,
+    grouped by _attributed_branch, over the whole scan -- run exactly once
+    per invocation regardless of how many PRs end up in scope. Mirrors
+    _cost_report's own dedup-then-price sequence so pr-cost's numbers are
+    derived the same way cost's are.
+
+    Returns (branch_totals, unbranched_totals): branch_totals is keyed by
+    each session's raw attributed branch string (never None); a record whose
+    _attributed_branch resolves to None (no gitBranch anywhere in the
+    session, not merely a worktree-agent carry-forward miss) accumulates
+    into the single unbranched_totals aggregate instead of being dropped,
+    unlike `buckets`, which silently skips records with no gitBranch.
+    """
+    branch_totals: dict[str, dict] = defaultdict(_new_pr_cost_agg)
+    unbranched_totals: dict = _new_pr_cost_agg()
+
+    for jsonl, records in session_iter:
+        records = _dedup_turns_by_request_id(records)  # dedup before pricing (must run first, see pricing.py)
+        branch_index = _session_branch_index(records)
+        session_id = jsonl.stem
+        for rec in records:
+            if rec.get("type") != "assistant":
+                continue
+            usage = (rec.get("message") or {}).get("usage")
+            if not usage:
+                continue
+            model = (rec.get("message") or {}).get("model", "")
+            dollars_by_class, context_at_turn, unpriced_tokens = _price_turn(model, usage)
+
+            branch = _attributed_branch(rec, branch_index)
+            agg = branch_totals[branch] if branch is not None else unbranched_totals
+
+            agg["turn_count"] += 1
+            agg["sessions"].add(session_id)
+            agg["sum_context_at_turn"] += context_at_turn
+
+            if dollars_by_class is None:
+                agg["unpriced_turns"] += 1
+                agg["unpriced_tokens"] += unpriced_tokens
+                continue
+
+            token_counts = _token_counts(usage)
+            for cls in _TOKEN_CLASSES:
+                agg["dollars"][cls] += dollars_by_class[cls]
+                agg["tokens"][cls] += token_counts[cls]
+            if _fam(model) == "opus":
+                agg["opus_dollars"] += sum(dollars_by_class.values())
+
+    return dict(branch_totals), unbranched_totals
+
+
+def _pr_cost_asof_window_ok(merged_at_iso: str, window_days: float, now: datetime) -> bool:
+    """True once at least window_days have elapsed since merged_at_iso --
+    the as-of rule's precondition."""
+    merged_ts = _parse_ts(merged_at_iso)
+    if merged_ts is None:
+        return False
+    return now.timestamp() - merged_ts >= window_days * 86400
+
+
+def _new_pr_cost_row(
+    *, pinned_repo: str, pr: dict, branch: str, agg: dict, enrichment: dict | None,
+    join_confidence: str, status: str, machine: str, captured_at: str, supersedes: str,
+    plan_glob: str, risk_globs: Sequence[str], ordinal: int, branch_map: dict,
+) -> dict:
+    """Assemble one ledger row dict from every piece the main loop resolved.
+    head_branch is the SCRUBBED form (_assign_root_scoped_redact_label) --
+    the join itself already ran on the raw `branch` value passed in here;
+    this is the write boundary, the only point this run's branch value is
+    allowed to reach the ledger or stdout/stderr. `repo` is stored raw: it
+    is part of the row's own key and must stay stable and comparable across
+    runs for the ledger to function at all (PR numbers are only unique
+    per-repo) -- every *print* of it still routes through the caller's own
+    repo_map instead.
+    """
+    dollars = agg["dollars"]
+    tokens = agg["tokens"]
+    turn_count = agg["turn_count"]
+    total_dollars = sum(dollars.values())
+
+    files = [f.get("path", "") for f in ((enrichment or {}).get("files") or []) if isinstance(f, dict)]
+    proxies = _pr_cost_mechanical_proxies(files, plan_glob=plan_glob, risk_globs=risk_globs)
+    reviews = (enrichment or {}).get("reviews") or []
+    commits = (enrichment or {}).get("commits") or []
+
+    return {
+        "repo": pinned_repo,
+        "pr_number": pr["number"],
+        "machine": machine,
+        "head_branch": _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map),
+        "merged_at": pr["mergedAt"],
+        "rate_stamp": _PRICING_FETCH_DATE.isoformat(),
+        "captured_at": captured_at,
+        "join_confidence": join_confidence,
+        "supersedes": supersedes,
+        "status": status,
+        "cache_read_usd": dollars["cache_read"], "cache_write_5m_usd": dollars["cache_write_5m"],
+        "cache_write_1h_usd": dollars["cache_write_1h"], "output_usd": dollars["output"],
+        "input_usd": dollars["input"],
+        "cache_read_tokens": tokens["cache_read"], "cache_write_5m_tokens": tokens["cache_write_5m"],
+        "cache_write_1h_tokens": tokens["cache_write_1h"], "output_tokens": tokens["output"],
+        "input_tokens": tokens["input"],
+        "unpriced_turns": agg["unpriced_turns"], "unpriced_tokens": agg["unpriced_tokens"],
+        "turn_count": turn_count, "session_count": len(agg["sessions"]),
+        "opus_dollars": agg["opus_dollars"], "opus_dollar_share_pct": _pct_value(agg["opus_dollars"], total_dollars),
+        "sum_context_at_turn": agg["sum_context_at_turn"],
+        "mean_context_at_turn": (agg["sum_context_at_turn"] / turn_count) if turn_count else 0.0,
+        "additions": pr.get("additions", 0), "deletions": pr.get("deletions", 0),
+        "changed_files": pr.get("changedFiles", 0),
+        "commit_count": len(commits), "review_comment_count": len(reviews),
+        "distinct_top_level_dirs": proxies["distinct_top_level_dirs"],
+        "distinct_file_extensions": proxies["distinct_file_extensions"],
+        "tests_changed": proxies["tests_changed"], "plan_file_added": proxies["plan_file_added"],
+        "risk_surface_flag": proxies["risk_surface_flag"],
+    }
+
+
+def _print_pr_cost_ledger_rows(rows: list[dict], ordinal: int, branch_map: dict, repo_map: dict) -> None:
+    """Read-mode's existing-rows preview -- scrubbed repo, no branch column
+    at all (head_branch is already the scrubbed placeholder stored in the
+    row, so re-scrubbing it through `branch_map` would double-redact it)."""
+    if not rows:
+        print("\nNo rows recorded yet.")
+        return
+    print()
+    print(f"{'Repo':<28} {'PR':>6} {'Machine':<9} {'Status':<20} {'Join':<8} {'CapturedAt':<20}")
+    for row in rows:
+        repo_label = _assign_root_scoped_redact_label("repo", ordinal, row["repo"], repo_map)
+        print(
+            f"{repo_label:<28} {row['pr_number']:>6} {row['machine']:<9} {row['status']:<20}"
+            f" {row['join_confidence']:<8} {row['captured_at']:<20}"
+        )
+
+
+def _print_pr_cost_uncaptured(
+    branch_totals: dict[str, dict], merged_prs: Sequence[dict], existing_rows: list[dict],
+    pinned_repo: str, machine_label: str | None, ordinal: int, branch_map: dict,
+) -> None:
+    """Read mode's gap listing: merged PRs with local corpus activity not
+    yet captured in the ledger. Restricted to an unambiguous direct
+    headRefName match (a branch with zero or more-than-one match is a
+    separate manual audit's territory, not this quick gap check) --
+    deliberately makes no extra gh calls beyond the bulk discovery this run
+    already made, so read mode stays cheap enough to run often, closing the
+    capture-trigger gap without needing a hook.
+    """
+    print("\nMerged PRs with local corpus activity not yet captured:")
+    any_uncaptured = False
+    for branch in sorted(branch_totals):
+        matches = _direct_headref_matches(branch, merged_prs)
+        if len(matches) != 1:
+            continue
+        pr = matches[0]
+        if _latest_pr_cost_row(existing_rows, pinned_repo, pr["number"], machine_label) is not None:
+            continue
+        any_uncaptured = True
+        label = _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map)
+        print(f"  PR #{pr['number']:<6} {label:<40} merged {pr['mergedAt']}")
+    if not any_uncaptured:
+        print("  (none)")
+
+
+def cmd_pr_cost(args: argparse.Namespace) -> None:
+    """CLI entry point for the pr-cost subcommand.
+
+    Reads the wall-clock date/time exactly once, here, mirroring cost's and
+    cost-ledger's own today-injection split so the as-of window's
+    precondition check is deterministic under test.
+    """
+    roots = _resolve_cost_roots(args, "pr-cost")
+    _pr_cost_report(args, datetime.now(UTC), roots)
+
+
+def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Path]) -> None:
+    """Read (default) or capture (--record) pr-cost ledger rows.
+
+    Failure-handling order: gh auth preflight, then repo-identity resolution
+    (retried under the shared rate-limit backoff, aborting the whole run on
+    exhaustion since no row exists yet to mark degraded), then discovery,
+    then per-branch enrichment (differentiated: rate-limit/network failures
+    degrade that branch's row instead of aborting). Every stdout/stderr path
+    below routes branch/repo values through _assign_root_scoped_redact_label
+    -- no raw branch name or repo value is ever printed. There is
+    deliberately no --no-redact escape hatch for this subcommand, unlike
+    cost/subagents.
+    """
+    if len(roots) > 1:
+        # Refuses genuine multi-root ambiguity only, not a claude-config-only
+        # scope requirement (this subcommand is never restricted to running
+        # against claude-config itself) -- load-bearing here because pr-cost
+        # durably writes, unlike a pure read command, and even read mode
+        # could otherwise conflate two accounts' branch/repo data into one
+        # listing.
+        print(
+            "pr-cost: more than one root resolved -- refusing a durable write (or a read that"
+            " could conflate two accounts' branch/repo data) across accounts; scope to a single"
+            " profile (drop --config-dir, or point CLAUDE_CONFIG_DIR at one account)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    record: bool = bool(getattr(args, "record", False))
+    force: bool = bool(getattr(args, "force", False))
+    target_pr: int | None = getattr(args, "pr", None)
+    machine_label: str | None = getattr(args, "machine_label", None) or None
+    window_days: float = getattr(args, "asof_window_days", None) or _PR_COST_ASOF_WINDOW_DAYS_DEFAULT
+    plan_glob: str = getattr(args, "plan_file_glob", None) or _DEFAULT_PR_COST_PLAN_FILE_GLOB
+    risk_globs: tuple[str, ...] = tuple(
+        getattr(args, "risk_surface_globs", None) or _DEFAULT_PR_COST_RISK_SURFACE_GLOBS
+    )
+
+    if force and target_pr is None:
+        print("pr-cost: --force requires --pr (a correction targets exactly one PR)", file=sys.stderr)
+        sys.exit(1)
+    if record and not machine_label:
+        print("pr-cost: --record requires --machine-label", file=sys.stderr)
+        sys.exit(1)
+    if machine_label is not None and not _MACHINE_LABEL_RE.match(machine_label):
+        print(f"pr-cost: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
+        sys.exit(1)
+    if record and machine_label.lower() == socket.gethostname().lower():
+        # Rejection names the rule, never the compared hostname -- same
+        # discipline as cost-ledger's own equivalent check.
+        print(
+            "pr-cost: --machine-label must not equal this machine's hostname -- publishing a"
+            " hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not _gh_auth_preflight_ok():
+        print("pr-cost: gh auth status failed -- run `gh auth login` before pr-cost", file=sys.stderr)
+        sys.exit(1)
+
+    pinned_repo, ordinal, repo_map = _resolve_pinned_gh_repo()
+    branch_map: dict[tuple[int, str], str] = {}
+
+    session_iter, scope_label = _resolve_project_scope(args, "pr-cost", include_subagents=True, roots=roots)
+    _print_resolved_scope("pr-cost", scope_label, roots)
+    branch_totals, unbranched_agg = _compute_pr_cost_branch_totals(session_iter)
+    print(
+        f"pr-cost: {_fmt_usd(sum(unbranched_agg['dollars'].values()))} across"
+        f" {unbranched_agg['turn_count']} priced turns attributed to no branch at all"
+        " (counted, not skipped, unlike `buckets`)",
+        file=sys.stderr,
+    )
+
+    merged_prs = _gh_discover_merged_prs(pinned_repo)
+
+    try:
+        ledger_path = _pr_cost_ledger_path()
+    except ValueError as exc:
+        print(f"pr-cost: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    existing_rows: list[dict] = []
+    if ledger_path.exists():
+        try:
+            existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        except _PrCostLedgerParseError as exc:
+            print(f"pr-cost: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    if not record:
+        _print_pr_cost_ledger_rows(existing_rows, ordinal, branch_map, repo_map)
+        _print_pr_cost_uncaptured(branch_totals, merged_prs, existing_rows, pinned_repo, machine_label, ordinal, branch_map)
+        return
+
+    sentinel_path = config_dir() / ".pr-cost-enabled"
+    if not sentinel_path.exists():
+        print(
+            "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
+            " see docs/pr-cost.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if _ledger_path_is_git_tracked(ledger_path, "pr-cost"):
+        # Always refused for pr-cost (not gated on multi-root, unlike the
+        # weekly ledger's own check): these rows carry branch/repo data the
+        # public weekly ledger's rows don't, so this ledger must never live
+        # inside a git working tree, full stop.
+        print(
+            "pr-cost: --record is refused when the ledger path is inside a git working tree --"
+            " move PR_COST_LEDGER_PATH outside git, or drop --record",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if target_pr is not None:
+        pr_by_number = {pr["number"]: pr for pr in merged_prs}
+        target_pr_data = pr_by_number.get(target_pr)
+        if target_pr_data is None:
+            print(f"pr-cost: PR #{target_pr} was not found among this repo's merged PRs", file=sys.stderr)
+            sys.exit(1)
+        target_branches = [target_pr_data["headRefName"]]
+    else:
+        target_branches = sorted(branch_totals)
+
+    for branch in target_branches:
+        branch_label = _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map)
+        print(f"pr-cost: resolving branch {branch_label}...", file=sys.stderr)
+        matches = _direct_headref_matches(branch, merged_prs)
+        if not matches:
+            print("pr-cost:   no merged PR found for this branch -- skipped", file=sys.stderr)
+            continue
+
+        enrichment_by_pr_number: dict[int, dict] = {}
+        degraded_status_by_pr_number: dict[int, str] = {}
+        for pr in matches:
+            print(f"pr-cost:   enriching PR #{pr['number']}...", file=sys.stderr)
+            payload, degraded = _gh_pr_view_enrichment(pinned_repo, pr["number"])
+            if payload is not None:
+                enrichment_by_pr_number[pr["number"]] = payload
+            else:
+                degraded_status_by_pr_number[pr["number"]] = (
+                    _PR_COST_STATUS_DEGRADED_NETWORK if degraded == _GH_CALL_DEGRADED_AUTH else degraded
+                )
+
+        resolved_pr, join_confidence = _resolve_branch_pr(branch, matches, enrichment_by_pr_number, plan_glob)
+        if resolved_pr is None:
+            print(
+                "pr-cost:   ambiguous branch-to-PR match (ties unresolved after SHA-overlap"
+                " and mergedAt comparison) -- skipped",
+                file=sys.stderr,
+            )
+            continue
+
+        enrichment = enrichment_by_pr_number.get(resolved_pr["number"])
+        row_status = _PR_COST_STATUS_OK if enrichment is not None else degraded_status_by_pr_number.get(
+            resolved_pr["number"], _PR_COST_STATUS_DEGRADED_NETWORK
+        )
+
+        if not _pr_cost_asof_window_ok(resolved_pr["mergedAt"], window_days, now):
+            message = (
+                f"pr-cost:   PR #{resolved_pr['number']} merged too recently"
+                f" (as-of window is {window_days:g}d)"
+            )
+            if target_pr is not None:
+                print(f"{message} -- refusing", file=sys.stderr)
+                sys.exit(1)
+            print(f"{message} -- skipped", file=sys.stderr)
+            continue
+
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+        with open(lock_path, "w") as lock_f:
+            _acquire_pr_cost_ledger_lock(lock_f)
+            try:
+                try:
+                    current_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                except FileNotFoundError:
+                    current_rows = []
+                except _PrCostLedgerParseError as exc:
+                    print(f"pr-cost: {exc}", file=sys.stderr)
+                    sys.exit(1)
+
+                already = _latest_pr_cost_row(current_rows, pinned_repo, resolved_pr["number"], machine_label)
+                if already is not None and not force:
+                    print(
+                        f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_label} is already"
+                        " captured -- pass --force (with --pr) to append a correcting row",
+                        file=sys.stderr,
+                    )
+                    if target_pr is not None:
+                        sys.exit(1)
+                    continue
+
+                agg = branch_totals.get(branch) or _new_pr_cost_agg()
+                captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+                new_row = _new_pr_cost_row(
+                    pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg, enrichment=enrichment,
+                    join_confidence=join_confidence, status=row_status, machine=machine_label,
+                    captured_at=captured_at, supersedes=(already["captured_at"] if already else ""),
+                    plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
+                )
+                try:
+                    updated_rows = _append_pr_cost_ledger_row(current_rows, new_row, already, force)
+                except ValueError as exc:
+                    print(f"pr-cost: {exc}", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    _write_pr_cost_ledger_file(ledger_path, updated_rows)
+                except _PrCostLedgerParseError as exc:
+                    print(f"pr-cost: {exc}", file=sys.stderr)
+                    sys.exit(1)
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+        existing_rows = updated_rows
+        print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_label}")
 
 
 def cmd_spend_over_threshold(args: argparse.Namespace) -> None:
@@ -9524,6 +10641,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="Free-text note for --record's row: what changed in the workflow this week.",
     )
     p_cost_ledger.set_defaults(func=cmd_cost_ledger)
+
+    p_pr_cost = sub.add_parser(
+        "pr-cost",
+        help=(
+            "Per-PR AI-tooling dollar cost, joined against PR size/rework/review-surface via"
+            " gh. Default: list uncaptured merged PRs still in the local transcript window."
+            " --record durably appends one row per captured PR to the pr-cost ledger (see"
+            " PR_COST_LEDGER_PATH). Always redacted -- no --no-redact escape hatch. Requires gh."
+        ),
+    )
+    _add_project_scope_args(p_pr_cost)
+    p_pr_cost.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). pr-cost refuses"
+            " (exit 2) whenever more than one root resolves -- see docs/pr-cost.md."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--record", action="store_true",
+        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled and --machine-label.",
+    )
+    p_pr_cost.add_argument(
+        "--pr", type=int, metavar="N",
+        help="Target exactly one PR number instead of every branch with local corpus activity.",
+    )
+    p_pr_cost.add_argument(
+        "--machine-label", metavar="LABEL",
+        help=(
+            "Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this"
+            " machine's hostname. Also narrows read mode's uncaptured-PR listing to one machine."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--force", action="store_true",
+        help="With --record and --pr, append a correcting row for an already-captured PR instead of refusing.",
+    )
+    p_pr_cost.add_argument(
+        "--asof-window-days", type=float, metavar="DAYS",
+        help=(
+            "Close-out window before a merged PR is eligible for capture (default:"
+            f" {_PR_COST_ASOF_WINDOW_DAYS_DEFAULT:g}, a provisional placeholder -- see docs/pr-cost.md)."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--plan-file-glob", metavar="GLOB",
+        help=(
+            "Glob checked against a PR's added files for the plan-slug join cross-check"
+            f" (default: {_DEFAULT_PR_COST_PLAN_FILE_GLOB!r})."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--risk-surface-glob", action="append", dest="risk_surface_globs", metavar="GLOB",
+        help=(
+            "Glob pattern considered risk surface for the risk_surface_flag proxy (repeatable;"
+            " replaces the claude-config defaults entirely when given)."
+        ),
+    )
+    p_pr_cost.set_defaults(func=cmd_pr_cost)
 
     p_spend_over_threshold = sub.add_parser(
         "spend-over-threshold",
