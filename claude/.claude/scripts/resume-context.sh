@@ -73,10 +73,10 @@
 #   file's slug via `ls` on a shared multi-user machine, where /tmp is often
 #   world-traversable (1777) even though the file's own 0600 permissions
 #   block content reads. ~/.claude/handoffs/ and ~/.claude/briefs/ are
-#   additionally protected at the directory level — the handoff/brief
-#   SKILL.md write recipes chmod those directories 700 (owner-only
-#   traversal) — but that protection is enforced by the writing skill, not
-#   by this script; it only holds if that chmod step actually ran.
+#   additionally protected at the directory level by install.sh's one-time
+#   `chmod 700 "$HOME/.claude"` (see install.sh for scope and the
+#   symlink-skip caveat) — enforced at install time, not by this script,
+#   and only if that step actually ran.
 #   Content exposure is still a strict improvement over the pre-fix
 #   /tmp/<slug>-handoff.md, which carried no permission hardening at all.
 # - A symlink at a glob-matching path inside the durable directory is
