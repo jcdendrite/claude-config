@@ -151,16 +151,20 @@ Before writing the file, verify:
 Once the handoff file is written and verified, append one line recording this session's id to
 `nudge-handoff-near-context-cap.sh`'s own log — pairing it with that hook's `nudged` lines lets a
 future report count how often a nudge fire is followed by a handoff in the same session, without
-joining to transcript content:
+joining to transcript content. Also remove that session's escalation-ladder marker, so a
+successful handoff resets the ignored-re-arm count instead of leaving it primed to hard-block on
+the next session's first re-arm if the session id were ever reused:
 
 ```bash
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SESSION_ID=$(head -n1 "$CONFIG_DIR/sessions/$PPID" 2>/dev/null)
 [ -n "$SESSION_ID" ] && printf 'handoff session=%s\n' "$SESSION_ID" >> "$CONFIG_DIR/.handoff-nudge.log"
+[ -n "$SESSION_ID" ] && rm -f "$CONFIG_DIR/.handoff-nudge-fired.d/$SESSION_ID-ignored"
 ```
 
 Best-effort: `sessions/$PPID` is the session-id lookup file `capture-session-id.sh` writes at
-session start; if it's absent, the append is silently skipped — this is a conversion metric, not
-a gate. (Claude Code ≤2.1.223 could refuse this exact shape via a buggy worktree-isolation
-Bash-tool check, fixed in 2.1.224 — if it recurs, split into single-statement calls with the
-session id substituted as a literal rather than carried in a variable.)
+session start; if it's absent, both the log append and the marker removal are silently skipped —
+this is a conversion metric and a defense-in-depth reset, not a gate. (Claude Code ≤2.1.223 could
+refuse this exact shape via a buggy worktree-isolation Bash-tool check, fixed in 2.1.224 — if it
+recurs, split into single-statement calls with the session id substituted as a literal rather
+than carried in a variable.)

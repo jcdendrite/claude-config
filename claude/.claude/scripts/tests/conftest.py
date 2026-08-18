@@ -178,7 +178,7 @@ def fake_projects(tmp_path, monkeypatch, request):
     PROJECTS_DIR patch above — without this, a subcommand routed through
     _resolve_cost_roots would silently fall back to this machine's real
     config dir instead of this fixture's isolated tmp_path. cost-ledger,
-    handoff-ratio, and rearm-backtest stay in the shim (not yet moved into
+    spend-over-threshold, and rearm-backtest stay in the shim (not yet moved into
     the package) and call config_dir() via their own separate import, so
     mod.config_dir is patched too -- two bindings of the same initial value,
     each the sole read path for its own still-independent call sites.

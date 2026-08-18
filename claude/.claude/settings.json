@@ -154,10 +154,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh"
-          },
-          {
-            "type": "command",
             "command": "~/.claude/hooks/nudge-error-mode-analysis.sh"
           },
           {
@@ -421,6 +417,16 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/nudge-transcript-toolkit.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh"
           }
         ]
       }
