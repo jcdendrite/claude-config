@@ -16,7 +16,32 @@ if [ -L .venv ]; then
   exit 1
 fi
 
-# Step 2 — Guard ensurepip BEFORE creating venv. On Debian/Ubuntu without
+# Step 2 — Require the private-projects.md redaction opt-in before setup
+# continues, so a contributor doesn't discover tier-2 of the redaction hook
+# was silently disabled for them only after a leak.
+# Resolution mirrors deny-private-project-refs.sh's own union exactly: the
+# $HOME/.claude copy is the floor, overridden only when $CLAUDE_CONFIG_DIR
+# is set, absolute, and its own copy exists — never CLAUDE_CONFIG_DIR alone.
+_private_projects_file="$HOME/.claude/private-projects.md"
+case "${CLAUDE_CONFIG_DIR:-}" in
+  /*)
+    _config_dir="${CLAUDE_CONFIG_DIR%/}"
+    [ -f "$_config_dir/private-projects.md" ] && _private_projects_file="$_config_dir/private-projects.md"
+    ;;
+esac
+# -f && -r (not bare -e): excludes a stray directory or dangling symlink at
+# this path, and matches the hook's own [ -r ] bar so a permission-denied
+# file can't pass this gate while the hook silently can't read it.
+if [ ! -f "$_private_projects_file" ] || [ ! -r "$_private_projects_file" ]; then
+  echo "ERROR: $_private_projects_file not found or not readable." >&2
+  echo "  Contributor setup requires opting into the private-project redaction" >&2
+  echo "  blocklist first (a comment-only file is enough if you have nothing to" >&2
+  echo "  list yet) — see docs/private-project-redaction.md 'Opt-in: enable the" >&2
+  echo "  blocklist'." >&2
+  exit 1
+fi
+
+# Step 3 — Guard ensurepip BEFORE creating venv. On Debian/Ubuntu without
 # python3-venv, `python3 -m venv` exits 0 but produces no pip, so the pip
 # install step fails with a confusing error. Catch this up front with
 # actionable guidance. Use `if !` so set -e does not swallow the exit path.
@@ -49,7 +74,7 @@ if ! python3 -c "import ensurepip" 2>/dev/null; then
   exit 1
 fi
 
-# Step 3 — Health probe: canonical check used by both the detect step and
+# Step 4 — Health probe: canonical check used by both the detect step and
 # the final verification. Both sites call this function — one definition.
 check_venv_healthy() {
   [ -x .venv/bin/python ] \
@@ -58,7 +83,7 @@ check_venv_healthy() {
     && .venv/bin/shellcheck --version >/dev/null 2>&1
 }
 
-# Step 4 — Heal or create venv. If .venv exists but the health probe fails
+# Step 5 — Heal or create venv. If .venv exists but the health probe fails
 # (partial install, deps missing, or interpreter mismatch), remove and
 # recreate. If absent, create fresh.
 if [ -d .venv ] && ! check_venv_healthy; then
@@ -77,7 +102,7 @@ fi
 echo "Syncing requirements-dev.txt..."
 .venv/bin/pip install --quiet -r requirements-dev.txt
 
-# Step 5 — Final verify. Same health probe as the detect step — consistent
+# Step 6 — Final verify. Same health probe as the detect step — consistent
 # success criterion. Print pinned versions so contributors can confirm pins.
 if check_venv_healthy; then
   pytest_ver="$(.venv/bin/python -c "import pytest; print(pytest.__version__)")"

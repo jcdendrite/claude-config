@@ -58,6 +58,10 @@ narrow the pattern.
 
 ## Opt-in: enable the blocklist
 
+`install-dev.sh` refuses to run until this file exists (a comment-only file
+is enough), so contributor setup enforces the opt-in rather than leaving it
+silently skippable.
+
 ```bash
 # Create the file with a header pointing at this doc for usage
 # rules (the hook ignores `#` lines, so the header doesn't affect
@@ -200,4 +204,5 @@ flags the `gh api` scan already resolves.
 Forks of `claude-config` inherit the same hook (the scoping check passes for
 any `claude-config` substring in the origin URL). A fork user can drop their
 own `~/.claude/private-projects.md` and contribute back without their project
-names ever ending up in a PR they open against the upstream.
+names ever ending up in a PR they open against the upstream. `install-dev.sh`
+requires that file to exist before it will set up a contributor's `.venv`.
