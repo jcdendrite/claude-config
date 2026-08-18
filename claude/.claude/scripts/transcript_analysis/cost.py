@@ -686,7 +686,7 @@ def compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]], 
 def _cost_trend_report(args: argparse.Namespace, today: date) -> None:
     """Per-ISO-week dollar spend, Opus-family share, and >=200k context-bucket share.
 
-    Reuses _price_turn's per-turn pricing (same as cost) and cmd_handoff_ratio's
+    Reuses _price_turn's per-turn pricing (same as cost) and cmd_spend_over_threshold's
     ISO-week bucketing. Sidechain turns are included (include_subagents=True)
     for the same reason _cost_report includes them — most dispatched spend
     would otherwise be silently excluded. The most recent bucket is very
