@@ -14,7 +14,7 @@ touched was re-verified at `eb5eae2` — `nudge-handoff-near-context-cap.sh` had
 grown and its line anchors moved, which is exactly the drift this pin exists to
 make visible.
 
-## Status — updated 2026-08-11
+## Status — updated 2026-08-18
 
 The findings below are a record of the repo at `eb5eae2` and are **not** revised
 as the backlog lands; `docs/reports/README.md` states why. This section is the
@@ -37,6 +37,10 @@ acting on any of them.
   `_lib_repo_root`, `README.md:212`, `staff-backend-engineer.md` section order,
   and duplicated Model Routing sentence. The remaining finding-7 sub-items were
   not re-checked individually.
+- **Finding 7's `register-marketplace.sh` sub-item (Phase 1a) is remediated**
+  by `13ea55a` (#698), which sourced `_lib_config_dir()` for config-dir
+  resolution and gave the script its own test file. The other finding-7
+  sub-items listed above remain as they were at `293ccf3`.
 - Finding 4's subject has grown since the baseline: `transcript-analysis.py` is
   now 9,434 lines across 26 subcommands, against 7,823 and 25 at `eb5eae2`; its
   test file is 15,360 lines, against 12,673.
@@ -314,7 +318,7 @@ Ordered by value per unit of risk. Each phase is an independent PR.
 
 | Phase | Work | Why this order |
 |---|---|---|
-| **1a** | `register-marketplace.sh` → `_lib_config_dir()`, plus its first test file | Independent mechanism, no overlap with anything below |
+| **1a** — *landed in `13ea55a`* | `register-marketplace.sh` → `_lib_config_dir()`, plus its first test file | Independent mechanism, no overlap with anything below |
 | **2a** — *landed in `484defb`* | Teach `_lib_capped` the `gtimeout` fallback, then route all 13 unguarded `timeout` sites in finding 1's table through it, with regression tests | Closes finding 1. Was kept to its own PR so the security fix would not be hostage to 2b's larger review |
 | **2b** | Extract `_lib_repo_root` and land it across the 12 `show-toplevel` call sites | Closes finding 7's idiom sprawl. Re-touches exactly two lines 2a already fixed (`guard-settings-session-keys.sh:66`, `require-worktree-for-git-writes.sh:115`) — expected, not scope creep. Also picks up `check-claude-md-length.sh:58` and `check-skill-length.sh:57`, which have no `timeout` wrapper at all today |
 | **6** | Wire `plugins/` into CI's pytest and ruff steps; add `persist-credentials: false` | Findings 2 and 3; small diff, closes a silent-green gap. Land it as a draft PR and let CI run once before merging: the local pass above is on Python 3.14, while CI's `setup-python` pins 3.12 — an untested combination, low risk but unverified |
