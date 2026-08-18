@@ -86,7 +86,10 @@ SMALL_TRANSCRIPT_LINES = 200  # equals the hook's own `tail -n 200` window
 LARGE_TRANSCRIPT_LINES = 150_000  # ~29MB; big enough that a regression to a
 # full-file read produces a ~6x runtime ratio against SMALL_TRANSCRIPT_LINES,
 # well clear of the noise ceiling below (measured: real hook ratio ~0.8-1.5x,
-# regressed hook ratio ~6.0x, at this fixture size).
+# regressed hook ratio ~6.0x, at this fixture size). `_interleaved_median_seconds`
+# gives every sample its own session_id so each measured call is a fresh
+# bootstrap scan, matching this calibration's cost model even after the
+# incremental-read cache (a8db41d) made repeat-session calls near-free.
 TRANSCRIPT_SCALING_RATIO = 3.0
 # Absolute slack so a near-zero baseline on a fast, quiet machine can't make
 # the ratio arbitrarily sensitive to scheduler noise — same values as
@@ -247,22 +250,19 @@ def _interleaved_median_seconds(
     entire sample window (this hook forks more subprocesses per call than
     sibling tests, so single-sample runtime is noisier).
 
-    Each arm uses its own session_id: the fire path's incremental-read cache
-    is keyed by session_id alone, not transcript path, so sharing one
-    session_id between two different-sized transcripts makes each call
-    reset the other's cached scan offset -- collapsing the large arm's
-    "unread suffix" down to nearly the whole file every time instead of the
-    empty-suffix, cache-hit read this test means to exercise.
+    Every call gets its own fresh session_id — the incremental-read cache is
+    keyed by session_id alone, not transcript path, so reusing one across
+    calls would make all but the first a free cache-hit read instead of the
+    bounded `tail -n 200` bootstrap scan this test means to measure.
     """
-    small_payload = _base_payload(small_transcript, session_id=f"{SESSION_ID}-small")
-    large_payload = _base_payload(large_transcript, session_id=f"{SESSION_ID}-large")
     small_samples: list[float] = []
     large_samples: list[float] = []
-    for _ in range(runs):
-        for payload, samples in (
-            (small_payload, small_samples),
-            (large_payload, large_samples),
+    for i in range(runs):
+        for label, transcript, samples in (
+            ("small", small_transcript, small_samples),
+            ("large", large_transcript, large_samples),
         ):
+            payload = _base_payload(transcript, session_id=f"{SESSION_ID}-{label}-{i}")
             start = time.perf_counter()
             result = _run_hook(payload, tmp_path)
             samples.append(time.perf_counter() - start)
@@ -1460,18 +1460,23 @@ class TestNudgeHandoffNearContextCap:
     def test_interleaved_median_seconds_alternates_calls_and_picks_true_median(
         self, monkeypatch, tmp_path
     ):
-        """Deterministic pin for `_interleaved_median_seconds`'s call order
-        and median selection, independent of real hook subprocess timing —
-        an off-by-one in the median index or a reversion to block-sequential
-        sampling would otherwise hide behind this hook's own wide legitimate
-        timing variance instead of failing reliably.
+        """Deterministic pin for `_interleaved_median_seconds`'s call order,
+        median selection, and per-call session_id, independent of real hook
+        subprocess timing — an off-by-one in the median index or a reversion
+        to block-sequential sampling would otherwise hide behind this hook's
+        own wide legitimate timing variance instead of failing reliably; a
+        reused session_id would silently turn every sample but the first
+        into a cache-hit read instead of the bootstrap scan this test means
+        to time (see `_interleaved_median_seconds`'s docstring).
         """
         small_transcript = tmp_path / "small.jsonl"
         large_transcript = tmp_path / "large.jsonl"
         call_log: list[str] = []
+        session_id_log: list[str] = []
 
         def fake_run_hook(payload, tmp_path_arg, extra_env=None):
             call_log.append(payload["transcript_path"])
+            session_id_log.append(payload["session_id"])
             return subprocess.CompletedProcess(args=[], returncode=0)
 
         # small-arm calls take 0.3/0.1/0.2s in call order, large-arm calls
@@ -1491,6 +1496,10 @@ class TestNudgeHandoffNearContextCap:
         assert call_log == [str(small_transcript), str(large_transcript)] * 3
         assert small_median == pytest.approx(0.2)
         assert large_median == pytest.approx(2.0)
+        assert len(set(session_id_log)) == len(session_id_log), (
+            "every call must get its own session_id -- a repeat would silently "
+            "swap that sample's bootstrap scan for a free cache-hit read"
+        )
 
     def test_partial_usage_block_falls_to_below_threshold(self, tmp_path):
         """A usage block with only output_tokens present sums to 500 — below threshold. No schema-drift, no nudge."""
