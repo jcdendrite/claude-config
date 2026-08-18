@@ -13181,29 +13181,6 @@ class TestFormatDriftCanary:
         # (subagent record has no isSidechain field → not counted as sidechain).
         assert "WARNING" in captured.err
 
-    def test_drift_warning_also_fires_in_cost(self, fake_projects, capsys):
-        """cmd_cost also emits the drift warning when spawns have no
-        sidechain turns -- _cost_report now accumulates total_spawns/
-        total_sidechain_turns through its own per-session loop instead of
-        never calling _warn_if_subagent_format_drift at all."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-backend-engineer"),
-            ]),
-        ])
-        _mod.cmd_cost(_cost_args())
-        assert "WARNING" in capsys.readouterr().err
-
-    def test_no_warning_in_cost_on_healthy_corpus(self, fake_projects, capsys):
-        """A corpus with no subagent spawns at all draws no drift warning
-        from cmd_cost -- the negative counterpart, so the canary is known to
-        stay silent on ordinary data rather than firing unconditionally."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", cache_read=100),
-        ])
-        _mod.cmd_cost(_cost_args())
-        assert "WARNING" not in capsys.readouterr().err
-
     def test_drift_warning_also_fires_in_cache_efficiency(self, fake_projects, capsys):
         """cmd_cache_efficiency also emits the drift warning when spawns
         have no sidechain turns."""
@@ -13245,46 +13222,11 @@ class TestFormatDriftCanary:
         _mod.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
 
-    def test_no_warning_in_cost_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
-        """The cmd_cost counterpart to
-        test_no_warning_in_cache_efficiency_with_spawn_and_real_sidechain_turn
-        above: a spawn paired with an actual priced sidechain turn is the
-        true no-drift case and must not warn."""
-        session_id = "sess-side-cost"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-backend-engineer"),
-            ]),
-        ])
-        side_rec = _priced("claude-sonnet-5", cache_read=100)
-        side_rec["isSidechain"] = True
-        _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
-        _mod.cmd_cost(_cost_args())
-        assert "WARNING" not in capsys.readouterr().err
-
-    def test_no_warning_in_cost_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
-        """The sidechain-turn count in _cost_report happens before the
-        usage-presence check (per that code's own comment), so an unpriced
-        sidechain assistant turn -- message.usage == {}, via _asst's default,
-        never _priced -- must still count toward total_sidechain_turns and
-        keep the canary silent. The priced-sidechain test above cannot catch
-        a regression that moves the count after the usage check, since a
-        priced turn passes either ordering."""
-        session_id = "sess-unpriced-side"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-backend-engineer"),
-            ]),
-        ])
-        _write_subagent_jsonl(fake_projects, session_id, "a1", [
-            _asst("claude-opus-4-7", branch="main", sidechain=True),
-        ])
-        _mod.cmd_cost(_cost_args())
-        assert "WARNING" not in capsys.readouterr().err
-
     def test_no_warning_in_cache_efficiency_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
-        """The cache-efficiency counterpart to the cost test above: an
-        unpriced sidechain assistant turn must still count toward
+        """The cache-efficiency counterpart to
+        TestCostFormatDriftCanary.test_no_warning_in_cost_with_spawn_and_unpriced_sidechain_turn
+        (test_transcript_cost.py): an unpriced sidechain assistant turn must
+        still count toward
         _scan_cache_efficiency_group's returned sidechain_turns_read, since
         that count happens before the group scan's own `if not usage:
         continue` guard."""

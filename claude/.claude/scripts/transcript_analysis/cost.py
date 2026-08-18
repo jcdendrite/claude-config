@@ -343,6 +343,12 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     subagent_total = 0.0
     priced_session_count = 0
     priced_turn_count = 0
+    # Feed pricing._warn_if_subagent_format_drift below -- unlike main_total/
+    # subagent_total, total_sidechain_turns counts every isSidechain
+    # assistant turn read (mirroring cmd_subagents' corpus_sidechain_turns),
+    # not just priced ones, so an unpriced-model session can't mask drift.
+    total_spawns = 0
+    total_sidechain_turns = 0
     # Keyed on (root_index_or_None, project_family) — see _project_family.
     project_totals: dict[tuple[int | None, str], float] = defaultdict(float)
     # One representative raw scoped_label per project_totals key, for redact
@@ -353,6 +359,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     for jsonl, records in session_iter:
         records = pricing.dedup_turns_by_request_id(records)
+        total_spawns += pricing._count_subagent_spawns(records)
         raw_proj_label = redaction._derive_proj_label(jsonl)
         session_id = jsonl.stem[:12]
         if redact and not summary_mode:
@@ -376,6 +383,12 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         for rec in records:
             if rec.get("type") != "assistant":
                 continue
+            # Counted before the usage/since/branch filters below, mirroring
+            # cmd_subagents' corpus_sidechain_turns -- the drift canary needs
+            # every isSidechain turn read, not just the ones this report ends
+            # up pricing or displaying.
+            if bool(rec.get("isSidechain")):
+                total_sidechain_turns += 1
             msg = rec.get("message") or {}
             usage = msg.get("usage")
             if not usage:
@@ -467,6 +480,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                     current_raw_part = current_repr[1] if isinstance(current_repr, tuple) else current_repr
                     if current_repr is None or raw_part < current_raw_part:
                         project_repr_label[project_key] = scoped_label
+
+    pricing._warn_if_subagent_format_drift(total_spawns, total_sidechain_turns)
 
     if since_ts is not None:
         for ordinal, earliest_ts in sorted(root_earliest_ts.items()):

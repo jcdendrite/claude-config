@@ -8,6 +8,8 @@ import sys
 from collections.abc import Sequence
 from datetime import date, timedelta
 
+from transcript_analysis.corpus import SUBAGENT_SUBDIR
+
 _TOKEN_CLASSES: tuple[str, ...] = ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input")
 
 _PRICING_SOURCE_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
@@ -374,6 +376,56 @@ def _log_non_contiguous_merge_decision(request_id: str, record_count: int, *, me
         file=sys.stderr,
     )
     _non_contiguous_merge_notices_logged.add(kind)
+
+
+# Subagent spawn tool_use names, corpus-wide across every command that
+# cross-checks spawns against isSidechain turns read.
+_SPAWN_TOOL_NAMES = ("Agent", "Task")
+
+
+def _count_subagent_spawns(records: list[dict]) -> int:
+    """Count main-thread subagent spawn tool_uses (Agent/Task) across all records.
+
+    Used corpus-wide (ignoring branch filter) as one side of the format-drift
+    cross-check: spawns > 0 with zero isSidechain turns read is the drift signature.
+    Note: isSidechain records (from subagent files) are excluded by design — nested
+    subagent spawns are not counted here.
+    """
+    count = 0
+    for rec in records:
+        if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+            continue
+        for block in ((rec.get("message") or {}).get("content") or []):
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("name") in _SPAWN_TOOL_NAMES
+            ):
+                count += 1
+    return count
+
+
+def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int) -> None:
+    """Emit a stderr warning when the drift signature is detected.
+
+    Drift signature: spawns recorded in the main thread but zero isSidechain
+    assistant turns read after include_subagents merge. Catches both failure
+    modes — the subagents/ path relocating (files never read → 0 turns) and a
+    field rename (files read but the filter matches 0).
+
+    This is the runtime half of the two-layer guard:
+      - Contract test (CI): pins what our code expects from fixtures.
+      - This canary (runtime): validates expectation against live on-disk data.
+    """
+    if total_spawns > 0 and total_sidechain_turns == 0:
+        print(
+            "WARNING: subagent spawns detected in main thread but zero isSidechain "
+            f"assistant turns were read from '{SUBAGENT_SUBDIR}/' subdirectories. "
+            "The Claude Code transcript format may have drifted — check that "
+            f"subagent files still live under <session>/{SUBAGENT_SUBDIR}/*.jsonl "
+            "and that records still carry 'isSidechain': true.",
+            file=sys.stderr,
+        )
 
 
 def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, int]:

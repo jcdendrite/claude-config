@@ -1201,12 +1201,13 @@ class TestCostMultiRootRedaction:
         assert "external-unrelated-secret-clientname" not in str(exc_info.value)
         assert "-home-user-escaped" not in str(exc_info.value)
 
-    def test_no_redact_refused_by_cost_report_itself_even_when_called_directly(self, tmp_path):
+    def test_no_redact_refused_by_cost_report_itself_even_when_called_directly(self, tmp_path, capsys):
         """Defense-in-depth: _cost_report is the function that actually prints
         raw labels when redact is False, so it must refuse the multi-root +
         --no-redact combination itself rather than trusting that
         _resolve_cost_roots already validated it — every test in this class
-        calls _cost_report directly, bypassing that CLI-level boundary."""
+        calls _cost_report directly, bypassing that CLI-level boundary.
+        Refusal happens before any output is printed."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
@@ -1214,6 +1215,7 @@ class TestCostMultiRootRedaction:
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_report(_cost_args(no_redact=True), date(2026, 8, 2), roots=[root_a, root_b])
         assert exc_info.value.code == 2
+        assert capsys.readouterr().out == ""
 
     def test_no_redact_refused_at_cmd_cost_when_config_dir_given(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
@@ -2682,3 +2684,67 @@ class TestCostTrendConfigDir:
             _mod.build_parser().parse_args(["cost-trend", "--no-redact"])
         err = capsys.readouterr().err
         assert "unrecognized arguments" in err
+
+
+# ---------------------------------------------------------------------------
+# format-drift canary (cost side; see TestFormatDriftCanary in
+# test_transcript_analysis.py for the subagents/skill-pair/cache-efficiency
+# siblings)
+# ---------------------------------------------------------------------------
+
+
+class TestCostFormatDriftCanary:
+    def test_drift_warning_also_fires_in_cost(self, fake_projects, capsys):
+        """cmd_cost also emits the drift warning when spawns have no sidechain turns."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_no_warning_in_cost_on_healthy_corpus(self, fake_projects, capsys):
+        """A corpus with no subagent spawns at all draws no drift warning
+        from cmd_cost -- the negative counterpart, so the canary is known to
+        stay silent on ordinary data rather than firing unconditionally."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cost_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
+        """A spawn paired with an actual priced sidechain turn is the true
+        no-drift case and must not warn."""
+        session_id = "sess-side-cost"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        side_rec = _priced("claude-sonnet-5", cache_read=100)
+        side_rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cost_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
+        """The sidechain-turn count in _cost_report happens before the
+        usage-presence check (per that code's own comment), so an unpriced
+        sidechain assistant turn -- message.usage == {}, via _asst's default,
+        never _priced -- must still count toward total_sidechain_turns and
+        keep the canary silent. The priced-sidechain test above cannot catch
+        a regression that moves the count after the usage check, since a
+        priced turn passes either ordering."""
+        session_id = "sess-unpriced-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [
+            _asst("claude-opus-4-7", branch="main", sidechain=True),
+        ])
+        _mod.cmd_cost(_cost_args())
+        assert "WARNING" not in capsys.readouterr().err
