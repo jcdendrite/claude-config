@@ -13,12 +13,10 @@ VALIDATE_HOOK = PLUGIN_ROOT / "hooks" / "validate-migration-filename.sh"
 
 
 def _plugin_env(home: Path) -> dict:
-    """Build the subprocess env with HOME and CLAUDE_PLUGIN_ROOT set."""
-    return {
-        **os.environ,
-        "HOME": str(home),
-        "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
-    }
+    """Build the subprocess env with HOME and CLAUDE_PLUGIN_ROOT set.
+    CLAUDE_CONFIG_DIR isolation is conftest.py's job (autouse
+    _clear_ambient_config_dir) — os.environ is already clean of it here."""
+    return {**os.environ, "HOME": str(home), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}
 
 
 def _place_token(home: Path, basename: str) -> Path:
@@ -95,12 +93,13 @@ class TestTokenDirEmpty:
         # When HOME is empty, token-path.sh produces an empty MIGRATION_TOKEN_DIR.
         # The guard added after sourcing token-path.sh must fail closed (deny)
         # rather than checking [ -f "/<basename>" ] against the root filesystem.
+        env = {**os.environ, "HOME": "", "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)}
         result = subprocess.run(
             [str(VALIDATE_HOOK)],
             input='{"tool_name":"Write","tool_input":{"file_path":"supabase/migrations/20260612120000_add-users.sql"}}',
             capture_output=True,
             text=True,
-            env={**os.environ, "HOME": "", "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+            env=env,
         )
         assert result.returncode == 0, f"Hook must exit 0 even with empty HOME: {result.stderr}"
         import json
@@ -155,7 +154,7 @@ class TestMalformedInput:
             input='{"tool_name":"Write","tool_input":{"file_path":"supabase/migrations/20260612120000_add-users.sql"}}',
             capture_output=True,
             text=True,
-            env={**os.environ, "HOME": str(tmp_path), "CLAUDE_PLUGIN_ROOT": str(empty_plugin_root)},
+            env=_plugin_env(tmp_path) | {"CLAUDE_PLUGIN_ROOT": str(empty_plugin_root)},
         )
         assert result.returncode == 0, f"Hook must exit 0 even on sourcing failure: {result.stderr}"
         import json

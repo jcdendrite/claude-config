@@ -52,7 +52,7 @@ Claude Code without enforcement will claim code is done before tests pass, skip 
 
 A CLAUDE.md instruction says "you should run code-review before committing." A PreToolUse hook says "the commit is denied until code-review ran against this exact diff." This distinction is the core design choice: enforce at the tool-call boundary, not at the prompt layer, because prompt-layer instructions are advisory — the model can disregard them on any change it judges simple enough not to need review.
 
-`claude-config` is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. It also disables a set of bundled Claude Code skills that overlap with its review pipeline or are one-time setup utilities (see [docs/skills.md — Bundled skills disabled by default](docs/skills.md#bundled-skills-disabled-by-default)); stow users can re-enable any of them via `skillOverrides` in `~/.claude/settings.local.json`. `claude-config` ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns `claude-config` systematizes: content-addressed review markers, specialist reviewer routing, and three-tier redaction.
+`claude-config` is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins disabled by default; stow users can enable any of them via `enabledPlugins` in their settings. It also disables a set of bundled Claude Code skills that overlap with its review pipeline or are one-time setup utilities (see the "Bundled skills disabled by default" section of [docs/skills.md](docs/skills.md)); stow users can re-enable any of them via `skillOverrides` in `<config-dir>/settings.local.json` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`). `claude-config` ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns `claude-config` systematizes: content-addressed review markers, specialist reviewer routing, and three-tier redaction.
 
 ## Docs
 
@@ -251,7 +251,7 @@ Configuration options spanning machine-local, project-local, and user-local sett
 
 ### Worktree enforcement
 
-`require-worktree-for-git-writes.sh` denies non-read-only git operations (`commit`, `push`, `rebase`, `reset`, `merge`, `checkout`, etc.) unless the session runs inside a linked git worktree. Read-only commands (`status`, `log`, `diff`, `fetch`, `show`, `blame`, etc.) are always allowed. The hook is opt-in per repo (via a committed `.claude/worktree-required` sentinel) or per machine (via `~/.claude/worktree-required`).
+`require-worktree-for-git-writes.sh` denies non-read-only git operations (`commit`, `push`, `rebase`, `reset`, `merge`, `checkout`, etc.) unless the session runs inside a linked git worktree. Read-only commands (`status`, `log`, `diff`, `fetch`, `show`, `blame`, etc.) are always allowed. The hook is opt-in per repo (via a committed `.claude/worktree-required` sentinel) or per machine (via a `worktree-required` sentinel at `<config-dir>/worktree-required`, checked as a union with the legacy `~/.claude/worktree-required` so a sentinel armed before `CLAUDE_CONFIG_DIR` adoption still activates).
 
 The race it prevents: concurrent Claude Code sessions sharing a working tree can step on each other — one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
 
@@ -302,7 +302,7 @@ To opt out, delete `.claude/worktree-required`.
 If you work across many repos and want enforcement everywhere without adding a marker to each:
 
 ```bash
-touch ~/.claude/worktree-required
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/worktree-required"
 ```
 
 This activates enforcement for every git repo on your machine. Any repo that already has a committed `.claude/worktree-required` is unaffected (it was already enforcing). To exempt a specific repo from machine-level enforcement:
@@ -330,7 +330,7 @@ If the agent ends its turn asking whether you want to review the diff before it 
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
 ```bash
-touch ~/.claude/autonomous-shipping-required
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autonomous-shipping-required"
 ```
 
 To exempt a specific repo:
@@ -358,7 +358,7 @@ The disclosed fields are not neutral — session count, turn count, and per-mode
 If you're running in `auto` permission mode and want to know which commands still trigger an interactive approval dialog — and how often — this opt-in hook captures it. `track-permission-prompts.sh` (a `Notification` hook, matcher `permission_prompt`) appends the redacted payload to a local, gitignored log whenever the sentinel below exists on this machine.
 
 ```bash
-touch ~/.claude/track-permission-prompts
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/track-permission-prompts"
 ```
 
 See [`docs/permission-prompt-tracking.md`](docs/permission-prompt-tracking.md) for the log location/format, redaction coverage, and known limitations.
@@ -370,7 +370,7 @@ See [`docs/permission-prompt-tracking.md`](docs/permission-prompt-tracking.md) f
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
 ```bash
-touch ~/.claude/.error-mode-nudge-enabled
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.error-mode-nudge-enabled"
 ```
 
 See [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) for the fire predicate, log location, and known limitations.
@@ -382,7 +382,7 @@ See [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) for the fire predicat
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
 ```bash
-touch ~/.claude/.cost-ledger-enabled
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.cost-ledger-enabled"
 ```
 
 See [`docs/cost-ledger.md`](docs/cost-ledger.md) for the schema and recording mechanics.
@@ -410,7 +410,7 @@ Moving or renaming this checkout (`mv ~/current-location/claude-config ~/somewhe
 This repo is public — any project codename, organization name, or tracker-ID that lands in a commit or PR description ships to the world. `claude-config` defends against that in three tiers:
 
 1. **Tracker-ID scan** (always on, no setup) — `deny-private-project-refs.sh` blocks `git commit`, `gh pr create`, `gh pr edit`, and mutating `gh api` calls whose content carries `[A-Z]{2,}-\d+` tracker tokens outside an OSS-prefix allowlist.
-2. **Private-projects blocklist** (opt-in) — the same hook reads a user-local `~/.claude/private-projects.md` and blocks any commit or PR whose content matches a listed project name (case-insensitive, whole-word). `install-dev.sh` requires this file to exist before setting up a contributor's `.venv`, so the opt-in isn't silently skippable at first setup.
+2. **Private-projects blocklist** (opt-in) — the same hook reads a user-local `<config-dir>/private-projects.md` and blocks any commit or PR whose content matches a listed project name (case-insensitive, whole-word). `install-dev.sh` requires this file to exist before setting up a contributor's `.venv`, so the opt-in isn't silently skippable at first setup.
 3. **Reviewer discipline** — what the hook can't catch: structural fingerprints (a verbatim RLS policy, a rare column-naming pattern) and private-corpus provenance (a fact known only through exposure to private engagement material, whether quoted, computed, or recalled) are a review responsibility, not a mechanical one.
 
 The repo-root [`CLAUDE.md`](./CLAUDE.md) "Redact private-project-identifying content" rule defines *what* to keep out; the hook is the mechanical enforcement of tiers 1–2. For blocklist setup, file format, match semantics, the deny-message contract, and the fork-contributor path, see [`docs/private-project-redaction.md`](docs/private-project-redaction.md).
@@ -426,7 +426,7 @@ For plan and model requirements, activation, the full hard-floor deny table, the
 
 ### Output preferences
 
-To customize response tone, formatting, and communication style, create `~/.claude/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Output Preferences" section.
+To customize response tone, formatting, and communication style, create `<config-dir>/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Output Preferences" section.
 
 **Cap:** keep it under 50 lines — content beyond that competes with project context for the 200-line CLAUDE.md budget. Avoid duplicating rules already in the global CLAUDE.md — they apply regardless, and duplicate entries waste context budget.
 
@@ -443,7 +443,7 @@ To customize response tone, formatting, and communication style, create `~/.clau
 
 ### Machine-specific overrides
 
-Machine-local Claude Code permissions belong in `~/.claude/settings.local.json` (not tracked).
+Machine-local Claude Code permissions belong in `<config-dir>/settings.local.json` (not tracked).
 
 ## Context management
 
@@ -453,7 +453,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires on session start, after `/clear`, and after compaction. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
 
-2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `~/.claude/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` once context crosses `nudge-handoff-near-context-cap.sh`'s computed threshold — 40% of the model's context window, capped at 360000 tokens (`HANDOFF_NUDGE_ABS_CAP` overrides it) — because cleaner context produces a higher-quality resume file, and every turn spent past a 360000-token prefix on the largest context window is waste. Resume with `resume-context --cwd <worktree-path> ~/.claude/handoffs/<slug>-handoff.md` when the handoff named a worktree, or `resume-context ~/.claude/handoffs/<slug>-handoff.md` alone from the main checkout — either form moves the file to a temp path and launches a new session with it loaded, consumption mechanical rather than dependent on the resuming session remembering to read or delete the file. `--cwd` launches the session in that directory outright, rather than depending on the invoker separately `cd`-ing there first.
+2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `<config-dir>/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` once context crosses `nudge-handoff-near-context-cap.sh`'s computed threshold — 40% of the model's context window, capped at 360000 tokens (`HANDOFF_NUDGE_ABS_CAP` overrides it) — because cleaner context produces a higher-quality resume file, and every turn spent past a 360000-token prefix on the largest context window is waste. Resume with `resume-context --cwd <worktree-path> <config-dir>/handoffs/<slug>-handoff.md` when the handoff named a worktree, or `resume-context <config-dir>/handoffs/<slug>-handoff.md` alone from the main checkout — either form moves the file to a temp path and launches a new session with it loaded, consumption mechanical rather than dependent on the resuming session remembering to read or delete the file. `--cwd` launches the session in that directory outright, rather than depending on the invoker separately `cd`-ing there first.
 3. **Post-compaction authorization boundary restatement (automatic).** `restore-authorization-boundary-on-compact.sh` fires only on `compact`, re-injecting `hookSpecificOutput.additionalContext` that restates the irreversible-action confirmation boundary — advisory, not a gate. Opt out via `~/.claude/.authorization-boundary-disabled`.
 
 ### When to use which

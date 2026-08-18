@@ -30,13 +30,22 @@ def _place_token(home: Path, basename: str) -> Path:
     return token_path
 
 
+def _env(home: Path, **overrides: str) -> dict[str, str]:
+    """Subprocess env with HOME isolated. CLAUDE_CONFIG_DIR isolation is
+    conftest.py's job (autouse _clear_ambient_config_dir) — os.environ is
+    already clean of it here."""
+    env = {**os.environ, "HOME": str(home)}
+    env.update(overrides)
+    return env
+
+
 def _run_consume(payload: dict, home: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(CONSUME_HOOK)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
-        env={**os.environ, "HOME": str(home), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+        env=_env(home, CLAUDE_PLUGIN_ROOT=str(PLUGIN_ROOT)),
         check=False,
     )
 
@@ -108,7 +117,7 @@ class TestTokenConsumption:
             input="not json",
             capture_output=True,
             text=True,
-            env={**os.environ, "HOME": str(tmp_path), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+            env=_env(tmp_path, CLAUDE_PLUGIN_ROOT=str(PLUGIN_ROOT)),
             check=False,
         )
         assert result.returncode == 0, f"Consume hook must exit 0 on malformed input: {result.stderr}"

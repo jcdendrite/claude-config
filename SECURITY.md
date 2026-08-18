@@ -10,7 +10,7 @@ The hook system in `claude-config` protects against three failure modes:
 
 ## Out of scope
 
-The hook system does not protect against a skill or hook script itself being malicious — if an attacker can write to `claude/.claude/`, they can ship a hook that exfiltrates secrets before denying the command. It does not protect against an attacker with write access to `~/.claude/`: the marker directory, session files, and hook scripts all live there, and tampering with any of them can bypass or forge gate checks. It does not protect against a model that quotes sensitive tool output back to the user in chat — the hooks gate tool calls, not what the model says; if Claude reads a secret from an allowed path and repeats it in conversation, no hook fires.
+The hook system does not protect against a skill or hook script itself being malicious — if an attacker can write to `claude/.claude/`, they can ship a hook that exfiltrates secrets before denying the command. It does not protect against an attacker with write access to `<config-dir>` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`): the marker directory, session files, and hook scripts all live there, and tampering with any of them can bypass or forge gate checks. It does not protect against a model that quotes sensitive tool output back to the user in chat — the hooks gate tool calls, not what the model says; if Claude reads a secret from an allowed path and repeats it in conversation, no hook fires.
 
 ## Reporting a vulnerability
 

@@ -455,3 +455,93 @@ class TestConsumeOnlyMode:
             "the symlink's target must not have its permissions altered"
         )
         assert not recorder.exists()
+
+
+class TestLegacyConfigDirFallback:
+    """A continuity file written before this account's handoff/brief recipes
+    honored CLAUDE_CONFIG_DIR may still sit at the legacy $HOME/.claude
+    location; resume-context.sh checks there before giving up. --consume-only
+    is sufficient for all four cases below (no launcher resolution needed,
+    per test_succeeds_with_no_resolvable_launcher_on_path above)."""
+
+    def test_falls_back_to_legacy_location_when_only_there(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile-container"
+        (home / ".claude" / "handoffs").mkdir(parents=True)
+        legacy_src = home / ".claude" / "handoffs" / "foo-handoff.md"
+        legacy_src.write_text("hello handoff\n")
+        requested_src = config_dir / "handoffs" / "foo-handoff.md"
+
+        result = _run(
+            ["--consume-only", str(requested_src)],
+            {
+                "HOME": str(home),
+                "CLAUDE_CONFIG_DIR": str(config_dir),
+                "RESUME_CONTEXT_TMPDIR": str(tmp_path),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert "legacy location" in result.stderr
+        assert not legacy_src.exists()
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+
+    def test_trailing_slash_on_config_dir_does_not_disable_fallback(self, tmp_path: Path) -> None:
+        """Regression test: CONFIG_DIR must strip a trailing slash before use
+        in the case-pattern match, matching _lib_config_dir's ${VAR%/}
+        convention (_lib.sh:114) — otherwise the pattern gains a doubled
+        slash that the single-slash requested path never matches, and the
+        fallback silently no-ops."""
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile-container"
+        (home / ".claude" / "briefs").mkdir(parents=True)
+        legacy_src = home / ".claude" / "briefs" / "foo-task.md"
+        legacy_src.write_text("hello brief\n")
+        requested_src = config_dir / "briefs" / "foo-task.md"
+
+        result = _run(
+            ["--consume-only", str(requested_src)],
+            {
+                "HOME": str(home),
+                "CLAUDE_CONFIG_DIR": str(config_dir) + "/",
+                "RESUME_CONTEXT_TMPDIR": str(tmp_path),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert "legacy location" in result.stderr
+        assert not legacy_src.exists()
+
+    def test_not_found_at_either_location_reports_standard_error(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile-container"
+        home.mkdir()
+        requested_src = config_dir / "handoffs" / "nowhere.md"
+
+        result = _run(
+            ["--consume-only", str(requested_src)],
+            {
+                "HOME": str(home),
+                "CLAUDE_CONFIG_DIR": str(config_dir),
+                "RESUME_CONTEXT_TMPDIR": str(tmp_path),
+            },
+        )
+        assert result.returncode != 0
+        assert "not found" in result.stderr
+        assert "legacy location" not in result.stderr
+
+    def test_no_op_when_config_dir_unset(self, tmp_path: Path, monkeypatch) -> None:
+        """When CLAUDE_CONFIG_DIR resolves to the default $HOME/.claude, the
+        fallback block's own guard (CONFIG_DIR != $HOME/.claude) skips it
+        entirely — there is no separate "legacy" location to fall back to."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        home = tmp_path / "home"
+        home.mkdir()
+        requested_src = home / ".claude" / "handoffs" / "nowhere.md"
+
+        result = _run(
+            ["--consume-only", str(requested_src)],
+            {"HOME": str(home), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert "not found" in result.stderr
+        assert "legacy location" not in result.stderr

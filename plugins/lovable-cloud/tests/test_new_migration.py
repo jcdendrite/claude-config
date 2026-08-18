@@ -12,12 +12,21 @@ PLUGIN_ROOT = WORKTREE_ROOT / "plugins" / "lovable-cloud"
 GENERATOR = PLUGIN_ROOT / "scripts" / "new-migration"
 
 
+def _env(home: Path, **overrides: str) -> dict[str, str]:
+    """Subprocess env with HOME isolated. CLAUDE_CONFIG_DIR isolation is
+    conftest.py's job (autouse _clear_ambient_config_dir) — os.environ is
+    already clean of it here."""
+    env = {**os.environ, "HOME": str(home)}
+    env.update(overrides)
+    return env
+
+
 def _run_generator(slug: str, home: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(GENERATOR), slug],
         capture_output=True,
         text=True,
-        env={**os.environ, "HOME": str(home)},
+        env=_env(home),
     )
 
 
@@ -99,6 +108,44 @@ class TestNewMigrationTokenSideEffect:
             f"Token not written at {token_path}"
         )
 
+    def test_token_written_under_config_dir_when_set(self, tmp_path):
+        """Positive coverage for token-path.sh's MIGRATION_TOKEN_DIR resolving
+        via CLAUDE_CONFIG_DIR when set, mirroring
+        TestMarkerScriptHonorsConfigDir's pattern for marker.sh."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        config_dir.mkdir()
+        result = subprocess.run(
+            [str(GENERATOR), "add co-parent index"],
+            capture_output=True,
+            text=True,
+            env=_env(home, CLAUDE_CONFIG_DIR=str(config_dir)),
+        )
+        assert result.returncode == 0, result.stderr
+        filename = result.stdout.strip()
+        token_path = config_dir / "lovable-cloud" / "migration-tokens" / filename
+        assert token_path.exists(), f"Token not written under CLAUDE_CONFIG_DIR at {token_path}"
+        assert not (_token_dir(home)).exists(), (
+            "Token must not also land under $HOME/.claude when CLAUDE_CONFIG_DIR is set"
+        )
+
+    def test_relative_config_dir_exits_nonzero_writes_no_token(self, tmp_path):
+        """A relative CLAUDE_CONFIG_DIR makes token-path.sh set an empty
+        MIGRATION_TOKEN_DIR — the generator must fail closed (its own error,
+        not a root-path mkdir/touch attempt), matching the guard already
+        present in both hooks for the identical empty-dir condition."""
+        home = tmp_path / "home"
+        home.mkdir()
+        result = subprocess.run(
+            [str(GENERATOR), "add co-parent index"],
+            capture_output=True,
+            text=True,
+            env=_env(home, CLAUDE_CONFIG_DIR="relative-profile"),
+        )
+        assert result.returncode != 0
+        assert "could not resolve the migration-token directory" in result.stderr
+
     def test_same_second_same_slug_double_gen_is_idempotent(self, tmp_path):
         # Two generator calls with the same slug at the same UTC second must
         # produce the same filename and leave exactly one token file — the
@@ -112,11 +159,7 @@ class TestNewMigrationTokenSideEffect:
         fake_date.chmod(0o755)
 
         slug = "idempotent-test"
-        env_with_fake_date = {
-            **os.environ,
-            "HOME": str(tmp_path),
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        }
+        env_with_fake_date = _env(tmp_path, PATH=f"{fake_bin}:{os.environ['PATH']}")
         result1 = subprocess.run(
             [str(GENERATOR), slug], capture_output=True, text=True, env=env_with_fake_date
         )

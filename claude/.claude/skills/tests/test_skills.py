@@ -1576,6 +1576,7 @@ def test_handoff_and_brief_write_recipe_executes_to_durable_path(
     isolated_home = tmp_path / "home"
     isolated_home.mkdir()
     monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
 
     skill_path = _skill_file(skill_name)
     command = extract_skill_command(skill_path, "write-target")
@@ -1585,6 +1586,33 @@ def test_handoff_and_brief_write_recipe_executes_to_durable_path(
     expected_dir = isolated_home / directory.replace("~/", "")
     assert expected_dir.is_dir(), (
         f"{skill_name}/SKILL.md's write-target fixture did not create {expected_dir}"
+    )
+
+
+@pytest.mark.parametrize("skill_name", sorted(_DURABLE_WRITE_TARGETS))
+def test_handoff_and_brief_write_recipe_honors_config_dir_when_set(
+    skill_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Write half of the round trip that
+    test_consumes_handoff_under_config_dir_when_set covers on the read side:
+    with CLAUDE_CONFIG_DIR set, the write-target recipe must create the
+    durable directory under it, not under $HOME/.claude."""
+    isolated_home = tmp_path / "home"
+    isolated_home.mkdir()
+    config_dir = tmp_path / "profile"
+    config_dir.mkdir()
+    monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+
+    skill_path = _skill_file(skill_name)
+    command = extract_skill_command(skill_path, "write-target")
+    run_skill_command(command, cwd=tmp_path, isolated_home=isolated_home)
+
+    directory, _suffix = _DURABLE_WRITE_TARGETS[skill_name]
+    expected_dir = config_dir / directory.replace("~/.claude/", "")
+    assert expected_dir.is_dir(), (
+        f"{skill_name}/SKILL.md's write-target fixture did not honor "
+        f"CLAUDE_CONFIG_DIR — expected {expected_dir}"
     )
 
 
@@ -1607,7 +1635,7 @@ def test_handoff_and_brief_reference_resume_context_literally(skill_name: str) -
     above so a benign copy-edit to this prose can't fail that invariant, and
     vice versa (an SDET review round flagged the two being combined)."""
     body = _skill_file(skill_name).read_text()
-    assert "resume-context ~/.claude/" in body, (
+    assert "resume-context <config-dir>/" in body, (
         f"{skill_name}/SKILL.md must give a literal resume-context invocation, "
         "not just mention the name in passing"
     )
@@ -2140,4 +2168,153 @@ class TestTranscriptAnalysisScopeConfirmationContract:
         assert _SCOPE_CONFIRMATION_SENTENCE in body, (
             "transcript-analysis/SKILL.md is missing its pinned scope-"
             f"confirmation sentence verbatim:\n{_SCOPE_CONFIRMATION_SENTENCE!r}"
+        )
+
+
+# A literal ~/.claude/$HOME/.claude/${HOME}/.claude prefix on a per-account-
+# state path — a state subdirectory, or a log/sentinel this diff migrates —
+# is a functional bug under a non-personal CLAUDE_CONFIG_DIR account, unlike
+# a stowed path (agents/, hooks/, rules/, scripts/, skills/), which resolves
+# identically under every account; the directory alternation mirrors
+# enforce-marker-script-shape.sh:314. worktree-required and
+# autonomous-shipping-required are deliberately excluded — those two sentinels
+# keep a literal ~/.claude mention by design, unioned with the config-dir form
+# rather than migrated (see CLAUDE.md's Shipping section and README's
+# "Worktree enforcement").
+_PER_ACCOUNT_STATE_PATH_RE = re.compile(
+    r"(~|\$HOME|\$\{HOME\})/\.claude/"
+    r"(handoffs/|briefs/|plans/|projects/|sessions/"
+    r"|[^/\s\"'`]*-markers/|\.[^/\s\"'`]*\.d/|output-preferences\.md"
+    r"|pii-patterns\.md|credential-file-guard\.md|credential-value-patterns\.md"
+    r"|data-file-read-guard\.md|private-projects\.md|track-permission-prompts"
+    r"|\.permission-prompt-log\.jsonl"
+    r"|\.error-mode-nudge-enabled|\.error-mode-nudge\.log"
+    r"|\.handoff-nudge-disabled|\.handoff-nudge\.log"
+    r"|\.commit-stall-block-disabled|\.commit-stall-block\.log"
+    r"|\.cost-ledger-enabled|\.consume-durable-continuity-disabled"
+    r"|\.session-title-disabled)"
+)
+
+# The marker triple (settings.json permission rules, hook command strings,
+# and these SKILL.md invocation sites) is deliberately excluded from the
+# contract below — see plan-review/SKILL.md's marker.sh comment for why
+# these six invocation sites stay literal rather than config-dir-aware.
+_MARKER_TRIPLE_SITES = [
+    ("respond-pr", "~/.claude/scripts/marker.sh activate respond-pr"),
+    ("respond-pr", "~/.claude/scripts/marker.sh deactivate respond-pr"),
+    ("plan-review", "~/.claude/scripts/marker.sh activate plan-review"),
+    ("plan-review", "~/.claude/scripts/marker.sh resolve-session-id"),
+    ("plan-review", "~/.claude/scripts/marker.sh deactivate plan-review"),
+    ("plan-review", "~/.claude/scripts/marker.sh write plan-review"),
+    ("ready-for-review", "~/.claude/scripts/marker.sh activate ready-for-review"),
+    ("ready-for-review", "~/.claude/scripts/marker.sh write ready-for-review"),
+    ("ready-for-review", "~/.claude/scripts/marker.sh deactivate ready-for-review"),
+    ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh activate memory-skill"),
+    ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh deactivate memory-skill"),
+    ("code-review", "~/.claude/scripts/marker.sh write code-review"),
+]
+
+
+def _all_agent_md_paths() -> list[Path]:
+    """Every agent body under claude/.claude/agents/ and plugin agents/ dirs —
+    _agent_body() above is by-name only, so a corpus-wide scan needs this."""
+    paths = sorted(_AGENTS_DIR.glob("*.md"))
+    if _PLUGINS_DIR.exists():
+        paths += sorted(_PLUGINS_DIR.glob("*/agents/*.md"))
+    return paths
+
+
+def _strip_yaml_frontmatter(text: str) -> str:
+    """Drop a leading '---'-delimited frontmatter block so a SKILL.md's or
+    agent's deliberately-literal frontmatter `description:` (loads standalone
+    for trigger-matching before any body is read, so a <config-dir>
+    placeholder would have no definition in scope) doesn't false-fail the
+    state-path contract below."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[end + 5 :]
+    return text
+
+
+def _all_doc_paths() -> list[Path]:
+    """Every prose doc file the state-path contract covers: docs/**/*.md,
+    every co-located skill REFERENCES.md, evals/README.md, and the
+    repo-root README/CONTRIBUTING/SECURITY files. docs/reports/** and
+    docs/case-studies/** hold preserved historical records (CLAUDE.md
+    Axis 3) and are excluded, matching the plan's Out of scope list."""
+    repo_root = SKILLS_DIR.parent.parent.parent
+    docs_root = repo_root / "docs"
+    paths = [
+        path
+        for path in sorted(docs_root.glob("**/*.md"))
+        if "reports" not in path.relative_to(docs_root).parts
+        and "case-studies" not in path.relative_to(docs_root).parts
+    ]
+    paths += sorted(SKILLS_DIR.glob("**/REFERENCES.md"))
+    if _PLUGINS_DIR.exists():
+        paths += sorted(_PLUGINS_DIR.glob("*/skills/**/REFERENCES.md"))
+    for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md"):
+        candidate = repo_root / name
+        if candidate.exists():
+            paths.append(candidate)
+    evals_readme = repo_root / "evals" / "README.md"
+    if evals_readme.exists():
+        paths.append(evals_readme)
+    return paths
+
+
+class TestPerAccountStatePathContract:
+    """No SKILL.md body, agent body, prose doc, or claude/.claude/CLAUDE.md
+    may hold a literal ~/.claude (or $HOME/.claude, ${HOME}/.claude)
+    per-account-state path — see
+    .claude/plans/normalize-config-dir-paths.md. Guards the state-path class
+    from drifting back in, including the $HOME-form bypass a bare
+    '~/.claude/' substring check would miss entirely."""
+
+    @pytest.mark.parametrize("skill_md_path", _all_skill_md_paths(), ids=lambda p: str(p))
+    def test_skill_body_has_no_state_path(self, skill_md_path):
+        body = _strip_yaml_frontmatter(skill_md_path.read_text())
+        match = _PER_ACCOUNT_STATE_PATH_RE.search(body)
+        assert match is None, (
+            f"{skill_md_path} contains a hardcoded per-account-state path "
+            f"{match.group(0)!r} — use <config-dir>/... (skill/agent prose) "
+            'or "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/..." (a runnable command)'
+        )
+
+    @pytest.mark.parametrize("agent_md_path", _all_agent_md_paths(), ids=lambda p: str(p))
+    def test_agent_body_has_no_state_path(self, agent_md_path):
+        body = _strip_yaml_frontmatter(agent_md_path.read_text())
+        match = _PER_ACCOUNT_STATE_PATH_RE.search(body)
+        assert match is None, (
+            f"{agent_md_path} contains a hardcoded per-account-state path "
+            f"{match.group(0)!r} — use <config-dir>/..."
+        )
+
+    @pytest.mark.parametrize("doc_path", _all_doc_paths(), ids=lambda p: str(p))
+    def test_doc_has_no_state_path(self, doc_path):
+        body = doc_path.read_text()
+        match = _PER_ACCOUNT_STATE_PATH_RE.search(body)
+        assert match is None, (
+            f"{doc_path} contains a hardcoded per-account-state path "
+            f"{match.group(0)!r} — use <config-dir>/..., with one caveat "
+            "sentence per file defining it"
+        )
+
+    def test_global_claude_md_has_no_state_path(self):
+        body = _GLOBAL_CLAUDE_MD.read_text()
+        match = _PER_ACCOUNT_STATE_PATH_RE.search(body)
+        assert match is None, (
+            f"claude/.claude/CLAUDE.md contains a hardcoded per-account-state "
+            f"path {match.group(0)!r} — use <config-dir>/..."
+        )
+
+    @pytest.mark.parametrize("skill_name,expected_substring", _MARKER_TRIPLE_SITES)
+    def test_marker_triple_site_stays_unmigrated(self, skill_name, expected_substring):
+        assert expected_substring in _skill_body(skill_name), (
+            f"{skill_name}/SKILL.md no longer contains the literal marker.sh "
+            f"invocation {expected_substring!r} — the marker triple "
+            "(settings.json allow-rule + enforce-marker-script-shape.sh's "
+            "anchor + this literal form) must change in lockstep or not at "
+            "all; see plan-review/SKILL.md's marker.sh comment"
         )

@@ -3,7 +3,8 @@ name: brief
 description: Produce a cold-start task briefing at ~/.claude/briefs/<slug>-task.md for a fresh session to pick up known, well-scoped work (abandoned PR, surfaced follow-up, ticket whose scope is settled). Distinct from /handoff, which captures mid-flight session state.
 ---
 
-Write a cold-start task briefing at `~/.claude/briefs/<descriptive-slug>-task.md`
+Write a cold-start task briefing at `<config-dir>/briefs/<descriptive-slug>-task.md`
+(`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`)
 using the structure below. Run the command below before writing — the
 directory is not guaranteed to exist yet. A fresh session — with no memory of
 the originating conversation — must be able to read the file and execute the
@@ -11,7 +12,7 @@ work.
 
 <!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
-mkdir -p ~/.claude/briefs
+mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/briefs"
 ```
 
 ## When to use this vs `/handoff`
@@ -24,19 +25,19 @@ If you are still mid-task and running low on context, use `/handoff`. If the wor
 ## When to use this vs `/plan-it`
 
 - **`/plan-it`** is for the design phase: approach is unsettled, exploration and clarifying questions are needed, and the output (`.claude/plans/<slug>.md`) is reviewed by `/plan-review` before implementation. Committed to the repo.
-- **`/brief`** is for the operational handoff: scope is settled (or the work is mechanical), no design step remains, and the output (`~/.claude/briefs/<slug>-task.md`) tells a fresh session where the work stands so they can pick up execution. Durable until resumed — see "Resume command" below.
+- **`/brief`** is for the operational handoff: scope is settled (or the work is mechanical), no design step remains, and the output (`<config-dir>/briefs/<slug>-task.md`) tells a fresh session where the work stands so they can pick up execution. Durable until resumed — see "Resume command" below.
 
 If `§5 Decisions to make` is filling with open design questions rather than specific items awaiting an answer, write a plan instead.
 
 ## Verify the brief file with Bash, never Read
 
-A `Read` of any `~/.claude/briefs/*-task.md` path consumes the file — verify with a Bash
+A `Read` of any `<config-dir>/briefs/*-task.md` path consumes the file — verify with a Bash
 command (`cat`, `grep`, `sed -n`, `wc -l`) instead. The consume fires from this
 authoring session too, mid-draft, long before any resume: the `Read` returns the
 content, and the file is gone from the canonical path by the next tool call.
 
 If it already happened, that successful `Read` reports the temp path the file
-moved to. `cp` it back to `~/.claude/briefs/<slug>-task.md` before any
+moved to. `cp` it back to `<config-dir>/briefs/<slug>-task.md` before any
 further `Edit`, which still targets the canonical path. A later `Read` of the
 now-empty canonical path reports only that the file does not exist — it does not
 name where the file went.
@@ -93,7 +94,7 @@ Steps from §6 that require explicit in-session confirmation from the engineer b
 Adjacent work that must NOT be bundled into this change. Name the temptation explicitly — refactors in the same area, parallel cleanups, "while we're here" additions — so the reader knows what to leave alone.
 
 ## §7.5 Resume command
-If §3 named a worktree, `resume-context --cwd <worktree path> ~/.claude/briefs/<slug>-task.md`; otherwise (work happened in the main checkout) `resume-context ~/.claude/briefs/<slug>-task.md` alone. `--cwd` makes the launched
+If §3 named a worktree, `resume-context --cwd <worktree path> <config-dir>/briefs/<slug>-task.md`; otherwise (work happened in the main checkout) `resume-context <config-dir>/briefs/<slug>-task.md` alone. `--cwd` makes the launched
 session start in that directory regardless of where the resume command is
 actually run from — do not use a `cd <path> &&` prefix instead, which only
 works if the invoker happens to already be positioned to run it. Moves the
@@ -130,6 +131,7 @@ Before writing the file, verify:
 - Every section §1–§7.5 above is populated
 - No placeholder text ("TBD", "TODO", "fill in later") in any section
 - §7.5 Resume command names the exact file you are about to write
+- §7.5 Resume command's `<config-dir>` and `<slug>` placeholders are both resolved to real values — an unresolved token ships a command that cannot run
 - §4 Current state is objective — facts a fresh session could verify, not editorial
 - §5 Decisions to make lists open questions, not foregone conclusions framed as questions
 - §6 Steps to ship name concrete commands or file edits, not vague verbs

@@ -38,6 +38,16 @@ output_filename="${utc_timestamp}_${sanitized_slug}.sql"
 # shellcheck source=../lib/token-path.sh
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/token-path.sh"
 
+# Guard against an empty MIGRATION_TOKEN_DIR (relative CLAUDE_CONFIG_DIR, or
+# HOME unset) — without this, mkdir/touch below expand against the empty
+# string and land at the filesystem root. Fail closed, matching the same
+# guard in validate-migration-filename.sh and consume-migration-token.sh.
+if [ -z "${MIGRATION_TOKEN_DIR}" ]; then
+  # shellcheck disable=SC2016 # single-quoted on purpose: $HOME here is the literal env var name in the error text, not a value to expand.
+  printf 'Error: could not resolve the migration-token directory (CLAUDE_CONFIG_DIR is set to a relative path, or $HOME is unset/empty).\n' >&2
+  exit 1
+fi
+
 mkdir -p "${MIGRATION_TOKEN_DIR}"
 # Touch is idempotent: if a same-second same-slug double-gen happens,
 # the token file already exists and this is a no-op.

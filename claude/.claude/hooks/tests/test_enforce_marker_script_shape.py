@@ -1075,6 +1075,118 @@ class TestGateReleaseAuthorityFileWrites:
         assert "code-review-markers" in reason
 
 
+class TestGateReleaseAuthorityUnderCustomConfigDir:
+    """The `.claude`-shape arm above assumes marker state always sits under a
+    `.claude` path segment, true for the default $HOME/.claude resolution but
+    not for a CLAUDE_CONFIG_DIR value with none (e.g. an account container
+    under ~/.config/) — marker.sh still resolves and writes there via
+    _lib_config_dir(), so the gate must too, or a no-gate-release agent can
+    forge a passing review marker undetected."""
+
+    @pytest.fixture
+    def custom_config_dir(self, tmp_path):
+        config_dir = tmp_path / "profile-container"
+        (config_dir / "code-review-markers").mkdir(parents=True)
+        return config_dir
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_marker_write_denied_under_config_dir_with_no_dotclaude_segment(
+        self, custom_config_dir, agent_type, tmp_path
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(
+                    str(custom_config_dir / "code-review-markers/deadbeef.session"),
+                    agent_type=agent_type,
+                ),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(custom_config_dir)},
+            )
+            == "deny"
+        )
+
+    def test_main_session_write_still_allowed_under_config_dir_with_no_dotclaude_segment(
+        self, custom_config_dir, tmp_path
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(custom_config_dir / "code-review-markers/deadbeef.session")),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(custom_config_dir)},
+            )
+            == "allow"
+        )
+
+    def test_unrelated_file_write_under_config_dir_not_denied(self, custom_config_dir, tmp_path):
+        """The config-dir-resolved arm must stay shape-scoped the same as the
+        .claude arm — it must not turn every write under the config dir into
+        a gate-release-authority match."""
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(
+                    str(custom_config_dir / "some-unrelated-file.txt"),
+                    agent_type="code-writer",
+                ),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(custom_config_dir)},
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_marker_write_denied_when_config_dir_unresolvable(self, agent_type, tmp_path):
+        """CLAUDE_CONFIG_DIR set to a relative value makes _lib_config_dir()
+        fail — the arm must deny rather than silently skip, matching this
+        file's declared fail-closed posture and the sibling gate hooks that
+        deny on the identical resolver failure."""
+        home = tmp_path / "home"
+        home.mkdir()
+        target = tmp_path / "somewhere" / "code-review-markers" / "deadbeef.session"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(target), agent_type=agent_type),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": "relative-profile"},
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_marker_write_denied_when_config_dir_is_a_symlink(self, agent_type, tmp_path):
+        """_lib_config_dir() returns CLAUDE_CONFIG_DIR verbatim, not
+        realpath-normalized — a symlink/stow-fold alias of a config dir with
+        no `.claude` segment must not evade this arm the way it would evade
+        the .claude-shape arm above."""
+        home = tmp_path / "home"
+        home.mkdir()
+        physical = tmp_path / "physical-profile"
+        (physical / "code-review-markers").mkdir(parents=True)
+        symlinked = tmp_path / "symlinked-profile"
+        symlinked.symlink_to(physical)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(
+                    str(physical / "code-review-markers/deadbeef.session"),
+                    agent_type=agent_type,
+                ),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(symlinked)},
+            )
+            == "deny"
+        )
+
+
 class TestPrescriptionAllowlistAlignment:
     """Every tilde-form marker.sh (subcommand, argument) shape the hook
     accepts must have a matching permissions.allow entry, except a fixed,

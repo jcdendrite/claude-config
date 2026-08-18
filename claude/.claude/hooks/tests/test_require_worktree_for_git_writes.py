@@ -972,6 +972,30 @@ class TestMachineMarkerUnderConfigDir:
             == "deny"
         )
 
+    def test_config_dir_marker_plus_optout_allows(self, repo_with_optout, isolated_home, tmp_path):
+        """_lib.sh:629's config-dir-branch opt-out is a genuinely distinct
+        code path from the legacy branch's opt-out at :633-634 — a
+        config-dir-resolved marker combined with .claude/worktree-optout
+        must still allow, not just enforce (this class's other tests) or
+        allow via the legacy-marker branch (TestMachineLevelMarker). Pairs
+        with test_machine_marker_under_config_dir_enforces above: that test
+        proves config-dir marker detection itself works (no opt-out, denies);
+        this one isolates the opt-out short-circuit on top of it — neither
+        test alone distinguishes "opt-out worked" from "marker detection
+        silently broke," but the pair together does."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "worktree-required").write_text("# sentinel\n")
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo_with_optout,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
 
 def _lock_worktree(worktree, reason: str) -> None:
     """Fabricate a `git worktree lock` state on `worktree` with an arbitrary

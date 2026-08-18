@@ -3,7 +3,7 @@
 ## Activation
 
 ```bash
-touch ~/.claude/autonomous-shipping-required
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autonomous-shipping-required"
 ```
 
 `./install.sh` now offers this interactively on every run (see [`install.sh` machine-level opt-ins](../README.md#autonomous-shipping)) — the command above is the non-interactive/scripted alternative. A repo cannot grant this by committing anything; only this machine-level file can. To exempt one repo while the machine-level sentinel stays on: `mkdir -p .claude && touch .claude/autonomous-shipping-optout`.
@@ -25,16 +25,16 @@ The `reason` text names the next step explicitly: `/code-review` → commit (pat
 
 ## How to disable
 
-**Mid-session:** press `Esc` to interrupt the current turn before the hook fires, or run `touch ~/.claude/.commit-stall-block-disabled` via the `!` shell escape — this kill switch is always effective regardless of the sentinel state and needs no repo change:
+**Mid-session:** press `Esc` to interrupt the current turn before the hook fires, or run `touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.commit-stall-block-disabled"` via the `!` shell escape — this kill switch is always effective regardless of the sentinel state and needs no repo change:
 
 ```bash
-! touch ~/.claude/.commit-stall-block-disabled
+! touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.commit-stall-block-disabled"
 ```
 
 Remove it to re-enable:
 
 ```bash
-! rm ~/.claude/.commit-stall-block-disabled
+! rm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.commit-stall-block-disabled"
 ```
 
 **Per repo, while the machine-level sentinel stays on:**
@@ -43,7 +43,7 @@ Remove it to re-enable:
 mkdir -p .claude && touch .claude/autonomous-shipping-optout
 ```
 
-**Everywhere:** remove the machine-level sentinel itself (`rm ~/.claude/autonomous-shipping-required`).
+**Everywhere:** remove the machine-level sentinel itself (`rm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autonomous-shipping-required"`).
 
 ## Fire predicate and the exclusion-window tradeoff
 
@@ -54,7 +54,7 @@ The fire and exclusion regexes both scan only the **final sentence** of the last
 
 ## Log location
 
-The hook appends one line per significant event to `~/.claude/.commit-stall-block.log`:
+The hook appends one line per significant event to `<config-dir>/.commit-stall-block.log` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`):
 
 | Line prefix | Meaning |
 |---|---|
@@ -62,7 +62,7 @@ The hook appends one line per significant event to `~/.claude/.commit-stall-bloc
 | `phrasing-drift session=<id> prompt=<id>` | The final sentence matched the permission-verb half of the fire pattern (`want me to`, `should I`, etc.) but not the object half (`commit`, `push`, `open a PR`) — the only signal that catches a future rewording of the stall without logging on nearly every non-matching turn |
 | `schema-drift session=<id> field=prompt_id` | `prompt_id` was absent from the Stop payload |
 
-The log is append-only and not rotated automatically. Trim it periodically if disk space is a concern: `> ~/.claude/.commit-stall-block.log`.
+The log is append-only and not rotated automatically. Trim it periodically if disk space is a concern: `> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.commit-stall-block.log"`.
 
 ## Known limitations
 

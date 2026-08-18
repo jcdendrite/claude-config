@@ -30,7 +30,7 @@ Your dispatch prompt gives you:
   weaken the blindness property above.
 - **`findings_path`** — see Output format.
 
-You are given the invocation list as input **so that you do not read session transcripts yourself.** This is an instruction about your task, not a sandbox — nothing stops your tools from reading `~/.claude/projects/**`. Reading them is simply not your job: the list already tells you what was invoked, and the whole design depends on you staying blind to the deviating session's reasoning.
+You are given the invocation list as input **so that you do not read session transcripts yourself.** This is an instruction about your task, not a sandbox — nothing stops your tools from reading `<config-dir>/projects/**` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`). Reading them is simply not your job: the list already tells you what was invoked, and the whole design depends on you staying blind to the deviating session's reasoning.
 
 ## Out of scope — do not evaluate these
 

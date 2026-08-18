@@ -109,7 +109,7 @@ _lib_parse_tool_input_or_deny "Blocked by <gate-name> gate: could not parse tool
 
 After the helper call, `INPUT`, `TOOL_NAME`, and `COMMAND` are set as globals. Hooks that perform **post-validation** extracts from `$INPUT` (e.g. `.session_id`, `.tool_input.file_path`) still need `// empty` defaults and explicit presence checks for required fields — the helper validates parse-shape, not semantic completeness.
 
-**Fail-open** when the gate is advisory and absence of input is normal: if `~/.claude/private-projects.md` is missing, allow normally (`deny-private-project-refs.sh:259–260`).
+**Fail-open** when the gate is advisory and absence of input is normal: if `<config-dir>/private-projects.md` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) is missing, allow normally (`deny-private-project-refs.sh:259–260`).
 
 State the chosen posture in the script header. Reviewers shouldn't have to re-derive it from the code.
 
@@ -129,7 +129,7 @@ Flipping a marker from `gate` to `informational`, or from either to `turn-gate`,
 Two distinct extension surfaces — don't conflate them:
 
 - **`OSS_ALLOWLIST` in the committed script** (`deny-private-project-refs.sh:151`): open-source and standards-body references only. Adding a private identifier here commits it to a public repo — exactly the leak the hook prevents.
-- **`~/.claude/private-projects.md`**: private identifiers, user-local, never committed. Users who need to blocklist private project names use this path.
+- **`<config-dir>/private-projects.md`**: private identifiers, user-local, never committed. Users who need to blocklist private project names use this path.
 
 Prefer named variables over magic strings buried in a regex; future contributors need a clear place to extend and a clear signal about which surface is appropriate.
 

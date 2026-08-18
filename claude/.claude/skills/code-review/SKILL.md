@@ -171,7 +171,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 For `.claude/skills/**/SKILL.md` review, invoke `skill-review`. For `claude/.claude/agents/*.md` and `plugins/*/agents/*.md` review, invoke `agent-review`. Each owns frontmatter contract, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions for its file type — do not assert behavioral equivalence on prose compressions yourself; that audit belongs to the dispatched skill.
 
-For `CLAUDE.md`, `AGENTS.md`, and `~/.claude/projects/*/memory/` review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), altitude, duplication, length cap, and behavior test for instruction and memory files.
+For `CLAUDE.md`, `AGENTS.md`, and `<config-dir>/projects/*/memory/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), altitude, duplication, length cap, and behavior test for instruction and memory files.
 
 35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
@@ -389,7 +389,7 @@ If the review is **clean** (no blockers, no unresolved critical findings, and yo
 ~/.claude/scripts/marker.sh write code-review
 ```
 
-This writes the hash of the currently staged diff into `~/.claude/code-review-markers/<repo-hash>.<session-id>`. The pre-commit hook recomputes the staged-diff hash and allows the commit when any marker under this repo-hash holds that value — the stored hash is the authorization, so a review still covering the staged state counts even from another session. The session id in the filename only prevents two parallel sessions in the same worktree from overwriting each other's markers. Re-staging any change invalidates the marker automatically.
+This writes the hash of the currently staged diff into `<config-dir>/code-review-markers/<repo-hash>.<session-id>`. The pre-commit hook recomputes the staged-diff hash and allows the commit when any marker under this repo-hash holds that value — the stored hash is the authorization, so a review still covering the staged state counts even from another session. The session id in the filename only prevents two parallel sessions in the same worktree from overwriting each other's markers. Re-staging any change invalidates the marker automatically.
 
 Run the command standalone, or chained only as `marker.sh write code-review && git commit …` — the invocation-shape gate denies every other chain tail. If it fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
 

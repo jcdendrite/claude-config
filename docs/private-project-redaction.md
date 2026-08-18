@@ -20,14 +20,15 @@ enforcement. For the high-level three-tier overview, see the
    for shapes that can identify a specific machine, person, or private
    project without naming it directly — see "The six structural detectors"
    below.
-3. **Private-projects blocklist (opt-in).** Reads `~/.claude/private-projects.md`
+3. **Private-projects blocklist (opt-in).** Reads `<config-dir>/private-projects.md`
+   (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`)
    at hook runtime and blocks commits/PRs whose content contains any
    non-comment, non-blank line from the file as a case-insensitive whole-word
    match.
 
 ## The six structural detectors
 
-Unlike the blocklist, these run unconditionally — no `~/.claude/private-projects.md`
+Unlike the blocklist, these run unconditionally — no `<config-dir>/private-projects.md`
 setup required. Each is checked independently, so the deny message names
 which one fired. Regexes live in `_lib.sh` as `_LIB_IPV4_LITERAL_REGEX` and
 its five siblings, shared with any future consumer that needs the same
@@ -66,7 +67,7 @@ silently skippable.
 # Create the file with a header pointing at this doc for usage
 # rules (the hook ignores `#` lines, so the header doesn't affect
 # matching):
-cat > ~/.claude/private-projects.md <<'EOF'
+cat > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/private-projects.md" <<'EOF'
 # Project names blocked from commits / PR titles / PR bodies in
 # claude-config (and forks). Match semantics + what to put in this
 # file: see docs/private-project-redaction.md in the claude-config
@@ -75,8 +76,8 @@ cat > ~/.claude/private-projects.md <<'EOF'
 EOF
 
 # Append your project names, one per line:
-echo "Acme Corp" >> ~/.claude/private-projects.md
-echo "Project Bluebird" >> ~/.claude/private-projects.md
+echo "Acme Corp" >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/private-projects.md"
+echo "Project Bluebird" >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/private-projects.md"
 ```
 
 ## File format
@@ -132,7 +133,7 @@ reviewer discipline instead of mechanical match.
 
 A committed list of private-project names in this public repo would itself be
 the leak — it would hardcode in cleartext the exact strings the rule prevents
-from shipping. The file lives at `~/.claude/private-projects.md` directly,
+from shipping. The file lives at `<config-dir>/private-projects.md` directly,
 **not** inside `claude-config/claude/.claude/` (which `stow` symlinks into
 `$HOME/`). Creating it in the wrong place risks accidental commit; the
 repo-root `.gitignore` has a belt-and-suspenders entry for
@@ -143,7 +144,7 @@ repo-root `.gitignore` has a belt-and-suspenders entry for
 When the blocklist scan blocks a commit or PR, the deny message names each
 matched blocklist entry and quotes the offending line(s) from the staged
 content. The matched token is the user's own private-project name, already in
-the staged content and in `~/.claude/private-projects.md`; naming it in the
+the staged content and in `<config-dir>/private-projects.md`; naming it in the
 deny discloses it to no new party, while letting the agent locate and remove it
 in one pass rather than bisecting the diff. The tracker-ID scan similarly names
 matched tokens.
@@ -203,6 +204,6 @@ flags the `gh api` scan already resolves.
 
 Forks of `claude-config` inherit the same hook (the scoping check passes for
 any `claude-config` substring in the origin URL). A fork user can drop their
-own `~/.claude/private-projects.md` and contribute back without their project
+own `<config-dir>/private-projects.md` and contribute back without their project
 names ever ending up in a PR they open against the upstream. `install-dev.sh`
 requires that file to exist before it will set up a contributor's `.venv`.

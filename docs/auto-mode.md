@@ -112,8 +112,9 @@ These rules apply in all permission modes, not only auto mode.
 ## What to put in `settings.local.json`
 
 The classifier trusts only the working repo and its configured remotes by
-default. Add `autoMode.environment` to `~/.claude/settings.local.json`
-(gitignored) to declare which infrastructure is yours, reducing false positives
+default. Add `autoMode.environment` to `<config-dir>/settings.local.json`
+(`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`;
+gitignored) to declare which infrastructure is yours, reducing false positives
 on routine operations:
 
 ```json

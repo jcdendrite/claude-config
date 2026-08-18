@@ -54,6 +54,8 @@
 #   root; it performs no directory listing or file-existence check of its
 #   own, so it stays truthful post-reboot (an empty glob then correctly
 #   reads as "nothing recoverable").
+# - The legacy-location fallback (below) prints the resolved legacy path to
+#   stderr on use — same sensitivity class as the not-found hint above.
 #
 # Known limitations:
 # - Shell *aliases* for `claude` are not visible here (aliases aren't
@@ -157,6 +159,23 @@ fi
 # GNU-only extension relied on here. Hoisted above the not-found check so
 # both the not-found hint and the move below share one definition.
 TMPDIR_ROOT="${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}"
+
+# Also check the legacy $HOME/.claude path before giving up, mirroring this
+# repo's "union, not swap" guard-config fallbacks. Trailing slash stripped
+# to match _lib_config_dir's ${VAR%/} convention (_lib.sh:114).
+CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CONFIG_DIR="${CONFIG_DIR%/}"
+if [ ! -f "$SRC" ] && [ "$CONFIG_DIR" != "$HOME/.claude" ]; then
+  case "$SRC" in
+    "$CONFIG_DIR"/handoffs/*|"$CONFIG_DIR"/briefs/*)
+      LEGACY_SRC="$HOME/.claude${SRC#"$CONFIG_DIR"}"
+      if [ -f "$LEGACY_SRC" ]; then
+        printf 'resume-context.sh: not found under %s; found it at the legacy location instead: %s\n' "$CONFIG_DIR" "$LEGACY_SRC" >&2
+        SRC="$LEGACY_SRC"
+      fi
+      ;;
+  esac
+fi
 
 if [ ! -f "$SRC" ]; then
   printf 'resume-context.sh: source file not found: %s\n' "$SRC" >&2

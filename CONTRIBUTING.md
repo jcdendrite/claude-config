@@ -23,7 +23,7 @@ See [Worktree enforcement in the README](./README.md#worktree-enforcement) for t
 A few advisory hooks are opt-in and dormant until a contributor explicitly arms them. `nudge-error-mode-analysis.sh` watches for accumulated in-session friction (hook denials, failed test runs, corrections) and suggests running `/error-mode-analysis` once a backtested threshold is crossed:
 
 ```bash
-touch ~/.claude/.error-mode-nudge-enabled
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.error-mode-nudge-enabled"
 ```
 
 See [`docs/error-mode-nudge.md`](./docs/error-mode-nudge.md) for what it does, how to disable it again, and known limitations.

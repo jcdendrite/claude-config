@@ -27,7 +27,7 @@ as "has no canonical principle behind it," which is a different claim from
 
 **Why ROUTING.md exists:** The 200-line skill ceiling is a hard constraint enforced by `check-skill-length.sh`. The Reviewer roles table, Reconciliation logic, and Item ownership table together account for ~83 lines — extracting them to a load-on-demand file via a Read directive was the primary lever for getting SKILL.md under the ceiling without dropping behavioral content.
 
-**The pattern:** SKILL.md's Reviewer routing section contains a single unconditional directive: `Read ~/.claude/skills/plan-review/ROUTING.md before any spawn decision.` All spawn criteria — including the always-spawn rules for ciso-reviewer and staff-product-engineer — live exclusively in ROUTING.md. The model reads ROUTING.md on demand before making any spawn decision.
+**The pattern:** SKILL.md's Reviewer routing section contains a single unconditional directive: `Read ${CLAUDE_SKILL_DIR}/ROUTING.md before any spawn decision.` All spawn criteria — including the always-spawn rules for ciso-reviewer and staff-product-engineer — live exclusively in ROUTING.md. The model reads ROUTING.md on demand before making any spawn decision.
 
 ## Reconciliation discriminator
 
@@ -93,8 +93,8 @@ Keep a paragraph here per tripwire. When Step 4 gains a rule and this section do
 
 Two hooks mechanically enforce ROUTING.md consultation during plan-review:
 
-- **`log-routing-read.sh`** (PostToolUse on Read): writes `~/.claude/.plan-review-routing-read.d/$SESSION_ID` when ROUTING.md is read during an active plan-review session. Observation-only; always exits 0.
-- **`require-routing-read.sh`** (PreToolUse on Agent): denies sub-agent spawning if no fresh (<60 min) routing-read marker exists for the session. Only fires when `~/.claude/.plan-review-active.d/$SESSION_ID` is present.
+- **`log-routing-read.sh`** (PostToolUse on Read): writes `<config-dir>/.plan-review-routing-read.d/$SESSION_ID` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) when ROUTING.md is read during an active plan-review session. Observation-only; always exits 0.
+- **`require-routing-read.sh`** (PreToolUse on Agent): denies sub-agent spawning if no fresh (<60 min) routing-read marker exists for the session. Only fires when `<config-dir>/.plan-review-active.d/$SESSION_ID` is present.
 
 The output format also requires listing spawned agents with their checklist item IDs (from ROUTING.md's Item ownership table). Item-to-agent mappings only exist in ROUTING.md, so correct attribution requires consulting the table — making the rationale a de-facto smoke test on every plan-review run.
 
