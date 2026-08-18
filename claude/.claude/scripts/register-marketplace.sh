@@ -26,7 +26,29 @@ if [ ! -f "$REPO_DIR/.claude-plugin/marketplace.json" ]; then
   exit 1
 fi
 
-SETTINGS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+# Sourced below the marketplace.json guard, never above it: a misresolved
+# $resolved must hit that guard's explanatory error rather than execute an
+# _lib.sh out of an unverified directory.
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname -- "$resolved")/../hooks/_lib.sh"
+
+# Fail closed: an unresolvable config dir must abort rather than build a
+# cwd-dependent or root-anchored $SETTINGS_FILE.
+# Captured as a status, never an inline "$(_lib_config_dir)/settings.json" —
+# set -e does not catch a nested command substitution that fails.
+# shellcheck disable=SC2016 # both messages are single-quoted for literal
+# display text: $HOME and $CLAUDE_CONFIG_DIR name the env vars, not their values.
+CONFIG_DIR=$(_lib_config_dir) || {
+  # _lib_config_dir folds its two failure causes into one status, so re-test
+  # which one fired — they have different fixes.
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    echo '[register-marketplace] error: CLAUDE_CONFIG_DIR is set to a relative path, which names a different directory per invocation cwd. Set it to an absolute path.' >&2
+  else
+    echo '[register-marketplace] error: $HOME is unset or empty and CLAUDE_CONFIG_DIR is not set, so no config directory can be resolved.' >&2
+  fi
+  exit 1
+}
+SETTINGS_FILE="$CONFIG_DIR/settings.json"
 if [ ! -f "$SETTINGS_FILE" ]; then
   echo "[register-marketplace] $SETTINGS_FILE not found — nothing to register for this profile."
   exit 0
