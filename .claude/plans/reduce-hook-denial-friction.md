@@ -116,15 +116,43 @@ Givens:
   record the assembled request
   (`.claude/plans/cost-attribution-integrity.md:232-235`).
 
-Row 1 [mechanism]: disposable cost script, not a committed subcommand —
-anchors: root — a one-time prioritization input needs no permanent
-surface; the two lighter alternatives to a new `review-trace --cost` flag
-are (a) reusing `friction-count`, rejected because it is a single-file,
-hook-driven, unweighted composite with no corpus aggregation or dollar
-dimension (`transcript-analysis.py:8706-8729`), and (b) a standalone
-subcommand, rejected because it duplicates multi-root resolution,
-redaction, and pricing plumbing — the same reasoning PR #658 used
-(`.claude/plans/cost-attribution-integrity.md:130-133`).
+Row 1 [mechanism]: a committed `--cost` flag on `review-trace` — anchors:
+root — denial cost needs re-measuring after every gate change, so the
+instrument is durable; a flag on the subcommand that already owns the
+event walk, bucket taxonomy, multi-root resolution, and scope header is
+the lightest form that survives. The two alternatives both cost more: a
+standalone `deny-cost` subcommand duplicates all four
+(`.claude/plans/cost-attribution-integrity.md:130-133`), and extending
+`friction-count` does not fit its single-transcript, unweighted,
+dollar-less shape (`transcript-analysis.py:8706-8729`).
+Row 1a [assumption]: the shared walk feeds `cost-ledger --record`'s weekly
+`denials` column, and only the subagent-scope half of that coupling can
+move the figure — `hook_counts` is dedup-invariant by construction,
+because denial detection reads only `attachment`/`user` records while
+`dedup_turns_by_request_id` merges consecutive *assistant* records and
+passes everything else through; widening `include_subagents` would add
+denial events and does move it
+[verified: `_review_trace_session_events` at transcript-analysis.py:1444
+feeds `_compute_deny_summary_data` at :1670,1696, consumed at :1808 and
+:7914 and nowhere else; detection at :1552-1650; unconditional increment
+at :1734; `dedup_turns_by_request_id` contract at pricing.py:160-216;
+`review-trace`'s scope call passes no `include_subagents`, unlike `cost`
+at :4169] — anchors: row1
+Row 1b [assumption]: the residual dedup risk is timestamp attribution, not
+counts — merging shifts a turn's effective timestamp to its first block's,
+which can move `--since`/`--until` boundary inclusion for the command-shape
+cross-tab, never for `hook_counts` [verified: same pricing.py contract] —
+anchors: row1a
+Row 1c [assumption]: `cost-ledger.md` is per-machine and untracked — it
+resolves under `config_dir()`, not the repo, so the drift risk is one
+operator comparing old rows against freshly recomputed ones, not a shared
+artifact other engineers see contradicted
+[verified: `_cost_ledger_path` at transcript-analysis.py:7333-7342,
+`config_dir()` at _config_dir.py:22-30; the tracked `docs/cost-ledger.md`
+is schema documentation only] — anchors: row1a
+Row 1d [assumption]: durability is the engineer's call, not a derived
+one — hooks are essential harness infrastructure and this measurement will
+be run again [engineer-verified] — anchors: row1
 Row 2 [mechanism]: per-hook fixes, no shared parser — anchors: root —
 each fix is local to a parser or regex that already exists; the heavier
 shared-tokenizer option is rejected in Approach above.
@@ -214,19 +242,69 @@ Two deliverables, both prerequisites for every item below.
 denials to one of the five dispositions. This is what makes the plan's
 coverage claim checkable.
 
-**Rank by cost.** A disposable script (scratchpad, not committed) imports
-`_price_turn`, `dedup_turns_by_request_id`
-(`transcript_analysis/pricing.py:314-356,160-216`), `hook_denial_key` and
-`_denial_hook_label` (`transcript-analysis.py:1073-1101,1266-1288`), and
-prices each denial as the blocked call's assistant-turn `output_tokens`
-plus the next assistant turn's `output_tokens`, grouped by
-`_denial_hook_label`. It must call `dedup_turns_by_request_id` first —
-`_review_trace_session_events` does not, and `output_tokens` reaches its
-billed value only on a multi-block response's last record.
+**Rank by cost — as a durable instrument, not a throwaway.** Hooks are
+load-bearing in this harness and their denial profile will need
+re-measuring after each item lands and on every future change to a gate,
+so this ships as a committed `--cost` flag on `review-trace` rather than a
+scratchpad script. It prices each denial as the blocked call's
+assistant-turn `output_tokens` plus the next assistant turn's
+`output_tokens`, grouped by `_denial_hook_label`, reusing `_price_turn`
+and `dedup_turns_by_request_id`
+(`transcript_analysis/pricing.py:314-356,160-216`) and `hook_denial_key`
+(`transcript-analysis.py:1073-1101`).
+
+A flag on `review-trace` is the lightest durable option: it already owns
+the event walk, the denial-bucket taxonomy, multi-root resolution, and the
+scope header. A standalone `deny-cost` subcommand would duplicate all four
+— the reasoning PR #658 used to reject the same shape
+(`.claude/plans/cost-attribution-integrity.md:130-133`). Extending
+`friction-count` does not fit: it is a single-transcript, hook-driven,
+unweighted composite with no corpus aggregation and no dollar dimension
+(`transcript-analysis.py:8706-8729`).
+
+**The flag must not change what the shared walk emits.**
+`_review_trace_session_events` (`:1444`) feeds `_compute_deny_summary_data`
+(`:1670`), consumed at `:1808` and by `cost-ledger --record`'s weekly
+`denials` column (`:7914`) — and nowhere else. That ledger is per-machine
+and untracked (`_cost_ledger_path`, `:7333-7342`), so the exposure is one
+operator's own history going internally inconsistent, not a shared
+artifact. Two consequences:
+
+- `dedup_turns_by_request_id` is applied **inside the cost accumulation
+  only**, never to the shared walk. It is required there because
+  `output_tokens` reaches its billed value only on a multi-block
+  response's last record. It is kept out of the walk not to protect the
+  denial count — that is dedup-invariant by construction, since detection
+  reads `attachment`/`user` records and dedup merges only consecutive
+  assistant ones — but because merging shifts a turn's effective timestamp
+  to its first block's, which can move `--since`/`--until` boundary
+  inclusion for the command-shape cross-tab.
+- The walk runs without `include_subagents`, unlike `cost` (`:4169`), so
+  sidechain denials are invisible. `--cost` reports main-thread denials
+  only. What share of denials that omits is **unknown, not negligible** —
+  dispatched reviewers and `code-writer` run Bash, Edit, and Write against
+  the same hooks — so the output states it as an unmeasured gap rather
+  than a minor caveat. Widening the scope moves `--deny-summary` and the
+  ledger column with it, so it is a separate decision.
 
 Carried context occupancy is reported as a separately-labelled estimate
 priced from the denial text's own size, never folded into the attributed
 figure — per the ledger's third given.
+
+Phase 0 was already a prerequisite for the others' start order, so this
+adds no new dependency — but it does lengthen the critical path, since the
+prerequisite now carries a full review-and-merge cycle instead of a
+scratchpad run. That is the cost of the instrument being durable.
+
+Because this adds committed surface, Phase 0 is its own PR: the flag, its
+tests in `claude/.claude/scripts/tests/test_transcript_analysis.py`, its
+entry in `docs/transcript-analysis.md`'s per-subcommand section (`:385`),
+and `docs/transcript-analysis-architecture.md`, which carries its own
+conformance test (`test_transcript_analysis_architecture_doc.py`). The
+publish-safety caveat is inherited, not waived: `review-trace` output is
+not publish-safe under the default machine-wide scope
+(`docs/transcript-analysis.md:17`), and a per-bucket dollar view does not
+change that.
 
 **Stop rule.** Compute the denominator with
 `python3 ~/.claude/scripts/transcript-analysis.py cost --since 31d`. Note
@@ -421,11 +499,17 @@ block each other on this signal.
 ## Critical files
 
 Create:
-- Phase 0's script — scratchpad only, never committed. It carries both the
-  cost ranking and the one-time real-corpus replay: each recovered denied
-  command run against the current hook to confirm the classification is
-  complete, and against a local prototype of the fix to confirm the
-  denial would have been eliminated.
+- `review-trace --cost` (Phase 0), committed, with its tests and docs —
+  see Phase 0 for why it is a flag rather than a script or a new
+  subcommand, and for the constraint that it must not alter the shared
+  walk.
+- Phase 0's **replay** harness — scratchpad only, never committed, and
+  distinct from the cost flag. It runs each recovered denied command
+  against the current hook to confirm the classification is complete, and
+  against a local prototype of each fix to confirm the denial would have
+  been eliminated. This one stays out of the repo because its inputs are
+  real command text; the cost flag reads transcripts and emits only
+  aggregates, so it carries no such constraint.
 
 No real command text lands in the repo, in any form. Sanitizing the
 recovered commands into committed fixtures was the alternative considered
@@ -452,6 +536,7 @@ Modify (one PR per item):
 - `claude/.claude/hooks/deny-pii-in-commits.sh` + `tests/test_deny_pii_in_commits.py`
 - `claude/.claude/hooks/deny-network-installs.sh` + `tests/test_deny_network_installs.py`
 - `claude/.claude/skills/plan-review/SKILL.md`, `claude/.claude/hooks/require-routing-read.sh` + `tests/test_require_plan_review.py`, `tests/test_require_routing_read.py`
+- `claude/.claude/scripts/transcript-analysis.py` (Phase 0's `--cost` flag) + `scripts/tests/test_transcript_analysis.py`; `docs/transcript-analysis.md`, `docs/transcript-analysis-architecture.md`
 - `docs/hooks.md`, `docs/private-project-redaction.md`, `docs/cost-levers-considered.md`
 
 **Reuse opportunities.** `_price_turn`, `_token_counts`,
@@ -502,6 +587,12 @@ days. Verification is therefore:
      all three detectors passes every other test while reopening exactly
      the leak the split exists to prevent.
    - Item D: one test per enumerated ambiguous heredoc form.
+   - Phase 0: a regression test asserting `--deny-summary`'s output is
+     unchanged by the presence of the `--cost` flag, over the same fixture
+     corpus — covering the command-shape cross-tab, not just
+     `hook_counts`, since per Row 1b that cross-tab is the part a
+     timestamp shift can actually move. That is the only mechanical guard
+     on Row 1a, and the failure it catches is silent.
 3. **Deferred re-measure** per item G.
 
 Also required: `claude-hook-review` on every `.sh` and parser change;
