@@ -90,13 +90,14 @@ later investigation without pausing to ask:
 | # | Mechanism | Justification | Anchors |
 |---|---|---|---|
 | M1 | New `pr-cost` subcommand, single local pass, grouping by attributed branch | No subcommand emits dollars by branch: `buckets` gives branch × model turn *counts* only; `cost --branches` filters to a supplied list rather than decomposing. Lighter primitives rejected below. | root |
-| M2 | Append-only ledger at `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv`, outside the repo, with the weekly ledger's git-tree refusal | The only way a row outlives the deletion window; keeping the default outside the repo means pointing the tool at a client repo later cannot leak client branch names into a public tree. | root, G1 |
+| M2 | Append-only ledger at `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv`, outside the repo, keyed `(repo, pr_number, machine)`, with the weekly ledger's git-tree refusal | The only way a row outlives the deletion window; keeping the default outside the repo means pointing the tool at a client repo later cannot leak client branch names into a public tree. GitHub PR numbers are unique only per-repo, so `repo` joins the key from row one — needed the moment this ledger is ever shared across the client-repo scenario above. | root, G1 |
 | M3 | Triple join: `gh` `headRefName` authoritative, plan-file slug and **commit-SHA overlap** as independent cross-checks, with a per-row `join_confidence` | G2 leaves no branch name locally and only 43 of 558 refs survive. Plan-slug covers 76%; SHA overlap covers the rest and additionally detects mid-work branch renames that would otherwise orphan a PR's early spend. | G2, G4 |
 | M4 | Reuse `dedup_turns_by_request_id`, `_price_turn`, `_cache_write_split`, `_attributed_branch`, `_resolve_cost_roots` unchanged | Each solves a correctness problem that would silently corrupt the dataset if reimplemented. All five verified at module scope, already multi-consumer, none private to another command's flow. | root |
 | M5 | Rate-table stamp per row, plus retained per-class token counts | G3 makes cross-row dollar comparison invalid without it; retained token counts make re-derivation under one table possible. | G3 |
 | M6 | Engineer-coded novelty and ambiguity on a cost-stratified sample of 50, rated from kickoff artifacts | The mechanical proxies operationalize review surface but are blind to whether work was novel and whether the ask was clear — the two candidate drivers most likely to explain residual variance. | E2, E5, root |
-| M7 | Read-mode "uncaptured PRs still in window" listing, plus a documented capture cadence | Closes the capture-trigger gap without a hook. Mirrors the weekly ledger's own solved pattern: its default read mode lists ISO weeks present in the corpus with no ledger row. | G1 |
-| M8 | Single-root enforcement: refuse (exit 2) whenever more than one scan root resolves | Mirrors `cost --summary`'s existing CLI-boundary refusal. `pr-cost` durably *writes*, so an unenforced union is worse than for a read-only report. **M8 enforces single-root, not claude-config-identity** — a single-root run against another repo passes it cleanly, which is correct for a shipped tool. E1 compliance for *this study* therefore remains a procedural `--this-repo` commitment; M8 narrows the blast radius but does not structuralize E1, and must not be cited as if it did. | G1 |
+| M7 | Read-mode "uncaptured PRs still in window" listing, filtered by resolved `repo` in addition to `machine`, plus a documented capture cadence | Closes the capture-trigger gap without a hook. Mirrors the weekly ledger's own solved pattern: its default read mode lists ISO weeks present in the corpus with no ledger row. Filtering on `repo` matters once the key carries it (M2): an unfiltered "already captured" query would read a same-numbered PR from a different repo as this PR already recorded, silently dropping it from the listing. | G1 |
+| M8 | Single-root enforcement: refuse (exit 2) whenever more than one scan root resolves | Mirrors `cost --summary`'s existing CLI-boundary refusal, load-bearing here because `pr-cost` durably *writes*. Refuses on multi-root ambiguity only — it does not enforce E1's claude-config-only scope (see Out of scope). | G1 |
+| M9 | `gh`-target resolution: resolve `gh`'s effective repo identity once (`gh repo view --json nameWithOwner`), refuse (exit 2) if it disagrees with the corpus root's own identity, then pin the confirmed `owner/name` as an explicit `--repo` argument on every subsequent `gh pr list`/`gh pr view` call for the run | M8 gates local scan-root ambiguity only; `gh`'s target repo can drift independently (a stale `GH_REPO`, `gh repo set-default`, or ambient cwd mismatch). A one-time check only catches drift at t=0, so the resolved identity is pinned via `--repo` on every subsequent call, compared case-folded to match `gh`'s own `nameWithOwner` form. | G4 |
 
 **Over-powered-primitive check on M1.** Three lighter mechanisms considered:
 
@@ -139,7 +140,7 @@ later investigation without pausing to ask:
 | A11 | Window totals: $5,916.07 (a repeat run minutes later read $5,926.88 — the corpus grows live). Context class 87.4% (cache read 57.9%, write-1h 18.7%, write-5m 10.8%); output 12.6%, input 0.1%. Main 69.3%, subagent 30.7%. | [verified: `cost --this-repo --since 30d`, 2026-08-17; redaction active, no `STALE PRICING` banner. **Provenance:** these are this repo's own spend only — `--this-repo` resolves to `claude-config` worktree project dirs by identity, and a single-account `--summary` run over the same window scanned the same 208 transcripts for $6,032.19, the gap being live corpus growth between runs. No other account's or client's spend is included in any figure in this plan.] |
 | A12 | `worktree-agent-*` spend cannot be a separate bucket — `_attributed_branch` folds it into the dispatching branch by design. Report as folded, never absent. | [verified: `:3958`; a `--branches worktree-agent-*` run matched nothing] |
 | A13 | `buckets` skips records with no `gitBranch` (`:244`), so it cannot show the absent bucket. `pr-cost` must count unbranched records rather than inherit this skip. | [verified: `:244`] |
-| A14 | The corpus spans 58 glob-matching project dirs, of which `--this-repo` identity-matches 55; the tool reports scanning 204 of 233 glob-found files. The 233/204 and 58/55 gaps are unexplained. | [unverified] — Phase 2 must **enumerate and classify** every excluded file and dir, confirming both that none carries priced turns on an in-window branch (the denominator question — a ~12% gap would bias every reported number) and that none belongs to a different project (the disclosure question). `pr-cost` resolves roots by identity via `--this-repo`, not the looser glob that produced the 58/233 figures, so the second risk is already contained by existing code; auditing it explicitly makes that containment checkable rather than incidental. |
+| A14 | The corpus spans 58 glob-matching project dirs, of which `--this-repo` identity-matches 55; the tool reports scanning 204 of 233 glob-found files. The 233/204 and 58/55 gaps are unexplained. | [unverified] — Phase 2 must classify every excluded file/dir against two risks: denominator bias (an excluded file carrying priced turns on an in-window branch) and disclosure (an excluded dir belonging to a different project). `pr-cost` already resolves roots by identity via `--this-repo`, not the looser glob that produced these figures, so only the denominator risk needs auditing. |
 | A15 | The existing multi-dir fixture convention (`fake_projects.parent / "-home-user-repoN"`), the subagent-transcript helper, and the `monkeypatch.setattr(subprocess, "run", fake_run)` seam used by `TestPrLink` already support everything these tests need — no new fixture machinery is required. | [verified: `tests/conftest.py`; `test_transcript_analysis.py` `TestPrLink` ~3288, multi-dir sites ~3190/3555/5884] |
 | A16 | The weekly ledger's `_upsert_cost_ledger_row` keys on `(week, machine)` and **refuses** a duplicate key without `--force`, on the principle that silently rewriting history is how a ledger stops being one. `pr-cost` inherits the refusal but not the replacement: the as-of rule makes a single capture per PR the norm, and a `--force` correction appends a superseding row rather than overwriting. | [verified: `transcript-analysis.py:6936`] |
 | A17 | `cost-ledger --record` is gated behind a machine-level opt-in sentinel registered by `install.sh:405`, precisely because it is a write-taking subcommand shipped to every stow user. | [verified: `install.sh:405`] |
@@ -186,16 +187,27 @@ later investigation without pausing to ask:
   empty by default. Populating that blocklist is a **precondition** for running
   `pr-cost` against a non-`claude-config` repo, not an optional hardening step —
   and the console-print path is exposed here just as the ledger is, so keeping
-  the ledger outside the repo does not cover it.
+  the ledger outside the repo does not cover it. The same best-effort caveat
+  applies to the `repo` column once the tool runs against a repo other than
+  `claude-config`. It must also state a
+  restrictive creation mode (`0600`) for the ledger file — these rows are more
+  sensitive than the public, committed weekly ledger — and that the file must
+  not be hand-edited: an out-of-band edit leaves no signal, since the design
+  has no checksum or hash-chain layer.
 - `docs/case-studies/token-cost-per-pr.md` — the study, in the established
   four-part shape (question, how measured, the numbers, honest limits). Sole home
   for findings; `docs/pr-cost.md` carries schema only.
 - A client-facing artifact (`dataviz` skill, published via `Artifact`). Not
   committed. Spec in Phase 4.
 
-**Ledger schema additions beyond the obvious.** `captured_at`; `join_confidence`;
+**Ledger schema additions beyond the obvious.** `repo`, part of the row key
+(`(repo, pr_number, machine)`), stored case-folded `owner/name` (matching
+`gh`'s own `nameWithOwner`, the same form M9 compares against). PR numbers are
+unique only per-repo, so this must be present from the first row —
+retrofitting it once two repos' data have interleaved is not possible.
+`captured_at`; `join_confidence`;
 `supersedes`, referencing the row a correction replaces so readers take the latest
-per `(pr_number, machine)`; a `status` column flagging degraded rows, as a fixed
+per `(repo, pr_number, machine)`; a `status` column flagging degraded rows, as a fixed
 enum carrying no API error text; `unpriced_turns` and `unpriced_tokens`
 (an unrecognized model ID is excluded from pricing, not priced at $0 — without
 this the row silently understates); and the **additive components** behind every
@@ -218,12 +230,44 @@ the join-integrity check because both run on raw pre-scrub values, while the
 ledger cell and console output carry the scrubbed form; `gh` failure by class
 (below); `gh pr list` pagination truncation (A8); an unforced re-record refusing,
 and a `--force` correction appending a superseding row while leaving prior rows
-byte-identical; and **the M8 refusal** — exit 2 when more than one root resolves,
-plus no raw branch name printed under a default machine-wide invocation. Single-pass is asserted with the suite's existing spy convention
-(`monkeypatch.setattr` on the scan entry point, ~16125-16238), counting exactly
-one scan for a multi-PR corpus — output correctness alone cannot prove atomicity.
-`gh` is faked through the existing `TestPrLink` seam, extended to dispatch by PR
-number across the bulk-list-plus-per-PR-view call shape.
+byte-identical; **the M8 refusal** — exit 2 when more than one root resolves;
+**the M9 mismatch path** — exit 2 when `gh repo view`'s `owner/name` disagrees
+with the corpus root's identity (parsed from `git remote get-url origin`);
+**the M9 allow path** — a matching identity proceeds without exit 2, *and* the
+row's persisted `repo` column equals the identity M9 validated rather than an
+independently re-resolved value; **every post-resolution call is pinned** —
+across 2+ calls in the fake's captured call log, each carries `--repo
+<pinned-value>`; the fake treats a call missing `--repo` as unmatched/erroring,
+so a regression that drops the pin fails the test loudly rather than returning
+a stale canned response; **M9's own retry exhaustion** — distinct from the
+per-PR rate-limit test below, a mocked clock/sleep asserts that once `gh repo
+view` itself exhausts the shared 5-attempt/~15-minute bound, the run aborts
+loudly rather than marking any row's `status` (no row exists yet at
+resolution); **two repos
+recording the same `pr_number`** — seed `(repo_a, 42, machine)`, then record
+`(repo_b, 42, machine)` without `--force`, asserting the second write succeeds
+and both persist as distinct latest-per-key rows, never colliding or
+superseding each other; **a concurrent write** — two `--record` invocations
+for different PRs against the same ledger file, asserting both rows persist
+and the file stays parseable, exercising the new lock/atomic-rename code
+directly rather than through the weekly ledger's already-tested path; **the
+rate-limit backoff bound** — a mocked clock/sleep asserts the loop gives up
+and marks `status` after 5 attempts or ~15 minutes elapsed rather than
+retrying forever. Redaction coverage (five cases): (1) per-PR progress line +
+M7's listing + default output, exercised together via the flag-less
+invocation; (2) no raw branch name or `repo` value in the M8 refusal message;
+(3) none in the M9 refusal message; (4) none in the unforced re-record refusal
+message; (5) none in the run-abort message for auth/config failure or M9's
+own retry exhaustion — `gh repo view` echoes the queried `owner/name` verbatim
+in its own error text, so the abort handler routes through the same scrub
+call rather than surfacing the underlying `gh` diagnostic raw. Single-pass
+is asserted with the suite's existing spy convention (`monkeypatch.setattr` on
+the scan entry point, ~16125-16238), counting exactly one scan for a multi-PR
+corpus — output correctness alone cannot prove atomicity. `gh` is faked
+through the existing `TestPrLink` seam, extended to dispatch by PR number
+across the bulk-list-plus-per-PR-view call shape, plus a third dispatch shape
+for M9's PR-number-less `gh repo view` call and the `--repo`-pinned calls that
+follow it, matched by argv.
 
 **Operational contracts to state in Phase 1, not discover in Phase 2.**
 
@@ -238,17 +282,30 @@ GraphQL complexity points rather than call count). Adopt it only if rate limitin
 actually bites during Phase 2, and re-run Phase 0 against the GraphQL field set
 first. The test seam fakes the bulk-list-plus-per-PR-view shape accordingly.
 
-*Failure handling.* A `gh auth status` preflight runs before the batch — an auth
-failure surfacing mid-run would otherwise leave a dataset that looks complete but
-has empty enrichment columns throughout. Thereafter failures are differentiated:
-auth/config errors fail the whole run loudly; rate-limit responses back off and
-resume; transient network errors degrade that row and mark `status`. Each call
-carries a timeout; a per-PR progress line goes to stderr. `gh` must operate
-against the same repo identity as the resolved corpus root — M8 gates the local
-scan roots only, not `gh`'s target repo.
+*Failure handling.* A `gh auth status` preflight runs before the batch, followed by
+M9's identity resolution — an auth failure or identity mismatch surfacing mid-run
+would otherwise leave a dataset that looks complete but has empty or
+misattributed enrichment columns throughout. M9's `gh repo view` call retries
+under the same rate-limit backoff as per-PR calls (5 attempts / ~15 minutes,
+stated below); exhausting it aborts the run loudly, since no row yet exists to
+mark degraded. A genuine identity mismatch (post-retry) still exits 2
+immediately, never treated as a transient failure. Once resolved, the
+confirmed `owner/name` is passed as `--repo` on every subsequent `gh pr list`/
+`gh pr view` call — see M9 — so ambient `gh` state cannot drift the target after
+resolution. The corpus-root side of M9's comparison is derived by parsing
+`git remote get-url origin` for the resolved root into `owner/name`; this is new
+derivation logic added to `_resolve_cost_roots`'s output in Phase 1, not an
+existing field. Thereafter failures are differentiated: auth/config errors fail
+the whole run loudly; rate-limit responses back off exponentially, honoring a
+`retry-after` header when present and otherwise starting at GitHub's stated
+minimum of one minute [verified: GitHub REST API docs, "Rate limits for the
+REST API" — secondary-rate-limit guidance], capped at 5 attempts or ~15 minutes
+total elapsed before giving up and marking that row's `status`; transient
+network errors degrade that row and mark `status`. Each call carries a timeout;
+a per-PR progress line goes to stderr.
 
 *Ledger writes.* One row per lock acquisition, matching the pattern's sizing. The
-key is `(pr_number, machine)` with reader-side aggregation, mirroring the weekly
+key is `(repo, pr_number, machine)` with reader-side aggregation, mirroring the weekly
 ledger's machine-separated rows, so two machines recording the same PR do not
 silently discard each other.
 
@@ -263,7 +320,19 @@ structural detectors at that write/print boundary, as a data-minimization filter
 since `deny-private-project-refs.sh` fires only on `git commit`/`gh pr create`/
 `gh pr edit`/mutating `gh api` and cannot gate a ledger write or a terminal.
 `status` is a **fixed enum** carrying no embedded API error text; any diagnostic
-text goes to stderr, never into a ledger cell.
+text goes to stderr, never into a ledger cell. Every stdout/stderr write path —
+the per-PR progress line, M7's uncaptured-PR listing, refusal messages, the
+default ledger-preview output, and the run-abort message on auth/config
+failure or M9's own retry exhaustion — routes through the same scrub call as
+the ledger-append step; none prints a raw branch name **or raw `repo` value**,
+including the underlying `gh` diagnostic text an abort surfaces, since
+`gh repo view` echoes the queried `owner/name` verbatim in its own error text.
+This
+extends to `repo` because M2's own reason for the key exists to anticipate a
+future run against a non-`claude-config` repo, at which point `repo` is exactly
+as sensitive as branch names; `docs/pr-cost.md`'s branch-scrubbing caveat below
+covers both. This is the sole layer: `deny-private-project-refs.sh` cannot gate
+a ledger write or a terminal, so an untested print path is an unscrubbed one.
 
 *Argument safety.* Any `git` ref argument sourced from PR or branch data uses a
 commit SHA or `--` disambiguation, never a raw branch string in an option
@@ -288,8 +357,8 @@ the case study, the `case-studies.md` index line, and the levers-register row.
 API recovers. Gates Phase 1's schema.
 
 **Phase 1 — the instrument.** Implement `pr-cost`, its tests, the M7 read-mode
-uncaptured listing, the M8 refusal, and `install.sh` registration. Per-PR row:
-PR number, head branch, merged date, rate stamp, `captured_at`, `join_confidence`,
+uncaptured listing, the M8 and M9 refusals, and `install.sh` registration. Per-PR row:
+`repo`, PR number, head branch, merged date, rate stamp, `captured_at`, `join_confidence`,
 `status`; dollars and tokens by class; `unpriced_turns`/`unpriced_tokens`; turn
 count, session count, `opus_dollars`, `sum_context_at_turn`; `additions`,
 `deletions`, `changed_files`, commit count, review-comment count; and mechanical
@@ -312,7 +381,7 @@ already-captured PR refuses and names `--force`.
 
 **Corrections append, they do not replace.** M2 calls this an append-only ledger,
 and a replacing correction would contradict that. A `--force` correction appends a
-*new* row carrying the same `(pr_number, machine)` key with a fresh `captured_at`
+*new* row carrying the same `(repo, pr_number, machine)` key with a fresh `captured_at`
 and a `supersedes` reference; readers take the latest row per key. This keeps the
 full correction history — a single-slot audit column would lose everything before
 the most recent correction, which matters because G3's rate expiry and A11's live
@@ -426,8 +495,11 @@ subset, generalized, reaches the artifact.
 - **Idempotence and correction:** an unforced re-record of an already-captured PR
   refuses and leaves the file byte-identical; a `--force` correction appends
   exactly one superseding row and leaves every prior row byte-identical, with a
-  reader taking the latest per `(pr_number, machine)`.
-- **Redaction:** the M8 refusal is tested, and Phase 4 adds a pre-publish gate
+  reader taking the latest per `(repo, pr_number, machine)`.
+- **Redaction:** the M8 refusal, M9's mismatch and allow paths, and the
+  cross-repo and concurrent-write cases above are tested; no raw branch name
+  or `repo` value appears in any of the five separate captured-output cases,
+  including the run-abort message, and Phase 4 adds a pre-publish gate
   against the rendered artifact content — `Artifact` is not `git commit`/`gh pr
   create`/`gh pr edit`/`gh api`, so no hook gates it and the obligation otherwise
   has no enforcement point. That gate is **scripted, not manual**, reusing the
@@ -464,12 +536,9 @@ subset, generalized, reaches the artifact.
   creation-versus-modification. It does not change the study's bound, which is
   set by what actually survives, but the discrepancy should be named rather than
   papered over.
-- Private-client-repo corpora (E1). Note M8 does **not** enforce this: it refuses
-  an ambiguous multi-root resolution, and a clean single-root run against any
-  repo — including a private one — passes it. Keeping this study to
-  `claude-config` remains a procedural `--this-repo` commitment. M2 anticipates
-  the tool being pointed at a client repo later, so no reader should treat M8 as
-  a barrier against that.
+- Private-client-repo corpora (E1) — kept to a procedural `--this-repo`
+  commitment, not a technical barrier; M8's row states why it doesn't enforce
+  this. M2 anticipates the tool being pointed at a client repo later.
 - An interim client artifact off Phase 2 (E6).
 - Fixing `pr-link`'s column drift or its sidechain/attribution undercounts.
 - **Force-push and rebase effects on a recorded row.** `additions`/`deletions`
