@@ -11000,7 +11000,7 @@ def _turn_shape_holdout_samples_args(
     projects: str = "*",
     this_repo: bool = False,
     since: str | None = None,
-    sample: int = 100,
+    sample: int = 30,
     seed: int = 0,
     offset: int = 0,
 ) -> object:
@@ -11425,6 +11425,24 @@ class TestTurnShapeHoldoutSamples:
         out, err = capsys.readouterr()
         assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
         assert "--offset=5 is past the end of the 2 unflagged candidates" in err
+
+    def test_offset_equals_total_candidates_triggers_past_end_diagnostic(self, fake_projects, capsys):
+        """offset == total_candidates exactly (not just past it) must still
+        trigger the past-end diagnostic — the boundary the `>=` check exists
+        to get right, since a rater paging with a fixed --sample stride lands
+        here naturally on the page after the last full one."""
+        _write_jsonl(fake_projects / "s1.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
+        ])
+        _write_jsonl(fake_projects / "s2.jsonl", [
+            _priced("claude-sonnet-5", input=10, output=5,
+                     content=[_bash_use("b1", "git commit -m b")], request_id="r1"),
+        ])
+        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=2, sample=30))
+        out, err = capsys.readouterr()
+        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
+        assert "--offset=2 is past the end of the 2 unflagged candidates" in err
 
     def test_offset_partial_final_page_returns_exactly_the_remainder(self, fake_projects, capsys):
         """3 candidates, offset=2/sample=2 returns exactly 1 candidate — the
