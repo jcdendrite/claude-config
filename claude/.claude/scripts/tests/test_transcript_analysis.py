@@ -15740,6 +15740,30 @@ class TestComputePrCostBranchTotals:
         assert agg["unpriced_tokens"] == 1_000_000
         assert sum(agg["dollars"].values()) == pytest.approx(0.0)
 
+    def test_per_class_token_totals_accumulate_correctly(self, fake_projects):
+        """agg["tokens"] accumulates each _TOKEN_CLASSES key from
+        _token_counts(usage) correctly -- distinct values per class, not
+        uniform input-only, so a class-key swap in the accumulation loop
+        (token_counts[cls] keyed wrong, or a transposed cache_write_1h/5m)
+        would fail this rather than passing on coincidentally-equal values."""
+        rec = _priced(
+            "claude-sonnet-5", input=1_000_000, output=200_000,
+            cache_read=50_000, ephemeral_1h=30_000, ephemeral_5m=10_000,
+            branch="feature-a",
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [rec])
+
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        tokens = branch_totals["feature-a"]["tokens"]
+        assert tokens["input"] == 1_000_000
+        assert tokens["output"] == 200_000
+        assert tokens["cache_read"] == 50_000
+        assert tokens["cache_write_1h"] == 30_000
+        assert tokens["cache_write_5m"] == 10_000
+
 
 class TestPrCostDedupBeforePricing:
     def test_multi_content_block_turn_prices_identically_via_pr_cost_and_cost_branches(
@@ -16011,6 +16035,38 @@ class TestPrCostReportOrchestration:
         assert row["input_usd"] == pytest.approx(0.0)
         assert row["unpriced_turns"] == 0
 
+    def test_captured_row_carries_correct_token_counts_alongside_dollars(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """A captured row's *_tokens columns are asserted end-to-end, not
+        just their *_usd siblings -- dollars and tokens are independently
+        derived (_price_turn vs _token_counts), so a regression in the
+        token half of the ledger schema could otherwise ship with every
+        existing orchestration test (which only checks *_usd) still green."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, output=200_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 7, "headRefName": "feature-a", "additions": 5, "deletions": 1,
+            "changedFiles": 2, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["input_tokens"] == 1_000_000
+        assert row["output_tokens"] == 200_000
+        assert row["cache_read_tokens"] == 0
+        assert row["input_usd"] > 0
+        assert row["output_usd"] > 0
+
     def test_branch_with_records_but_no_merged_pr_is_skipped_not_errored(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
@@ -16258,6 +16314,17 @@ class TestParsePrCostLedgerFileTextMalformed:
         text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
         with pytest.raises(_mod._PrCostLedgerParseError, match="unknown status"):
             _mod._parse_pr_cost_ledger_file_text(text)
+
+    def test_malformed_repo_raises_without_leaking_raw_value(self):
+        """A non-lowercase repo value fails the malformed-repo check, and --
+        mirroring _append_pr_cost_ledger_row's duplicate-key error -- the
+        raised message omits the raw value, since the ledger's repo column
+        is never scrubbed at rest."""
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(repo="Acme-Corp/Internal-Project"))
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="malformed repo value") as exc_info:
+            _mod._parse_pr_cost_ledger_file_text(text)
+        assert "Acme-Corp" not in str(exc_info.value)
 
     def test_malformed_merged_at_raises(self):
         line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(merged_at="not-a-timestamp"))

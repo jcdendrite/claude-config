@@ -2,7 +2,7 @@
 
 A local, append-only record of this repo's own per-PR AI-tooling dollar cost, joined against GitHub PR size, rework, and review-surface data — one row per captured merged PR per machine, appended by `transcript-analysis.py pr-cost --record`. Claude Code deletes transcripts on a rolling window (`cleanupPeriodDays`, default 30 days), so a PR's spend not captured while its branch is still observable in the local corpus cannot be recovered later; the ledger survives past that deletion, but — unlike a git-tracked file — has no built-in backup or cross-machine replication of its own.
 
-Unlike the weekly `cost-ledger` (`docs/cost-ledger.md`), whose rows are aggregate-only, every row here carries a branch name and a repo identifier — see "Redaction is best-effort" below before pointing this tool at any repo other than `claude-config`.
+Unlike the weekly `cost-ledger` (`docs/cost-ledger.md`), whose rows are aggregate-only, every row here carries a branch name and a repo identifier — see "Redaction: `head_branch` is opaque, `repo` is raw at rest" below before pointing this tool at any repo other than `claude-config`.
 
 ## Schema
 
@@ -10,7 +10,7 @@ Columns, in ledger order (`_PR_COST_LEDGER_COLUMNS` in `transcript-analysis.py`)
 
 | Column | What it holds |
 |---|---|
-| `repo`, `pr_number`, `machine` | The row's key. `repo` is a case-folded `owner/name`, stored raw (never scrubbed at rest — see "Redaction is best-effort") since it must stay stable and comparable across runs; PR numbers are unique only per-repo, so `repo` is part of the key from the first row. |
+| `repo`, `pr_number`, `machine` | The row's key. `repo` is a case-folded `owner/name`, stored raw (never scrubbed at rest — see "Redaction: `head_branch` is opaque, `repo` is raw at rest") since it must stay stable and comparable across runs; PR numbers are unique only per-repo, so `repo` is part of the key from the first row. |
 | `head_branch` | The joined branch, stored in its already-scrubbed form. |
 | `merged_at` | The PR's `mergedAt` from `gh`. |
 | `rate_stamp` | The pricing table's fetch date (`_PRICING_FETCH_DATE`) in effect when the row was computed — rows under different rate stamps are not directly comparable; see "Comparing rows across rate stamps" below. |
@@ -81,15 +81,17 @@ Two rows with different `rate_stamp` values were priced under different vendor r
 
 **`gh` identity mismatch (exit 2).** Before any `gh` discovery call, `pr-cost` resolves `gh`'s own effective target repo (`gh repo view --json nameWithOwner`) and compares it, case-folded, against this repo's own `git remote get-url origin` identity. A mismatch refuses rather than silently recording rows against the wrong repo — check `GH_REPO`, `gh repo set-default`, or an ambient cwd mismatch (the run may simply not be happening from this repo's own working tree). The confirmed identity is then pinned via `--repo` on every subsequent `gh` call this run makes, so ambient `gh` state can't drift the target mid-run.
 
-## Redaction is best-effort
+## Redaction: `head_branch` is opaque, `repo` is raw at rest
 
-Every stdout/stderr path this subcommand prints through — the per-PR progress line, the read-mode listing, the ledger preview, and every refusal message above — routes branch names and `repo` values through the same scrub call the ledger-append step uses. There is deliberately no `--no-redact` escape hatch.
+`head_branch`:
+- Never reaches the ledger file or a terminal in its original form — `_new_pr_cost_row` writes it through `_assign_root_scoped_redact_label` before it's placed in the row, and every print path (the per-PR progress line, the read-mode listing, the ledger preview, every refusal message above) does the same before display.
+- The substitution is full-value and opaque (`account-<K>/branch-<N>`), not a scan for known-sensitive shapes — a branch name that happens to encode a client name in plain English (`feature/acme-onboarding`) has no gap to fall through, because the original string is never retained anywhere this subcommand writes or prints. There is deliberately no `--no-redact` escape hatch.
+- This is a different mechanism from `deny-private-project-refs.sh`'s git-commit-time tracker-ID and blocklist scan — that hook covers the publish boundary for this repo's own source, not pr-cost's runtime output, and pr-cost never reads its `<config-dir>/private-projects.md` blocklist.
 
-That scrubbing is **best-effort, not a guarantee**. The always-on redaction detectors catch six structural shapes (a private-range/loopback IPv4 literal, an SSH key path, a home-rooted filesystem path, a long hex/UUID identifier, an internal-TLD hostname, a Slack-channel-shaped reference) plus bare tracker IDs — but a branch name encoding a client's name in plain English (`feature/acme-onboarding`) matches none of those shapes. Catching it requires the opt-in `<config-dir>/private-projects.md` blocklist (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`), which is **empty by default**.
-
-**Populating that blocklist is a precondition for running `pr-cost` against any repo other than `claude-config`, not an optional hardening step.** Keeping the ledger file itself outside the repo does not cover this: the console-print path (the per-PR progress line, the read-mode listing) is exposed exactly the same way the ledger cell is, so a client name in a branch reaches your terminal on every run against that corpus regardless of where the ledger file lives.
-
-The same caveat applies to the `repo` column: it is scrubbed at every print site the same way `head_branch` is, but only once the tool is pointed at a repo other than `claude-config` does `repo` carry any information worth scrubbing in the first place, and the same best-effort limits apply to it.
+`repo` is not protected the same way at rest:
+- `_new_pr_cost_row` stores `pinned_repo` directly in the ledger row with no substitution, so every captured PR's owner/name pair sits in the ledger file in the clear, permanently, once written — an unmitigated gap.
+- Terminal output is the one place `repo` *is* covered: the read-mode listing computes a redacted label via the same `_assign_root_scoped_redact_label` call `head_branch` uses before printing, so a `repo` value doesn't reach your terminal in the clear even though it reaches the file that way.
+- Keeping the ledger file itself outside this repo's git tree does not close this — that only stops it from being published in a commit, not from sitting in the clear in a local file.
 
 ## Residual replication paths the git-tree check doesn't close
 
@@ -98,4 +100,4 @@ The same caveat applies to the `repo` column: it is scrubbed at every print site
 - **A cloud-sync folder** (Dropbox, iCloud, OneDrive, or similar) syncing `$CLAUDE_CONFIG_DIR` or `PR_COST_LEDGER_PATH`'s directory. The ledger's branch names and repo identifier — more sensitive than the weekly ledger's aggregate-only rows — would replicate to every device and account the sync folder reaches.
 - **A bare-repo dotfile manager** (yadm-style, tracking `$HOME` via `--git-dir`/`--work-tree` flags rather than an in-tree `.git`). The git-tree check looks for a conventional in-tree `.git`; a bare-repo dotfile manager's tracking is invisible to it, so the ledger could be silently version-controlled and pushed to a remote without the check ever firing.
 
-Avoid both if the ledger's contents should stay off a shared destination — this is independent of, and in addition to, the redaction best-effort caveats above.
+Avoid both if the ledger's contents should stay off a shared destination — this is independent of, and in addition to, `repo`'s own raw-at-rest exposure above.

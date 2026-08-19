@@ -7512,6 +7512,9 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
 
     sentinel_path = config_dir() / ".pr-cost-enabled"
     if not sentinel_path.exists():
+        # Prints the conventional path, not sentinel_path, to avoid a
+        # resolved home-rooted path in output -- same discipline as
+        # cost-ledger's equivalent message above.
         print(
             "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
             " see docs/pr-cost.md",
