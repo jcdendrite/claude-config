@@ -76,6 +76,7 @@ from transcript_analysis.pricing import (
     _model_rates,
     _price_turn,
     _session_peak_context,
+    _token_counts,
     _warn_if_subagent_format_drift,
 )
 from transcript_analysis.pricing import dedup_turns_by_request_id as _dedup_turns_by_request_id
