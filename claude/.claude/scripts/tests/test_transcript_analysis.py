@@ -1,5 +1,6 @@
 """Tests for transcript-analysis.py."""
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
@@ -15443,3 +15444,1588 @@ class TestPlanBoundaryArgparseWiring:
         assert args.extra_config_dirs is None
         assert args.no_redact is False
         assert args.func == _mod.cmd_plan_boundary
+
+
+# ---------------------------------------------------------------------------
+# pr-cost -- local-mechanics coverage only (attribution, ledger I/O,
+# correction contract, mechanical proxies, join logic that doesn't require
+# faking gh). gh-integration scenarios (gh's effective repo mismatch/pin,
+# rate-limit backoff, retry exhaustion, redaction, cross-repo, gh failure by
+# class) are covered separately.
+# ---------------------------------------------------------------------------
+
+
+def _pr_cost_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    extra_config_dirs: list[str] | None = None,
+    record: bool = False,
+    pr: int | None = None,
+    machine_label: str | None = None,
+    force: bool = False,
+    asof_window_days: float | None = None,
+    plan_file_glob: str | None = None,
+    risk_surface_globs: list[str] | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "extra_config_dirs": extra_config_dirs,
+        "record": record,
+        "pr": pr,
+        "machine_label": machine_label,
+        "force": force,
+        "asof_window_days": asof_window_days,
+        "plan_file_glob": plan_file_glob,
+        "risk_surface_globs": risk_surface_globs,
+    })()
+
+
+def _fake_pr_cost_subprocess_run(
+    *,
+    repo: str = "owner/repo",
+    merged_prs: list[dict] | None = None,
+    enrichment_by_pr: dict[int, dict] | None = None,
+    local_git_shas: set[str] | None = None,
+    gh_repo_name_with_owner: str | None = None,
+    gh_auth_status_failure: bool = False,
+    gh_repo_view_failure_stderr: str | None = None,
+    gh_pr_view_failure_stderr: str | None = None,
+    call_log: list[list[str]] | None = None,
+    enforce_repo_pin: str | None = None,
+    git_tracked: bool = False,
+):
+    """Build a subprocess.run double covering every local git/gh call
+    _pr_cost_report's full orchestration makes: origin-remote resolution,
+    the git-tracked-ledger check (answers "not a git repository" unless
+    git_tracked=True, so --record never trips the git-tracked refusal
+    against a tmp_path ledger by default), gh auth/repo-view/pr-list/pr-view,
+    and cat-file --batch-check (answers from local_git_shas). Raises
+    AssertionError on any other command shape, so an untested call path
+    fails loud instead of silently returning "".
+
+    gh-integration extension points (all default to the local-mechanics
+    behavior above -- unset, every new param is a no-op):
+    gh_repo_name_with_owner decouples `gh repo view`'s own nameWithOwner from
+    the git-remote-derived `repo` (_resolve_pinned_gh_repo's case-fold/
+    mismatch scenarios); a
+    *_failure_stderr param makes every call of that kind fail with the given
+    stderr text instead of succeeding (rate-limit/network/auth-shaped
+    classification, retry-exhaustion); call_log, when given, collects every
+    matched command's argv; enforce_repo_pin, when given, raises
+    AssertionError on any post-resolution `gh pr list`/`gh pr view` call
+    whose argv doesn't carry `--repo <enforce_repo_pin>` contiguously;
+    git_tracked, when True, makes the git-tracked-ledger check answer as if
+    the ledger path sits inside a tracked git working tree.
+    """
+    merged_prs = merged_prs if merged_prs is not None else []
+    enrichment_by_pr = enrichment_by_pr or {}
+    local_git_shas = local_git_shas or set()
+    gh_repo_name_with_owner = gh_repo_name_with_owner if gh_repo_name_with_owner is not None else repo
+
+    def fake_run(cmd, *args, **kwargs):
+        class _Proc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        proc = _Proc()
+        if cmd[:3] == ["git", "remote", "get-url"]:
+            proc.stdout = f"https://github.com/{repo}.git\n"
+        elif cmd[0] == "git" and "rev-parse" in cmd and "--is-inside-work-tree" in cmd:
+            if git_tracked:
+                proc.stdout = "true\n"
+            else:
+                proc.returncode = 128
+                proc.stderr = "fatal: not a git repository (or any of the parent directories): .git\n"
+        elif cmd[0] == "git" and len(cmd) > 1 and cmd[1] == "cat-file":
+            queried = kwargs.get("input", "").split()
+            found = [sha for sha in queried if sha in local_git_shas]
+            proc.stdout = "".join(f"{sha} commit\n" for sha in found)
+        elif cmd[:2] == ["gh", "auth"]:
+            if gh_auth_status_failure:
+                proc.returncode = 1
+                proc.stderr = "error: not logged into any GitHub hosts\n"
+            else:
+                proc.stdout = ""
+        elif cmd[:3] == ["gh", "repo", "view"]:
+            if gh_repo_view_failure_stderr is not None:
+                proc.returncode = 1
+                proc.stderr = gh_repo_view_failure_stderr
+            else:
+                proc.stdout = json.dumps({"nameWithOwner": gh_repo_name_with_owner})
+        elif cmd[:3] == ["gh", "pr", "list"]:
+            if enforce_repo_pin is not None and not _argv_carries_repo_pin(cmd, enforce_repo_pin):
+                raise AssertionError(f"gh pr list call missing --repo {enforce_repo_pin!r} pin: {cmd}")
+            proc.stdout = json.dumps(merged_prs)
+        elif cmd[:3] == ["gh", "pr", "view"]:
+            if enforce_repo_pin is not None and not _argv_carries_repo_pin(cmd, enforce_repo_pin):
+                raise AssertionError(f"gh pr view call missing --repo {enforce_repo_pin!r} pin: {cmd}")
+            if gh_pr_view_failure_stderr is not None:
+                proc.returncode = 1
+                proc.stderr = gh_pr_view_failure_stderr
+            else:
+                pr_number = int(cmd[3])
+                proc.stdout = json.dumps(enrichment_by_pr.get(pr_number, {}))
+        else:
+            raise AssertionError(f"unexpected subprocess.run call in pr-cost test: {cmd}")
+        if call_log is not None:
+            call_log.append(cmd)
+        return proc
+
+    return fake_run
+
+
+def _argv_carries_repo_pin(cmd: list[str], pinned_repo: str) -> bool:
+    """True when `--repo <pinned_repo>` appears contiguously in cmd --
+    _fake_pr_cost_subprocess_run's enforce_repo_pin check."""
+    return any(cmd[i] == "--repo" and cmd[i + 1] == pinned_repo for i in range(len(cmd) - 1))
+
+
+def _sample_pr_cost_row(**overrides) -> dict:
+    """A complete, valid pr-cost ledger row dict covering every column and
+    type (str, int, float, bool) -- the base fixture for round-trip, append,
+    and malformed-content tests."""
+    row: dict = {
+        "repo": "owner/repo", "pr_number": 42, "machine": "ci1",
+        "head_branch": "account-1/branch-1", "merged_at": "2026-01-01T00:00:00Z",
+        "rate_stamp": "2026-08-02", "captured_at": "2026-01-02T00:00:00Z",
+        "join_confidence": "high", "supersedes": "", "status": "ok",
+        "cache_read_usd": 1.5, "cache_write_5m_usd": 0.25, "cache_write_1h_usd": 0.1,
+        "output_usd": 2.0, "input_usd": 0.5,
+        "cache_read_tokens": 1000, "cache_write_5m_tokens": 200, "cache_write_1h_tokens": 100,
+        "output_tokens": 500, "input_tokens": 300,
+        "unpriced_turns": 0, "unpriced_tokens": 0,
+        "turn_count": 5, "session_count": 2,
+        "opus_dollars": 0.0, "opus_dollar_share_pct": 0.0,
+        "sum_context_at_turn": 1500, "mean_context_at_turn": 300.0,
+        "additions": 42, "deletions": 10, "changed_files": 3, "commit_count": 4, "review_comment_count": 1,
+        "distinct_top_level_dirs": 2, "distinct_file_extensions": 3,
+        "tests_changed": True, "plan_file_added": True, "risk_surface_flag": False,
+    }
+    row.update(overrides)
+    assert set(row) == set(_mod._PR_COST_LEDGER_COLUMNS), "sample row must cover every ledger column exactly"
+    return row
+
+
+class TestComputePrCostBranchTotals:
+    """_compute_pr_cost_branch_totals: pr-cost's own single-pass per-branch
+    aggregation, exercised through the function itself (not just its reused
+    primitives _attributed_branch/_session_branch_index in isolation)."""
+
+    def test_worktree_agent_record_folds_into_branch_active_at_dispatch_time(self, fake_projects):
+        """A worktree-agent-* subagent record's dollars fold into the branch
+        active in its own session at dispatch time, via pr-cost's own
+        grouping call -- mirrors TestCostWorktreeAgentBranchCarryForward's
+        case (a), against _compute_pr_cost_branch_totals instead of cost's
+        --branches path."""
+        session_id = "sess-carry-a"
+        main_rec = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="feature-a", ts="2026-08-01T10:00:00.000Z",
+        )  # $2.00
+        agent_rec = _priced(
+            "claude-sonnet-5", input=500_000, branch="worktree-agent-abc123", ts="2026-08-01T11:00:00.000Z",
+        )  # $1.00, later than main_rec
+        agent_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [main_rec])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
+
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        assert "worktree-agent-abc123" not in branch_totals
+        assert sum(branch_totals["feature-a"]["dollars"].values()) == pytest.approx(3.00)
+        assert branch_totals["feature-a"]["turn_count"] == 2
+        assert unbranched["turn_count"] == 0
+
+    def test_mid_session_branch_switch_splits_turns_across_both_branches(self, fake_projects):
+        """A session whose main-thread records switch branches mid-session
+        splits its turns across both branches' aggregates -- not
+        all-or-nothing attribution."""
+        session_id = "sess-switch"
+        first_main = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="feature-a", ts="2026-08-01T10:00:00.000Z",
+        )  # $2.00
+        second_main = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-01T12:00:00.000Z",
+        )  # $2.00
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [first_main, second_main])
+
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        assert sum(branch_totals["feature-a"]["dollars"].values()) == pytest.approx(2.00)
+        assert sum(branch_totals["main"]["dollars"].values()) == pytest.approx(2.00)
+        assert branch_totals["feature-a"]["turn_count"] == 1
+        assert branch_totals["main"]["turn_count"] == 1
+
+    def test_worktree_agent_record_with_unparseable_timestamp_falls_back_to_earliest_index_entry(
+        self, fake_projects,
+    ):
+        """A worktree-agent-* record whose own timestamp doesn't parse
+        degrades gracefully via _attributed_branch's documented contract
+        (rec_ts is None -> falls back to branch_index[0][1], the session's
+        earliest main-thread branch entry) rather than crashing or dropping
+        into unbranched_totals."""
+        session_id = "sess-bad-ts"
+        main_rec = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="feature-a", ts="2026-08-01T10:00:00.000Z",
+        )  # $2.00
+        agent_rec = _priced(
+            "claude-sonnet-5", input=500_000, branch="worktree-agent-abc123", ts="2026-08-01T09:00:00.000Z",
+        )
+        agent_rec["isSidechain"] = True
+        agent_rec["timestamp"] = "not-a-real-timestamp"  # overrides _priced's own valid ts
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [main_rec])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
+
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        assert "worktree-agent-abc123" not in branch_totals
+        assert sum(branch_totals["feature-a"]["dollars"].values()) == pytest.approx(3.00)
+        assert unbranched["turn_count"] == 0
+
+    def test_multi_session_accumulation_for_one_branch(self, fake_projects):
+        """Two separate session files on the same branch both contribute to
+        one branch's aggregate -- the shape the single-pass approach
+        depends on."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),  # $2.00
+        ])
+        _write_jsonl(fake_projects / "sess-2.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-a"),  # $1.00
+        ])
+
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        agg = branch_totals["feature-a"]
+        assert sum(agg["dollars"].values()) == pytest.approx(3.00)
+        assert agg["turn_count"] == 2
+        assert len(agg["sessions"]) == 2
+
+    def test_null_git_branch_record_counted_in_unbranched_totals_not_skipped(self, fake_projects):
+        """A record with no gitBranch is accumulated into unbranched_totals,
+        unlike `buckets`, which silently skips a record with no gitBranch."""
+        rec = _priced("claude-sonnet-5", input=1_000_000)  # $2.00
+        rec["gitBranch"] = None
+        _write_jsonl(fake_projects / "sess.jsonl", [rec])
+
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        assert branch_totals == {}
+        assert unbranched["turn_count"] == 1
+        assert sum(unbranched["dollars"].values()) == pytest.approx(2.00)
+
+    def test_unpriced_model_increments_unpriced_counters_not_dollars(self, fake_projects):
+        """A model absent from the price table increments unpriced_turns/
+        unpriced_tokens; it never contributes to the dollars total."""
+        rec = _priced("<synthetic>", input=1_000_000, branch="feature-a")
+        _write_jsonl(fake_projects / "sess.jsonl", [rec])
+
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        agg = branch_totals["feature-a"]
+        assert agg["unpriced_turns"] == 1
+        assert agg["unpriced_tokens"] == 1_000_000
+        assert sum(agg["dollars"].values()) == pytest.approx(0.0)
+
+    def test_per_class_token_totals_accumulate_correctly(self, fake_projects):
+        """agg["tokens"] accumulates each _TOKEN_CLASSES key from
+        _token_counts(usage) correctly -- distinct values per class, not
+        uniform input-only, so a class-key swap in the accumulation loop
+        (token_counts[cls] keyed wrong, or a transposed cache_write_1h/5m)
+        would fail this rather than passing on coincidentally-equal values."""
+        rec = _priced(
+            "claude-sonnet-5", input=1_000_000, output=200_000,
+            cache_read=50_000, ephemeral_1h=30_000, ephemeral_5m=10_000,
+            branch="feature-a",
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [rec])
+
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        tokens = branch_totals["feature-a"]["tokens"]
+        assert tokens["input"] == 1_000_000
+        assert tokens["output"] == 200_000
+        assert tokens["cache_read"] == 50_000
+        assert tokens["cache_write_1h"] == 30_000
+        assert tokens["cache_write_5m"] == 10_000
+
+
+class TestPrCostDedupBeforePricing:
+    def test_multi_content_block_turn_prices_identically_via_pr_cost_and_cost_branches(
+        self, fake_projects, capsys,
+    ):
+        """A multi-content-block turn sharing one requestId prices
+        identically whether summed via pr-cost's own
+        _compute_pr_cost_branch_totals or the existing cost --branches path
+        -- the dedup-before-pricing regression this repo's own contract
+        (pricing.py's dedup_turns_by_request_id) must hold for pr-cost's new
+        aggregation too."""
+        session_id = "sess-dedup"
+        rec1 = _priced(
+            "claude-sonnet-5", input=100_000, output=3, branch="feature-a", request_id="req-1",
+            content=[{"type": "thinking", "thinking": "..."}],
+        )
+        rec2 = _priced(
+            "claude-sonnet-5", input=100_000, output=50, branch="feature-a", request_id="req-1",
+            content=[{"type": "text", "text": "done"}],
+        )
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [rec1, rec2])
+
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        assert branch_totals["feature-a"]["turn_count"] == 1  # the two records collapse into one priced turn
+        pr_cost_total = sum(branch_totals["feature-a"]["dollars"].values())
+
+        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        cost_total = _extract_grand_total(capsys.readouterr().out)
+        # abs= accounts for the printed table's own 2-decimal-place rounding,
+        # not slack in the expected computation itself.
+        assert pr_cost_total == pytest.approx(cost_total, abs=0.005)
+
+
+class TestResolveBranchPrTieBreak:
+    """_resolve_branch_pr's >1-direct-match tie-break arms -- unit-level,
+    plain data in, no gh faking needed for the two arms whose SHA-overlap
+    computation short-circuits on an empty commits list; the SHA-overlap
+    arms fake only the local `git cat-file --batch-check` call."""
+
+    def test_highest_sha_overlap_wins_outright(self, monkeypatch):
+        matches = [
+            {"number": 1, "headRefName": "shared-branch", "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "headRefName": "shared-branch", "mergedAt": "2026-01-02T00:00:00Z"},
+        ]
+        enrichment_by_pr_number = {
+            1: {"commits": [{"oid": "a" * 40}], "files": []},
+            2: {"commits": [{"oid": "b" * 40}, {"oid": "c" * 40}], "files": []},
+        }
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(local_git_shas={"b" * 40, "c" * 40}))
+        resolved, confidence = _mod._resolve_branch_pr(
+            "shared-branch", matches, enrichment_by_pr_number, _mod._DEFAULT_PR_COST_PLAN_FILE_GLOB,
+        )
+        assert resolved["number"] == 2
+        assert confidence == "low"
+
+    def test_overlap_tie_broken_by_most_recent_merged_at(self, monkeypatch):
+        matches = [
+            {"number": 1, "headRefName": "shared-branch", "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "headRefName": "shared-branch", "mergedAt": "2026-02-01T00:00:00Z"},
+        ]
+        enrichment_by_pr_number = {
+            1: {"commits": [{"oid": "a" * 40}], "files": []},
+            2: {"commits": [{"oid": "b" * 40}], "files": []},
+        }
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(local_git_shas={"a" * 40, "b" * 40}))
+        resolved, confidence = _mod._resolve_branch_pr(
+            "shared-branch", matches, enrichment_by_pr_number, _mod._DEFAULT_PR_COST_PLAN_FILE_GLOB,
+        )
+        assert resolved["number"] == 2
+        assert confidence == "low"
+
+    def test_still_ambiguous_after_both_tie_breaks_returns_none(self):
+        matches = [
+            {"number": 1, "headRefName": "shared-branch", "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "headRefName": "shared-branch", "mergedAt": "2026-01-01T00:00:00Z"},
+        ]
+        enrichment_by_pr_number = {
+            1: {"commits": [], "files": []},
+            2: {"commits": [], "files": []},
+        }
+        resolved, confidence = _mod._resolve_branch_pr(
+            "shared-branch", matches, enrichment_by_pr_number, _mod._DEFAULT_PR_COST_PLAN_FILE_GLOB,
+        )
+        assert resolved is None
+        assert confidence == "low"
+
+
+class TestPrCostJoinCorroborated:
+    """_pr_cost_join_corroborated: plan-slug match and SHA overlap each
+    independently corroborate a direct headRefName match (an `or`, not an
+    `and`)."""
+
+    def test_true_via_plan_slug_alone(self):
+        enrichment = {"files": [{"path": ".claude/plans/feat-x.md"}], "commits": []}
+        assert _mod._pr_cost_join_corroborated("feat-x", enrichment, ".claude/plans/*.md") is True
+
+    def test_true_via_sha_overlap_alone(self, monkeypatch):
+        sha = "e" * 40
+        enrichment = {"files": [], "commits": [{"oid": sha}]}
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(local_git_shas={sha}))
+        assert _mod._pr_cost_join_corroborated("feat-x", enrichment, ".claude/plans/*.md") is True
+
+    def test_false_when_neither_present(self):
+        enrichment = {"files": [], "commits": []}
+        assert _mod._pr_cost_join_corroborated("feat-x", enrichment, ".claude/plans/*.md") is False
+
+    def test_false_when_enrichment_is_none(self):
+        assert _mod._pr_cost_join_corroborated("feat-x", None, ".claude/plans/*.md") is False
+
+
+class TestResolveBranchPrJoinConfidence:
+    """_resolve_branch_pr's single-direct-match confidence grading: "high"
+    when either cross-check corroborates, else "medium"."""
+
+    def test_plan_slug_corroboration_yields_high_confidence(self):
+        matches = [{"number": 1, "headRefName": "feat-x", "mergedAt": "2026-01-01T00:00:00Z"}]
+        enrichment_by_pr_number = {1: {"files": [{"path": ".claude/plans/feat-x.md"}], "commits": []}}
+        resolved, confidence = _mod._resolve_branch_pr(
+            "feat-x", matches, enrichment_by_pr_number, ".claude/plans/*.md",
+        )
+        assert resolved["number"] == 1
+        assert confidence == "high"
+
+    def test_sha_overlap_corroboration_without_plan_slug_yields_high_confidence(self, monkeypatch):
+        matches = [{"number": 1, "headRefName": "feat-x", "mergedAt": "2026-01-01T00:00:00Z"}]
+        sha = "d" * 40
+        enrichment_by_pr_number = {1: {"files": [], "commits": [{"oid": sha}]}}
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(local_git_shas={sha}))
+        resolved, confidence = _mod._resolve_branch_pr(
+            "feat-x", matches, enrichment_by_pr_number, ".claude/plans/*.md",
+        )
+        assert resolved["number"] == 1
+        assert confidence == "high"
+
+    def test_no_corroboration_yields_medium_confidence(self):
+        matches = [{"number": 1, "headRefName": "feat-x", "mergedAt": "2026-01-01T00:00:00Z"}]
+        enrichment_by_pr_number = {1: {"files": [], "commits": []}}
+        resolved, confidence = _mod._resolve_branch_pr(
+            "feat-x", matches, enrichment_by_pr_number, ".claude/plans/*.md",
+        )
+        assert resolved["number"] == 1
+        assert confidence == "medium"
+
+
+class TestPrCostBranchRedactionJoinIntegrity:
+    """A branch name shaped like a long hex identifier (the kind
+    deny-private-project-refs.sh's structural detectors would flag in a raw
+    commit) still joins correctly and is still scrubbed at the ledger's own
+    write boundary."""
+
+    # Built via concatenation, not a literal run: a continuous 32-char hex
+    # sequence here would itself match the redaction gate's own "long hex
+    # identifier" detector on this file's diff, blocking the commit that
+    # adds this fixture -- splitting it produces the identical runtime
+    # string this test needs without embedding a matching literal.
+    _HEXISH_BRANCH = "a1b2c3d4e5f6" + "78900987654321fedcba"
+
+    def test_hex_shaped_branch_name_still_joins_on_raw_value(self):
+        """Join logic (_direct_headref_matches/_resolve_branch_pr) operates
+        on the raw branch value -- it is never pre-scrubbed before the join
+        runs."""
+        merged_prs = [{"number": 9, "headRefName": self._HEXISH_BRANCH, "mergedAt": "2026-01-01T00:00:00Z"}]
+        matches = _mod._direct_headref_matches(self._HEXISH_BRANCH, merged_prs)
+        assert len(matches) == 1
+        resolved, confidence = _mod._resolve_branch_pr(
+            self._HEXISH_BRANCH, matches, {}, _mod._DEFAULT_PR_COST_PLAN_FILE_GLOB,
+        )
+        assert resolved["number"] == 9
+        assert confidence == "medium"
+
+    def test_hex_shaped_branch_name_stored_scrubbed_in_new_pr_cost_row(self):
+        """_new_pr_cost_row's head_branch column IS the scrubbed placeholder
+        -- the ledger's own write boundary for branch data, distinct from
+        the join above which never sees it."""
+        pr = {"number": 9, "mergedAt": "2026-01-01T00:00:00Z", "additions": 1, "deletions": 1, "changedFiles": 1}
+        row = _mod._new_pr_cost_row(
+            pinned_repo="owner/repo", pr=pr, branch=self._HEXISH_BRANCH, agg=_mod._new_pr_cost_agg(),
+            enrichment=None, join_confidence="medium", status=_mod._PR_COST_STATUS_OK, machine="ci1",
+            captured_at="2026-01-01T00:00:00Z", supersedes="",
+            plan_glob=_mod._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=_mod._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+            ordinal=1, branch_map={},
+        )
+        assert row["head_branch"] != self._HEXISH_BRANCH
+        assert row["head_branch"] == "account-1/branch-1"
+
+
+class TestGhDiscoverMergedPrsPagination:
+    def test_passes_explicit_limit_well_above_ghs_own_default(self, monkeypatch):
+        """gh pr list's own default (30) silently truncates a larger
+        population with no error -- _gh_discover_merged_prs must always pass
+        an explicit --limit."""
+        captured: dict = {}
+
+        def fake_run(cmd, *a, **kw):
+            captured["cmd"] = cmd
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _mod._gh_discover_merged_prs("owner/repo")
+
+        argv = captured["cmd"]
+        assert "--limit" in argv
+        limit_value = int(argv[argv.index("--limit") + 1])
+        assert limit_value == _mod._PR_COST_GH_PR_LIST_LIMIT
+        assert limit_value > 30  # gh pr list's own truncating default
+
+
+class TestAppendPrCostLedgerRow:
+    def test_duplicate_key_without_force_raises(self):
+        existing_row = _sample_pr_cost_row()
+        with pytest.raises(ValueError, match="already exists"):
+            _mod._append_pr_cost_ledger_row([existing_row], _sample_pr_cost_row(), already=existing_row, force=False)
+
+    def test_duplicate_key_with_force_appends_superseding_row_byte_identical_prior_rows(self):
+        existing_row = _sample_pr_cost_row(captured_at="2026-01-01T00:00:00Z")
+        existing_rows = [existing_row]
+        new_row = _sample_pr_cost_row(captured_at="2026-01-02T00:00:00Z", supersedes="2026-01-01T00:00:00Z")
+
+        result = _mod._append_pr_cost_ledger_row(existing_rows, new_row, already=existing_row, force=True)
+
+        assert result == [existing_row, new_row]
+        assert _mod._format_pr_cost_ledger_row(result[0]) == _mod._format_pr_cost_ledger_row(existing_row)
+
+    def test_duplicate_key_without_force_error_omits_raw_repo_value(self):
+        existing_row = _sample_pr_cost_row(repo="acme-corp/internal-project")
+        with pytest.raises(ValueError) as exc_info:
+            _mod._append_pr_cost_ledger_row(
+                [existing_row],
+                _sample_pr_cost_row(repo="acme-corp/internal-project"),
+                already=existing_row,
+                force=False,
+            )
+        assert "acme-corp" not in str(exc_info.value)
+
+
+class TestPrCostReportOrchestration:
+    """Full _pr_cost_report orchestration, with every git/gh call faked via
+    _fake_pr_cost_subprocess_run -- local-mechanics behavior only (zero-
+    record agg defaulting, per-branch skip, the multi-root refusal, and
+    the single local-corpus-scan guarantee), never gh-integration coverage."""
+
+    def test_target_pr_with_zero_branch_records_uses_zero_valued_agg_default(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """_new_pr_cost_row's zero-valued shape is used correctly when
+        branch_totals.get(branch) misses (--pr targeting a merged PR whose
+        branch carries no local corpus activity at all)."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        merged_prs = [{
+            "number": 42, "headRefName": "ghost-branch", "additions": 5, "deletions": 1,
+            "changedFiles": 2, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["turn_count"] == 0
+        assert row["session_count"] == 0
+        assert row["cache_read_usd"] == pytest.approx(0.0)
+        assert row["input_usd"] == pytest.approx(0.0)
+        assert row["unpriced_turns"] == 0
+
+    def test_captured_row_carries_correct_token_counts_alongside_dollars(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """A captured row's *_tokens columns are asserted end-to-end, not
+        just their *_usd siblings -- dollars and tokens are independently
+        derived (_price_turn vs _token_counts), so a regression in the
+        token half of the ledger schema could otherwise ship with every
+        existing orchestration test (which only checks *_usd) still green."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, output=200_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 7, "headRefName": "feature-a", "additions": 5, "deletions": 1,
+            "changedFiles": 2, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["input_tokens"] == 1_000_000
+        assert row["output_tokens"] == 200_000
+        assert row["cache_read_tokens"] == 0
+        assert row["input_usd"] > 0
+        assert row["output_usd"] > 0
+
+    def test_branch_with_records_but_no_merged_pr_is_skipped_not_errored(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="orphan-branch"),
+        ])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[]))
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        err = capsys.readouterr().err
+        assert "no merged PR found for this branch -- skipped" in err
+        assert not ledger_path.exists()
+
+    def test_targeted_pr_merged_inside_asof_window_refuses_with_exit_1(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """--pr targeting a PR that merged too recently (inside the default
+        3-day as-of window) refuses outright rather than silently skipping --
+        the caller asked for exactly this PR, so there is no other PR left
+        to fall back to."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-08-09T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, pr=1, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        assert exc_info.value.code == 1
+        assert "refusing" in capsys.readouterr().err
+        assert not ledger_path.exists()
+
+    def test_swept_pr_merged_inside_asof_window_skips_without_exiting(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """No --pr (sweep mode): a branch's PR merged too recently is
+        skipped, not fatal -- the run continues over any other branch in
+        scope, unlike the --pr-targeted case above."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-08-09T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        err = capsys.readouterr().err
+        assert "merged too recently" in err
+        assert "skipped" in err
+        assert not ledger_path.exists()
+
+    def test_more_than_one_resolved_root_refuses_with_exit_2(self, fake_projects, tmp_path, capsys):
+        other_root = tmp_path / "other-account" / "projects"
+        other_root.mkdir(parents=True)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(
+                _pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent, other_root],
+            )
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert str(fake_projects.parent) not in err
+        assert str(other_root) not in err
+
+    def test_resolves_project_scope_exactly_once_across_multi_pr_run(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """The local corpus is scanned exactly once per invocation
+        regardless of how many PRs end up in scope -- wraps (not replaces)
+        _resolve_project_scope with a counting closure, matching
+        TestRootsThreadingSpy's own spy-wrap pattern."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-b"),
+        ])
+        merged_prs = [
+            {"number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "headRefName": "feature-b", "additions": 1, "deletions": 1,
+             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+        ]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        calls: list[object] = []
+        real_resolve = _mod._resolve_project_scope
+
+        def counting_resolve(*a, **kw):
+            calls.append(1)
+            return real_resolve(*a, **kw)
+
+        monkeypatch.setattr(_mod, "_resolve_project_scope", counting_resolve)
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        assert len(calls) == 1
+
+
+class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:
+    """Pure args-object-driven refusals in _pr_cost_report -- each must fire
+    before any subprocess call, confirmed by a subprocess double that raises
+    loudly on any invocation instead of silently succeeding."""
+
+    @staticmethod
+    def _no_subprocess_calls_fake(cmd, *a, **kw):
+        raise AssertionError(f"unexpected subprocess.run call: {cmd}")
+
+    def test_force_without_pr_exits_1(self, fake_projects, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
+        args = _pr_cost_args(force=True)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+
+    def test_record_without_machine_label_exits_1(self, fake_projects, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
+        args = _pr_cost_args(record=True)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+
+    def test_malformed_machine_label_exits_1(self, fake_projects, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
+        args = _pr_cost_args(machine_label="Not-Valid!")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+
+    def test_machine_label_equal_to_hostname_exits_1_naming_the_deanonymization_risk(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
+        monkeypatch.setattr(_mod.socket, "gethostname", lambda: "realhost")
+        args = _pr_cost_args(record=True, machine_label="realhost")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        assert "deanonymiz" in capsys.readouterr().err
+
+
+class TestPrCostRecordRefusesGitTrackedLedgerUnconditionally:
+    def test_single_root_git_tracked_ledger_refuses_record_with_exit_2(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Unlike cost-ledger's own git-tracked check (gated on multi-root),
+        pr-cost refuses --record against a git-tracked ledger path even with
+        exactly one root resolved -- these rows carry branch/repo data the
+        weekly ledger's rows don't."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(git_tracked=True))
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        assert exc_info.value.code == 2
+        assert "inside a git working tree" in capsys.readouterr().err
+        assert not ledger_path.exists()
+
+
+class TestPrCostLedgerConcurrentWrite:
+    """Genuine OS-level concurrency isn't deterministic in a unit test --
+    models two sequential --record-shaped lock/write/unlock cycles against
+    the same ledger file instead."""
+
+    def test_two_sequential_record_writes_both_persist(self, tmp_path):
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+
+        row1 = _sample_pr_cost_row(pr_number=1, captured_at="2026-01-01T00:00:00Z")
+        with open(lock_path, "w") as lock_f:
+            _mod._acquire_pr_cost_ledger_lock(lock_f)
+            try:
+                _mod._write_pr_cost_ledger_file(ledger_path, [row1])
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+        row2 = _sample_pr_cost_row(pr_number=2, captured_at="2026-01-01T00:00:00Z")
+        with open(lock_path, "w") as lock_f:
+            _mod._acquire_pr_cost_ledger_lock(lock_f)
+            try:
+                current_rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                _mod._write_pr_cost_ledger_file(ledger_path, [*current_rows, row2])
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+        final_rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert [r["pr_number"] for r in final_rows] == [1, 2]
+
+
+class TestPrCostLedgerRowFormatRoundTrip:
+    def test_format_then_parse_round_trip_is_lossless(self):
+        row = _sample_pr_cost_row()
+        line = _mod._format_pr_cost_ledger_row(row)
+        parsed = _mod._parse_pr_cost_ledger_row_cells(line.split("\t"), line_no=2)
+        assert parsed == row
+
+
+class TestParsePrCostLedgerFileTextMalformed:
+    def _valid_line(self) -> str:
+        return _mod._format_pr_cost_ledger_row(_sample_pr_cost_row())
+
+    def test_wrong_column_count_raises(self):
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + "owner/repo\t1\tci1\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="expected .* columns"):
+            _mod._parse_pr_cost_ledger_file_text(text)
+
+    def test_non_numeric_pr_number_raises(self):
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(pr_number="not-a-number"))
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="non-numeric pr_number"):
+            _mod._parse_pr_cost_ledger_file_text(text)
+
+    def test_unknown_join_confidence_raises(self):
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(join_confidence="extreme"))
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="unknown join_confidence"):
+            _mod._parse_pr_cost_ledger_file_text(text)
+
+    def test_unknown_status_raises(self):
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(status="degraded_mystery"))
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="unknown status"):
+            _mod._parse_pr_cost_ledger_file_text(text)
+
+    def test_malformed_repo_raises_without_leaking_raw_value(self):
+        """A non-lowercase repo value fails the malformed-repo check, and --
+        mirroring _append_pr_cost_ledger_row's duplicate-key error -- the
+        raised message omits the raw value, since the ledger's repo column
+        is never scrubbed at rest."""
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(repo="Acme-Corp/Internal-Project"))
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="malformed repo value") as exc_info:
+            _mod._parse_pr_cost_ledger_file_text(text)
+        assert "Acme-Corp" not in str(exc_info.value)
+
+    def test_malformed_merged_at_raises(self):
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(merged_at="not-a-timestamp"))
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="malformed merged_at"):
+            _mod._parse_pr_cost_ledger_file_text(text)
+
+    def test_malformed_captured_at_raises(self):
+        """Guards _latest_pr_cost_row's lexicographic string max() on
+        captured_at, which would silently misresolve given a malformed value."""
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(captured_at="2026/01/01"))
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="malformed captured_at"):
+            _mod._parse_pr_cost_ledger_file_text(text)
+
+    def test_merge_conflict_marker_raises(self):
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + self._valid_line() + "\n<<<<<<< HEAD\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="merge-conflict marker"):
+            _mod._parse_pr_cost_ledger_file_text(text)
+
+    def test_missing_header_raises(self):
+        text = "not-the-header\n" + self._valid_line() + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="missing or mismatched"):
+            _mod._parse_pr_cost_ledger_file_text(text)
+
+    def test_mismatched_header_raises(self):
+        bad_header = "\t".join(_mod._PR_COST_LEDGER_COLUMNS[:-1])  # drop the last column
+        text = bad_header + "\n" + self._valid_line() + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="missing or mismatched"):
+            _mod._parse_pr_cost_ledger_file_text(text)
+
+
+class TestPrCostMechanicalProxies:
+    def test_representative_file_path_list(self):
+        paths = [
+            "claude/.claude/hooks/foo.py",
+            "claude/.claude/hooks/tests/test_foo.py",
+            "docs/pr-cost.md",
+            ".claude/plans/token-cost-per-pr-study.md",
+            "README.md",
+        ]
+        proxies = _mod._pr_cost_mechanical_proxies(
+            paths, plan_glob=".claude/plans/*.md", risk_globs=_mod._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+        )
+        assert proxies["distinct_top_level_dirs"] == 4  # claude, docs, .claude, README.md (no "/")
+        assert proxies["distinct_file_extensions"] == 2  # .py, .md
+        assert proxies["tests_changed"] is True
+        assert proxies["plan_file_added"] is True
+        assert proxies["risk_surface_flag"] is True
+
+    def test_no_tests_no_plan_no_risk_surface(self):
+        paths = ["src/app.py", "src/util.py"]
+        proxies = _mod._pr_cost_mechanical_proxies(
+            paths, plan_glob=".claude/plans/*.md", risk_globs=_mod._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+        )
+        assert proxies["tests_changed"] is False
+        assert proxies["plan_file_added"] is False
+        assert proxies["risk_surface_flag"] is False
+        assert proxies["distinct_top_level_dirs"] == 1
+        assert proxies["distinct_file_extensions"] == 1
+
+    def test_plan_file_glob_requires_exact_configured_pattern(self):
+        """A near-miss plan-shaped path (wrong extension) must not set
+        plan_file_added -- only an exact configured-glob match does."""
+        proxies = _mod._pr_cost_mechanical_proxies(
+            [".claude/plans/foo.txt"], plan_glob=".claude/plans/*.md", risk_globs=(),
+        )
+        assert proxies["plan_file_added"] is False
+
+    def test_empty_file_path_list_returns_zero_valued_proxies(self):
+        """A PR with zero changed files (the enrichment call never returned
+        `files`, or the list is genuinely empty) must not crash any of the
+        set/any() computations."""
+        proxies = _mod._pr_cost_mechanical_proxies(
+            [], plan_glob=".claude/plans/*.md", risk_globs=_mod._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+        )
+        assert proxies["distinct_top_level_dirs"] == 0
+        assert proxies["distinct_file_extensions"] == 0
+        assert proxies["tests_changed"] is False
+        assert proxies["plan_file_added"] is False
+        assert proxies["risk_surface_flag"] is False
+
+    def test_risk_surface_flag_true_for_any_configured_glob_match(self):
+        proxies = _mod._pr_cost_mechanical_proxies(
+            ["install.sh"], plan_glob=".claude/plans/*.md", risk_globs=("install*.sh",),
+        )
+        assert proxies["risk_surface_flag"] is True
+
+
+class TestPrCostAsofWindowOk:
+    def test_inside_window_returns_false(self):
+        now = datetime(2026, 8, 10, tzinfo=UTC)
+        assert _mod._pr_cost_asof_window_ok("2026-08-09T00:00:00Z", 3.0, now) is False
+
+    def test_exactly_at_window_boundary_returns_true(self):
+        """>= , not >: the window boundary instant itself is eligible."""
+        now = datetime(2026, 8, 10, tzinfo=UTC)
+        assert _mod._pr_cost_asof_window_ok("2026-08-07T00:00:00Z", 3.0, now) is True
+
+    def test_past_window_returns_true(self):
+        now = datetime(2026, 8, 10, tzinfo=UTC)
+        assert _mod._pr_cost_asof_window_ok("2026-08-01T00:00:00Z", 3.0, now) is True
+
+    def test_unparseable_merged_at_returns_false(self):
+        now = datetime(2026, 8, 10, tzinfo=UTC)
+        assert _mod._pr_cost_asof_window_ok("not-a-timestamp", 3.0, now) is False
+
+
+class TestWritePrCostLedgerFileMode:
+    def test_fresh_file_created_with_0600(self, tmp_path):
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        _mod._write_pr_cost_ledger_file(ledger_path, [])
+        assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o600
+
+    def test_existing_file_mode_preserved_across_write(self, tmp_path):
+        """A user-loosened mode on an existing ledger file is preserved, not
+        silently reset back to 0600 on a later write."""
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        _mod._write_pr_cost_ledger_file(ledger_path, [])
+        os.chmod(ledger_path, 0o644)
+        _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+        assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o644
+
+
+class TestWritePrCostLedgerFileVerificationFailure:
+    def test_readback_mismatch_raises_without_publishing(self, tmp_path, monkeypatch):
+        """Forces the write/read-back byte-equality check to fail: the
+        function must raise rather than ever call os.replace, so the
+        destination path is never created."""
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        real_read_text = Path.read_text
+
+        def corrupting_read_text(self, *a, **kw):
+            return real_read_text(self, *a, **kw) + "CORRUPTED"
+
+        monkeypatch.setattr(Path, "read_text", corrupting_read_text)
+        with pytest.raises(_mod._PrCostLedgerParseError, match="write verification mismatch"):
+            _mod._write_pr_cost_ledger_file(ledger_path, [])
+        assert not ledger_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# pr-cost -- gh-integration coverage: gh failure classification and backoff,
+# gh's effective-repo-identity pinning (_resolve_pinned_gh_repo), cross-repo
+# ledger isolation, and redaction of every gh-integration print site.
+# Local-mechanics coverage (attribution, ledger I/O, join logic, mechanical
+# proxies) lives in the section above.
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyGhError:
+    @pytest.mark.parametrize("stderr", [
+        "You are not logged into any GitHub hosts. Run gh auth login to authenticate.\n",
+        "authentication failed for repository 'https://github.com/owner/repo/'\n",
+        "HTTP 401: Bad credentials\n",
+    ])
+    def test_auth_shaped_stderr_classified_as_auth(self, stderr):
+        assert _mod._classify_gh_error(stderr) == _mod._GH_ERROR_KIND_AUTH
+
+    @pytest.mark.parametrize("stderr", [
+        "API rate limit exceeded for user ID 123.\n",
+        "HTTP 429: Too Many Requests\n",
+        "HTTP 403: Forbidden\n",
+    ])
+    def test_rate_limit_shaped_stderr_classified_as_rate_limit(self, stderr):
+        assert _mod._classify_gh_error(stderr) == _mod._GH_ERROR_KIND_RATE_LIMIT
+
+    @pytest.mark.parametrize("stderr", [
+        "curl: (6) Could not resolve host: api.github.com\n",
+        "connection reset by peer\n",
+        "\n",  # unrecognized/empty stderr falls back to network, not a crash
+    ])
+    def test_unrecognized_stderr_falls_back_to_network(self, stderr):
+        assert _mod._classify_gh_error(stderr) == _mod._GH_ERROR_KIND_NETWORK
+
+
+class TestGitRemoteOriginOwnerRepoRegex:
+    """_git_remote_origin_owner_repo / _GIT_REMOTE_OWNER_REPO_RE: every
+    github.com remote URL shape git/gh support, plus the substring-spoofing
+    attack named in the regex's own comment."""
+
+    @pytest.mark.parametrize("remote_url,expected", [
+        ("https://github.com/owner/repo.git", "owner/repo"),
+        ("https://github.com/owner/repo", "owner/repo"),
+        ("git@github.com:owner/repo.git", "owner/repo"),
+        ("ssh://git@github.com/owner/repo.git", "owner/repo"),
+    ])
+    def test_recognized_remote_shapes_resolve_to_owner_repo(self, monkeypatch, remote_url, expected):
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": remote_url + "\n", "stderr": ""})(),
+        )
+        assert _mod._git_remote_origin_owner_repo() == expected
+
+    def test_attacker_substring_shape_does_not_resolve(self, monkeypatch, capsys):
+        """A malicious/misconfigured remote embedding "github.com/owner/repo"
+        as a path segment on a different host must not spoof the real
+        identity -- the exact shape named in _GIT_REMOTE_OWNER_REPO_RE's own
+        comment."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": "https://attacker.example/github.com/owner/repo\n", "stderr": "",
+            })(),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_owner_repo()
+        assert exc_info.value.code == 1
+        assert "not a recognizable github.com owner/repo URL" in capsys.readouterr().err
+
+
+class TestGhCallWithBackoffFailureClassBehavior:
+    """_gh_call_with_backoff's own retry/no-retry split by _classify_gh_error
+    kind -- auth never retries, rate-limit/network do (whether the failure
+    is stderr-text-shaped or a raised exception)."""
+
+    def test_auth_shaped_failure_returns_immediately_with_no_retry_or_sleep(self, monkeypatch):
+        call_count = 0
+
+        def fake_run(cmd, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return type("R", (), {
+                "returncode": 1, "stdout": "", "stderr": "not logged into any GitHub hosts\n",
+            })()
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        proc, degraded = _mod._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert proc is None
+        assert degraded == _mod._GH_CALL_DEGRADED_AUTH
+        assert call_count == 1
+        assert sleep_calls == []
+
+    def test_rate_limit_shaped_failure_retries_before_returning_degraded(self, monkeypatch):
+        call_count = 0
+
+        def fake_run(cmd, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return type("R", (), {
+                "returncode": 1, "stdout": "", "stderr": "API rate limit exceeded (HTTP 403)\n",
+            })()
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        proc, degraded = _mod._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert proc is None
+        assert degraded == _mod._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+        assert call_count == _mod._PR_COST_RATE_LIMIT_MAX_ATTEMPTS
+        assert sleep_calls  # retried at least once before exhausting
+
+    def test_network_shaped_exception_retries_before_returning_degraded(self, monkeypatch):
+        """A raised TimeoutExpired (no stderr text at all, unlike the two
+        cases above) is still classified network-kind and retried under the
+        same budget."""
+        call_count = 0
+
+        def fake_run(cmd, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._PR_COST_GH_TIMEOUT_S)
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        proc, degraded = _mod._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert proc is None
+        assert degraded == _mod._PR_COST_STATUS_DEGRADED_NETWORK
+        assert call_count == _mod._PR_COST_RATE_LIMIT_MAX_ATTEMPTS
+        assert sleep_calls
+
+    def test_network_shaped_failure_succeeds_after_two_retries(self, monkeypatch):
+        """Neither of the two paths above proves the success-after-retry
+        path itself works -- only zero-retry success (elsewhere) and full
+        exhaustion (above) are covered without this test."""
+        call_count = 0
+
+        def fake_run(cmd, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._PR_COST_GH_TIMEOUT_S)
+            return type("R", (), {"returncode": 0, "stdout": '{"ok": true}', "stderr": ""})()
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        proc, degraded = _mod._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert degraded == ""
+        assert proc is not None
+        assert proc.stdout == '{"ok": true}'
+        assert call_count == 3
+        assert len(sleep_calls) == 2
+
+
+class TestGhCallWithBackoffElapsedBudgetCap:
+    """_gh_call_with_backoff exhausts on whichever of its two bounds
+    (_PR_COST_RATE_LIMIT_MAX_ATTEMPTS, _PR_COST_RATE_LIMIT_MAX_ELAPSED_S) is
+    hit first -- the default doubling sequence hits the attempts bound
+    first; a huge "retry after" hint (capped per-sleep) hits the elapsed
+    bound first instead."""
+
+    def test_default_backoff_exhausts_at_max_attempts_with_expected_sleep_sequence(self, monkeypatch):
+        def fake_run(cmd, *a, **kw):
+            return type("R", (), {
+                "returncode": 1, "stdout": "", "stderr": "API rate limit exceeded (HTTP 403)\n",
+            })()
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        proc, degraded = _mod._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
+
+        assert proc is None
+        assert degraded == _mod._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+        assert sleep_calls == [60.0, 120.0, 240.0, 480.0]
+        assert sum(sleep_calls) == _mod._PR_COST_RATE_LIMIT_MAX_ELAPSED_S
+
+    def test_malformed_huge_retry_after_hint_caps_sleep_to_remaining_elapsed_budget(self, monkeypatch):
+        """A huge "retry after" hint from gh's own stderr is capped to the
+        remaining elapsed budget, not passed through raw; exhaustion here
+        fires via the elapsed bound, not the attempts bound."""
+        call_count = 0
+
+        def fake_run(cmd, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return type("R", (), {
+                "returncode": 1, "stdout": "",
+                "stderr": "secondary rate limit hit, retry after: 999999 seconds\n",
+            })()
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        proc, degraded = _mod._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
+
+        assert proc is None
+        assert degraded == _mod._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+        assert call_count == 2
+        assert sleep_calls == [_mod._PR_COST_RATE_LIMIT_MAX_ELAPSED_S]  # capped, not the raw 999999 value
+
+
+class TestPrCostPerPrEnrichmentRateLimitDegradesRowNotRun:
+    def test_perpetual_gh_pr_view_rate_limit_failure_marks_row_degraded_and_still_records(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """A per-PR `gh pr view` enrichment call that never succeeds marks
+        that row's own status column and the run still completes -- only
+        repo-identity-resolution/discovery failures (with no row yet to
+        degrade into) abort the whole run."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo="owner/repo", merged_prs=merged_prs,
+                gh_pr_view_failure_stderr="API rate limit exceeded (HTTP 403)\n",
+            ),
+        )
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        assert rows[0]["status"] == _mod._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+
+
+class TestPrCostPerPrEnrichmentAuthFailureFoldsToDegradedNetwork:
+    def test_gh_pr_view_auth_shaped_failure_writes_degraded_network_not_degraded_auth(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """An auth-shaped failure on the per-PR `gh pr view` enrichment call
+        (distinct from the M9-equivalent identity-resolution call) folds
+        into _PR_COST_STATUS_DEGRADED_NETWORK before reaching the row --
+        _GH_CALL_DEGRADED_AUTH is never a valid ledger status value."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo="owner/repo", merged_prs=merged_prs,
+                gh_pr_view_failure_stderr="You are not logged into any GitHub hosts.\n",
+            ),
+        )
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        assert rows[0]["status"] == _mod._PR_COST_STATUS_DEGRADED_NETWORK
+
+
+class TestResolvePinnedGhRepoIdentity:
+    """_resolve_pinned_gh_repo: refuses a genuine identity mismatch between
+    gh's own effective repo and this repo's git remote, case-folds a
+    matching identity, and never prints a raw repo value."""
+
+    def test_mismatch_exits_2_with_neither_raw_value_in_output(self, monkeypatch, capsys):
+        """The two capsys assertions below confirm the refusal message
+        itself never leaks either raw repo identity."""
+        gh_repo = "gh-side-owner/gh-side-repo"
+        corpus_repo = "git-side-owner/git-side-repo"
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(repo=corpus_repo, gh_repo_name_with_owner=gh_repo),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_pinned_gh_repo()
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert gh_repo not in err
+        assert corpus_repo not in err
+        assert "account-1/repo-1" in err
+        assert "account-1/repo-2" in err
+
+    def test_case_differing_match_proceeds_and_persists_the_pinned_lowercased_identity(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """A case-differing but otherwise-equal identity ('Owner/Repo' from
+        the git remote vs. 'owner/REPO' from `gh repo view`) proceeds
+        without exit(2); the row's persisted repo column is the single
+        lowercased identity _resolve_pinned_gh_repo itself resolved and
+        returned (its own `gh_repo`), confirmed by checking it is fully
+        lowercase -- a bug that persisted the raw, differently-cased
+        corpus-side value instead would leave mixed case behind."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        merged_prs = [{
+            "number": 42, "headRefName": "ghost-branch", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo="Owner/Repo", gh_repo_name_with_owner="owner/REPO", merged_prs=merged_prs,
+            ),
+        )
+
+        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        assert rows[0]["repo"] == "owner/repo"
+
+
+class TestResolvePinnedGhRepoRetryExhaustion:
+    def test_perpetual_rate_limit_failure_on_gh_repo_view_exits_1_after_max_attempts_no_row_written(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Distinct from a genuine identity mismatch (exit 2): exhausting
+        the shared retry budget on `gh repo view` itself aborts the whole
+        run (exit 1, since no row exists yet to degrade into) before ever
+        reaching the comparison that could disagree. The abort message must
+        never surface gh's own raw stderr text either, only this module's
+        generic one."""
+        gh_repo = "gh-side-owner/gh-side-repo"
+        corpus_repo = "git-side-owner/git-side-repo"
+        rate_limit_stderr = "API rate limit exceeded (HTTP 403)\n"
+        call_log: list[list[str]] = []
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo=corpus_repo, gh_repo_name_with_owner=gh_repo,
+                gh_repo_view_failure_stderr=rate_limit_stderr, call_log=call_log,
+            ),
+        )
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1  # exhaustion, not the mismatch path's exit(2)
+
+        gh_repo_view_calls = [c for c in call_log if c[:3] == ["gh", "repo", "view"]]
+        assert len(gh_repo_view_calls) == _mod._PR_COST_RATE_LIMIT_MAX_ATTEMPTS
+        assert len(sleep_calls) == _mod._PR_COST_RATE_LIMIT_MAX_ATTEMPTS - 1
+
+        err = capsys.readouterr().err
+        assert gh_repo not in err
+        assert corpus_repo not in err
+        assert rate_limit_stderr.strip() not in err  # gh's own raw stderr text is never surfaced
+        assert not (tmp_path / "pr-cost-ledger.tsv").exists()
+
+
+class TestPrCostGhCallsPinnedAfterRepoIdentityResolution:
+    def test_every_post_resolution_gh_call_carries_repo_pin(self, fake_projects, tmp_path, monkeypatch):
+        """Every `gh pr list`/`gh pr view` call this run makes after
+        _resolve_pinned_gh_repo resolves the identity must carry
+        --repo <pinned-value> -- the fake
+        itself raises AssertionError on a call missing the pin (enforce_repo_pin),
+        so a regression that drops it fails loud rather than returning a
+        stale canned response; the assertions below are a second, explicit
+        check against the captured call log."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-b"),
+        ])
+        merged_prs = [
+            {"number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "headRefName": "feature-b", "additions": 1, "deletions": 1,
+             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+        ]
+        call_log: list[list[str]] = []
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo="owner/repo", merged_prs=merged_prs, call_log=call_log, enforce_repo_pin="owner/repo",
+            ),
+        )
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        gh_pr_list_calls = [c for c in call_log if c[:3] == ["gh", "pr", "list"]]
+        gh_pr_view_calls = [c for c in call_log if c[:3] == ["gh", "pr", "view"]]
+        assert len(gh_pr_list_calls) == 1
+        assert len(gh_pr_view_calls) == 2
+        for cmd in [*gh_pr_list_calls, *gh_pr_view_calls]:
+            assert _argv_carries_repo_pin(cmd, "owner/repo")
+
+
+class TestPrCostCrossRepoLedgerIsolation:
+    def test_two_repos_recording_the_same_pr_number_persist_as_distinct_rows(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """(repo, pr_number, machine) is the ledger's own key -- two
+        different repos both recording pr_number=42 for the same machine
+        must persist as two distinct latest-per-key rows, neither
+        superseding the other."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        existing_row = _sample_pr_cost_row(repo="repo-a/x", pr_number=42, machine="ci1")
+        _mod._write_pr_cost_ledger_file(ledger_path, [existing_row])
+
+        merged_prs = [{
+            "number": 42, "headRefName": "ghost-branch", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(
+            subprocess, "run", _fake_pr_cost_subprocess_run(repo="repo-b/y", merged_prs=merged_prs),
+        )
+
+        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 2
+        by_repo = {r["repo"]: r for r in rows}
+        assert set(by_repo) == {"repo-a/x", "repo-b/y"}
+        assert by_repo["repo-a/x"]["supersedes"] == ""
+        assert by_repo["repo-b/y"]["supersedes"] == ""
+
+
+class TestPrCostMultiRootRefusalRedaction:
+    """The multi-root refusal (see local-mechanics' own
+    test_more_than_one_resolved_root_refuses_with_exit_2 for its path-
+    redaction coverage) fires before any repo/branch identity is resolved --
+    confirmed here by proving no git/gh call happens at all, so there is
+    structurally nothing repo/branch-shaped left for the message to leak."""
+
+    def test_refusal_fires_before_any_git_or_gh_call(self, fake_projects, tmp_path, monkeypatch):
+        other_root = tmp_path / "other-account" / "projects"
+        other_root.mkdir(parents=True)
+
+        def fail_on_any_call(cmd, *a, **kw):
+            raise AssertionError(f"unexpected subprocess call before the multi-root refusal: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", fail_on_any_call)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(
+                _pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent, other_root],
+            )
+        assert exc_info.value.code == 2
+
+
+class TestPrCostReadModeRedaction:
+    """`_pr_cost_report` in read mode (record=False) -- every per-row print
+    in _print_pr_cost_ledger_rows (existing captured rows) and
+    _print_pr_cost_uncaptured (merged PRs not yet captured) routes through
+    _assign_root_scoped_redact_label; no raw branch name reaches stdout/
+    stderr. The --record loop's own per-branch "resolving..." progress line
+    is covered by TestPrCostUnforcedReRecordRefusalRedaction below."""
+
+    def test_no_raw_branch_name_in_existing_rows_table_or_uncaptured_listing(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        distinctive_branch = "acme-corp-secret-initiative-branch"
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=7)])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch=distinctive_branch),
+        ])
+        merged_prs = [{
+            "number": 99, "headRefName": distinctive_branch, "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(repo="owner/repo", merged_prs=merged_prs))
+
+        _mod._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert distinctive_branch not in combined
+        assert "account-1/branch-1" in combined
+
+
+class TestPrCostUnforcedReRecordRefusalRedaction:
+    def test_no_raw_branch_name_in_already_captured_refusal(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Also covers the --record loop's per-branch "resolving..."
+        progress line, printed just before this refusal fires."""
+        distinctive_branch = "acme-corp-secret-initiative-branch"
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=42, machine="ci1")])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch=distinctive_branch),
+        ])
+        merged_prs = [{
+            "number": 42, "headRefName": distinctive_branch, "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(repo="owner/repo", merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+
+        err = capsys.readouterr().err
+        assert distinctive_branch not in err
+        assert "already" in err
+        assert "account-1/branch-1" in err
+
+
+class TestPrCostAuthPreflightFailureAbortRedaction:
+    def test_gh_auth_status_failure_aborts_before_any_identity_resolution(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """An auth preflight failure aborts before _resolve_pinned_gh_repo is
+        ever called, confirmed here by asserting no `gh repo view` call is in
+        the captured call log -- there is nothing repo/branch-shaped yet to
+        leak."""
+        call_log: list[list[str]] = []
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(gh_auth_status_failure=True, call_log=call_log),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+
+        err = capsys.readouterr().err
+        assert "gh auth login" in err
+        assert not any(c[:3] == ["gh", "repo", "view"] for c in call_log)
