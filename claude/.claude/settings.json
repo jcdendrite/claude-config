@@ -306,6 +306,11 @@
             "type": "command",
             "command": "~/.claude/hooks/deny-network-installs.sh",
             "statusMessage": "Checking network-install guard..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-review-orchestrator-bash.sh",
+            "statusMessage": "Checking review-orchestrator Bash restriction..."
           }
         ]
       },
@@ -366,6 +371,11 @@
             "type": "command",
             "command": "~/.claude/hooks/require-routing-read.sh",
             "statusMessage": "Checking routing-read gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-review-orchestrator-agent-target.sh",
+            "statusMessage": "Checking review-orchestrator dispatch-target restriction..."
           }
         ]
       },

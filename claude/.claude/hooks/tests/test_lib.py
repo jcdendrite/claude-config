@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import _dead_pid
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -2165,3 +2166,159 @@ def test_lib_config_lines_counts_raw_line_numbers_through_skipped_lines(tmp_path
     messages pointing the user at the actual line to fix."""
     content = "# comment\nfirst\n\nsecond\n"
     assert _config_lines(content, tmp_path) == [("2", "first"), ("4", "second")]
+
+
+# --- _lib_append_line_locked -----------------------------------------------
+#
+# Direct unit coverage of the noclobber-lock + PID-liveness-eviction +
+# single-EXIT-trap primitive extracted from review-ledger.sh's original
+# _append_ledger_line_locked, so orchestrator-checkpoint.sh's reuse of it is
+# validated once here rather than only indirectly, through each caller's own
+# subprocess-integration tests.
+
+
+def _append_line_locked(
+    target_file: Path, lock_file: Path, line: str, retries: int, timeout: float = 15
+) -> subprocess.CompletedProcess:
+    harness = f'. {_LIB_SH}; _lib_append_line_locked "$1" "$2" "$3" "$4"'
+    return subprocess.run(
+        ["bash", "-c", harness, "bash", str(target_file), str(lock_file), line, str(retries)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def test_append_line_locked_appends_a_new_line(tmp_path: Path) -> None:
+    target = tmp_path / "target.jsonl"
+    result = _append_line_locked(target, tmp_path / "target.jsonl.lock", '{"a":1}', retries=5)
+    assert result.returncode == 0, result.stderr
+    assert target.read_text().splitlines() == ['{"a":1}']
+
+
+def test_append_line_locked_dedups_an_identical_existing_line(tmp_path: Path) -> None:
+    target = tmp_path / "target.jsonl"
+    target.write_text('{"a":1}\n')
+    result = _append_line_locked(target, tmp_path / "target.jsonl.lock", '{"a":1}', retries=5)
+    assert result.returncode == 0, result.stderr
+    assert target.read_text().splitlines() == ['{"a":1}']
+
+
+def test_append_line_locked_appends_a_distinct_line_alongside_an_existing_one(tmp_path: Path) -> None:
+    target = tmp_path / "target.jsonl"
+    target.write_text('{"a":1}\n')
+    result = _append_line_locked(target, tmp_path / "target.jsonl.lock", '{"a":2}', retries=5)
+    assert result.returncode == 0, result.stderr
+    assert target.read_text().splitlines() == ['{"a":1}', '{"a":2}']
+
+
+def test_append_line_locked_releases_the_lock_file(tmp_path: Path) -> None:
+    lock = tmp_path / "target.jsonl.lock"
+    _append_line_locked(tmp_path / "target.jsonl", lock, '{"a":1}', retries=5)
+    assert not lock.exists()
+
+
+def test_append_line_locked_evicts_a_dead_pid_holder_faster_than_a_live_lock(
+    tmp_path: Path, live_pid
+) -> None:
+    """Mirrors test_review_ledger_script.py's own dead-PID-eviction test, but
+    calls the shared _lib.sh primitive directly rather than through either
+    caller script. Compared against a live-lock control run in the same test
+    (rather than a fixed wall-clock threshold), since absolute timing is too
+    noisy under variable system/CI load -- the dead-PID path skips every
+    sleep the live-lock path is forced through, so the gap is large
+    regardless of ambient load."""
+    target = tmp_path / "target.jsonl"
+    lock = tmp_path / "target.jsonl.lock"
+
+    lock.write_text(f"{_dead_pid()}\n")
+    start = time.monotonic()
+    result_dead = _append_line_locked(target, lock, '{"a":1}', retries=5)
+    elapsed_dead_pid_lock = time.monotonic() - start
+    assert result_dead.returncode == 0, result_dead.stderr
+    assert target.exists()
+
+    target.unlink()
+    lock.write_text(f"{live_pid}\n")
+    start = time.monotonic()
+    result_live = _append_line_locked(target, lock, '{"a":1}', retries=5)
+    elapsed_live_pid_lock = time.monotonic() - start
+    assert result_live.returncode == 0, result_live.stderr
+
+    assert elapsed_dead_pid_lock < elapsed_live_pid_lock, (
+        f"dead-PID eviction ({elapsed_dead_pid_lock:.2f}s) should be faster "
+        f"than exhausting every retry against a live lock "
+        f"({elapsed_live_pid_lock:.2f}s) -- a prompt eviction, not a wait"
+    )
+
+
+# --- _lib_sweep_stale_files --------------------------------------------
+
+
+def _sweep_stale_files(directory: Path, dry_run: int, report: int) -> subprocess.CompletedProcess:
+    harness = f'. {_LIB_SH}; _lib_sweep_stale_files "$1" "$2" "$3"'
+    return subprocess.run(
+        ["bash", "-c", harness, "bash", str(directory), str(dry_run), str(report)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _make_file_with_mtime(path: Path, age_days: float, content: str = "x") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    stale_time = time.time() - age_days * 24 * 60 * 60
+    os.utime(path, (stale_time, stale_time))
+
+
+def test_sweep_stale_files_removes_a_jsonl_older_than_30_days(tmp_path: Path) -> None:
+    stale = tmp_path / "old.jsonl"
+    _make_file_with_mtime(stale, age_days=31)
+    result = _sweep_stale_files(tmp_path, dry_run=0, report=0)
+    assert result.returncode == 0, result.stderr
+    assert not stale.exists()
+
+
+def test_sweep_stale_files_removes_a_stale_lock_file(tmp_path: Path) -> None:
+    stale = tmp_path / "old.jsonl.lock"
+    _make_file_with_mtime(stale, age_days=31)
+    _sweep_stale_files(tmp_path, dry_run=0, report=0)
+    assert not stale.exists()
+
+
+def test_sweep_stale_files_leaves_a_fresh_file_untouched(tmp_path: Path) -> None:
+    fresh = tmp_path / "fresh.jsonl"
+    _make_file_with_mtime(fresh, age_days=1)
+    _sweep_stale_files(tmp_path, dry_run=0, report=0)
+    assert fresh.exists()
+
+
+def test_sweep_stale_files_ignores_an_unrelated_extension(tmp_path: Path) -> None:
+    stale = tmp_path / "old.txt"
+    _make_file_with_mtime(stale, age_days=31)
+    _sweep_stale_files(tmp_path, dry_run=0, report=0)
+    assert stale.exists()
+
+
+def test_sweep_stale_files_dry_run_reports_without_removing(tmp_path: Path) -> None:
+    stale = tmp_path / "old.jsonl"
+    _make_file_with_mtime(stale, age_days=31)
+    result = _sweep_stale_files(tmp_path, dry_run=1, report=1)
+    assert result.returncode == 0, result.stderr
+    assert stale.exists()
+    assert "would evict 1 file" in result.stdout
+
+
+def test_sweep_stale_files_report_disabled_is_silent(tmp_path: Path) -> None:
+    stale = tmp_path / "old.jsonl"
+    _make_file_with_mtime(stale, age_days=31)
+    result = _sweep_stale_files(tmp_path, dry_run=0, report=0)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+def test_sweep_stale_files_absent_directory_is_a_no_op(tmp_path: Path) -> None:
+    result = _sweep_stale_files(tmp_path / "never-created", dry_run=0, report=0)
+    assert result.returncode == 0, result.stderr

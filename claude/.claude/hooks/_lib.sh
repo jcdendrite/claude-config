@@ -1088,6 +1088,93 @@ _lib_worktree_collision_guard() {
   return 1
 }
 
+# _lib_append_line_locked TARGET_FILE LOCK_FILE LINE RETRIES
+# Generic noclobber-lock + PID-liveness-eviction + single-EXIT-trap append
+# primitive, extracted from review-ledger.sh's original
+# _append_ledger_line_locked so orchestrator-checkpoint.sh can share it
+# instead of duplicating a correctness-sensitive concurrency algorithm.
+# Acquires a same-directory noclobber lock (bash `set -o noclobber`, the
+# idiom _lib_worktree_collision_guard above already establishes) around the
+# check-then-append critical section: no-ops if LINE already exists verbatim
+# in TARGET_FILE, else appends it. The lock file's content is the holder's
+# PID; a lock whose PID is dead is evicted and retried immediately, the same
+# PID-liveness eviction _lib_active_bypass_marker_live uses for its own
+# markers, rather than waiting out every retry against a crashed holder.
+# Falls through to an unlocked append after RETRIES failed acquisitions
+# rather than blocking — a duplicate line from a lost race is a
+# low-consequence outcome (an inflated count, or a resumed step re-recorded),
+# not data loss. RETRIES is caller-supplied so each caller's own constant
+# (e.g. review-ledger.sh's _LEDGER_LOCK_RETRIES) stays visible at its own call
+# site rather than buried in this shared function.
+#
+# CALLER CONTRACT: this function sets the global $_LIB_APPEND_LOCK_PATH
+# (deliberately not `local`: the EXIT trap it installs evaluates that
+# variable lazily at script-exit time, after this function has already
+# returned) and installs the lock-release EXIT trap. A caller must not set
+# its own EXIT trap after calling this — a second `trap ... EXIT` silently
+# overwrites the first and leaks the lock file.
+_lib_append_line_locked() {
+  local target_file="$1" line="$3" retries="$4"
+  _LIB_APPEND_LOCK_PATH="$2"
+  local attempt=0 stored_pid
+  while [ "$attempt" -lt "$retries" ]; do
+    if (set -o noclobber; printf '%s\n' "$$" > "$_LIB_APPEND_LOCK_PATH") 2>/dev/null; then
+      trap 'rm -f "$_LIB_APPEND_LOCK_PATH"' EXIT
+      break
+    fi
+    stored_pid=$(cat "$_LIB_APPEND_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
+    if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
+      # Dead holder: evict now and retry acquisition on the very next
+      # iteration, with no sleep -- this is what makes eviction prompt
+      # rather than waiting out the remaining retries.
+      rm -f "$_LIB_APPEND_LOCK_PATH" 2>/dev/null
+      attempt=$((attempt + 1))
+      continue
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.05
+  done
+  if [ -f "$target_file" ] && grep -qFx -e "$line" -- "$target_file" 2>/dev/null; then
+    # A dedup no-op must still count as activity on TARGET_FILE's own mtime,
+    # or a long-running caller's later no-op append leaves a stale mtime for
+    # a directory-wide sweep to delete out from under it.
+    touch -- "$target_file" 2>/dev/null
+    return 0
+  fi
+  printf '%s\n' "$line" >> "$target_file"
+}
+
+# _lib_sweep_stale_files DIR DRY_RUN REPORT
+# Removes (or, if DRY_RUN=1, reports without removing) every *.jsonl and
+# *.lock file under DIR older than 30 days by mtime, across every repo-hash —
+# extracted from review-ledger.sh's original _sweep_stale_ledger_files so
+# orchestrator-checkpoint.sh can share it. Mirrors
+# nudge-handoff-near-context-cap.sh's directory-wide `find ... -mtime +30
+# -delete` sweep of .handoff-nudge-fired.d. REPORT=1 prints per-file and
+# summary lines (an explicit clear-stale-style invocation); REPORT=0 is
+# silent (a best-effort sweep run alongside an ordinary append).
+_lib_sweep_stale_files() {
+  local dir="$1" dry_run="$2" report="$3"
+  [ -d "$dir" ] || return 0
+  local evicted=0 entry
+  while IFS= read -r -d '' entry; do
+    evicted=$((evicted + 1))
+    if [ "$dry_run" -eq 1 ]; then
+      [ "$report" -eq 1 ] && printf '  evict (dry-run): %s\n' "$(basename "$entry")"
+    else
+      rm -f "$entry" 2>/dev/null
+      [ "$report" -eq 1 ] && printf '  evict: %s\n' "$(basename "$entry")"
+    fi
+  done < <(find "$dir" -maxdepth 1 \( -name '*.jsonl' -o -name '*.lock' \) -mtime +30 -print0 2>/dev/null)
+  if [ "$report" -eq 1 ]; then
+    if [ "$dry_run" -eq 1 ]; then
+      printf 'clear-stale: would evict %d file(s)\n' "$evicted"
+    else
+      printf 'clear-stale: evicted %d file(s)\n' "$evicted"
+    fi
+  fi
+}
+
 # Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
 _LIB_SIZE_THRESHOLD_BYTES=5242880
 
@@ -1435,6 +1522,24 @@ _lib_readonly_git_subcmds() {
   printf '%s\n' "${_LIB_READONLY_GIT_SUBCMDS[@]}"
 }
 
+# Stricter than _LIB_READONLY_GIT_SUBCMDS above: this excludes every
+# subcommand that can mutate git state or issue network egress under its own
+# bare/listing form (branch/tag/symbolic-ref ref mutation, fetch/remote/
+# ls-remote network egress, fsck/reflog/worktree destructive recovery or
+# checkout operations), for a caller whose invariant is zero git-state
+# mutation and zero network egress rather than working-tree-race safety.
+# Sourced by require-review-orchestrator-bash.sh.
+_LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS=(branch fetch fsck ls-remote reflog remote symbolic-ref tag worktree)
+_lib_strict_readonly_git_subcmds() {
+  local subcmd
+  for subcmd in "${_LIB_READONLY_GIT_SUBCMDS[@]}"; do
+    case " ${_LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS[*]} " in
+      *" $subcmd "*) continue ;;
+    esac
+    printf '%s\n' "$subcmd"
+  done
+}
+
 # Single source of truth for review-only agent identities: the eight
 # staff-*/ciso-reviewer personas dispatched by /plan-review and /code-review,
 # skill-fidelity-reviewer (dispatched by /ready-for-review) and
@@ -1520,6 +1625,41 @@ _lib_is_no_gate_release_agent() {
   [ -n "$agent_type" ] || return 1
   local candidate
   for candidate in "${_LIB_NO_GATE_RELEASE_AGENTS[@]}"; do
+    [ "$agent_type" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+# Agent identities whose Bash tool calls are restricted to a closed
+# verification/read-only allowlist. Sourced by
+# require-review-orchestrator-bash.sh. Deliberately a separate array from
+# _LIB_REVIEW_ONLY_AGENTS / _LIB_NO_GATE_RELEASE_AGENTS above, not an addition
+# to either: review-orchestrator genuinely runs a review skill and must keep
+# its gate-release capability (it is NOT in _LIB_NO_GATE_RELEASE_AGENTS), but
+# still needs its direct Bash calls restricted, since Bash alone can mutate
+# the tree as well as Edit/Write can (`echo > file`, `git commit`) and
+# review-orchestrator carries no Edit/Write tool at all. Whether an agent may
+# release a gate and whether its Bash calls are mutation-restricted are two
+# independent properties that happen to coincide for every
+# _LIB_REVIEW_ONLY_AGENTS member (each is both); conflating them into one
+# array here would either strip review-orchestrator's gate-release capability
+# or let a reviewer persona's Bash restriction quietly change.
+_LIB_BASH_MUTATION_RESTRICTED_AGENTS=(
+  review-orchestrator
+)
+_lib_bash_mutation_restricted_agents() {
+  printf '%s\n' "${_LIB_BASH_MUTATION_RESTRICTED_AGENTS[@]}"
+}
+
+# _lib_is_bash_mutation_restricted_agent AGENT_TYPE
+# Returns 0 (true) iff AGENT_TYPE exactly matches an entry in
+# _LIB_BASH_MUTATION_RESTRICTED_AGENTS. Empty input (agent_type absent from
+# the PreToolUse payload, e.g. the main session) never matches.
+_lib_is_bash_mutation_restricted_agent() {
+  local agent_type="$1"
+  [ -n "$agent_type" ] || return 1
+  local candidate
+  for candidate in "${_LIB_BASH_MUTATION_RESTRICTED_AGENTS[@]}"; do
     [ "$agent_type" = "$candidate" ] && return 0
   done
   return 1

@@ -625,9 +625,13 @@ MARKER = "~/.claude/scripts/marker.sh"
 # reviewer, and a harness built-in.
 NO_GATE_RELEASE_AGENTS = ["code-writer", "staff-sdet", "ciso-reviewer", "Explore"]
 
-# Agent types that keep the documented delegation escape hatch: both carry the
-# full tool set, so they can genuinely run a review skill themselves.
-GATE_RELEASE_ALLOWED_AGENTS = ["general-purpose", "claude"]
+# Agent types that may release a review gate. general-purpose/claude keep the
+# documented delegation escape hatch: both carry the full tool set, so they
+# can genuinely run a review skill themselves. review-orchestrator is the
+# dedicated agent this whole mechanism was built for — it is deliberately
+# absent from _LIB_NO_GATE_RELEASE_AGENTS precisely so it can write the
+# marker for the skill it actually ran.
+GATE_RELEASE_ALLOWED_AGENTS = ["general-purpose", "claude", "review-orchestrator"]
 
 
 class TestGateReleaseAuthority:
