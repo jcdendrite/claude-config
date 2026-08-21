@@ -30,16 +30,27 @@ the `require-ready-for-review.sh` hook:
 
 If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this session's id — abort and report; the gate will block iteration pushes without this marker.
 
+## CI watch launch recipe
+
+Once the PR number is known (Step 1 below if a PR already exists, Step 6 if one is just created — never both), launch the background CI watch immediately, before continuing to later steps, so it overlaps with the rest of the gate's own runtime instead of blocking on it:
+
+1. Record the PR's current `headRefOid` (`gh pr view --json headRefOid`) — the Async CI follow-up's staleness check compares against this value.
+2. Launch `gh pr checks <n> --watch` via `Bash` `run_in_background`. No special stream redirection is needed — the harness's background-task capture already includes stderr alongside stdout.
+3. When the harness notifies on that command's exit, grep the captured output for gh's own literal `no checks reported` text. Match → zero checks ever registered on this PR; report "no CI checks configured for this PR" and stop, no further call. No match → proceed to step 4.
+4. Run `gh pr checks <n> --json name,bucket,description,link,workflow` for a clean structured snapshot — the `bucket` field is the pass/fail source of truth, not `--watch`'s own exit code. If this call itself fails (non-zero exit, no JSON output), report "couldn't determine CI status for PR <n> — check `gh pr checks <n>` yourself" and stop; step 3's no-match doesn't guarantee step 4 succeeds independently.
+5. On a successful snapshot, branch per "Async CI follow-up" below.
+
 ## 1. Preconditions (halt on fail)
 
 - **Session is anchored in the branch's worktree.** Under worktree enforcement, confirm the working directory is this branch's linked worktree and not the main checkout — an unanchored session runs verification, writes review markers, and dispatches subagents against the main checkout on the default branch, so every check below passes against the wrong tree (and the next bullet fails with a misleading reason). Re-enter the worktree per `branch-management/SKILL.md` § "Anchor the session in the worktree", then restart this step.
 - Current branch is not the default branch (`main` / `master` / `develop`).
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base:
-  `gh pr view --json number,baseRefName`
+  `gh pr view --json number,baseRefName`. Then launch the background CI
+  watch now (see "CI watch launch recipe" above).
 - If no PR exists, step 5 authors the body and step 6 opens the PR from it,
   after verification and review.
-- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 9's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
+- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 8's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
 ## 2. Verification (halt on fail)
 
@@ -120,7 +131,7 @@ body to a temp file and ends its report with a `BODY_FILE: <path>` line.
 
 Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
 
-The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. `-f` catches a missing path; `-s` alone would pass the whitespace-only file a truncated write leaves. Halting matters because an empty-bodied PR is unrepairable: step 5 takes its *sync* path once a PR exists, and sync checks a body against branch state rather than authoring one. Capture the PR number for step 7.
+The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. `-f` catches a missing path; `-s` alone would pass the whitespace-only file a truncated write leaves. Halting matters because an empty-bodied PR is unrepairable: step 5 takes its *sync* path once a PR exists, and sync checks a body against branch state rather than authoring one. Capture the PR number for step 7, then launch the background CI watch now (see "CI watch launch recipe" above).
 
 ## 7. Final hygiene recheck (halt on fail)
 
@@ -135,17 +146,7 @@ Steps 3–6 may have produced new commits or body writes. Reconfirm:
 - The PR body landed, whether step 5 edited it or step 6 created the PR from it — re-fetch with `gh pr view` and confirm.
 - Branch is not behind the base branch — if steps 3–6 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
 
-## 8. CI status (warn only)
-
-Run `gh pr checks <n>`:
-- All green → continue.
-- Still running → note the in-flight checks; user decides whether to wait.
-- No checks reported (`gh pr checks` exits non-zero) → not yet registered; treat as pending.
-- Red → surface failing check names with a one-line summary of each.
-  Do not auto-halt — sometimes the human reviewer wants to see the
-  failure themselves — but make the failure explicit before handoff.
-
-## 9. Record gate completion + deactivate session
+## 8. Record gate completion + deactivate session
 
 If every halt-on-fail step above passed, record the completed gate
 and remove the active-session marker:
@@ -179,5 +180,14 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 - Verification: commands run and their results.
 - Code review: findings fixed, or "none."
 - PR description: authored for a new PR, or updated / "already in sync."
-- CI: status per check.
+- CI: whichever of these is currently known — background watch in progress (will report separately when checks resolve, or check `gh pr checks <n>` yourself); no CI checks configured for this PR; couldn't determine CI status (see the launch recipe's step 4 fallback); or, if the watch already resolved before this point, the resolved bucket summary directly.
 - Branch: clean, pushed, PR #N ready for review.
+
+## Async CI follow-up
+
+When the background CI watch (launched per "CI watch launch recipe" above) resolves and the harness re-invokes this session:
+
+- **Bucket-to-branch mapping**, from the structured `--json` snapshot's `bucket` field per check, as an ordered ladder — evaluate top to bottom, first match wins: `fail` on any check → diagnosis path below, naming only the failing check(s), not all checks. Else any `pass` present → pass path (a `skipping`/`cancel` check alongside a `pass` didn't run, but doesn't withhold the pass report). Else — every check is `skipping`/`cancel`, none `pass` or `fail` — report neutrally: no diagnosis, no "passed" claim, since nothing actually ran. A `pending` bucket surviving past `--watch`'s exit is a race (a check re-registering after `--watch` observed a terminal state) — treat as "still pending, re-check" rather than folding it into any of the above.
+- **Before dispatching diagnosis:** check for staleness — `gh pr view --json headRefOid`, compared against the `headRefOid` the launch recipe recorded. If the PR's current head no longer matches, report "superseded by a newer push, no action taken" instead of dispatching.
+- **Pass path:** report the one-line success confirmation.
+- **Fail path:** dispatch `general-purpose` (model: sonnet) to (a) apply `/root-cause-analysis` against the failing check(s), (b) first check whether step 2's local run of the same suite already passed (a local-pass/CI-fail split is `root-cause-analysis` Stage C's own asymmetry signal), and (c) apply step 2's "Test-to-fit is forbidden" rule rather than restating it. If the `general-purpose` dispatch itself fails or never returns, report that diagnosis failed and name the failing check(s) so the user can investigate directly — no retry. Otherwise report the diagnosis and offer to implement a fix; dispatch `code-writer` (model: sonnet) only on explicit user confirmation. Before pushing the fix, reactivate the active-session marker (`~/.claude/scripts/marker.sh activate ready-for-review`) — step 8 already deactivated it, and `require-ready-for-review.sh` denies a push with neither an active marker nor a completion marker matching the post-fix HEAD. Push through the existing step 3/7 review-and-push pattern (new commit → normal staged-diff `/code-review` + marker gate → push), then deactivate the marker again (`marker.sh deactivate ready-for-review`). If the user does not confirm, take no further action and do not re-offer — the diagnosis stays available in-session if raised again later.
