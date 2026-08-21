@@ -91,9 +91,9 @@ Two bundled skills are name-only instead of fully disabled — they are availabl
 
 ### Re-enable for your session
 
-Via `/skills` UI: open `/skills`, highlight the skill, press `Space` to cycle to `"on"`, then `Enter`. This writes to `<config-dir>/settings.local.json` (gitignored; persists across sessions).
+Via `/skills` UI: open `/skills`, highlight the skill, press `Space` to cycle to `"on"`, then `Enter`. This writes to that repository's own `.claude/settings.local.json` (gitignored; persists across sessions in that repo).
 
-Persistent per-user: add to `<config-dir>/settings.local.json`:
+Persistent per-project: add to the repository's own `.claude/settings.local.json`:
 
 ```json
 {
@@ -103,7 +103,7 @@ Persistent per-user: add to `<config-dir>/settings.local.json`:
 }
 ```
 
-`settings.local.json` overrides `settings.json` at the same scope; the repo's `"off"` entry does not win. Remove the entry (or set to `"on"`) to restore. Reference: [Claude Code skills — Override skill visibility from settings](https://code.claude.com/docs/en/skills.md).
+`.claude/settings.local.json` is per-repository, not per-user — there is no untracked settings file at the user's home config directory, only `~/.claude/settings.json` (tracked, shared by every stow consumer). A re-enable added this way applies to sessions in this one repository. It overrides `settings.json` at the same scope, so the repo's `"off"` entry does not win. Remove the entry (or set to `"on"`) to restore. Reference: [Claude Code skills — Override skill visibility from settings](https://code.claude.com/docs/en/skills.md).
 
 ## Skill evals
 
@@ -155,7 +155,7 @@ claude plugin install plugin-semver@claude-config --scope project
 
 Claude Code allocates 1% of the context window for skill descriptions by default (`skillListingBudgetFraction: 0.01`). Run `/doctor` to see current usage; a warning appears when descriptions are dropped.
 
-After this repo's plugin restructure, stowed skills from claude-config use less budget than before. If a downstream project still sees truncation — because it has many of its own project-specific skills — raise the cap locally in `<config-dir>/settings.local.json` (create if absent; gitignored, per-user):
+After this repo's plugin restructure, stowed skills from claude-config use less budget than before. If a downstream project still sees truncation — because it has many of its own project-specific skills — raise the cap in that project's own `.claude/settings.local.json` at the repository root (create if absent; gitignored automatically, per-project):
 
 ```json
 {
@@ -163,7 +163,9 @@ After this repo's plugin restructure, stowed skills from claude-config use less 
 }
 ```
 
-`settings.local.json` overrides `settings.json` at the same scope, so this raise applies only to the user who adds it without forking the stowed config. Reference: [Claude Code settings — skillListingBudgetFraction](https://code.claude.com/docs/en/settings).
+`.claude/settings.local.json` overrides `settings.json` at the same (repository) scope, so this raise applies only to that one project without forking the stowed config — there is no untracked settings file at the user's home config directory to raise it globally in. Reference: [Claude Code settings — skillListingBudgetFraction](https://code.claude.com/docs/en/settings).
+
+Tools have an analogous per-tool lever — `disableArtifact`/`disableWorkflows` — for the two largest eagerly-loaded built-in tool schemas, though the right place to set them is different: see `design-decisions.md` §28.
 
 ## Project-specific layers
 
