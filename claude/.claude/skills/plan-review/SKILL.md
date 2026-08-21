@@ -233,7 +233,7 @@ For hook content, invoke `claude-hook-review`. For `permissions.allow` rules, in
 
 ## Reviewer routing
 
-Read `${CLAUDE_SKILL_DIR}/ROUTING.md` before any spawn decision.
+Read `${CLAUDE_SKILL_DIR}/ROUTING.md` with the Read tool before any spawn decision — a Bash read (`cat`, `sed`, `grep`) does not satisfy this gate.
 
 ## Output format
 
