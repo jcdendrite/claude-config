@@ -248,6 +248,67 @@ def _count_handoff_nudge_abs_cap_default() -> int:
     return int(match.group(1))
 
 
+def _count_handoff_nudge_block_after_default() -> int:
+    """Return the handoff-nudge hard-block escalation count, derived behaviorally.
+
+    Fires the hook twice against the same session -- an initial advisory
+    fire, then a re-arm far past any plausible HANDOFF_NUDGE_REARM_SPACING --
+    with HANDOFF_NUDGE_BLOCK_AFTER unset. The re-arm hard-blocks once its
+    ignored-re-arm count reaches the shipped default, so the second call's
+    stderr names the value the runtime path actually used, avoiding a second
+    source-scanning regex on the fallback arm's literal, which would only
+    prove the literal exists, not that it's the value the runtime path
+    actually uses. Both estimates stay under 9 digits: the marker's own
+    corrupt-value guard (nudge-handoff-near-context-cap.sh, the
+    `?????????*` arm) treats a 9-digit LAST_FIRED_AT as corrupt and would
+    silently reset the re-arm count instead of exercising it.
+    """
+    hook_path = REPO_ROOT / _NUDGE_HOOK_REL_PATH
+
+    def _usage_record(cache_read: int) -> dict:
+        return {
+            "type": "assistant",
+            "message": {
+                "model": "claude-sonnet-5",
+                "usage": {
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                },
+            },
+        }
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        transcript_path = tmp_path / "t.jsonl"
+        transcript_path.write_text(json.dumps(_usage_record(400_000)) + "\n")
+        payload = {
+            "session_id": "doc-count-block-after-probe",
+            "transcript_path": str(transcript_path),
+            "hook_event_name": "PostToolBatch",
+        }
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        env.pop("HANDOFF_NUDGE_BLOCK_AFTER", None)
+        subprocess.run(
+            [str(hook_path)], input=json.dumps(payload), capture_output=True, text=True, env=env, check=False,
+        )
+        with transcript_path.open("a") as transcript_fh:
+            transcript_fh.write(json.dumps(_usage_record(900_000)) + "\n")
+        result = subprocess.run(
+            [str(hook_path)], input=json.dumps(payload), capture_output=True, text=True, env=env, check=False,
+        )
+    match = re.search(r"HANDOFF_NUDGE_BLOCK_AFTER=(\d+)\)", result.stderr)
+    if match is None:
+        raise ValueError(
+            "Could not find 'HANDOFF_NUDGE_BLOCK_AFTER=N)' in the hook's hard-block "
+            f"stderr message (stderr: {result.stderr!r}); the message wording "
+            "changed and this ground truth needs updating."
+        )
+    return int(match.group(1))
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -355,6 +416,17 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 rel_path="README.md",
                 pattern=r"(\d+) tokens \(default\): the absolute-token cap",
                 description="README.md: N tokens (default): the absolute-token cap",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_handoff_nudge_block_after_default,
+        label="handoff-nudge HANDOFF_NUDGE_BLOCK_AFTER default, derived behaviorally",
+        occurrences=[
+            Occurrence(
+                rel_path="docs/handoff-nudge.md",
+                pattern=r"`HANDOFF_NUDGE_BLOCK_AFTER` \(default (\d+)\)",
+                description="docs/handoff-nudge.md: HANDOFF_NUDGE_BLOCK_AFTER (default N)",
             ),
         ],
     ),

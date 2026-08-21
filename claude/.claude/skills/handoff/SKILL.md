@@ -58,7 +58,7 @@ done / in-flight / blocked.
 
 ## §2.5 Incomplete prerequisites
 
-If this session executed one phase of a multi-phase plan, name the plan and the current phase. Enumerate prerequisite phases that were defined earlier and their completion status. If any are incomplete or unverified, list them here explicitly — do not omit them. If the handoff reason is context-limit, note what was mid-flight: open tool calls, pending verifications (see §2.6 for task-list state).
+If this session executed one phase of a multi-phase plan, name the plan and the current phase. Enumerate prerequisite phases that were defined earlier and their completion status. If any are incomplete or unverified, list them here explicitly — do not omit them. If the handoff reason is context-limit, note what was mid-flight: open tool calls — including any still-running background subagent dispatch, named by its `agent-<agentId>` (never its full transcript path, which embeds this session's own id) — noting whether this session is still open, so a resuming session can address it by this session's name rather than re-dispatching (never by session_id) — and pending verifications (see §2.6 for task-list state).
 
 If none: write "None."
 
@@ -139,7 +139,7 @@ Before writing the file, verify:
 - §7 Resume command's `<config-dir>` and `<slug>` placeholders are both resolved to real values — an unresolved token ships a command that cannot run
 - Markers in §5 use the globs `<config-dir>/*-markers/` and `<config-dir>/.*-active.d/` — not a hardcoded subdir list
 - §2.5 is populated; if any prerequisite phases are incomplete or unverified, they are listed there, not silently omitted
-- If the handoff reason is context-limit, §2.5 names what was mid-flight at the time of the handoff
+- If the handoff reason is context-limit, §2.5 names what was mid-flight at the time of the handoff — including any still-running background subagent dispatch, by its `agent-<agentId>` and whether this session is still open
 - §2.6 is populated — a faithful task-list serialization with per-item ordinal, status, and blocking edges, or "None." — and carries the resume directive
 - §5 is reconciled: finished work a live completion marker covers is committed before this file is written; where it is not, §3 names the review skill the resuming session must re-run to commit it
 - Every §5 marker is labelled live or historical — a marker whose covered state was committed or superseded is not listed as if it still gates
