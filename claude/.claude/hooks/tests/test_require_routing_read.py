@@ -78,6 +78,15 @@ class TestRequireRoutingRead:
         assert reason is not None
         assert "ROUTING.md" in reason
 
+    def test_deny_message_names_read_tool(self, isolated_home):
+        """Deny message names the Read tool, so a Bash-based read isn't mistaken for satisfying the gate."""
+        sid = "session-deny-msg-read-tool"
+        write_plan_review_active_marker(isolated_home, sid)
+        reason = run_hook_reason(REQUIRE_ROUTING_READ_HOOK, agent_input(session_id=sid))
+        assert reason is not None
+        assert "Read tool" in reason
+        assert "does not satisfy this gate" in reason
+
     def test_deactivate_gate_fixture_removes_routing_read_marker(
         self, isolated_home, tmp_path
     ):
