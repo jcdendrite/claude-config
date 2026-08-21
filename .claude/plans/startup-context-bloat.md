@@ -102,7 +102,7 @@ No code changes; no PR-required change touches `claude/.claude/settings.json` it
 
 ## Verification
 
-1. In a real (non-subagent) Claude Code session, before touching any settings, run `/context all` and note the total baseline and the `Artifact`/`Workflow` line items (Row 10 is currently unverified — this step confirms or refutes it).
+1. In a real (non-subagent) Claude Code session, before touching any settings, run `/context all` and note the total baseline and the `Artifact`/`Workflow` line items (the settings docs don't say whether disabling strips the schema or only blocks the call — this step confirms or refutes it).
 2. Export both environment variables from the shell profile.
 3. Start a brand-new session in any repo, run `/context all` again, and confirm `Artifact`/`Workflow` no longer appear as separate line items and the total baseline dropped by roughly the measured ~7,200 tokens.
 4. If a future task genuinely needs Workflow (multi-agent orchestration) or Artifact (publishing), temporarily unset `CLAUDE_CODE_DISABLE_WORKFLOWS`/`CLAUDE_CODE_DISABLE_ARTIFACT` for that one shell session rather than editing the profile back and forth.
@@ -111,6 +111,6 @@ No code changes; no PR-required change touches `claude/.claude/settings.json` it
 ## Out of scope
 
 - **Trimming CLAUDE.md content** (global ~6,760 est. tokens + project ~3,177 est. tokens). Real, measured contributor, but deliberately authored engineering-judgment prose — an editorial call the user hasn't asked for here. Recorded as a finding only.
-- **Reducing the available-agent-types listing** (~2,800 tokens). No platform lever currently exists (Row 11) — a candidate for an upstream Anthropic feature request, not something this repo can fix today.
+- **Reducing the available-agent-types listing** (~2,800 tokens). No settings.json key equivalent to `skillOverrides` was found for it — a candidate for an upstream Anthropic feature request, not something this repo can fix today.
 - **Further skill-listing reduction** (~2,650 tokens). Already actively managed via `skillOverrides` (12+ skills already `name-only`/`off`); any further reduction needs a per-skill judgment call this task wasn't asked to make.
 - **Exhaustive per-MCP-server token accounting.** The visible slice (deferred tool names + the harness's own truncated instructions text) is already the cheap path (~1,100 tokens measured); a full accounting would require reading `~/.claude.json`, which CLAUDE.md's Safety section explicitly forbids (secrets-shaped file).
