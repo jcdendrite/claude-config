@@ -95,23 +95,32 @@ a bureaucratic line in the printed gate narrative on every single run.
   `run_in_background` anyway, so it isn't a genuinely distinct mechanism —
   only a strictly worse one for the short-CI case, since it blocks the
   interactive turn.
-- M2 (anchors: row "CI bucket semantics" below) — two sequential commands in
-  the background script, not one combined call: `gh pr checks <n> --watch`
-  first (blocks until terminal state; its own output is discarded, not
-  parsed), immediately followed by a separate `gh pr checks <n> --json
-  name,bucket,description,link,workflow` for a clean structured snapshot,
-  whose `bucket` field is the pass/fail source of truth — not `--watch`'s
-  own exit code, undocumented for `--watch` mode's terminal outcome. The
-  two-command shape isn't a style choice: `gh pr checks --help` (gh 2.97.0)
-  rejects `--watch` and `--json` combined outright ("cannot use `--watch`
-  with `--json` flag" — confirmed via a live error this session), so a
-  single combined call was never available. [verified: empirical, this
-  session — the combined-flag error above; a plain `--watch` run against
-  resolved PR #708 returned in 1.4s printing duplicated plain-text lines
-  across its internal polls, confirming its own output is unsuitable to
-  parse and must be discarded in favor of the separate `--json` call; a
-  plain `--json` call against the same PR returned one clean parseable
-  array]
+- M2 (anchors: row "Pre-implementation blocker" below) — three sequential
+  commands in the launch recipe, run synchronously in the foreground before
+  anything goes to the background: (0) `gh pr checks <n> --json name --jq
+  'length'` — a single near-instant read, [verified: empirical, this
+  session, returned `1` against real PR #708] — if it returns `0`, stop
+  here: no watch is launched at all, and the summary reports "no CI checks
+  configured" directly, synchronously, with no async follow-up to wait for.
+  This is the guard the "Pre-implementation blocker" ledger row below
+  tracks — that row is about whether a `0` result is trustworthy (vs. a
+  checks-still-registering race), not about whether the check itself is
+  cheap to run; it clearly is (one read, sub-second). Only past that guard
+  do the two backgrounded commands from the original design run: (1)
+  `gh pr checks <n> --watch` (blocks until terminal state; its own output is
+  discarded, not parsed), immediately followed by (2) a separate
+  `gh pr checks <n> --json name,bucket,description,link,workflow` for a
+  clean structured snapshot, whose `bucket` field is the pass/fail source of
+  truth — not `--watch`'s own exit code, undocumented for `--watch` mode's
+  terminal outcome. Steps (1)+(2) can't merge into one call: `gh pr checks
+  --help` (gh 2.97.0) rejects `--watch` and `--json` combined outright
+  ("cannot use `--watch` with `--json` flag" — confirmed via a live error
+  this session). [verified: empirical, this session — the combined-flag
+  error above; a plain `--watch` run against resolved PR #708 returned in
+  1.4s printing duplicated plain-text lines across its internal polls,
+  confirming its own output is unsuitable to parse and must be discarded in
+  favor of the separate `--json` call; a plain `--json` call against the
+  same PR returned one clean parseable array]
 - M3 (anchors: root) — diagnosis via `general-purpose` + `/root-cause-analysis`,
   not `code-writer`, not inline in the gate session. `code-writer`'s own tool
   list (`Read, Edit, Write, Bash, Grep, Glob`) has no `Skill` tool, so it
@@ -231,10 +240,17 @@ a bureaucratic line in the printed gate narrative on every single run.
   - **New/changed structure:**
     - One canonical "launching the background CI watch" recipe, referenced
       (not duplicated) from Step 1 and Step 6 — per CLAUDE.md's
-      single-source-of-truth rule. Per M2: the recipe is the two-command
-      form (`gh pr checks <n> --watch`, discard its output, then a separate
-      `gh pr checks <n> --json ...` call), plus the no-CI guard's
-      pre-implementation blocker (resolve before this recipe ships).
+      single-source-of-truth rule. Per M2, the recipe is three steps: (0) a
+      synchronous, near-instant `gh pr checks <n> --json name --jq 'length'`
+      — if `0`, stop here, report "no CI checks configured" directly, and
+      launch nothing; (1) `gh pr checks <n> --watch` in the background,
+      discarding its own output; (2) a separate `gh pr checks <n> --json
+      ...` call after it exits, for the clean structured snapshot the async
+      follow-up parses. Step (0)'s reliability (does `0` really mean "no CI"
+      rather than "not registered yet") is the open pre-implementation
+      blocker below — the check itself is cheap and unambiguous to run,
+      only its result's interpretation needs settling before this recipe
+      ships.
     - Old Step 8 ("CI status (warn only)") removed in its entirety.
     - Old Step 9 ("Record gate completion + deactivate session") renumbered
       to Step 8.
