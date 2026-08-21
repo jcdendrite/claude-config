@@ -4,8 +4,10 @@ description: >
   Produces an implementation plan and hands off to /plan-review.
   TRIGGER when: asked for a plan or implementation strategy
   for work spanning multiple files or domains. DO NOT TRIGGER when:
-  single-file tweaks, "just implement it" requests, or when a plan
-  already exists (use /plan-review instead).
+  single-file tweaks, "just implement it" requests, work that makes
+  no change to this repository (an audit, status assessment, or
+  ticket-filing pass), or when a plan already exists (use
+  /plan-review instead).
 user-invocable: true
 argument-hint: "[optional topic or ticket id]"
 ---
@@ -14,6 +16,8 @@ argument-hint: "[optional topic or ticket id]"
 
 ## Step 1 — Branch + plan file
 
+`.claude/plans/` holds only plans that gate a change to this repository — the plan file is provenance for that change, not the deliverable itself. Work that makes no repository change (an audit, a status assessment, a documentation or ticket-filing pass) doesn't belong here; route its narrative through the project's own tracker or documentation tool instead (see that project's `CLAUDE.md`, or ask the engineer if undocumented).
+
 **If plan mode is active:** write the plan to the harness-provided plan path (named in the plan-mode system-reminder). Skip branch creation here — plan mode would block it. Resume the branch-management flow only after `ExitPlanMode` is approved: derive the slug, run `branch-management`, and move the plan file to `.claude/plans/<topic-slug>.md` on the new branch.
 
 **If that write fails** (e.g. a machine-level policy denies the harness-provided path): this is the one case where creating a branch happens before `ExitPlanMode` is approved — not a general license to branch during plan mode, only a recovery once the designated path write has already failed. In a git repository, derive the slug now, create its worktree (`branch-management`'s worktree steps), and write the plan to the repo-relative `.claude/plans/<topic-slug>.md` there instead — a path outside whatever denied the harness-provided one. The branch/worktree already exists by the time `ExitPlanMode` is approved, so skip the post-approval `branch-management` call above; nothing needs to move. Outside a git repository there is no repo-relative path to fall back to — present the full plan as chat text instead of a file and skip `ExitPlanMode`, asking the user to approve conversationally.
@@ -21,6 +25,8 @@ argument-hint: "[optional topic or ticket id]"
 **Otherwise:** if on the default branch, invoke the `branch-management` skill to pick a slug and start from a fresh default tip. If already on a feature branch, keep it and derive the slug from the branch name — if the branch name contains `/` (e.g. `GH-42/add-auth`), use only the portion after the last `/`. Plan path is `.claude/plans/<topic-slug>.md` on the implementation branch (per `branch-management`'s "plan files go on the implementation branch" rule).
 
 If `.claude/plans/<topic-slug>.md` already exists, open it for revision in place rather than scaffolding a new file.
+
+**If this only becomes apparent later** — Step 5's Critical Files section ends up empty — unwind: `mv` the plan file out of `.claude/plans/`, remove the branch and worktree created for it, and route the narrative as described above.
 
 ## Step 2 — Discovery
 
