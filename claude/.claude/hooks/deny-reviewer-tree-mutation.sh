@@ -306,7 +306,20 @@ case "$TOOL_NAME" in
     while IFS= read -r fragment; do
       [ -z "$fragment" ] && continue
 
+      if _lib_fragment_is_bare_env_assignment "$fragment"; then
+        emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' is a bare environment-variable assignment -- a later fragment in the same command can consume it (e.g. git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism), with no git word in THIS fragment for the git-anchored checks below to catch. $SANCTIONED_ALTERNATIVE"
+        exit 0
+      fi
+
       if _lib_fragment_invokes_git "$fragment"; then
+        if _lib_fragment_has_command_invoking_git_flag "$fragment"; then
+          emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' carries a git flag (-c, --config-env, -O/--open-files-in-pager, --ext-diff, or --textconv) that can exec an arbitrary command regardless of subcommand. $SANCTIONED_ALTERNATIVE"
+          exit 0
+        fi
+        if _lib_fragment_has_env_assignment_before_git "$fragment"; then
+          emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' carries an environment-variable assignment before the git word -- git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism can set arbitrary config (e.g. diff.external) this way with no matching CLI flag. $SANCTIONED_ALTERNATIVE"
+          exit 0
+        fi
         subcmd=$(_lib_extract_git_subcmd "$fragment")
         # Unlike require-worktree-for-git-writes.sh, cwd is irrelevant here:
         # a reviewer never has a legitimate git-write target anywhere, so

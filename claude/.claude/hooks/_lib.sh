@@ -483,6 +483,103 @@ _lib_extract_git_subcmd() {
   printf '%s' "$subcmd"
 }
 
+# True iff a git-invoking fragment carries a flag that execs an arbitrary
+# command as a side effect of git's own argument parsing, independent of the
+# subcommand: a bare -c (config override, e.g. core.pager/diff.external/
+# core.editor), --config-env (same config override, value sourced from an
+# env var instead of given literally; git(1): "--config-env=<name>=<envvar>"),
+# -O/--open-files-in-pager (execs its argument against matched files, with or
+# without an attached value), --ext-diff, or --textconv (both invoke a
+# configured external diff/textconv command). A subcommand-word-only check
+# treats `git grep -O'sh -c "..."'` as safe because `grep` is read-only; this
+# scans every word in the fragment, not just the subcommand, to catch the
+# flag regardless of which subcommand it rides on. Strips one layer of
+# surrounding quote characters from each word before matching, so a quoted
+# flag (`git '-c' core.pager=x log`) is caught directly by this scan rather
+# than only incidentally, via _lib_extract_git_subcmd failing to resolve a
+# subcommand from the quoted token.
+_lib_fragment_has_command_invoking_git_flag() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local found=false word stripped
+  for word in $fragment; do
+    stripped="${word#[\'\"]}"
+    stripped="${stripped%[\'\"]}"
+    case "$stripped" in
+      -c|--ext-diff|--textconv|--config-env*) found=true; break ;;
+      -O*|--open-files-in-pager*) found=true; break ;;
+    esac
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $found
+}
+
+# True iff a git-invoking fragment carries a shell environment-variable
+# assignment (WORD=value) before the git word itself. Git's own
+# GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism
+# (git-config(1) "ENVIRONMENT") sets arbitrary config -- including
+# diff.external, core.pager, core.editor -- entirely from env vars, with no
+# CLI flag token for _lib_fragment_has_command_invoking_git_flag's scan to
+# catch. No restricted agent has a legitimate reason to prefix a git
+# invocation with an env-var assignment, so this is a blanket deny on the
+# shape (any assignment, not just GIT_-prefixed names) rather than an
+# enumeration of individual config-injection env vars -- an open-ended,
+# git-version-dependent moving target. Same assignment regex as
+# _lib_fragment_command_word's leading-env-var skip.
+_lib_fragment_has_env_assignment_before_git() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local found=false word
+  for word in $fragment; do
+    if [[ "$word" == "git" || "$word" == */git ]]; then
+      break
+    fi
+    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      found=true
+      break
+    fi
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $found
+}
+
+# True iff a fragment consists ENTIRELY of one or more environment-variable
+# assignments (WORD=value), each optionally preceded by the `export`
+# keyword, with no other command word. Closes the path a git-command-word
+# check alone misses: splitting `export GIT_CONFIG_KEY_0=diff.external`
+# out into its own fragment (via `;`) from the eventual `git` invocation
+# means that fragment never mentions git at all, so
+# _lib_fragment_has_env_assignment_before_git's git-anchored scan never
+# fires on it -- yet it still exports a config-injection variable into the
+# same shell process a later fragment's `git` execs in. Denying the bare-
+# assignment SHAPE itself, independent of any git mention, closes that gap.
+# Same word-splitting caveat as every other fragment scanner in this file:
+# an assignment whose value contains unquoted-looking whitespace splits
+# across multiple words like any other word, so it will not always present
+# as bare here -- callers rely on the leading assignment in a chain (e.g.
+# `export GIT_CONFIG_COUNT=1`) being single-word and caught directly.
+_lib_fragment_is_bare_env_assignment() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local word is_bare=true saw_assignment=false
+  for word in $fragment; do
+    if [[ "$word" == "export" ]]; then
+      continue
+    fi
+    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+      saw_assignment=true
+      continue
+    fi
+    is_bare=false
+    break
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $is_bare && $saw_assignment
+}
+
 # Split a shell command string into fragments on shell operators (;, &&, ||, |,
 # $(...), backticks). Each fragment may invoke a distinct command. Leading/
 # trailing parentheses are stripped from each fragment so that `(cd /x; git push)`
@@ -1471,6 +1568,8 @@ _LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[^(])#[a-z0-9_-]*[a-z_-][a-z0-9_-]*|(^|[^]])\
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
 # security surface, so new entries are added deliberately (a subcommand
 # proven read-only against git's own docs), not accreted via "etc./like".
+# A new entry here should prompt checking whether _LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS
+# below needs it added too, for callers with a zero-mutation/zero-egress invariant.
 _LIB_READONLY_GIT_SUBCMDS=(
   blame
   branch           # "git branch" lists; creating/deleting takes flags
@@ -1528,8 +1627,20 @@ _lib_readonly_git_subcmds() {
 # ls-remote network egress, fsck/reflog/worktree destructive recovery or
 # checkout operations), for a caller whose invariant is zero git-state
 # mutation and zero network egress rather than working-tree-race safety.
-# Sourced by require-review-orchestrator-bash.sh.
-_LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS=(branch fetch fsck ls-remote reflog remote symbolic-ref tag worktree)
+# Sourced by require-review-orchestrator-bash.sh. A new entry added to
+# _LIB_READONLY_GIT_SUBCMDS above should prompt checking whether it needs
+# excluding here too.
+_LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS=(
+  branch
+  fetch
+  fsck
+  ls-remote
+  reflog
+  remote
+  symbolic-ref
+  tag
+  worktree
+)
 _lib_strict_readonly_git_subcmds() {
   local subcmd
   for subcmd in "${_LIB_READONLY_GIT_SUBCMDS[@]}"; do
@@ -1631,19 +1742,11 @@ _lib_is_no_gate_release_agent() {
 }
 
 # Agent identities whose Bash tool calls are restricted to a closed
-# verification/read-only allowlist. Sourced by
-# require-review-orchestrator-bash.sh. Deliberately a separate array from
-# _LIB_REVIEW_ONLY_AGENTS / _LIB_NO_GATE_RELEASE_AGENTS above, not an addition
-# to either: review-orchestrator genuinely runs a review skill and must keep
-# its gate-release capability (it is NOT in _LIB_NO_GATE_RELEASE_AGENTS), but
-# still needs its direct Bash calls restricted, since Bash alone can mutate
-# the tree as well as Edit/Write can (`echo > file`, `git commit`) and
-# review-orchestrator carries no Edit/Write tool at all. Whether an agent may
-# release a gate and whether its Bash calls are mutation-restricted are two
-# independent properties that happen to coincide for every
-# _LIB_REVIEW_ONLY_AGENTS member (each is both); conflating them into one
-# array here would either strip review-orchestrator's gate-release capability
-# or let a reviewer persona's Bash restriction quietly change.
+# verification/read-only allowlist. Sourced by require-review-orchestrator-bash.sh.
+# Separate from _LIB_REVIEW_ONLY_AGENTS/_LIB_NO_GATE_RELEASE_AGENTS above:
+# review-orchestrator needs Bash-call restriction but must keep gate-release
+# capability, so the two properties can't share one array here — see
+# docs/design-decisions.md §29.
 _LIB_BASH_MUTATION_RESTRICTED_AGENTS=(
   review-orchestrator
 )

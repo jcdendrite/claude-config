@@ -624,6 +624,175 @@ def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
     assert not _is_no_gate_release_agent(agent_type)
 
 
+# --- _lib_strict_readonly_git_subcmds -------------------------------------
+
+
+def _readonly_git_subcmds() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_readonly_git_subcmds"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def _strict_readonly_excluded_git_subcmds() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; printf "%s\\n" "${{_LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS[@]}}"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def _strict_readonly_git_subcmds() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_strict_readonly_git_subcmds"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def test_strict_readonly_git_subcmds_is_exact_set_difference() -> None:
+    """Output equals _LIB_READONLY_GIT_SUBCMDS minus _LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS,
+    checked as a set difference rather than a few spot-checked subcommands —
+    coverage that doesn't depend on any hook-level fixture staying in sync
+    with the exclusion list."""
+    base = set(_readonly_git_subcmds())
+    excluded = set(_strict_readonly_excluded_git_subcmds())
+    assert excluded <= base, "excluded list must only name entries present in the base list"
+    assert set(_strict_readonly_git_subcmds()) == base - excluded
+
+
+# --- _lib_fragment_has_command_invoking_git_flag / --------------------------
+# --- _lib_fragment_has_env_assignment_before_git -----------------------------
+#
+# Both back the git-flag and env-assignment gates in
+# require-review-orchestrator-bash.sh and deny-reviewer-tree-mutation.sh.
+# Called directly here (subprocess-isolated, same pattern as
+# _valid_session_id_component above) rather than through hook-level
+# JSON/subprocess plumbing.
+
+
+def _fragment_has_command_invoking_git_flag(fragment: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_has_command_invoking_git_flag "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _fragment_has_env_assignment_before_git(fragment: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_has_env_assignment_before_git "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "git -c core.pager=less log",
+        "git '-c' core.pager=less log",  # quoted -c: caught directly by this scan, not just incidentally
+        "git diff --ext-diff",
+        "git show --textconv HEAD:file.bin",
+        "git log --open-files-in-pager=sh",
+        "git grep -O'less' the README.md",
+        "git log --config-env=core.pager=SOME_ENV_VAR",
+    ],
+)
+def test_fragment_has_command_invoking_git_flag_true_for_each_unsafe_flag_shape(fragment: str) -> None:
+    assert _fragment_has_command_invoking_git_flag(fragment)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "git log --oneline",
+        "git status",
+        "git diff HEAD",
+    ],
+)
+def test_fragment_has_command_invoking_git_flag_false_for_plain_commands(fragment: str) -> None:
+    assert not _fragment_has_command_invoking_git_flag(fragment)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=x git diff",
+        "FOO=bar git diff",  # blanket rule, not scoped to GIT_-prefixed names
+    ],
+)
+def test_fragment_has_env_assignment_before_git_true_for_leading_assignment(fragment: str) -> None:
+    assert _fragment_has_env_assignment_before_git(fragment)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "git log --oneline",
+        "git log FOO=bar",  # assignment-shaped token AFTER git is just an argument
+    ],
+)
+def test_fragment_has_env_assignment_before_git_false_for_no_leading_assignment(fragment: str) -> None:
+    assert not _fragment_has_env_assignment_before_git(fragment)
+
+
+# --- _lib_fragment_is_bare_env_assignment ------------------------------------
+#
+# Backs deny-reviewer-tree-mutation.sh's per-fragment bare-assignment check:
+# a fragment split out via `;` from its eventual `git` invocation never
+# itself contains a git word, so _lib_fragment_has_env_assignment_before_git's
+# git-anchored scan cannot catch it — this predicate catches the assignment
+# SHAPE directly, independent of any git mention in the same fragment.
+
+
+def _fragment_is_bare_env_assignment(fragment: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_is_bare_env_assignment "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "export GIT_CONFIG_KEY_0=diff.external",
+        "GIT_CONFIG_KEY_0=diff.external",  # bare, no export keyword
+        "export SOME_VAR=x",
+        "SOME_VAR=x",
+    ],
+)
+def test_fragment_is_bare_env_assignment_true_for_assignment_only_fragments(fragment: str) -> None:
+    assert _fragment_is_bare_env_assignment(fragment)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "git diff",
+        "FOO=bar git diff",  # assignment followed by a command: not BARE
+        "export",  # export with nothing to export
+        "",
+    ],
+)
+def test_fragment_is_bare_env_assignment_false_for_non_assignment_or_mixed_fragments(fragment: str) -> None:
+    assert not _fragment_is_bare_env_assignment(fragment)
+
+
 # --- _lib_valid_session_id_component --------------------------------------
 #
 # Every call site that builds a filesystem path from a hook-payload-supplied

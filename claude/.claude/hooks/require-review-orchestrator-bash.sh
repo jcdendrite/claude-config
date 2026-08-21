@@ -5,8 +5,16 @@
 # read-only git subcommands, the marker.sh/review-ledger.sh/
 # orchestrator-checkpoint.sh helper scripts, and this repo's own
 # CLAUDE.md-named verification commands — because Bash alone could otherwise
-# mutate the tree despite the agent lacking Edit/Write. See
-# docs/design-decisions.md §29 for the fuller design rationale.
+# mutate the tree despite the agent lacking Edit/Write. review-orchestrator
+# also carries the Agent tool, so this Bash restriction alone doesn't stop
+# nested dispatch to an unrestricted agent — require-review-orchestrator-agent-target.sh
+# closes that gap separately. See docs/design-decisions.md §29 for the fuller
+# design rationale.
+#
+# This hook is an allowlist (deny-by-default): a standalone `export
+# VAR=value` fragment is never on the allowlist below, so it already denies
+# without needing _lib_fragment_is_bare_env_assignment — that helper exists
+# for deny-reviewer-tree-mutation.sh's denylist model, not this one.
 set -uo pipefail
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
@@ -113,6 +121,14 @@ while IFS= read -r fragment; do
   fi
 
   if _lib_fragment_invokes_git "$fragment"; then
+    if _lib_fragment_has_command_invoking_git_flag "$fragment"; then
+      emit_deny "Blocked by review-orchestrator Bash gate: '$fragment' carries a git flag (-c, --config-env, -O/--open-files-in-pager, --ext-diff, or --textconv) that can exec an arbitrary command regardless of subcommand. $SANCTIONED_ALTERNATIVE"
+      exit 0
+    fi
+    if _lib_fragment_has_env_assignment_before_git "$fragment"; then
+      emit_deny "Blocked by review-orchestrator Bash gate: '$fragment' carries an environment-variable assignment before the git word -- git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism can set arbitrary config (e.g. diff.external) this way with no matching CLI flag. $SANCTIONED_ALTERNATIVE"
+      exit 0
+    fi
     subcmd=$(_lib_extract_git_subcmd "$fragment")
     if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
       emit_deny "Blocked by review-orchestrator Bash gate: 'git $subcmd' is not a read-only git subcommand. $SANCTIONED_ALTERNATIVE"

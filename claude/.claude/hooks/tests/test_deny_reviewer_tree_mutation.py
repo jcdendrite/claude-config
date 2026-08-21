@@ -335,6 +335,109 @@ class TestBashGitWrites:
         assert run_hook(HOOK, bash_input("git checkout -- x", agent_type="code-writer")) == "allow"
 
 
+class TestCommandInvokingGitFlagDenied:
+    """A subcommand-word-only allowlist check treats 'git grep -O...' as safe
+    because grep is otherwise read-only, while -O execs its argument as a
+    command unconditionally -- these flags must deny regardless of
+    subcommand for a review-only agent too."""
+
+    def test_git_grep_open_files_in_pager_short_form_denied(self):
+        command = 'git grep -O\'sh -c "touch /tmp/marker" #\' the README.md'
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_git_grep_open_files_in_pager_short_form_denied_with_no_embedded_dash_c(self):
+        """Confound-free companion to the fixture above: that payload's own
+        embedded 'sh -c "..."' produces a bare -c token that independently
+        satisfies the -c arm, so it doesn't pin -O short-form detection on
+        its own. This value carries no -c-shaped token anywhere."""
+        command = "git grep -O'less' the README.md"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_git_log_open_files_in_pager_long_form_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git log --open-files-in-pager=sh", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_git_log_bare_config_override_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git -c core.pager=less log", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_git_diff_ext_diff_denied(self):
+        assert run_hook(HOOK, bash_input("git diff --ext-diff", agent_type="staff-sdet")) == "deny"
+
+    def test_git_show_textconv_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git show --textconv HEAD:file.bin", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_git_config_env_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git log --config-env=core.pager=SOME_ENV_VAR", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_plain_readonly_git_log_with_no_unsafe_flag_still_allowed(self):
+        """Regression guard: the new flag scan must not false-deny an
+        ordinary read-only git subcommand with none of the unsafe flags."""
+        assert run_hook(HOOK, bash_input("git log --oneline", agent_type="staff-sdet")) == "allow"
+
+
+class TestBareEnvAssignmentFragmentDenied:
+    """A fragment that is ITSELF purely an environment-variable assignment
+    denies regardless of whether it mentions git -- closing the cross-
+    fragment path where splitting an assignment out via `;` from its
+    eventual `git` invocation leaves neither fragment individually caught by
+    _lib_fragment_has_env_assignment_before_git's git-anchored scan."""
+
+    def test_git_config_env_var_mechanism_split_across_fragments_denied(self):
+        """The exact multi-fragment GIT_CONFIG_* attack: each `export ...`
+        fragment doesn't itself invoke git, and the final `git diff` fragment
+        carries no assignment of its own -- only a per-fragment bare-
+        assignment check catches this."""
+        command = (
+            "export GIT_CONFIG_COUNT=1; export GIT_CONFIG_KEY_0=diff.external; "
+            "export GIT_CONFIG_VALUE_0=x; git diff"
+        )
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_bare_export_fragment_alone_denied(self):
+        assert run_hook(HOOK, bash_input("export SOME_VAR=x", agent_type="staff-sdet")) == "deny"
+
+    def test_bare_assignment_fragment_without_export_denied(self):
+        assert run_hook(HOOK, bash_input("SOME_VAR=x", agent_type="staff-sdet")) == "deny"
+
+    def test_plain_command_with_no_bare_assignment_fragment_still_allowed(self):
+        """Regression guard: the new bare-assignment scan must not false-deny
+        a normal command with no env-assignment fragment anywhere."""
+        assert run_hook(HOOK, bash_input("git status", agent_type="staff-sdet")) == "allow"
+
+
+class TestEnvironmentVariableAssignmentBeforeGitDenied:
+    """Git's own GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n>
+    mechanism (git-config(1) ENVIRONMENT) sets arbitrary config -- including
+    diff.external -- with zero matching CLI flag token, entirely bypassing
+    the flag-token scan above. A leading env-var assignment before the git
+    word is denied as a blanket rule, not enumerated per variable name."""
+
+    def test_git_config_env_var_mechanism_denied(self):
+        command = (
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external "
+            "GIT_CONFIG_VALUE_0='touch /tmp/marker #' git diff"
+        )
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_non_git_prefixed_env_assignment_denied(self):
+        """The rule is a blanket one on the WORD=value shape, not scoped to
+        GIT_-prefixed names -- any env var could matter to some git
+        mechanism now or in the future."""
+        assert run_hook(HOOK, bash_input("FOO=bar git diff", agent_type="staff-sdet")) == "deny"
+
+    def test_plain_command_with_no_env_assignment_still_allowed(self):
+        """Regression guard: the new env-assignment scan must not false-deny
+        an ordinary git command with no leading env-var assignment."""
+        assert run_hook(HOOK, bash_input("git log --oneline", agent_type="staff-sdet")) == "allow"
+
+
 class TestBashGitModeDependentWrites:
     """The shared _LIB_READONLY_GIT_SUBCMDS admits branch/tag/worktree/remote/
     fetch/reflog/symbolic-ref as read-only for require-worktree-for-git-writes.sh's

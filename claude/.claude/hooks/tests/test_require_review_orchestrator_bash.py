@@ -172,6 +172,98 @@ class TestMutatingCommandsDenied:
         assert "code-writer" in reason
 
 
+class TestCommandInvokingGitFlagDenied:
+    """A subcommand-word-only allowlist check treats 'git grep -O...' as safe
+    because grep is read-only, while -O execs its argument as a command
+    unconditionally -- these flags must deny regardless of subcommand."""
+
+    def test_git_grep_open_files_in_pager_short_form_denied(self):
+        command = 'git grep -O\'sh -c "touch /tmp/marker" #\' the README.md'
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_git_grep_open_files_in_pager_short_form_denied_with_no_embedded_dash_c(self):
+        """Confound-free companion to the fixture above: that payload's own
+        embedded 'sh -c "..."' produces a bare -c token that independently
+        satisfies the -c arm, so it doesn't pin -O short-form detection on
+        its own. This value carries no -c-shaped token anywhere."""
+        command = "git grep -O'less' the README.md"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_git_log_open_files_in_pager_long_form_denied(self):
+        command = "git log --open-files-in-pager=sh"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_git_log_bare_config_override_denied(self):
+        command = "git -c core.pager=less log"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_git_diff_ext_diff_denied(self):
+        command = "git diff --ext-diff"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_git_show_textconv_denied(self):
+        command = "git show --textconv HEAD:file.bin"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_git_config_env_denied(self):
+        command = "git log --config-env=core.pager=SOME_ENV_VAR"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_plain_readonly_git_log_with_no_unsafe_flag_still_allowed(self):
+        """Regression guard: the new flag scan must not false-deny an
+        ordinary read-only git subcommand with none of the unsafe flags."""
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input("git log -5", agent_type=AGENT)
+        ) == "allow"
+
+
+class TestEnvironmentVariableAssignmentBeforeGitDenied:
+    """Git's own GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n>
+    mechanism (git-config(1) ENVIRONMENT) sets arbitrary config -- including
+    diff.external -- with zero matching CLI flag token, entirely bypassing
+    the flag-token scan above. A leading env-var assignment before the git
+    word is denied as a blanket rule, not enumerated per variable name."""
+
+    def test_git_config_env_var_mechanism_denied(self):
+        command = (
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external "
+            "GIT_CONFIG_VALUE_0='touch /tmp/marker #' git diff"
+        )
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_non_git_prefixed_env_assignment_denied(self):
+        """The rule is a blanket one on the WORD=value shape, not scoped to
+        GIT_-prefixed names -- any env var could matter to some git
+        mechanism now or in the future."""
+        command = "FOO=bar git diff"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_plain_command_with_no_env_assignment_still_allowed(self):
+        """Regression guard: the new env-assignment scan must not false-deny
+        an ordinary git command with no leading env-var assignment."""
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input("git log --oneline", agent_type=AGENT)
+        ) == "allow"
+
+
 class TestRestrictionScopedToReviewOrchestrator:
     @pytest.mark.parametrize(
         "agent_type",

@@ -280,8 +280,8 @@ existing one.
 
 Row 7a [mechanism]: new `_LIB_BASH_MUTATION_RESTRICTED_AGENTS` array
 (containing `review-orchestrator`), consumed by a new hook that restricts
-its `Bash` tool calls to: read-only git subcommands (reusing
-`_lib_readonly_git_subcmds`), exact-path invocations of `marker.sh`,
+its `Bash` tool calls to: strict read-only git subcommands (reusing
+`_lib_strict_readonly_git_subcmds`), exact-path invocations of `marker.sh`,
 `review-ledger.sh`, and `orchestrator-checkpoint.sh`, and exactly the
 verification commands root `CLAUDE.md`'s own Commands section already
 names for this repo (`.venv/bin/pytest claude/.claude/`,
@@ -461,7 +461,7 @@ kill-and-resume check is the only coverage it gets, once, by hand.
 | `claude/.claude/hooks/tests/test_enforce_marker_script_shape.py` | Add `review-orchestrator` to the existing `GATE_RELEASE_ALLOWED_AGENTS` test fixture (currently `["general-purpose", "claude"]`), giving it the same functional allow-path test coverage those two identities already get — a roster-membership assertion in `test_agent_roster.py` alone doesn't exercise the hook's actual allow branch. |
 | `claude/.claude/settings.json` | Register `require-review-orchestrator-bash.sh` and `require-review-orchestrator-agent-target.sh`, following `require-skill-review.sh`'s existing PreToolUse registration shape — without this, neither hook is live and rows 7a/7b are enforced in name only. |
 | `docs/hooks.md` | Document `require-review-orchestrator-bash.sh` and `require-review-orchestrator-agent-target.sh`, mirroring existing entries' style. |
-| `docs/design-decisions.md` | New §28 entry recording this decision, its rejected alternatives, and the row 7/7a/7b coupling fix (condensed from the assumption ledger above). |
+| `docs/design-decisions.md` | New §29 entry recording this decision, its rejected alternatives, and the row 7/7a/7b coupling fix (condensed from the assumption ledger above). |
 | `.claude/plans/review-pipeline-orchestrator-subagent.md` | This plan, committed to the branch. |
 
 **PR 2** (opened only after the dogfooding gate above)

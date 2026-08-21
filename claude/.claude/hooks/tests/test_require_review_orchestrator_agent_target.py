@@ -49,6 +49,17 @@ class TestDeniedDispatchTargets:
             REQUIRE_REVIEW_ORCHESTRATOR_AGENT_TARGET_HOOK, _agent_dispatch("some-other-agent")
         ) == "deny"
 
+    def test_dispatch_to_review_orchestrator_denied(self):
+        """review-orchestrator is absent from _LIB_REVIEW_ONLY_AGENTS, so a
+        self-recursive dispatch (review-orchestrator nest-dispatching
+        another review-orchestrator) is already denied by the allowlist
+        design -- pins the self-recursion/escalation risk with a named
+        regression test rather than leaving it covered only incidentally by
+        the closed-set check."""
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_AGENT_TARGET_HOOK, _agent_dispatch("review-orchestrator")
+        ) == "deny"
+
     def test_denial_names_the_closed_allowlist(self):
         reason = run_hook_reason(
             REQUIRE_REVIEW_ORCHESTRATOR_AGENT_TARGET_HOOK, _agent_dispatch("general-purpose")
