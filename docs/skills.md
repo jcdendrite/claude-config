@@ -165,6 +165,8 @@ After this repo's plugin restructure, stowed skills from claude-config use less 
 
 `settings.local.json` overrides `settings.json` at the same scope, so this raise applies only to the user who adds it without forking the stowed config. Reference: [Claude Code settings — skillListingBudgetFraction](https://code.claude.com/docs/en/settings).
 
+Tools have an analogous per-tool lever — `disableArtifact`/`disableWorkflows` in the same file — for the two largest eagerly-loaded built-in tool schemas; see `design-decisions.md` §28.
+
 ## Project-specific layers
 
 `/plan-it`, `/plan-review`, `/code-review`, `/pr-description`, and `/test-conventions` load a project-specific layer if one exists in the consuming repo — so a project can extend the base skill without forking the public skill body.
