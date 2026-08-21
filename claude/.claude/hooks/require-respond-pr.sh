@@ -48,6 +48,22 @@
 # an unrelated neighboring command can be denied alongside a gated one; and
 # the gate cannot see inside a query body sourced from a file, so it denies
 # those wholesale rather than inspecting them.
+#
+# Second bypass path: /review-pr's active marker at
+# ~/.claude/.review-pr-active.d/<session_id> releases a matched READ the
+# same way respond-pr's does. A matched WRITE (posting a `gh pr review`) is
+# never released by the active marker alone -- it additionally requires
+# /review-pr's completion marker (~/.claude/review-pr-markers/<repo-hash>.
+# <session_id>) to name this exact HEAD, PR number, and (when the command
+# posts a body file) body hash, proving the review happened rather than
+# merely that a post was authorized. See _lib_review_pr_completion_marker_fields
+# in _lib.sh for the session-scoped read and marker.sh's `write review-pr`
+# arm for what writes it. Named accepted gap: an inline (non-file) --body
+# value has no file to hash, so the body-hash check does not apply to it.
+#
+# `gh pr edit` with a body-mutating flag (--body/--body-file) is also
+# gated here, independent of either marker: the "never edit someone else's
+# PR body" invariant otherwise rests on skill prose alone.
 
 set -uo pipefail
 
@@ -85,6 +101,16 @@ fi
 SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 if _lib_active_bypass_marker_live_and_touch ".respond-pr-active.d" "$SESSION_ID"; then
   exit 0
+fi
+
+# review-pr active marker: computed here, used further down. Unlike
+# respond-pr's blanket bypass above, this does NOT exit 0 unconditionally --
+# a live marker only proves a /review-pr session is running, never that the
+# review itself happened. It releases reads unconditionally further below;
+# a write additionally requires the completion marker checked there.
+REVIEW_PR_ACTIVE=0
+if _lib_active_bypass_marker_live ".review-pr-active.d" "$SESSION_ID"; then
+  REVIEW_PR_ACTIVE=1
 fi
 
 # grep matches within a line and `.` never crosses a newline, so any command
@@ -209,6 +235,22 @@ PATTERN_GRAPHQL_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*(qu
 PATTERN_ANY_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*(query=@|--input([[:space:]]|=))'
 PATTERN_FIELD_FLAG='(-f|-F|--field|--raw-field)[[:space:]=]'
 PATTERN_MUTATING_METHOD='(-X|--method)[[:space:]=]*(POST|PATCH|PUT|DELETE)'
+# `gh pr edit` covers title, labels, reviewers, and more -- only the
+# body-mutating forms fold into this gate ("never edit someone else's PR
+# body" is the invariant being closed here, not every `pr edit` use). Two
+# separate patterns rather than one combined regex: bash ERE has no
+# lookahead, so "pr edit ... AND a body flag somewhere in the command" is
+# expressed as two `[[ ]]` tests joined by `&&`, not one alternation.
+PATTERN_PR_EDIT_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'pr[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'edit([[:space:]]|$)'
+PATTERN_PR_EDIT_BODY_FLAG='(--body|--body-file)([[:space:]]|=)'
+# Used only by the review-pr write-authorization block below: an approval is
+# never released there regardless of the rest of that block's checks, since
+# /review-pr's own design never emits one autonomously (see SKILL.md). Covers
+# both the `gh pr review --approve` CLI form and the `gh api .../reviews -f
+# event=APPROVE` REST form (GitHub's review-event values are case-sensitive
+# uppercase, so no case-folding is needed here -- any other casing already
+# fails at the API rather than reaching this hook as a real approval).
+PATTERN_REVIEW_PR_APPROVE_FLAG='(^|[[:space:]])--approve([[:space:]]|$)|(-f|--field|--raw-field)[[:space:]=]+event=APPROVE([[:space:]]|$)'
 
 if [[ "$COMMAND_FLAT" =~ $PATTERN_REST_NUMBERED ]]; then
   :
@@ -221,6 +263,8 @@ elif [[ "$COMMAND_FLAT" =~ $PATTERN_ISSUE_WRITE_CMD ]]; then
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_MUTATION ]]; then
   :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_FILE_BODY ]]; then
+  :
+elif [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_CMD ]] && [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_BODY_FLAG ]]; then
   :
 else
   exit 0
@@ -252,6 +296,15 @@ for write_signal in "${gated_write_patterns[@]}"; do
   fi
 done
 
+# `gh pr edit` carries no read form -- reaching the arm chain above (which
+# requires the body flag too) already means this is a write, so it is set
+# directly rather than added to gated_write_patterns above, which would
+# make the body flag alone (with no `pr edit` anywhere) count as a write
+# signal for every OTHER matched arm too.
+if [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_CMD ]] && [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_BODY_FLAG ]]; then
+  GATED_WRITE=1
+fi
+
 # The mutating-method signal is checked separately because it is the one that
 # must fold case, and the patterns above must not: `repos/` path segments and
 # GraphQL mutation names are case-significant. `gh` normalizes the method
@@ -264,6 +317,139 @@ if [[ "$COMMAND_FLAT" =~ $PATTERN_MUTATING_METHOD ]]; then
   GATED_WRITE=1
 fi
 shopt -u nocasematch
+
+# review-pr read bypass: an active marker releases a matched READ
+# unconditionally (step 1 needs the complete three-endpoint fetch the same
+# way an author does). A matched WRITE is never released here -- that needs
+# the completion-marker check below, which an active marker alone cannot
+# stand in for.
+if [ "$REVIEW_PR_ACTIVE" -eq 1 ] && [ "$GATED_WRITE" -eq 0 ]; then
+  exit 0
+fi
+
+# Repo the gated command targets: the explicit -R/--repo flag or a
+# repos/OWNER/REPO/... path. The write-authorization block below needs this
+# ahead of its own exit paths, to bind a posted review to the repo
+# /review-pr actually reviewed, not only its PR number and HEAD -- so it is
+# extracted here rather than reusing the cross-repo bypass's own extraction
+# further down, which runs too late for this block to read. Two explicit
+# forms are recognized:
+#   gh api repos/OWNER/REPO/...
+#   gh pr <cmd> ... -R OWNER/REPO      (also --repo OWNER/REPO, --repo=OWNER/REPO)
+# Reads COMMAND_FLAT, not COMMAND: `sed` is per-line exactly as grep is, so a
+# wrapped cross-repo URL would otherwise be invisible here while the arm
+# chain above already saw it — the two would disagree about the same
+# command. That direction fails closed (the repo goes unrecognized and the
+# command denies), but a gate whose two halves read different text is a gate
+# whose behaviour cannot be reasoned about from either half alone.
+COMMAND_REPO=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's,.*repos/([^/]+/[^/]+)/(pulls|issues)/[0-9]+/(comments|reviews).*,\1,p;s,.*repos/([^/]+/[^/]+)/(pulls|issues)/comments/[0-9]+.*,\1,p' | head -1)
+if [ -z "$COMMAND_REPO" ]; then
+  COMMAND_REPO=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's,.*[[:space:]](-R|--repo)[[:space:]=]+([^[:space:]=]+/[^[:space:]]+).*,\2,p' | head -1)
+fi
+
+# `gh api repos/{owner}/{repo}/...` is documented gh syntax: gh substitutes
+# the current repo at call time. The placeholder is literal text, so it reads
+# as a repo name unlike any origin and would otherwise release the very
+# same-repo access this gate exists to catch.
+if [[ "$COMMAND_REPO" == *[{}]* ]]; then
+  COMMAND_REPO=""
+fi
+
+# review-pr write authorization. Requires, all checked against THIS
+# session's own completion marker (never a cross-session glob -- see
+# _lib_review_pr_completion_marker_fields in _lib.sh): the marker's stored
+# headRefOid equals the worktree's current HEAD; the marker's stored PR
+# identity equals the PR number the command being run actually targets; the
+# repo the command targets (COMMAND_REPO above, or -- when the command
+# carries neither an explicit flag nor a repos/OWNER/REPO/ path -- this
+# worktree's own origin remote, resolved the same way gh itself would)
+# equals the marker's stored owner/repo; and, when the command posts a body
+# via -F/--body-file, that file's hash equals the marker's stored body hash.
+# Any missing piece (no completion marker, unresolvable worktree root,
+# unparseable PR number, unresolvable target repo) leaves
+# REVIEW_PR_WRITE_AUTHORIZED at 0 and falls through to the existing deny
+# below -- fail-closed by construction, not by an explicit check.
+REVIEW_PR_WRITE_AUTHORIZED=0
+if [ "$REVIEW_PR_ACTIVE" -eq 1 ] && [ "$GATED_WRITE" -eq 1 ]; then
+  if REVIEW_PR_CONFIG_DIR=$(_lib_config_dir 2>/dev/null); then
+    REVIEW_PR_REPO_ROOT=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null)
+    if [ -n "$REVIEW_PR_REPO_ROOT" ]; then
+      REVIEW_PR_REPO_HASH=$(_marker_lib_repo_hash "$REVIEW_PR_REPO_ROOT")
+      if REVIEW_PR_MARKER_FIELDS=$(_lib_review_pr_completion_marker_fields "$REVIEW_PR_CONFIG_DIR" "$REVIEW_PR_REPO_HASH" "$SESSION_ID"); then
+        REVIEW_PR_MARKER_PR_IDENTITY=$(printf '%s\n' "$REVIEW_PR_MARKER_FIELDS" | sed -n '1p')
+        REVIEW_PR_MARKER_HEAD_REF_OID=$(printf '%s\n' "$REVIEW_PR_MARKER_FIELDS" | sed -n '2p')
+        REVIEW_PR_MARKER_BODY_HASH=$(printf '%s\n' "$REVIEW_PR_MARKER_FIELDS" | sed -n '3p')
+        REVIEW_PR_MARKER_PR_NUMBER="${REVIEW_PR_MARKER_PR_IDENTITY##*#}"
+        REVIEW_PR_MARKER_OWNER_REPO="${REVIEW_PR_MARKER_PR_IDENTITY%#*}"
+
+        REVIEW_PR_CURRENT_HEAD=$(_lib_capped git rev-parse HEAD 2>/dev/null)
+
+        # PR number: the integer immediately following the `review` verb
+        # (CLI form) or the path segment between `pulls/` and the next `/`
+        # (API form) -- the same two shapes PATTERN_PR_WRITE_CMD and
+        # PATTERN_REST_NUMBERED above already gate on. More than one
+        # distinct number across both extractions is an unresolvable
+        # ambiguity (e.g. two chained gh calls); GATED_COMMAND_PR_NUMBER
+        # stays empty rather than guessing, which never matches below.
+        REVIEW_PR_PR_NUMBER_CLI_MATCHES=$(printf '%s\n' "$COMMAND_FLAT" | grep -oE '[[:space:]]review[[:space:]]+[0-9]+([[:space:]]|$)' | grep -oE '[0-9]+')
+        REVIEW_PR_PR_NUMBER_API_MATCHES=$(printf '%s\n' "$COMMAND_FLAT" | grep -oE 'pulls/[0-9]+/' | grep -oE '[0-9]+')
+        REVIEW_PR_PR_NUMBER_CANDIDATES=$(printf '%s\n%s\n' "$REVIEW_PR_PR_NUMBER_CLI_MATCHES" "$REVIEW_PR_PR_NUMBER_API_MATCHES" | grep -v '^$' | sort -u)
+        GATED_COMMAND_PR_NUMBER=""
+        if [ "$(printf '%s\n' "$REVIEW_PR_PR_NUMBER_CANDIDATES" | grep -c '.')" -eq 1 ]; then
+          GATED_COMMAND_PR_NUMBER="$REVIEW_PR_PR_NUMBER_CANDIDATES"
+        fi
+
+        # Repo the command targets: COMMAND_REPO when the command carries an
+        # explicit -R/--repo flag or repos/OWNER/REPO/ path, otherwise the
+        # implicit current-directory-remote resolution gh itself would use.
+        # A wrong resolution can never leak an unrelated repo's identity
+        # into the comparison below -- it just fails to equal
+        # REVIEW_PR_MARKER_OWNER_REPO, which denies.
+        REVIEW_PR_TARGET_REPO="$COMMAND_REPO"
+        if [ -z "$REVIEW_PR_TARGET_REPO" ]; then
+          # _lib_capped, not bare git: a stale index lock or a
+          # network-mounted .git would otherwise block this call for as
+          # long as the filesystem takes to answer.
+          REVIEW_PR_CURRENT_URL=$(_lib_capped git config --get remote.origin.url 2>/dev/null)
+          if [ -n "$REVIEW_PR_CURRENT_URL" ]; then
+            REVIEW_PR_TARGET_REPO=$(printf '%s\n' "$REVIEW_PR_CURRENT_URL" | sed -nE 's,.*[:/]([^/:]+/[^/]+)$,\1,p' | sed 's,\.git$,,')
+          fi
+        fi
+
+        # --body-file / -F value, or gh api's -f/--field/--raw-field
+        # key=@file form scoped to the `body` field: same quoting/=-joined/
+        # space-separated tolerance as the -R/--repo extraction above
+        # (COMMAND_REPO). Empty means no file-based body in this command --
+        # the named accepted gap for an inline `--body "<text>"` form, which
+        # has no file to hash, so the body-hash check does not apply to it.
+        REVIEW_PR_BODY_FILE_PATH=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's,.*[[:space:]](-F|--body-file)[[:space:]=]+([^[:space:]]+).*,\2,p;s,.*[[:space:]](-f|--field|--raw-field)[[:space:]=]+body=@([^[:space:]]+).*,\2,p' | head -1)
+        REVIEW_PR_BODY_HASH_OK=1
+        if [ -n "$REVIEW_PR_BODY_FILE_PATH" ]; then
+          REVIEW_PR_BODY_HASH_OK=0
+          REVIEW_PR_ACTUAL_BODY_HASH=$(_lib_capped sha256sum -- "$REVIEW_PR_BODY_FILE_PATH" 2>/dev/null | awk '{print $1}')
+          if [ -n "$REVIEW_PR_ACTUAL_BODY_HASH" ] && [ "$REVIEW_PR_ACTUAL_BODY_HASH" = "$REVIEW_PR_MARKER_BODY_HASH" ]; then
+            REVIEW_PR_BODY_HASH_OK=1
+          fi
+        fi
+
+        if [ -n "$REVIEW_PR_CURRENT_HEAD" ] && [ "$REVIEW_PR_CURRENT_HEAD" = "$REVIEW_PR_MARKER_HEAD_REF_OID" ] \
+          && [ -n "$GATED_COMMAND_PR_NUMBER" ] && [ "$GATED_COMMAND_PR_NUMBER" = "$REVIEW_PR_MARKER_PR_NUMBER" ] \
+          && [ -n "$REVIEW_PR_TARGET_REPO" ] && [ "$REVIEW_PR_TARGET_REPO" = "$REVIEW_PR_MARKER_OWNER_REPO" ] \
+          && [ "$REVIEW_PR_BODY_HASH_OK" -eq 1 ]; then
+          REVIEW_PR_WRITE_AUTHORIZED=1
+        fi
+      fi
+    fi
+  fi
+fi
+
+# --approve is never authorized here, independent of every check above: the
+# skill's own design never emits --approve autonomously (it stays the
+# human's separate action in the GitHub UI), so this hook backs that
+# invariant regardless of whether the rest of this block would have allowed.
+if [[ "$COMMAND_FLAT" =~ $PATTERN_REVIEW_PR_APPROVE_FLAG ]]; then
+  REVIEW_PR_WRITE_AUTHORIZED=0
+fi
 
 # The cross-repo bypass below releases reads only. It exists so that research
 # on an external repo is not mistaken for a PR response here, and research is
@@ -279,7 +465,10 @@ shopt -u nocasematch
 # unattributed write to this one; a decoy that only releases a read costs
 # nothing, since the read was never the thing being protected.
 if [ "$GATED_WRITE" -eq 1 ]; then
-  emit_deny "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. Stop and ask the user how they want to proceed."
+  if [ "$REVIEW_PR_WRITE_AUTHORIZED" -eq 1 ]; then
+    exit 0
+  fi
+  emit_deny "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: this command must exactly match the reviewed PR/HEAD/body recorded by /review-pr's own completion marker — re-run the skill through step 9 rather than hand-constructing the gh call. Stop and ask the user how they want to proceed."
   exit 0
 fi
 
