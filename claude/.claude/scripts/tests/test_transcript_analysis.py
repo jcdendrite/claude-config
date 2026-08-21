@@ -16543,8 +16543,8 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
         as a path segment on a different host must not spoof the real
         identity -- the exact shape named in _GIT_REMOTE_HOST_OWNER_REPO_RE's
         own comment. The 4-segment shape (host/github.com/owner/repo) stays
-        unrecognized after the regex's host capture was generalized beyond
-        the github.com literal."""
+        unrecognized regardless of which host name appears in the spoofed
+        segment."""
         monkeypatch.setattr(
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {
@@ -16557,17 +16557,31 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
         assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
 
     def test_attacker_substring_shape_on_ghe_host_does_not_resolve(self, monkeypatch, capsys):
-        """The same 4-segment spoofing shape, but embedding a GHE host as the
-        spoofed segment instead of github.com, stays unrecognized too. The
-        host capture is a character class with no host-specific branching,
-        so this doesn't guard a distinct failure mode from
-        test_attacker_substring_shape_does_not_resolve -- it documents that
-        the anchoring invariant still holds after the regex's host capture
-        was generalized beyond the github.com literal."""
+        """The same 4-segment spoofing shape, but with a GHE host as the
+        spoofed segment instead of github.com. The host capture is a
+        character class with no host-specific branching, so this doesn't
+        guard a distinct failure mode from
+        test_attacker_substring_shape_does_not_resolve -- it's here to
+        confirm the anchoring invariant isn't accidentally github.com-specific."""
         monkeypatch.setattr(
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {
                 "returncode": 0, "stdout": "https://attacker.example/acme-corp.ghe.com/owner/repo\n", "stderr": "",
+            })(),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
+
+    def test_host_with_disallowed_character_does_not_resolve(self, monkeypatch, capsys):
+        """A host segment containing a character outside the host capture's
+        `[A-Za-z0-9.-]+` class (e.g. an underscore) must not silently
+        mis-capture into a shorter, valid-looking host/owner/repo split."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": "https://internal_host/owner/repo\n", "stderr": "",
             })(),
         )
         with pytest.raises(SystemExit) as exc_info:
@@ -16599,6 +16613,17 @@ class TestGhAuthPreflightOkHostnameScoping:
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {"returncode": 1, "stdout": "", "stderr": "error\n"})(),
         )
+        assert _mod._gh_auth_preflight_ok("github.com") is False
+
+    @pytest.mark.parametrize("raised", [
+        subprocess.TimeoutExpired(cmd=["gh", "auth", "status"], timeout=1),
+        OSError("gh not found"),
+    ])
+    def test_timeout_or_os_error_returns_false(self, monkeypatch, raised):
+        def fake_run(cmd, *a, **kw):
+            raise raised
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
         assert _mod._gh_auth_preflight_ok("github.com") is False
 
 
@@ -17018,6 +17043,12 @@ class TestResolvePinnedGhRepoRetryExhaustion:
         assert not (tmp_path / "pr-cost-ledger.tsv").exists()
 
 
+class TestGhHostQualifiedRepo:
+    def test_returns_host_slash_owner_repo(self):
+        assert _mod._gh_host_qualified_repo("acme-corp.ghe.com", "owner/repo") == "acme-corp.ghe.com/owner/repo"
+        assert _mod._gh_host_qualified_repo("github.com", "owner/repo") == "github.com/owner/repo"
+
+
 class TestPrCostGhCallsPinnedAfterRepoIdentityResolution:
     def test_every_post_resolution_gh_call_carries_repo_pin(self, fake_projects, tmp_path, monkeypatch):
         """Every `gh pr list`/`gh pr view` call this run makes after
@@ -17106,6 +17137,13 @@ class TestPrCostGheHostQualifiesGhRepoCalls:
         assert len(gh_pr_view_calls) == 1
         for cmd in [*gh_pr_list_calls, *gh_pr_view_calls]:
             assert _argv_carries_repo_pin(cmd, "acme-corp.ghe.com/owner/repo")
+        # _argv_carries_repo_pin's suffix branch alone can't distinguish a
+        # correctly-qualified value from a double-qualified one (e.g. a
+        # regression producing "acme-corp.ghe.com/acme-corp.ghe.com/owner/repo"
+        # would still pass via the suffix match), so pin the exact value too --
+        # mirroring the equivalent check on the default github.com path.
+        for cmd in [*gh_pr_list_calls, *gh_pr_view_calls]:
+            assert cmd[cmd.index("--repo") + 1] == "acme-corp.ghe.com/owner/repo"
 
 
 class TestPrCostCrossRepoLedgerIsolation:
