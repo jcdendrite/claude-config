@@ -329,6 +329,36 @@ _lib_marker_value_present() {
   grep -qFx -e "$expected_value" -- "${marker_files[@]}" 2>/dev/null
 }
 
+# _lib_review_pr_completion_marker_fields CONFIG_DIR REPO_HASH SESSION_ID
+# Prints the review-pr completion marker's three stored fields -- PR
+# identity, headRefOid, body hash, one per line -- and returns 0, but only
+# when THIS session's own marker file exists and parses into exactly three
+# non-empty lines. Returns 1 with no output otherwise (marker absent, wrong
+# session, malformed content).
+#
+# Deliberately session-scoped, unlike _lib_marker_value_present's
+# cross-session glob above: this authorization is bound to the session that
+# wrote the marker, so this reads exactly
+# "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID", never a glob over
+# every session's marker under the repo hash. A cross-session glob here
+# would let a stale marker written by an unrelated session authorize this
+# session's post -- see test_other_sessions_marker_does_not_leak_bypass for
+# the equivalent property on the active-bypass marker.
+_lib_review_pr_completion_marker_fields() {
+  local config_dir="$1" repo_hash="$2" session_id="$3"
+  [ -n "$config_dir" ] && [ -n "$repo_hash" ] || return 1
+  _lib_valid_session_id_component "$session_id" || return 1
+  local marker="$config_dir/review-pr-markers/$repo_hash.$session_id"
+  [ -f "$marker" ] || return 1
+  local content pr_identity head_ref_oid body_hash
+  content=$(_lib_capped cat "$marker" 2>/dev/null) || return 1
+  pr_identity=$(printf '%s\n' "$content" | sed -n '1p')
+  head_ref_oid=$(printf '%s\n' "$content" | sed -n '2p')
+  body_hash=$(printf '%s\n' "$content" | sed -n '3p')
+  [ -n "$pr_identity" ] && [ -n "$head_ref_oid" ] && [ -n "$body_hash" ] || return 1
+  printf '%s\n%s\n%s\n' "$pr_identity" "$head_ref_oid" "$body_hash"
+}
+
 # Enumerate the "active" plan file set in a repo's .claude/plans/ directory:
 # untracked, or tracked-and-modified-vs-HEAD. A plan that is tracked and
 # byte-identical to HEAD is historical (its PR shipped) and is excluded.

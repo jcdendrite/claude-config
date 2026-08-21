@@ -24,7 +24,7 @@ from helpers import (
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
-# The 19 single-command tilde-form shapes the hook accepts — single source of
+# The 22 single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
@@ -34,16 +34,19 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh write plan-review",
     "~/.claude/scripts/marker.sh write ready-for-review",
     "~/.claude/scripts/marker.sh write cumulative-review",
+    "~/.claude/scripts/marker.sh write review-pr",
     "~/.claude/scripts/marker.sh activate plan-review",
     "~/.claude/scripts/marker.sh activate ready-for-review",
     "~/.claude/scripts/marker.sh activate respond-pr",
     "~/.claude/scripts/marker.sh activate memory-skill",
     "~/.claude/scripts/marker.sh activate handoff",
+    "~/.claude/scripts/marker.sh activate review-pr",
     "~/.claude/scripts/marker.sh deactivate plan-review",
     "~/.claude/scripts/marker.sh deactivate ready-for-review",
     "~/.claude/scripts/marker.sh deactivate respond-pr",
     "~/.claude/scripts/marker.sh deactivate memory-skill",
     "~/.claude/scripts/marker.sh deactivate handoff",
+    "~/.claude/scripts/marker.sh deactivate review-pr",
     "~/.claude/scripts/marker.sh clear-stale",
     "~/.claude/scripts/marker.sh clear-stale --dry-run",
     "~/.claude/scripts/marker.sh resolve-session-id",
@@ -53,7 +56,7 @@ TILDE_MARKER_SHAPES = [
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — 19 single-command shapes, each must be allowed       #
+    # Valid shapes — 22 single-command shapes, each must be allowed       #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
@@ -657,7 +660,14 @@ class TestGateReleaseAuthority:
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
     @pytest.mark.parametrize(
         "skill",
-        ["code-review", "skill-review", "plan-review", "ready-for-review", "cumulative-review"],
+        [
+            "code-review",
+            "skill-review",
+            "plan-review",
+            "ready-for-review",
+            "cumulative-review",
+            "review-pr",
+        ],
     )
     def test_write_denied_for_no_release_agents(self, agent_type, skill):
         assert (
@@ -670,7 +680,15 @@ class TestGateReleaseAuthority:
 
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
     @pytest.mark.parametrize(
-        "target", ["plan-review", "ready-for-review", "respond-pr", "memory-skill", "handoff"]
+        "target",
+        [
+            "plan-review",
+            "ready-for-review",
+            "respond-pr",
+            "memory-skill",
+            "handoff",
+            "review-pr",
+        ],
     )
     def test_activate_denied_for_no_release_agents(self, agent_type, target):
         """`activate` is the more dangerous verb: the active-bypass marker holds a

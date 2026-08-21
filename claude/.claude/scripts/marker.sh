@@ -38,9 +38,9 @@ Subcommands:
              side effect of classifying it.
 
 Valid (subcommand, skill) combinations:
-  write       code-review | skill-review | plan-review | ready-for-review | cumulative-review
-  activate    plan-review | ready-for-review | respond-pr | memory-skill | handoff
-  deactivate  plan-review | ready-for-review | respond-pr | memory-skill | handoff
+  write       code-review | skill-review | plan-review | ready-for-review | cumulative-review | review-pr
+  activate    plan-review | ready-for-review | respond-pr | memory-skill | handoff | review-pr
+  deactivate  plan-review | ready-for-review | respond-pr | memory-skill | handoff | review-pr
 EOF
 }
 
@@ -371,8 +371,38 @@ case "$SUBCOMMAND" in
         printf '%s\n' "$MARKER_VALUE" \
           > "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
+      review-pr)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        # Sibling file written by /review-pr Step 8: PR identity, the
+        # reviewed headRefOid, and the findings-body file's path -- never
+        # the body text itself, so the findings never land in argv, shell
+        # history, or the process table. Same sibling-file shape as
+        # write plan-review's PLANMODE_SIBLING above, three lines instead
+        # of one.
+        FINDINGS_SIBLING="$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.findings"
+        if ! FINDINGS_SIBLING_CONTENT=$(_lib_capped cat "$FINDINGS_SIBLING" 2>/dev/null); then
+          printf 'marker.sh: cannot read %s -- cannot compute the review-pr marker. Abort without writing a marker.\n' "$FINDINGS_SIBLING" >&2
+          exit 2
+        fi
+        PR_IDENTITY=$(printf '%s\n' "$FINDINGS_SIBLING_CONTENT" | sed -n '1p')
+        HEAD_REF_OID=$(printf '%s\n' "$FINDINGS_SIBLING_CONTENT" | sed -n '2p')
+        FINDINGS_BODY_PATH=$(printf '%s\n' "$FINDINGS_SIBLING_CONTENT" | sed -n '3p')
+        if [ -z "$PR_IDENTITY" ] || [ -z "$HEAD_REF_OID" ] || [ -z "$FINDINGS_BODY_PATH" ]; then
+          printf 'marker.sh: %s is missing PR identity, headRefOid, or the findings-body path. Abort without writing a marker.\n' "$FINDINGS_SIBLING" >&2
+          exit 2
+        fi
+        # Compute before redirecting, same reasoning as every arm above: a
+        # failed hash must not truncate a valid existing marker.
+        BODY_HASH=$(_lib_capped sha256sum -- "$FINDINGS_BODY_PATH" 2>/dev/null | awk '{print $1}')
+        [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s. Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
+        mkdir -p "$CONFIG_DIR/review-pr-markers"
+        printf '%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$BODY_HASH" \
+          > "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID"
+        ;;
       *)
-        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review\n" "$SKILL" >&2
+        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review, review-pr\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -419,8 +449,14 @@ case "$SUBCOMMAND" in
         mkdir -p "$CONFIG_DIR/.handoff-active.d"
         printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.handoff-active.d/$SESSION_ID"
         ;;
+      review-pr)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
+        mkdir -p "$CONFIG_DIR/.review-pr-active.d"
+        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.review-pr-active.d/$SESSION_ID"
+        ;;
       *)
-        printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff\n" "$SKILL" >&2
+        printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff, review-pr\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -450,8 +486,35 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.handoff-active.d/$SESSION_ID"
         ;;
+      review-pr)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        rm -f "$CONFIG_DIR/.review-pr-active.d/$SESSION_ID"
+        FINDINGS_SIBLING="$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.findings"
+        # The findings-body file's path lives on the sibling's third line;
+        # read it before removing the sibling so the body file itself can be
+        # deleted too -- nothing the completion marker points to may outlive
+        # this skill invocation, on every exit path (posted, declined, aborted).
+        if FINDINGS_BODY_PATH=$(_lib_capped cat "$FINDINGS_SIBLING" 2>/dev/null | sed -n '3p') && [ -n "$FINDINGS_BODY_PATH" ]; then
+          rm -f -- "$FINDINGS_BODY_PATH"
+        fi
+        rm -f "$FINDINGS_SIBLING"
+        # Repo-scoped, unlike the active marker and sibling above: the
+        # completion marker path needs REPO_HASH. A resolution failure here
+        # is not fatal to deactivate -- deliberately not
+        # _resolve_repo_root/_refuse_main_tree_under_enforcement, which
+        # would abort the whole call and leave the active marker and
+        # sibling (already removed above) as the only cleanup that ran.
+        # Best-effort is sufficient: require-respond-pr.sh requires both a
+        # live active marker AND a matching completion marker before
+        # authorizing a post, so a leftover completion marker with no
+        # active marker authorizes nothing on its own.
+        if REVIEW_PR_REPO_ROOT=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null | tr -d '\n') && [ -n "$REVIEW_PR_REPO_ROOT" ]; then
+          REVIEW_PR_REPO_HASH=$(_marker_lib_repo_hash "$REVIEW_PR_REPO_ROOT")
+          rm -f "$CONFIG_DIR/review-pr-markers/$REVIEW_PR_REPO_HASH.$SESSION_ID"
+        fi
+        ;;
       *)
-        printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff\n" "$SKILL" >&2
+        printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff, review-pr\n" "$SKILL" >&2
         exit 2
         ;;
     esac
