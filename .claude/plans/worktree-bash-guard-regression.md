@@ -19,12 +19,18 @@ skill recipe covers.
 ## Approach
 
 Split every affected skill recipe into single-statement Bash calls with
-literal (not variable-carried) substitution between them, correct the three
-existing "fixed in 2.1.224" notes to state the guard is still active, add a
-`docs/worktree-bash-guard.md` reference recording the full current trigger
-taxonomy, land the `test_skills.py` sweep the prior investigation specified
-but reverted alongside its premise, and add one CLAUDE.md-level convention
-bullet for Bash calls this fix's per-recipe scope doesn't reach.
+literal (not variable-carried) substitution between them, and — per the
+engineer's own review of this plan — strip the version-specific "fixed in
+2.1.224" framing out of every site entirely rather than correcting it in
+place, replacing it with one version-free structural pointer per site to a
+new `docs/worktree-bash-guard.md` reference, which is the sole place a
+version number or current-status claim is allowed to live. Land the
+`test_skills.py` sweep the prior investigation specified but reverted
+alongside its premise, add one CLAUDE.md-level convention bullet for Bash
+calls this fix's per-recipe scope doesn't reach, and record — but do not
+implement — the engineer's preferred long-term mitigation (`install.sh`
+version-gating the minimum Claude Code version) as blocked until a fix
+version exists to gate on.
 
 ### Investigation, re-derived this session
 
@@ -168,6 +174,15 @@ same reason as the other eight.
   response given the guard's multi-version patch history; a report is
   still worth filing (see Out of scope) but isn't a near-term mitigation
   on its own.
+- *`install.sh` version-gates the minimum Claude Code version instead of
+  splitting recipes* — the engineer's preferred long-term shape once a
+  fix version exists (replacing nine per-recipe workarounds with one
+  mechanical check is exactly the "prefer mechanical enforcement over
+  prose" principle this repo already follows elsewhere), but not
+  buildable today: this session found no version, including the
+  currently-installed 2.1.238, where Triggers A/B are fixed, so there is
+  no version number to assert. Recorded as mechanism 6 and Out of scope,
+  not implemented in this plan.
 - *Skip the `test_skills.py` regression test, prose-only fix* — this was
   this session's first draft, reasoning that the guard's exact shapes
   shift release to release and a test would go stale. Reversed after the
@@ -218,12 +233,20 @@ enforcement, is every session working in it) — both in claimed severity
    confirmed-refusing trigger]. No lighter primitive applies — this is a
    same-weight correction to existing recipe text, not an escalation to a
    heavier mechanism.
-2. Correct the three existing "fixed in 2.1.224" notes
-   (`handoff/SKILL.md`, `ready-for-review/SKILL.md:72`,
-   `pr-description/SKILL.md:88`) to state the shape is still refusing as
-   of 2.1.238, pointing to `docs/worktree-bash-guard.md` rather than
-   asserting a version-specific fact inline (see A2 below for why).
-   anchors: row1.
+2. Remove every version-specific claim from all nine sites — including
+   the three existing "Claude Code ≤2.1.223 could refuse this exact shape
+   ... fixed in 2.1.224" notes, which are both wrong (per the changelog
+   cross-check above) and, per the engineer's review of this plan, the
+   wrong *kind* of content to carry at each site regardless: a
+   version-gated fact restated nine times is read-cost paid on every
+   session that loads any of these skills, for a fact that goes stale the
+   next time the guard changes. Replace each with a single, version-free
+   sentence stating only the structural constraint ("run each step
+   separately — a worktree-isolated session's Bash tool refuses
+   multi-statement or `$CLAUDE_CONFIG_DIR`-referencing calls") and a
+   pointer to `docs/worktree-bash-guard.md`, which is the one place a
+   version number or current-status claim is allowed to live (see A2
+   below). anchors: row1.
 3. Add `docs/worktree-bash-guard.md` recording the full current trigger
    taxonomy (A–E), the changelog cross-check, the eight-site sweep table,
    and a "how to re-verify" section, following this repo's existing
@@ -279,6 +302,16 @@ enforcement, is every session working in it) — both in claimed severity
    substitution" claude/.claude/skills/tests/test_skills.py` returns zero
    matches — the test was never shipped, and the sweep above shows five
    sites it would have caught].
+6. **Not implemented in this plan — blocked, not deferred by choice.**
+   The engineer's preferred long-term mitigation is an `install.sh`
+   version check hard-blocking install below the Claude Code version that
+   fixes this guard, replacing per-recipe workarounds entirely once that
+   version exists. It cannot be built yet: this session found no version,
+   including the currently-installed 2.1.238, where Triggers A/B are
+   fixed — there is no version number to gate on. This mechanism becomes
+   live only after Anthropic confirms a fix version (see Out of scope);
+   recorded here so a future plan revising this repo's mitigation starts
+   from this ledger instead of re-deriving the same conclusion.
 
 **Other assumptions:**
 - A1 (closed this session). The prior investigation's A1 ("no other skill
@@ -292,12 +325,13 @@ enforcement, is every session working in it) — both in claimed severity
   claude/.claude/rules/*.md docs/*.md` — 9 matches, resolved to the 8
   distinct sites in the sweep table above (one file, `ready-for-review`,
   has two separate sites)]
-- A2. The corrected historical-note wording ("still refuses as of
-  2.1.238" rather than "fixed in 2.1.224") will itself go stale the next
-  time the guard changes. [accepted — this is why the note now points to
-  `docs/worktree-bash-guard.md` for the current state rather than
-  asserting a permanent fact inline; the doc, not the skill file, is
-  where drift gets corrected going forward.]
+- A2. A version-free structural note at each site ("run each step
+  separately — see docs/worktree-bash-guard.md") stays accurate even
+  after the guard's behavior changes again, unlike the version-specific
+  notes it replaces. [accepted — this is the engineer's stated preference
+  from this plan's review: no per-site version claims, one place
+  (`docs/worktree-bash-guard.md`) where a version number or current-status
+  claim is allowed to live and get corrected as the guard evolves.]
 - A3. The `$CLAUDE_CONFIG_DIR`-plus-worktree-isolation residual gap (a
   session with a customized `CLAUDE_CONFIG_DIR`, worktree-isolated, falls
   back to the default `$HOME/.claude` location for every one of the eight
@@ -479,6 +513,15 @@ enforcement, is every session working in it) — both in claimed severity
   both require confirming external-communication content with the
   engineer before sending — a separate follow-up, not part of this plan's
   implementation.
+- `install.sh` asserting a minimum Claude Code version and hard-blocking
+  install below it, with the corresponding CHANGELOG breaking-change
+  entry — the engineer's preferred long-term replacement for per-recipe
+  workarounds (mechanism 6, above). Blocked, not deferred by choice: no
+  version currently fixes Triggers A/B, so there is nothing to gate on
+  yet. Becomes actionable once the bug report above gets a fix version
+  from Anthropic; track it against this plan and
+  `docs/worktree-bash-guard.md` rather than re-deriving the mitigation
+  strategy from scratch when that happens.
 - A `test_skills.py` sweep hardcoding Triggers C/D/E as regression
   assertions — per Approach's alternatives, these are prose-covered by
   "quote everything, never pass `$PPID` as a whole argument, never
