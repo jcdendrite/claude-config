@@ -443,7 +443,11 @@ To customize response tone, formatting, and communication style, create `<config
 
 ### Machine-specific overrides
 
-Machine-local Claude Code permissions belong in `<config-dir>/settings.local.json` (not tracked).
+Personal permission overrides belong in a repository's own `.claude/settings.local.json` (untracked, gitignored automatically) — Claude Code scopes this file to the repository root, not the user's home directory, so there is no single file that covers every repo on the machine at once. For a preference that should apply everywhere, use an environment variable exported from your shell profile instead (see the next section for an example).
+
+### Context budget: disabling Artifact/Workflow
+
+The built-in `Artifact` and `Workflow` tools are the two largest eagerly-loaded tool schemas in every session's system prompt — roughly 7,200 tokens combined (schema size is measured; the actual reclaim from disabling is not yet independently confirmed — see [`docs/design-decisions.md` §28](docs/design-decisions.md)). Both have a documented disable setting with an environment-variable equivalent, `CLAUDE_CODE_DISABLE_ARTIFACT=1` / `CLAUDE_CODE_DISABLE_WORKFLOWS=1`. This repo doesn't set either — publishing Artifacts and running multi-agent Workflows are legitimate for many stow consumers, so it isn't a default this shared config should impose. If you don't use one or both tools, export the corresponding variable from your own shell profile to reclaim that budget across every repo on the machine.
 
 ## Context management
 
