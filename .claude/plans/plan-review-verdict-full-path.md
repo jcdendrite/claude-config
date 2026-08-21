@@ -24,7 +24,10 @@ its own UI per `plan-it` Step 6, so it doesn't need a redundant path line.
 Step 6 was rejected — `plan-it` doesn't compose its own verdict text, it
 forwards `plan-review`'s, so the single edit covers both entry points and
 avoids a second copy that could drift (CLAUDE.md's single-source-of-truth
-rule).
+rule). A separate sentence in Step 1 instructing the model to resolve the
+plan file's absolute path was also rejected — the Output format sentence
+below is a complete, self-sufficient instruction on its own, so a Step 1
+companion would only repeat it.
 
 ### Assumption ledger
 
@@ -44,9 +47,7 @@ rule).
 ## Critical files
 
 - `claude/.claude/skills/plan-review/SKILL.md`
-  - Output format section, closing verdict sentence — the only edit;
-    `skill-review` flagged a companion sentence originally drafted for
-    Step 1 as redundant with this one and it was dropped (see Approach):
+  - Output format section, closing verdict sentence — the only edit:
 
     Before:
     ```
