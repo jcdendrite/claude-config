@@ -361,9 +361,9 @@ configure_machine_level_opt_ins() {
   echo ""
   echo "=== Machine-level opt-ins ==="
   SENTINEL_INVENTORY_PROMPTED_INDICES=""
-  local sentinel_index=0 entry path_template scope human_name prompt_description default_state docs_anchor
+  local sentinel_index=0 entry path_template scope human_name prompt_description default_state docs_anchor expected_content polarity
   for entry in "${SENTINEL_INVENTORY[@]}"; do
-    IFS='|' read -r path_template scope human_name prompt_description default_state docs_anchor <<< "$entry"
+    IFS='|' read -r path_template scope human_name prompt_description default_state docs_anchor expected_content polarity <<< "$entry"
     if [ "$scope" = "machine-promptable" ]; then
       _prompt_sentinel_opt_in "$HOME/.claude/$path_template" "$human_name" "$prompt_description"
       SENTINEL_INVENTORY_PROMPTED_INDICES="$SENTINEL_INVENTORY_PROMPTED_INDICES $sentinel_index"
@@ -381,20 +381,28 @@ configure_machine_level_opt_ins() {
 # on macOS (and this machine's default) is 3.2, which has no `declare -A`.
 # Schema (no surrounding whitespace around any `|` — IFS='|' read -r would
 # otherwise bake leading/trailing spaces into every field):
-#   path-template|scope|human-name|prompt-description|default-state|docs-anchor
+#   path-template|scope|human-name|prompt-description|default-state|docs-anchor|expected-content|polarity
 # scope is one of: machine-promptable (offered by configure_machine_level_opt_ins
 # above, path-template resolved against $HOME/.claude/), machine (report-only,
 # same resolution), repo (report-only, path-template resolved against this
 # repo's own root), or account (report-only, path-template resolved against
 # $CLAUDE_CONFIG_DIR when set and absolute, else $HOME/.claude — never both;
 # see _report_account_sentinel below). prompt-description is carried only for
-# machine-promptable rows. default-state is the sentinel's own state —
-# "disabled" here for every row, but what makes a row match its default-state
-# differs: machine-promptable/machine/repo rows key off the file's own
-# presence (a kill-switch row's human-name names the suppression itself, not
-# the feature it suppresses, so presence still reads as that suppression
-# being "enabled"), while the account row's state comes from the file's
-# content instead — see _report_account_sentinel.
+# machine-promptable rows. default-state is the label printed when the
+# sentinel file is absent — "disabled" for every machine-promptable/machine/
+# repo/opt-in-account row (a kill-switch row still reads "enabled" on file
+# presence, same as every other row), but an opt-out-polarity account row
+# (see below) inverts this: absence is the row's on-by-default state, so its
+# default-state reads "enabled" instead. expected-content and polarity are
+# optional trailing fields, meaningful only for scope=account rows and
+# appended *last* so every other row's `read` fills them with empty strings
+# unchanged: expected-content empty means a presence-only check (the default
+# for every row); a non-empty value generalizes _report_account_sentinel's
+# content-mode check (compare the sentinel's trimmed, lowercased content
+# against this value, as pr-cost-disclosure does against "dollars"). polarity
+# empty or "opt-in" means the existing behavior (absent = default-state,
+# present = "ENABLED"); "opt-in" is also the fallback for any unrecognized
+# polarity value. "opt-out" inverts which state is the row's default.
 # Promotion criterion, machine -> machine-promptable: boolean file-presence
 # state plus an opt-into-new-capability semantic — see docs/design-decisions.md #23.
 SENTINEL_INVENTORY=(
@@ -412,7 +420,8 @@ SENTINEL_INVENTORY=(
   ".claude/worktree-optout|repo|Worktree enforcement opt-out (this repo)||disabled|README.md § Worktree enforcement"
   ".claude/autonomous-shipping-optout|repo|Autonomous-shipping opt-out (this repo)||disabled|README.md § Autonomous shipping"
   ".claude/session-title-disabled|repo|Branch-based session-title suppression (this repo)||disabled|docs/hooks.md § Utility hooks"
-  "pr-cost-disclosure|account|PR cost disclosure (this account)||disabled|README.md § PR cost disclosure"
+  "pr-cost-disclosure|account|PR cost disclosure (this account)||disabled|README.md § PR cost disclosure|dollars"
+  "pr-description-tighten-prose-optout|account|Prose-tightening pass opt-out (this account)||enabled|docs/hooks.md § Prose tightening opt-out||opt-out"
 )
 
 # Whether $1 (a zero-based SENTINEL_INVENTORY index) was prompted by
@@ -472,15 +481,20 @@ _report_repo_sentinel() {
   fi
 }
 
-# Content, not presence, is this row's state — see the mode grammar in
-# claude/.claude/skills/pr-description/SKILL.md, whose gate this reporter
-# mirrors byte-for-byte (same trim/lowercase/anchored-compare snippet, pinned
-# in both places so they cannot silently diverge). Resolution, not union:
-# $CLAUDE_CONFIG_DIR only when set and absolute, else $HOME/.claude — never
-# both, so one account's opt-in cannot activate disclosure under another
-# account's config dir.
+# Two check modes and two polarities — see the SENTINEL_INVENTORY schema
+# comment above for the full expected-content/polarity grammar. polarity is
+# read only in presence-mode (expected_content empty); a content-mode row
+# ignores it and always reports opt-in semantics. Content-mode
+# (e.g. pr-cost-disclosure) mirrors claude/.claude/skills/pr-description/
+# SKILL.md's mode grammar byte-for-byte — same trim/lowercase/anchored-
+# compare snippet, pinned in both places so they cannot silently diverge.
+# Resolution is not union: $CLAUDE_CONFIG_DIR only when set and absolute,
+# else $HOME/.claude — never both, so one account's opt-in cannot activate a
+# row under another account's config dir.
 _report_account_sentinel() {
-  local sentinel_index="$1" path_template="$2" human_name="$3" docs_anchor="$4"
+  local sentinel_index="$1" path_template="$2" human_name="$3" default_state="$4" docs_anchor="$5" expected_content="$6" polarity="$7"
+  local effective_polarity="opt-in"
+  [ "$polarity" = "opt-out" ] && effective_polarity="opt-out"
   local config_dir
   case "${CLAUDE_CONFIG_DIR:-}" in
     /*) config_dir="${CLAUDE_CONFIG_DIR%/}" ;;
@@ -488,21 +502,29 @@ _report_account_sentinel() {
   esac
   local sentinel_path="$config_dir/$path_template"
   local state
-  if [ ! -f "$sentinel_path" ]; then
-    state="disabled"
-  else
-    local mode
-    mode=$(cat "$sentinel_path" 2>/dev/null) || mode=""
-    mode="${mode#"${mode%%[![:space:]]*}"}"
-    mode="${mode%"${mode##*[![:space:]]}"}"
-    mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
-    if [ "$mode" = "dollars" ]; then
-      state="ENABLED (mode=dollars)"
-    elif [ -z "$mode" ]; then
-      state="disabled"
+  if [ -n "$expected_content" ]; then
+    if [ ! -f "$sentinel_path" ]; then
+      state="$default_state"
     else
-      state="present but mode not recognized: \"$mode\" — treated as disabled"
+      local mode
+      mode=$(cat "$sentinel_path" 2>/dev/null) || mode=""
+      mode="${mode#"${mode%%[![:space:]]*}"}"
+      mode="${mode%"${mode##*[![:space:]]}"}"
+      mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
+      if [ "$mode" = "$expected_content" ]; then
+        state="ENABLED (mode=$expected_content)"
+      elif [ -z "$mode" ]; then
+        state="$default_state"
+      else
+        state="present but mode not recognized: \"$mode\" — treated as $default_state"
+      fi
     fi
+  elif [ ! -f "$sentinel_path" ]; then
+    state="$default_state"
+  elif [ "$effective_polarity" = "opt-out" ]; then
+    state="DISABLED"
+  else
+    state="ENABLED"
   fi
   printf '  %s: %s (%s)\n' "$human_name" "$state" "$sentinel_path"
   # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
@@ -510,7 +532,19 @@ _report_account_sentinel() {
   printf '    the only path this scope checks — never falls back to $HOME/.claude when CLAUDE_CONFIG_DIR is set\n'
   printf '    docs: %s\n' "$docs_anchor"
   if [ ! -f "$sentinel_path" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
-    printf '    → to enable: echo dollars > "%s"\n' "$sentinel_path"
+    local cta_verb="to enable"
+    # polarity is presence-mode-only (see the comment above this function) --
+    # a content-mode row's CTA must not flip to "to disable" on opt-out,
+    # since the state computation above never reads polarity either.
+    [ -z "$expected_content" ] && [ "$effective_polarity" = "opt-out" ] && cta_verb="to disable"
+    if [ -n "$expected_content" ]; then
+      # $expected_content is unquoted in this example command -- fine while
+      # every content-mode row's value is a single word (only "dollars"
+      # today); quote it if a future row's value ever has a space.
+      printf '    → %s: echo %s > "%s"\n' "$cta_verb" "$expected_content" "$sentinel_path"
+    else
+      printf '    → %s: touch "%s"\n' "$cta_verb" "$sentinel_path"
+    fi
   fi
 }
 
@@ -534,9 +568,9 @@ report_sentinel_inventory() {
     fi
   fi
 
-  local sentinel_index=0 entry path_template scope human_name prompt_description default_state docs_anchor
+  local sentinel_index=0 entry path_template scope human_name prompt_description default_state docs_anchor expected_content polarity
   for entry in "${SENTINEL_INVENTORY[@]}"; do
-    IFS='|' read -r path_template scope human_name prompt_description default_state docs_anchor <<< "$entry"
+    IFS='|' read -r path_template scope human_name prompt_description default_state docs_anchor expected_content polarity <<< "$entry"
     case "$scope" in
       machine-promptable | machine)
         _report_machine_sentinel "$sentinel_index" "$path_template" "$human_name" "$default_state" "$docs_anchor" "$diverged_config_dir"
@@ -545,7 +579,7 @@ report_sentinel_inventory() {
         _report_repo_sentinel "$sentinel_index" "$path_template" "$human_name" "$default_state" "$docs_anchor"
         ;;
       account)
-        _report_account_sentinel "$sentinel_index" "$path_template" "$human_name" "$docs_anchor"
+        _report_account_sentinel "$sentinel_index" "$path_template" "$human_name" "$default_state" "$docs_anchor" "$expected_content" "$polarity"
         ;;
     esac
     sentinel_index=$((sentinel_index + 1))
