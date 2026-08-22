@@ -1187,6 +1187,9 @@ class TestNudgeHandoffNearContextCap:
         assert third.stdout.strip() == ""
         assert third.stderr.strip() != ""
         assert "/handoff" in third.stderr
+        assert "HANDOFF_NUDGE_BLOCK_AFTER=" in third.stderr
+        assert "genuinely almost done" not in third.stderr
+        assert "too aggressive for your workflow" not in third.stderr
         assert _ignored_marker_path(tmp_path).stat().st_size == 2
         assert _marker_path(tmp_path).read_text() == f"{estimate}\n"
 
@@ -1766,6 +1769,17 @@ class TestNudgeHandoffNearContextCap:
         payload = json.loads(result.stdout)
         ctx = payload["hookSpecificOutput"]["additionalContext"]
         assert "25%" not in ctx
+
+    def test_advisory_context_still_carries_the_nearly_complete_escape_hatch(self, tmp_path):
+        """The advisory path's additionalContext keeps the "nearly complete, ignore this" affordance —
+        the hard-block path's own copy of it was removed on the assumption this is its only home."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        assert "nearly complete" in ctx
 
     def test_synthetic_model_all_zero_usage_takes_schema_drift_path(self, tmp_path):
         """A <synthetic> model with all-zero usage still takes the schema-drift path, not the window/threshold path."""

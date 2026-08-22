@@ -613,7 +613,7 @@ if [ "$IGNORED_COUNT" -ge "$BLOCK_AFTER" ] 2>/dev/null && [ "$HOOK_EVENT" = "Pos
   printf 'nudged session=%s est=%s model=%s window=%s event=%s action=block\n' \
     "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
   printf '%s\n' "$ESTIMATE" > "$FIRED_MARKER" 2>/dev/null || true
-  printf 'Context is past this session'\''s handoff-nudge threshold (%s tokens), and %s prior re-arms went unacted on this session (HANDOFF_NUDGE_BLOCK_AFTER=%s). Blocking rather than advising: run /handoff now — it captures state in a /tmp file and resumes in a fresh session — or, if the current task is genuinely almost done, finish it in this reply instead of continuing past this point. Set HANDOFF_NUDGE_BLOCK_AFTER to a higher value in your shell environment if this default is too aggressive for your workflow.\n' \
+  printf 'Context is past this session'\''s handoff-nudge threshold (%s tokens), and %s prior re-arms went unacted on this session (HANDOFF_NUDGE_BLOCK_AFTER=%s). Blocking rather than advising: run /handoff now — it captures state in a /tmp file and resumes in a fresh session.\n' \
     "$THRESHOLD" "$IGNORED_COUNT" "$BLOCK_AFTER" >&2
   exit 2
 fi
