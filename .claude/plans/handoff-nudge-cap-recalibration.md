@@ -136,6 +136,39 @@ was committed because capture is recurring; this one-time cap decision is not).
 Documented in the case-study/lever-register writeup as a point-in-time
 measurement, same caveat as the turn-index table.
 
+**M2 results (this session, `pr-cost-ledger.tsv`, 145 rows, repo `claude-config`,
+PRs #278–#698, merged 2026-05-20 to 2026-08-18):**
+
+| Bucket | n (PRs) | $/PR | $/1k output tokens | Mean context |
+|---|---|---|---|---|
+| <100k | 1 | 30.60 | 0.0712 | 88,801 |
+| 100–150k | 23 | 19.02 | 0.0915 | 136,158 |
+| 150–200k | 55 | 36.63 | 0.0979 | 176,363 |
+| 200–250k | 32 | 51.84 | 0.1134 | 223,583 |
+| 250–300k | 19 | 50.44 | 0.1345 | 270,696 |
+| 300k+ | 15 | 58.29 | 0.1515 | 377,534 |
+
+`$/PR` is `sum(cache_read_usd, cache_write_5m_usd, cache_write_1h_usd,
+output_usd, input_usd)` averaged per row in the bucket (`opus_dollars` is a
+breakdown of that same total by model family, not additive — confirmed
+against `_new_pr_cost_row`, `transcript-analysis.py:7305-7349`, this
+session). 100–150k is the cheapest bucket with a trustworthy sample (n=23):
+both cost measures rise monotonically from there through every larger
+bucket. `<100k`'s apparent lower $/PR is n=1 — not trustworthy, consistent
+with A11's anticipated thin-bucket risk — so it does not move the
+conclusion below. This corroborates A2's turn-index curve (cheapest at mean
+context 136k) with an independent, PR-bucketed measurement.
+
+**Sanity check (Verification step 1):** `gh pr list --state merged --search
+"merged:2026-05-20..2026-08-18"` returns 332 merged PRs in the ledger's own
+date range, against the ledger's 145 captured rows (44%). The gap is
+expected, not a defect: `pr-cost` only captures a PR whose branch still has
+local session-transcript activity, and this plan's own premise is that the
+local corpus is on a rolling deletion window — most of the shortfall is
+already-aged-out transcripts, not a `pr-cost` bug. 145 rows across 6 buckets
+(range n=1 to n=55) is enough to trust the 100–150k/150–200k comparison that
+this plan's conclusion rests on.
+
 *Over-powered-primitive check* — two lighter alternatives considered and
 rejected:
 
@@ -169,7 +202,16 @@ number, not the duplication pattern):
 - `nudge-handoff-near-context-cap.sh`'s `compute_threshold()` fallback default
   and its header-comment mention.
 - `transcript-analysis.py`'s `_HANDOFF_NUDGE_ABS_CAP` mirror constant and its
-  comment (used by `rearm-backtest` and `plan-boundary`).
+  comment (used by `rearm-backtest`, `plan-boundary`, and `spend-over-threshold`
+  — `cmd_spend_over_threshold` (`:7639`) also calls `_hook_effective_fire_threshold`
+  directly at `:7645` to compute each session's own fire threshold for its
+  dollar-share report, per `docs/handoff-nudge.md`'s "How to read
+  spend-over-threshold output" section; missed in an earlier pass of this
+  plan, caught by `staff-platform-engineer` at plan-review). Also update the
+  in-string literal inside `rearm-backtest`'s printed report description
+  (`:9632`, `"...the fixed 360,000-token _HANDOFF_NUDGE_ABS_CAP..."`) — a
+  quoted-string prose mention, not a `#`-comment, so it sits outside a literal
+  reading of "mirror constant and comment."
 - `transcript_analysis/pricing.py`'s `_CONTEXT_DISTRIBUTION_THRESHOLD_ABS`
   tuple (`:96-98`), which includes `360_000` specifically because — per its
   own comment — it is "the live 1M-model effective threshold today," so
@@ -178,7 +220,10 @@ number, not the duplication pattern):
   place (or alongside it) so that property still holds after M3 picks a value.
 - `docs/handoff-nudge.md`'s "Why this cap" section (new grounding narrative
   replacing the 2026-08-08 session-share measurement basis), its per-model
-  table, and its example `--check` JSON output. **Constraint, not just
+  table, its example `--check` JSON output, and its "Known limitations"
+  bullet on the model→window table (`:127`, "the absolute cap (360000 by
+  default)") — a fourth literal mention outside the three named subsections,
+  caught at plan-review. **Constraint, not just
   content:** `test_doc_counts.py`'s `_count_handoff_nudge_abs_cap_default`
   DocCountFact derives the cap's ground truth *behaviorally* (runs the hook
   against a synthetic transcript, reads the emitted threshold back) and
@@ -208,9 +253,37 @@ silently adopted the new grounding.
 **M5 — Update the regression suite for whatever M3 decides.** *(anchors: C1)*.
 `test_old_120k_constant_no_longer_fires_on_1m_models` and any other test
 asserting the literal 360000 (comments/docstrings in
-`test_transcript_analysis.py:14395,14779,14835` describe it; confirm at
-implementation time whether any *assertion*, not just prose, depends on the
-literal) get updated in lockstep with M4, not left to drift.
+`test_transcript_analysis.py:14395,14779,14835` describe it) get updated in
+lockstep with M4, not left to drift.
+
+Plan-review (`staff-sdet` and `staff-platform-engineer`, independently
+convergent) found the grep-for-the-literal method above structurally misses a
+third category: a **fixture/input value chosen to equal the cap, feeding an
+assertion on a derived value that never itself mentions the literal.** One
+confirmed instance — `test_transcript_analysis.py:8393`,
+`test_context_at_turn_exactly_equal_to_threshold_counts_as_above` in
+`TestSpendOverThreshold`, whose docstring states its whole purpose is pinning
+the `>=`-vs-`>` boundary by setting `input=360_000` to "the same point the
+real hook fires at." After M3's retune, this stops sitting on the boundary —
+360000 sits well above any candidate cap in the 100–200k range, so the
+assertion (`Share == "100.0%"`) keeps passing while the off-by-one it exists
+to catch goes untested: a silent coverage regression, not a CI failure.
+**Required, not optional:** re-derive this fixture's input value from
+`_mod._hook_effective_fire_threshold("claude-sonnet-5")` at test-call time
+(mirroring how `test_nudge_handoff_near_context_cap.py`'s
+`test_fires_at_exactly_threshold_for_model` already derives its own boundary
+from `DEFAULT_ABS_CAP`/`KNOWN_MODEL_THRESHOLDS` instead of hardcoding it) —
+not a literal swap to the new number, which would only reproduce the same
+staleness risk at the next retune. Also update the stale docstring at `:8285`
+("own fire threshold (360,000 for claude-sonnet-5)"), both outside the
+original three cited line numbers.
+
+`test_nudge_handoff_near_context_cap.py:61`'s `DEFAULT_ABS_CAP = 360_000`
+module constant (driving `LARGE_THRESHOLD`, `KNOWN_MODEL_THRESHOLDS`, and
+every parametrized test built off it) needs updating too — not itself a
+silent-drift risk (a miss here fails loudly: `test_silent_one_below_threshold_for_model`
+would assert silence at a token count the retuned hook already fires at), but
+named explicitly here so it isn't left to an implementation-time hunt.
 
 ### Assumption ledger
 
@@ -235,9 +308,10 @@ literal) get updated in lockstep with M4, not left to drift.
 - `claude/.claude/hooks/nudge-handoff-near-context-cap.sh` — `compute_threshold()`'s
   fallback default and header comment (M4).
 - `claude/.claude/hooks/tests/test_nudge_handoff_near_context_cap.py` — default-value
-  assertions and the GH-556 regression test per M3/M5's outcome.
+  assertions, `DEFAULT_ABS_CAP` at `:61`, and the GH-556 regression test per M3/M5's outcome.
 - `claude/.claude/scripts/transcript-analysis.py` — `_HANDOFF_NUDGE_ABS_CAP` mirror
-  constant and comment (M4).
+  constant and comment, `cmd_spend_over_threshold`'s consumption of it via
+  `_hook_effective_fire_threshold`, and the in-string literal at `:9632` (M4).
 - `claude/.claude/scripts/transcript_analysis/pricing.py` —
   `_CONTEXT_DISTRIBUTION_THRESHOLD_ABS` tuple and its comment (M4), so the
   candidate-threshold sweep still shows the hook's actual configured value.
@@ -246,8 +320,9 @@ literal) get updated in lockstep with M4, not left to drift.
   `_attributed_branch`/`dedup_turns_by_request_id` — all already power `pr-cost`
   and need no changes for M1/M2.
 - `claude/.claude/scripts/tests/test_transcript_analysis.py` — comment/docstring
-  mentions of 360,000 at `:14395,14779,14835`; any assertion depending on the
-  literal (M5).
+  mentions of 360,000 at `:14395,14779,14835,8285`; the `:8393` boundary
+  fixture in `TestSpendOverThreshold` re-derived from
+  `_hook_effective_fire_threshold`, not hardcoded (M5).
 - `docs/handoff-nudge.md` — "Why this cap" rewrite, per-model table, example
   `--check` JSON (M4).
 - `docs/transcript-analysis.md` — `rearm-backtest` description's cap mention (M4).
@@ -276,7 +351,7 @@ other plan surfaced by this session's `grep` for "360000" that lives under
    sanity-checked against `gh pr list --state merged` for the same window.
 2. M2's bucket report reproduces from the populated ledger; every bucket cited
    in the plan's final grounding carries a stated sample size.
-3. `../../../.venv/bin/pytest claude/.claude/hooks/tests/test_nudge_handoff_near_context_cap.py claude/.claude/scripts/tests/test_transcript_analysis.py` passes with updated assertions.
+3. `../../../.venv/bin/pytest claude/.claude/hooks/tests/test_nudge_handoff_near_context_cap.py claude/.claude/hooks/tests/test_doc_counts.py claude/.claude/scripts/tests/test_transcript_analysis.py` passes with updated assertions — `test_doc_counts.py` included explicitly since M4 calls its four-phrase regex match a hard constraint, not left to an eventual full-suite CI run to catch a missed phrasing.
 4. `../../../.venv/bin/ruff check claude/.claude/` and
    `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck` clean.
 5. Manual `nudge-handoff-near-context-cap.sh --check` against a synthetic
