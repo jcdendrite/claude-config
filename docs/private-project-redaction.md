@@ -57,6 +57,31 @@ hyphenated). Loosening the charset to exclude that shape would defeat the
 detector's actual purpose — rephrase around a false positive rather than
 narrow the pattern.
 
+## Why the blocklist can't be armed by default
+
+The blocklist *mechanism* is complete and correct; what's missing by default
+is data only the user can supply, so `install.sh`'s
+`check_private_projects_file` prints a TIP pointing at this doc rather than
+populating `<config-dir>/private-projects.md` itself. Four mechanical
+alternatives were considered and rejected, each for reducing to the same
+missing-data problem or making a security-relevant choice without user
+review:
+
+1. **Widen the always-on structural detectors** — the six above already
+   exhaust what's structurally identifiable without a name list; further
+   candidates just need a name list too, or deny ordinary PR prose constantly.
+2. **Auto-derive a starter blocklist** from SSH config hosts, sibling repo
+   names, or shell history — always incomplete, and arms a security-relevant
+   list without user review.
+3. **Force population at install time** — `install.sh` has no way to know a
+   user's private projects, so a forced placeholder only reproduces the
+   empty-file state the TIP already reports.
+4. **Escalate the install-time nudge** — raises the odds the user arms the
+   tier themselves, but doesn't arm anything by default on its own.
+
+No mechanical fix closes this without user-specific data, so the tier stays
+opt-in: reachable only through the setup below, never through a hook change.
+
 ## Opt-in: enable the blocklist
 
 `install-dev.sh` refuses to run until this file exists (a comment-only file
