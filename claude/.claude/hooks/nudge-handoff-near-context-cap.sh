@@ -610,6 +610,9 @@ if [ "$IGNORED_COUNT" -ge "$BLOCK_AFTER" ] 2>/dev/null && [ "$HOOK_EVENT" = "Pos
   # PostToolBatch only — on Stop, exit 2 forces the conversation to
   # continue instead of blocking it, so that registration falls through to
   # the advisory fire path below.
+  # A hook_event_name value degraded away from PostToolBatch by something
+  # other than a genuine Stop registration would silently fall through to
+  # advisory-only here too, with no distinguishing log signal.
   printf 'nudged session=%s est=%s model=%s window=%s event=%s action=block\n' \
     "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
   printf '%s\n' "$ESTIMATE" > "$FIRED_MARKER" 2>/dev/null || true

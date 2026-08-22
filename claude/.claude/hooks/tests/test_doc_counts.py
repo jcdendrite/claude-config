@@ -251,17 +251,11 @@ def _count_handoff_nudge_abs_cap_default() -> int:
 def _count_handoff_nudge_block_after_default() -> int:
     """Return the handoff-nudge hard-block escalation count, derived behaviorally.
 
-    Fires the hook twice against the same session -- an initial advisory
-    fire, then a re-arm far past any plausible HANDOFF_NUDGE_REARM_SPACING --
-    with HANDOFF_NUDGE_BLOCK_AFTER unset. The re-arm hard-blocks once its
-    ignored-re-arm count reaches the shipped default, so the second call's
-    stderr names the value the runtime path actually used, avoiding a second
-    source-scanning regex on the fallback arm's literal, which would only
-    prove the literal exists, not that it's the value the runtime path
-    actually uses. Both estimates stay under 9 digits: the marker's own
-    corrupt-value guard (nudge-handoff-near-context-cap.sh, the
-    `?????????*` arm) treats a 9-digit LAST_FIRED_AT as corrupt and would
-    silently reset the re-arm count instead of exercising it.
+    Fires the hook twice (advisory, then a re-arm) with HANDOFF_NUDGE_BLOCK_AFTER
+    unset and reads the default back from the hard-block stderr -- a source-scan
+    of the fallback literal wouldn't prove the runtime path actually uses it.
+    Keep both estimates under 9 digits: the marker's `?????????*` corrupt-value
+    guard would otherwise reset the re-arm count instead of exercising it.
     """
     hook_path = REPO_ROOT / _NUDGE_HOOK_REL_PATH
 

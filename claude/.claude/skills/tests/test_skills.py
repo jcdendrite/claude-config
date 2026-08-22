@@ -1078,6 +1078,9 @@ class TestHandoffMidFlightNoteUnconditional:
     unconditionally, not only on context-limit handoffs, so a phase-complete
     handoff can't silently strand a still-running background dispatch with no
     record of it.
+
+    Mutation-tested: re-adding the "If the handoff reason is context-limit,"
+    gate, or dropping the collected/stranded terms, flips these assertions red.
     """
 
     def test_handoff_section2_5_mid_flight_note_has_no_context_limit_gate(self):
@@ -1116,6 +1119,10 @@ class TestHandoffCollectStepPinsLoadBearingClauses:
     load-bearing clauses, so a future edit can't silently drop the
     ListAgents-unavailable fallback, reintroduce the deprecated blocking-wait
     path, or lose the subagent/re-fire handling without a test failing.
+
+    Mutation-tested: dropping the ListAgents-unavailable fallback clause,
+    reintroducing polling/TaskOutput, or dropping the subagent-gate or
+    repeat-block-is-expected clauses each flips a distinct assertion below red.
     """
 
     def test_collect_step_falls_through_to_stranded_when_listagents_unavailable(self):

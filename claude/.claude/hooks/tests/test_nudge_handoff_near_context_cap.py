@@ -56,15 +56,9 @@ HOOK_EVENT_NAMES = ["PostToolBatch", "Stop"]
 # blocks once a session's ignored-re-arm count reaches this value.
 DEFAULT_BLOCK_AFTER = 1
 
-# Pinned override for tests below that drive one or two real re-arms to
-# exercise marker/re-arm mechanics (not the escalation ladder itself) and
-# need those re-arms to stay advisory. Strictly greater than the ladder
-# tests' own literal "2" (test_escalation_ladder_blocks_once_block_after_
-# ignored_rearms_reached and its neighbors): those tests deliberately drive
-# ignored_count to 2, and test_escalation_counter_concurrent_rearms_no_lost_
-# update's own docstring documents ignored_count legitimately reaching 2
-# under genuine concurrent overlap, so pinning to "2" here would make that
-# specific test flaky instead of consistently green.
+# Must exceed 2 -- some ladder tests deliberately drive ignored_count to 2
+# (see test_escalation_counter_concurrent_rearms_no_lost_update); 5 is
+# otherwise arbitrary above that floor.
 REARM_MECHANICS_BLOCK_AFTER = "5"
 
 # Mirrors the hook's own window table so no test hand-computes a threshold.
@@ -1269,19 +1263,19 @@ class TestNudgeHandoffNearContextCap:
             assert second.stdout.strip() != ""
             payload = json.loads(second.stdout)
             assert payload["hookSpecificOutput"]["hookEventName"] == hook_event_name
+            nudged_lines = [
+                line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+            ]
+            assert "action=block" not in nudged_lines[-1]
 
     @pytest.mark.parametrize(
         "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
     def test_block_after_malformed_override_falls_back_to_default_not_zero(self, tmp_path, malformed_value):
-        """A malformed HANDOFF_NUDGE_BLOCK_AFTER (non-numeric, zero-padded,
-        empty, literal zero, negative, non-integer, or 10+ digits) must fall
-        back to the shipped default (1) rather than degrade BLOCK_AFTER toward
-        0/unset/negative. The discriminating call is this session's very
-        first-ever crossing, where IGNORED_COUNT is 0 either way (the ignored
-        marker is untouched pre-first-fire): a degraded BLOCK_AFTER=0 hard-blocks
-        there (0 >= 0) with zero advisory nudges ever, while the correct
-        fallback to 1 stays advisory (0 >= 1 is false)."""
+        """A malformed override must fall back to the shipped default (1), not
+        degrade toward 0 -- checked on this session's first-ever crossing, where a
+        degraded BLOCK_AFTER=0 would hard-block immediately (0 >= 0) but a correct
+        fallback stays advisory (0 >= 1 is false)."""
         transcript = tmp_path / "t.jsonl"
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
@@ -1294,20 +1288,10 @@ class TestNudgeHandoffNearContextCap:
         "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
     def test_block_after_malformed_override_positive_control_blocks_at_default(self, tmp_path, malformed_value):
-        """Positive control for the test above: proves the fallback actually
-        lands on DEFAULT_BLOCK_AFTER and blocks once that many re-arms are
-        reached, not merely that it fails to block too early. At the shipped
-        default (1), `range(DEFAULT_BLOCK_AFTER - 1)` is `range(0)`, so the
-        loop below is a no-op and this test's pre-loop call and the sibling
-        test's own call are the same discriminating assertion, each caught
-        independently: a degraded BLOCK_AFTER=0 would hard-block this
-        session's first-ever crossing (0 >= 0), while the correct fallback
-        to 1 stays advisory (0 >= 1 is false). The post-loop call is this
-        test's own contribution: it drives the actual re-arm and asserts the
-        real default hard-blocks there, which the sibling test does not
-        check. A higher future BLOCK_AFTER default would make the loop a
-        real no-op-free exercise of "N-1 advisory re-arms then block on the
-        Nth" again."""
+        """At the shipped default (1), range(DEFAULT_BLOCK_AFTER - 1) is range(0),
+        so this test's own contribution is the post-loop call, which drives the
+        real re-arm and asserts the default actually hard-blocks there (the sibling
+        test only checks the fallback isn't degraded to 0)."""
         transcript = tmp_path / "t.jsonl"
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
