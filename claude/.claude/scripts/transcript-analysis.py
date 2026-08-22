@@ -6661,16 +6661,18 @@ class _PrCostLedgerParseError(Exception):
     a hand-edited or corrupted row."""
 
 
-def _pr_cost_ledger_path() -> Path:
+def _pr_cost_ledger_path(config_dir_override: Path | None = None) -> Path:
     """Active pr-cost ledger path: $PR_COST_LEDGER_PATH if set (must be
-    absolute), else config_dir() / "pr-cost-ledger.tsv"."""
+    absolute), else (config_dir_override or config_dir()) / "pr-cost-ledger.tsv".
+    config_dir_override lets --all-accounts resolve each account's own
+    ledger path without reassigning the process-wide CLAUDE_CONFIG_DIR."""
     override = os.environ.get("PR_COST_LEDGER_PATH")
     if override:
         path = Path(override)
         if not path.is_absolute():
             raise ValueError(f"PR_COST_LEDGER_PATH must be an absolute path, got: {override!r}")
         return path
-    return config_dir() / "pr-cost-ledger.tsv"
+    return (config_dir_override or config_dir()) / "pr-cost-ledger.tsv"
 
 
 def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
@@ -7024,17 +7026,19 @@ def _gh_auth_preflight_ok() -> bool:
     return proc.returncode == 0
 
 
-def _resolve_pinned_gh_repo() -> tuple[str, int, dict]:
+def _resolve_pinned_gh_repo(ordinal: int) -> tuple[str, dict]:
     """Resolve gh's effective repo identity once, refuse (exit 2) if it
     disagrees (case-folded) with this repo's own git remote identity, and
     return the confirmed owner/name to pin on every subsequent gh call this
     run makes -- gh's ambient target repo (a stale GH_REPO, `gh repo
     set-default`, or an ambient cwd mismatch) can otherwise silently diverge
     from the repo this invocation's own corpus and git remote actually
-    belong to. Also returns the single-root redact ordinal and a fresh
-    repo-kind redact map, used to scrub this same repo value at every later
-    print site this run needs (this subcommand always refuses more than one
-    scan root, so there is only ever one ordinal to assign).
+    belong to. Also returns a fresh repo-kind redact map, used to scrub this
+    same repo value at every later print site this run needs. `ordinal` is
+    the redact label to use for this call's own mismatch-refusal message --
+    this resolution happens once per run, before any single account is "the"
+    account under --all-accounts, so the caller supplies it rather than this
+    function hardcoding one.
     """
     corpus_repo = _git_remote_origin_owner_repo()
     proc, degraded = _gh_call_with_backoff(["gh", "repo", "view", "--json", "nameWithOwner"], label="repo view")
@@ -7046,8 +7050,6 @@ def _resolve_pinned_gh_repo() -> tuple[str, int, dict]:
         print("pr-cost: gh repo view returned unparseable JSON -- no row was captured", file=sys.stderr)
         sys.exit(1)
 
-    ordinal = 1  # pr-cost always refuses more than one scan root, so this
-    # is the only ordinal _assign_root_scoped_redact_label ever assigns.
     repo_map: dict[tuple[int, str], str] = {}
     if gh_repo != corpus_repo:
         print(
@@ -7058,7 +7060,7 @@ def _resolve_pinned_gh_repo() -> tuple[str, int, dict]:
             file=sys.stderr,
         )
         sys.exit(2)
-    return gh_repo, ordinal, repo_map
+    return gh_repo, repo_map
 
 
 def _gh_discover_merged_prs(pinned_repo: str) -> list[dict]:
@@ -7416,19 +7418,24 @@ def cmd_pr_cost(args: argparse.Namespace) -> None:
 
 
 def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Path]) -> None:
-    """Read (default) or capture (--record) pr-cost ledger rows.
+    """Read (default) or capture (--record) pr-cost ledger rows, one full
+    report per resolved account.
 
     Failure-handling order: gh auth preflight, then repo-identity resolution
     (retried under the shared rate-limit backoff, aborting the whole run on
-    exhaustion since no row exists yet to mark degraded), then discovery,
-    then per-branch enrichment (differentiated: rate-limit/network failures
-    degrade that branch's row instead of aborting). Every stdout/stderr path
-    below routes branch/repo values through _assign_root_scoped_redact_label
-    -- no raw branch name or repo value is ever printed. There is
-    deliberately no --no-redact escape hatch for this subcommand, unlike
-    cost/subagents.
+    exhaustion since no row exists yet to mark degraded), then discovery --
+    each resolved once for the whole run, since gh auth/identity and merged-PR
+    discovery are account-independent (never scoped by CLAUDE_CONFIG_DIR).
+    Everything else -- local corpus scan, per-branch enrichment (rate-limit/
+    network failures degrade that branch's row instead of aborting), and the
+    ledger read/print/write -- loops once per resolved root. Every
+    stdout/stderr path below routes branch/repo values through
+    _assign_root_scoped_redact_label -- no raw branch name or repo value is
+    ever printed. There is deliberately no --no-redact escape hatch for this
+    subcommand, unlike cost/subagents.
     """
-    if len(roots) > 1:
+    all_accounts: bool = bool(getattr(args, "all_accounts", False))
+    if len(roots) > 1 and not all_accounts:
         # Refuses genuine multi-root ambiguity only, not a claude-config-only
         # scope requirement (this subcommand is never restricted to running
         # against claude-config itself) -- load-bearing here because pr-cost
@@ -7437,8 +7444,20 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         # listing.
         print(
             "pr-cost: more than one root resolved -- refusing a durable write (or a read that"
-            " could conflate two accounts' branch/repo data) across accounts; scope to a single"
-            " profile (drop --config-dir, or point CLAUDE_CONFIG_DIR at one account)",
+            " could conflate two accounts' branch/repo data) across accounts; pass --all-accounts"
+            " to scan every declared account in one run (each account's own opt-in sentinel still"
+            " gates its own write), or scope to a single profile (drop --config-dir)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if all_accounts and len(roots) > 1 and os.environ.get("PR_COST_LEDGER_PATH"):
+        # A single forced path would commingle every account's rows into one
+        # file, defeating the per-account separation the sentinel gate below
+        # depends on.
+        print(
+            "pr-cost: PR_COST_LEDGER_PATH is refused with --all-accounts across more than one"
+            " resolved root -- unset PR_COST_LEDGER_PATH (each account then defaults to its own"
+            " ledger path) or drop --all-accounts",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -7476,164 +7495,227 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         print("pr-cost: gh auth status failed -- run `gh auth login` before pr-cost", file=sys.stderr)
         sys.exit(1)
 
-    pinned_repo, ordinal, repo_map = _resolve_pinned_gh_repo()
-    branch_map: dict[tuple[int, str], str] = {}
-
-    session_iter, scope_label = _resolve_project_scope(args, "pr-cost", include_subagents=True, roots=roots)
-    _print_resolved_scope("pr-cost", scope_label, roots)
-    branch_totals, unbranched_agg = _compute_pr_cost_branch_totals(session_iter)
-    print(
-        f"pr-cost: {_fmt_usd(sum(unbranched_agg['dollars'].values()))} across"
-        f" {unbranched_agg['turn_count']} priced turns attributed to no branch at all"
-        " (counted, not skipped, unlike `buckets`)",
-        file=sys.stderr,
-    )
-
+    # gh auth/identity and merged-PR discovery are account-independent, so
+    # they're resolved once for the whole run rather than once per account
+    # below. redact_ordinals is computed first so _resolve_pinned_gh_repo's
+    # own mismatch-refusal message has an ordinal to label with.
+    redact_ordinals = _redaction_ordinals(roots)
+    pinned_repo, repo_map = _resolve_pinned_gh_repo(ordinal=redact_ordinals[roots[0].resolve()])
     merged_prs = _gh_discover_merged_prs(pinned_repo)
+    branch_map: dict[tuple[int, str], str] = {}  # shared across accounts; key already includes ordinal
 
-    try:
-        ledger_path = _pr_cost_ledger_path()
-    except ValueError as exc:
-        print(f"pr-cost: {exc}", file=sys.stderr)
-        sys.exit(1)
+    recorded = skipped_no_sentinel = skipped_other = 0
+    for root in roots:
+        account_config_dir = root.parent
+        ordinal = redact_ordinals[root.resolve()]
 
-    existing_rows: list[dict] = []
-    if ledger_path.exists():
+        session_iter, scope_label = _resolve_project_scope(
+            args, "pr-cost", include_subagents=True, roots=[root]
+        )
+        _print_resolved_scope("pr-cost", scope_label, [root])
+        branch_totals, unbranched_agg = _compute_pr_cost_branch_totals(session_iter)
+        print(
+            f"pr-cost: {_fmt_usd(sum(unbranched_agg['dollars'].values()))} across"
+            f" {unbranched_agg['turn_count']} priced turns attributed to no branch at all"
+            " (counted, not skipped, unlike `buckets`)",
+            file=sys.stderr,
+        )
+
         try:
-            existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
-        except _PrCostLedgerParseError as exc:
+            ledger_path = _pr_cost_ledger_path(config_dir_override=account_config_dir)
+        except ValueError as exc:
             print(f"pr-cost: {exc}", file=sys.stderr)
             sys.exit(1)
 
-    if not record:
-        _print_pr_cost_ledger_rows(existing_rows, ordinal, branch_map, repo_map)
-        _print_pr_cost_uncaptured(branch_totals, merged_prs, existing_rows, pinned_repo, machine_label, ordinal, branch_map)
-        return
+        existing_rows: list[dict] = []
+        if ledger_path.exists():
+            try:
+                existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+            except _PrCostLedgerParseError as exc:
+                print(f"pr-cost: {exc}", file=sys.stderr)
+                sys.exit(1)
 
-    sentinel_path = config_dir() / ".pr-cost-enabled"
-    if not sentinel_path.exists():
-        # Prints the conventional path, not sentinel_path, to avoid a
-        # resolved home-rooted path in output -- same discipline as
-        # cost-ledger's equivalent message above.
-        print(
-            "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
-            " see docs/pr-cost.md",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    if _ledger_path_is_git_tracked(ledger_path, "pr-cost"):
-        # Always refused for pr-cost (not gated on multi-root, unlike the
-        # weekly ledger's own check): these rows carry branch/repo data the
-        # public weekly ledger's rows don't, so this ledger must never live
-        # inside a git working tree, full stop.
-        print(
-            "pr-cost: --record is refused when the ledger path is inside a git working tree --"
-            " move PR_COST_LEDGER_PATH outside git, or drop --record",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if target_pr is not None:
-        pr_by_number = {pr["number"]: pr for pr in merged_prs}
-        target_pr_data = pr_by_number.get(target_pr)
-        if target_pr_data is None:
-            print(f"pr-cost: PR #{target_pr} was not found among this repo's merged PRs", file=sys.stderr)
-            sys.exit(1)
-        target_branches = [target_pr_data["headRefName"]]
-    else:
-        target_branches = sorted(branch_totals)
-
-    for branch in target_branches:
-        branch_label = _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map)
-        print(f"pr-cost: resolving branch {branch_label}...", file=sys.stderr)
-        matches = _direct_headref_matches(branch, merged_prs)
-        if not matches:
-            print("pr-cost:   no merged PR found for this branch -- skipped", file=sys.stderr)
+        if not record:
+            _print_pr_cost_ledger_rows(existing_rows, ordinal, branch_map, repo_map)
+            _print_pr_cost_uncaptured(
+                branch_totals, merged_prs, existing_rows, pinned_repo, machine_label, ordinal, branch_map
+            )
             continue
 
-        enrichment_by_pr_number: dict[int, dict] = {}
-        degraded_status_by_pr_number: dict[int, str] = {}
-        for pr in matches:
-            print(f"pr-cost:   enriching PR #{pr['number']}...", file=sys.stderr)
-            payload, degraded = _gh_pr_view_enrichment(pinned_repo, pr["number"])
-            if payload is not None:
-                enrichment_by_pr_number[pr["number"]] = payload
-            else:
-                degraded_status_by_pr_number[pr["number"]] = (
-                    _PR_COST_STATUS_DEGRADED_NETWORK if degraded == _GH_CALL_DEGRADED_AUTH else degraded
+        sentinel_path = account_config_dir / ".pr-cost-enabled"
+        if not sentinel_path.exists():
+            if all_accounts:
+                # account-N, not sentinel_path, to avoid a resolved
+                # home-rooted path in output -- same discipline as the
+                # single-account refusal message below.
+                print(
+                    f"pr-cost: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
+                    " skipped, see docs/pr-cost.md",
+                    file=sys.stderr,
                 )
-
-        resolved_pr, join_confidence = _resolve_branch_pr(branch, matches, enrichment_by_pr_number, plan_glob)
-        if resolved_pr is None:
+                skipped_no_sentinel += 1
+                continue
+            # Prints the conventional path, not sentinel_path, to avoid a
+            # resolved home-rooted path in output -- same discipline as
+            # cost-ledger's equivalent message above.
             print(
-                "pr-cost:   ambiguous branch-to-PR match (ties unresolved after SHA-overlap"
-                " and mergedAt comparison) -- skipped",
+                "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
+                " see docs/pr-cost.md",
                 file=sys.stderr,
             )
-            continue
-
-        enrichment = enrichment_by_pr_number.get(resolved_pr["number"])
-        row_status = _PR_COST_STATUS_OK if enrichment is not None else degraded_status_by_pr_number.get(
-            resolved_pr["number"], _PR_COST_STATUS_DEGRADED_NETWORK
-        )
-
-        if not _pr_cost_asof_window_ok(resolved_pr["mergedAt"], window_days, now):
-            message = (
-                f"pr-cost:   PR #{resolved_pr['number']} merged too recently"
-                f" (as-of window is {window_days:g}d)"
-            )
-            if target_pr is not None:
-                print(f"{message} -- refusing", file=sys.stderr)
-                sys.exit(1)
-            print(f"{message} -- skipped", file=sys.stderr)
-            continue
-
-        ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = ledger_path.with_name(ledger_path.name + ".lock")
-        with open(lock_path, "w") as lock_f:
-            _acquire_pr_cost_ledger_lock(lock_f)
-            try:
-                try:
-                    current_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
-                except FileNotFoundError:
-                    current_rows = []
-                except _PrCostLedgerParseError as exc:
-                    print(f"pr-cost: {exc}", file=sys.stderr)
-                    sys.exit(1)
-
-                already = _latest_pr_cost_row(current_rows, pinned_repo, resolved_pr["number"], machine_label)
-                if already is not None and not force:
-                    print(
-                        f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_label} is already"
-                        " captured -- pass --force (with --pr) to append a correcting row",
-                        file=sys.stderr,
-                    )
-                    if target_pr is not None:
-                        sys.exit(1)
-                    continue
-
-                agg = branch_totals.get(branch) or _new_pr_cost_agg()
-                captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-                new_row = _new_pr_cost_row(
-                    pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg, enrichment=enrichment,
-                    join_confidence=join_confidence, status=row_status, machine=machine_label,
-                    captured_at=captured_at, supersedes=(already["captured_at"] if already else ""),
-                    plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
+            sys.exit(1)
+        if _ledger_path_is_git_tracked(ledger_path, "pr-cost"):
+            # Always refused for pr-cost (not gated on multi-root, unlike the
+            # weekly ledger's own check): these rows carry branch/repo data
+            # the public weekly ledger's rows don't, so this ledger must
+            # never live inside a git working tree, full stop.
+            if all_accounts:
+                print(
+                    f"pr-cost: account-{ordinal}'s ledger path is inside a git working tree --"
+                    " skipped, see docs/pr-cost.md",
+                    file=sys.stderr,
                 )
-                try:
-                    updated_rows = _append_pr_cost_ledger_row(current_rows, new_row, already, force)
-                except ValueError as exc:
-                    print(f"pr-cost: {exc}", file=sys.stderr)
+                skipped_other += 1
+                continue
+            print(
+                "pr-cost: --record is refused when the ledger path is inside a git working tree --"
+                " move PR_COST_LEDGER_PATH outside git, or drop --record",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        if target_pr is not None:
+            pr_by_number = {pr["number"]: pr for pr in merged_prs}
+            target_pr_data = pr_by_number.get(target_pr)
+            if target_pr_data is None:
+                print(f"pr-cost: PR #{target_pr} was not found among this repo's merged PRs", file=sys.stderr)
+                sys.exit(1)
+            target_branches = [target_pr_data["headRefName"]]
+        else:
+            target_branches = sorted(branch_totals)
+
+        account_recorded_a_row = False
+        for branch in target_branches:
+            branch_label = _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map)
+            print(f"pr-cost: resolving branch {branch_label}...", file=sys.stderr)
+            matches = _direct_headref_matches(branch, merged_prs)
+            if not matches:
+                print("pr-cost:   no merged PR found for this branch -- skipped", file=sys.stderr)
+                continue
+
+            enrichment_by_pr_number: dict[int, dict] = {}
+            degraded_status_by_pr_number: dict[int, str] = {}
+            for pr in matches:
+                print(f"pr-cost:   enriching PR #{pr['number']}...", file=sys.stderr)
+                payload, degraded = _gh_pr_view_enrichment(pinned_repo, pr["number"])
+                if payload is not None:
+                    enrichment_by_pr_number[pr["number"]] = payload
+                else:
+                    degraded_status_by_pr_number[pr["number"]] = (
+                        _PR_COST_STATUS_DEGRADED_NETWORK if degraded == _GH_CALL_DEGRADED_AUTH else degraded
+                    )
+
+            resolved_pr, join_confidence = _resolve_branch_pr(branch, matches, enrichment_by_pr_number, plan_glob)
+            if resolved_pr is None:
+                print(
+                    "pr-cost:   ambiguous branch-to-PR match (ties unresolved after SHA-overlap"
+                    " and mergedAt comparison) -- skipped",
+                    file=sys.stderr,
+                )
+                continue
+
+            enrichment = enrichment_by_pr_number.get(resolved_pr["number"])
+            row_status = _PR_COST_STATUS_OK if enrichment is not None else degraded_status_by_pr_number.get(
+                resolved_pr["number"], _PR_COST_STATUS_DEGRADED_NETWORK
+            )
+
+            if not _pr_cost_asof_window_ok(resolved_pr["mergedAt"], window_days, now):
+                message = (
+                    f"pr-cost:   PR #{resolved_pr['number']} merged too recently"
+                    f" (as-of window is {window_days:g}d)"
+                )
+                if target_pr is not None and not all_accounts:
+                    print(f"{message} -- refusing", file=sys.stderr)
                     sys.exit(1)
+                print(f"{message} -- skipped", file=sys.stderr)
+                continue
+
+            ledger_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+            with open(lock_path, "w") as lock_f:
+                _acquire_pr_cost_ledger_lock(lock_f)
                 try:
-                    _write_pr_cost_ledger_file(ledger_path, updated_rows)
-                except _PrCostLedgerParseError as exc:
-                    print(f"pr-cost: {exc}", file=sys.stderr)
-                    sys.exit(1)
-            finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
-        existing_rows = updated_rows
-        print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_label}")
+                    try:
+                        current_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                    except FileNotFoundError:
+                        current_rows = []
+                    except _PrCostLedgerParseError as exc:
+                        print(f"pr-cost: {exc}", file=sys.stderr)
+                        sys.exit(1)
+
+                    already = _latest_pr_cost_row(current_rows, pinned_repo, resolved_pr["number"], machine_label)
+                    if already is not None and not force:
+                        print(
+                            f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_label} is already"
+                            " captured -- pass --force (with --pr) to append a correcting row",
+                            file=sys.stderr,
+                        )
+                        if target_pr is not None and not all_accounts:
+                            sys.exit(1)
+                        continue
+
+                    # A --pr target's branch comes from the shared, repo-wide
+                    # merged_prs list, so under --all-accounts it can resolve
+                    # here even for an account whose own local corpus never
+                    # touched it; skip rather than fall through to a
+                    # zero-valued-agg row (single-account --pr N still writes
+                    # that row -- there is no other account to fall back to).
+                    if all_accounts and target_pr is not None and branch not in branch_totals:
+                        print(
+                            f"pr-cost:   account-{ordinal} has no local corpus activity for this"
+                            " branch -- skipped",
+                            file=sys.stderr,
+                        )
+                        continue
+
+                    agg = branch_totals.get(branch) or _new_pr_cost_agg()
+                    captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+                    new_row = _new_pr_cost_row(
+                        pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg, enrichment=enrichment,
+                        join_confidence=join_confidence, status=row_status, machine=machine_label,
+                        captured_at=captured_at, supersedes=(already["captured_at"] if already else ""),
+                        plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
+                    )
+                    try:
+                        updated_rows = _append_pr_cost_ledger_row(current_rows, new_row, already, force)
+                    except ValueError as exc:
+                        print(f"pr-cost: {exc}", file=sys.stderr)
+                        sys.exit(1)
+                    try:
+                        _write_pr_cost_ledger_file(ledger_path, updated_rows)
+                    except _PrCostLedgerParseError as exc:
+                        print(f"pr-cost: {exc}", file=sys.stderr)
+                        sys.exit(1)
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+            existing_rows = updated_rows
+            account_recorded_a_row = True
+            print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_label}")
+
+        if account_recorded_a_row:
+            recorded += 1  # counts accounts that wrote a row, not total rows written
+        elif all_accounts:
+            # Covers every branch-loop skip reason (no PR match, ambiguous
+            # match, already captured, asof-window, not-in-corpus) in one
+            # place, so an account with zero recorded rows is never absent
+            # from all three summary counters below.
+            skipped_other += 1
+
+    if record and all_accounts:
+        print(
+            f"pr-cost: recorded {recorded} of {len(roots)} declared accounts"
+            f" ({skipped_no_sentinel} not opted in, {skipped_other} skipped)"
+        )
 
 
 def cmd_spend_over_threshold(args: argparse.Namespace) -> None:
@@ -10660,7 +10742,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
         help=(
             "Additional Claude Code config directory to scan (repeatable). pr-cost refuses"
-            " (exit 2) whenever more than one root resolves -- see docs/pr-cost.md."
+            " (exit 2) whenever more than one root resolves, unless --all-accounts is given --"
+            " see docs/pr-cost.md."
+        ),
+    )
+    p_pr_cost.add_argument(
+        "--all-accounts", action="store_true",
+        help=(
+            "Scan every declared account in one run instead of refusing when more than one root"
+            " resolves. Each account's own ~/.claude/.pr-cost-enabled sentinel still individually"
+            " gates whether that account's row is recorded -- see docs/pr-cost.md."
         ),
     )
     p_pr_cost.add_argument(

@@ -15467,6 +15467,7 @@ def _pr_cost_args(
     asof_window_days: float | None = None,
     plan_file_glob: str | None = None,
     risk_surface_globs: list[str] | None = None,
+    all_accounts: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -15479,6 +15480,7 @@ def _pr_cost_args(
         "asof_window_days": asof_window_days,
         "plan_file_glob": plan_file_glob,
         "risk_surface_globs": risk_surface_globs,
+        "all_accounts": all_accounts,
     })()
 
 
@@ -16766,7 +16768,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_pinned_gh_repo()
+            _mod._resolve_pinned_gh_repo(ordinal=1)
 
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
@@ -16774,6 +16776,65 @@ class TestResolvePinnedGhRepoIdentity:
         assert corpus_repo not in err
         assert "account-1/repo-1" in err
         assert "account-1/repo-2" in err
+
+    def test_mismatch_with_non_default_ordinal_labels_output_account_two(self, monkeypatch, capsys):
+        """No caller in the new --all-accounts design passes a literal
+        ordinal=1 by coincidence -- every call site passes
+        redact_ordinals[roots[0].resolve()], which happens to be 1 only for
+        a single/first root. This closes the gap that no other test in this
+        file exercises _resolve_pinned_gh_repo with a non-default ordinal."""
+        gh_repo = "gh-side-owner/gh-side-repo"
+        corpus_repo = "git-side-owner/git-side-repo"
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(repo=corpus_repo, gh_repo_name_with_owner=gh_repo),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_pinned_gh_repo(ordinal=2)
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert gh_repo not in err
+        assert corpus_repo not in err
+        assert "account-1/repo-1" not in err
+        assert "account-2/repo-1" in err
+        assert "account-2/repo-2" in err
+
+    def test_pr_cost_report_wires_the_scan_order_first_roots_resolved_ordinal_not_a_literal(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """_pr_cost_report computes _resolve_pinned_gh_repo's ordinal as
+        redact_ordinals[roots[0].resolve()] -- roots[0] is scan-order-first,
+        but _redaction_ordinals numbers by resolved-path sort, so the two
+        can diverge (as in test_account_ordinal_is_resolved_path_sorted_not_scan_order
+        above). Drives that same divergent root pair through a gh-identity
+        mismatch end-to-end via cmd_pr_cost, closing the gap that
+        test_mismatch_with_non_default_ordinal_labels_output_account_two
+        only proves the literal ordinal=2 case, not _pr_cost_report's own
+        computation of which ordinal to pass."""
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
+        active = tmp_path / "zzz-active"
+        (active / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
+        extra = tmp_path / "aaa-extra"  # resolved-path-sorts before "zzz-active" despite being scanned second
+        (extra / "projects").mkdir(parents=True)
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(repo="git-side-owner/git-side-repo",
+                                          gh_repo_name_with_owner="gh-side-owner/gh-side-repo"),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost(_pr_cost_args(extra_config_dirs=[str(extra)], all_accounts=True))
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "gh-side-owner/gh-side-repo" not in err
+        assert "git-side-owner/git-side-repo" not in err
+        assert "account-1/repo-1" not in err  # zzz-active is scan-order-first but resolved-sort SECOND
+        assert "account-2/repo-1" in err
+        assert "account-2/repo-2" in err
 
     def test_case_differing_match_proceeds_and_persists_the_pinned_lowercased_identity(
         self, fake_projects, tmp_path, monkeypatch,
@@ -17029,3 +17090,394 @@ class TestPrCostAuthPreflightFailureAbortRedaction:
         err = capsys.readouterr().err
         assert "gh auth login" in err
         assert not any(c[:3] == ["gh", "repo", "view"] for c in call_log)
+
+
+class TestPrCostAllAccounts:
+    """--all-accounts: lifts the multi-root refusal and loops the full
+    report (local corpus scan, ledger read/print, and -- under --record --
+    ledger write) once per resolved account, with each account's own
+    ~/.claude/.pr-cost-enabled sentinel still individually gating whether
+    that account's row is durably written. gh auth/identity resolution and
+    merged-PR discovery are resolved once for the whole run, shared across
+    every account's iteration below.
+
+    Every --record test here uses per-account config dirs, not the file's
+    usual PR_COST_LEDGER_PATH monkeypatch idiom -- that path is refused
+    outright once --all-accounts sees more than one root (see
+    TestPrCostAllAccountsForcedLedgerPathRefusal below).
+    """
+
+    def test_read_mode_across_two_accounts_keeps_branch_and_repo_labels_distinct(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        for root in roots:
+            proj = root / "-home-user-testrepo"
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / "sess.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+            ])
+        for account_config_dir in (acct_a, acct_b):
+            _mod._write_pr_cost_ledger_file(
+                account_config_dir / "pr-cost-ledger.tsv",
+                [_sample_pr_cost_row(repo="owner/repo", pr_number=1, machine="ci1")],
+            )
+        merged_prs = [{
+            "number": 99, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        _mod._pr_cost_report(_pr_cost_args(all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        out = capsys.readouterr().out
+        assert "account-1/repo-1" in out
+        assert "account-2/repo-1" in out
+        assert "account-1/branch-1" in out
+        assert "account-2/branch-1" in out
+
+    def test_record_with_mixed_opted_in_and_not_opted_in_accounts(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_a / ".pr-cost-enabled").touch()  # acct_b deliberately left without a sentinel
+        proj_a = roots[0] / "-home-user-testrepo"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        rows_a = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_a) == 1
+        assert not (acct_b / "pr-cost-ledger.tsv").exists()
+
+        captured = capsys.readouterr()
+        assert "account-2 has no opt-in sentinel" in captured.err
+        assert "recorded 1 of 2 declared accounts (1 not opted in, 0 skipped)" in captured.out
+
+    def test_record_with_zero_sentinels_present_records_nothing_and_exits_cleanly(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
+
+        assert not (acct_a / "pr-cost-ledger.tsv").exists()
+        assert not (acct_b / "pr-cost-ledger.tsv").exists()
+        out = capsys.readouterr().out
+        assert "recorded 0 of 2 declared accounts (2 not opted in, 0 skipped)" in out
+
+    def test_recorded_counter_counts_accounts_not_rows(self, tmp_path, monkeypatch, capsys):
+        """One account writing two rows in one run (two branches) must still
+        count as 1 toward `recorded`, not 2 -- the summary line's own
+        denominator is "declared accounts", not "rows written"."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a = roots[0].parent
+        (acct_a / ".pr-cost-enabled").touch()  # acct_b deliberately left without a sentinel
+        proj_a = roots[0] / "-home-user-testrepo"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-b"),
+        ])
+        merged_prs = [
+            {"number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "headRefName": "feature-b", "additions": 1, "deletions": 1,
+             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+        ]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        rows_a = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_a) == 2
+        out = capsys.readouterr().out
+        assert "recorded 1 of 2 declared accounts (1 not opted in, 0 skipped)" in out
+
+    def test_full_sweep_account_with_no_matchable_branch_counts_as_skipped_not_omitted(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Full-sweep --record --all-accounts (no --pr): an opted-in account
+        whose only local branch matches no merged PR must still land in one
+        of the three summary counters, not vanish from all of them -- the
+        per-branch "no merged PR found" skip has no --pr target to attach a
+        per-branch skipped_other increment to, so the account-level count
+        must come from account_recorded_a_row staying False after the
+        branch loop, not from a branch-loop increment."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_a / ".pr-cost-enabled").touch()  # acct_b deliberately left without a sentinel
+        proj_a = roots[0] / "-home-user-testrepo"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())  # no merged PRs at all
+
+        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        assert not (acct_a / "pr-cost-ledger.tsv").exists()
+        assert not (acct_b / "pr-cost-ledger.tsv").exists()
+        out = capsys.readouterr().out
+        assert "recorded 0 of 2 declared accounts (1 not opted in, 1 skipped)" in out
+
+    def test_targeted_pr_branch_absent_from_one_accounts_corpus_is_skipped_not_zero_recorded(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """See _pr_cost_report's branch-not-in-corpus skip comment for why --
+        distinct from the single-account --pr N contract
+        (test_target_pr_with_zero_branch_records_uses_zero_valued_agg_default),
+        which keeps writing the zero-valued row when --all-accounts is absent."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_a / ".pr-cost-enabled").touch()
+        (acct_b / ".pr-cost-enabled").touch()
+        proj_a = roots[0] / "-home-user-testrepo"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        (roots[1] / "-home-user-testrepo").mkdir(parents=True)  # acct_b: no local activity at all
+        merged_prs = [{
+            "number": 5, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, pr=5, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        rows_a = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_a) == 1
+        assert rows_a[0]["turn_count"] > 0
+        assert not (acct_b / "pr-cost-ledger.tsv").exists()
+
+        captured = capsys.readouterr()
+        assert "account-2 has no local corpus activity for this branch" in captured.err
+        assert "recorded 1 of 2 declared accounts (0 not opted in, 1 skipped)" in captured.out
+
+    def test_targeted_pr_already_captured_converts_to_per_account_skip_not_hard_abort(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """A second, unforced --record --pr N --all-accounts call against an
+        already-captured (repo, pr_number, machine) is a per-account skip,
+        not the whole run hard-aborting with sys.exit(1) the way plain
+        single-account --pr N does at the same guard."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a = roots[0].parent
+        (acct_a / ".pr-cost-enabled").touch()  # acct_b deliberately left without a sentinel
+        proj_a = roots[0] / "-home-user-testrepo"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 7, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+        args = _pr_cost_args(record=True, pr=7, machine_label="ci1", all_accounts=True)
+
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # first call: captures the row
+        rows_after_first = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_after_first) == 1
+        capsys.readouterr()  # discard first call's output
+
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # second call: must not raise
+
+        rows_after_second = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_after_second) == 1  # no correcting row appended without --force
+        captured = capsys.readouterr()
+        assert "is already captured" in captured.err
+        assert "recorded 0 of 2 declared accounts (1 not opted in, 1 skipped)" in captured.out
+
+    def test_targeted_pr_merged_inside_asof_window_converts_to_per_account_skip_not_hard_abort(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """A --pr N target merged too recently is a per-account skip under
+        --all-accounts, not the whole run hard-aborting with sys.exit(1) the
+        way plain single-account --pr N does at the same guard -- distinct
+        from the "already captured" and "branch not in corpus" conditions
+        covered by the two tests above."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a = roots[0].parent
+        (acct_a / ".pr-cost-enabled").touch()  # acct_b deliberately left without a sentinel
+        proj_a = roots[0] / "-home-user-testrepo"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 9, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-08-09T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, pr=9, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
+
+        assert not (acct_a / "pr-cost-ledger.tsv").exists()
+        captured = capsys.readouterr()
+        assert "merged too recently" in captured.err
+        assert "skipped" in captured.err
+        assert "recorded 0 of 2 declared accounts (1 not opted in, 1 skipped)" in captured.out
+
+    def test_all_accounts_on_a_single_declared_account_machine_is_a_no_op(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """--all-accounts against a machine with only one resolved root
+        produces identical read-mode output to a plain call, and never
+        triggers the multi-root refusal."""
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        _mod._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        plain_output = capsys.readouterr()
+
+        _mod._pr_cost_report(
+            _pr_cost_args(all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent],
+        )
+        all_accounts_output = capsys.readouterr()
+
+        assert plain_output.out == all_accounts_output.out
+        assert plain_output.err == all_accounts_output.err
+
+    def test_account_ordinal_is_resolved_path_sorted_not_scan_order(self, tmp_path, monkeypatch, capsys):
+        """account-N is assigned by resolved-path sort (_redaction_ordinals),
+        not by --config-dir argument order or scan order -- mirrors
+        subagent-mix's own regression test of the same name."""
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
+        active = tmp_path / "zzz-active"
+        active_proj = active / "projects" / "-home-user-active-repo"
+        active_proj.mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
+        _write_jsonl(active_proj / "sess-active.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="active-branch"),
+        ])
+
+        extra = tmp_path / "aaa-extra"
+        extra_proj = extra / "projects" / "-home-user-extra-repo"
+        extra_proj.mkdir(parents=True)
+        _write_jsonl(extra_proj / "sess-extra.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="extra-branch"),
+        ])
+
+        merged_prs = [
+            {"number": 1, "headRefName": "extra-branch", "additions": 1, "deletions": 1,
+             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "headRefName": "active-branch", "additions": 1, "deletions": 1,
+             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+        ]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        _mod.cmd_pr_cost(_pr_cost_args(extra_config_dirs=[str(extra)], all_accounts=True))
+
+        out = capsys.readouterr().out
+        pr1_line = next(line for line in out.splitlines() if "PR #1" in line)
+        pr2_line = next(line for line in out.splitlines() if "PR #2" in line)
+        # "aaa-extra" (PR #1's branch) resolved-path-sorts before "zzz-active"
+        # (PR #2's branch) despite being scanned second -- account-1 must be
+        # the extra root's row.
+        assert "account-1/branch-1" in pr1_line
+        assert "account-2/branch-1" in pr2_line
+
+    def test_symlinked_sentinel_opts_both_accounts_in_together(self, tmp_path, monkeypatch, capsys):
+        """Pins docs/pr-cost.md's documented caveat: the sentinel check is a
+        plain Path.exists(), which follows symlinks -- an account whose
+        .pr-cost-enabled is a symlink to another account's real sentinel is
+        opted in too, with no separate consent of its own."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_a / ".pr-cost-enabled").touch()
+        os.symlink(acct_a / ".pr-cost-enabled", acct_b / ".pr-cost-enabled")
+        for root in roots:
+            proj = root / "-home-user-testrepo"
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / "sess.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+            ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        assert (acct_a / "pr-cost-ledger.tsv").exists()
+        assert (acct_b / "pr-cost-ledger.tsv").exists()
+        out = capsys.readouterr().out
+        assert "recorded 2 of 2 declared accounts (0 not opted in, 0 skipped)" in out
+
+
+class TestPrCostAllAccountsForcedLedgerPathRefusal:
+    def test_all_accounts_with_forced_ledger_path_and_multi_root_refuses_before_any_git_or_gh_call(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(tmp_path / "shared-ledger.tsv"))
+
+        def fail_on_any_call(cmd, *a, **kw):
+            raise AssertionError(f"unexpected subprocess call before the PR_COST_LEDGER_PATH refusal: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", fail_on_any_call)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(_pr_cost_args(all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert str(roots[0]) not in err
+        assert str(roots[1]) not in err
+
+
+class TestCmdPrCostEndToEndViaRealArgparse:
+    def test_all_accounts_flag_drives_cmd_pr_cost_through_the_real_parser(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Exercises pr-cost through the real argparse CLI (build_parser()),
+        not the _pr_cost_args() test-helper shortcut every other pr-cost
+        test uses."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        parser = _mod.build_parser()
+        args = parser.parse_args(["pr-cost", "--all-accounts", "--record", "--machine-label", "ci1"])
+        assert args.all_accounts is True
+        assert args.func == _mod.cmd_pr_cost
+
+        _mod.cmd_pr_cost(args)
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        out = capsys.readouterr().out
+        assert "recorded 1 of 1 declared accounts (0 not opted in, 0 skipped)" in out
