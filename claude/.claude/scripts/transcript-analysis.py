@@ -6561,10 +6561,11 @@ _PR_COST_INT_COLUMNS = (
 _PR_COST_BOOL_COLUMNS = ("tests_changed", "plan_file_added", "risk_surface_flag")
 
 # status is a fixed enum carrying no embedded gh diagnostic text --
-# _GH_CALL_DEGRADED_AUTH from _gh_call_with_backoff folds into
-# _PR_COST_STATUS_DEGRADED_NETWORK here, since a mid-run auth failure and a
+# _GH_CALL_DEGRADED_AUTH and _GH_CALL_DEGRADED_HOST_MISMATCH from
+# _gh_call_with_backoff both fold into _PR_COST_STATUS_DEGRADED_NETWORK
+# here, since a mid-run auth or local-misconfiguration failure and a
 # generic transient one both just mean "this row's enrichment is
-# incomplete," not two distinguishable data states.
+# incomplete," not distinguishable data states.
 _PR_COST_STATUS_OK = "ok"
 _PR_COST_STATUS_DEGRADED_RATE_LIMIT = "degraded_rate_limit"
 _PR_COST_STATUS_DEGRADED_NETWORK = "degraded_network"
@@ -6581,10 +6582,12 @@ _PR_COST_JOIN_CONFIDENCE_VALUES = (
     _PR_COST_JOIN_CONFIDENCE_HIGH, _PR_COST_JOIN_CONFIDENCE_MEDIUM, _PR_COST_JOIN_CONFIDENCE_LOW,
 )
 
-# The gh-call-level outcome _gh_call_with_backoff itself returns on an
-# auth-shaped failure -- never a ledger status value; every caller folds it
-# into _PR_COST_STATUS_DEGRADED_NETWORK before it reaches a row (see above).
+# The gh-call-level outcomes _gh_call_with_backoff itself returns on an
+# auth-shaped or local-misconfiguration-shaped failure -- never ledger
+# status values; every caller folds them into _PR_COST_STATUS_DEGRADED_NETWORK
+# before they reach a row (see above).
 _GH_CALL_DEGRADED_AUTH = "degraded_auth"
+_GH_CALL_DEGRADED_HOST_MISMATCH = "degraded_host_mismatch"
 
 # Provisional placeholder ("As-of rule"): a merged PR's branch keeps
 # accruing local transcript activity for a while after merge, so
@@ -6652,6 +6655,13 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 # structured error-kind field on stderr, so this is pattern matching against
 # gh's own documented error phrasing, not a guarantee.
 _GH_AUTH_ERROR_RE = re.compile(r"not logged into|gh auth login|authentication failed|http\s?401", re.IGNORECASE)
+# Matches gh's own stderr for an ambient GH_HOST that doesn't match any
+# configured git remote (verified against gh 2.97.0: "none of the git
+# remotes configured for this repository correspond to the GH_HOST
+# environment variable") -- a local shell-config mismatch, not a transient
+# failure, so it must not consume the retry budget the way a genuine
+# network error does.
+_GH_HOST_MISMATCH_ERROR_RE = re.compile(r"GH_HOST environment variable", re.IGNORECASE)
 _GH_RATE_LIMIT_ERROR_RE = re.compile(r"rate limit|http\s?429|http\s?403", re.IGNORECASE)
 _GH_RETRY_AFTER_RE = re.compile(r"retry.{0,3}after[:\s]+(\d+)", re.IGNORECASE)
 
@@ -6916,6 +6926,7 @@ def _git_remote_origin_host_and_owner_repo() -> tuple[str, str]:
 
 
 _GH_ERROR_KIND_AUTH = "auth"
+_GH_ERROR_KIND_HOST_MISMATCH = "host_mismatch"
 _GH_ERROR_KIND_RATE_LIMIT = "rate_limit"
 _GH_ERROR_KIND_NETWORK = "network"
 
@@ -6925,6 +6936,8 @@ def _classify_gh_error(stderr: str) -> str:
     one of the _GH_ERROR_KIND_* constants."""
     if _GH_AUTH_ERROR_RE.search(stderr):
         return _GH_ERROR_KIND_AUTH
+    if _GH_HOST_MISMATCH_ERROR_RE.search(stderr):
+        return _GH_ERROR_KIND_HOST_MISMATCH
     if _GH_RATE_LIMIT_ERROR_RE.search(stderr):
         return _GH_ERROR_KIND_RATE_LIMIT
     return _GH_ERROR_KIND_NETWORK
@@ -6951,16 +6964,18 @@ def _gh_call_with_backoff(argv: Sequence[str], *, label: str) -> tuple[subproces
     _PR_COST_RATE_LIMIT_MAX_ELAPSED_S total elapsed -- a budget local to this
     one call (attempt/elapsed/backoff are all function-local state), not
     shared across the run: a --record sweep over many PRs can spend up to
-    that budget on each one in the worst case. An auth-shaped failure is
-    never retried: gh auth status already ran as a preflight, so a later one
-    is not expected to self-resolve by waiting.
+    that budget on each one in the worst case. An auth-shaped or
+    GH_HOST-mismatch-shaped failure is never retried: gh auth status already
+    ran as a preflight, and a local shell-config mismatch doesn't self-resolve
+    by waiting either way.
 
     Returns (proc, "") on success. On exhaustion, returns (None, status)
-    with status one of _GH_CALL_DEGRADED_AUTH, _PR_COST_STATUS_DEGRADED_RATE_LIMIT,
-    _PR_COST_STATUS_DEGRADED_NETWORK -- callers with no row yet to degrade
-    (repo-identity resolution, discovery) abort the whole run on any
-    non-empty status; per-PR enrichment instead marks that row's own status
-    column (folding _GH_CALL_DEGRADED_AUTH into _PR_COST_STATUS_DEGRADED_NETWORK
+    with status one of _GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH,
+    _PR_COST_STATUS_DEGRADED_RATE_LIMIT, _PR_COST_STATUS_DEGRADED_NETWORK --
+    callers with no row yet to degrade (repo-identity resolution, discovery)
+    abort the whole run on any non-empty status; per-PR enrichment instead
+    marks that row's own status column (folding _GH_CALL_DEGRADED_AUTH and
+    _GH_CALL_DEGRADED_HOST_MISMATCH into _PR_COST_STATUS_DEGRADED_NETWORK
     there -- see _PR_COST_STATUS_VALUES).
     """
     attempt = 0
@@ -6985,6 +7000,18 @@ def _gh_call_with_backoff(argv: Sequence[str], *, label: str) -> tuple[subproces
         if kind == _GH_ERROR_KIND_AUTH:
             print(f"pr-cost: {label} failed ({kind}), not retrying (auth failures don't self-resolve)", file=sys.stderr)
             return None, _GH_CALL_DEGRADED_AUTH
+        if kind == _GH_ERROR_KIND_HOST_MISMATCH:
+            # Never echoes gh's own stderr (same discipline as every other
+            # print site here), but this specific failure has one fix an
+            # operator can actually act on, so name it instead of falling
+            # through to the generic network-failure message below.
+            print(
+                f"pr-cost: {label} failed ({kind}), not retrying -- gh's ambient GH_HOST"
+                " environment variable does not match this repo's own git remote host;"
+                " unset GH_HOST or point it at the correct host",
+                file=sys.stderr,
+            )
+            return None, _GH_CALL_DEGRADED_HOST_MISMATCH
         if attempt >= _PR_COST_RATE_LIMIT_MAX_ATTEMPTS or elapsed >= _PR_COST_RATE_LIMIT_MAX_ELAPSED_S:
             print(f"pr-cost: {label} failed ({kind}), giving up after {attempt} attempt(s)", file=sys.stderr)
             return None, (
@@ -7048,6 +7075,14 @@ def _resolve_pinned_gh_repo(corpus_host: str, corpus_repo: str, ordinal: int) ->
     "the" account under --all-accounts, so the caller supplies it rather
     than this function hardcoding one.
     """
+    # The mismatch check below folds a gh-side parse failure into gh_host=""
+    # and relies on that never coincidentally equaling corpus_host -- true
+    # today only because the sole caller resolves corpus_host via
+    # _git_remote_origin_host_and_owner_repo(), which itself never returns
+    # an empty string. Assert it here so a future caller violating that
+    # invariant fails loud instead of silently disabling the mismatch check.
+    if not corpus_host or not corpus_repo:
+        raise ValueError("_resolve_pinned_gh_repo requires a non-empty corpus_host and corpus_repo")
     proc, degraded = _gh_call_with_backoff(
         ["gh", "repo", "view", "--json", "nameWithOwner,url"], label="repo view"
     )
@@ -7081,10 +7116,12 @@ def _resolve_pinned_gh_repo(corpus_host: str, corpus_repo: str, ordinal: int) ->
 
 def _gh_host_qualified_repo(corpus_host: str, pinned_repo: str) -> str:
     """`HOST/OWNER/REPO` form for a gh `--repo` argument -- gh's bare
-    `OWNER/REPO` form always resolves against api.github.com regardless of
+    `OWNER/REPO` form resolves against whichever host the ambient `GH_HOST`
+    environment variable names (api.github.com when unset), regardless of
     the invoking directory's own git remote, so every gh call this
-    subcommand makes must host-qualify `--repo` to actually reach a GHE
-    host instead of silently querying github.com under the same owner/repo.
+    subcommand makes must host-qualify `--repo` to actually reach the
+    intended host instead of silently querying the wrong one under the
+    same owner/repo.
     """
     return f"{corpus_host}/{pinned_repo}"
 
@@ -7118,10 +7155,11 @@ def _gh_pr_view_enrichment(corpus_host: str, pinned_repo: str, pr_number: int) -
     """Per-PR enrichment call: commits/reviews/files, none of which
     `gh pr list` returns. Returns (payload, _PR_COST_STATUS_OK) on success,
     else (None, degraded) with degraded one of _gh_call_with_backoff's own
-    status strings -- the caller folds _GH_CALL_DEGRADED_AUTH into
-    _PR_COST_STATUS_DEGRADED_NETWORK before it reaches a ledger row's status
-    column. `--repo` is host-qualified (see _gh_host_qualified_repo) so a
-    GHE-pinned repo is queried on its own host rather than on api.github.com.
+    status strings -- the caller folds _GH_CALL_DEGRADED_AUTH and
+    _GH_CALL_DEGRADED_HOST_MISMATCH into _PR_COST_STATUS_DEGRADED_NETWORK
+    before either reaches a ledger row's status column. `--repo` is
+    host-qualified (see _gh_host_qualified_repo) so a GHE-pinned repo is
+    queried on its own host rather than on api.github.com.
     """
     argv = [
         "gh", "pr", "view", str(pr_number),
@@ -7645,7 +7683,9 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     enrichment_by_pr_number[pr["number"]] = payload
                 else:
                     degraded_status_by_pr_number[pr["number"]] = (
-                        _PR_COST_STATUS_DEGRADED_NETWORK if degraded == _GH_CALL_DEGRADED_AUTH else degraded
+                        _PR_COST_STATUS_DEGRADED_NETWORK
+                        if degraded in (_GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH)
+                        else degraded
                     )
 
             resolved_pr, join_confidence = _resolve_branch_pr(branch, matches, enrichment_by_pr_number, plan_glob)

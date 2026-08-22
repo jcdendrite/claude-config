@@ -16501,6 +16501,16 @@ class TestClassifyGhError:
         assert _mod._classify_gh_error(stderr) == _mod._GH_ERROR_KIND_AUTH
 
     @pytest.mark.parametrize("stderr", [
+        # Verified against gh 2.97.0's own stderr for an ambient GH_HOST that
+        # doesn't match any configured git remote.
+        "none of the git remotes configured for this repository correspond to the"
+        " GH_HOST environment variable. Try adding a matching remote or unsetting"
+        " the variable\n",
+    ])
+    def test_gh_host_mismatch_stderr_classified_as_host_mismatch(self, stderr):
+        assert _mod._classify_gh_error(stderr) == _mod._GH_ERROR_KIND_HOST_MISMATCH
+
+    @pytest.mark.parametrize("stderr", [
         "API rate limit exceeded for user ID 123.\n",
         "HTTP 429: Too Many Requests\n",
         "HTTP 403: Forbidden\n",
@@ -16652,6 +16662,39 @@ class TestGhCallWithBackoffFailureClassBehavior:
         assert degraded == _mod._GH_CALL_DEGRADED_AUTH
         assert call_count == 1
         assert sleep_calls == []
+
+    def test_gh_host_mismatch_failure_returns_immediately_with_actionable_message(self, monkeypatch, capsys):
+        """Distinct from the generic network-failure path (which this
+        stderr shape would otherwise be misclassified into, burning the
+        full retry budget on a failure that can't self-resolve): no retry,
+        and the abort message names the actual fix (unset/correct GH_HOST)
+        without echoing gh's own raw stderr."""
+        call_count = 0
+        gh_stderr = (
+            "none of the git remotes configured for this repository correspond to the"
+            " GH_HOST environment variable. Try adding a matching remote or unsetting"
+            " the variable\n"
+        )
+
+        def fake_run(cmd, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": gh_stderr})()
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        proc, degraded = _mod._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert proc is None
+        assert degraded == _mod._GH_CALL_DEGRADED_HOST_MISMATCH
+        assert call_count == 1
+        assert sleep_calls == []
+        err = capsys.readouterr().err
+        assert "GH_HOST" in err
+        assert "unset" in err
+        assert gh_stderr.strip() not in err  # gh's own raw stderr text is never surfaced
 
     def test_rate_limit_shaped_failure_retries_before_returning_degraded(self, monkeypatch):
         call_count = 0
@@ -16840,12 +16883,62 @@ class TestPrCostPerPrEnrichmentAuthFailureFoldsToDegradedNetwork:
         assert len(rows) == 1
         assert rows[0]["status"] == _mod._PR_COST_STATUS_DEGRADED_NETWORK
 
+    def test_gh_pr_view_gh_host_mismatch_failure_writes_degraded_network_not_degraded_host_mismatch(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """Same fold as the auth-shaped case above, for the other
+        no-retry-shaped failure kind: _GH_CALL_DEGRADED_HOST_MISMATCH is
+        never a valid ledger status value either."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo="owner/repo", merged_prs=merged_prs,
+                gh_pr_view_failure_stderr=(
+                    "none of the git remotes configured for this repository correspond to the"
+                    " GH_HOST environment variable. Try adding a matching remote or unsetting"
+                    " the variable\n"
+                ),
+            ),
+        )
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        assert rows[0]["status"] == _mod._PR_COST_STATUS_DEGRADED_NETWORK
+
 
 class TestResolvePinnedGhRepoIdentity:
     """_resolve_pinned_gh_repo: refuses a genuine identity mismatch between
     gh's own effective repo and this repo's git remote -- on host or on
     owner/name -- case-folds a matching identity, and never prints a raw
     repo value."""
+
+    @pytest.mark.parametrize("corpus_host,corpus_repo", [
+        ("", "owner/repo"), ("github.com", ""), ("", ""),
+    ])
+    def test_empty_corpus_host_or_repo_raises_rather_than_silently_matching(
+        self, monkeypatch, corpus_host, corpus_repo,
+    ):
+        """Pins the invariant the mismatch check's gh_host="" fail-closed
+        default relies on: an empty corpus_host/corpus_repo must never
+        reach the comparison, where it could coincidentally equal an
+        unparseable gh_url's own empty-string fallback and skip the
+        refusal. No gh call should even be attempted -- subprocess.run is
+        left unmocked and would raise if called."""
+        with pytest.raises(ValueError, match="non-empty corpus_host and corpus_repo"):
+            _mod._resolve_pinned_gh_repo(corpus_host, corpus_repo, ordinal=1)
 
     def test_mismatch_exits_2_with_neither_raw_value_in_output(self, monkeypatch, capsys):
         """The two capsys assertions below confirm the refusal message
@@ -16912,6 +17005,76 @@ class TestResolvePinnedGhRepoIdentity:
 
         assert exc_info.value.code == 2
         assert "owner/repo" not in capsys.readouterr().err
+
+    def test_gh_repo_view_url_substring_spoof_shape_refuses_rather_than_false_matching(self, monkeypatch, capsys):
+        """Mirrors TestGitRemoteOriginHostAndOwnerRepoRegex's substring-spoof
+        cases, but at the `gh repo view` `url`-field parse site instead of
+        the local git remote parse site -- both share one compiled regex
+        object today, but nothing pinned that this site resists the same
+        attack shape until now. A malicious/misconfigured `url` embedding
+        "github.com/owner/repo" as a path segment on a different host must
+        not spoof the real identity."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0,
+                "stdout": json.dumps({
+                    "nameWithOwner": "owner/repo",
+                    "url": "https://attacker.example/github.com/owner/repo",
+                }),
+                "stderr": "",
+            })(),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "owner/repo" not in err
+        assert "attacker.example" not in err
+
+    @pytest.mark.parametrize("missing_key", ["nameWithOwner", "url"])
+    def test_gh_repo_view_payload_missing_required_key_exits_1(self, monkeypatch, capsys, missing_key):
+        """The except (JSONDecodeError, KeyError, TypeError) branch aborts
+        the whole run (exit 1, distinct from the identity-mismatch exit 2)
+        when `gh repo view`'s JSON is missing either key it now requires --
+        never letting an unhandled KeyError propagate as a raw traceback."""
+        payload = {"nameWithOwner": "owner/repo", "url": "https://github.com/owner/repo"}
+        del payload[missing_key]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": json.dumps(payload), "stderr": "",
+            })(),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
+
+        assert exc_info.value.code == 1
+        assert "unparseable JSON" in capsys.readouterr().err
+
+    def test_case_differing_host_still_matches(self, monkeypatch):
+        """Mirrors test_case_differing_match_proceeds_and_persists_the_pinned_lowercased_identity
+        below, but on the host axis instead of the repo axis -- the
+        docstring's "host or owner/name (case-folded)" claim is only
+        verified for repo casing without this test.
+
+        _resolve_pinned_gh_repo is called directly below (not via the full
+        _pr_cost_report orchestration), so only the `gh repo view` response
+        this fake builds matters -- repo/host (which drive the unused `git
+        remote get-url origin` branch) are left at their defaults."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                gh_repo_view_host="ACME-Corp.GHE.com", gh_repo_name_with_owner="owner/repo",
+            ),
+        )
+
+        gh_repo, _ = _mod._resolve_pinned_gh_repo("acme-corp.ghe.com", "owner/repo", ordinal=1)
+
+        assert gh_repo == "owner/repo"
 
     def test_mismatch_with_non_default_ordinal_labels_output_account_two(self, monkeypatch, capsys):
         """No caller in the new --all-accounts design passes a literal
