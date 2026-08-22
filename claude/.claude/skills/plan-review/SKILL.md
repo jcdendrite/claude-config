@@ -215,7 +215,7 @@ S6. **Secret lifecycle** — Does the plan describe provisioning, storage, rotat
 
 ## Domain: Claude Code config
 
-Apply when the plan proposes new or modified content for `.claude/skills/**/SKILL.md`, `claude/.claude/agents/*.md` or `plugins/*/agents/*.md`, `CLAUDE.md`/`AGENTS.md`/`.claude/rules/*.md`/`claude/.claude/rules/*.md`/`<config-dir>/projects/*/memory/`, hooks (`claude/.claude/hooks/*.sh`, `settings.json` hook entries), or `permissions.allow` rules.
+Apply when the plan proposes new or modified content for `.claude/skills/**/SKILL.md`, `claude/.claude/agents/*.md` or `plugins/*/agents/*.md`, `CLAUDE.md`/`AGENTS.md`/`.claude/rules/*.md`/`<config-dir>/projects/*/memory/`, hooks (`claude/.claude/hooks/*.sh`, `settings.json` hook entries), or `permissions.allow` rules.
 
 For SKILL.md content, invoke `skill-review` against the plan's drafted text. For agent-file content, invoke `agent-review`. Each owns frontmatter contract, trigger design, voice, length, behavior test, and cross-reference vs duplication for its file type.
 
