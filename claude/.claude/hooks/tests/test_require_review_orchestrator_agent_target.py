@@ -88,6 +88,15 @@ class TestMalformedPayloadHandledWithoutCrashing:
         }
         assert run_hook(REQUIRE_REVIEW_ORCHESTRATOR_AGENT_TARGET_HOOK, payload) == "deny"
 
+    def test_present_but_empty_subagent_type_denied(self):
+        """Distinct code path from the missing-key case above: `_agent_dispatch`
+        with subagent_type="" hits jq's `// empty` normalization rather than
+        true field absence, though both currently converge on the same
+        `[ -n "$TARGET" ]` guard and the same denial."""
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_AGENT_TARGET_HOOK, _agent_dispatch("")
+        ) == "deny"
+
     def test_non_string_subagent_type_denied(self):
         """jq -r renders a non-string value rather than failing, so TARGET
         becomes that rendering -- the predicate is exact-match against a

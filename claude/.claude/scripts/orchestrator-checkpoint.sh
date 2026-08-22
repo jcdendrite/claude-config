@@ -19,6 +19,11 @@ set -u
 _CHECKPOINT_STEP_MAX_CHARS=200
 _CHECKPOINT_STATUS_MAX_CHARS=100
 _CHECKPOINT_MARKER_HASH_MAX_CHARS=128
+# Concatenated into the checkpoint filename (<repo-hash>.<run-id>.jsonl), same
+# as the fields above are concatenated into the JSON line -- well under the
+# ~184-byte budget filesystem NAME_MAX (255) leaves after the 65-byte
+# repo-hash prefix and 6-byte .jsonl suffix.
+_CHECKPOINT_RUN_ID_MAX_CHARS=128
 # Small and fixed: this runs synchronously inside review-orchestrator's own
 # turn, mirroring review-ledger.sh's _LEDGER_LOCK_RETRIES rationale.
 _CHECKPOINT_LOCK_RETRIES=5
@@ -41,15 +46,22 @@ EOF
 }
 
 _validate_run_id() {
-  local run_id="$1"
+  local RUN_ID="$1"
   # Reuses the same safe-path-component check marker.sh/review-ledger.sh
   # apply to a session id -- orchestrator_run_id is equally caller-supplied
   # (minted by the dispatching parent, named in review-orchestrator's own
   # dispatch prompt) and equally gets concatenated into a filesystem path
   # below, so an id containing '..' or '/' must not escape the checkpoint
   # directory.
-  if ! _lib_valid_session_id_component "$run_id"; then
-    printf 'orchestrator-checkpoint.sh: orchestrator_run_id %s is not a valid path component. Abort without writing.\n' "$run_id" >&2
+  if ! _lib_valid_session_id_component "$RUN_ID"; then
+    printf 'orchestrator-checkpoint.sh: orchestrator_run_id %s is not a valid path component. Abort without writing.\n' "$RUN_ID" >&2
+    return 2
+  fi
+  # Reject over-cap rather than truncate, same discipline as --step/--status/
+  # --marker-hash below -- a truncated run id would silently key a different
+  # checkpoint file than the one the dispatching parent expects to resume.
+  if [ "${#RUN_ID}" -gt "$_CHECKPOINT_RUN_ID_MAX_CHARS" ]; then
+    printf 'orchestrator-checkpoint.sh: orchestrator_run_id exceeds %d characters (got %d).\n' "$_CHECKPOINT_RUN_ID_MAX_CHARS" "${#RUN_ID}" >&2
     return 2
   fi
 }

@@ -817,6 +817,24 @@ class TestKnownGapBypass:
         # not `-i`, so it is not caught. Pin the accepted allow.
         assert run_hook(HOOK, bash_input("sed --in-place s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cp /tmp/malicious.txt claude/.claude/hooks/_lib.sh",
+            "printf malicious > claude/.claude/hooks/_lib.sh",
+            "echo malicious | tee claude/.claude/hooks/_lib.sh",
+        ],
+    )
+    def test_raw_bash_write_target_onto_tracked_file_allowed(self, command):
+        """Documented "Known gaps" miss (this hook's own header comment):
+        arbitrary Bash write-target resolution (cp/redirect/tee onto a
+        tracked file) is not mechanically gated. This is also the composed
+        two-hop path require-review-orchestrator-agent-target.sh's own
+        allowlist does not close for a review-orchestrator-dispatched
+        reviewer persona -- see docs/design-decisions.md §29. Pin the
+        accepted allow so a future narrowing of this gap is visible."""
+        assert run_hook(HOOK, bash_input(command, agent_type="ciso-reviewer")) == "allow"
+
 
 class TestChainOperators:
     """The shared fragment splitter must catch a mutation in a non-leading

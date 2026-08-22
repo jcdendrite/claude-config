@@ -1,12 +1,13 @@
 #!/bin/bash
 # hook-class: gate
 # Gate: restricts review-orchestrator's Agent tool calls to dispatch targets
-# in _LIB_REVIEW_ONLY_AGENTS ∪ {code-writer}, closing the one-hop-around
+# in _LIB_REVIEW_ONLY_AGENTS ∪ {code-writer}, closing the direct one-hop
 # nested-dispatch gap require-review-orchestrator-bash.sh's own Bash
-# restriction leaves open. tool_name for sub-agent spawning is "Agent"
-# (verified from session transcripts — see require-routing-read.sh, which
-# gates the same tool). See docs/design-decisions.md §29 for the fuller
-# design rationale.
+# restriction leaves open (which agent may be dispatched) -- not a guarantee
+# that every allowed target's OWN Bash restriction is airtight; see
+# docs/design-decisions.md §29 for the residual it does not close. tool_name
+# for sub-agent spawning is "Agent" (verified from session transcripts — see
+# require-routing-read.sh, which gates the same tool).
 set -uo pipefail
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.

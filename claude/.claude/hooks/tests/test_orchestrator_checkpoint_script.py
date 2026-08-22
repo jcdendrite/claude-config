@@ -125,6 +125,60 @@ class TestOrchestratorCheckpointFieldCapsRejectOverLength:
         assert result.returncode == 2
         assert not _checkpoint_path(isolated_home, git_repo).exists()
 
+    def test_over_length_run_id_rejected(self, isolated_home, git_repo):
+        args = ["append", "x" * 129, "--step", "skill-invoked", "--status", "done"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        checkpoint_dir = isolated_home / ".claude" / "orchestrator-checkpoints"
+        stray = list(checkpoint_dir.rglob("*")) if checkpoint_dir.exists() else []
+        assert stray == [], f"an over-cap run id must not write any checkpoint file: {stray}"
+
+
+class TestOrchestratorCheckpointFieldCapsAllowAtExactBoundary:
+    """The over-cap tests above only prove `-gt` rejects; without a case at
+    exactly the cap, an accidental `-ge`/`-gt` flip on any one field would
+    still pass that suite untouched -- both operators reject 201/101/129/129."""
+
+    def test_exactly_max_step_allowed(self, isolated_home, git_repo):
+        args = ["append", RUN_ID, "--step", "x" * 200, "--status", "done"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+    def test_exactly_max_status_allowed(self, isolated_home, git_repo):
+        args = ["append", RUN_ID, "--step", "skill-invoked", "--status", "x" * 100]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+    def test_exactly_max_marker_hash_allowed(self, isolated_home, git_repo):
+        args = _append_args(marker_hash="x" * 128)
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+    def test_exactly_max_run_id_allowed(self, isolated_home, git_repo):
+        args = ["append", "x" * 128, "--step", "skill-invoked", "--status", "done"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+
+class TestOrchestratorCheckpointOutsideGitRepo:
+    def test_append_outside_git_repo_denied(self, isolated_home, tmp_path):
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        args = _append_args()
+        result = _run(args, cwd=non_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert "not inside a git repository" in result.stderr
+        checkpoint_dir = isolated_home / ".claude" / "orchestrator-checkpoints"
+        stray = list(checkpoint_dir.rglob("*")) if checkpoint_dir.exists() else []
+        assert stray == [], f"must not write a checkpoint file outside a git repo: {stray}"
+
+    def test_read_outside_git_repo_denied(self, isolated_home, tmp_path):
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        result = _run(["read", RUN_ID], cwd=non_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert "not inside a git repository" in result.stderr
+
 
 class TestOrchestratorCheckpointNoCheckpointYet:
     def test_read_reports_absence_for_a_brand_new_run_id(self, isolated_home, git_repo):
@@ -186,6 +240,25 @@ class TestOrchestratorCheckpointDuplicateStepRetry:
         )
         statuses = {json.loads(line)["status"] for line in lines}
         assert statuses == {"started", "done"}
+
+    def test_dedup_is_file_wide_not_last_entry_scoped(self, isolated_home, git_repo):
+        """_lib_append_line_locked no-ops on ANY prior verbatim match in the
+        file, not just the immediately-preceding line (see its docstring in
+        _lib.sh). Pins this file-wide scope explicitly: a step that goes
+        started -> done -> started again (an identical re-open, same
+        marker-hash) produces a byte-identical line to its first 'started'
+        entry, so the third append is deduped away rather than recorded --
+        by design, not a bug, but previously asserted only implicitly."""
+        _run(_append_args(step="reviewer:x", status="started"), cwd=git_repo, home=isolated_home)
+        _run(_append_args(step="reviewer:x", status="done"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(step="reviewer:x", status="started"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _checkpoint_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 2, (
+            "a non-adjacent identical re-append is deduped file-wide by "
+            f"design, so the file must still hold only the first two "
+            f"entries: {lines}"
+        )
 
 
 class TestOrchestratorCheckpointCorruptLine:
