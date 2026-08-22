@@ -92,9 +92,9 @@ provenance for a change, so it isn't committed — `mv` the plan file
 out of `.claude/plans/`, remove the branch and worktree created for
 it, and route the narrative through the project's own tracker or
 documentation tool (see that project's `CLAUDE.md`, or ask the
-engineer if undocumented). The review it just passed still counts;
-what ships is the findings, through that channel. Stop here — the
-choice below is about where implementation runs, and there is none.
+engineer if undocumented) — the review still counts, it just ships as
+findings rather than a commit. Stop here — the choice below is about
+where implementation runs, and there is none.
 
 Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check` and act on its JSON (`docs/handoff-nudge.md` carries the contract):
 
