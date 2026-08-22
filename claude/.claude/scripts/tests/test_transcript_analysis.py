@@ -15604,7 +15604,7 @@ def _sample_pr_cost_row(**overrides) -> dict:
     type (str, int, float, bool) -- the base fixture for round-trip, append,
     and malformed-content tests."""
     row: dict = {
-        "repo": "owner/repo", "pr_number": 42, "machine": "ci1",
+        "host": "github.com", "repo": "owner/repo", "pr_number": 42, "machine": "ci1",
         "head_branch": "account-1/branch-1", "merged_at": "2026-01-01T00:00:00Z",
         "rate_stamp": "2026-08-02", "captured_at": "2026-01-02T00:00:00Z",
         "join_confidence": "high", "supersedes": "", "status": "ok",
@@ -15959,7 +15959,8 @@ class TestPrCostBranchRedactionJoinIntegrity:
         the join above which never sees it."""
         pr = {"number": 9, "mergedAt": "2026-01-01T00:00:00Z", "additions": 1, "deletions": 1, "changedFiles": 1}
         row = _mod._new_pr_cost_row(
-            pinned_repo="owner/repo", pr=pr, branch=self._HEXISH_BRANCH, agg=_mod._new_pr_cost_agg(),
+            host="github.com", pinned_repo="owner/repo", pr=pr, branch=self._HEXISH_BRANCH,
+            agg=_mod._new_pr_cost_agg(),
             enrichment=None, join_confidence="medium", status=_mod._PR_COST_STATUS_OK, machine="ci1",
             captured_at="2026-01-01T00:00:00Z", supersedes="",
             plan_glob=_mod._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=_mod._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
@@ -16342,6 +16343,17 @@ class TestParsePrCostLedgerFileTextMalformed:
             _mod._parse_pr_cost_ledger_file_text(text)
         assert "Acme-Corp" not in str(exc_info.value)
 
+    def test_malformed_host_raises_without_leaking_raw_value(self):
+        """Same guard as the repo check above, mirrored for the host column --
+        a non-lowercase host fails the malformed-host check without the raw
+        value reaching the raised message, since host is never scrubbed at
+        rest either."""
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(host="Acme-Corp.GHE.com"))
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="malformed host value") as exc_info:
+            _mod._parse_pr_cost_ledger_file_text(text)
+        assert "Acme-Corp" not in str(exc_info.value)
+
     def test_malformed_merged_at_raises(self):
         line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(merged_at="not-a-timestamp"))
         text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
@@ -16371,6 +16383,58 @@ class TestParsePrCostLedgerFileTextMalformed:
         text = bad_header + "\n" + self._valid_line() + "\n"
         with pytest.raises(_mod._PrCostLedgerParseError, match="missing or mismatched"):
             _mod._parse_pr_cost_ledger_file_text(text)
+
+
+class TestPrCostLedgerLegacyHostColumnMigration:
+    """The pre-host-column header (_PR_COST_LEDGER_LEGACY_HEADER_LINE) is
+    the one documented backward-compat exception to the parser's otherwise
+    exact header/column-count match -- every row recorded under it predates
+    GHE host-awareness, so implicitly belongs to github.com."""
+
+    def _legacy_row_line(self, **overrides) -> str:
+        # host is always _PR_COST_LEDGER_COLUMNS' first cell, so dropping it
+        # from a current-schema formatted line reproduces the legacy shape
+        # without a second column-ordering implementation to keep in sync.
+        return "\t".join(_mod._format_pr_cost_ledger_row(_sample_pr_cost_row(**overrides)).split("\t")[1:])
+
+    def test_legacy_header_row_parses_with_host_defaulted_to_github_com(self):
+        text = _mod._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + self._legacy_row_line() + "\n"
+
+        rows = _mod._parse_pr_cost_ledger_file_text(text)
+
+        assert len(rows) == 1
+        assert rows[0]["host"] == "github.com"
+
+    def test_record_against_legacy_file_upgrades_it_to_current_schema(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """A subsequent --record write against a legacy-format file rewrites
+        the whole ledger under the current header -- no separate migration
+        script needed, since the writer always renders the current schema
+        from the in-memory rows the parser already normalized."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        legacy_line = self._legacy_row_line(pr_number=7, machine="ci1")
+        ledger_path.write_text(_mod._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + legacy_line + "\n")
+
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(repo="owner/repo", merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        written_text = ledger_path.read_text()
+        assert written_text.splitlines()[0] == _mod._PR_COST_LEDGER_HEADER_LINE
+        rows = _mod._parse_pr_cost_ledger_file_text(written_text)
+        assert len(rows) == 2  # the upgraded legacy row (pr_number=7) plus the freshly recorded one (pr_number=1)
+        assert all(r["host"] == "github.com" for r in rows)
 
 
 class TestPrCostMechanicalProxies:
@@ -16850,7 +16914,7 @@ class TestPrCostPerPrEnrichmentRateLimitDegradesRowNotRun:
         assert rows[0]["status"] == _mod._PR_COST_STATUS_DEGRADED_RATE_LIMIT
 
 
-class TestPrCostPerPrEnrichmentAuthFailureFoldsToDegradedNetwork:
+class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
     def test_gh_pr_view_auth_shaped_failure_writes_degraded_network_not_degraded_auth(
         self, fake_projects, tmp_path, monkeypatch,
     ):
@@ -16936,7 +17000,13 @@ class TestResolvePinnedGhRepoIdentity:
         reach the comparison, where it could coincidentally equal an
         unparseable gh_url's own empty-string fallback and skip the
         refusal. No gh call should even be attempted -- subprocess.run is
-        left unmocked and would raise if called."""
+        stubbed to raise if called, rather than left unmocked, since a real
+        `gh` binary on PATH would otherwise run to completion and enter
+        _gh_call_with_backoff's real retry loop instead of raising."""
+        def boom(cmd, *a, **k):
+            raise AssertionError("gh must not be called when corpus_host/corpus_repo is empty")
+        monkeypatch.setattr(subprocess, "run", boom)
+
         with pytest.raises(ValueError, match="non-empty corpus_host and corpus_repo"):
             _mod._resolve_pinned_gh_repo(corpus_host, corpus_repo, ordinal=1)
 
@@ -17206,6 +17276,51 @@ class TestResolvePinnedGhRepoRetryExhaustion:
         assert not (tmp_path / "pr-cost-ledger.tsv").exists()
 
 
+class TestResolvePinnedGhRepoHostMismatchAbort:
+    def test_gh_host_mismatch_failure_on_gh_repo_view_exits_1_with_no_retry_no_row_written(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Distinct from a genuine identity mismatch (exit 2): a GH_HOST-
+        mismatch-shaped failure on `gh repo view` itself -- the new failure
+        kind this PR introduces at this call site -- aborts the whole run
+        (exit 1, since no row exists yet to degrade into) before ever
+        reaching the identity comparison, and without retrying (a local
+        shell-config mismatch doesn't self-resolve by waiting). Mirrors
+        TestResolvePinnedGhRepoRetryExhaustion's rate-limit-shaped case
+        above for this call site's other no-retry failure kind."""
+        gh_repo = "gh-side-owner/gh-side-repo"
+        corpus_repo = "git-side-owner/git-side-repo"
+        host_mismatch_stderr = (
+            "none of the git remotes configured for this repository correspond to the"
+            " GH_HOST environment variable. Try adding a matching remote or unsetting"
+            " the variable\n"
+        )
+        call_log: list[list[str]] = []
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo=corpus_repo, gh_repo_name_with_owner=gh_repo,
+                gh_repo_view_failure_stderr=host_mismatch_stderr, call_log=call_log,
+            ),
+        )
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1  # abort, not the identity-mismatch path's exit(2)
+
+        gh_repo_view_calls = [c for c in call_log if c[:3] == ["gh", "repo", "view"]]
+        assert len(gh_repo_view_calls) == 1  # no retry -- a host mismatch doesn't self-resolve
+        assert sleep_calls == []
+
+        err = capsys.readouterr().err
+        assert gh_repo not in err
+        assert corpus_repo not in err
+        assert host_mismatch_stderr.strip() not in err  # gh's own raw stderr text is never surfaced
+        assert not (tmp_path / "pr-cost-ledger.tsv").exists()
+
+
 class TestGhHostQualifiedRepo:
     def test_returns_host_slash_owner_repo(self):
         assert _mod._gh_host_qualified_repo("acme-corp.ghe.com", "owner/repo") == "acme-corp.ghe.com/owner/repo"
@@ -17340,6 +17455,98 @@ class TestPrCostCrossRepoLedgerIsolation:
         assert set(by_repo) == {"repo-a/x", "repo-b/y"}
         assert by_repo["repo-a/x"]["supersedes"] == ""
         assert by_repo["repo-b/y"]["supersedes"] == ""
+
+
+class TestPrCostCrossHostLedgerIsolation:
+    """(host, repo, pr_number, machine) is the ledger's own key -- a
+    same-named owner/repo on two different hosts (e.g. an org mid-migration
+    from a GHE instance to github.com, the scenario
+    TestResolvePinnedGhRepoIdentity.test_host_mismatch_with_matching_owner_repo_exits_2
+    names for the identity-resolution check) must not collide under one
+    key. Sibling coverage to TestPrCostCrossRepoLedgerIsolation above, which
+    only varies `repo` on a single host."""
+
+    def _existing_row_and_merged_prs(self, existing_host: str) -> tuple[dict, list[dict]]:
+        existing_row = _sample_pr_cost_row(host=existing_host, repo="owner/repo", pr_number=42, machine="ci1")
+        merged_prs = [{
+            "number": 42, "headRefName": "ghost-branch", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        return existing_row, merged_prs
+
+    def test_second_hosts_pr_is_recorded_not_skipped_as_already_captured(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        existing_row, merged_prs = self._existing_row_and_merged_prs("acme-corp.ghe.com")
+        _mod._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
+        )
+
+        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 2
+        by_host = {r["host"]: r for r in rows}
+        assert set(by_host) == {"acme-corp.ghe.com", "github.com"}
+
+    def test_force_does_not_supersede_the_other_hosts_row(self, fake_projects, tmp_path, monkeypatch):
+        """--force with an owner/repo match on a different host must still
+        record a fresh row, not a correction: _latest_pr_cost_row correctly
+        returns None across hosts, so there is nothing for `supersedes` to
+        reference."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        existing_row, merged_prs = self._existing_row_and_merged_prs("acme-corp.ghe.com")
+        _mod._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
+        )
+
+        args = _pr_cost_args(record=True, pr=42, machine_label="ci1", force=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 2
+        by_host = {r["host"]: r for r in rows}
+        assert by_host["github.com"]["supersedes"] == ""
+        assert by_host["acme-corp.ghe.com"]["supersedes"] == ""
+
+    def test_uncaptured_gap_listing_still_lists_second_hosts_pr(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Read mode's gap listing (_print_pr_cost_uncaptured) keys its own
+        already-captured check by host too -- a row captured on one host
+        must not hide the same-numbered PR as already captured on another."""
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        distinctive_branch = "feature-cross-host"
+        existing_row = _sample_pr_cost_row(host="acme-corp.ghe.com", repo="owner/repo", pr_number=99, machine="ci1")
+        _mod._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch=distinctive_branch),
+        ])
+        merged_prs = [{
+            "number": 99, "headRefName": distinctive_branch, "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
+        )
+
+        _mod._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        out = capsys.readouterr().out
+        assert "PR #99" in out
+        assert "(none)" not in out
 
 
 class TestPrCostMultiRootRefusalRedaction:

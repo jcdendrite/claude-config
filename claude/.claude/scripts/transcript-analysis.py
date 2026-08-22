@@ -6528,7 +6528,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
 _PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
     # Key.
-    "repo", "pr_number", "machine",
+    "host", "repo", "pr_number", "machine",
     # Identity / provenance.
     "head_branch", "merged_at", "rate_stamp", "captured_at",
     "join_confidence", "supersedes", "status",
@@ -6546,6 +6546,16 @@ _PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
     "tests_changed", "plan_file_added", "risk_surface_flag",
 )
 _PR_COST_LEDGER_HEADER_LINE = "\t".join(_PR_COST_LEDGER_COLUMNS)
+
+# Legacy header (no "host" column): every row under it is implicitly
+# _PR_COST_LEDGER_LEGACY_HOST_DEFAULT. _parse_pr_cost_ledger_file_text
+# recognizes both headers and normalizes a legacy row to the current column
+# shape before parsing -- see docs/pr-cost.md's backward-compat contract for
+# a new key column.
+assert _PR_COST_LEDGER_COLUMNS[0] == "host"  # the slice below assumes this position
+_PR_COST_LEDGER_LEGACY_COLUMNS: tuple[str, ...] = _PR_COST_LEDGER_COLUMNS[1:]
+_PR_COST_LEDGER_LEGACY_HEADER_LINE = "\t".join(_PR_COST_LEDGER_LEGACY_COLUMNS)
+_PR_COST_LEDGER_LEGACY_HOST_DEFAULT = "github.com"
 
 _PR_COST_FLOAT_COLUMNS = (
     "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
@@ -6649,6 +6659,9 @@ _GIT_REMOTE_ORIGIN_TIMEOUT_S = 10  # Matches this file's other local git
 _GIT_REMOTE_HOST_OWNER_REPO_RE = re.compile(
     r"^(?:https?://|git://|ssh://(?:git@)?|git@)?(?P<host>[A-Za-z0-9.-]+)[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
 )
+# The host character class above has no port syntax, so a GHE remote on a
+# non-standard port (host:8443, ssh://git@host:2222/...) fails to parse and
+# the run aborts rather than misrouting.
 _GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 # Best-effort classification of a failed gh call's stderr text -- gh has no
@@ -6697,6 +6710,11 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
         )
     row = dict(zip(_PR_COST_LEDGER_COLUMNS, cells, strict=True))
 
+    if not row["host"] or row["host"] != row["host"].lower():
+        raise _PrCostLedgerParseError(
+            f"line {line_no}: malformed host value (must be lowercase) -- value omitted from"
+            " this diagnostic since the ledger's host column is never scrubbed at rest"
+        )
     if not row["repo"] or row["repo"] != row["repo"].lower():
         raise _PrCostLedgerParseError(
             f"line {line_no}: malformed repo value (must be lowercase owner/name) -- value omitted from"
@@ -6755,8 +6773,10 @@ def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
     """Canonical parser for the pr-cost ledger's tab-separated content.
 
     Unlike the weekly cost-ledger's markdown table, this format has no
-    preamble: line 1 must be exactly _PR_COST_LEDGER_HEADER_LINE, and every
-    following non-blank line is one tab-separated data row. Fails loud
+    preamble: line 1 must be exactly _PR_COST_LEDGER_HEADER_LINE (or the
+    pre-host-column _PR_COST_LEDGER_LEGACY_HEADER_LINE, the one documented
+    backward-compat exception -- see its own comment), and every following
+    non-blank line is one tab-separated data row. Fails loud
     (_PrCostLedgerParseError) on an unresolved git merge-conflict marker
     (reusing _COST_LEDGER_CONFLICT_MARKERS -- a generic git marker, not
     specific to the weekly ledger's own format), a missing/mismatched
@@ -6769,14 +6789,23 @@ def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
             if line.startswith(marker):
                 raise _PrCostLedgerParseError(f"line {line_no}: unresolved merge-conflict marker {marker!r}")
 
-    if not lines or lines[0] != _PR_COST_LEDGER_HEADER_LINE:
+    if not lines:
+        raise _PrCostLedgerParseError("missing or mismatched pr-cost ledger header row")
+    if lines[0] == _PR_COST_LEDGER_HEADER_LINE:
+        is_legacy_header = False
+    elif lines[0] == _PR_COST_LEDGER_LEGACY_HEADER_LINE:
+        is_legacy_header = True
+    else:
         raise _PrCostLedgerParseError("missing or mismatched pr-cost ledger header row")
 
     rows: list[dict] = []
     for line_no, line in enumerate(lines[1:], start=2):
         if not line.strip():
             continue
-        rows.append(_parse_pr_cost_ledger_row_cells(line.split("\t"), line_no))
+        cells = line.split("\t")
+        if is_legacy_header:
+            cells = [_PR_COST_LEDGER_LEGACY_HOST_DEFAULT, *cells]
+        rows.append(_parse_pr_cost_ledger_row_cells(cells, line_no))
     return rows
 
 
@@ -6806,17 +6835,25 @@ def _format_pr_cost_ledger_row(row: dict) -> str:
     return "\t".join(cells)
 
 
-def _latest_pr_cost_row(rows: Sequence[dict], repo: str, pr_number: int, machine_label: str | None) -> dict | None:
-    """Latest row (by captured_at) matching (repo, pr_number[, machine_label]).
+def _latest_pr_cost_row(
+    rows: Sequence[dict], host: str, repo: str, pr_number: int, machine_label: str | None,
+) -> dict | None:
+    """Latest row (by captured_at) matching (host, repo, pr_number[, machine_label]).
 
-    machine_label=None matches any machine -- read mode's default (an
-    operator checking "has any machine captured this PR yet" doesn't care
-    which one); --record always passes its own resolved machine_label,
-    matching the ledger's own (repo, pr_number, machine) key.
+    host and repo are compared as-is (no re-lowering here): both are
+    case-folded by the caller before reaching this function (host via
+    _git_remote_origin_host_and_owner_repo, repo via _resolve_pinned_gh_repo),
+    and every stored row's own host/repo cells are validated lowercase by
+    the parser -- the same convention _pr_cost_report's other identity
+    comparisons already rely on. machine_label=None matches any machine --
+    read mode's default (an operator checking "has any machine captured
+    this PR yet" doesn't care which one); --record always passes its own
+    resolved machine_label, matching the ledger's own (host, repo,
+    pr_number, machine) key.
     """
     matches = [
         r for r in rows
-        if r["repo"] == repo and r["pr_number"] == pr_number
+        if r["host"] == host and r["repo"] == repo and r["pr_number"] == pr_number
         and (machine_label is None or r["machine"] == machine_label)
     ]
     if not matches:
@@ -6825,7 +6862,7 @@ def _latest_pr_cost_row(rows: Sequence[dict], repo: str, pr_number: int, machine
 
 
 def _append_pr_cost_ledger_row(existing_rows: list[dict], new_row: dict, already: dict | None, force: bool) -> list[dict]:
-    """Append new_row to existing_rows, keyed by (repo, pr_number, machine).
+    """Append new_row to existing_rows, keyed by (host, repo, pr_number, machine).
 
     Unlike the weekly ledger's in-place replace, a duplicate key with
     --force APPENDS a new row (carrying new_row["supersedes"], already set
@@ -7375,7 +7412,7 @@ def _pr_cost_asof_window_ok(merged_at_iso: str, window_days: float, now: datetim
 
 
 def _new_pr_cost_row(
-    *, pinned_repo: str, pr: dict, branch: str, agg: dict, enrichment: dict | None,
+    *, host: str, pinned_repo: str, pr: dict, branch: str, agg: dict, enrichment: dict | None,
     join_confidence: str, status: str, machine: str, captured_at: str, supersedes: str,
     plan_glob: str, risk_globs: Sequence[str], ordinal: int, branch_map: dict,
 ) -> dict:
@@ -7383,11 +7420,11 @@ def _new_pr_cost_row(
     head_branch is the SCRUBBED form (_assign_root_scoped_redact_label) --
     the join itself already ran on the raw `branch` value passed in here;
     this is the write boundary, the only point this run's branch value is
-    allowed to reach the ledger or stdout/stderr. `repo` is stored raw: it
-    is part of the row's own key and must stay stable and comparable across
-    runs for the ledger to function at all (PR numbers are only unique
-    per-repo) -- every *print* of it still routes through the caller's own
-    repo_map instead.
+    allowed to reach the ledger or stdout/stderr. `host` and `repo` are
+    stored raw: both are part of the row's own key and must stay stable and
+    comparable across runs for the ledger to function at all (PR numbers are
+    only unique per-(host, repo)) -- every *print* of `repo` still routes
+    through the caller's own repo_map instead.
     """
     dollars = agg["dollars"]
     tokens = agg["tokens"]
@@ -7400,6 +7437,7 @@ def _new_pr_cost_row(
     commits = (enrichment or {}).get("commits") or []
 
     return {
+        "host": host,
         "repo": pinned_repo,
         "pr_number": pr["number"],
         "machine": machine,
@@ -7450,7 +7488,7 @@ def _print_pr_cost_ledger_rows(rows: list[dict], ordinal: int, branch_map: dict,
 
 def _print_pr_cost_uncaptured(
     branch_totals: dict[str, dict], merged_prs: Sequence[dict], existing_rows: list[dict],
-    pinned_repo: str, machine_label: str | None, ordinal: int, branch_map: dict,
+    corpus_host: str, pinned_repo: str, machine_label: str | None, ordinal: int, branch_map: dict,
 ) -> None:
     """Read mode's gap listing: merged PRs with local corpus activity not
     yet captured in the ledger. Restricted to an unambiguous direct
@@ -7467,7 +7505,7 @@ def _print_pr_cost_uncaptured(
         if len(matches) != 1:
             continue
         pr = matches[0]
-        if _latest_pr_cost_row(existing_rows, pinned_repo, pr["number"], machine_label) is not None:
+        if _latest_pr_cost_row(existing_rows, corpus_host, pinned_repo, pr["number"], machine_label) is not None:
             continue
         any_uncaptured = True
         label = _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map)
@@ -7609,7 +7647,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         if not record:
             _print_pr_cost_ledger_rows(existing_rows, ordinal, branch_map, repo_map)
             _print_pr_cost_uncaptured(
-                branch_totals, merged_prs, existing_rows, pinned_repo, machine_label, ordinal, branch_map
+                branch_totals, merged_prs, existing_rows, corpus_host, pinned_repo, machine_label, ordinal, branch_map
             )
             continue
 
@@ -7726,7 +7764,9 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         print(f"pr-cost: {exc}", file=sys.stderr)
                         sys.exit(1)
 
-                    already = _latest_pr_cost_row(current_rows, pinned_repo, resolved_pr["number"], machine_label)
+                    already = _latest_pr_cost_row(
+                        current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_label
+                    )
                     if already is not None and not force:
                         print(
                             f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_label} is already"
@@ -7754,9 +7794,10 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     agg = branch_totals.get(branch) or _new_pr_cost_agg()
                     captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
                     new_row = _new_pr_cost_row(
-                        pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg, enrichment=enrichment,
-                        join_confidence=join_confidence, status=row_status, machine=machine_label,
-                        captured_at=captured_at, supersedes=(already["captured_at"] if already else ""),
+                        host=corpus_host, pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg,
+                        enrichment=enrichment, join_confidence=join_confidence, status=row_status,
+                        machine=machine_label, captured_at=captured_at,
+                        supersedes=(already["captured_at"] if already else ""),
                         plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
                     )
                     try:
