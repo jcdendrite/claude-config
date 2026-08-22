@@ -25,7 +25,7 @@ Before writing any file under `memory/`, check in order:
 1. **Grep CLAUDE.md and AGENTS.md** (project tree + `~/.claude/`) for keywords from the rule. If covered → edit the source, don't write to memory. Restating a covered rule is pure load. (See §3 advisory vs deterministic, §5 anti-duplication heuristic.)
 2. **Does this rule apply automatically whenever a specific file type or path pattern is open, regardless of which skill or workflow is running?** If yes → a path-scoped rule (`.claude/rules/*.md`), not memory — it auto-loads via `paths` frontmatter matching with no explicit invocation and no every-session cost.
 3. **Does this rule fire only inside a specific named skill's workflow?** If yes → that skill's `SKILL.md`, not memory. Skill bodies load at the moment the rule applies; memory loads every session whether the session uses that workflow or not.
-4. **Confirm the content fits a genuine memory use:** personal preference (user type), feedback calibration with the *why* — corrections *and* validated judgment calls (feedback type), past-incident context not captured in code or commit messages (project type), or pointer to an external system (reference type).
+4. **Confirm the content fits a genuine memory use, not a rule.** Personal preference is always memory (user type). Feedback, project, and reference content are memory only when they don't generalize to a rule any contributor should follow (→ edit CLAUDE.md/AGENTS.md instead, per item 1): a correction or judgment call specific to how this user works (feedback type), time-sensitive state that fails CLAUDE.md's evergreen/behavior-test bar (project type), or a pointer unsafe to publish in a public repo — e.g. a private dashboard URL (reference type).
 
 If step 1, 2, or 3 produces a destination, write there and stop. This pre-write check is placed here — before the architecture overview — because the Step 0 procedural form is what runs reliably before the writer decides what to do. See §4 and §5 below for the full routing tables.
 
@@ -184,7 +184,10 @@ on contact.**
 Memory earns its keep when it captures what the repo *doesn't*: who
 the user is and how they prefer to collaborate, feedback calibration
 (corrections **and** validated judgment calls) with the *why* story,
-time-sensitive project context, and references to external systems.
+time-sensitive project context, and references to external systems —
+provided the content doesn't generalize into a rule any contributor
+should follow (edit CLAUDE.md/AGENTS.md instead) and, in a public
+repo, is safe to publish.
 
 ## Final step — Deactivate gate session
 
