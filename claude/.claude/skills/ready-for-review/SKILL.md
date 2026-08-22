@@ -66,11 +66,11 @@ the existing owner or open a separate branch. Rebase once the default branch is 
 ## 3. Code review (halt on findings)
 
 Run `/code-review` against the **cumulative** PR-vs-default-branch
-diff — not staged changes, not per-commit deltas (Claude Code ≤2.1.223 could refuse this exact shape via a buggy worktree-isolation Bash-tool check, fixed in 2.1.224 — if it recurs, resolve the base ref via a temp file and `read` instead):
+diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this
+resolves through a dedicated script rather than an inline multi-statement Bash call):
 
 ```bash
-BASE_REF=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main)
-git diff $(git merge-base origin/$BASE_REF HEAD)...HEAD
+~/.claude/scripts/pr-diff-against-base.sh
 ```
 
 The squash-merge artifact reviewers see is this diff; cumulative review surfaces cross-commit findings that per-commit review misses. Per-commit `/code-review` during iteration remains valuable — treat its findings as inputs here, not substitutes.
@@ -89,11 +89,7 @@ Unskippable — markdown, skill, and config diffs benefit from the same pass.
 Check that skills this branch invoked were executed, not silently abbreviated — an independent observer, so a rationalization in the working session can't wave the deviation through. List invocations and the reviewer-spawn timeline:
 
 ```bash
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" skill-invocation \
-  --branches "$BRANCH" --include-subagents
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace \
-  --this-repo --branches "$BRANCH"
+~/.claude/scripts/skill-fidelity-report.sh
 ```
 
 `skill-invocation` defaults to this repo (omit `--projects`); `review-trace` defaults machine-wide, so `--this-repo` is required — branch names aren't unique across repos, and omitting it leaks another repo's same-named branch in as false spawn evidence.

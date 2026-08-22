@@ -70,29 +70,30 @@ not something you can resolve. If none match, proceed without a layer.
 
 Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
 
-Gate: resolve the config dir as `$CLAUDE_CONFIG_DIR` when it is set **and absolute**, else `$HOME/.claude` — a relative `$CLAUDE_CONFIG_DIR` is invalid, not a cwd-relative path, and disables the section. Read `<config-dir>/pr-cost-disclosure`, trim leading and trailing whitespace only, lowercase via `tr '[:upper:]' '[:lower:]'`. Exactly `dollars` → regenerate the block. Anything else — absent, unreadable, empty, interior whitespace, a second line, any other value — delete the block if one exists. Treating an unreadable file as "off" rather than as "leave the block alone" is deliberate: a local read fails rarely and self-heals on the next sync, so the gate prefers under-disclosing to guessing. Do not reintroduce an indeterminate third outcome here. Resolve that one path only; never also check `$HOME/.claude` when `$CLAUDE_CONFIG_DIR` is set, or one account's opt-in would activate disclosure under another. The sentinel is per Claude account, not per repo: cost is an organizational fact, and each account is its own billing entity.
+Resolve the section with a single script call:
 
 ```bash
-case "${CLAUDE_CONFIG_DIR:-}" in
-  /*) config_dir="${CLAUDE_CONFIG_DIR%/}" ;;
-  *) config_dir="$HOME/.claude" ;;
-esac
-sentinel_path="$config_dir/pr-cost-disclosure"
-mode=$(cat "$sentinel_path" 2>/dev/null) || mode=""
-mode="${mode#"${mode%%[![:space:]]*}"}"
-mode="${mode%"${mode##*[![:space:]]}"}"
-mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
-[ "$mode" = "dollars" ]
+~/.claude/scripts/pr-cost-section.sh
 ```
 
-Resolve the branch immediately before the call and pass it as a quoted, opaque literal — never string-interpolated unquoted (ref names can carry shell metacharacters). (Claude Code ≤2.1.223 could refuse this exact shape via a buggy worktree-isolation Bash-tool check, fixed in 2.1.224 — if it recurs, resolve the branch via a temp file and `read` rather than a `$(...)`-assigned variable.)
-
-```bash
-branch="$(git rev-parse --abbrev-ref HEAD)"
-python3 "$config_dir/scripts/transcript-analysis.py" cost --this-repo --branches "$branch" --summary
-```
-
-If `$branch` is the literal `HEAD` (detached HEAD), omit the section and say why, rather than publish a `$0.00` block for an unresolved branch. Otherwise embed stdout **verbatim** under `## Cost`, followed by the exact command — `$config_dir` left literal, unresolved, only `$branch` filled in with its real value — never recompose, round, or re-narrate the figures. Session/turn counts and per-model-ID dollars are not neutral — they signal engagement scale and model mix. That is the intended read under an account that opted in; it is not a property of the output format, and an account enabling this for one engagement should not assume the fields are harmless in another.
+Exit 0: enabled and the branch resolved cleanly — stdout is the cost report; embed it **verbatim**
+under `## Cost`, followed by the exact command `~/.claude/scripts/pr-cost-section.sh` as "the exact
+command that produced it" for reproducibility — never recompose, round, or re-narrate the figures.
+Exit 1: disabled, unreadable, or malformed
+`<config-dir>/pr-cost-disclosure` — delete the block if one exists, no stdout. Exit 2: enabled but
+the branch is the literal `HEAD` (detached) — omit the section and say why, no stdout. The sentinel
+check (`<config-dir>/pr-cost-disclosure`, trimmed and lowercased, exactly `dollars`) is per Claude
+account, not per repo: cost is an organizational fact, and each account is its own billing entity.
+Resolves that one config-dir path only — never unions it with `$HOME/.claude`, or one account's
+opt-in would activate disclosure under another.
+**One deliberate narrowing:** a sentinel consisting of a blank line followed by `dollars` reads as
+two lines and is judged disabled, where a whitespace-collapsing read would have judged it enabled
+— in the direction this gate already prefers (under-disclosing over guessing). Session/turn counts
+and per-model-ID dollars are not neutral — they signal engagement scale and model mix. That is the
+intended read under an account that opted in; it is not a property of the output format, and an
+account enabling this for one engagement should not assume the fields are harmless in another. See
+`docs/worktree-bash-guard.md` for why this collapses to one script call instead of a
+gate-check-then-fetch two-step.
 
 ## Checks
 

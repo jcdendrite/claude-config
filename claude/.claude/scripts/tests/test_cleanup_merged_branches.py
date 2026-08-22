@@ -12,20 +12,21 @@ import os
 import pty
 import re
 import shlex
-import shutil
 import subprocess
 import textwrap
-import uuid
 from pathlib import Path
 
 import pytest
 from conftest import (
+    _base_test_env,
     _commit,
+    _curated_path_without_direnv,
     _dead_pid,
     _init_repo,
     _make_feature_branch,
     _make_repo_with_remote,
     _make_worktree,
+    _shimmed_env,
 )
 
 # Path to the script under test (resolved relative to this file)
@@ -205,18 +206,6 @@ def _gh_shim_source_by_token(token_to_pr_data: dict[str, dict]) -> str:
     """)
 
 
-def _noop_direnv_shim_source() -> str:
-    """Default direnv shim installed for every test: `export bash` exits 0
-    with no output, modeling a directory with no identity-bearing .envrc.
-    Tests exercising direnv's own export payload pass their own source via
-    _shimmed_env's direnv_source parameter."""
-    return textwrap.dedent("""\
-        #!/usr/bin/env python3
-        import sys
-        sys.exit(0)
-    """)
-
-
 def _direnv_shim_source_by_cwd(exports_by_cwd: dict[str, dict[str, str]]) -> str:
     """direnv shim modeling per-directory `.envrc` exports: `export bash`
     emits `export NAME=VALUE` for the current directory's configured table
@@ -294,85 +283,6 @@ def _direnv_shim_source_reads_stdin() -> str:
             sys.stdin.read()
         sys.exit(0)
     """)
-
-
-# gh-credential env vars that must never leak from a contributor's real
-# shell into a test's PATH-shimmed subprocess (see _base_test_env).
-_SENSITIVE_ENV_VARS = frozenset({
-    "GH_TOKEN", "GH_HOST", "GITHUB_TOKEN",
-    "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR",
-})
-
-
-def _base_test_env() -> dict:
-    """Inherited env with DIRENV_* and gh-credential vars stripped.
-
-    Left as inherited, `direnv export bash` run from a test's tmp_path
-    would emit the *revert* half of a contributor's real DIRENV_* diff,
-    restoring a PATH without the test's own shim dir — the script's next
-    `gh` call would be the contributor's real gh with their real token,
-    against real GitHub.
-    """
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("DIRENV_") and key not in _SENSITIVE_ENV_VARS
-    }
-
-
-# Tools the script and _worktree-lib.sh need on a normal (non-lsof,
-# non-usage-error) run — mirrors TestGhMissing's min_bin list. Symlinking
-# only these into a curated directory keeps the absent-direnv PATH free of
-# a real direnv without also losing any other tool that happens to share
-# direnv's install directory (e.g. git, via the same package-manager prefix).
-_TOOLS_NEEDED_WITHOUT_DIRENV = ("git", "python3", "bash", "grep", "awk", "sed", "dirname")
-
-
-def _curated_path_without_direnv(tmp_path: Path) -> str:
-    curated_dir = tmp_path / f"curated_bin_{uuid.uuid4().hex}"
-    curated_dir.mkdir()
-    for tool in _TOOLS_NEEDED_WITHOUT_DIRENV:
-        tool_path = shutil.which(tool)
-        if tool_path:
-            (curated_dir / tool).symlink_to(tool_path)
-    return str(curated_dir)
-
-
-def _shimmed_env(
-    tmp_path: Path,
-    gh_shim_source_text: str,
-    *,
-    direnv_source: str | None = None,
-    direnv_present: bool = True,
-) -> dict:
-    """Build the credential-scrubbed, PATH-shimmed env every test's `gh`
-    invocation must use — the single seam `fake_gh` and every
-    hand-rolled shim site route through, so none can skip the
-    DIRENV_*/token scrubbing.
-
-    direnv_present=False replaces the inherited PATH with a curated
-    directory holding only the tools the script needs, none of them
-    `direnv` — deterministic on machines with and without direnv actually
-    installed, and immune to direnv sharing an install prefix with a tool
-    the script does need (e.g. git).
-    """
-    shim_dir = tmp_path / f"shim_{uuid.uuid4().hex}"
-    shim_dir.mkdir()
-
-    gh_shim = shim_dir / "gh"
-    gh_shim.write_text(gh_shim_source_text)
-    gh_shim.chmod(0o755)
-
-    if direnv_present:
-        direnv_shim = shim_dir / "direnv"
-        direnv_shim.write_text(direnv_source or _noop_direnv_shim_source())
-        direnv_shim.chmod(0o755)
-        base_path = os.environ.get("PATH", "")
-    else:
-        base_path = _curated_path_without_direnv(tmp_path)
-
-    new_path = os.pathsep.join([str(shim_dir), base_path])
-    return {**_base_test_env(), "PATH": new_path}
 
 
 @pytest.fixture()

@@ -107,16 +107,19 @@ gh api repos/owner/repo/pulls/4/comments/12345678/replies \
 - If you disagree with a comment, explain why clearly but defer to the reviewer's judgment
 - Do not resolve review threads — let the reviewer verify and resolve them
 - PR comments are editable after posting. If a reply **you authored** in this session has a typo or factual error, edit it in place rather than posting a correction. **Use PATCH only against comments you authored — confusing the target ID with the user's comment ID overwrites their text irrecoverably and cannot be undone.** A `user.login` check is insufficient — Claude posts under the user's own token, so PATCH against the user's own comment will succeed. The reliable check is the attribution prefix: every reply Claude posts starts with `**[Claude Code]**`, and the user's comments do not. Before any PATCH, fetch the target body and verify it starts with that prefix; abort to the `/replies` form (Step 7) on any mismatch:
-  ```
-  TARGET_BODY=$(gh api repos/{owner}/{repo}/pulls/comments/{id} --jq '.body')
-  case "$TARGET_BODY" in
-    '**[Claude Code]**'*) gh api repos/{owner}/{repo}/pulls/comments/{id} -X PATCH \
-                            -F body='**[Claude Code]** ...corrected text...
+  ```bash
+  ~/.claude/scripts/respond-pr-safe-patch.sh {owner}/{repo} {comment-id} <<'RESPOND_PR_BODY_EOF'
+  **[Claude Code]** ...corrected text...
 
-  🤖 Generated with [Claude Code](https://claude.com/claude-code)' ;;
-    *) echo "ABORT: target is not Claude-authored; reply via /replies instead" >&2; exit 1 ;;
-  esac
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)
+  RESPOND_PR_BODY_EOF
   ```
+  The heredoc terminator must stay quoted (`<<'RESPOND_PR_BODY_EOF'`, not `<<RESPOND_PR_BODY_EOF`)
+  — an unquoted terminator lets `$(...)`/`$VAR` sequences inside the corrected text expand in the
+  calling shell before the script ever sees them, silently corrupting the body being PATCHed in.
+  The script re-fetches the target comment, checks its current body starts with `**[Claude Code]**`,
+  and only then issues the PATCH — it never attempts one on a mismatch, so the ownership check can't
+  be skipped or fumbled independently of the PATCH the way two separate Bash statements could be.
   (or `/issues/comments/{id}` for issue-level comments)
 - **Avoid SHA-pinned commit references.** When acknowledging a fix in a reply, prefer "addressed in the latest commit on this branch" over "fixed in commit `<sha>`". SHA references become stale if the branch is rebased or force-pushed; branch-tip language remains correct across rebases. If a prior reply in this session cited a SHA that is now stale, post a correction reply — do not leave stale SHAs uncorrected before requesting reviewer re-verification.
 - **A filed follow-up updates what already referenced it.** When you file a ticket a reply promised as `will create`, correct every place that promise was already published: post a correction reply for earlier replies, as with a stale SHA, and refresh the PR body by re-running `/pr-description`, which owns that surface. Nothing re-reads those artifacts for you.
