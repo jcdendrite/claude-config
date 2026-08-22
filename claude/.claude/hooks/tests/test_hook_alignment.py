@@ -9,9 +9,10 @@ plugins/*/hooks/ (excluding _lib.sh siblings) must declare a
 matching gate-naming prefixes or the EXPLICIT_GATES set must declare
 `# hook-class: gate`. Layer 1 also pins each gate-backed review skill to the
 hook that gates it — both files present, and the hook still wired into a
-PreToolUse matcher group — and pins standalone config-value invariants in
-settings.json unrelated to gate/skill pairing (e.g. the plan-mode-entry
-deny/defaultMode declarations).
+PreToolUse matcher group — asserts that same PreToolUse wiring for every
+hook-class: gate hook regardless of skill pairing, and pins standalone
+config-value invariants in settings.json unrelated to gate/skill pairing
+(e.g. the plan-mode-entry deny/defaultMode declarations).
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -148,6 +149,39 @@ def test_hook_documented_in_hooks_md(hook: Path) -> None:
 _SKILLS_DIR = _REPO_ROOT / "claude" / ".claude" / "skills"
 _SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.json"
 
+
+def _pretooluse_command_for(hook: Path) -> list[str]:
+    """Every PreToolUse command wired to `hook`, matched by exact equality on
+    the command's last whitespace-separated token — not a substring/endswith
+    match, which would also match a hook name appearing as a non-final CLI
+    argument to an unrelated script.
+    """
+    if hook.parent == _MAIN_HOOKS_DIR:
+        config_path = _SETTINGS_PATH
+        expected_invocation = f"~/.claude/hooks/{hook.name}"
+    else:
+        config_path = hook.parent / "hooks.json"
+        expected_invocation = f'"${{CLAUDE_PLUGIN_ROOT}}"/hooks/{hook.name}'
+
+    assert config_path.is_file(), (
+        f"{hook.name}: expected registration config {config_path} does not "
+        f"exist"
+    )
+    config = json.loads(config_path.read_text())
+    matched: list[str] = []
+    for group in config.get("hooks", {}).get("PreToolUse", []):
+        if not isinstance(group, dict):
+            continue
+        for entry in group.get("hooks", []):
+            if not isinstance(entry, dict):
+                continue
+            command = entry.get("command", "")
+            tokens = command.split()
+            if tokens and tokens[-1] == expected_invocation:
+                matched.append(command)
+    return matched
+
+
 # Review skills whose descriptions advertise a gate, paired with the hook that
 # enforces it. Each of these skills states a gate fact in its own frontmatter
 # description; that claim is only true while the named hook still exists under
@@ -178,9 +212,9 @@ def test_gate_backed_skill_has_a_live_gate(skill_name: str, hook_name: str) -> N
     left on disk but absent from every PreToolUse matcher group never fires,
     and the skill's description would still claim it does. So this asserts
     presence of both files and that the hook's command appears in a
-    PreToolUse group — the same settings.json parse (json.loads, not a
-    substring match) used by test_settings_json_contains_hook_entry in
-    test_check_claude_md_length.py.
+    PreToolUse group, via the same _pretooluse_command_for scan
+    test_gate_hook_registered_in_pretooluse_matcher below uses for every
+    gate hook.
 
     Matcher content is deliberately not asserted: these four gates span
     different surfaces (Bash for commit/push/PR-comment gates, an
@@ -204,19 +238,33 @@ def test_gate_backed_skill_has_a_live_gate(skill_name: str, hook_name: str) -> N
         f"itself as gate-backed — update that description or restore the hook"
     )
 
-    settings = json.loads(_SETTINGS_PATH.read_text())
-    wired = [
-        entry
-        for group in settings.get("hooks", {}).get("PreToolUse", [])
-        if isinstance(group, dict)
-        for entry in group.get("hooks", [])
-        if isinstance(entry, dict)
-        and entry.get("command", "").endswith(f"/{hook_name}")
-    ]
+    wired = _pretooluse_command_for(hook_file)
     assert wired, (
         f"{hook_name}: present on disk but not wired into any PreToolUse "
         f"matcher group in {_SETTINGS_PATH.name} — the gate never fires, yet "
         f"{skill_name}/SKILL.md still describes itself as gate-backed"
+    )
+
+
+@pytest.mark.parametrize("hook", GATE_HOOKS, ids=[h.name for h in GATE_HOOKS])
+def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
+    """Every hook-class: gate hook must be wired into a PreToolUse matcher
+    group in its owning config file — claude/.claude/settings.json for a
+    main-hooks-dir hook, that plugin's own hooks/hooks.json for a
+    plugin-dir hook.
+
+    hook-class: gate declares intent to fire on PreToolUse (see
+    TestHookClassHeader.test_hook_class_value_valid's docstring above), and
+    Layer 2's behavior checks (TestGateHookBehavior) assume the hook
+    actually receives a PreToolUse payload — neither catches a gate hook
+    left unregistered after a rename or a config edit that drops its entry.
+    test_gate_backed_skill_has_a_live_gate above proves this same wiring for
+    the 4 hooks backing a gate-releasing skill's promise; this generalizes
+    it to every gate hook, independent of whether a skill advertises it.
+    """
+    assert _pretooluse_command_for(hook), (
+        f"{hook.name}: hook-class: gate but not wired into any PreToolUse "
+        f"matcher group in its owning config file"
     )
 
 
