@@ -137,7 +137,7 @@ class TestUsageError:
     def test_wrong_argc_no_gh_calls(self, tmp_path, fake_gh, args):
         env, call_log = fake_gh({})
         result = _run_script(tmp_path, env, args)
-        assert result.returncode != 0
+        assert result.returncode == 2
         assert "Usage" in result.stderr
         assert _read_calls(call_log) == []
 
@@ -151,14 +151,50 @@ class TestInvalidArgumentShape:
     def test_invalid_repo_shape_no_gh_calls(self, tmp_path, fake_gh, repo):
         env, call_log = fake_gh({})
         result = _run_script(tmp_path, env, [repo, "42"], input_text="body\n")
-        assert result.returncode != 0
+        assert result.returncode == 2
         assert _read_calls(call_log) == []
 
     @pytest.mark.parametrize("comment_id", ["42/../../999", "abc", "-1"])
     def test_invalid_comment_id_shape_no_gh_calls(self, tmp_path, fake_gh, comment_id):
         env, call_log = fake_gh({})
         result = _run_script(tmp_path, env, ["owner/repo", comment_id], input_text="body\n")
-        assert result.returncode != 0
+        assert result.returncode == 2
+        assert _read_calls(call_log) == []
+
+
+class TestEmptyStdin:
+    """A caller that omits the body (e.g. drops the heredoc) must not fall
+    through to a PATCH with an empty body -- exit 2, same class as the argv
+    usage errors, with no gh call at all."""
+
+    def test_empty_stdin_exits_two_no_gh_calls(self, tmp_path, fake_gh):
+        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=None)
+        assert result.returncode == 2
+        assert "empty" in result.stderr.lower()
+        assert _read_calls(call_log) == []
+
+    def test_explicit_empty_string_stdin_exits_two_no_gh_calls(self, tmp_path, fake_gh):
+        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text="")
+        assert result.returncode == 2
+        assert _read_calls(call_log) == []
+
+    @pytest.mark.parametrize("whitespace_only_stdin", [" ", "\t"])
+    def test_whitespace_only_stdin_exits_two_no_gh_calls(self, tmp_path, fake_gh, whitespace_only_stdin):
+        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=whitespace_only_stdin)
+        assert result.returncode == 2
+        assert _read_calls(call_log) == []
+
+    def test_whitespace_only_stdin_exits_two_under_c_locale(self, tmp_path, fake_gh):
+        """[[:space:]] narrows to byte-wise ASCII matching under LC_ALL=C --
+        confirm the ASCII whitespace this guard exists for is still caught
+        even when the pattern's wider Unicode-aware coverage degrades."""
+        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
+        env = {**env, "LC_ALL": "C", "LANG": "C"}
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=" ")
+        assert result.returncode == 2
         assert _read_calls(call_log) == []
 
 

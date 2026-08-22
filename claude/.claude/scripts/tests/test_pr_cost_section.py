@@ -38,6 +38,31 @@ def _fake_transcript_analysis_source() -> str:
     """)
 
 
+def _failing_transcript_analysis_source() -> str:
+    """Source for a transcript-analysis.py stand-in that fails with no
+    stdout -- models a downstream-tool failure distinct from the
+    sentinel-disabled/malformed exit-1 path."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        print("transcript-analysis.py: boom", file=sys.stderr)
+        sys.exit(1)
+    """)
+
+
+def _failing_transcript_analysis_source_with_partial_stdout() -> str:
+    """Source for a transcript-analysis.py stand-in that prints part of a
+    report to stdout before failing -- models a mid-report crash, distinct
+    from a clean early failure with no stdout at all."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        print("cost: main: scanned 3 sessions")
+        print("transcript-analysis.py: boom", file=sys.stderr)
+        sys.exit(1)
+    """)
+
+
 @pytest.fixture()
 def script_fixture(tmp_path) -> Path:
     """Build a fixture directory holding a copy of the script under test, a
@@ -57,6 +82,55 @@ def script_fixture(tmp_path) -> Path:
 
     fake = scripts_dir / "transcript-analysis.py"
     fake.write_text(_fake_transcript_analysis_source())
+    fake.chmod(0o755)
+
+    return script_copy
+
+
+@pytest.fixture()
+def failing_script_fixture(tmp_path) -> Path:
+    """Same layout as script_fixture, but transcript-analysis.py itself
+    fails -- for the downstream-tool-failure path distinct from the
+    sentinel-disabled/malformed exit-1 path."""
+    fixture_root = tmp_path / "fixture_root"
+    scripts_dir = fixture_root / "scripts"
+    hooks_dir = fixture_root / "hooks"
+    scripts_dir.mkdir(parents=True)
+    hooks_dir.mkdir(parents=True)
+
+    script_copy = scripts_dir / "pr-cost-section.sh"
+    shutil.copy(_SCRIPT, script_copy)
+    script_copy.chmod(0o755)
+
+    shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+
+    fake = scripts_dir / "transcript-analysis.py"
+    fake.write_text(_failing_transcript_analysis_source())
+    fake.chmod(0o755)
+
+    return script_copy
+
+
+@pytest.fixture()
+def partial_output_failing_script_fixture(tmp_path) -> Path:
+    """Same layout as failing_script_fixture, but transcript-analysis.py
+    prints part of a report to stdout before failing -- proves the script's
+    stdout buffering suppresses a partial print, not just a clean early
+    failure."""
+    fixture_root = tmp_path / "fixture_root"
+    scripts_dir = fixture_root / "scripts"
+    hooks_dir = fixture_root / "hooks"
+    scripts_dir.mkdir(parents=True)
+    hooks_dir.mkdir(parents=True)
+
+    script_copy = scripts_dir / "pr-cost-section.sh"
+    shutil.copy(_SCRIPT, script_copy)
+    script_copy.chmod(0o755)
+
+    shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+
+    fake = scripts_dir / "transcript-analysis.py"
+    fake.write_text(_failing_transcript_analysis_source_with_partial_stdout())
     fake.chmod(0o755)
 
     return script_copy
@@ -141,6 +215,41 @@ class TestSentinelEnabledDetachedHead:
         result = _run_script(script_fixture, repo, config_dir)
 
         assert result.returncode == 2
+        assert result.stdout == ""
+
+
+class TestDownstreamCostCallFails:
+    """Sentinel enabled and HEAD resolves to a branch, but the
+    transcript-analysis.py cost call itself fails -- exit 3, distinct from
+    the sentinel-disabled/malformed exit 1 the calling agent would otherwise
+    silently reinterpret as intentional."""
+
+    def test_no_stdout_and_exit_three(self, tmp_path, failing_script_fixture):
+        repo, _bare = _make_repo_with_remote(tmp_path)
+        config_dir = tmp_path / "claude_config"
+        _write_sentinel(config_dir, "dollars\n")
+
+        result = _run_script(failing_script_fixture, repo, config_dir)
+
+        assert result.returncode == 3
+        assert result.stdout == ""
+        assert "pr-cost-section.sh: transcript-analysis.py cost call failed" in result.stderr
+
+
+class TestDownstreamCostCallFailsAfterPartialOutput:
+    """A transcript-analysis.py that crashes mid-report -- after already
+    printing part of it to stdout -- must still surface no stdout from this
+    script, proving the buffering fix suppresses partial output rather than
+    only covering a clean early failure."""
+
+    def test_no_stdout_and_exit_three(self, tmp_path, partial_output_failing_script_fixture):
+        repo, _bare = _make_repo_with_remote(tmp_path)
+        config_dir = tmp_path / "claude_config"
+        _write_sentinel(config_dir, "dollars\n")
+
+        result = _run_script(partial_output_failing_script_fixture, repo, config_dir)
+
+        assert result.returncode == 3
         assert result.stdout == ""
 
 

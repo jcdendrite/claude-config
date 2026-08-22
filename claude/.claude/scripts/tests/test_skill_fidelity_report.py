@@ -85,16 +85,29 @@ class TestBothReportsSucceed:
 
 
 class TestFirstCallFails:
-    def test_review_trace_still_runs_and_exit_zero(self, tmp_path, make_script_fixture):
+    def test_review_trace_still_runs_and_exit_one(self, tmp_path, make_script_fixture):
         repo, _bare = _make_repo_with_remote(tmp_path)
         script_copy = make_script_fixture(skill_invocation_exit=1)
 
         result = _run_script(script_copy, repo)
 
-        assert result.returncode == 0
+        assert result.returncode == 1
         assert "review-trace stdout for main" in result.stdout
         assert "skill-fidelity-report.sh: skill-invocation report failed" in result.stderr
         assert "skill-fidelity-report.sh: review-trace report failed" not in result.stderr
+
+
+class TestSecondCallFails:
+    def test_skill_invocation_still_runs_and_exit_one(self, tmp_path, make_script_fixture):
+        repo, _bare = _make_repo_with_remote(tmp_path)
+        script_copy = make_script_fixture(review_trace_exit=1)
+
+        result = _run_script(script_copy, repo)
+
+        assert result.returncode == 1
+        assert "skill-invocation stdout for main" in result.stdout
+        assert "skill-fidelity-report.sh: review-trace report failed" in result.stderr
+        assert "skill-fidelity-report.sh: skill-invocation report failed" not in result.stderr
 
 
 class TestBothCallsFail:

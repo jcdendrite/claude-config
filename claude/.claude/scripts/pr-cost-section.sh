@@ -5,6 +5,8 @@
 #         (transcript-analysis.py cost --summary) is printed to stdout.
 # Exit 1: sentinel disabled, unreadable, or malformed -- no stdout.
 # Exit 2: sentinel enabled but HEAD is detached -- no stdout.
+# Exit 3: sentinel enabled and HEAD resolves to a branch, but the downstream
+#         transcript-analysis.py cost call itself failed -- no stdout.
 set -euo pipefail
 
 # shellcheck source=../hooks/_lib.sh
@@ -25,4 +27,8 @@ mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
 branch=$(git rev-parse --abbrev-ref HEAD)
 [[ "$branch" != "HEAD" ]] || exit 2
 
-"$(dirname "$0")/transcript-analysis.py" cost --this-repo --branches "$branch" --summary
+if ! cost_output=$("$(dirname "$0")/transcript-analysis.py" cost --this-repo --branches "$branch" --summary); then
+  echo "pr-cost-section.sh: transcript-analysis.py cost call failed" >&2
+  exit 3
+fi
+printf '%s\n' "$cost_output"

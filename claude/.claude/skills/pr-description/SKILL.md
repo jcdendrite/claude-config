@@ -76,24 +76,23 @@ Resolve the section with a single script call:
 ~/.claude/scripts/pr-cost-section.sh
 ```
 
-Exit 0: enabled and the branch resolved cleanly — stdout is the cost report; embed it **verbatim**
-under `## Cost`, followed by the exact command `~/.claude/scripts/pr-cost-section.sh` as "the exact
-command that produced it" for reproducibility — never recompose, round, or re-narrate the figures.
-Exit 1: disabled, unreadable, or malformed
-`<config-dir>/pr-cost-disclosure` — delete the block if one exists, no stdout. Exit 2: enabled but
-the branch is the literal `HEAD` (detached) — omit the section and say why, no stdout. The sentinel
+Exit 0: enabled and the branch resolved cleanly — stdout is the cost report; embed it **verbatim** under
+`## Cost`, followed by the exact command `~/.claude/scripts/pr-cost-section.sh` as "the exact command
+that produced it" for reproducibility — never recompose, round, or re-narrate the figures. Exit 1:
+disabled, unreadable, or malformed `<config-dir>/pr-cost-disclosure` — delete the block if one exists,
+no stdout. Exit 2: enabled but the branch is the literal `HEAD` (detached) — omit the section and say
+why, no stdout. Exit 3: branch resolved but the downstream cost report itself failed — omit `## Cost`
+and note in the body that the report failed to generate, unlike exit 1's silent deletion. The sentinel
 check (`<config-dir>/pr-cost-disclosure`, trimmed and lowercased, exactly `dollars`) is per Claude
 account, not per repo: cost is an organizational fact, and each account is its own billing entity.
-Resolves that one config-dir path only — never unions it with `$HOME/.claude`, or one account's
-opt-in would activate disclosure under another.
+Resolves that one config-dir path only — never unions it with `$HOME/.claude`, or one account's opt-in
+would activate disclosure under another; call the script once, it performs the sentinel check internally.
 **One deliberate narrowing:** a sentinel consisting of a blank line followed by `dollars` reads as
 two lines and is judged disabled, where a whitespace-collapsing read would have judged it enabled
 — in the direction this gate already prefers (under-disclosing over guessing). Session/turn counts
 and per-model-ID dollars are not neutral — they signal engagement scale and model mix. That is the
 intended read under an account that opted in; it is not a property of the output format, and an
-account enabling this for one engagement should not assume the fields are harmless in another. See
-`docs/worktree-bash-guard.md` for why this collapses to one script call instead of a
-gate-check-then-fetch two-step.
+account enabling this for one engagement should not assume the fields are harmless in another.
 
 ## Checks
 

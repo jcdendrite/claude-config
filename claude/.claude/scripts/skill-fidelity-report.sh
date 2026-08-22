@@ -8,8 +8,7 @@ SCRIPT_DIR=$(dirname "$0")
 
 # Both calls must run regardless of whether the first one fails -- guarded by
 # `if !`, which is exempt from set -e's abort-on-failure per the Bash manual.
-# A single-report failure exits 0 (visible only via the stderr note below);
-# exit 1 is reserved for both reports failing.
+# Either report failing exits 1, in addition to the stderr note below.
 SKILL_INVOCATION_OK=1
 REVIEW_TRACE_OK=1
 
@@ -25,7 +24,7 @@ if ! "$SCRIPT_DIR/transcript-analysis.py" review-trace --this-repo --branches "$
   echo "skill-fidelity-report.sh: review-trace report failed" >&2
 fi
 
-if [[ "$SKILL_INVOCATION_OK" -eq 0 && "$REVIEW_TRACE_OK" -eq 0 ]]; then
+if [[ "$SKILL_INVOCATION_OK" -eq 0 || "$REVIEW_TRACE_OK" -eq 0 ]]; then
   exit 1
 fi
 

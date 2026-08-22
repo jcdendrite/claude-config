@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Fetch a PR review comment and PATCH its body only if it starts with the
-# Claude Code marker prefix — collapses the fetch-then-conditional-PATCH
-# recipe into one call so the ownership check can't be skipped or fumbled
-# independently of the PATCH.
+# Claude Code marker prefix — the ownership check and the PATCH happen in
+# one call so a caller can't skip the check.
 set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/respond-pr-safe-patch.sh <owner/repo> <comment-id>
 
-Reads the replacement comment body from stdin. Fetches the target comment's
-current body from repos/<owner/repo>/pulls/comments/<comment-id>; PATCHes it
-with the stdin body only if the current body starts with "**[Claude Code]**".
+Reads the replacement comment body from stdin -- stdin must be non-empty.
+Fetches the target comment's current body from
+repos/<owner/repo>/pulls/comments/<comment-id>; PATCHes it with the stdin
+body only if the current body starts with "**[Claude Code]**".
 Exits 1 with no PATCH attempted if it does not, or if the fetch fails.
 EOF
 }
@@ -41,6 +41,11 @@ COMMENT_PATH="repos/$REPO/pulls/comments/$COMMENT_ID"
 # Read stdin fully before the GET, so a slow/interactive stdin can't leave
 # the GET half-done.
 BODY=$(cat)
+
+if [[ -z "${BODY//[[:space:]]/}" ]]; then
+  echo "respond-pr-safe-patch.sh: stdin was empty or whitespace-only — no PATCH attempted." >&2
+  exit 2
+fi
 
 # No revision pinning between this GET and the PATCH below -- a concurrent
 # edit to this same comment in that window is overwritten unconditionally.
