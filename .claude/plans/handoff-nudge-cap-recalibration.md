@@ -74,7 +74,7 @@ is being deleted daily.
 | # | Given | Why it is fixed |
 |---|---|---|
 | G1 | Every token class is billed at a flat per-token rate — no quadratic term exists anywhere in the pricing model. | Vendor pricing mechanic. `[verified: transcript_analysis/pricing.py:431-456 _price_turn, read this session]`. This falsifies the request's own stated mechanism; the design below is grounded in the measured cost-per-work curve instead, not in per-token billing shape. |
-| G2 | Transcripts already aged out of the local corpus cannot be recovered — no retention change reconstructs history predating whatever window survives at implementation time. | Deleted files are gone; this is the only irreversible part. `[verified: token-cost-per-pr-study.md G1, re-derive the current surviving-window size at implementation time]`. The go-forward retention window itself (`cleanupPeriodDays`) is **not** a given — it is a real, configurable `settings.json` key that plan already evaluated and declined to raise, for reasons unrelated to this plan (see Out of Scope); this plan doesn't reopen that decision, and doesn't rest any conclusion on the window being fixed. |
+| G2 | Transcripts already aged out of the local corpus cannot be recovered — no retention change reconstructs history predating whatever window survives at implementation time. | Deleted files are gone — the only irreversible part. `[verified: token-cost-per-pr-study.md G1, re-derive the current surviving-window size at implementation time]`. `cleanupPeriodDays` itself is a separate, already-declined lever (see Out of Scope); this given doesn't rest on that window being fixed. |
 | G3 | Cache-read/cache-write TTL pricing and base per-token rates are vendor-set. | Same source as G1 — establishes *why* a cost-per-work curve, not a pricing-formula argument, is the only way to grow evidence for a lower cap. |
 
 **C1 — design constraint, not a given** (this plan's own Critical Files already
@@ -229,19 +229,13 @@ number, not the duplication pattern):
   table, its example `--check` JSON output, and its "Known limitations"
   bullet on the model→window table (`:127`, "the absolute cap (360000 by
   default)") — a fourth literal mention outside the three named subsections,
-  caught at plan-review. **Constraint, not just
-  content:** `test_doc_counts.py`'s `_count_handoff_nudge_abs_cap_default`
-  DocCountFact derives the cap's ground truth *behaviorally* (runs the hook
-  against a synthetic transcript, reads the emitted threshold back) and
-  regex-matches it against four exact phrase shapes across this file and
-  README.md (`\| 1M \(default\) \| 400000 \| (\d+)`, `capped at (\d+) tokens`,
-  `past a (\d+)-token prefix on the largest context window`, `(\d+) tokens
-  \(default\): the absolute-token cap`). The rewrite must keep the numeric
-  value inside these exact phrasings — a paraphrase that drops one loses the
-  match entirely (a missing-match failure, not a wrong-value one), and the
-  behavioral derivation means correctly updating the hook's own default and
-  these four phrasings is what makes the test pass, not a fifth hand-synced
-  assertion to remember.
+  caught at plan-review. **Constraint, not just content:** `test_doc_counts.py`'s
+  `_count_handoff_nudge_abs_cap_default` DocCountFact regex-matches the cap
+  value against four exact phrase shapes in this file and README.md (`\| 1M
+  \(default\) \| 400000 \| (\d+)`, `capped at (\d+) tokens`, `past a (\d+)-token
+  prefix on the largest context window`, `(\d+) tokens \(default\): the
+  absolute-token cap`) — keep the numeric value inside each phrasing verbatim,
+  or the match silently stops firing (not a wrong-value failure).
 - `README.md`'s three prose mentions matched by the same DocCountFact (two
   in one sentence, plus the "N tokens (default)" glossary-style line).
 - `docs/transcript-analysis.md`'s `rearm-backtest` description.
