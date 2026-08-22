@@ -877,21 +877,26 @@ _lib_resolve_claude_pid() {
 
 # _lib_worktree_lock_pid WORKTREE_ROOT PORCELAIN_TEXT
 # Parses a captured `git worktree list --porcelain` text for WORKTREE_ROOT's
-# lock state. Prints the numeric PID from a `locked claude-code pid <N>`
-# reason (the exact string _lib_worktree_collision_guard writes) and returns
-# 0; prints nothing and returns 1 when WORKTREE_ROOT has no `locked` line in
-# this capture (unlocked, or the capture is stale and no longer lists it at
-# all); prints nothing and returns 2 when locked but the reason isn't that
-# exact shape (e.g. a human-authored reason for an unrelated purpose) —
-# matched on the full reason, not a loose `pid <N>` substring search, so an
-# unrelated reason that happens to mention "pid" can't be misread as a
-# Claude-session lock. The `worktree <path>` line is always the first line of
-# each porcelain record, so unlike a branch-name match (which can appear
-# after several other lines), the target record is known immediately with no
-# deferred-commit buffering.
+# lock state. Prints "<pid> <session_id>" from a `locked claude-code pid <N>`
+# or `locked claude-code pid <N> session <ID>` reason (the exact string
+# _lib_worktree_collision_guard writes) and returns 0 — session_id is empty
+# for an old-format, pre-session-id lock, but the separating space is always
+# printed, so a caller splits with `read -r pid session_id <<< "$output"`
+# with no dependency on a trailing token actually being present. Prints
+# nothing and returns 1 when WORKTREE_ROOT has no `locked` line in this
+# capture (unlocked, or the capture is stale and no longer lists it at all);
+# prints nothing and returns 2 when locked but the reason isn't that exact
+# shape (e.g. a human-authored reason for an unrelated purpose, or a session
+# field truncated to just the `session` keyword) — matched on the full
+# reason, not a loose `pid <N>` substring search, so an unrelated reason that
+# happens to mention "pid" can't be misread as a Claude-session lock. The
+# `worktree <path>` line is always the first line of each porcelain record,
+# so unlike a branch-name match (which can appear after several other
+# lines), the target record is known immediately with no deferred-commit
+# buffering.
 _lib_worktree_lock_pid() {
   local worktree_root="$1" porcelain="$2"
-  local line path in_target=0 locked=0 pid=""
+  local line path in_target=0 locked=0 pid="" session_id=""
   while IFS= read -r line; do
     case "$line" in
       "worktree "*)
@@ -905,8 +910,9 @@ _lib_worktree_lock_pid() {
       "locked"*)
         if [ "$in_target" -eq 1 ]; then
           locked=1
-          if [[ "$line" =~ ^locked\ claude-code\ pid\ ([0-9]+)$ ]]; then
+          if [[ "$line" =~ ^locked\ claude-code\ pid\ ([0-9]+)(\ session\ ([A-Za-z0-9_-]+))?$ ]]; then
             pid="${BASH_REMATCH[1]}"
+            session_id="${BASH_REMATCH[3]}"
           fi
         fi
         ;;
@@ -918,7 +924,7 @@ _lib_worktree_lock_pid() {
   if [ -z "$pid" ]; then
     return 2
   fi
-  printf '%s' "$pid"
+  printf '%s %s' "$pid" "$session_id"
   return 0
 }
 
@@ -930,7 +936,14 @@ _lib_worktree_lock_pid() {
 # resolution as a defense against the target having changed underneath the
 # caller between its own check and this call. On success, prints nothing and
 # returns 0. On failure, prints a human-readable reason to stdout (for the
-# caller to fold into its own deny message) and returns 1.
+# caller to fold into its own deny message) and returns 1. The lock reason
+# string's exact shape is documented at _lib_worktree_lock_pid's header, the
+# format's source of truth — not restated here.
+#
+# Self-recognition ("is this my own lock?") compares session_id, which
+# `claude --continue`/`--resume` keeps stable across the CLI process's PID
+# change, falling back to PID comparison only for an old-format lock that
+# carries no session_id (predates this fix, or was truncated mid-write).
 #
 # Read-only fast path: an already-self-held lock (from an earlier write this
 # session) returns 0 with no write attempt.
@@ -978,27 +991,33 @@ _lib_worktree_collision_guard() {
     return 1
   fi
 
-  local my_pid_pair my_pid
+  local my_pid_pair my_pid my_session_id
   my_pid_pair=$(_lib_resolve_claude_pid) || {
     printf "could not resolve this session's own process identity to check the worktree lock"
     return 1
   }
   my_pid="${my_pid_pair##* }"
+  my_session_id="${my_pid_pair%% *}"
 
-  local porcelain locked_pid state
+  local porcelain lock_output locked_pid locked_session_id state
   porcelain=$(_lib_capped git -C "$worktree_root" worktree list --porcelain 2>/dev/null) || {
     printf 'could not read worktree lock state for %s' "$worktree_root"
     return 1
   }
-  # `locked_pid=$(fn) || state=$?` (not a bare `locked_pid=$(fn); state=$?`):
+  # `lock_output=$(fn) || state=$?` (not a bare `lock_output=$(fn); state=$?`):
   # _lib_worktree_lock_pid's ordinary "unlocked" outcome is exit 1, and under
   # a caller's `set -e` a plain assignment aborts the script at that line
   # before `$?` is ever read — this file's own _lib_config_dir header
   # documents the same hazard. The `||` puts the assignment inside a
   # compound list, which `-e` does not abort on.
-  locked_pid=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
-  if [ "$state" -eq 0 ] && [ "$locked_pid" = "$my_pid" ]; then
-    return 0
+  lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
+  read -r locked_pid locked_session_id <<< "$lock_output"
+  if [ "$state" -eq 0 ]; then
+    if [ -n "$locked_session_id" ]; then
+      [ "$locked_session_id" = "$my_session_id" ] && return 0
+    elif [ "$locked_pid" = "$my_pid" ]; then
+      return 0
+    fi
   fi
 
   local wt_git_dir
@@ -1011,15 +1030,20 @@ _lib_worktree_collision_guard() {
     return 1
   fi
 
-  # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2 must resolve as the inner bash's own positional parameters, not expand in this shell before exec -- double-quoting would either expand to nothing ($my_pid isn't exported) or open a shell-injection surface via $wt_git_dir.
-  if _lib_capped bash -c 'set -o noclobber; printf "claude-code pid %s\n" "$1" > "$2/locked"' _ "$my_pid" "$wt_git_dir" 2>/dev/null; then
+  # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2/$3 must resolve as the inner bash's own positional parameters, not expand in this shell before exec -- double-quoting would either expand to nothing ($my_pid/$my_session_id aren't exported) or open a shell-injection surface via $wt_git_dir.
+  if _lib_capped bash -c 'set -o noclobber; printf "claude-code pid %s session %s\n" "$1" "$2" > "$3/locked"' _ "$my_pid" "$my_session_id" "$wt_git_dir" 2>/dev/null; then
     porcelain=$(_lib_capped git -C "$worktree_root" worktree list --porcelain 2>/dev/null) || {
       printf 'could not confirm the worktree lock for %s after acquiring it' "$worktree_root"
       return 1
     }
-    locked_pid=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
-    if [ "$state" -eq 0 ] && [ "$locked_pid" = "$my_pid" ]; then
-      return 0
+    lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
+    read -r locked_pid locked_session_id <<< "$lock_output"
+    if [ "$state" -eq 0 ]; then
+      if [ -n "$locked_session_id" ]; then
+        [ "$locked_session_id" = "$my_session_id" ] && return 0
+      elif [ "$locked_pid" = "$my_pid" ]; then
+        return 0
+      fi
     fi
     printf 'the worktree lock for %s could not be confirmed after acquiring it — treating as unresolved' "$worktree_root"
     return 1
@@ -1029,15 +1053,20 @@ _lib_worktree_collision_guard() {
     printf 'could not confirm the worktree lock holder for %s' "$worktree_root"
     return 1
   }
-  locked_pid=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
+  lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
+  read -r locked_pid locked_session_id <<< "$lock_output"
   # A concurrent self-race (e.g. two parallel subagents both writing into
   # this worktree with no `isolation: worktree` between them, per this
   # repo's own Agent Briefing) can land here after losing the lock attempt
   # above to an earlier call from this SAME live pid — not a different
   # session. Treat that identically to the first read's self-lock check
   # rather than misreporting the caller's own pid as a foreign collision.
-  if [ "$state" -eq 0 ] && [ "$locked_pid" = "$my_pid" ]; then
-    return 0
+  if [ "$state" -eq 0 ]; then
+    if [ -n "$locked_session_id" ]; then
+      [ "$locked_session_id" = "$my_session_id" ] && return 0
+    elif [ "$locked_pid" = "$my_pid" ]; then
+      return 0
+    fi
   fi
   case "$state" in
     1)
