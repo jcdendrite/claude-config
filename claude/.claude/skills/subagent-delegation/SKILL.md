@@ -165,6 +165,19 @@ the substantive content — the edit stays inline. Discovery reads
 (mapping an unfamiliar area before deciding) route to
 `Explore`/`general-purpose`, not `code-writer`.
 
+**Implementation of an approved plan is delegated by default.** A plan
+that cleared `/plan-review` already fixed scope and approach, so condition
+(1) of the decision-made test above holds by construction — dispatch
+`code-writer` per phase, naming the plan path, the phase's steps, and its
+verification command. Two things stay with the parent: a step the plan
+deliberately left open for implementation-time discovery, and the review
+of what a dispatch returns — running the phase's verification command
+inline, reading the returned diff line by line, and applying a
+correction whose content is already decided. Root-causing a failure the
+returned diff does not explain is not parent work: dispatch it as a
+**Debug-investigation probe** (above) and apply the fix the returned
+diagnosis specifies.
+
 ### Everything else → `general-purpose`
 
 The two-test gate above covers every other case: multi-step

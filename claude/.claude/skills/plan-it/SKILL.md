@@ -48,6 +48,24 @@ Choose the approach. Always include brief rationale — what alternatives were w
 
 **External-pattern grounding.** When the chosen approach invokes a pattern from external documentation (a library, framework, or vendor doc), quote the literal source lines that establish the pattern — not a paraphrase, not a summary, not the section heading. This extends Step 3's grep-the-population rule from in-codebase patterns to external sources. A capitalized pattern name ("the X pattern") lifted from prose without a verbatim source quote is a hazard: names crystallize an interpretation that may not match the source.
 
+**Name the dispatch split.** Implementation of an approved plan is
+delegated to `code-writer` per phase by default (`subagent-delegation`);
+the plan decides how a phase divides further, not the session that
+implements it. Split a phase into more than one dispatch only when its
+steps partition into non-overlapping file sets that are each specifiable
+without restating the other's context — then name each dispatch's files
+and verification command in **Critical files**. Sequence them whenever
+one dispatch's output is the next one's input (a signature and its
+callers, a schema and its consumers); parallelize only for genuinely
+disjoint file sets, and note that parallel dispatches share the parent's
+feature worktree — `CLAUDE.md`'s Agent Briefing bars `isolation:
+worktree` for PR-bound work, and overlapping edits in one tree clobber
+silently rather than conflict. Do not split when the same shared-state
+background would have to be restated in every dispatch prompt: each
+agent re-reads the same files in its own context and can resolve the
+same open question differently, and no agent's self-review sees the
+other's.
+
 **Assumption ledger.** The Approach section carries a structured ledger — recording what was checked and what wasn't, so a later revision can be diffed against it instead of silently drifting from a fact the session already established:
 - **One root problem/threat line** stating what the plan solves, followed by the **givens** it accepts — conditions the design treats as fixed that lie beyond its own reach. Each carries a one-sentence reason: another party owns it, a vendor or protocol imposes it, or dissolving the design's dependence on it needs a decision outside this plan. "The engineer decided it" is not such a reason — tag that `[engineer-verified]` on its own row. A condition the plan *could* change but deliberately won't is not a given — record it in **Out of scope** with its reason. A given with no qualifying reason is an untested premise, and `plan-review` Step 4 fires on it.
 - **Per mechanism:** a one-line justification anchored to `anchors: root` or `anchors: row<N>`, so completeness is a real parse, not another judgment call. This is where the over-powered-primitive check lives: if a mechanism is heavier, more privileged, or wider-scope than the task requires — a heavier abstraction, a more privileged execution context, a more complex coordination pattern, a more invasive integration — enumerate at least two lighter primitives from the source documentation/system and justify in one sentence why each fails, anchored to the row it replaces. Finding fewer than two is itself the signal that you have not read the source carefully enough — re-read with "what mechanisms exist that do NOT require this heavier choice?" before continuing.
@@ -89,4 +107,4 @@ Then choose the session. **Continue in this one by default.** A fresh session is
 
 These are a floor, not the only signal: hand off regardless when the engineer asked, when the session is ending anyway, or when a `handoff` §2 reason applies on its own terms. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or plan file.
 
-Delegating implementation to `code-writer` is a separate axis, not a tiebreaker: a subagent starts from a fresh context either way, so it neither argues for handing off nor for staying.
+Delegating implementation to `code-writer` is a separate axis, not a tiebreaker: a subagent starts from a fresh context either way, so it neither argues for handing off nor for staying. Whichever session implements, dispatch `code-writer` per phase by default — the plan already fixed scope and approach, so `subagent-delegation`'s decision-made test is satisfied by construction. See `subagent-delegation`'s "Implementation work → `code-writer`" section for the two carve-outs.

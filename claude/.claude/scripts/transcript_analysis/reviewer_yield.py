@@ -557,8 +557,8 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     reflect parent-main-thread edits only — subagent-transcript edit reads
     cost ~16.2s more than parent-only scanning on a 30-day corpus, so
     parent-only shipped instead; this undercounts real fix work whenever it
-    happened inside a code-writer dispatch, which this repo's own CLAUDE.md
-    mandates for implementation work. The unclassified
+    happened inside a code-writer dispatch, which `subagent-delegation`
+    mandates by default for approved-plan implementation. The unclassified
     bucket is not scored (prints "excluded" for Cited/Active/Edited/Rate) —
     an unreadable subagent transcript lands there via its empty verdict text
     and is separately counted in the printed read-error line, never entered
