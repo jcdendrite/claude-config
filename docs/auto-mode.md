@@ -188,6 +188,7 @@ treat the table below as what each agent *asks for*:
 | `Explore` | Sonnet | `claude/.claude/agents/Explore.md` override |
 | `staff-*`, `ciso-reviewer` | Sonnet | `model: sonnet` frontmatter in `~/.claude/agents/` |
 | `code-writer` | Sonnet | `model: sonnet` frontmatter |
+| `plan-architect` | Opus | `model: opus` frontmatter + explicit `model: "opus"` param from `/plan-it` Step 5 |
 | `general-purpose` | **Inherited from parent** | No model of its own — falls through to the parent |
 
 If the session is anchored to Opus (`claude-auto --model opus`, or a

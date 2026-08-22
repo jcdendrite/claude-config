@@ -32,7 +32,7 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 
 ## Step 3 — Codebase exploration
 
-Find similar features, the target subsystem, and integration points. Spawn `general-purpose` subagents in parallel when scope warrants — judge fan-out from surface area, do not default to a fixed count. Pass an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule. Read the files each subagent flags before designing. Do not use `Explore` here; its read-excerpt window is wrong for design-context analysis.
+Find similar features, the target subsystem, and integration points. Spawn `general-purpose` subagents in parallel when scope warrants — judge fan-out from surface area, do not default to a fixed count. Pass an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule. Collect the absolute path of every file each subagent flags, plus its summary, as evidence — not as a design conclusion to hand off unread. The actual design reasoning happens in Step 5, where `plan-architect` reads the files it needs and forms its own conclusions (`subagent-delegation`'s locate-and-report vs. read-and-reason split: comprehension reads belong with whoever reasons over the design, not whoever located the files). Do not use `Explore` here; its read-excerpt window is wrong for design-context analysis.
 
 **Pattern claims require a grep, not a single example.** Before asserting a code shape is "canonical," "the existing pattern," or "how the codebase does X," run `git grep` (or ripgrep) and count call sites. Cite the count ("12 of 13 modules use form X; one exception at `path/to/file:NN`") rather than a single example. A single-call-site citation establishes that the shape compiles, not that it is canonical — outliers look identical to canonical examples until you check the population.
 
@@ -43,6 +43,16 @@ Find similar features, the target subsystem, and integration points. Spawn `gene
 List every underspecified decision (edge cases, error handling, scope boundaries, backward compatibility) and ask the user. Do not proceed until answered or the user delegates the call to you.
 
 ## Step 5 — Architecture design
+
+Dispatch `plan-architect` with an explicit `model: "opus"` override to author this section — on every `/plan-it` run, regardless of what model the session itself is anchored to. Pass no `isolation: "worktree"` — the session is already anchored in the implementation branch's worktree, and `plan-architect` writes nothing.
+
+The dispatch prompt carries:
+- The Context paragraph from Step 2 and the answers gathered in Step 4, verbatim.
+- Every Step 3 subagent's findings, framed as evidence rather than conclusions, plus the absolute path of every file it flagged.
+
+Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it automatically at startup, like every subagent except `Explore`/`Plan`.
+
+Insert the returned text verbatim into the plan file's Approach, Critical files, Verification, and Out of scope sections — do not rewrite or summarize it further. If the returned design names an open decision it left to the user, ask it via `AskUserQuestion` per Step 4 and re-dispatch with the answer rather than settling it in the main session. An unusable or truncated return (context-limit failure, tool error, or a return that ignores the required grammar) is re-dispatched from scratch rather than repaired inline — `plan-architect` is read-only and idempotent, so nothing durable is lost by retrying.
 
 Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, and `verify-sources` if their domains are implicated.
 
