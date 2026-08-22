@@ -87,7 +87,7 @@ NON_REVIEWER_MODELS = {
 # (see CLAUDE.md "Model & Effort Routing" and design-decisions.md §24).
 # plan-architect also sits outside CANARY_AGENTS but gets "xhigh": single-pass
 # design synthesis with no downstream pass correcting a shallow miss, same
-# class as the ciso-reviewer/staff-* rows below (design-decisions.md §29).
+# class as the ciso-reviewer/staff-* rows below (design-decisions.md §24).
 EXPECTED_EFFORT = {
     "Explore.md": "low",
     "comment-discipline-reviewer.md": "medium",
@@ -353,6 +353,11 @@ class TestAgentFrontmatter:
         checks that one file — a second file under a different filename
         declaring the same `name:` with a wider `tools:` grant would pass
         every test here while the harness could dispatch either one.
+
+        Unions project-scope (`claude/.claude/agents/`) and plugin-scope
+        (`plugins/*/agents/`) names into one namespace — stricter than the
+        cited "within one scope" collision rule strictly requires, but no
+        plugin agent exists yet to test the distinction against.
         """
         agent_files = list(self._AGENT_FILES) + sorted(
             (REPO_ROOT / "plugins").glob("*/agents/*.md")
@@ -362,6 +367,10 @@ class TestAgentFrontmatter:
             fm = parse_frontmatter(path)
             name = fm.get("name")
             if not name:
+                # A nameless AGENTS_DIR file already fails test_required_fields_present.
+                # No equivalent required-field test exists yet for plugins/*/agents/*.md
+                # (no such directory exists today); a nameless plugin agent would pass
+                # uniqueness vacuously until one is added.
                 continue
             names_to_files.setdefault(name, []).append(str(path.relative_to(REPO_ROOT)))
         duplicates = {name: files for name, files in names_to_files.items() if len(files) > 1}
