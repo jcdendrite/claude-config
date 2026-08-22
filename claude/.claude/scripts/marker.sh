@@ -240,6 +240,13 @@ CONFIG_DIR=$(_lib_config_dir) || {
   exit 2
 }
 
+# Single derivation for the one path both the `write review-pr` and
+# `deactivate review-pr` arms below must agree on -- SKILL.md Step 8 instructs
+# writing the findings body here and nowhere else.
+_review_pr_findings_body_fixed_path() {
+  printf '%s/.review-pr-active.d/%s.body' "$CONFIG_DIR" "$1"
+}
+
 SUBCOMMAND="$1"
 ARG2="${2:-}"
 
@@ -393,6 +400,14 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: %s is missing PR identity, headRefOid, or the findings-body path. Abort without writing a marker.\n' "$FINDINGS_SIBLING" >&2
           exit 2
         fi
+        # Same fixed-path constraint as deactivate below: the third line is
+        # untrusted PR-review content, so it must name this exact derived
+        # path before it is used in a filesystem operation, read-only or not.
+        FINDINGS_BODY_FIXED_PATH=$(_review_pr_findings_body_fixed_path "$SESSION_ID")
+        if [ "$FINDINGS_BODY_PATH" != "$FINDINGS_BODY_FIXED_PATH" ]; then
+          printf 'marker.sh: %s does not name the fixed findings-body path %s. Abort without writing a marker.\n' "$FINDINGS_SIBLING" "$FINDINGS_BODY_FIXED_PATH" >&2
+          exit 2
+        fi
         # Compute before redirecting, same reasoning as every arm above: a
         # failed hash must not truncate a valid existing marker.
         BODY_HASH=$(_lib_capped sha256sum -- "$FINDINGS_BODY_PATH" 2>/dev/null | awk '{print $1}')
@@ -494,7 +509,16 @@ case "$SUBCOMMAND" in
         # read it before removing the sibling so the body file itself can be
         # deleted too -- nothing the completion marker points to may outlive
         # this skill invocation, on every exit path (posted, declined, aborted).
-        if FINDINGS_BODY_PATH=$(_lib_capped cat "$FINDINGS_SIBLING" 2>/dev/null | sed -n '3p') && [ -n "$FINDINGS_BODY_PATH" ]; then
+        # /review-pr's whole purpose is reviewing untrusted PR content, so the
+        # third line is not trusted as-is: it must equal this fixed, derived
+        # path (SKILL.md Step 8 instructs writing the findings body there and
+        # nowhere else) before `rm -f` runs against it, or an
+        # attacker-influenced session could steer this delete at an arbitrary
+        # file. A mismatch skips the delete rather than aborting the rest of
+        # deactivate.
+        FINDINGS_BODY_FIXED_PATH=$(_review_pr_findings_body_fixed_path "$SESSION_ID")
+        if FINDINGS_BODY_PATH=$(_lib_capped cat "$FINDINGS_SIBLING" 2>/dev/null | sed -n '3p') \
+          && [ -n "$FINDINGS_BODY_PATH" ] && [ "$FINDINGS_BODY_PATH" = "$FINDINGS_BODY_FIXED_PATH" ]; then
           rm -f -- "$FINDINGS_BODY_PATH"
         fi
         rm -f "$FINDINGS_SIBLING"
@@ -529,11 +553,13 @@ case "$SUBCOMMAND" in
       dir_name=$(basename "$active_dir")
       for entry in "$active_dir"/*; do
         [ -f "$entry" ] || continue
-        # Name-based exemption, not a PID-liveness question: this sibling
-        # holds a declared plan-mode path, never a PID, so the ^[0-9]+$ test
-        # below would always misread it as a dead marker and evict it.
+        # Name-based exemption, not a PID-liveness question: these siblings
+        # hold a declared plan-mode path, review-pr findings content, or the
+        # findings-body text itself, never a PID, so the ^[0-9]+$ test below
+        # would always misread them as a dead marker and evict them even
+        # while the session's own PID marker is still alive.
         case "$entry" in
-          *.planmode-path) continue ;;
+          *.planmode-path|*.findings|*.body) continue ;;
         esac
         stored_pid=$(cat "$entry" 2>/dev/null | tr -d '[:space:]')
         entry_name=$(basename "$entry")
