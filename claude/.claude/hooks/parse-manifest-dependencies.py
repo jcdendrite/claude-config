@@ -5,7 +5,8 @@ package.json, requirements*.txt, go.mod, Gemfile, Cargo.toml, and
 pyproject.toml.
 
 Requires Python >= 3.11 — this repo's stated floor (see README.md's setup
-section and install.sh's preflight check). `ruff`'s
+section and install.sh's preflight check) — because `Cargo.toml`/
+`pyproject.toml` parsing needs stdlib `tomllib`, added in 3.11. `ruff`'s
 `target-version = "py312"` governs lint style repo-wide, not this file's
 actual runtime floor — a 3.12-only construct here would lint clean and
 only fail on a stow user's 3.11 interpreter, silently, since the calling

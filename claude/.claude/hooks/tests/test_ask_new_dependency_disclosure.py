@@ -504,6 +504,10 @@ class TestComputeNewDependencyNamesGemfile:
         assert compute_new_dependency_names(pre, tool_input).records == ["pg@"]
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="tomllib is 3.11+ stdlib; skips cleanly on a sub-floor .venv instead of a bare ModuleNotFoundError",
+)
 class TestComputeNewDependencyNamesCargoToml:
     def test_dependencies_table_addition_reported(self):
         pre = '[dependencies]\nserde = "1.0"\n'
@@ -564,6 +568,10 @@ class TestComputeNewDependencyNamesCargoToml:
         assert compute_new_dependency_names(pre, tool_input).records == ["serde@1.0"]
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="tomllib is 3.11+ stdlib; skips cleanly on a sub-floor .venv instead of a bare ModuleNotFoundError",
+)
 class TestComputeNewDependencyNamesPyprojectToml:
     def test_project_dependencies_addition_reported(self):
         pre = '[project]\ndependencies = ["requests>=2.30.0"]\n'
@@ -657,7 +665,10 @@ class TestBashPythonRecognizedManifestSetParity:
     else in the repo enforcing they agree -- a format added to one side and
     not the other would either silently allow-through-unasked (bash ahead)
     or degrade-ask on every edit to a format bash already gates on (Python
-    ahead)."""
+    ahead). Proves the two declared sets match as literal text, not that
+    shell-glob and fnmatch semantics accept the same basenames for every
+    possible input -- TestHookRecognizesNewManifestFormats' Tier-3 cases
+    are what prove real files are recognized end-to-end."""
 
     def test_bash_and_python_recognize_the_same_basename_set(self):
         bash_basenames = _extract_bash_recognized_basenames()
@@ -679,6 +690,31 @@ class TestParseManifestDependenciesPythonFloor:
         on any helper error — this closes that gap mechanically."""
         source = PARSER_PATH.read_text()
         ast.parse(source, feature_version=(3, 11))  # raises SyntaxError on a 3.12-only construct
+
+    def test_tomllib_import_stays_deferred_not_top_level(self):
+        """`import tomllib` must sit inside _parse_toml_manifest, not at
+        module top, or a sub-floor interpreter can't load this module at
+        all -- silently killing package.json/go.mod coverage too, not just
+        TOML. Blocks tomllib via sys.modules so `import tomllib` raises
+        regardless of the interpreter actually running this test, then
+        reloads the module: a hoisted import would fail here before
+        compute_new_dependency_names is even reachable."""
+        blocked = sys.modules.pop("tomllib", None)
+        sys.modules["tomllib"] = None  # forces ImportError on any `import tomllib`
+        try:
+            spec = importlib.util.spec_from_file_location("parse_manifest_dependencies_tomllib_blocked", PARSER_PATH)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)  # must succeed -- tomllib isn't imported at module top
+
+            pre = '{"dependencies": {"lodash": "^4.0.0"}}'
+            post = '{"dependencies": {"lodash": "^4.0.0", "express": "^4.18.0"}}'
+            tool_input = _write_tool_input(post, file_path="/repo/package.json")
+            delta = module.compute_new_dependency_names(pre, tool_input)
+            assert delta.records == ["express@^4.18.0"]
+        finally:
+            del sys.modules["tomllib"]
+            if blocked is not None:
+                sys.modules["tomllib"] = blocked
 
 
 # ==========================================================================

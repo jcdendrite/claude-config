@@ -414,6 +414,14 @@ _marker_write_candidate_mentions_claude() {
   return "$mentions"
 }
 
+# Per-fire cost on every Bash call, not just a marker-shaped one: the
+# quote-strip below is 2 forks (_lib_strip_shell_quotes's sed + tr) and the
+# '.claude' pre-filter is 1 more, so this arm adds 3 forks ahead of Stage 1's
+# own single-grep fast-reject regardless of relevance. Necessary ordering,
+# not a simplification target: this scan exists specifically to catch a
+# command that never reaches Stage 1's marker.sh substring check, so it
+# cannot run after that check without reopening the bypass it closes.
+#
 # Bash-tool write to a marker path via a redirect or write utility that never
 # mentions `marker.sh` — closes the class of bypass Stage 1's substring gate
 # below would otherwise fast-exit as an allow. Runs first for that reason.
