@@ -1,8 +1,13 @@
 #!/bin/bash
+# Mutates $HOME (stow symlinks) and this repo's tracked settings (marketplace
+# registration) -- never `source`/`.` this file; to exercise one block in
+# isolation, extract it via its INSTALL_TEST_FIXTURE markers instead (see
+# claude/.claude/hooks/tests/test_install_sh_python_floor.py for the pattern).
 set -e
 
 echo "=== claude-config Setup ==="
 
+# INSTALL_TEST_FIXTURE: presence-check — start
 missing=()
 for cmd in stow git gh jq sha256sum claude python3; do
   command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
@@ -12,6 +17,23 @@ if [ ${#missing[@]} -gt 0 ]; then
   echo "Install them via your system package manager, then re-run."
   exit 1
 fi
+# INSTALL_TEST_FIXTURE: presence-check — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under a stubbed `python3` on PATH. Keep both
+# markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: python-floor-check — start
+# See parse-manifest-dependencies.py's module docstring for why 3.11.
+# Hooks resolve python3 from PATH at execution time, so this is checked
+# here too -- a below-floor interpreter must fail loudly at install
+# rather than degrade a hook silently later.
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+  echo "python3 on PATH does not meet the Python >= 3.11 this repo requires."
+  echo "Stock macOS /usr/bin/python3, Ubuntu 22.04 LTS, and Debian 11 all ship an older python3 by default."
+  echo "Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's python3.11+ package or pyenv on Linux) and make sure it resolves first on PATH, then re-run."
+  exit 1
+fi
+# INSTALL_TEST_FIXTURE: python-floor-check — end
 
 # pwd -P (not pwd) canonicalizes away any symlink in the invocation path, so
 # REPO_DIR matches the canonicalized form the marketplace-registration check
