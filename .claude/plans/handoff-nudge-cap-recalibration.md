@@ -191,6 +191,12 @@ above 135000 the curve still supports, or the pin itself is deliberately
 revised with its own stated cause (not silently overwritten). This fork is
 resolved after M2 produces real numbers, not pre-committed here.
 
+**M3 decision: `HANDOFF_NUDGE_ABS_CAP` moves to 150000** — the upper edge of
+M2's cheapest trustworthy bucket (100–150k, n=23; see M2 above), where
+sessions roll into the next, more expensive 150–200k bucket. This is the
+value the M3 rule's "moves there directly" resolves to, clearing C1's 135000
+floor with margin (no fork triggered).
+
 **M4 — Apply the chosen cap across every hand-synced site.** *(anchors: root)*.
 This repo has no single source of truth for this literal — it is duplicated by
 convention across a bash hook, a Python mirror constant, and prose in three
