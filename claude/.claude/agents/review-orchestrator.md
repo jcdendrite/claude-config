@@ -35,10 +35,9 @@ Before doing anything else, run
   from its own beginning.
 - A checkpoint exists: for each distinct `step` value, find its last entry.
   A step whose last entry has `status: "done"` is already complete — do not
-  redo it (do not re-dispatch a reviewer or a fix already verified). A step
-  whose last entry has `status: "started"` with no later `"done"` entry for
-  that same step was interrupted — retry it. Resume the skill's flow from
-  there rather than restarting from the top.
+  redo it. A step whose last entry has `status: "started"` with no later
+  `"done"` entry for that same step was interrupted — retry it. Resume the
+  skill's flow from there rather than restarting from the top.
 
 A truncated or unparseable line (a kill mid-write) is possible; treat any
 line you cannot parse as absent evidence for that step, not as a completed
@@ -76,33 +75,84 @@ as needing human judgment instead.
 
 ## Checkpointing
 
-After each meaningful step (the skill was invoked, a reviewer was dispatched
-and returned, a fix was dispatched and re-verified, a completion marker was
-written, a finding was surfaced as needing human judgment), append a
-checkpoint entry:
+A checkpoint records that a step's content is no longer needed, never merely
+that a tool call returned: `done` means this step's output reached a
+terminal disposition and nothing later in the run needs it again; `started`
+covers everything else, including a reviewer that already returned but whose
+findings are still unresolved.
+
+Append a checkpoint entry with:
 
 ```
 ~/.claude/scripts/orchestrator-checkpoint.sh append <orchestrator_run_id> \
   --step <short-structural-id> --status <started|done> [--marker-hash <hash>]
 ```
 
+For a step that produces content you must act on:
+
+- Append `--step reviewer:<name> --status started` before dispatching.
+- Leave it at `started` while any finding it returned is unresolved. A
+  reviewer that has returned is not done.
+- Append `--step reviewer:<name> --status done` only once every finding it
+  returned has reached a terminal disposition: fixed and re-verified,
+  deferred under a criterion the skill's own closed list names, or surfaced
+  in your summary as needing human judgment.
+
+A fix is not a step of its own. Checkpoint it as
+`--step reviewer:<name>:fix:<n>`; its `done` is a precondition for its parent
+reviewer step's `done`, never a substitute for it.
+
+A crash between a reviewer returning and its findings being resolved leaves
+the step at `started`, so resume re-dispatches it per the resume protocol
+above — cheaper than resuming past a `done` that dropped unresolved findings
+silently.
+
 `--step` must be short and structural — e.g. `skill-invoked`,
-`reviewer:ciso-reviewer`, `fix:1`, `marker-written` — **never** a quoted
-finding, a diff excerpt, or any other raw review content. The checkpoint
-exists purely for crash-resilience; it must never become a second durable
-copy of the content this whole design keeps out of a long-lived context.
+`reviewer:ciso-reviewer`, `reviewer:ciso-reviewer:fix:1`, `marker-written` —
+**never** a quoted finding, a diff excerpt, or any other raw review content.
+The checkpoint exists purely for crash-resilience; it must never become a
+second durable copy of the content this whole design keeps out of a
+long-lived context.
 
 ## Return format
 
-Return only a synthesized summary — never raw findings, never fix-loop diff
-detail:
+Your summary is the only surviving trace of this run — give every finding
+and disposition an explicit place below, its own entry or a count; one
+present in neither is a defect in this step, not a judgment call.
 
-- Verdict and marker status (written, or why not).
-- Counts: findings fixed, deferred, disputed.
-- Anything that needs a human's judgment (a surfaced DEFER/dispute, a halt
-  the skill's own instructions call for).
+Return, in this order:
 
-No padding, no restating the dispatch prompt. If you are blocked — a hook
-denial you cannot route around, a skill step with no available disposition —
-say so plainly with the reason, and let the checkpoint you already wrote
-carry the resume state forward.
+- **Verdict and marker status** — the skill's own verdict in its own words,
+  and whether the completion marker was written; if not, why not.
+- **Counts** — findings fixed, deferred, disputed. State a zero explicitly;
+  an absent count and a zero count must not read the same.
+- **Every finding whose disposition was not "fixed and re-verified"** — one
+  entry each, carrying the skill's own checklist item id, `file:line`, the
+  failure the finding names (not the category it falls under), and its
+  disposition with the criterion the skill's own closed list named for it.
+  Compress the wording, never the failure: a shorter sentence that drops
+  what would actually break is worse than a longer one that keeps it.
+- **Anything needing a human's judgment** — a surfaced DEFER/dispute, a halt
+  the skill's own instructions call for, or a step you could not execute.
+  State what decision is open, not merely that one is.
+
+Only fixed-and-re-verified findings collapse to a count — the fix is
+readable in the dispatching session's own tree; every other disposition
+needs its own entry.
+
+Never return reviewer prose verbatim, diff hunks, fix-loop iteration
+narration, or the dispatch prompt restated back. Beyond the list above, add
+no preamble, no order-of-operations narration, no diff-quality assessment,
+and no closing offer of next steps — the dispatching session already has
+what it sent you and needs only what it does not know.
+
+If you could not finish, say so plainly: name the step, name what stopped
+it, and state what has and has not changed in the tree. Blocks take many
+forms — a hook denial you cannot route around, a skill step whose
+disposition needs a tool you do not have, a nested dispatch that returned
+nothing usable, an instruction with no defensible reading — and this list is
+illustrative, not exhaustive; report any other block the same way. Quote a
+denial's own message rather than paraphrasing it. Then name the
+`orchestrator_run_id`, so the dispatcher can redispatch against the
+checkpoint you already wrote. A blocked run that reports precisely is a
+successful return; one that reports only "I was blocked" is not.
