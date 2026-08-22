@@ -245,12 +245,32 @@ PATTERN_PR_EDIT_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'pr[[:space:]]+'"$PA
 PATTERN_PR_EDIT_BODY_FLAG='(--body|--body-file)([[:space:]]|=)'
 # Used only by the review-pr write-authorization block below: an approval is
 # never released there regardless of the rest of that block's checks, since
-# /review-pr's own design never emits one autonomously (see SKILL.md). Covers
-# both the `gh pr review --approve` CLI form and the `gh api .../reviews -f
-# event=APPROVE` REST form (GitHub's review-event values are case-sensitive
-# uppercase, so no case-folding is needed here -- any other casing already
-# fails at the API rather than reaching this hook as a real approval).
-PATTERN_REVIEW_PR_APPROVE_FLAG='(^|[[:space:]])--approve([[:space:]]|$)|(-f|--field|--raw-field)[[:space:]=]+event=APPROVE([[:space:]]|$)'
+# /review-pr's own design never emits one autonomously (see SKILL.md).
+#
+# The CLI form combines an allowlist with a denylist -- neither alone is
+# sufficient. `gh pr review --help` documents -a/--approve, -c/--comment, and
+# -r/--request-changes as the only verdict flags. The allowlist
+# (PATTERN_REVIEW_PR_VERDICT_FLAG) requires one of the two non-approving
+# flags be present, closing every --approve spelling, known or not, rather
+# than adding another spelling to chase -- but presence of a non-approving
+# flag does not imply absence of an approving one: `gh pr review N --approve
+# --comment -F body` carries both, and gh itself is not relied on to reject
+# that combination. The denylist (PATTERN_REVIEW_PR_APPROVE_FLAG_CLI) closes
+# that gap by matching known --approve spellings (short, long, and
+# `=`-joined) unconditionally, regardless of what else the command carries.
+PATTERN_PR_REVIEW_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'pr[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'review([[:space:]]|$)'
+# Trailing boundary includes `=`: pflag-based boolean flags accept an
+# `=`-joined explicit value (`--comment=true`), and without it here that
+# gh-valid spelling would be wrongly denied by this allowlist.
+PATTERN_REVIEW_PR_VERDICT_FLAG='(^|[[:space:]])(-c|--comment|-r|--request-changes)([[:space:]]|=|$)'
+PATTERN_REVIEW_PR_APPROVE_FLAG_CLI='(^|[[:space:]])(-a|--approve)([[:space:]]|=|$)'
+# The REST form's `event` field is a small fixed vocabulary
+# (COMMENT|REQUEST_CHANGES|APPROVE) with no shorthand spelling, so denylisting
+# APPROVE here carries none of the CLI flag's bypass risk (GitHub's
+# review-event values are case-sensitive uppercase, so no case-folding is
+# needed -- any other casing already fails at the API rather than reaching
+# this hook as a real approval).
+PATTERN_REVIEW_PR_API_EVENT_APPROVE='(-f|--field|--raw-field)[[:space:]=]+event=APPROVE([[:space:]]|$)'
 
 if [[ "$COMMAND_FLAT" =~ $PATTERN_REST_NUMBERED ]]; then
   :
@@ -443,11 +463,21 @@ if [ "$REVIEW_PR_ACTIVE" -eq 1 ] && [ "$GATED_WRITE" -eq 1 ]; then
   fi
 fi
 
-# --approve is never authorized here, independent of every check above: the
-# skill's own design never emits --approve autonomously (it stays the
+# An approving verdict is never authorized here, independent of every check
+# above: the skill's own design never emits one autonomously (it stays the
 # human's separate action in the GitHub UI), so this hook backs that
 # invariant regardless of whether the rest of this block would have allowed.
-if [[ "$COMMAND_FLAT" =~ $PATTERN_REVIEW_PR_APPROVE_FLAG ]]; then
+# CLI form: a `gh pr review` write must carry one of the two non-approving
+# verdict flags (or it is treated as an unrecognized-spelling approval), AND
+# must not also carry a recognized --approve spelling -- carrying both is
+# denied rather than trusting gh to reject the combination.
+if [[ "$COMMAND_FLAT" =~ $PATTERN_PR_REVIEW_CMD ]]; then
+  if ! [[ "$COMMAND_FLAT" =~ $PATTERN_REVIEW_PR_VERDICT_FLAG ]] || [[ "$COMMAND_FLAT" =~ $PATTERN_REVIEW_PR_APPROVE_FLAG_CLI ]]; then
+    REVIEW_PR_WRITE_AUTHORIZED=0
+  fi
+fi
+# REST form: denylist on the fixed `event=APPROVE` vocabulary.
+if [[ "$COMMAND_FLAT" =~ $PATTERN_REVIEW_PR_API_EVENT_APPROVE ]]; then
   REVIEW_PR_WRITE_AUTHORIZED=0
 fi
 
