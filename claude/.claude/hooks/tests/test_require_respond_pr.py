@@ -1492,6 +1492,182 @@ class TestReviewPrCompletionMarkerGate:
             == "deny"
         )
 
+    def test_short_approve_flag_denied_even_when_otherwise_fully_authorized(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """`-a` is gh pr review's documented short form of --approve
+        (`gh pr review --help`) -- the prior denylist only matched the long
+        spelling, so this exact command bypassed it."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag="-a")
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_approve_equals_true_flag_denied_even_when_otherwise_fully_authorized(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """`--approve=true` is the `=`-joined spelling gh also accepts for a
+        boolean flag -- the prior denylist required whitespace on both sides
+        of `--approve`, so this exact command bypassed it."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag="--approve=true")
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("flag", ["-c", "--comment", "-r", "--request-changes"])
+    def test_short_and_long_verdict_flags_allow(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flag
+    ):
+        """Bounds the allowlist from the other side: every documented
+        non-approving verdict flag, short and long, must still pass once
+        every other check is satisfied."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag=flag)
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("flag", ["--comment=true", "-c=true", "--request-changes=true", "-r=true"])
+    def test_equals_joined_verdict_flags_allow(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flag
+    ):
+        """gh's pflag-based boolean flags accept an `=`-joined explicit value
+        the same way `--approve=true` does -- confirmed against the real gh
+        binary, this spelling reaches gh's own git-repo check rather than
+        erroring as an unrecognized flag, so the allowlist must not
+        wrongly deny it."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag=flag)
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_review_with_no_verdict_flag_denied(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """The allowlist's fail-closed side: a `gh pr review` write naming
+        neither a comment nor a request-changes flag is denied rather than
+        defaulting to allow -- gh itself would reject this the same way, but
+        the gate must not rely on that."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = f"gh pr review {REVIEW_PR_PR_NUMBER} -F {body_file}"
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("flags", ["--approve --comment", "-a -c"])
+    def test_approve_combined_with_a_verdict_flag_denied(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flags
+    ):
+        """The allowlist alone only checks for a non-approving flag's
+        presence, not an approving flag's absence -- `--approve --comment`
+        carries both and must still deny, or the allowlist's own stated
+        invariant ('never authorized... independent of every check above')
+        does not hold for this input shape."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag=flags)
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
     def test_field_flag_body_file_form_matching_hash_allows(
         self, isolated_home, git_repo_foo_bar_origin, tmp_path
     ):
