@@ -211,10 +211,8 @@ Row 3c [mechanism]: the noclobber-lock + PID-liveness-eviction + single
 EXIT-trap primitive `review-ledger.sh` already implements
 (`_append_ledger_line_locked`) is extracted into `_lib.sh` as a shared
 helper, and both `review-ledger.sh` and the new `orchestrator-checkpoint.sh`
-call it — anchors: row 3. This reverses an earlier draft of this plan,
-which proposed duplicating the ~25-line locking algorithm instead, citing
-CLAUDE.md's "a small duplicated value can beat a bad abstraction" exception.
-That citation doesn't fit what's actually being copied: a
+call it — anchors: row 3. CLAUDE.md's "a small duplicated value can beat a
+bad abstraction" exception doesn't fit what's being copied here: a
 correctness-sensitive concurrency algorithm, not a value, and one this repo
 would then hold in three near-identical copies (`_lib.sh`'s own
 `_lib_worktree_collision_guard`, `review-ledger.sh`'s, and the new script's)
@@ -406,7 +404,8 @@ this plan makes and fails to keep.
 It fires only on `agent_type` absent, so a session could still comply with
 its letter by dispatching the existing `general-purpose` escape hatch
 instead of `review-orchestrator` — closing the main-session-context problem
-(FM1) but silently missing `code-writer` substitution and checkpointing.
+(the first failure mode in Context above) but silently missing `code-writer`
+substitution and checkpointing.
 Blocking every `agent_type` except `review-orchestrator` isn't a fix: it
 would break the documented `general-purpose` escape hatch this repo already
 relies on elsewhere (CLAUDE.md Safety: "if [a marker-write] hook is

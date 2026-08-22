@@ -139,6 +139,29 @@ class TestOrchestratorCheckpointNoCheckpointYet:
         assert stray == [], f"read must never write a checkpoint file: {stray}"
 
 
+class TestOrchestratorCheckpointRunIdTraversalGuard:
+    """_validate_run_id reuses _lib_valid_session_id_component to reject a
+    traversal-shaped orchestrator_run_id before it is concatenated into
+    CHECKPOINT_FILE -- end-to-end regression coverage for that guard, since
+    test_lib.py's convention test only proves the guard is called, not that
+    it actually blocks a traversal payload here."""
+
+    def test_traversal_run_id_rejected_on_append(self, isolated_home, git_repo):
+        result = _run(_append_args(run_id="../../etc/passwd"), cwd=git_repo, home=isolated_home)
+        assert result.returncode != 0
+        checkpoint_dir = isolated_home / ".claude" / "orchestrator-checkpoints"
+        stray = list(checkpoint_dir.rglob("*")) if checkpoint_dir.exists() else []
+        assert stray == [], f"a traversal-shaped run id must not write outside CHECKPOINT_DIR: {stray}"
+        assert not (isolated_home / "etc" / "passwd").exists()
+
+    def test_traversal_run_id_rejected_on_read(self, isolated_home, git_repo):
+        result = _run(["read", "../../etc/passwd"], cwd=git_repo, home=isolated_home)
+        assert result.returncode != 0
+        checkpoint_dir = isolated_home / ".claude" / "orchestrator-checkpoints"
+        stray = list(checkpoint_dir.rglob("*")) if checkpoint_dir.exists() else []
+        assert stray == [], f"a traversal-shaped run id must not write outside CHECKPOINT_DIR: {stray}"
+
+
 class TestOrchestratorCheckpointDuplicateStepRetry:
     def test_identical_retry_for_the_same_step_is_deduped(self, isolated_home, git_repo):
         """A resumed orchestrator re-emitting the identical step/status/

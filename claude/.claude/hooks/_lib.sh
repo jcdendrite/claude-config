@@ -515,6 +515,35 @@ _lib_fragment_has_command_invoking_git_flag() {
   $found
 }
 
+# True iff a git-invoking fragment carries a flag that writes the command's
+# own output to a caller-chosen filesystem path, independent of the
+# subcommand and with no shell redirect character for a `<`/`>` scan to see.
+# `--output=<file>` / `--output <file>` is documented on git-diff(1) and
+# shared by every subcommand built on the same diff-generate-patch machinery
+# (diff, log, show, diff-tree, diff-files, diff-index, whatchanged,
+# range-diff); empirically it is also honored -- undocumented -- by blame,
+# rev-list, and shortlog, truncating an existing target file to zero bytes
+# even when those three don't write real content there. `--output-directory`
+# is format-patch's equivalent (not on either read-only allowlist today, kept
+# here as a forward guard). Matched the same way as the flags above: strip one
+# layer of quoting, then compare the whole word so `--output-indicator-new`
+# and friends (legitimate, write nothing) are not caught by a prefix match.
+_lib_fragment_has_git_write_target_flag() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local found=false word stripped
+  for word in $fragment; do
+    stripped="${word#[\'\"]}"
+    stripped="${stripped%[\'\"]}"
+    case "$stripped" in
+      --output|--output=*|--output-directory|--output-directory=*) found=true; break ;;
+    esac
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $found
+}
+
 # True iff a git-invoking fragment carries a shell environment-variable
 # assignment (WORD=value) before the git word itself. Git's own
 # GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism
@@ -534,6 +563,42 @@ _lib_fragment_has_env_assignment_before_git() {
   local found=false word
   for word in $fragment; do
     if [[ "$word" == "git" || "$word" == */git ]]; then
+      break
+    fi
+    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      found=true
+      break
+    fi
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $found
+}
+
+# True iff a fragment carries a shell environment-variable assignment
+# (WORD=value) anywhere before its resolved command word -- tool-name-
+# agnostic generalization of _lib_fragment_has_env_assignment_before_git
+# above, for an allowlist branch that admits a command by exact name (e.g.
+# marker.sh) rather than by git subcommand. _lib_fragment_command_word
+# deliberately skips past both a leading assignment AND a runner/wrapper
+# prefix (env, sudo, xargs, python, ...) to resolve the command word for
+# tool-name matching, but an assignment anywhere in that skipped span still
+# takes effect in the same shell once the command actually runs -- e.g. both
+# `CLAUDE_CONFIG_DIR=/tmp/x marker.sh` and `env CLAUDE_CONFIG_DIR=/tmp/x
+# marker.sh` redirect where the sanctioned helper script reads or writes.
+# Stopping the scan at the already-resolved command word (rather than
+# re-deriving "is this word a wrapper" independently) keeps this in lockstep
+# with _lib_fragment_command_word's own wrapper list by construction -- the
+# two checks drifting apart, as a first-word-only version of this function
+# once did, is exactly how a wrapper-prefixed assignment would slip through.
+_lib_fragment_has_leading_env_assignment() {
+  local fragment="$1"
+  local cmd
+  cmd=$(_lib_fragment_command_word "$fragment")
+  local saved_opts=$-
+  set -f
+  local found=false word
+  for word in $fragment; do
+    if [[ -n "$cmd" && ( "$word" == "$cmd" || "$word" == */"$cmd" ) ]]; then
       break
     fi
     if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
@@ -580,13 +645,35 @@ _lib_fragment_is_bare_env_assignment() {
   $is_bare && $saw_assignment
 }
 
-# Split a shell command string into fragments on shell operators (;, &&, ||, |,
-# $(...), backticks). Each fragment may invoke a distinct command. Leading/
-# trailing parentheses are stripped from each fragment so that `(cd /x; git push)`
-# yields `git push` as a clean fragment rather than `git push)`.
+# Split a shell command string into fragments on shell operators (;, &&, ||,
+# |, |&, a standalone & backgrounding operator, $(...), backticks). Each
+# fragment may invoke a distinct command. Leading/trailing parentheses are
+# stripped from each fragment so that `(cd /x; git push)` yields `git push`
+# as a clean fragment rather than `git push)`.
+#
+# `|&` (combined stdout+stderr pipe) invokes two distinct commands exactly
+# like a plain `|` does, so it is a full split point in the same pass as
+# `;`/`&&`/`||`/`|`, ordered before the bare-`&` and bare-`|` rules so it
+# consumes the whole two-byte token in one match rather than leaving a
+# stray `&` glued onto the next fragment for either rule to mishandle.
+#
+# The bare-`&` split must not fire on a `&` that is part of a genuine
+# redirect operator riding inside an otherwise-unsplit fragment (`>&`/`<&`
+# fd duplication, e.g. `2>&1`; `&>`/`&>>` combined stdout+stderr redirect)
+# -- callers like deny-network-installs.sh depend on that glued token
+# surviving as one word. Every such `&` is immediately adjacent (no
+# whitespace) to `>` or `<`, so it is protected with a one-byte placeholder
+# (a non-printable byte unlikely to occur in real command text, same
+# convention as _lib_parse_tool_input_or_deny's 0x1f jq delimiter) before
+# the `&`/`&&` split step runs, then restored afterward. A `&` that is part
+# of `&&` is consumed by that split point first and never reaches the
+# bare-`&` step either.
 _lib_split_fragments() {
+  local amp_marker=$'\x01'
   printf '%s' "$1" \
-    | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
+    | sed -E "s/(>|<)&/\\1${amp_marker}/g; s/&(>>?)/${amp_marker}\\1/g" \
+    | sed -E 's/;/\n/g; s/\|&/\n/g; s/&&/\n/g; s/&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
+    | sed -E "s/${amp_marker}/\\&/g" \
     | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
 }
 

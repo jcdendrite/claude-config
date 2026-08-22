@@ -382,6 +382,59 @@ class TestCommandInvokingGitFlagDenied:
         assert run_hook(HOOK, bash_input("git log --oneline", agent_type="staff-sdet")) == "allow"
 
 
+class TestBareAmpersandBackgroundingDenied:
+    """A standalone `&` (shell backgrounding) is not `&&` and was not a
+    _lib_split_fragments split point -- 'git diff & sed -i ...' never split
+    at all, so this hook's per-fragment denylist scan only ever inspected the
+    text before the `&` while the backgrounded mutating tail still executed."""
+
+    def test_allowed_prefix_with_backgrounded_mutating_tail_denied(self):
+        command = "git diff & sed -i s/a/b/ x.txt"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_double_ampersand_still_allowed(self):
+        """Confound-free companion: the bare-`&` fix must not regress `&&`
+        chaining of two otherwise-allowed read-only fragments."""
+        assert run_hook(HOOK, bash_input("git diff && git log", agent_type="staff-sdet")) == "allow"
+
+    def test_combined_pipe_ampersand_mutating_tail_denied(self):
+        """`|&` (combined stdout+stderr pipe) invokes two distinct commands
+        exactly like a plain `|` does. A prior version of the bare-`&`
+        protection only marked the `&` byte, leaving the `|` for the
+        pre-existing bare-pipe rule to split on anyway -- corrupting the
+        second fragment's leading byte and hiding the real command word
+        (`sed`) from the in-place-edit denylist check."""
+        command = "git status |& sed -i s/x/y/ evil.py"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+
+class TestGitWriteTargetFlagDenied:
+    """git diff/log/show (and the diff-machinery subcommands sharing their
+    option parser) accept --output=<file> / --output <file>, writing the
+    command's own content to a caller-chosen path with no shell redirect
+    character for a `<`/`>` scan to see."""
+
+    def test_git_diff_output_denied(self):
+        command = "git diff --output=src/tracked_file.py HEAD~1..HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_git_log_output_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git log --output=src/tracked_file.py", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_git_show_output_denied(self):
+        command = "git show --output=src/tracked_file.py HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_git_log_output_indicator_flag_confound_free_companion_allowed(self):
+        """Confound-free companion: --output-indicator-new shares the
+        --output prefix but writes nothing anywhere -- must not false-deny."""
+        assert run_hook(
+            HOOK, bash_input("git log --output-indicator-new=+", agent_type="staff-sdet")
+        ) == "allow"
+
+
 class TestBareEnvAssignmentFragmentDenied:
     """A fragment that is ITSELF purely an environment-variable assignment
     denies regardless of whether it mentions git -- closing the cross-

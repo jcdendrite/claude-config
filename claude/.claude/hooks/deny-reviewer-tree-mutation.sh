@@ -316,6 +316,10 @@ case "$TOOL_NAME" in
           emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' carries a git flag (-c, --config-env, -O/--open-files-in-pager, --ext-diff, or --textconv) that can exec an arbitrary command regardless of subcommand. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
+        if _lib_fragment_has_git_write_target_flag "$fragment"; then
+          emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' carries a git flag (--output/--output-directory) that writes the command's own output to a caller-chosen filesystem path, with no shell redirect character for a redirect scan to catch. $SANCTIONED_ALTERNATIVE"
+          exit 0
+        fi
         if _lib_fragment_has_env_assignment_before_git "$fragment"; then
           emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' carries an environment-variable assignment before the git word -- git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism can set arbitrary config (e.g. diff.external) this way with no matching CLI flag. $SANCTIONED_ALTERNATIVE"
           exit 0

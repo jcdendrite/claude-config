@@ -69,7 +69,7 @@ _resolve_repo_root() {
 }
 
 # Locking (noclobber-lock + PID-liveness-eviction + single-EXIT-trap) and the
-# stale-file sweep both live in _lib.sh now (_lib_append_line_locked,
+# stale-file sweep live in _lib.sh (_lib_append_line_locked,
 # _lib_sweep_stale_files) — shared with orchestrator-checkpoint.sh so this
 # repo doesn't hold a second near-identical copy of either mechanism.
 

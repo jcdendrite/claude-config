@@ -120,9 +120,23 @@ while IFS= read -r fragment; do
     exit 0
   fi
 
+  # Applies to every branch below (git AND the helper-script allowlist), not
+  # just git: a leading env-var assignment still takes effect in the same
+  # shell once the command actually runs, even though the helper-script
+  # branch's tool-name match deliberately skips past it -- e.g.
+  # CLAUDE_CONFIG_DIR=/tmp/x redirecting where marker.sh writes.
+  if _lib_fragment_has_leading_env_assignment "$fragment"; then
+    emit_deny "Blocked by review-orchestrator Bash gate: '$fragment' begins with an environment-variable assignment -- CLAUDE_CONFIG_DIR/HOME and similar can redirect where a sanctioned helper script (marker.sh/review-ledger.sh/orchestrator-checkpoint.sh) reads or writes, and git's own env-based config-injection mechanism applies the same way. $SANCTIONED_ALTERNATIVE"
+    exit 0
+  fi
+
   if _lib_fragment_invokes_git "$fragment"; then
     if _lib_fragment_has_command_invoking_git_flag "$fragment"; then
       emit_deny "Blocked by review-orchestrator Bash gate: '$fragment' carries a git flag (-c, --config-env, -O/--open-files-in-pager, --ext-diff, or --textconv) that can exec an arbitrary command regardless of subcommand. $SANCTIONED_ALTERNATIVE"
+      exit 0
+    fi
+    if _lib_fragment_has_git_write_target_flag "$fragment"; then
+      emit_deny "Blocked by review-orchestrator Bash gate: '$fragment' carries a git flag (--output/--output-directory) that writes the command's own output to a caller-chosen filesystem path, with no shell redirect character for the redirect check above to catch. $SANCTIONED_ALTERNATIVE"
       exit 0
     fi
     if _lib_fragment_has_env_assignment_before_git "$fragment"; then
