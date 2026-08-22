@@ -65,4 +65,4 @@ if [ -f "$ROUTING_MARKER" ] && [ -n "$(find "$ROUTING_MARKER" -mmin -60 2>/dev/n
   exit 0
 fi
 
-emit_deny "Agent spawn blocked by plan-review routing gate: Read ~/.claude/skills/plan-review/ROUTING.md before spawning any specialist agent. All spawn criteria (always-spawn rules, item ownership, reconciliation logic) live exclusively in ROUTING.md."
+emit_deny "Agent spawn blocked by plan-review routing gate: use the Read tool to read ~/.claude/skills/plan-review/ROUTING.md before spawning any specialist agent — a Bash read (cat/sed/grep) does not satisfy this gate. All spawn criteria (always-spawn rules, item ownership, reconciliation logic) live exclusively in ROUTING.md."
