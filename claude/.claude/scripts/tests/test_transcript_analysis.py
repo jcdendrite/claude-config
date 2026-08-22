@@ -16663,6 +16663,22 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
         assert exc_info.value.code == 1
         assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
 
+    def test_host_with_port_does_not_resolve(self, monkeypatch, capsys):
+        """The host capture's `[A-Za-z0-9.-]+` class has no port syntax, so a
+        port-bearing remote (a real GHE deployment shape, e.g. behind a
+        reverse proxy) fails to parse and aborts rather than mis-splitting
+        the port into the owner/repo capture groups."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": "ssh://git@acme-corp.ghe.com:2222/owner/repo\n", "stderr": "",
+            })(),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
+
 
 class TestGhAuthPreflightOkHostnameScoping:
     """_gh_auth_preflight_ok: scopes `gh auth status` to the given hostname
@@ -17055,6 +17071,7 @@ class TestResolvePinnedGhRepoIdentity:
         err = capsys.readouterr().err
         assert same_owner_repo not in err
         assert "acme-corp.ghe.com" not in err
+        assert "github.com" not in err  # the gh-side host, symmetric with the corpus-side check above
 
     def test_gh_repo_view_url_not_matching_regex_refuses_rather_than_false_matching(self, monkeypatch, capsys):
         """`gh repo view`'s `url` field failing to parse (a future `gh`

@@ -6552,7 +6552,8 @@ _PR_COST_LEDGER_HEADER_LINE = "\t".join(_PR_COST_LEDGER_COLUMNS)
 # recognizes both headers and normalizes a legacy row to the current column
 # shape before parsing -- see docs/pr-cost.md's backward-compat contract for
 # a new key column.
-assert _PR_COST_LEDGER_COLUMNS[0] == "host"  # the slice below assumes this position
+if _PR_COST_LEDGER_COLUMNS[0] != "host":  # the slice below assumes this position; `assert` would
+    raise RuntimeError("_PR_COST_LEDGER_COLUMNS[0] must be 'host'")  # vanish under python -O
 _PR_COST_LEDGER_LEGACY_COLUMNS: tuple[str, ...] = _PR_COST_LEDGER_COLUMNS[1:]
 _PR_COST_LEDGER_LEGACY_HEADER_LINE = "\t".join(_PR_COST_LEDGER_LEGACY_COLUMNS)
 _PR_COST_LEDGER_LEGACY_HOST_DEFAULT = "github.com"
