@@ -2527,13 +2527,21 @@ class TestMarkerScriptReviewPr:
         file (dropping the $HOME prefix) must be rejected identically to a
         wholly different path, guarding against a future regression that
         swaps the equality check for something more 'helpful' about
-        equivalent spellings."""
+        equivalent spellings. The decoy is seeded at the relative spelling's
+        actual resolution against marker.sh's invocation cwd (git_repo), with
+        content that differs from the real file -- so a regression that
+        dropped the equality check would hash the decoy and this test would
+        observe a written marker instead of an abort, proving the test can
+        fail rather than passing by cwd coincidence."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         fixed_path = self._fixed_body_path(isolated_home, sid)
         fixed_path.parent.mkdir(parents=True, exist_ok=True)
         fixed_path.write_text("# findings body\n")
         relative_spelling = f".claude/.review-pr-active.d/{sid}.body"
+        decoy = git_repo / relative_spelling
+        decoy.parent.mkdir(parents=True, exist_ok=True)
+        decoy.write_text("# decoy body at the relative-path resolution\n")
         self._declare_sibling(isolated_home, "foo/bar#42", "abc123", relative_spelling, sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
@@ -2601,7 +2609,12 @@ class TestMarkerScriptReviewPr:
     ):
         """Same literal-equality guard as the write arm's equivalent test:
         a relative spelling of the fixed location (dropping the $HOME
-        prefix) must not delete the real file sitting at that location."""
+        prefix) must not delete the real file sitting at that location. A
+        decoy is seeded at the relative spelling's actual resolution against
+        marker.sh's invocation cwd (git_repo) -- absent the equality check,
+        `rm -f` would silently delete that decoy, so asserting it survives
+        is what makes this test able to fail, not just seeing the real file
+        (at an unrelated path) survive by cwd coincidence."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         active_dir = isolated_home / ".claude" / ".review-pr-active.d"
@@ -2610,12 +2623,16 @@ class TestMarkerScriptReviewPr:
         fixed_path = self._fixed_body_path(isolated_home, sid)
         fixed_path.write_text("# findings body\n")
         relative_spelling = f".claude/.review-pr-active.d/{sid}.body"
+        decoy = git_repo / relative_spelling
+        decoy.parent.mkdir(parents=True, exist_ok=True)
+        decoy.write_text("# decoy body at the relative-path resolution\n")
         sibling = self._declare_sibling(isolated_home, "foo/bar#42", "abc123", relative_spelling, sid)
 
         result = _run(["deactivate", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
 
         assert fixed_path.exists(), "deactivate must refuse to delete via a relative-path spelling"
+        assert decoy.exists(), "deactivate must not delete whatever the relative spelling actually resolves to"
         assert not (active_dir / sid).exists()
         assert not sibling.exists()
 
