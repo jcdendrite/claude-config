@@ -725,8 +725,7 @@ class TestPrDescriptionProseTighteningPassWiring:
     Cost section` above it -- pr-description has no behavioral test suite
     in this repo, so these assertions only prove the section is present,
     correctly placed, and dispatches by name; not that it executes
-    correctly (manual verification only, per the plan's Verification
-    section)."""
+    correctly (execution requires manual verification)."""
 
     def _body(self):
         return _skill_file("pr-description").read_text()
@@ -850,14 +849,11 @@ class TestContinuityFileBucketCrosscheck:
 
 
 class TestTightenProseScopeCarveOutPhrases:
-    """Regression guard on tighten-prose's own scope rule, mirroring
-    TestContinuityFileBucketCrosscheck's string-presence guard on brief's
-    critical-rule text above. The naming-collision comment against
-    comment-discipline-reviewer required an explicit object/action boundary
-    in the SKILL.md body itself (REFERENCES.md is never loaded at runtime,
-    so the boundary has to live where a running model actually reads it) --
-    this pins those carve-out phrases so a future edit can't silently drop
-    them.
+    """Regression guard on tighten-prose's scope rule, mirroring
+    TestContinuityFileBucketCrosscheck's guard on brief's critical-rule
+    text. REFERENCES.md is never loaded at runtime, so the durable-doc/
+    plan-file scope boundary must live in the SKILL.md body itself -- this
+    pins those carve-out phrases so a future edit can't silently drop them.
     """
 
     def test_declares_references_md_carve_out(self):

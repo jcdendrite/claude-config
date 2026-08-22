@@ -351,6 +351,10 @@ _prompt_sentinel_opt_in() {
 # top-level call site in this script satisfies that by ordering, since both
 # blocks are defined, in file order, before this function is ever called.
 # configure_machine_level_opt_ins iterates its scope=machine-promptable rows.
+# Reads all 8 fields per row but only consumes the first four (expected_content
+# and polarity are account-scope-only); no current machine-promptable row
+# populates those two, so this read site's handling of them is untested --
+# add coverage here if a future row starts consuming either.
 configure_machine_level_opt_ins() {
   if [ ! -t 0 ]; then
     echo ""
@@ -402,7 +406,11 @@ configure_machine_level_opt_ins() {
 # against this value, as pr-cost-disclosure does against "dollars"). polarity
 # empty or "opt-in" means the existing behavior (absent = default-state,
 # present = "ENABLED"); "opt-in" is also the fallback for any unrecognized
-# polarity value. "opt-out" inverts which state is the row's default.
+# polarity value. "opt-out" inverts which state is the row's default. A
+# content-mode row (non-empty expected-content) must use default-state
+# "disabled" — its CTA is never keyed off default-state (see
+# _report_account_sentinel), so "enabled" would desync the printed state
+# from the CTA.
 # Promotion criterion, machine -> machine-promptable: boolean file-presence
 # state plus an opt-into-new-capability semantic — see docs/design-decisions.md #23.
 SENTINEL_INVENTORY=(
@@ -481,16 +489,16 @@ _report_repo_sentinel() {
   fi
 }
 
-# Two check modes and two polarities — see the SENTINEL_INVENTORY schema
-# comment above for the full expected-content/polarity grammar. polarity is
-# read only in presence-mode (expected_content empty); a content-mode row
-# ignores it and always reports opt-in semantics. Content-mode
-# (e.g. pr-cost-disclosure) mirrors claude/.claude/skills/pr-description/
-# SKILL.md's mode grammar byte-for-byte — same trim/lowercase/anchored-
-# compare snippet, pinned in both places so they cannot silently diverge.
-# Resolution is not union: $CLAUDE_CONFIG_DIR only when set and absolute,
-# else $HOME/.claude — never both, so one account's opt-in cannot activate a
-# row under another account's config dir.
+# See the SENTINEL_INVENTORY schema comment above for the full
+# expected-content/polarity grammar (including the content-mode/default-state
+# invariant). polarity applies only when expected_content is empty;
+# content-mode rows (e.g. pr-cost-disclosure) always use opt-in semantics and
+# mirror claude/.claude/skills/pr-description/SKILL.md's mode grammar
+# byte-for-byte — a manual pin, not an enforced sync, so a change to one side
+# needs the matching edit on the other. Resolution is not union:
+# $CLAUDE_CONFIG_DIR only when set and absolute, else $HOME/.claude — never
+# both, so one account's opt-in cannot activate a row under another
+# account's config dir.
 _report_account_sentinel() {
   local sentinel_index="$1" path_template="$2" human_name="$3" default_state="$4" docs_anchor="$5" expected_content="$6" polarity="$7"
   local effective_polarity="opt-in"
@@ -533,10 +541,10 @@ _report_account_sentinel() {
   printf '    docs: %s\n' "$docs_anchor"
   if [ ! -f "$sentinel_path" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
     local cta_verb="to enable"
-    # polarity is presence-mode-only (see the comment above this function) --
-    # a content-mode row's CTA must not flip to "to disable" on opt-out,
-    # since the state computation above never reads polarity either.
-    [ -z "$expected_content" ] && [ "$effective_polarity" = "opt-out" ] && cta_verb="to disable"
+    # Keyed off default_state, matching what state="$default_state" already
+    # printed above for the absent case, so the CTA can't desync from the
+    # printed state even when polarity is an unrecognized value.
+    [ -z "$expected_content" ] && [ "$default_state" = "enabled" ] && cta_verb="to disable"
     if [ -n "$expected_content" ]; then
       # $expected_content is unquoted in this example command -- fine while
       # every content-mode row's value is a single word (only "dollars"

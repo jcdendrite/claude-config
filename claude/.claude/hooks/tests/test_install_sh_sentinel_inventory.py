@@ -53,15 +53,9 @@ def _extract_opt_ins_and_inventory_blocks() -> str:
     return opt_ins + "\n" + inventory
 
 
-# Frozen snapshot of the pre-refactor SENTINEL_INVENTORY array and
-# report_sentinel_inventory (plus its helpers), captured from install.sh at
-# the commit immediately before the field-widening change this test class
-# regression-tests. NOT derived via `git show HEAD:install.sh` at test time:
-# this repo squash-merges with branch deletion (confirmed via `gh api
-# repos/<owner>/<repo>` -- allow_squash_merge=true, delete_branch_on_merge=
-# true), so a `HEAD`-literal or pinned-SHA lookup would either self-reference
-# the instant this diff lands, or dangle once the source commit is
-# unreachable and pruned. A frozen text constant has no such expiry.
+# Frozen text constant, not `git show HEAD:install.sh` -- this repo
+# squash-merges with branch deletion, so a `HEAD`-literal or pinned-SHA
+# lookup would self-reference or dangle once the source commit is pruned.
 _PRE_TIGHTEN_PROSE_SENTINEL_BLOCK = r"""
 SENTINEL_INVENTORY=(
   "worktree-required|machine-promptable|Worktree enforcement|Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'.|disabled|README.md § Worktree enforcement"
@@ -859,9 +853,11 @@ class TestReportSentinelInventory:
 
 
 class TestSixFieldRowBackwardCompatibility:
-    """The field-count widening (install.sh: both `IFS='|' read -r` sites,
-    `_report_account_sentinel`'s new parameters) must not change what any
-    pre-existing 6-field row reports. Runs the frozen pre-refactor
+    """The field-count widening at report_sentinel_inventory's `IFS='|'
+    read -r` site and `_report_account_sentinel`'s new parameters must not
+    change what any pre-existing 6-field row reports. (The sibling read
+    site in configure_machine_level_opt_ins is not exercised here -- see
+    the comment above that function.) Runs the frozen pre-refactor
     SENTINEL_INVENTORY/report_sentinel_inventory (`_PRE_TIGHTEN_PROSE_
     SENTINEL_BLOCK`) and the current one against the same fixture, and
     checks every pre-existing line still appears in the new output --
@@ -921,11 +917,10 @@ class TestSixFieldRowBackwardCompatibility:
 
 
 class TestPrCostDisclosureExpectedContentField:
-    """The content-check generalization (install.sh bullet, item 3-4) moves
-    pr-cost-disclosure's "dollars" comparison from a literal hardcoded in
-    _report_account_sentinel to field 7 of its own row. Pin the row still
-    carries it explicitly -- the existing dollars-mode behavioral tests
-    above (test_account_sentinel_exact_dollars_reports_enabled and
+    """pr-cost-disclosure's "dollars" comparison lives in field 7 of its own
+    row, not a literal hardcoded in _report_account_sentinel. Pin the row
+    still carries it explicitly -- the existing dollars-mode behavioral
+    tests above (test_account_sentinel_exact_dollars_reports_enabled and
     neighbors) already cover that the generalized function still enforces
     it correctly; this pins the source-level field itself didn't silently
     drop to empty (which would turn the check into presence-only)."""
@@ -945,9 +940,8 @@ class TestPrCostDisclosureExpectedContentField:
 
 
 class TestProseTighteningOptOutSentinel:
-    """Behavioral coverage for the new opt-out-polarity account row
-    (install.sh bullet, item 5): absence is the on-by-default state (the
-    engineer's explicit "on by default" requirement), presence opts out."""
+    """Behavioral coverage for the opt-out-polarity account row: absence is
+    the default-on state, presence opts out."""
 
     def test_absent_reports_default_enabled_state_with_disable_hint(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -1004,7 +998,9 @@ class TestAccountSentinelPolarityFallback:
     comment: an unrecognized polarity value falls back to opt-in behavior
     rather than being rejected at definition time."""
 
-    def _report_with_polarity(self, polarity: str, present: bool, tmp_path: Path) -> str:
+    def _report_with_polarity(
+        self, polarity: str, present: bool, tmp_path: Path, default_state: str = "disabled"
+    ) -> str:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         sentinel_path = home / ".claude" / "some-sentinel"
@@ -1015,7 +1011,7 @@ class TestAccountSentinelPolarityFallback:
         script = (
             "set -e\n"
             + _extract_inventory_block()
-            + f'\n_report_account_sentinel 0 some-sentinel "Some sentinel" disabled "docs/x.md" "" "{polarity}"\n'
+            + f'\n_report_account_sentinel 0 some-sentinel "Some sentinel" "{default_state}" "docs/x.md" "" "{polarity}"\n'
         )
         result = subprocess.run(
             [_BASH, "-c", script],
@@ -1035,6 +1031,20 @@ class TestAccountSentinelPolarityFallback:
     def test_unrecognized_polarity_present_behaves_as_opt_in(self, tmp_path: Path) -> None:
         stdout = self._report_with_polarity("sideways", present=True, tmp_path=tmp_path)
         assert "Some sentinel: ENABLED" in stdout
+
+    def test_unrecognized_polarity_on_enabled_default_state_row_keeps_cta_consistent(
+        self, tmp_path: Path
+    ) -> None:
+        """The real opt-out row (pr-description-tighten-prose-optout) has
+        default_state="enabled" -- an unrecognized polarity on a row shaped
+        like that one must not print a "to enable" CTA next to a state that
+        already reads "enabled"."""
+        stdout = self._report_with_polarity(
+            "Opt-Out", present=False, tmp_path=tmp_path, default_state="enabled"
+        )
+        assert "Some sentinel: enabled" in stdout
+        assert "to disable: touch" in stdout
+        assert "to enable" not in stdout
 
 
 class TestContentModePolarityIsIgnored:
@@ -1069,3 +1079,29 @@ class TestContentModePolarityIsIgnored:
         assert "Hybrid sentinel: disabled" in result.stdout
         assert "to enable: echo dollars >" in result.stdout
         assert "to disable" not in result.stdout
+
+
+class TestContentModeRowsUseDisabledDefaultState:
+    """Schema-level pin for the invariant stated in the SENTINEL_INVENTORY
+    schema comment: content-mode rows (non-empty expected-content) must use
+    default_state="disabled". The CTA guard only keys presence-mode off
+    default_state -- a content-mode row with default_state="enabled" would
+    reproduce the same state/CTA desync TestAccountSentinelPolarityFallback
+    pins for presence-mode, since content-mode's CTA never reaches that
+    check at all (short-circuited by the expected_content guard)."""
+
+    def test_every_content_mode_row_uses_disabled_default_state(self) -> None:
+        install_text = _INSTALL_SH.read_text()
+        start = install_text.find(_INVENTORY_START)
+        end = install_text.find(_INVENTORY_END, start)
+        block = install_text[start:end]
+        rows = [line.strip()[1:-1] for line in block.splitlines() if line.strip().startswith('"')]
+        for row in rows:
+            fields = row.split("|")
+            expected_content = fields[6] if len(fields) > 6 else ""
+            if expected_content:
+                assert fields[4] == "disabled", (
+                    f"content-mode row {row!r} must use default_state=disabled -- "
+                    "its CTA is never keyed off default_state, so default_state="
+                    "enabled would desync the printed state from the CTA"
+                )
