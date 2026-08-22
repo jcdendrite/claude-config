@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Diff dependency key sets between a package.json's pre-write and
-post-write state, for ask-new-dependency-disclosure.sh.
+"""Diff dependency name sets between a manifest's pre-write and post-write
+state, for ask-new-dependency-disclosure.sh. Recognized manifests:
+package.json, requirements*.txt, go.mod, Gemfile, Cargo.toml, and
+pyproject.toml.
 
 Requires Python >= 3.11 — this repo's stated floor (see README.md's setup
 section and install.sh's preflight check). `ruff`'s
@@ -57,7 +59,9 @@ targets — so the bound has to live here, independent of coreutils.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
+import re
 import signal
 import sys
 import unicodedata
@@ -163,6 +167,213 @@ def _dependency_map(manifest: dict) -> dict:
     return merged
 
 
+# requirements.txt option lines are a closed syntactic class -- any pip
+# global option (-r, --requirement, -c, --constraint, -e, --editable,
+# --hash, --index-url, --trusted-host, ...) starts with a dash, so matching
+# on the leading dash covers every option, not just an enumerated subset,
+# while a real PEP 508 package name can never start with one.
+_REQUIREMENTS_CONTROL_LINE_RE = re.compile(r"^-")
+# The first version specifier, extras marker, environment marker, or
+# whitespace character -- whichever comes first ends the package name.
+_REQUIREMENT_NAME_BOUNDARY_RE = re.compile(r"[=<>~!\[; \t]")
+
+
+def _split_requirement_line(line: str) -> tuple[str, str]:
+    """Splits a single PEP 508-shaped requirement (a requirements.txt line
+    or a pyproject.toml `project.dependencies` entry) into (name,
+    constraint) at the first version/extras/marker delimiter."""
+    match = _REQUIREMENT_NAME_BOUNDARY_RE.search(line)
+    if match:
+        return line[: match.start()], line[match.start() :].strip()
+    return line, ""
+
+
+def _parse_requirements_txt(text: str) -> dict[str, str]:
+    """Parses a requirements*.txt manifest. Skips blank lines, full-line
+    and inline comments, and any pip option line (leading dash) that names
+    a file, host, or hash rather than a package. A `-r`/`-c` include is a
+    residual -- see ask-new-dependency-disclosure.sh's Known gaps."""
+    deps: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        # pip's own comment rule: `#` starts a comment at start-of-line or
+        # after whitespace.
+        line = re.split(r"(?:^|\s)#", raw_line, maxsplit=1)[0].strip()
+        if not line or _REQUIREMENTS_CONTROL_LINE_RE.match(line):
+            continue
+        name, constraint = _split_requirement_line(line)
+        if name:
+            deps[name] = constraint
+    return deps
+
+
+_GO_INDIRECT_SUFFIX_RE = re.compile(r"\s*//\s*indirect\s*$")
+# Trailing content after "require (" -- at minimum a "// direct"/"//
+# indirect" line comment -- must not prevent block-start detection.
+_GO_REQUIRE_BLOCK_START_RE = re.compile(r"^require\s*\((?:\s*//.*)?$")
+_GO_REQUIRE_SINGLE_LINE_RE = re.compile(r"^require\s+(\S+)\s+(\S+)")
+_GO_MODULE_VERSION_RE = re.compile(r"^(\S+)\s+(\S+)")
+
+
+def _parse_go_mod(text: str) -> dict[str, str]:
+    """Parses go.mod's single-line `require module version` form and the
+    `require ( ... )` block form; strips a trailing `// indirect` marker
+    from either before splitting on whitespace."""
+    deps: dict[str, str] = {}
+    in_require_block = False
+    for raw_line in text.splitlines():
+        line = _GO_INDIRECT_SUFFIX_RE.sub("", raw_line).strip()
+        if not line or line.startswith("//"):
+            continue
+        if in_require_block:
+            if line == ")":
+                in_require_block = False
+                continue
+            # A block-content line coincidentally shaped like the
+            # single-line grammar must yield the real module/version, not
+            # the literal name "require".
+            match = _GO_REQUIRE_SINGLE_LINE_RE.match(line) or _GO_MODULE_VERSION_RE.match(line)
+        elif _GO_REQUIRE_BLOCK_START_RE.match(line):
+            in_require_block = True
+            continue
+        else:
+            match = _GO_REQUIRE_SINGLE_LINE_RE.match(line)
+        if match:
+            deps[match.group(1)] = match.group(2)
+    return deps
+
+
+_GEMFILE_GEM_RE = re.compile(r"""^\s*gem\s+(['"])(?P<name>[^'"]+)\1(?:\s*,\s*(['"])(?P<constraint>[^'"]+)\3)?""")
+
+
+def _parse_gemfile(text: str) -> dict[str, str]:
+    """Parses Gemfile's `gem 'name'[, 'constraint'][, options...]` lines,
+    anchored so a `#`-commented-out gem line (which can't start with
+    `gem`) never matches. A trailing option like `require: false` after
+    the name is ignored rather than misread as a version constraint."""
+    deps: dict[str, str] = {}
+    for line in text.splitlines():
+        match = _GEMFILE_GEM_RE.match(line)
+        if match:
+            deps[match.group("name")] = match.group("constraint") or ""
+    return deps
+
+
+def _toml_dependency_constraint(spec: Any) -> str:
+    """A TOML dependency table entry is either a bare version string or an
+    inline table with a `version` key -- shared grammar between Cargo's
+    [dependencies]-shaped tables and Poetry's
+    [tool.poetry.dependencies]-shaped tables."""
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, dict):
+        version = spec.get("version")
+        return version if isinstance(version, str) else ""
+    return ""
+
+
+def _add_toml_dependency_table(deps: dict[str, str], table: Any) -> None:
+    if not isinstance(table, dict):
+        return
+    for name, spec in table.items():
+        if isinstance(name, str):
+            deps[name] = _toml_dependency_constraint(spec)
+
+
+def _add_pep508_entries(deps: dict[str, str], entries: Any) -> None:
+    """Splits each PEP 508 requirement string in `entries` (a pyproject.toml
+    `dependencies` or `optional-dependencies[group]` array) via
+    `_split_requirement_line` and merges the result into `deps`."""
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        name, constraint = _split_requirement_line(entry)
+        if name:
+            deps[name] = constraint
+
+
+def _parse_toml_manifest(text: str, basename: str) -> dict[str, str]:
+    """Parses Cargo.toml's [dependencies]/[dev-dependencies]/
+    [build-dependencies] tables, every [target.*.dependencies] table
+    (unioned across every target key), and [workspace.dependencies]; or
+    pyproject.toml's PEP 621 [project] dependencies/
+    [project.optional-dependencies] groups plus Poetry's
+    [tool.poetry.dependencies] and [tool.poetry.group.*.dependencies]
+    (unioned across every group). `tomllib` is imported here, not at
+    module top, so an interpreter below the 3.11 floor still parses every
+    other recognized format -- see module docstring's Python floor note.
+    """
+    import tomllib
+
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ManifestDeltaError(f"manifest text is not valid TOML: {exc}") from exc
+    except RecursionError as exc:
+        # Deeply nested TOML raises RecursionError, not TOMLDecodeError, so
+        # it needs its own catch to still surface as ManifestDeltaError.
+        raise ManifestDeltaError(f"manifest text exceeded the TOML parser's recursion limit: {exc}") from exc
+
+    deps: dict[str, str] = {}
+    if basename == "Cargo.toml":
+        for table_name in ("dependencies", "dev-dependencies", "build-dependencies"):
+            _add_toml_dependency_table(deps, data.get(table_name))
+        target = data.get("target")
+        if isinstance(target, dict):
+            for target_spec in target.values():
+                if isinstance(target_spec, dict):
+                    _add_toml_dependency_table(deps, target_spec.get("dependencies"))
+        workspace = data.get("workspace")
+        if isinstance(workspace, dict):
+            _add_toml_dependency_table(deps, workspace.get("dependencies"))
+        return deps
+
+    project = data.get("project")
+    if isinstance(project, dict):
+        _add_pep508_entries(deps, project.get("dependencies"))
+        optional = project.get("optional-dependencies")
+        if isinstance(optional, dict):
+            for group_entries in optional.values():
+                _add_pep508_entries(deps, group_entries)
+
+    tool = data.get("tool")
+    poetry = tool.get("poetry") if isinstance(tool, dict) else None
+    if isinstance(poetry, dict):
+        _add_toml_dependency_table(deps, poetry.get("dependencies"))
+        group = poetry.get("group")
+        if isinstance(group, dict):
+            for group_spec in group.values():
+                if isinstance(group_spec, dict):
+                    _add_toml_dependency_table(deps, group_spec.get("dependencies"))
+    return deps
+
+
+def _manifest_dependency_map(text: str, basename: str) -> dict[str, str]:
+    """Dispatches to the per-format parser matching `basename`, each
+    returning a {name: constraint} map. Raises ManifestDeltaError for an
+    unrecognized basename -- the caller must never silently treat an
+    unmodeled format as JSON."""
+    if basename == "package.json":
+        return _dependency_map(_parse_manifest(text))
+    if fnmatch.fnmatchcase(basename, "requirements*.txt"):
+        return _parse_requirements_txt(text)
+    if basename == "go.mod":
+        return _parse_go_mod(text)
+    if basename == "Gemfile":
+        return _parse_gemfile(text)
+    if basename in ("Cargo.toml", "pyproject.toml"):
+        return _parse_toml_manifest(text, basename)
+    raise ManifestDeltaError(f"unrecognized manifest basename: {basename!r}")
+
+
+def _manifest_basename(tool_input: dict) -> str:
+    file_path = tool_input.get("file_path")
+    if not isinstance(file_path, str) or not file_path:
+        raise ManifestDeltaError("tool_input.file_path missing or not a string")
+    return Path(file_path).name
+
+
 def _apply_single_edit(buffer: str, old_string: str, new_string: str, replace_all: bool) -> str:
     if replace_all:
         return buffer.replace(old_string, new_string)
@@ -193,19 +404,19 @@ def _reconstruct_post_text(pre_text: str, tool_input: dict) -> str:
 def compute_new_dependency_names(pre_text: str, tool_input: dict) -> DependencyDelta:
     """Pure — no I/O. Reconstructs the post-write manifest text from
     `tool_input` (see module docstring), diffs the pre- and post-write
-    dependency-name sets over their four-section union, and returns the
-    sorted, sanitized, capped result. Raises ManifestDeltaError on
-    anything that isn't a well-formed manifest object at either state —
-    callers must not treat that as an empty diff."""
+    dependency-name sets for the manifest format matching
+    `tool_input.file_path`'s basename, and returns the sorted, sanitized,
+    capped result. Raises ManifestDeltaError on anything that isn't a
+    well-formed manifest at either state, or on an unrecognized basename
+    — callers must not treat that as an empty diff."""
     if not isinstance(tool_input, dict):
         raise ManifestDeltaError("tool_input is not an object")
 
-    pre_manifest = _parse_manifest(pre_text)
+    basename = _manifest_basename(tool_input)
     post_text = _reconstruct_post_text(pre_text, tool_input)
-    post_manifest = _parse_manifest(post_text)
 
-    pre_deps = _dependency_map(pre_manifest)
-    post_deps = _dependency_map(post_manifest)
+    pre_deps = _manifest_dependency_map(pre_text, basename)
+    post_deps = _manifest_dependency_map(post_text, basename)
     new_names = sorted(name for name in post_deps if name not in pre_deps)
 
     records = [f"{_sanitize_field(name)}@{_sanitize_field(post_deps[name])}" for name in new_names]

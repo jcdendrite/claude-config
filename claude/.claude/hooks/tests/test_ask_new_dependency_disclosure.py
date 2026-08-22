@@ -334,6 +334,342 @@ class TestComputeNewDependencyNamesSanitizeSortCap:
             assert marker == f"…and {expect_elided} more"
 
 
+class TestComputeNewDependencyNamesRequirementsTxt:
+    def test_dependency_added_reported(self):
+        pre = "requests==2.30.0\n"
+        post = "requests==2.30.0\nflask==2.0.0\n"
+        tool_input = _write_tool_input(post, file_path="/repo/requirements.txt")
+        assert compute_new_dependency_names(pre, tool_input).records == ["flask@==2.0.0"]
+
+    def test_version_only_bump_not_reported(self):
+        pre = "requests==2.30.0\n"
+        post = "requests==2.31.0\n"
+        tool_input = _write_tool_input(post, file_path="/repo/requirements.txt")
+        assert compute_new_dependency_names(pre, tool_input).records == []
+
+    def test_comment_and_blank_lines_ignored(self):
+        pre = ""
+        post = "# a full-line comment\n\nrequests==2.31.0\n"
+        tool_input = _write_tool_input(post, file_path="/repo/requirements-dev.txt")
+        assert compute_new_dependency_names(pre, tool_input).records == ["requests@==2.31.0"]
+
+    def test_inline_comment_stripped(self):
+        pre = ""
+        post = "requests==2.31.0  # pinned for compatibility\n"
+        tool_input = _write_tool_input(post, file_path="/repo/requirements.txt")
+        assert compute_new_dependency_names(pre, tool_input).records == ["requests@==2.31.0"]
+
+    @pytest.mark.parametrize(
+        "control_line",
+        [
+            "-r other.txt",
+            "--requirement other.txt",
+            "-c constraints.txt",
+            "--constraint constraints.txt",
+            "-e ./local-pkg",
+            "--editable ./local-pkg",
+            "--hash=sha256:deadbeef",
+            "--index-url https://example.com/simple",
+            "--trusted-host example.com",
+            "-i https://example.com/simple",
+        ],
+    )
+    def test_control_lines_skipped_not_read_as_a_dependency_name(self, control_line):
+        """A leading-dash option line names a file, host, or hash, not a
+        package -- reading it as a dependency would report the flag text
+        itself as a fabricated new dependency. Covers every pip global
+        option by leading-dash shape, not just the seven previously
+        enumerated by name."""
+        pre = ""
+        post = f"{control_line}\nrequests==2.31.0\n"
+        tool_input = _write_tool_input(post, file_path="/repo/requirements.txt")
+        assert compute_new_dependency_names(pre, tool_input).records == ["requests@==2.31.0"]
+
+    def test_r_include_of_another_file_is_a_documented_residual_not_followed(self):
+        """A -r other.txt line pulling in a new dependency from that other
+        file is never seen -- only the edited manifest's own text is
+        diffed, never a file it references (documented in the hook's
+        header)."""
+        pre = ""
+        post = "-r other.txt\n"
+        tool_input = _write_tool_input(post, file_path="/repo/requirements.txt")
+        assert compute_new_dependency_names(pre, tool_input).records == []
+
+
+class TestComputeNewDependencyNamesGoMod:
+    def test_single_line_require_added_reported(self):
+        pre = "module example.com/x\n\ngo 1.21\n"
+        post = pre + "\nrequire github.com/foo/bar v1.2.3\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        assert compute_new_dependency_names(pre, tool_input).records == ["github.com/foo/bar@v1.2.3"]
+
+    def test_block_form_require_added_reported(self):
+        pre = "module example.com/x\n\ngo 1.21\n"
+        post = pre + "\nrequire (\n\tgithub.com/foo/bar v1.2.3\n)\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        assert compute_new_dependency_names(pre, tool_input).records == ["github.com/foo/bar@v1.2.3"]
+
+    def test_block_form_multiple_modules_all_reported(self):
+        pre = "module example.com/x\n"
+        post = pre + "\nrequire (\n\tgithub.com/foo/bar v1.2.3\n\tgithub.com/baz/qux v0.9.0\n)\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        delta = compute_new_dependency_names(pre, tool_input)
+        assert delta.records == ["github.com/baz/qux@v0.9.0", "github.com/foo/bar@v1.2.3"]
+
+    def test_trailing_indirect_marker_stripped_single_line(self):
+        pre = "module example.com/x\n"
+        post = pre + "\nrequire github.com/foo/bar v1.2.3 // indirect\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        assert compute_new_dependency_names(pre, tool_input).records == ["github.com/foo/bar@v1.2.3"]
+
+    def test_trailing_indirect_marker_stripped_block_form(self):
+        pre = "module example.com/x\n"
+        post = pre + "\nrequire (\n\tgithub.com/foo/bar v1.2.3 // indirect\n)\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        assert compute_new_dependency_names(pre, tool_input).records == ["github.com/foo/bar@v1.2.3"]
+
+    def test_version_only_bump_not_reported(self):
+        pre = "module example.com/x\n\nrequire github.com/foo/bar v1.2.3\n"
+        post = "module example.com/x\n\nrequire github.com/foo/bar v1.3.0\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        assert compute_new_dependency_names(pre, tool_input).records == []
+
+    def test_full_line_comment_inside_block_not_misread_as_a_module(self):
+        """A `// comment` line inside a require block has no module/version
+        pair -- it must be skipped rather than read as a module named
+        `//`."""
+        pre = "module example.com/x\n"
+        post = pre + "\nrequire (\n\t// see RFC-1 for why this is pinned\n\tgithub.com/foo/bar v1.2.3\n)\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        assert compute_new_dependency_names(pre, tool_input).records == ["github.com/foo/bar@v1.2.3"]
+
+    def test_empty_require_block_reports_no_records(self):
+        pre = "module example.com/x\n"
+        post = pre + "\nrequire (\n)\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        assert compute_new_dependency_names(pre, tool_input).records == []
+
+    def test_require_block_start_with_trailing_comment_detected(self):
+        """A trailing `// direct`/`// indirect` comment on the `require (`
+        line itself must not prevent block-start detection -- a regex
+        anchored right after `(` would silently drop the entire block's
+        contents from the parsed map."""
+        pre = "module example.com/x\n"
+        post = pre + "\nrequire ( // direct\n\tgithub.com/foo/bar v1.2.3\n)\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        assert compute_new_dependency_names(pre, tool_input).records == ["github.com/foo/bar@v1.2.3"]
+
+    def test_block_content_line_shaped_like_single_line_require_not_misparsed(self):
+        """A block-content line coincidentally shaped like the single-line
+        `require module version` grammar must yield the real module and
+        version, not the literal name `require` with the module swallowed
+        as the "version"."""
+        pre = "module example.com/x\n"
+        post = pre + "\nrequire (\n\trequire github.com/foo/bar v1.2.3\n)\n"
+        tool_input = _write_tool_input(post, file_path="/repo/go.mod")
+        assert compute_new_dependency_names(pre, tool_input).records == ["github.com/foo/bar@v1.2.3"]
+
+
+class TestComputeNewDependencyNamesGemfile:
+    def test_gem_added_reported(self):
+        pre = "gem 'rails', '~> 7.0'\n"
+        post = pre + "gem 'pg', '~> 1.5'\n"
+        tool_input = _write_tool_input(post, file_path="/repo/Gemfile")
+        assert compute_new_dependency_names(pre, tool_input).records == ["pg@~> 1.5"]
+
+    def test_version_only_bump_not_reported(self):
+        pre = "gem 'rails', '~> 7.0'\n"
+        post = "gem 'rails', '~> 7.1'\n"
+        tool_input = _write_tool_input(post, file_path="/repo/Gemfile")
+        assert compute_new_dependency_names(pre, tool_input).records == []
+
+    def test_commented_out_gem_line_ignored(self):
+        """The anchored `^\\s*gem` pattern never matches a line starting
+        with `#` -- a commented-out gem must not be read as declared."""
+        pre = ""
+        post = "# gem 'rails', '~> 7.0'\n"
+        tool_input = _write_tool_input(post, file_path="/repo/Gemfile")
+        assert compute_new_dependency_names(pre, tool_input).records == []
+
+    def test_options_after_name_ignored_not_misread_as_constraint(self):
+        pre = ""
+        post = "gem 'rails', require: false\n"
+        tool_input = _write_tool_input(post, file_path="/repo/Gemfile")
+        assert compute_new_dependency_names(pre, tool_input).records == ["rails@"]
+
+    def test_gem_without_constraint(self):
+        pre = ""
+        post = "gem 'pg'\n"
+        tool_input = _write_tool_input(post, file_path="/repo/Gemfile")
+        assert compute_new_dependency_names(pre, tool_input).records == ["pg@"]
+
+
+class TestComputeNewDependencyNamesCargoToml:
+    def test_dependencies_table_addition_reported(self):
+        pre = '[dependencies]\nserde = "1.0"\n'
+        post = pre + 'tokio = "1.35"\n'
+        tool_input = _write_tool_input(post, file_path="/repo/Cargo.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["tokio@1.35"]
+
+    def test_version_only_bump_not_reported(self):
+        pre = '[dependencies]\nserde = "1.0"\n'
+        post = '[dependencies]\nserde = "1.1"\n'
+        tool_input = _write_tool_input(post, file_path="/repo/Cargo.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == []
+
+    def test_dev_dependencies_table_reported(self):
+        pre = ""
+        post = '[dev-dependencies]\nmockito = "1.4"\n'
+        tool_input = _write_tool_input(post, file_path="/repo/Cargo.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["mockito@1.4"]
+
+    def test_build_dependencies_table_reported(self):
+        pre = ""
+        post = '[build-dependencies]\ncc = "1.0"\n'
+        tool_input = _write_tool_input(post, file_path="/repo/Cargo.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["cc@1.0"]
+
+    def test_table_form_dependency_version_key_read(self):
+        pre = ""
+        post = '[dependencies]\ntokio = { version = "1.35", features = ["full"] }\n'
+        tool_input = _write_tool_input(post, file_path="/repo/Cargo.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["tokio@1.35"]
+
+    def test_table_form_dependency_without_version_key_reported_with_empty_constraint(self):
+        """A path/workspace dependency has no `version` key -- still a new
+        declared name, so it must still be reported, just with an empty
+        constraint rather than a crash on the missing key."""
+        pre = ""
+        post = "[dependencies]\ninternal-crate = { workspace = true }\n"
+        tool_input = _write_tool_input(post, file_path="/repo/Cargo.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["internal-crate@"]
+
+    def test_invalid_toml_raises(self):
+        pre = ""
+        post = "[dependencies\nserde = \n"
+        tool_input = _write_tool_input(post, file_path="/repo/Cargo.toml")
+        with pytest.raises(ManifestDeltaError):
+            compute_new_dependency_names(pre, tool_input)
+
+    def test_target_cfg_dependencies_table_reported(self):
+        pre = ""
+        post = '[target.\'cfg(unix)\'.dependencies]\nlibc = "0.2"\n'
+        tool_input = _write_tool_input(post, file_path="/repo/Cargo.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["libc@0.2"]
+
+    def test_workspace_dependencies_table_reported(self):
+        pre = ""
+        post = '[workspace.dependencies]\nserde = "1.0"\n'
+        tool_input = _write_tool_input(post, file_path="/repo/Cargo.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["serde@1.0"]
+
+
+class TestComputeNewDependencyNamesPyprojectToml:
+    def test_project_dependencies_addition_reported(self):
+        pre = '[project]\ndependencies = ["requests>=2.30.0"]\n'
+        post = '[project]\ndependencies = ["requests>=2.30.0", "flask>=2.0.0"]\n'
+        tool_input = _write_tool_input(post, file_path="/repo/pyproject.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["flask@>=2.0.0"]
+
+    def test_version_only_bump_not_reported(self):
+        pre = '[project]\ndependencies = ["requests>=2.30.0"]\n'
+        post = '[project]\ndependencies = ["requests>=2.31.0"]\n'
+        tool_input = _write_tool_input(post, file_path="/repo/pyproject.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == []
+
+    def test_optional_dependencies_group_reported(self):
+        pre = "[project]\n"
+        post = '[project]\n[project.optional-dependencies]\ndev = ["pytest>=8.0.0"]\n'
+        tool_input = _write_tool_input(post, file_path="/repo/pyproject.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["pytest@>=8.0.0"]
+
+    def test_poetry_dependencies_string_form_reported(self):
+        pre = '[tool.poetry.dependencies]\nrequests = "^2.30.0"\n'
+        post = '[tool.poetry.dependencies]\nrequests = "^2.30.0"\nflask = "^2.0.0"\n'
+        tool_input = _write_tool_input(post, file_path="/repo/pyproject.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["flask@^2.0.0"]
+
+    def test_poetry_dependencies_inline_table_form_reported(self):
+        pre = "[tool.poetry.dependencies]\n"
+        post = '[tool.poetry.dependencies]\nflask = { version = "^2.0.0", extras = ["async"] }\n'
+        tool_input = _write_tool_input(post, file_path="/repo/pyproject.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["flask@^2.0.0"]
+
+    def test_poetry_group_dependencies_reported(self):
+        pre = "[tool.poetry]\n"
+        post = '[tool.poetry.group.dev.dependencies]\npytest = "^8.0.0"\n'
+        tool_input = _write_tool_input(post, file_path="/repo/pyproject.toml")
+        assert compute_new_dependency_names(pre, tool_input).records == ["pytest@^8.0.0"]
+
+    def test_deeply_nested_toml_raises_rather_than_crashing(self):
+        """Pathological nesting exhausts the interpreter's recursion limit
+        (RecursionError), not tomllib.TOMLDecodeError -- both must surface
+        as ManifestDeltaError per compute_new_dependency_names's documented
+        contract, not an uncaught crash."""
+        pre = ""
+        post = "a=" + "{b=" * 3000 + "1" + "}" * 3000
+        tool_input = _write_tool_input(post, file_path="/repo/pyproject.toml")
+        with pytest.raises(ManifestDeltaError):
+            compute_new_dependency_names(pre, tool_input)
+
+
+class TestComputeNewDependencyNamesUnrecognizedBasename:
+    def test_unrecognized_basename_raises_rather_than_silently_treated_as_json(self):
+        """An unrecognized manifest basename must never fall through to the
+        JSON parser -- that would silently misparse arbitrary text as an
+        empty dependency object instead of surfacing to the caller's
+        degraded-ask path."""
+        tool_input = _write_tool_input("anything", file_path="/repo/setup.cfg")
+        with pytest.raises(ManifestDeltaError):
+            compute_new_dependency_names("", tool_input)
+
+
+def _extract_bash_recognized_basenames() -> set[str]:
+    """Pulls the Step 3 case pattern's recognized-basename set out of
+    ask-new-dependency-disclosure.sh's actual source (not a hand-retyped
+    copy), mirroring test_hook_alignment.py's extract-from-real-source
+    pattern -- proves the real bash gate, not a stand-in string."""
+    source = DISCLOSURE_HOOK.read_text()
+    match = re.search(r'case "\$BASENAME" in\n\s*(.+?)\)\s*;;', source)
+    assert match, f"Step 3 case pattern not found in {DISCLOSURE_HOOK}"
+    return {arm.strip() for arm in match.group(1).split("|")}
+
+
+def _extract_python_recognized_basenames() -> set[str]:
+    """Pulls the basename set _manifest_dependency_map dispatches on out of
+    parse-manifest-dependencies.py's actual source."""
+    source = PARSER_PATH.read_text()
+    dispatch_start = source.index("def _manifest_dependency_map")
+    dispatch_end = source.index("\ndef ", dispatch_start + 1)
+    body = source[dispatch_start:dispatch_end]
+    basenames: set[str] = set()
+    basenames.update(re.findall(r'basename == "([^"]+)"', body))
+    basenames.update(re.findall(r'fnmatch\.fnmatchcase\(basename, "([^"]+)"\)', body))
+    for tuple_literal in re.findall(r"basename in \(([^)]+)\)", body):
+        basenames.update(re.findall(r'"([^"]+)"', tuple_literal))
+    return basenames
+
+
+class TestBashPythonRecognizedManifestSetParity:
+    """ask-new-dependency-disclosure.sh's Step 3 bash case pattern and
+    parse-manifest-dependencies.py's _manifest_dependency_map if-chain each
+    hardcode the same recognized-basename set independently, with nothing
+    else in the repo enforcing they agree -- a format added to one side and
+    not the other would either silently allow-through-unasked (bash ahead)
+    or degrade-ask on every edit to a format bash already gates on (Python
+    ahead)."""
+
+    def test_bash_and_python_recognize_the_same_basename_set(self):
+        bash_basenames = _extract_bash_recognized_basenames()
+        python_basenames = _extract_python_recognized_basenames()
+        # Guards against a regex that silently matches nothing on both
+        # sides, which would make the equality assertion below vacuously
+        # true.
+        assert bash_basenames, "extraction found no bash-side basenames -- regex likely broken"
+        assert python_basenames, "extraction found no python-side basenames -- regex likely broken"
+        assert bash_basenames == python_basenames
+
+
 class TestParseManifestDependenciesPythonFloor:
     def test_source_parses_under_python_3_11_syntax(self):
         """ruff's target-version=py312 governs lint style repo-wide, not
@@ -558,7 +894,7 @@ def test_run_disclosure_positive_control_detects_nonzero_exit(tmp_path):
     assert returncode == 1
 
 
-def _package_json(tmp_path: Path, content: str, name: str = "package.json") -> Path:
+def _manifest_file(tmp_path: Path, content: str, name: str = "package.json") -> Path:
     manifest = tmp_path / name
     manifest.write_text(content)
     return manifest
@@ -625,9 +961,30 @@ class TestHookFilterSteps:
 
     # ---- Step 3: basename, case-sensitive ------------------------------
 
-    @pytest.mark.parametrize("basename", ["Package.json", "Package.JSON", "package.JSON", "notpackage.json"])
+    @pytest.mark.parametrize(
+        "basename",
+        [
+            "Package.json",
+            "Package.JSON",
+            "package.JSON",
+            "notpackage.json",
+            "Requirements.txt",
+            "REQUIREMENTS.TXT",
+            "requirements.TXT",
+            "myrequirements.txt",  # glob is anchored to "requirements*.txt", not a substring match
+            "requirements.txt.bak",
+            "Go.mod",
+            "GO.MOD",
+            "gemfile",
+            "GEMFILE",
+            "cargo.toml",
+            "CARGO.TOML",
+            "Pyproject.toml",
+            "PYPROJECT.TOML",
+        ],
+    )
     def test_non_lowercase_basename_silent_allow(self, basename, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, '{"dependencies":{}}', name=basename)
+        manifest = _manifest_file(tmp_path, '{"dependencies":{}}', name=basename)
         payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
         returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
         assert returncode == 0
@@ -649,7 +1006,7 @@ class TestHookFilterSteps:
     def test_excluded_directory_silent_allow(self, relative_dir, isolated_home, tmp_path):
         target_dir = tmp_path / relative_dir
         target_dir.mkdir(parents=True)
-        manifest = _package_json(target_dir, '{"dependencies":{}}')
+        manifest = _manifest_file(target_dir, '{"dependencies":{}}')
         payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
         returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
         assert returncode == 0
@@ -669,7 +1026,7 @@ class TestHookFilterSteps:
         largest silent bypass in this hook's design."""
         target_dir = tmp_path / relative_dir
         target_dir.mkdir(parents=True)
-        manifest = _package_json(target_dir, '{"dependencies":{}}')
+        manifest = _manifest_file(target_dir, '{"dependencies":{}}')
         payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
         assert run_hook(DISCLOSURE_HOOK, payload, home=isolated_home) == "ask"
 
@@ -700,7 +1057,7 @@ class TestHookFilterSteps:
         farm_dir = tmp_path / "path-farm"
         farm_dir.mkdir()
         restricted_path = build_path_without("python3", farm_dir)
-        manifest = _package_json(tmp_path, '{"dependencies":{}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{}}')
         payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
         returncode, stdout, _stderr = _run_disclosure(
             payload, home=isolated_home, extra_env={"PATH": restricted_path}
@@ -719,7 +1076,7 @@ class TestHookFilterSteps:
         shim.write_text("#!/bin/bash\nexit 1\n")
         shim.chmod(0o755)
         broken_path = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
-        manifest = _package_json(tmp_path, '{"dependencies":{}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{}}')
         payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
         returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home, extra_env={"PATH": broken_path})
         assert returncode == 0
@@ -729,7 +1086,7 @@ class TestHookFilterSteps:
         farm_dir = tmp_path / "path-farm"
         farm_dir.mkdir()
         restricted_path = build_path_without("jq", farm_dir)
-        manifest = _package_json(tmp_path, '{"dependencies":{}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{}}')
         payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
         returncode, stdout, _stderr = _run_disclosure(
             payload, home=isolated_home, extra_env={"PATH": restricted_path}
@@ -740,7 +1097,7 @@ class TestHookFilterSteps:
     # ---- Step 7: helper spawn -------------------------------------------
 
     def test_helper_success_new_dependency_asks(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
         payload = edit_input(
             str(manifest),
             old_string='{"dependencies":{"lodash":"^4.0.0"}}',
@@ -749,7 +1106,7 @@ class TestHookFilterSteps:
         assert run_hook(DISCLOSURE_HOOK, payload, home=isolated_home) == "ask"
 
     def test_helper_success_empty_diff_silent_allow(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
         payload = edit_input(
             str(manifest),
             old_string='{"dependencies":{"lodash":"^4.0.0"}}',
@@ -760,26 +1117,120 @@ class TestHookFilterSteps:
         assert stdout == ""
 
     def test_helper_failure_unparseable_pre_state_degraded_ask(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, "not valid json{{{")
+        manifest = _manifest_file(tmp_path, "not valid json{{{")
         payload = edit_input(str(manifest), old_string="x", new_string="y")
         reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
         assert reason is not None
         assert "dependency delta could not be determined" in reason
 
 
+class TestHookRecognizesNewManifestFormats:
+    """End-to-end proof that step 3's widened case pattern actually reaches
+    the helper for each newly-recognized basename -- the Tier 1 classes
+    above pin the parsers in isolation, but only a subprocess run proves
+    the bash glob (requirements*.txt) and exact-name matches (go.mod,
+    Gemfile, Cargo.toml, pyproject.toml) actually dispatch to them."""
+
+    def test_requirements_txt_dependency_added_asks(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, "requests==2.30.0\n", name="requirements.txt")
+        payload = write_input(str(manifest), content="requests==2.30.0\nflask==2.0.0\n")
+        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
+        assert reason is not None
+        assert "flask@==2.0.0" in reason
+
+    def test_requirements_dev_txt_glob_match_asks(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, "", name="requirements-dev.txt")
+        payload = write_input(str(manifest), content="pytest==8.0.0\n")
+        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
+        assert reason is not None
+        assert "pytest@==8.0.0" in reason
+
+    def test_go_mod_dependency_added_asks(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, "module example.com/x\n", name="go.mod")
+        payload = write_input(str(manifest), content="module example.com/x\n\nrequire github.com/foo/bar v1.2.3\n")
+        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
+        assert reason is not None
+        assert "github.com/foo/bar@v1.2.3" in reason
+
+    def test_gemfile_dependency_added_asks(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, "", name="Gemfile")
+        payload = write_input(str(manifest), content="gem 'pg', '~> 1.5'\n")
+        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
+        assert reason is not None
+        assert "pg@~> 1.5" in reason
+
+    def test_cargo_toml_dependency_added_asks(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, "", name="Cargo.toml")
+        payload = write_input(str(manifest), content='[dependencies]\ntokio = "1.35"\n')
+        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
+        assert reason is not None
+        assert "tokio@1.35" in reason
+
+    def test_pyproject_toml_dependency_added_asks(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, "", name="pyproject.toml")
+        payload = write_input(str(manifest), content='[project]\ndependencies = ["flask>=2.0.0"]\n')
+        reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
+        assert reason is not None
+        assert "flask@>=2.0.0" in reason
+
+
+class TestHookRecognizesNewManifestFormatsNoAskCases:
+    """Sibling no-ask coverage to TestHookRecognizesNewManifestFormats,
+    mirroring test_helper_success_empty_diff_silent_allow's shape -- proves
+    silent allow, not just the ask path, is reachable through the widened
+    step 3 case pattern for each newly-recognized basename."""
+
+    def test_requirements_txt_comment_only_edit_silent_allow(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, "requests==2.30.0\n", name="requirements.txt")
+        payload = write_input(str(manifest), content="# pinned for compatibility\nrequests==2.30.0\n")
+        returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
+        assert returncode == 0
+        assert stdout == ""
+
+    def test_go_mod_version_only_bump_silent_allow(self, isolated_home, tmp_path):
+        manifest = _manifest_file(
+            tmp_path, "module example.com/x\n\nrequire github.com/foo/bar v1.2.3\n", name="go.mod"
+        )
+        payload = write_input(str(manifest), content="module example.com/x\n\nrequire github.com/foo/bar v1.3.0\n")
+        returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
+        assert returncode == 0
+        assert stdout == ""
+
+    def test_gemfile_version_only_bump_silent_allow(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, "gem 'rails', '~> 7.0'\n", name="Gemfile")
+        payload = write_input(str(manifest), content="gem 'rails', '~> 7.1'\n")
+        returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
+        assert returncode == 0
+        assert stdout == ""
+
+    def test_cargo_toml_version_only_bump_silent_allow(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, '[dependencies]\nserde = "1.0"\n', name="Cargo.toml")
+        payload = write_input(str(manifest), content='[dependencies]\nserde = "1.1"\n')
+        returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
+        assert returncode == 0
+        assert stdout == ""
+
+    def test_pyproject_toml_version_only_bump_silent_allow(self, isolated_home, tmp_path):
+        manifest = _manifest_file(tmp_path, '[project]\ndependencies = ["requests>=2.30.0"]\n', name="pyproject.toml")
+        payload = write_input(str(manifest), content='[project]\ndependencies = ["requests>=2.31.0"]\n')
+        returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
+        assert returncode == 0
+        assert stdout == ""
+
+
 class TestHookMustNotFireCases:
     def test_version_bump_only_allowed(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
         payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.1.0"}}')
         assert run_hook(DISCLOSURE_HOOK, payload, home=isolated_home) == "allow"
 
     def test_dependency_moved_between_sections_allowed(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
         payload = write_input(str(manifest), content='{"devDependencies":{"lodash":"^4.0.0"}}')
         assert run_hook(DISCLOSURE_HOOK, payload, home=isolated_home) == "allow"
 
     def test_wholesale_reformat_via_write_allowed(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
         payload = write_input(str(manifest), content='{\n  "dependencies": {\n    "lodash": "^4.0.0"\n  }\n}\n')
         assert run_hook(DISCLOSURE_HOOK, payload, home=isolated_home) == "allow"
 
@@ -788,13 +1239,13 @@ class TestHookMustNotFireCases:
         """Not asserting broader coverage than the diff actually provides:
         scripts.preinstall/postinstall is deliberate non-coverage (see
         docs/security-hardening.md), not a claim these fields are safe."""
-        manifest = _package_json(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
         content = json.dumps({"dependencies": {"lodash": "^4.0.0"}, field: {"x": "1"}})
         payload = write_input(str(manifest), content=content)
         assert run_hook(DISCLOSURE_HOOK, payload, home=isolated_home) == "allow"
 
     def test_multiedit_replace_all_net_zero_allowed(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{"lodash":"^4.0.0"}}')
         edits = [
             {
                 "old_string": '{"dependencies":{"lodash":"^4.0.0"}}',
@@ -818,7 +1269,7 @@ class TestHookReasonContent:
     def test_reason_names_every_added_package_not_just_the_first(self, isolated_home, tmp_path):
         """A head-1 bug would pass a single-name check; this requires both
         added names to appear."""
-        manifest = _package_json(tmp_path, "{}")
+        manifest = _manifest_file(tmp_path, "{}")
         content = json.dumps({"dependencies": {"lodash": "^4.0.0", "left-pad": "^1.3.0"}})
         payload = write_input(str(manifest), content=content)
         reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
@@ -827,7 +1278,7 @@ class TestHookReasonContent:
         assert "left-pad@^1.3.0" in reason
 
     def test_reason_does_not_name_pre_existing_dependencies_or_scripts_key(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, '{"dependencies":{"existing-pkg":"^1.0.0"}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{"existing-pkg":"^1.0.0"}}')
         content = json.dumps(
             {
                 "dependencies": {"existing-pkg": "^1.0.0", "new-pkg": "^2.0.0"},
@@ -842,7 +1293,7 @@ class TestHookReasonContent:
         assert "scripts" not in reason
 
     def test_cap_marker_present_only_past_ten_new_dependencies(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, "{}")
+        manifest = _manifest_file(tmp_path, "{}")
         deps = {f"pkg{i:02d}": "^1.0.0" for i in range(12)}
         content = json.dumps({"dependencies": deps})
         payload = write_input(str(manifest), content=content)
@@ -858,7 +1309,7 @@ class TestHookDegradedAskDistinguishedFromOrdinaryAsk:
     path silently never fires."""
 
     def test_oversized_manifest_degraded_reason_has_no_package_names(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, "{}")
+        manifest = _manifest_file(tmp_path, "{}")
         payload = edit_input(str(manifest), old_string="x", new_string="y")
         manifest.write_bytes(b" " * 5242881)
         reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
@@ -867,7 +1318,7 @@ class TestHookDegradedAskDistinguishedFromOrdinaryAsk:
         assert "@" not in reason  # no name@constraint record leaked into a degraded reason
 
     def test_same_manifest_under_threshold_gets_the_ordinary_ask(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, '{"dependencies":{}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{}}')
         payload = edit_input(
             str(manifest),
             old_string='{"dependencies":{}}',
@@ -879,7 +1330,7 @@ class TestHookDegradedAskDistinguishedFromOrdinaryAsk:
         assert "dependency delta could not be determined" not in reason
 
     def test_malformed_pre_state_degraded_reason_has_no_package_names(self, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, "not valid json{{{")
+        manifest = _manifest_file(tmp_path, "not valid json{{{")
         payload = edit_input(str(manifest), old_string="x", new_string="y")
         reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
         assert reason is not None
@@ -893,7 +1344,7 @@ class TestHookDegradedAskDistinguishedFromOrdinaryAsk:
         shim_dir = tmp_path / "shim"
         shim_dir.mkdir()
         below_floor_path = _python3_version_floor_shim(shim_dir, meets_floor=False)
-        manifest = _package_json(tmp_path, '{"dependencies":{}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{}}')
         payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
         reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home, extra_env={"PATH": below_floor_path})
         assert reason is not None
@@ -906,7 +1357,7 @@ class TestHookDegradedAskDistinguishedFromOrdinaryAsk:
         shim_dir = tmp_path / "shim"
         shim_dir.mkdir()
         at_floor_path = _python3_version_floor_shim(shim_dir, meets_floor=True)
-        manifest = _package_json(tmp_path, '{"dependencies":{}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{}}')
         payload = write_input(str(manifest), content='{"dependencies":{"lodash":"^4.0.0"}}')
         reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home, extra_env={"PATH": at_floor_path})
         assert reason is not None
@@ -950,7 +1401,7 @@ class TestHookEnvelopeIntegrity:
         ids=["quote", "backslash", "injection-shaped"],
     )
     def test_hostile_dependency_name_round_trips_through_the_envelope(self, hostile_name, isolated_home, tmp_path):
-        manifest = _package_json(tmp_path, "{}")
+        manifest = _manifest_file(tmp_path, "{}")
         content = json.dumps({"dependencies": {hostile_name: "^1.0.0"}})
         payload = write_input(str(manifest), content=content)
         returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
@@ -971,7 +1422,7 @@ class TestHookEnvelopeIntegrity:
     def test_hostile_version_constraint_round_trips_through_the_envelope(
         self, hostile_constraint, isolated_home, tmp_path
     ):
-        manifest = _package_json(tmp_path, "{}")
+        manifest = _manifest_file(tmp_path, "{}")
         content = json.dumps({"dependencies": {"some-pkg": hostile_constraint}})
         payload = write_input(str(manifest), content=content)
         returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
@@ -988,7 +1439,7 @@ class TestHookEnvelopeIntegrity:
     def test_hostile_directory_name_on_degraded_ask_path_round_trips(self, hostile_dirname, isolated_home, tmp_path):
         target_dir = tmp_path / hostile_dirname
         target_dir.mkdir()
-        manifest = _package_json(target_dir, "{}")
+        manifest = _manifest_file(target_dir, "{}")
         payload = edit_input(str(manifest), old_string="x", new_string="y")
         manifest.write_bytes(b" " * 5242881)  # forces the degraded-ask path
         returncode, stdout, _stderr = _run_disclosure(payload, home=isolated_home)
@@ -1004,7 +1455,7 @@ class TestHookEnvelopeIntegrity:
         helper's own sanitizer."""
         target_dir = tmp_path / "safe-‮drive.sh"  # RLO
         target_dir.mkdir()
-        manifest = _package_json(target_dir, "{}")
+        manifest = _manifest_file(target_dir, "{}")
         payload = edit_input(str(manifest), old_string="x", new_string="y")
         manifest.write_bytes(b" " * 5242881)
         reason = run_hook_reason(DISCLOSURE_HOOK, payload, home=isolated_home)
@@ -1019,7 +1470,7 @@ class TestHookSubagentBehavior:
         code-writer subagent's tool calls as for the top-level session.
         Whether the ask actually RENDERS to the human for a subagent stays
         Anthropic's contract, not something this hook controls."""
-        manifest = _package_json(tmp_path, '{"dependencies":{}}')
+        manifest = _manifest_file(tmp_path, '{"dependencies":{}}')
         payload = edit_input(
             str(manifest),
             old_string='{"dependencies":{}}',

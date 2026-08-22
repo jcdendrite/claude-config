@@ -1,7 +1,8 @@
 #!/bin/bash
 # hook-class: informational
 # Gate: ask (never deny) when an Edit/Write/MultiEdit call adds a
-# dependency name to a package.json that wasn't already declared —
+# dependency name to a recognized manifest (package.json, requirements*.txt,
+# go.mod, Gemfile, Cargo.toml, pyproject.toml) that wasn't already declared —
 # reminder layer for claude/.claude/CLAUDE.md's §Safety "Name every new
 # package before it is fetched" duty. See docs/security-hardening.md for
 # the three-layer design and the full named-residuals list.
@@ -33,10 +34,12 @@
 # subprocess today:
 #   1. tool_name in Edit|Write|MultiEdit, else silent allow.
 #   2. tool_input.file_path non-empty, else silent allow.
-#   3. basename == "package.json", case-sensitive, else silent allow --
-#      deliberate: this repo targets stock macOS, where APFS is
-#      case-insensitive-preserving by default, but the manifest name
-#      itself is a fixed, always-lowercase npm convention.
+#   3. basename in the recognized-manifest set (package.json,
+#      requirements*.txt, go.mod, Gemfile, Cargo.toml, pyproject.toml),
+#      case-sensitive, else silent allow -- deliberate: this repo targets
+#      stock macOS, where APFS is case-insensitive-preserving by default,
+#      but every one of these manifest names is a fixed-case ecosystem
+#      convention.
 #   4. path excludes node_modules/, fixtures/, __fixtures__/, test-data/
 #      as whole path segments (not a substring match -- "my-fixtures-app"
 #      must not exclude), else silent allow. A vendored or test-fixture
@@ -82,8 +85,14 @@
 #   - `npm pkg set dependencies.<name>=<ver>` writes a manifest entry with
 #     no ask -- the highest-priority follow-up of this hook family, since
 #     it reproduces the originating incident end-to-end.
-#   - Non-`package.json` ecosystems (including this repo's own
-#     `requirements.txt`) and lockfiles aren't covered.
+#   - Lockfiles (package-lock.json, Cargo.lock, Gemfile.lock, go.sum) and
+#     ecosystems outside the recognized set (step 3) aren't covered.
+#   - `requirements*.txt`'s `-r other.txt`/`-c other.txt` includes aren't
+#     followed -- only the edited manifest's own text is diffed, never a
+#     file it references.
+#   - `requirements*.txt`'s `-e`/`--editable` lines are skipped entirely --
+#     a dependency introduced only via an editable install is invisible to
+#     the diff.
 
 set -uo pipefail
 
@@ -113,7 +122,7 @@ FILE_PATH=$(printf '%s' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty' 2
 # --- Step 3 (case-sensitive; deliberate, see header) ------------------
 BASENAME=$(basename -- "$FILE_PATH")
 case "$BASENAME" in
-  package.json) ;;
+  package.json | requirements*.txt | go.mod | Gemfile | Cargo.toml | pyproject.toml) ;;
   *) exit 0 ;;
 esac
 
