@@ -27,18 +27,25 @@ in review; the shared helper resolves it, not just the duplication note).
 Match strength, tightened past a bare substring `endswith` after
 `staff-sdet` review flagged that a hook name appearing as a trailing CLI
 argument to an unrelated dispatcher script would false-positive "wired":
+the helper `shlex.split()`s the command (not a bare whitespace `.split()` —
+a second `staff-sdet` pass on the cumulative diff flagged that a whitespace
+split has no notion of shell quoting, so pairing it with an
+`expected_invocation` written to match today's quoting convention held only
+by coincidence of current data, not by guarantee) and requires the **last**
+shell word to equal `expected_invocation` exactly, ruling out the hook name
+appearing as a non-final argument. Same comparison for both branches, only
+`expected_invocation` differs:
 - **Main-dir hooks**: every current `settings.json` entry is a bare
   `~/.claude/hooks/<name>.sh` with no arguments
-  [verified: `claude/.claude/settings.json`, dumped in-session], so the
-  helper requires exact string equality against
-  `f"~/.claude/hooks/{hook.name}"` — not a substring match.
+  [verified: `claude/.claude/settings.json`, dumped in-session], so
+  `expected_invocation = f"~/.claude/hooks/{hook.name}"`.
 - **Plugin-dir hooks**: every current plugin `hooks.json` entry is zero or
   more `VAR="${VAR}"`-shaped env assignments followed by a final
   `"${CLAUDE_PLUGIN_ROOT}"/hooks/<name>.sh` token
-  [verified: all 4 `plugins/*/hooks/hooks.json`, dumped in-session], so the
-  helper splits the command on whitespace and requires the **last** token to
-  equal `f'"${{CLAUDE_PLUGIN_ROOT}}"/hooks/{hook.name}'` exactly — ruling out
-  the hook name appearing as a non-final argument.
+  [verified: all 4 `plugins/*/hooks/hooks.json`, dumped in-session], so
+  `expected_invocation = f"${{CLAUDE_PLUGIN_ROOT}}/hooks/{hook.name}"` —
+  quote characters omitted, since `shlex.split()` strips them from the
+  parsed word.
 
 This still can't distinguish "invoked as the final argument to a wrapper
 script" from "invoked directly" — that distinction needs execution, not
@@ -75,11 +82,11 @@ fire on PreToolUse" [verified: test_hook_alignment.py TestHookClassHeader's
 test_hook_class_value_valid docstring] — anchors: row1
 Row 3 [assumption]: plugin PreToolUse registration uses the same
 {matcher, hooks: [{command}]} shape as claude/.claude/settings.json, so one
-scan helper serves both [verified:
-plugins/skill-management/hooks/hooks.json] — anchors: row1
+scan helper serves both [verified: all 4 plugins/*/hooks/hooks.json,
+dumped in-session] — anchors: row1
 Row 4 [assumption]: every current gate hook's command string is either a
-bare `~/.claude/hooks/<name>.sh` (main dir) or ends, as its last
-whitespace-separated token, in `"${CLAUDE_PLUGIN_ROOT}"/hooks/<name>.sh`
+bare `~/.claude/hooks/<name>.sh` (main dir) or ends, as its last shell
+word (shlex-tokenized), in `${CLAUDE_PLUGIN_ROOT}/hooks/<name>.sh`
 (plugin dir) — no current command takes CLI arguments after the hook path
 [verified: claude/.claude/settings.json + all 4
 plugins/*/hooks/hooks.json, dumped in-session] — anchors: row1
@@ -88,11 +95,11 @@ plugins/*/hooks/hooks.json, dumped in-session] — anchors: row1
 ## Critical files
 
 - `claude/.claude/hooks/tests/test_hook_alignment.py`:
-  - Add `_pretooluse_command_for(hook) -> Path` helper (or equivalent) that
-    picks `_SETTINGS_PATH` for a hook under `_MAIN_HOOKS_DIR` and
+  - Add `_pretooluse_command_for(hook) -> list[str]` helper that picks
+    `_SETTINGS_PATH` for a hook under `_MAIN_HOOKS_DIR` and
     `hook.parent / "hooks.json"` for a hook under any `_PLUGIN_HOOKS_DIRS`
-    entry, then returns the matched command strings per the exact/
-    last-token matching rules above.
+    entry, then returns the matched command strings per the shlex
+    last-word matching rule above.
   - Refactor `test_gate_backed_skill_has_a_live_gate`'s inline wired-scan
     (lines 207–220, currently `settings.json`-only, `endswith`-matched) to
     call the same helper, so main-dir matching semantics live in one place.

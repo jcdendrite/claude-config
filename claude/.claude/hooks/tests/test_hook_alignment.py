@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -152,16 +153,20 @@ _SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.json"
 
 def _pretooluse_command_for(hook: Path) -> list[str]:
     """Every PreToolUse command wired to `hook`, matched by exact equality on
-    the command's last whitespace-separated token — not a substring/endswith
-    match, which would also match a hook name appearing as a non-final CLI
-    argument to an unrelated script.
+    the command's last shell word — not a substring/endswith match, which
+    would also match a hook name appearing as a non-final CLI argument to an
+    unrelated script. Tokenized with shlex, which parses shell quoting, so
+    the match stays correct regardless of a plugin author's quoting style —
+    a bare whitespace split has no notion of quoting at all, so pairing it
+    with an `expected_invocation` written to match today's quoting
+    convention is a coincidence of current data, not a guarantee.
     """
     if hook.parent == _MAIN_HOOKS_DIR:
         config_path = _SETTINGS_PATH
         expected_invocation = f"~/.claude/hooks/{hook.name}"
     else:
         config_path = hook.parent / "hooks.json"
-        expected_invocation = f'"${{CLAUDE_PLUGIN_ROOT}}"/hooks/{hook.name}'
+        expected_invocation = f"${{CLAUDE_PLUGIN_ROOT}}/hooks/{hook.name}"
 
     assert config_path.is_file(), (
         f"{hook.name}: expected registration config {config_path} does not "
@@ -176,7 +181,7 @@ def _pretooluse_command_for(hook: Path) -> list[str]:
             if not isinstance(entry, dict):
                 continue
             command = entry.get("command", "")
-            tokens = command.split()
+            tokens = shlex.split(command)
             if tokens and tokens[-1] == expected_invocation:
                 matched.append(command)
     return matched
