@@ -28,13 +28,18 @@ if [[ "$#" -ne 1 ]] || [[ -z "$1" ]]; then
   exit 2
 fi
 PR_NUMBER="$1"
+if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "Usage: $(basename "$0") <pr-number>" >&2
+  echo "CI_RESULT: error pr-number must be numeric, got: ${PR_NUMBER}"
+  exit 2
+fi
 
 if ! command -v gh &>/dev/null; then
   echo "CI_RESULT: error gh not installed"
   exit 1
 fi
 
-STDERR_FILE=$(mktemp -t ci-watch-stderr) || {
+STDERR_FILE=$(mktemp -t ci-watch-stderr.XXXXXX) || {  # GNU mktemp requires the XXXXXX suffix; a bare prefix is BSD-only.
   echo "CI_RESULT: error could not create temp file for stderr capture"
   exit 1
 }
@@ -49,11 +54,9 @@ if ! LAUNCH_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>"
 fi
 echo "LAUNCH_SHA: ${LAUNCH_SHA}"
 
-# Only the literal zero-checks error text is parsed below; --watch's exit
-# code and per-poll output are not reliable signals.
-# 2>&1: gh writes the zero-checks error to stderr, not stdout.
-# A transient --watch failure and a late-registering "pending" check both
-# land here indistinguishably — accepted, not retried.
+# Parses only the literal zero-checks text — --watch's exit code/output
+# (2>&1, since gh writes it to stderr) can't otherwise distinguish a
+# transient failure from a late-registering "pending" check.
 WATCH_OUTPUT=$(gh pr checks "$PR_NUMBER" --watch 2>&1) || true
 
 if printf '%s' "$WATCH_OUTPUT" | grep -q 'no checks reported'; then

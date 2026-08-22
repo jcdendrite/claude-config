@@ -184,7 +184,7 @@ Steps 1 and 6 launch this; it resolves after the gate has finished, possibly hou
 | `CI_RESULT: checks <json>` | Resolve below. |
 
 **On resolve:**
-1. **Staleness.** If `gh pr view --json headRefOid` no longer matches the `LAUNCH_SHA` in that output, report "superseded by a newer push, no action taken" and stop.
+1. **Staleness.** If `gh pr view --json headRefOid` no longer matches the `LAUNCH_SHA` in that output, report "superseded by a newer push, no action taken" and stop. If that `gh pr view` call itself fails, report "couldn't determine CI status for PR `<n>` — check `gh pr checks <n>` yourself" and stop, same as a `CI_RESULT: error` above.
 2. **Buckets.** First row matching any check in the snapshot wins:
 
    | Bucket present | Report |
@@ -193,6 +193,7 @@ Steps 1 and 6 launch this; it resolves after the gate has finished, possibly hou
    | `pending` | "Still pending, re-check" — a check registered after the watch saw a terminal state. |
    | `pass` | One-line success confirmation. Done. |
    | `skipping` / `cancel` only | Nothing ran: report neutrally — no diagnosis, no "passed" claim. Done. |
+   | *(none — empty array)* | All checks were removed or reconfigured mid-watch: report "no CI checks remain configured for this PR" — same as `CI_RESULT: none`, not a failure. Done. |
 
 3. **Diagnose.** Dispatch `general-purpose` (`model: sonnet`) to run `/root-cause-analysis` on the failing checks, instructed to check first whether step 2's local run of the same suite passed — a local-pass/CI-fail split is that skill's Stage C asymmetry signal — and to obey step 2's "Test-to-fit is forbidden." If the dispatch fails or never returns, report that and name the failing checks; no retry.
 4. **Offer, don't act.** Report the diagnosis and offer a fix. Dispatch `code-writer` (`model: sonnet`) only on explicit user confirmation; without it, stop and do not re-offer — the diagnosis stays available if the user raises it again.

@@ -23,11 +23,9 @@ import pytest
 _SCRIPT = Path(__file__).parent.parent / "ci-watch.sh"
 
 _PR_NUMBER = "713"
-# A placeholder value, not a real commit SHA — ci-watch.sh treats this as
-# an opaque string, so it need not look hex-shaped. Deliberately non-hex
-# (contains 'z') to avoid the redaction gate's long-hex-identifier detector,
-# which pattern-matches on shape alone and can't distinguish real from
-# fabricated.
+# Opaque placeholder (ci-watch.sh doesn't validate SHA shape) — deliberately
+# non-hex ('z') to dodge the redaction gate's shape-only long-hex-identifier
+# detector.
 _HEAD_SHA = "placeholder-sha-not-a-real-commit-zzzzz"
 
 
@@ -48,8 +46,8 @@ def _gh_shim_source(
     watch_output  -> the combined stdout+stderr text `gh pr checks --watch`
                       writes (ci-watch.sh discards its exit code, so this is
                       the only channel the script actually reads)
-    watch_exit    -> the exit code `--watch` itself returns (ci-watch.sh
-                      ignores this — asserted here only to document that)
+    watch_exit    -> the exit code `--watch` itself returns; ci-watch.sh
+                      ignores it and reads WATCH_OUTPUT instead
     json_fails    -> the follow-up `gh pr checks --json ...` call exits
                       non-zero with no stdout
     json_stderr   -> stderr text that call writes when it fails
@@ -138,6 +136,13 @@ def test_usage_error_on_empty_arg():
     assert "CI_RESULT: error" in result.stdout
 
 
+def test_usage_error_on_non_numeric_arg():
+    result = _run({**os.environ}, "not-a-number")
+    assert result.returncode == 2
+    assert "Usage:" in result.stderr
+    assert "CI_RESULT: error" in result.stdout
+
+
 def test_zero_checks_reports_none(fake_gh):
     env = fake_gh(
         watch_output="no checks reported on the 'defer-ci-check-to-end' branch\n",
@@ -202,15 +207,9 @@ def test_head_sha_lookup_failure_reports_error_before_watch(fake_gh):
 
 
 def test_missing_gh_reports_error(tmp_path):
-    # ci-watch.sh's own shebang (`#!/usr/bin/env bash`) needs `bash` on
-    # PATH to even start, so a bare empty PATH can't isolate "gh missing"
-    # from "bash missing" (env exits 127, not the script's own error path).
-    # The "gh missing" branch exits before any other external command runs
-    # (checked ahead of the mktemp call), so an allowlist PATH containing
-    # only a bash symlink is sufficient — no need to scan and filter the
-    # real PATH for gh's location, matching the simpler, more robust
-    # allowlist pattern test_cleanup_idle_open_pr_worktrees.py's own
-    # "gh missing" test already uses.
+    # PATH must keep bash (needed for the shebang) but exclude gh; an
+    # allowlist works because the "gh missing" check runs before any other
+    # external command.
     bash_only_dir = tmp_path / "bash_only"
     bash_only_dir.mkdir()
     (bash_only_dir / "bash").symlink_to(shutil.which("bash"))
