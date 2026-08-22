@@ -1548,6 +1548,75 @@ class TestReviewPrCompletionMarkerGate:
             == "deny"
         )
 
+    def test_graphql_submit_review_approve_denied_even_when_otherwise_fully_authorized(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """submitPullRequestReview is the GraphQL twin of `gh pr review` --
+        its event: APPROVE value is a query-string literal, not a -f/-F
+        flag, so neither the CLI nor REST denylist matches it. A `pulls/N/`
+        substring anywhere in the query text (a plausible in-context
+        reference, not an obfuscation trick) satisfies the PR-number
+        extraction the same way a real REST call's URL would."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        _, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = (
+            "gh api graphql -f query='mutation { submitPullRequestReview(input: "
+            '{reviewId: "PRR_abc", event: APPROVE}) { clientMutationId } }'
+            f" # ref pulls/{REVIEW_PR_PR_NUMBER}/ for context'"
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_graphql_submit_review_comment_denied_even_when_otherwise_fully_authorized(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """The GraphQL denylist covers the whole submitPullRequestReview
+        mutation, not only its APPROVE spelling: SKILL.md Step 9 never
+        emits a GraphQL review post of any event value, so a comment-event
+        GraphQL submission is denied here too, same as an approve-event
+        one."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        _, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = (
+            "gh api graphql -f query='mutation { submitPullRequestReview(input: "
+            '{reviewId: "PRR_abc", event: COMMENT}) { clientMutationId } }'
+            f" # ref pulls/{REVIEW_PR_PR_NUMBER}/ for context'"
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
     @pytest.mark.parametrize("flag", ["-c", "--comment", "-r", "--request-changes"])
     def test_short_and_long_verdict_flags_allow(
         self, isolated_home, git_repo_foo_bar_origin, tmp_path, flag
@@ -1646,6 +1715,41 @@ class TestReviewPrCompletionMarkerGate:
         carries both and must still deny, or the allowlist's own stated
         invariant ('never authorized... independent of every check above')
         does not hold for this input shape."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag=flags)
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("flags", ["-ac", "-ca", "-cr"])
+    def test_clustered_short_flags_denied(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flags
+    ):
+        """gh's pflag parser accepts clustered short boolean flags (`gh pr
+        review 1 -ac -F body` reaches gh's own verdict-conflict rejection,
+        confirming gh itself parses the cluster) -- neither
+        PATTERN_REVIEW_PR_VERDICT_FLAG nor PATTERN_REVIEW_PR_APPROVE_FLAG_CLI
+        match a letter embedded inside a cluster token, since both require a
+        boundary immediately after the single letter. That leaves the
+        allowlist's absence-of-a-verdict-flag branch to deny this shape,
+        which this test pins against a future boundary-regex edit that
+        starts matching inside a cluster."""
         sid = self.SID
         _write_review_pr_active_marker(isolated_home, sid)
         body_file, body_hash = _write_findings_body(tmp_path)

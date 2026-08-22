@@ -271,6 +271,13 @@ PATTERN_REVIEW_PR_APPROVE_FLAG_CLI='(^|[[:space:]])(-a|--approve)([[:space:]]|=|
 # needed -- any other casing already fails at the API rather than reaching
 # this hook as a real approval).
 PATTERN_REVIEW_PR_API_EVENT_APPROVE='(-f|--field|--raw-field)[[:space:]=]+event=APPROVE([[:space:]]|$)'
+# GraphQL form: submitPullRequestReview (the GraphQL twin of `gh pr review`,
+# per PATTERN_GRAPHQL_MUTATION's comment above) is denied outright rather
+# than pattern-matched on its event: APPROVE value -- that value can arrive
+# as an inline query literal or via a separate -f/-F variable, and SKILL.md
+# Step 9 never emits a GraphQL review post at all, so no legitimate write
+# takes this shape.
+PATTERN_REVIEW_PR_GRAPHQL_SUBMIT_REVIEW='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*submit[A-Za-z]*Review'
 
 if [[ "$COMMAND_FLAT" =~ $PATTERN_REST_NUMBERED ]]; then
   :
@@ -478,6 +485,10 @@ if [[ "$COMMAND_FLAT" =~ $PATTERN_PR_REVIEW_CMD ]]; then
 fi
 # REST form: denylist on the fixed `event=APPROVE` vocabulary.
 if [[ "$COMMAND_FLAT" =~ $PATTERN_REVIEW_PR_API_EVENT_APPROVE ]]; then
+  REVIEW_PR_WRITE_AUTHORIZED=0
+fi
+# GraphQL form: denies the mutation outright (see pattern comment above).
+if [[ "$COMMAND_FLAT" =~ $PATTERN_REVIEW_PR_GRAPHQL_SUBMIT_REVIEW ]]; then
   REVIEW_PR_WRITE_AUTHORIZED=0
 fi
 
