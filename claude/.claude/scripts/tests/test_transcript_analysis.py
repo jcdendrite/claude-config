@@ -8282,7 +8282,7 @@ def _spend_over_threshold_args(since: str | None = None, projects: str = "*") ->
 class TestSpendOverThreshold:
     def test_session_entirely_under_threshold_reports_zero_share(self, fake_projects, capsys):
         """Every main-thread turn's context_at_turn stays below the session's
-        own fire threshold (360,000 for claude-sonnet-5): above-threshold
+        own fire threshold (150,000 for claude-sonnet-5): above-threshold
         dollars is 0, share is 0.0%."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=50_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
@@ -8389,8 +8389,9 @@ class TestSpendOverThreshold:
         (`>` written instead of `>=`) would silently misclassify this turn as
         under, since no other test in this class exercises the exact
         boundary (all use values far below or far above it)."""
+        threshold = _mod._hook_effective_fire_threshold("claude-sonnet-5")
         exactly_at_threshold = _priced(
-            "claude-sonnet-5", input=360_000, output=1_000, ts="2026-05-19T10:00:00.000Z"
+            "claude-sonnet-5", input=threshold, output=1_000, ts="2026-05-19T10:00:00.000Z"
         )
         _write_jsonl(fake_projects / "sess.jsonl", [exactly_at_threshold])
         _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
@@ -14385,7 +14386,7 @@ def _ramp_curve_from_records(*sessions_records: list[dict]) -> tuple[dict[str, d
 class TestHookEffectiveFireThreshold:
     def test_200k_window_model_fires_at_40pct_not_the_abs_cap(self):
         """A 200k-context-window model's real fire point is 80,000 (40% of
-        its own window) -- well under the 1M-window arm's 360,000 cap, so
+        its own window) -- well under the 1M-window arm's 150,000 cap, so
         using the cap uniformly for every session would understate how early
         such sessions actually get nudged today."""
         assert _mod._hook_effective_fire_threshold("claude-sonnet-4-5") == 80_000
@@ -14393,7 +14394,7 @@ class TestHookEffectiveFireThreshold:
     def test_1m_window_model_fires_at_the_abs_cap_not_40pct(self):
         """A 1M-context-window model's 40% figure (400,000) exceeds
         _HANDOFF_NUDGE_ABS_CAP, so the cap governs instead."""
-        assert _mod._hook_effective_fire_threshold("claude-sonnet-5") == 360_000
+        assert _mod._hook_effective_fire_threshold("claude-sonnet-5") == 150_000
 
 
 class TestHookObservableBoundaries:
@@ -14776,7 +14777,7 @@ class TestRearmBacktestReport:
 
     def test_200k_window_session_re_arms_off_its_own_80k_threshold(self, fake_projects, capsys):
         """A session on a 200k-context-window model crosses its own real fire
-        point (80,000) well under _HANDOFF_NUDGE_ABS_CAP (360,000) -- a
+        point (80,000) well under _HANDOFF_NUDGE_ABS_CAP (150,000) -- a
         report that used the cap uniformly for every session would never
         simulate a split for this session at all, understating the re-arm
         benefit on the 200k-window arm entirely."""
@@ -14817,9 +14818,10 @@ class TestRearmBacktestReport:
         Runs the real pipeline end to end and checks a hand-computed dollar
         total, not merely a nonzero delta, so an index mismatch between the
         two functions actually fails the test."""
+        threshold = _mod._hook_effective_fire_threshold("claude-sonnet-5")
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-sonnet-5", ts="2026-05-19T10:00:00.000Z"),  # no usage block
-            _priced("claude-sonnet-5", input=355_000, output=5_000, ts="2026-05-19T10:00:01.000Z"),
+            _priced("claude-sonnet-5", input=threshold, output=5_000, ts="2026-05-19T10:00:01.000Z"),
             _user_msg("continue", ts="2026-05-19T10:00:02.000Z"),
             _priced("claude-sonnet-5", input=500, output=2_000, ts="2026-05-19T10:00:03.000Z"),
         ])
@@ -14829,13 +14831,13 @@ class TestRearmBacktestReport:
         total = float(cols["$"].replace(",", ""))
 
         rates = _mod._model_rates("claude-sonnet-5")
-        turn0_dollars = 355_000 / 1_000_000 * rates["input"] + 5_000 / 1_000_000 * rates["output"]
+        turn0_dollars = threshold / 1_000_000 * rates["input"] + 5_000 / 1_000_000 * rates["output"]
         turn1_dollars = 500 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
-        # Turn 0's own abs-tokens (360,000) crosses the model's 360,000
-        # threshold (its 1M-window 40% figure exceeds _HANDOFF_NUDGE_ABS_CAP,
-        # so the cap governs), so turn 1 is ramp-priced at the "0-5" bucket's
-        # rate -- which, since both turns land in that bucket, is their own
-        # blended $/1k-output rate.
+        # Turn 0's own abs-tokens (threshold input + 5,000 output) clears the
+        # model's fire threshold (its 1M-window 40% figure exceeds
+        # _HANDOFF_NUDGE_ABS_CAP, so the cap governs), so turn 1 is
+        # ramp-priced at the "0-5" bucket's rate -- which, since both turns
+        # land in that bucket, is their own blended $/1k-output rate.
         ramp_rate = (turn0_dollars + turn1_dollars) / ((5_000 + 2_000) / 1000)
         expected_total = turn0_dollars + (2_000 / 1000) * ramp_rate
         # abs= accounts for the table's own 2-decimal-place rounding

@@ -3,10 +3,10 @@
 The hook is a PostToolBatch and Stop hook that emits a
 hookSpecificOutput.additionalContext JSON payload when the estimated carried
 token count crosses the lesser of 40% of the resolved model's context window
-or an absolute-token cap (HANDOFF_NUDGE_ABS_CAP, default 360000). 200k models
+or an absolute-token cap (HANDOFF_NUDGE_ABS_CAP, default 150000). 200k models
 stay at 80000 (below the default cap, unaffected); 1M models — including
 unrecognized/missing model IDs, which default to the 1M window — are capped
-at 360000 rather than the raw 400000 (40% of 1M). The nudge re-arms at
+at 150000 rather than the raw 400000 (40% of 1M). The nudge re-arms at
 escalating token bands past the first fire — a marker file holds the
 triggering estimate and gates subsequent turns until the estimate advances
 HANDOFF_NUDGE_REARM_SPACING (default 80000) past it. Past
@@ -58,7 +58,7 @@ DEFAULT_BLOCK_AFTER = 3
 LARGE_WINDOW = 1_000_000
 SMALL_WINDOW = 200_000
 SMALL_THRESHOLD = 80_000  # 40% of 200k — the pct arm, unaffected by the cap (A7)
-DEFAULT_ABS_CAP = 360_000  # HANDOFF_NUDGE_ABS_CAP's shipped default
+DEFAULT_ABS_CAP = 150_000  # HANDOFF_NUDGE_ABS_CAP's shipped default
 DEFAULT_REARM_SPACING = 80_000  # HANDOFF_NUDGE_REARM_SPACING's shipped default
 # Effective 200k-window threshold under min(pct, cap) — a distinct symbol from
 # SMALL_THRESHOLD (currently equal to it per A7) so a future cap below 80,000
@@ -773,7 +773,7 @@ class TestNudgeHandoffNearContextCap:
         override is larger than the current ESTIMATE -- the exact opposite of the hook's
         documented "fail toward firing" posture for a corrupt marker. The default
         REARM_SPACING (80000) can't expose this: ESTIMATE must already clear THRESHOLD
-        (>= 360000) to reach this code path at all, so 0 + 80000 is never large enough to
+        (>= 150000) to reach this code path at all, so 0 + 80000 is never large enough to
         suppress it -- only an oversized override makes the two interpretations diverge."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(400_000, model="claude-sonnet-5")])
@@ -1576,8 +1576,8 @@ class TestNudgeHandoffNearContextCap:
         assert result.stdout.strip() == ""
 
     def test_old_120k_constant_no_longer_fires_on_1m_models(self, tmp_path):
-        """135 000 (fired under the old flat 120 000 constant) is now silent on a 1M model — well
-        below the 360000 absolute cap. Direct GH-556 regression test."""
+        """135 000 (fired under the old flat 120 000 constant) is now silent on a 1M model — still
+        below the 150000 absolute cap. Direct GH-556 regression test."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(135000, model="claude-sonnet-5")])
         result = _run_hook(_base_payload(transcript), tmp_path)

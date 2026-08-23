@@ -9103,12 +9103,12 @@ def cmd_friction_count(args: argparse.Namespace) -> None:
 # _context_window_for_model's docstring already documents. Not a CLI flag:
 # .claude/plans/token-cost-reduction.md's Phase 3 keeps this fixed, and a
 # flag would invite a future run to quietly retune it through this tool.
-_HANDOFF_NUDGE_ABS_CAP = 360_000
+_HANDOFF_NUDGE_ABS_CAP = 150_000
 
 # Mirrors the hook's own `PCT_THRESHOLD=$(( CONTEXT_WINDOW * 40 / 100 ))` --
 # the hook fires at the LESSER of 40% of the active model's context window
 # and _HANDOFF_NUDGE_ABS_CAP, so a 200k-window model's real fire point
-# (80,000) is well under the 1M-window arm's cap-governed 360,000. Neither
+# (80,000) is well under the 1M-window arm's cap-governed 150,000. Neither
 # this fraction nor _HANDOFF_NUDGE_ABS_CAP is backtested -- only re-arm
 # spacing past whichever of the two governs a given session is.
 _HANDOFF_NUDGE_PCT_THRESHOLD = 0.40
@@ -9161,7 +9161,7 @@ def _hook_effective_fire_threshold(model: str) -> int:
     that model's context window (_context_window_for_model, mirroring the
     bash hook's own CONTEXT_WINDOW case statement) and _HANDOFF_NUDGE_ABS_CAP.
     A 200k-window model's real threshold (80,000) is well under a 1M-window
-    model's cap-governed one (360,000) -- using _HANDOFF_NUDGE_ABS_CAP alone
+    model's cap-governed one (150,000) -- using _HANDOFF_NUDGE_ABS_CAP alone
     for every session would overstate how early such sessions actually get
     nudged today."""
     pct_threshold = int(_context_window_for_model(model) * _HANDOFF_NUDGE_PCT_THRESHOLD)
@@ -9711,7 +9711,7 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
     )
     print(
         "\nModel routing and each session's own fire threshold (the lesser of 40% of its model's"
-        " context window and the fixed 360,000-token _HANDOFF_NUDGE_ABS_CAP -- mirroring the hook's"
+        " context window and the fixed 150,000-token _HANDOFF_NUDGE_ABS_CAP -- mirroring the hook's"
         " real behavior) are held fixed and are NOT backtested by this report -- only re-arm spacing"
         " past the first fire varies."
     )
