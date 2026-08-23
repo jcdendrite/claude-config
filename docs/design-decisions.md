@@ -140,6 +140,23 @@ there is no tool-call boundary for "the parent is about to write code"
 (`Edit` / `Write` fire identically for code, config, and docs), so unlike the
 review gates (§1) it stays advisory.
 
+**Narrowed 2026-08-21.** For the subcase of implementing a plan that has
+already cleared `/plan-review`, "left unmade" no longer holds:
+`subagent-delegation`'s decision-made test now states delegation as the
+default for that case (scope and approach are already fixed by the
+plan), with `plan-it` Step 7 and `handoff` §3 pointing to it at the two
+points a session decides where implementation runs. The general case —
+any code-writing the parent might do inline, plan or no plan — stays
+advisory for the reason above: the routing rule still cannot be
+hook-enforced, since a hard deny still has no way to tell approved-plan
+implementation apart from any other legitimate inline edit (fixing a
+diff, editing the plan file itself, docs, config). See
+`.claude/plans/handoff-code-writer-delegation.md` for the transcript
+measurement that grounded this narrowing (102 plan-review-boundary
+sessions, 90d, this repo: only 33% of handoff §3 sections named
+`code-writer`, 35% of sessions were inline-only with zero delegation
+attempt).
+
 The name `code-writer` is job-shaped — an action-noun (like `code-review`)
 describing the work the agent does — not a persona job title.
 Anthropic's subagent documentation treats the agent `name` as a pure

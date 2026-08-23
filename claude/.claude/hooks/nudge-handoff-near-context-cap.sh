@@ -2,7 +2,7 @@
 # hook-class: batch-gate
 # PostToolBatch and Stop hook: injects a context-window nudge when the
 # estimated token count crosses the lesser of 40% of the model's context
-# window or an absolute-token cap (HANDOFF_NUDGE_ABS_CAP, default 360000).
+# window or an absolute-token cap (HANDOFF_NUDGE_ABS_CAP, default 150000).
 # See docs/handoff-nudge.md "What the hook does" for the dual-registration
 # rationale and why cost tracks absolute tokens, not window percentage.
 #
@@ -143,7 +143,7 @@ resolve_context_window() {
 compute_threshold() {
   PCT_THRESHOLD=$(( CONTEXT_WINDOW * 40 / 100 ))
   case "$HANDOFF_NUDGE_ABS_CAP" in
-    ''|0|*[!0-9]*|0[0-9]*|?????????*) ABS_CAP=360000 ;;
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) ABS_CAP=150000 ;;
     *) ABS_CAP=$HANDOFF_NUDGE_ABS_CAP ;;
   esac
   THRESHOLD=$(( PCT_THRESHOLD < ABS_CAP ? PCT_THRESHOLD : ABS_CAP ))
