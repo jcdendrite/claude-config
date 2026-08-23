@@ -303,13 +303,9 @@ class TestPatchFailureAfterOwnershipCheckPropagates:
 
 class TestGhMagicValueShapedBodiesUseRawFlag:
     """The script always invokes gh with -f (raw string), never -F (typed),
-    regardless of body content -- a regression to -F would type-coerce a
-    gh-magic-value-shaped body (leading @, or the literal null/true/false/
-    an integer) instead of PATCHing the literal text. The marker prefix
-    required by TestReplacementBodyMustPreserveMarker means none of these
-    bodies are literal gh -F magic values in production; the values below
-    keep that shape suffixed on for illustration, but this class now pins
-    the -f flag choice itself, not the magic-value coercion hazard."""
+    regardless of body content -- including these marker-prefixed values
+    whose suffix still shapes like a gh -F magic value (leading @, or the
+    literal null/true/false/an integer) for illustration."""
 
     @pytest.mark.parametrize("tricky_body", [
         "**[Claude Code]** @correction, see below.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
