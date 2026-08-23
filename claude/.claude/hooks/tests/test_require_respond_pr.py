@@ -17,6 +17,7 @@ from helpers import (
     edit_input,
     extract_skill_command,
     head_sha,
+    review_pr_completion_marker_path,
     run_hook,
     run_hook_reason,
     run_skill_command,
@@ -1120,6 +1121,20 @@ def git_repo_foo_bar_origin(git_repo):
     return git_repo
 
 
+@pytest.fixture
+def git_repo_foo_bar_ssh_origin(git_repo):
+    """Same as `git_repo_foo_bar_origin`, but the SSH remote form
+    (`git@github.com:foo/bar.git`) rather than HTTPS -- the implicit-repo
+    resolution's `git config --get remote.origin.url` -> sed parsing is new
+    in this PR and untested against this very common remote spelling."""
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:foo/bar.git"],
+        cwd=git_repo,
+        check=True,
+    )
+    return git_repo
+
+
 class TestReviewPrActiveMarkerReadBypass:
     def test_active_marker_releases_a_matched_read(self, isolated_home, git_repo):
         sid = "test-session-review-pr-read"
@@ -1840,6 +1855,74 @@ class TestReviewPrCompletionMarkerGate:
             == "deny"
         )
 
+    def test_capital_f_flag_body_file_form_matching_hash_allows(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """The `-F` sibling of test_field_flag_body_file_form_matching_hash_allows:
+        `-F body=@<path>` (gh api's --field form) is a different shape from
+        `-F <path>` (gh pr review's --body-file form) despite sharing the -F
+        spelling -- before this fix, the extraction captured the literal text
+        "body=@<path>" as the filename, so the hash check always failed and
+        this exact command always denied regardless of a matching body."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = (
+            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews "
+            f"-F body=@{body_file} -F event=COMMENT"
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_capital_f_flag_body_file_form_mismatched_hash_denies(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """The `-F` sibling of test_field_flag_body_file_form_mismatched_hash_denies."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        reviewed_body_file, reviewed_body_hash = _write_findings_body(
+            tmp_path, content="# reviewed findings\n", name="reviewed.md"
+        )
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            reviewed_body_hash,
+            sid,
+        )
+        different_body_file, _ = _write_findings_body(
+            tmp_path, content="# a different body\n", name="different.md"
+        )
+        command = (
+            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews "
+            f"-F body=@{different_body_file} -F event=COMMENT"
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
     def test_ambiguous_pr_number_extraction_denies(
         self, isolated_home, git_repo_foo_bar_origin, tmp_path
     ):
@@ -1875,4 +1958,344 @@ class TestReviewPrCompletionMarkerGate:
                 home=isolated_home,
             )
             == "deny"
+        )
+
+    def test_input_sourced_rest_body_denied_even_when_otherwise_fully_authorized(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """`gh api .../reviews --input file.json` cannot be content-inspected
+        by this hook -- the body-file extraction only recognizes -F/
+        --body-file and -f/--field/--raw-field body=@, so an --input-sourced
+        body (which could itself carry event:APPROVE and arbitrary content)
+        must never be write-authorized, regardless of a valid marker."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        payload = tmp_path / "payload.json"
+        payload.write_text('{"event":"APPROVE","body":"anything"}')
+        command = f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews --input {payload}"
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_capital_f_flag_api_event_approve_denied(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """`-F event=APPROVE` (capital -F, a real independent `gh api` flag
+        distinct from `-f`) must be denied the same as the lowercase
+        spelling -- the REST approve-denylist previously matched only
+        `-f`/`--field`/`--raw-field`."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = (
+            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews "
+            f"-F event=APPROVE -F body=@{body_file}"
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_gh_repo_env_var_prefix_denies_the_post(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """`GH_REPO=` ahead of the gated call changes gh's actual target repo
+        (gh precedence: --repo > GH_REPO > git remote) while this hook's
+        implicit-resolution fallback would otherwise still read the
+        worktree's origin remote -- must deny rather than trust the
+        cwd-based guess once GH_REPO is present."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = f"GH_REPO=attacker/evil-repo {_review_command(REVIEW_PR_PR_NUMBER, body_file)}"
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_cd_prefixed_command_denies_the_post(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """A `cd` earlier in the flattened command can move gh's actual
+        working directory away from the repo this hook resolves its
+        implicit fallback against -- must deny rather than trust the
+        cwd-based guess once a `cd` is present."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = f"cd /tmp && {_review_command(REVIEW_PR_PR_NUMBER, body_file)}"
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_cd_prefixed_command_with_explicit_repo_flag_still_allows(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """A `cd` earlier in the command must not distrust an explicit
+        `-R`/`--repo` flag on the gated call -- the GH_REPO=/cd distrust
+        check only applies when COMMAND_REPO (the explicit-flag case) is
+        already empty, so a `cd` prefix combined with an explicit flag must
+        still resolve via that flag and allow."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = (
+            f"cd /tmp && gh pr review {REVIEW_PR_PR_NUMBER} --comment "
+            f"-R foo/bar -F {body_file}"
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_gh_host_prefix_with_explicit_repo_flag_still_allows(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """Pins the named accepted gap at require-respond-pr.sh:66-71: the
+        completion marker stores only owner/repo, never a host, so a
+        `GH_HOST=`-prefixed command combined with an explicit host-less `-R`
+        that string-matches the marker's stored repo currently allows even
+        though gh itself would resolve that owner/repo against the named
+        host, not github.com."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = (
+            f"GH_HOST=internal-ghe.example.com gh pr review {REVIEW_PR_PR_NUMBER} "
+            f"--comment -R foo/bar -F {body_file}"
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_malformed_completion_marker_denies(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """A completion marker with fewer than 3 non-empty lines (hand-crafted
+        here, unlike every other test in this class which writes one via
+        write_review_pr_completion_marker) must deny --
+        _lib_review_pr_completion_marker_fields's read side, not only
+        marker.sh's write side, must fail closed on malformed content."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, _ = _write_findings_body(tmp_path)
+        marker_path = review_pr_completion_marker_path(
+            isolated_home, git_repo_foo_bar_origin, sid
+        )
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(f"{REVIEW_PR_PR_IDENTITY}\n{head_sha(git_repo_foo_bar_origin)}\n")
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(_review_command(REVIEW_PR_PR_NUMBER, body_file), session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_last_of_multiple_dash_r_flags_wins_resolution(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """Pins today's greedy-`.*` extraction behavior (last -R value wins,
+        matching gh's own last-flag-wins semantics) so a future edit to the
+        extraction regex can't silently flip this to first-flag-wins with no
+        test noticing: the LAST of two -R values must be the one compared
+        against the marker's stored repo."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = (
+            f"gh pr review {REVIEW_PR_PR_NUMBER} --comment "
+            f"-R wrong-owner/wrong-repo -R foo/bar -F {body_file}"
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_ssh_remote_origin_resolves_and_allows(
+        self, isolated_home, git_repo_foo_bar_ssh_origin, tmp_path
+    ):
+        """The new implicit-origin resolution (`git config --get
+        remote.origin.url` -> sed, no explicit -R/--repo flag on the gated
+        command) must also parse the SSH remote form
+        (git@github.com:foo/bar.git), not only HTTPS -- a very common
+        developer configuration untested elsewhere in this class."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_ssh_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_ssh_origin),
+            body_hash,
+            sid,
+        )
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(_review_command(REVIEW_PR_PR_NUMBER, body_file), session_id=sid),
+                cwd=git_repo_foo_bar_ssh_origin,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_whitespace_in_body_path_denies_rather_than_mishashing(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """The body-file path extraction assumes no whitespace
+        ([^[:space:]]+). A quoted path containing a space is not the
+        extraction shape it expects, so REVIEW_PR_BODY_FILE_PATH resolves to
+        a truncated (wrong) path -- the hash comparison then fails and denies,
+        never silently mis-hashing and allowing."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        spaced_dir = tmp_path / "has space"
+        spaced_dir.mkdir()
+        body_file, body_hash = _write_findings_body(spaced_dir)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = f'gh pr review {REVIEW_PR_PR_NUMBER} --comment -F "{body_file}"'
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_authorized_review_post_chained_with_trailing_command_allows(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """Pins the named accepted gap at require-respond-pr.sh:62-65: this
+        gate decides per whole command, so a fully marker-authorized review
+        post chained via `&&` with an unrelated trailing command allows the
+        whole string atomically -- there is no per-segment command
+        splitting."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = f"{_review_command(REVIEW_PR_PR_NUMBER, body_file)} && echo posted"
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "allow"
         )

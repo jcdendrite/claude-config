@@ -54,7 +54,7 @@ Running the project's checks executes the PR's code by definition, so this alway
 
 Dedupe findings across `/code-review` and any `/plan-review` pass, cross-reference against step 1's existing reviews so this pass doesn't repeat them, and tier each finding blocking / non-blocking / question / nit. `/code-review`'s ADDRESS/DEFER axis answers "in scope for this PR" — drop it here in favor of the tiering above. Scrub any secret value found in the diff or PR text to location-and-type only, never the value — this posting path is not covered by `deny-private-project-refs.sh`. Re-check `headRefOid` before proceeding; a mid-review push means the diff moved under the findings, and this step aborts rather than synthesizing stale findings.
 
-Write the findings body to `$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.body` — this exact fixed path, never a file of your own choosing (never pass it as a Bash argument either) — then declare it via the **Write tool** (not Bash — a spawned review-only subagent cannot release this gate, and a Write-tool call is what that restriction actually keys on):
+Write the findings body to `$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.body` — this exact fixed path, never a file of your own choosing (never pass it as a Bash argument either) — then declare it via the **Write tool**, not Bash (see `REFERENCES.md` for why):
 ```
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SESSION_ID=$(~/.claude/scripts/marker.sh resolve-session-id) || exit 1

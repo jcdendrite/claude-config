@@ -408,10 +408,27 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: %s does not name the fixed findings-body path %s. Abort without writing a marker.\n' "$FINDINGS_SIBLING" "$FINDINGS_BODY_FIXED_PATH" >&2
           exit 2
         fi
-        # Compute before redirecting, same reasoning as every arm above: a
-        # failed hash must not truncate a valid existing marker.
-        BODY_HASH=$(_lib_capped sha256sum -- "$FINDINGS_BODY_PATH" 2>/dev/null | awk '{print $1}')
-        [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s. Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
+        # A separate `[ -L ]` check followed by `sha256sum` is not atomic --
+        # an attacker can swap in a symlink between the two, which defeats a
+        # pre-planted-symlink check just as easily as it evades one. Read
+        # through a single os.open(O_NOFOLLOW) instead: it refuses a symlink
+        # at the final path component atomically with the read, so there is
+        # no window between check and use. Compute before redirecting, same
+        # reasoning as every arm above: a failed hash must not truncate a
+        # valid existing marker.
+        BODY_HASH=$(_lib_capped python3 -c '
+import hashlib, os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(1)
+digest = hashlib.sha256()
+with os.fdopen(fd, "rb") as f:
+    for chunk in iter(lambda: f.read(65536), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+' "$FINDINGS_BODY_PATH" 2>/dev/null)
+        [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing, unreadable, or a symlink). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/review-pr-markers"
         printf '%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$BODY_HASH" \
           > "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID"
@@ -505,33 +522,23 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.review-pr-active.d/$SESSION_ID"
         FINDINGS_SIBLING="$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.findings"
-        # The findings-body file's path lives on the sibling's third line;
-        # read it before removing the sibling so the body file itself can be
-        # deleted too -- nothing the completion marker points to may outlive
-        # this skill invocation, on every exit path (posted, declined, aborted).
-        # /review-pr's whole purpose is reviewing untrusted PR content, so the
-        # third line is not trusted as-is: it must equal this fixed, derived
-        # path (SKILL.md Step 8 instructs writing the findings body there and
-        # nowhere else) before `rm -f` runs against it, or an
-        # attacker-influenced session could steer this delete at an arbitrary
-        # file. A mismatch skips the delete rather than aborting the rest of
-        # deactivate.
+        # Third line is untrusted PR content -- delete only if it equals the
+        # fixed derived path (an attacker-controlled path must never reach
+        # rm -f); a mismatch skips the delete without aborting the rest of
+        # deactivate. Named accepted gap: a hard crash between write and this
+        # call leaves the sibling and body file on disk indefinitely -- no
+        # TTL reaps them.
         FINDINGS_BODY_FIXED_PATH=$(_review_pr_findings_body_fixed_path "$SESSION_ID")
         if FINDINGS_BODY_PATH=$(_lib_capped cat "$FINDINGS_SIBLING" 2>/dev/null | sed -n '3p') \
           && [ -n "$FINDINGS_BODY_PATH" ] && [ "$FINDINGS_BODY_PATH" = "$FINDINGS_BODY_FIXED_PATH" ]; then
           rm -f -- "$FINDINGS_BODY_PATH"
         fi
         rm -f "$FINDINGS_SIBLING"
-        # Repo-scoped, unlike the active marker and sibling above: the
-        # completion marker path needs REPO_HASH. A resolution failure here
-        # is not fatal to deactivate -- deliberately not
-        # _resolve_repo_root/_refuse_main_tree_under_enforcement, which
-        # would abort the whole call and leave the active marker and
-        # sibling (already removed above) as the only cleanup that ran.
-        # Best-effort is sufficient: require-respond-pr.sh requires both a
-        # live active marker AND a matching completion marker before
-        # authorizing a post, so a leftover completion marker with no
-        # active marker authorizes nothing on its own.
+        # Repo-root resolution is best-effort here (not
+        # _resolve_repo_root/_refuse_main_tree_under_enforcement, which would
+        # abort and skip the cleanup already done above) -- a stray
+        # completion marker with no active marker authorizes nothing on its
+        # own.
         if REVIEW_PR_REPO_ROOT=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null | tr -d '\n') && [ -n "$REVIEW_PR_REPO_ROOT" ]; then
           REVIEW_PR_REPO_HASH=$(_marker_lib_repo_hash "$REVIEW_PR_REPO_ROOT")
           rm -f "$CONFIG_DIR/review-pr-markers/$REVIEW_PR_REPO_HASH.$SESSION_ID"
