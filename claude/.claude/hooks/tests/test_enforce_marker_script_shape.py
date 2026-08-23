@@ -812,21 +812,12 @@ class TestGateReleaseAuthority:
             == "allow"
         )
 
-    @pytest.mark.xfail(
-        reason=(
-            "known gap: enforce-marker-script-shape.sh's Bash arm only matches "
-            "marker.sh-mentioning commands, not raw redirects — see "
-            "agent-reviews/ciso-reviewer-1786305269-plan-mode-review-gate.md "
-            "finding 2; tracked for a follow-up PR"
-        ),
-        strict=True,
-    )
-    def test_bash_redirect_write_to_planmode_sibling_bypasses_write_authority(self):
+    def test_bash_redirect_write_to_planmode_sibling_denied(self):
         """A raw Bash redirect that writes the same sibling path the
         Write-tool arm correctly denies (see
         TestGateReleaseAuthorityFileWrites.test_marker_path_write_denied)
-        never mentions `marker.sh`, so the Bash arm's Stage-1 fast-reject
-        exits allow before the gate-release authority check ever runs — for
+        never mentions `marker.sh`, so it is caught by the pre-Stage-1
+        redirect/utility scan rather than the marker.sh-mention check — for
         any restricted agent type."""
         cmd = (
             'printf "%s" "/tmp/attacker-plan.md" > '
@@ -838,6 +829,350 @@ class TestGateReleaseAuthority:
                 bash_input(cmd, agent_type="code-writer"),
             )
             == "deny"
+        )
+
+
+class TestGateReleaseAuthorityBashRedirectAndUtility:
+    """The pre-Stage-1 scan: a Bash write to a marker path via a redirect or
+    write utility is caught even though the command never mentions
+    `marker.sh`. Covers the closed half of the gap `_marker_shape_match`
+    documents as still open (python3 -c, here-doc bodies, $(...)-computed
+    paths, shell-function indirection).
+    """
+
+    @pytest.fixture
+    def marker_home(self, tmp_path):
+        home = tmp_path / "home"
+        (home / ".claude" / "code-review-markers").mkdir(parents=True)
+        return home
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo x | tee -a ~/.claude/code-review-markers/forged",
+            "cp /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
+            "mv /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
+            "install /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
+            "dd if=/tmp/attacker-plan.md of=~/.claude/code-review-markers/forged",
+            "sed -i 's/a/b/' ~/.claude/code-review-markers/forged",
+        ],
+    )
+    def test_write_utility_to_marker_path_denied(self, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo x | tee -a ~/.claude/code-review-markers/forged",
+            "cp /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
+            "mv /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
+            "install /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
+            "dd if=/tmp/attacker-plan.md of=~/.claude/code-review-markers/forged",
+            "sed -i 's/a/b/' ~/.claude/code-review-markers/forged",
+        ],
+    )
+    def test_full_tool_set_agent_may_use_any_write_utility_on_a_marker_path(self, command):
+        """The deny above is agent-scoped, not utility-scoped: each write
+        mechanism must also have a verified allow path for an agent that
+        could have run the review."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="general-purpose"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Quote-splitting: the shell collapses `~/.cla''ude/...` to
+            # `~/.claude/...` at execution time even though no contiguous
+            # `.claude` substring appears in the raw command text.
+            "printf x > ~/.cla''ude/code-review-markers/forged",
+            # Case-folding: macOS's default APFS volume is case-insensitive,
+            # so this resolves to the same on-disk marker directory.
+            "printf x > ~/.Claude/code-review-markers/forged",
+        ],
+    )
+    def test_quote_split_and_case_fold_bypass_forms_denied(self, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Glued, no space -- a distinct branch (redirect_glued_re) from
+            # the standalone-operator form the other tests already exercise.
+            "printf x >~/.claude/code-review-markers/forged",
+            # Append form.
+            "printf x >> ~/.claude/code-review-markers/forged",
+            # fd-prefixed, glued -- redirects stderr rather than stdout.
+            "printf x 2>~/.claude/code-review-markers/forged",
+            # fd-prefixed with a 2-digit descriptor -- pins the quantifier
+            # against a regex that only tolerates a single digit.
+            "printf x 35>~/.claude/code-review-markers/forged",
+            # Combined stdout+stderr redirect, standalone and append forms --
+            # cannot take an fd prefix, unlike the operators above.
+            "printf x &> ~/.claude/code-review-markers/forged",
+            "printf x &>> ~/.claude/code-review-markers/forged",
+        ],
+    )
+    def test_redirect_operator_forms_to_marker_path_denied(self, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    def test_stow_directory_fold_physical_path_denied(self, marker_home, tmp_path):
+        """Mirrors TestGateReleaseAuthorityFileWrites' same-named test: the
+        markers directory's stow-fold physical-path alias is gated on this
+        arm too, not only the Write/Edit arm."""
+        physical = tmp_path / "repo" / "claude" / ".claude" / "code-review-markers" / "forged"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"printf x > {physical}", agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    def test_traversal_path_denied_without_realpath(self, marker_home, tmp_path):
+        """Mirrors TestGateReleaseAuthorityFileWrites' same-named test: the
+        nested loop's no-realpath fallback (raw candidate only) has to hold
+        for N extracted Bash targets, not just the Write arm's one."""
+        stub_bin = tmp_path / "no-realpath-bin"
+        stub_bin.mkdir()
+        # Adds `tr` to the Write-arm counterpart's binary list: the Bash arm's
+        # redirect-target extraction quote-strips via _lib_strip_shell_quotes,
+        # which the Write arm's file_path-only path never needs.
+        for binary in ("bash", "jq", "grep", "sed", "dirname", "cat", "timeout", "tr"):
+            resolved = shutil.which(binary)
+            if resolved:
+                (stub_bin / binary).symlink_to(resolved)
+        assert shutil.which("realpath", path=str(stub_bin)) is None
+
+        sneaky = str(marker_home / "unrelated" / ".." / ".claude" / "code-review-markers" / "m")
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"printf x > {sneaky}", agent_type="code-writer"),
+                home=marker_home,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "deny"
+        )
+
+    def test_main_session_may_redirect_into_a_marker_path(self):
+        """Absent agent_type is the main session — the ordinary path."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("printf x > ~/.claude/code-review-markers/forged"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
+    def test_full_tool_set_agents_may_redirect_into_a_marker_path(self, agent_type):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    "printf x > ~/.claude/code-review-markers/forged", agent_type=agent_type
+                ),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # .claude/-rooted but not marker-shaped -- the fast-reject's real
+            # blast radius, since `grep -qF '.claude'` matches far more than
+            # marker paths.
+            "printf x > ~/.claude/plans/foo.md",
+            "printf x > ~/.claude/scratch.log",
+        ],
+    )
+    def test_non_marker_claude_rooted_redirect_allowed(self, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+    def test_claude_mention_in_a_non_target_argument_allowed(self):
+        """The fast-reject fires on `.claude` appearing anywhere in the
+        command, but only the extracted write-target word is shape-tested --
+        a `.claude`-rooted source with a non-marker destination must not
+        deny."""
+        cmd = "cp ~/.claude/scripts/marker.sh /tmp/backup.sh"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+    def test_python_write_call_to_marker_path_allowed_residual(self):
+        """Accepted residual: this arm matches command TEXT for redirect and
+        utility shapes, not a Python string literal's runtime effect."""
+        cmd = "python3 -c \"open('~/.claude/code-review-markers/forged', 'w').write('x')\""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+    def test_heredoc_body_targeting_marker_path_allowed_residual(self):
+        """Accepted residual: a here-doc body handed to an interpreter is
+        opaque text to this arm, the same carve-out as the python3 -c case."""
+        cmd = (
+            "python3 <<'EOF'\n"
+            "open('/home/user/.claude/code-review-markers/forged', 'w').write('x')\n"
+            "EOF"
+        )
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cp -t ~/.claude/code-review-markers /tmp/attacker-plan.md",
+            "cp --target-directory=~/.claude/code-review-markers /tmp/attacker-plan.md",
+            "mv -t ~/.claude/code-review-markers /tmp/attacker-plan.md",
+            "install -t ~/.claude/code-review-markers /tmp/attacker-plan.md",
+        ],
+    )
+    def test_target_directory_form_allowed_residual(self, command):
+        """Accepted residual: the destination isn't the last argument for
+        `-t DIR`/`--target-directory=DIR`, so the last-argument heuristic
+        misses it."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+    def test_command_substitution_computed_target_allowed_residual(self):
+        """Accepted residual: a `$(...)`-computed target is opaque text to
+        the word-splitting extraction, which reads the substitution syntax
+        itself rather than its runtime output."""
+        cmd = 'printf x > "$(echo ~/.claude/code-review-markers/forged)"'
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Variable indirection: the target is a variable reference, not
+            # the literal marker path, so word-splitting extracts the
+            # variable name rather than a shape-matchable path.
+            'T=~/.claude/code-review-markers/forged; printf x > "$T"',
+            # Shell-function indirection: the fragment invoking the write
+            # utility names the wrapper function, not `cp` itself, so
+            # `_lib_fragment_invokes_tool` never recognizes it.
+            'f() { cp "$@"; }; f /tmp/attacker-plan.md ~/.claude/code-review-markers/forged',
+        ],
+    )
+    def test_shell_indirection_around_the_write_target_or_utility_allowed_residual(self, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+    def test_symlink_with_no_claude_in_its_own_path_allowed_residual(self, marker_home, tmp_path):
+        """Accepted residual: this scan's fast-reject requires the literal
+        `.claude` in the command text, unlike the Write/Edit arm's
+        unconditional realpath resolution -- a symlink whose own path
+        carries no `.claude` segment but resolves into the markers directory
+        is not caught here."""
+        alias_dir = tmp_path / "aliasdir"
+        alias_dir.mkdir()
+        symlinked_path = alias_dir / "notclaudepath"
+        symlinked_path.symlink_to(marker_home / ".claude" / "code-review-markers")
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"printf x > {symlinked_path}/forged", agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "allow"
+        )
+
+    def test_symlink_with_claude_not_followed_by_slash_denied(self, marker_home, tmp_path):
+        """Mirrors the residual test above from the opposite direction: the
+        pre-filter's `.claude` substring test is not anchored to a following
+        `/`, so a symlink named e.g. `.claudetrick` (contains `.claude` but
+        not immediately followed by a path separator) still reaches
+        `_marker_shape_match`'s realpath resolution rather than being
+        skipped as if it didn't mention `.claude` at all."""
+        alias_dir = tmp_path / "aliasdir"
+        alias_dir.mkdir()
+        symlinked_path = alias_dir / ".claudetrick"
+        symlinked_path.symlink_to(marker_home / ".claude" / "code-review-markers")
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"printf x > {symlinked_path}/forged", agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.timing
+    def test_many_target_tee_fanout_with_no_claude_mention_completes_quickly(self):
+        """A `tee` fanout with dozens of targets and no `.claude` mention
+        must stay near the fast-reject's cost, not scale with target count --
+        pins the pre-filter that skips realpath resolution for candidates
+        the fast-reject already rejected."""
+        targets = " ".join(f"/tmp/marker-shape-perf-target-{i}.log" for i in range(60))
+        started = time.monotonic()
+        decision = run_hook(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"echo x | tee {targets}", agent_type="code-writer"),
+        )
+        elapsed = time.monotonic() - started
+        assert decision == "allow"
+        assert elapsed < 1.0, (
+            f"a 60-target tee fanout with no .claude mention took {elapsed:.2f}s -- "
+            "should stay near the fast-reject's cost, not scale with target count"
         )
 
 
@@ -911,6 +1246,20 @@ class TestGateReleaseAuthorityFileWrites:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 write_input("~/.claude/code-review-markers/deadbeef.session", agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    def test_case_varied_path_denied(self, marker_home):
+        """macOS's default APFS volume is case-insensitive, so a case-varied
+        marker path (`.Claude` instead of `.claude`) resolves to the same
+        on-disk file this arm's shape pattern would otherwise miss."""
+        case_varied = str(marker_home / ".Claude/code-review-markers/deadbeef.session")
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(case_varied, agent_type="code-writer"),
                 home=marker_home,
             )
             == "deny"
@@ -1184,6 +1533,88 @@ class TestGateReleaseAuthorityUnderCustomConfigDir:
                 extra_env={"CLAUDE_CONFIG_DIR": str(symlinked)},
             )
             == "deny"
+        )
+
+
+class TestGateReleaseAuthorityBashArmConfigDirResidual:
+    """The Bash redirect/utility arm shares `_marker_shape_match` with the
+    Write/Edit/MultiEdit arm above, but its two `.claude`-substring
+    pre-filters (Stage 0 and `_marker_write_candidate_mentions_claude`) run
+    before `_marker_shape_match` is ever reached, so a config-dir-resolved
+    marker write with no literal `.claude` substring anywhere in the command
+    is never scanned — a named, accepted residual (see the hook's own header),
+    not a bug to chase. Pinned here so a future change to either pre-filter
+    doesn't silently assume this case is already covered."""
+
+    def test_redirect_to_config_dir_marker_path_allowed_is_a_named_residual(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        (config_dir / "code-review-markers").mkdir(parents=True)
+        target = config_dir / "code-review-markers" / "forged"
+        # Even with a `.claude` mention elsewhere in the same command, the
+        # per-candidate filter still rejects `target` itself for lacking the
+        # literal substring — confirming the gap is the candidate-level
+        # filter, not merely the command-level Stage 0 one.
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"echo x > {target} && ls ~/.claude", agent_type="code-writer"),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
+
+class TestGateReleaseAuthorityBashArmConfigDirShapeSurvivesBudgetExhaustion:
+    """_lib_config_dir is subprocess-free, so _marker_shape_match resolves it
+    unconditionally regardless of the realpath budget — only the follow-on
+    realpath call (the one with real subprocess cost) is budget-gated. A
+    config-dir-shape write must still deny even when it is the 11th
+    `.claude`-mentioning candidate in one command (past
+    MARKER_WRITE_REALPATH_BUDGET=10), the same way the $HOME-relative shape
+    already degrades to raw-candidate-only rather than dropping coverage
+    entirely once the budget is spent."""
+
+    def test_config_dir_shape_denied_past_realpath_budget(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        # Contains the literal substring ".claude" (so the per-candidate
+        # `.claude`-mention filter passes) without matching the $HOME-relative
+        # `*/.claude/*-markers/*` glob shape as a real path segment — only the
+        # config-dir-resolved shape check can catch this one.
+        config_dir = tmp_path / "backup.claude-profile"
+        (config_dir / "code-review-markers").mkdir(parents=True)
+        forged = config_dir / "code-review-markers" / "forged"
+        padding = " ".join(f"~/.claude/pad{i}" for i in range(11))
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"tee {padding} {forged}", agent_type="code-writer"),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
+        )
+
+    def test_full_tool_set_agent_allowed_for_same_shape_past_realpath_budget(self, tmp_path):
+        """The deny above is agent-scoped, not shape-scoped: an agent that
+        could have run the review still passes the identical shape."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "backup.claude-profile"
+        (config_dir / "code-review-markers").mkdir(parents=True)
+        forged = config_dir / "code-review-markers" / "forged"
+        padding = " ".join(f"~/.claude/pad{i}" for i in range(11))
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"tee {padding} {forged}", agent_type="general-purpose"),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
         )
 
 

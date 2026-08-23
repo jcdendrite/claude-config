@@ -130,22 +130,22 @@ no-network builds that this literal still denies, an accepted over-deny, not
 a restore collision); see
 [`docs/auto-mode.md`](auto-mode.md#hard-floor-deny-rules) for that table.
 
-`deny-network-installs.sh` matches on token *presence*
-(`_lib_fragment_has_token`), not on resolving "the" leading command through
-wrappers. Position-based resolution has three failure modes this design
-avoids entirely: `_lib_fragment_command_word`'s runner-skip list resolves
-`pnpm add lodash` to the command word `add`, not the manager name; `bash -c
-"$(curl …)"` produces a `curl` fragment with nothing after it, so any
-adjacency-based check misses it; and a hand-curated wrapper list (`sudo`,
-`env`, `timeout`, …) is easy to leave incomplete. Presence is immune to that
-whole bug class, since no wrapper removes a token from the command string.
+`deny-network-installs.sh` matches on token *presence* — verbs and flags via
+`_lib_fragment_has_token`, manager names via `_install_word_matches_name`
+(`NAME` or `*/NAME`, so a path-prefixed invocation matches too) — not on
+resolving "the" leading command through wrappers. Position-based resolution
+has three failure modes this design avoids entirely: `_lib_fragment_command_word`'s
+runner-skip list resolves `pnpm add lodash` to the command word `add`, not
+the manager name; `bash -c "$(curl …)"` produces a `curl` fragment with
+nothing after it, so any adjacency-based check misses it; and a
+hand-curated wrapper list (`sudo`, `env`, `timeout`, …) is easy to leave
+incomplete. Presence is immune to that whole bug class, since no wrapper
+removes a token from the command string.
 
 **Named residuals, accepted rather than chased with more parsing:**
 - Bare `npx`/`bunx`/`uvx`/`pipx` (no `-y`/`--yes`) — disambiguating "runs an
   already-installed local tool, no network call" from "fetches a new one"
   needs lockfile/`package.json` awareness this hook does not have.
-- A path-prefixed manager invocation (`/opt/homebrew/bin/npm install x`) —
-  token-presence matching never sees `npm` inside the longer token.
 - `pip install -e <VCS-URL>` — the editable-install marker's value is always
   skipped, whether it's a local path or a fetchable URL.
 - An unrecognized value-taking flag (`--registry <url>`, `--prefix <path>`)
@@ -173,6 +173,24 @@ whole bug class, since no wrapper removes a token from the command string.
   written then executed separately, `eval $(echo … | base64 -d)`, a
   session-defined alias (see `deny-repo-relocation.sh`'s header for the
   precedent this mirrors).
+- `_lib_split_fragments` splits on any literal `|`, including the one inside
+  bash's `>|` (noclobber-override) redirect operator — a redirect placed
+  before a trailing package-name argument (`npm install >|/tmp/x evil-pkg`)
+  separates the manager+verb fragment from the package-name fragment and
+  evades this hook. Fixing it means changing shared `_lib_split_fragments`,
+  used by every hook in this suite — out of scope for a single-hook
+  matching fix.
+- A manager binary whose own filename contains a space, invoked quoted
+  (`"/tmp/n pm" install x`), allows — `_lib_strip_shell_quotes` removes the
+  quotes before word-splitting, so the quoted single token becomes two
+  unquoted words and neither matches the manager name. Pre-existing under
+  exact-token matching too; fixing it means quote-position tracking through
+  shared `_lib_strip_shell_quotes`, used by every hook in this suite.
+- The path-prefix matcher widens the curl/wget-interpreter co-occurrence
+  check (above) to also fire on a path-prefixed interpreter *reference*
+  (`curl ... && ls ~/.nvm/.../bin/node`), not just an actual invocation —
+  the same accepted over-deny direction, extended to reference-only
+  mentions.
 
 **Out of scope for this hook:** `brew`/`gem`/`cargo`/`go`/`gh extension`/
 `mas`/`pipx`/`apt(-get)`/`yum`/`dnf`/`apk`/`zypper` are covered only by the
@@ -275,17 +293,20 @@ agent cooperating; there is no deny-class backstop, by decision.
 | 3 — the handoff text | `deny-network-installs.sh`'s `_INSTALL_ALTERNATIVE` | The named install command | Amended deny-message text, reaches the model on `stderr`, not the human |
 
 **`ask-new-dependency-disclosure.sh`** — `informational`, `PreToolUse` on
-`Edit`/`Write`/`MultiEdit`. Reconstructs the post-write `package.json` from
+`Edit`/`Write`/`MultiEdit`. Reconstructs the post-write manifest text from
 `tool_input` (`Edit`'s `old_string`→`new_string`; `MultiEdit`'s `edits`
 applied sequentially against a running buffer; `Write`'s `content`
-verbatim) via `parse-manifest-dependencies.py`, diffs the
+verbatim) via `parse-manifest-dependencies.py`, diffs its declared
+dependency names against the on-disk pre-state — the
 `dependencies`/`devDependencies`/`peerDependencies`/`optionalDependencies`
-union against the on-disk pre-state, and asks — naming each
-`name@constraint` pair, capped at 10 with an "…and N more" marker — only
-when that diff is non-empty. `parse-manifest-dependencies.py` targets
-Python 3.9 explicitly: stock macOS `/usr/bin/python3` is 3.9.6, with no
-`tomllib` and no `match` statement, which is also why this hook covers only
-`package.json` and not `requirements.txt`/`go.mod` (see residuals below).
+union for `package.json`, a per-format parser for each other recognized
+manifest — and asks — naming each `name@constraint` pair, capped at 10 with
+an "…and N more" marker — only when that diff is non-empty.
+`parse-manifest-dependencies.py` requires Python >= 3.11 (this repo's
+stated floor; see its own module docstring), needed for `Cargo.toml`/
+`pyproject.toml` parsing via stdlib `tomllib`. It covers six manifest
+formats: `package.json`, `requirements*.txt`, `go.mod`, `Gemfile`,
+`Cargo.toml`, and `pyproject.toml` (see residuals below).
 
 A hook-returned `ask` renders as an interactive prompt under `acceptEdits`
 and `bypassPermissions` (see the finding recorded above, under "WebFetch
@@ -294,18 +315,19 @@ Layer 2 viable at all — it exists specifically to cover the manifest edit
 in those two modes, not in `default` mode where a hook-`ask` trivially
 renders regardless.
 
-Fail-open but loud on a matched, non-excluded manifest: a manifest that
-doesn't match `package.json` (case-sensitive), sits under
+Fail-open but loud on a matched, non-excluded manifest: a manifest whose
+basename isn't one of the six recognized names (case-sensitive), sits under
 `node_modules/`/`fixtures/`/`__fixtures__/`/`test-data/`, or is evaluated
 with `python3` absent/unusable (e.g. the Xcode Command Line Tools shim)
 allows silently, since none of those is reachable by crafting the
-manifest's own content. An on-disk pre-state over 5 MB, or the helper
-erroring/timing out/emitting unparseable output, instead degrades to a
-generic ask naming no packages — manifest content is agent-authored, so
-silence there would be a one-step-suppressible reminder. No repo-scoped
-opt-out sentinel: a `.claude/*-optout` file this hook would be the sole
-reader of is agent-writable with one `Write` call and produces total,
-silent, permanent suppression.
+manifest's own content. An on-disk pre-state over 5 MB, the helper
+erroring/timing out/emitting unparseable output, or a present-but-usable
+`python3` below the 3.11 floor (a broken install, not an expected runtime
+state) instead degrades to a generic ask naming no packages — manifest
+content is agent-authored, so silence there would be a one-step-suppressible
+reminder. No repo-scoped opt-out sentinel: a `.claude/*-optout` file this
+hook would be the sole reader of is agent-writable with one `Write` call and
+produces total, silent, permanent suppression.
 
 **Named residuals:**
 
@@ -342,11 +364,13 @@ bound, independent of coreutils; a `git+https://user:TOKEN@host/...`-shaped
 version constraint is disclosed verbatim in the ask reason, by design — the
 CLAUDE.md duty this hook backstops requires naming the exact constraint, and
 this is the same content a human reviewing the manifest diff by eye would
-see, not an additional exposure channel; non-`package.json` ecosystems, including
-this repo's own `requirements.txt` — deferred not because of the
-`tomllib` hazard (which doesn't apply to a line-based format) but because
-of its own grammar hazards (`-r`/`-e` includes, environment markers, PEP
-503 name normalization), ranked just below `npm pkg set` above; lockfiles.
+see, not an additional exposure channel; `requirements*.txt`'s `-r`/`-c`
+includes aren't followed — only the edited manifest's own text is diffed,
+never a file it references; `requirements*.txt`'s `-e`/`--editable` lines
+are skipped entirely, so a dependency introduced only via an editable
+install is invisible to the diff; lockfiles (`package-lock.json`,
+`Cargo.lock`, `Gemfile.lock`, `go.sum`) and ecosystems outside the six
+recognized manifests aren't covered.
 
 ## The two PII guard hooks
 
