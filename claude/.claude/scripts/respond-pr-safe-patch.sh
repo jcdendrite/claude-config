@@ -56,6 +56,12 @@ fi
 
 case "$CURRENT_BODY" in
   '**[Claude Code]**'*)
+    # Quoted literal, not bare -- unquoted, [Claude Code] is a glob
+    # bracket-expression (matches any one char), not the literal string.
+    if [[ "$BODY" != '**[Claude Code]**'* ]]; then
+      echo "respond-pr-safe-patch.sh: replacement body for comment $COMMENT_ID in $REPO does not start with '**[Claude Code]**' -- refusing to strip the ownership marker from an already-marked comment. No PATCH attempted." >&2
+      exit 1
+    fi
     # -f (raw string), not -F (typed): -F applies gh's own type coercion
     # (true/false/null/integer conversion, {owner}/{repo}/{branch}
     # placeholder substitution, and a leading @ read as a filename) --
