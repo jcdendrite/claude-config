@@ -79,6 +79,7 @@
     "sql-query-conventions": "name-only",
     "agent-review": "name-only",
     "root-cause-analysis": "name-only",
+    "tighten-prose": "name-only",
     "loop": "name-only",
     "simplify": "name-only",
     "claude-api": "off",

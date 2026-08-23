@@ -694,6 +694,52 @@ class TestPrDescriptionCostSectionWiring:
         assert "~/.claude/scripts/pr-cost-section.sh" in body
 
 
+class TestPrDescriptionProseTighteningPassWiring:
+    """Wiring tripwire for the `## Prose tightening pass` section, mirroring
+    TestPrDescriptionCostSectionWiring's treatment of the neighboring `##
+    Cost section` above it -- pr-description has no behavioral test suite
+    in this repo, so these assertions only prove the section is present,
+    correctly placed, and dispatches by name; not that it executes
+    correctly (execution requires manual verification)."""
+
+    def _body(self):
+        return _skill_file("pr-description").read_text()
+
+    def _prose_section(self):
+        """The `## Prose tightening pass` section's own text, isolated from
+        the rest of the body -- an assertion against the whole body can pass
+        on unrelated text from a neighboring section (e.g. `## Cost
+        section`'s own CLAUDE_CONFIG_DIR reference) even when the new
+        section itself dropped what's being checked for."""
+        body = self._body()
+        start = body.index("## Prose tightening pass")
+        end = body.index("## Checks", start)
+        return body[start:end]
+
+    def test_declares_account_scoped_opt_out_sentinel(self):
+        section = self._prose_section()
+        assert "pr-description-tighten-prose-optout" in section
+        assert "Cost section's gate above" in section
+
+    def test_section_placed_before_checks(self):
+        """Order-sensitive: the pass must run before ## Checks so the
+        reader-coherence pass and content-claim verification validate the
+        final, already-tightened bytes rather than pre-rewrite text."""
+        body = self._body()
+        prose_pass_index = body.index("## Prose tightening pass")
+        checks_index = body.index("## Checks")
+        assert prose_pass_index < checks_index, (
+            "## Prose tightening pass must precede ## Checks"
+        )
+        cost_section_index = body.index("## Cost section")
+        assert cost_section_index < prose_pass_index, (
+            "## Prose tightening pass must follow ## Cost section"
+        )
+
+    def test_dispatches_tighten_prose_by_name(self):
+        assert "dispatch `tighten-prose` by name" in self._body()
+
+
 class TestRespondPrPromiseRedemption:
     """Pin the Guidelines bullet requiring a filed `will create` ticket to
     update every place that promise was already published (GH-476).
@@ -775,6 +821,21 @@ class TestContinuityFileBucketCrosscheck:
             'status, and blocking edges, or "None." — and carries the resume directive'
             in _skill_file("handoff").read_text()
         )
+
+
+class TestTightenProseScopeCarveOutPhrases:
+    """Regression guard on tighten-prose's scope rule, mirroring
+    TestContinuityFileBucketCrosscheck's guard on brief's critical-rule
+    text. REFERENCES.md is never loaded at runtime, so the durable-doc/
+    plan-file scope boundary must live in the SKILL.md body itself -- this
+    pins those carve-out phrases so a future edit can't silently drop them.
+    """
+
+    def test_declares_references_md_carve_out(self):
+        assert "REFERENCES.md" in _skill_file("tighten-prose").read_text()
+
+    def test_declares_plan_file_carve_out(self):
+        assert ".claude/plans/" in _skill_file("tighten-prose").read_text()
 
 
 class TestHandoffCommitMarkerCoveredWork:
