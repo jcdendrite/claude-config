@@ -2340,7 +2340,7 @@ class TestDenyPrivateProjectRefs:
         )
         subprocess.run(["git", "add", "notes.txt"], cwd=claude_config_repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=claude_config_repo, check=True)
-        (claude_config_repo / "notes.txt").write_text("")
+        (claude_config_repo / "notes.txt").write_text("The internal service moved.\n")
         subprocess.run(["git", "add", "notes.txt"], cwd=claude_config_repo, check=True)
         assert (
             run_hook(

@@ -123,7 +123,7 @@ answer.
     and the existing message-based test's placeholder at line 2036 —
     generate a fresh random-looking UUID at implementation time rather than
     reusing either
-  - Internal hostname: the message string in `test_structural_internal_hostname_denied`, line 2079
+  - Internal hostname: the message string in `test_structural_internal_hostname_denied`, line 2078
   - Slack channel: the message string in `test_structural_slack_channel_shape_denied`, line 2215
 
   (This plan deliberately does not reproduce those literal strings here —
