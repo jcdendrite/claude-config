@@ -15567,6 +15567,8 @@ def _fake_pr_cost_subprocess_run(
                 # for -- gating on the actual argv here (not hardcoding both
                 # keys) catches a caller that drops a required field from
                 # its own --json list, which a hardcoded payload would mask.
+                if "--json" not in cmd:
+                    raise AssertionError(f"gh repo view call missing --json: {cmd}")
                 json_flag_index = cmd.index("--json")
                 requested_fields = set(cmd[json_flag_index + 1].split(","))
                 full_payload = {
