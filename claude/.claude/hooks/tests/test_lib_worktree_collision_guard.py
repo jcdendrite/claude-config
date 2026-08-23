@@ -463,6 +463,83 @@ class TestCollisionGuardBranches:
         assert result.returncode == 0
         assert result.stdout == ""
 
+    def test_resumed_session_dead_pid_self_recognized_via_session_id(self, isolated_home, tmp_path):
+        """A resumed session (`claude --continue`/`--resume`) keeps its
+        session_id but gets a new PID. A lock acquired under the
+        pre-resume PID, now dead, must still self-recognize via
+        session_id and never reach the kill -0 liveness check that would
+        otherwise report it 'no longer running' and ask for a manual
+        unlock -- the exact false deny this fix closes."""
+        repo = tmp_path / "resume-dead-pid-repo"
+        _init_opted_in_repo(repo)
+        wt_path = tmp_path / "resume-dead-pid-worktree"
+        _add_worktree(repo, wt_path, "resume-dead-pid")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "resume-dead-pid-session")
+        pre_resume_pid = _dead_pid()
+        _lock_worktree(wt_path, f"claude-code pid {pre_resume_pid} session resume-dead-pid-session")
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_resumed_session_reused_live_pid_self_recognized_via_session_id(
+        self, isolated_home, tmp_path, live_pid
+    ):
+        """The other half of the resume regression: the pre-resume PID
+        gets reused by an unrelated live process (live_pid stands in for
+        it). Self-recognition via session_id must short-circuit before
+        the kill -0 check, which would otherwise misreport this
+        live-but-foreign PID as 'already in use by a live Claude Code
+        session'."""
+        repo = tmp_path / "resume-live-pid-repo"
+        _init_opted_in_repo(repo)
+        wt_path = tmp_path / "resume-live-pid-worktree"
+        _add_worktree(repo, wt_path, "resume-live-pid")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "resume-live-pid-session")
+        _lock_worktree(wt_path, f"claude-code pid {live_pid} session resume-live-pid-session")
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_old_format_lock_no_session_field_falls_back_to_pid_match(self, isolated_home, tmp_path):
+        """A pre-upgrade lock reason with no ` session <ID>` field still
+        self-recognizes via PID match -- the fallback this fix must
+        preserve for a lock acquired before this fix shipped."""
+        repo = tmp_path / "old-format-repo"
+        _init_opted_in_repo(repo)
+        wt_path = tmp_path / "old-format-worktree"
+        _add_worktree(repo, wt_path, "old-format")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "old-format-session")
+        _lock_worktree(wt_path, f"claude-code pid {os.getpid()}")
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_truncated_session_token_lock_denies_with_manual_remedy(self, isolated_home, tmp_path):
+        """A lock reason whose session field is truncated to just the
+        `session` keyword (e.g. a `locked` file write killed mid-flight
+        by the 5s _lib_capped timeout) is unparseable -- denies with the
+        same manual remedy as any other malformed reason, never a false
+        self-match even though the pid field alone matches this
+        session's own pid."""
+        repo = tmp_path / "truncated-session-repo"
+        _init_opted_in_repo(repo)
+        wt_path = tmp_path / "truncated-session-worktree"
+        _add_worktree(repo, wt_path, "truncated-session")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "truncated-session-session")
+        _lock_worktree(wt_path, f"claude-code pid {os.getpid()} session")
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home)
+        assert result.returncode == 1
+        assert "git worktree unlock" in result.stdout
+        assert _worktree_lock_reason(wt_path) is not None, "guard must not auto-evict"
+
     def test_foreign_live_lock_denies_naming_pid(self, isolated_home, tmp_path, live_pid):
         repo = tmp_path / "foreign-live-repo"
         _init_opted_in_repo(repo)
@@ -472,6 +549,26 @@ class TestCollisionGuardBranches:
         _seed_session(isolated_home, "foreign-live-session")
         foreign_pid = live_pid
         _lock_worktree(wt_path, f"claude-code pid {foreign_pid}")
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home)
+        assert result.returncode == 1
+        assert str(foreign_pid) in result.stdout
+        assert "live" in result.stdout
+
+    def test_new_format_foreign_session_id_lock_denies_naming_pid(self, isolated_home, tmp_path, live_pid):
+        """A different security invariant than the old-format case above:
+        a new-format lock (carries a session_id) belonging to a genuinely
+        different, live session must still deny -- proves the session_id
+        equality check doesn't degrade into a presence check that would
+        let any session self-match any other session's new-format lock."""
+        repo = tmp_path / "foreign-session-repo"
+        _init_opted_in_repo(repo)
+        wt_path = tmp_path / "foreign-session-worktree"
+        _add_worktree(repo, wt_path, "foreign-session")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "foreign-session-my-session")
+        foreign_pid = live_pid
+        _lock_worktree(wt_path, f"claude-code pid {foreign_pid} session foreign-session-their-session")
 
         result = _run_collision_guard(wt_path, common_dir, isolated_home)
         assert result.returncode == 1
@@ -746,6 +843,46 @@ class TestWorktreeLockPid:
         result = _run_lock_pid("/some/path", porcelain)
         assert result.returncode == 0
         assert result.stdout.strip() == "4242"
+
+    def test_locked_with_old_format_pid_only_prints_trailing_separator_space(self):
+        """The exact-string counterpart to test_locked_with_parseable_pid
+        above (which only checks the stripped pid): an old-format reason
+        with no session field still prints the separating space before an
+        empty session_id, so a caller's `read -r pid session_id <<< "$out"`
+        never depends on the writer having emitted a trailing token."""
+        porcelain = (
+            "worktree /some/path\n"
+            "HEAD abc123\n"
+            "branch refs/heads/feature\n"
+            "locked claude-code pid 4242\n"
+        )
+        result = _run_lock_pid("/some/path", porcelain)
+        assert result.returncode == 0
+        assert result.stdout == "4242 "
+
+    def test_locked_with_pid_and_session_id(self):
+        """The new-format reason parses both fields, distinct from
+        test_locked_with_parseable_pid above (old format, no session
+        field)."""
+        porcelain = (
+            "worktree /some/path\n"
+            "HEAD abc123\n"
+            "branch refs/heads/feature\n"
+            "locked claude-code pid 4242 session abc-123_DEF\n"
+        )
+        result = _run_lock_pid("/some/path", porcelain)
+        assert result.returncode == 0
+        assert result.stdout == "4242 abc-123_DEF"
+
+    def test_locked_with_truncated_session_token_returns_2(self):
+        """A `session` keyword with no id after it (e.g. a `locked` file
+        write killed mid-flight by the 5s _lib_capped timeout) fails the
+        session-id character-class capture -- the whole reason is
+        unparseable, not a partial session match."""
+        porcelain = "worktree /some/path\nlocked claude-code pid 4242 session\n"
+        result = _run_lock_pid("/some/path", porcelain)
+        assert result.returncode == 2
+        assert result.stdout == ""
 
     def test_unlocked_returns_1(self):
         porcelain = (
