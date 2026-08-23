@@ -2,7 +2,7 @@
 
 A local, append-only record of this repo's own per-PR AI-tooling dollar cost, joined against GitHub PR size, rework, and review-surface data — one row per captured merged PR per machine, appended by `transcript-analysis.py pr-cost --record`. Capture before the transcript retention window (`cleanupPeriodDays`, default 30d) expires — once a branch's transcripts age out, that PR's spend is unrecoverable, and the ledger itself has no backup or cross-machine replication of its own.
 
-Unlike the weekly `cost-ledger` (`docs/cost-ledger.md`), whose rows are aggregate-only, every row here carries a branch name and a repo identifier — see "Redaction: `head_branch` is opaque, `repo` is raw at rest" below before pointing this tool at any repo other than `claude-config`.
+Unlike the weekly `cost-ledger` (`docs/cost-ledger.md`), whose rows are aggregate-only, every row here carries a branch name, a repo identifier, and a host identifier — see "Redaction: `head_branch` is opaque, `host`/`repo` are raw at rest" below before pointing this tool at any repo other than `claude-config`.
 
 ## Schema
 
@@ -10,7 +10,7 @@ Columns, in ledger order (`_PR_COST_LEDGER_COLUMNS` in `transcript-analysis.py`)
 
 | Column | What it holds |
 |---|---|
-| `repo`, `pr_number`, `machine` | The row's key. `repo` is a case-folded `owner/name`, stored raw (never scrubbed at rest — see "Redaction: `head_branch` is opaque, `repo` is raw at rest") since it must stay stable and comparable across runs; PR numbers are unique only per-repo, so `repo` is part of the key from the first row. |
+| `host`, `repo`, `pr_number`, `machine` | The row's key. `host` and `repo` are case-folded (`host` alone for a bare hostname, `repo` as `owner/name`), stored raw (never scrubbed at rest — see "Redaction: `head_branch` is opaque, `host`/`repo` are raw at rest") since both must stay stable and comparable across runs; PR numbers are unique only per-(`host`, `repo`), so both are part of the key from the first row — a same-named `owner/repo` on two different hosts (e.g. a GHE instance and github.com) is two distinct keys, not one. |
 | `head_branch` | The joined branch, stored in its already-scrubbed form. |
 | `merged_at` | The PR's `mergedAt` from `gh`. |
 | `rate_stamp` | The pricing table's fetch date (`_PRICING_FETCH_DATE`) in effect when the row was computed — rows under different rate stamps are not directly comparable; see "Comparing rows across rate stamps" below. |
@@ -53,7 +53,7 @@ A degraded row's dollar/token figures are still trustworthy (those come from the
 
 ## Data
 
-Ledger data lives outside this repo, at `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv` by default (`~/.claude/pr-cost-ledger.tsv` when `CLAUDE_CONFIG_DIR` is unset) — a local, per-account file that `--record` creates on first use and never enters this repo's git tree. Set `PR_COST_LEDGER_PATH` to an absolute path to record somewhere else instead; a relative value is rejected. Unlike the public, git-committed weekly cost ledger, a freshly created pr-cost ledger file is given restrictive `0600` permissions, since its rows carry branch names and a repo identifier the weekly ledger's rows don't.
+Ledger data lives outside this repo, at `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv` by default (`~/.claude/pr-cost-ledger.tsv` when `CLAUDE_CONFIG_DIR` is unset) — a local, per-account file that `--record` creates on first use and never enters this repo's git tree. Set `PR_COST_LEDGER_PATH` to an absolute path to record somewhere else instead; a relative value is rejected. Unlike the public, git-committed weekly cost ledger, a freshly created pr-cost ledger file is given restrictive `0600` permissions, since its rows carry branch names and a repo/host identifier the weekly ledger's rows don't.
 
 `--record` additionally requires the opt-in sentinel `~/.claude/.pr-cost-enabled` (prompted by `install.sh`, alongside `.cost-ledger-enabled`) — a write-taking subcommand shipped to every stow user stays consent-gated.
 
@@ -69,7 +69,7 @@ With no `--record`, `pr-cost` prints every row currently in the ledger file, fol
 
 **The as-of window.** A branch keeps accruing local transcript activity for a while after its PR merges, so capturing immediately after merge understates the PR's true cost. `--asof-window-days` (default `3`, per `_PR_COST_ASOF_WINDOW_DAYS_DEFAULT`) is the close-out window a PR must clear before it's eligible for capture. This default is a **provisional placeholder**, not a validated figure: the real close-out window is meant to be set as a measured percentile of (last priced turn − `mergedAt`) across the surviving corpus, and the default may change once that measurement lands.
 
-**The re-record contract.** An unforced re-record of an already-captured `(repo, pr_number, machine)` refuses and names `--force`. `--force` requires `--pr` (a correction targets exactly one PR) and does not overwrite: it appends a new row carrying the same key, a fresh `captured_at`, and a `supersedes` reference to the prior row's own `captured_at`. Every prior row is left byte-identical. Readers take the latest row per key (`_latest_pr_cost_row`, by `captured_at`). This is deliberate — more than one correction per PR is plausible, and since this ledger is the sole surviving record once transcripts age out, a single-slot overwrite would lose prior corrections permanently.
+**The re-record contract.** An unforced re-record of an already-captured `(host, repo, pr_number, machine)` refuses and names `--force`. `--force` requires `--pr` (a correction targets exactly one PR) and does not overwrite: it appends a new row carrying the same key, a fresh `captured_at`, and a `supersedes` reference to the prior row's own `captured_at`. Every prior row is left byte-identical. Readers take the latest row per key (`_latest_pr_cost_row`, by `captured_at`). This is deliberate: vendor rate tables expire and the local corpus keeps growing, so more than one correction per PR is plausible, and this ledger is the sole surviving record once transcripts age out — a single-slot overwrite would lose everything before the most recent correction.
 
 ### Comparing rows across rate stamps
 
@@ -89,23 +89,24 @@ Each account's own `~/.claude/.pr-cost-enabled` sentinel still individually gate
 
 **`gh` identity mismatch (exit 2).** Before any `gh` discovery call, `pr-cost` resolves `gh`'s own effective target repo (`gh repo view --json nameWithOwner`) and compares it, case-folded, against this repo's own `git remote get-url origin` identity. A mismatch refuses rather than silently recording rows against the wrong repo — check `GH_REPO`, `gh repo set-default`, or an ambient cwd mismatch (the run may simply not be happening from this repo's own working tree). The confirmed identity is then pinned via `--repo` on every subsequent `gh` call this run makes, so ambient `gh` state can't drift the target mid-run.
 
-## Redaction: `head_branch` is opaque, `repo` is raw at rest
+## Redaction: `head_branch` is opaque, `host`/`repo` are raw at rest
 
 `head_branch`:
 - Never reaches the ledger file or a terminal in its original form — `_new_pr_cost_row` writes it through `_assign_root_scoped_redact_label` before it's placed in the row, and every print path (the per-PR progress line, the read-mode listing, the ledger preview, every refusal message above) does the same before display.
 - The substitution is full-value and opaque (`account-<K>/branch-<N>`), not a scan for known-sensitive shapes — a branch name that happens to encode a client name in plain English (`feature/acme-onboarding`) has no gap to fall through, because the original string is never retained anywhere this subcommand writes or prints. There is deliberately no `--no-redact` escape hatch.
 - This is a different mechanism from `deny-private-project-refs.sh`'s git-commit-time tracker-ID and blocklist scan — that hook covers the publish boundary for this repo's own source, not pr-cost's runtime output, and pr-cost never reads its `<config-dir>/private-projects.md` blocklist.
 
-`repo` is not protected the same way at rest:
-- `_new_pr_cost_row` stores `pinned_repo` directly in the ledger row with no substitution, so every captured PR's owner/name pair sits in the ledger file in the clear, permanently, once written — an unmitigated gap.
-- Terminal output is the one place `repo` *is* covered: the read-mode listing computes a redacted label via the same `_assign_root_scoped_redact_label` call `head_branch` uses before printing, so a `repo` value doesn't reach your terminal in the clear even though it reaches the file that way.
+`host` and `repo` are not protected the same way at rest:
+- `_new_pr_cost_row` stores both directly in the ledger row with no substitution, so every captured PR's host and owner/name pair sit in the ledger file in the clear, permanently, once written — an unmitigated gap.
+- Terminal output is the one place `repo` *is* covered: the read-mode listing computes a redacted label via the same `_assign_root_scoped_redact_label` call `head_branch` uses before printing, so a `repo` value doesn't reach your terminal in the clear even though it reaches the file that way. `host` has no equivalent terminal exposure to cover in the first place — no print path currently displays it, redacted or otherwise.
+- For a GHE host specifically, this gap carries more identification risk than for `repo` alone — an internal GHE hostname is often the single most distinctive organization-identifying token in the row, the same reasoning `deny-private-project-refs` uses to treat internal-TLD hostnames as an always-on structural detector.
 - Keeping the ledger file itself outside this repo's git tree does not close this — that only stops it from being published in a commit, not from sitting in the clear in a local file.
 
 ## Residual replication paths the git-tree check doesn't close
 
 `--record` refuses (exit 2) when the resolved ledger path sits inside a git working tree, so the default location is never accidentally committed. That check walks up from the ledger path to the nearest existing ancestor and asks git directly whether it's tracked — it cannot see two git-invisible ways the same branch/repo data could still end up shared or duplicated outside this machine:
 
-- **A cloud-sync folder** (Dropbox, iCloud, OneDrive, or similar) syncing `$CLAUDE_CONFIG_DIR` or `PR_COST_LEDGER_PATH`'s directory. The ledger's branch names and repo identifier — more sensitive than the weekly ledger's aggregate-only rows — would replicate to every device and account the sync folder reaches.
+- **A cloud-sync folder** (Dropbox, iCloud, OneDrive, or similar) syncing `$CLAUDE_CONFIG_DIR` or `PR_COST_LEDGER_PATH`'s directory. The ledger's branch names and repo/host identifiers — more sensitive than the weekly ledger's aggregate-only rows — would replicate to every device and account the sync folder reaches.
 - **A bare-repo dotfile manager** (yadm-style, tracking `$HOME` via `--git-dir`/`--work-tree` flags rather than an in-tree `.git`). The git-tree check looks for a conventional in-tree `.git`; a bare-repo dotfile manager's tracking is invisible to it, so the ledger could be silently version-controlled and pushed to a remote without the check ever firing.
 
-Avoid both if the ledger's contents should stay off a shared destination — this is independent of, and in addition to, `repo`'s own raw-at-rest exposure above.
+Avoid both if the ledger's contents should stay off a shared destination — this is independent of, and in addition to, `repo`'s and `host`'s own raw-at-rest exposure above.

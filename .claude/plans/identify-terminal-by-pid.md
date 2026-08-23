@@ -9,8 +9,7 @@ windows. This matters because a blocked Claude Code session (a stuck lock,
 a hung command) often leaves the engineer with only its PID — no window
 title, no distinguishing text — and manually correlating that PID to a
 terminal today means hand-typing `ps` and a raw escape-sequence command
-each time. A prior Haiku-authored technique brief
-(`/private/tmp/claude-501/-Users-jared-Clarifi-GHE-nokryn/d561d4e4-ec95-40b2-a58e-22a984e09397/scratchpad/identify-and-rename-terminal-task.md`)
+each time. A prior Haiku-authored technique brief in a session scratchpad
 verified the underlying mechanism live (`ps` → TTY → OSC title escape
 sequence) but left it as ad hoc one-liners; this plan turns it into a
 tested, installed script following this repo's existing scripts/

@@ -15489,10 +15489,12 @@ def _pr_cost_args(
 def _fake_pr_cost_subprocess_run(
     *,
     repo: str = "owner/repo",
+    host: str = "github.com",
     merged_prs: list[dict] | None = None,
     enrichment_by_pr: dict[int, dict] | None = None,
     local_git_shas: set[str] | None = None,
     gh_repo_name_with_owner: str | None = None,
+    gh_repo_view_host: str | None = None,
     gh_auth_status_failure: bool = False,
     gh_repo_view_failure_stderr: str | None = None,
     gh_pr_view_failure_stderr: str | None = None,
@@ -15501,19 +15503,21 @@ def _fake_pr_cost_subprocess_run(
     git_tracked: bool = False,
 ):
     """Build a subprocess.run double covering every local git/gh call
-    _pr_cost_report's full orchestration makes: origin-remote resolution,
-    the git-tracked-ledger check (answers "not a git repository" unless
-    git_tracked=True, so --record never trips the git-tracked refusal
-    against a tmp_path ledger by default), gh auth/repo-view/pr-list/pr-view,
-    and cat-file --batch-check (answers from local_git_shas). Raises
-    AssertionError on any other command shape, so an untested call path
-    fails loud instead of silently returning "".
+    _pr_cost_report's full orchestration makes: origin-remote resolution
+    (host defaults to github.com; pass a GHE hostname to simulate a
+    GHE-pinned repo), the git-tracked-ledger check (answers "not a git
+    repository" unless git_tracked=True, so --record never trips the
+    git-tracked refusal against a tmp_path ledger by default), gh
+    auth/repo-view/pr-list/pr-view, and cat-file --batch-check (answers from
+    local_git_shas). Raises AssertionError on any other command shape, so an
+    untested call path fails loud instead of silently returning "".
 
     gh-integration extension points (all default to the local-mechanics
     behavior above -- unset, every new param is a no-op):
     gh_repo_name_with_owner decouples `gh repo view`'s own nameWithOwner from
-    the git-remote-derived `repo` (_resolve_pinned_gh_repo's case-fold/
-    mismatch scenarios); a
+    the git-remote-derived `repo`, and gh_repo_view_host (defaults to `host`)
+    decouples its own url's host the same way (_resolve_pinned_gh_repo's
+    case-fold/mismatch scenarios); a
     *_failure_stderr param makes every call of that kind fail with the given
     stderr text instead of succeeding (rate-limit/network/auth-shaped
     classification, retry-exhaustion); call_log, when given, collects every
@@ -15527,6 +15531,7 @@ def _fake_pr_cost_subprocess_run(
     enrichment_by_pr = enrichment_by_pr or {}
     local_git_shas = local_git_shas or set()
     gh_repo_name_with_owner = gh_repo_name_with_owner if gh_repo_name_with_owner is not None else repo
+    gh_repo_view_host = gh_repo_view_host if gh_repo_view_host is not None else host
 
     def fake_run(cmd, *args, **kwargs):
         class _Proc:
@@ -15536,7 +15541,7 @@ def _fake_pr_cost_subprocess_run(
 
         proc = _Proc()
         if cmd[:3] == ["git", "remote", "get-url"]:
-            proc.stdout = f"https://github.com/{repo}.git\n"
+            proc.stdout = f"https://{host}/{repo}.git\n"
         elif cmd[0] == "git" and "rev-parse" in cmd and "--is-inside-work-tree" in cmd:
             if git_tracked:
                 proc.stdout = "true\n"
@@ -15558,7 +15563,21 @@ def _fake_pr_cost_subprocess_run(
                 proc.returncode = 1
                 proc.stderr = gh_repo_view_failure_stderr
             else:
-                proc.stdout = json.dumps({"nameWithOwner": gh_repo_name_with_owner})
+                # Real `gh --json` returns only the fields the caller asked
+                # for -- gating on the actual argv here (not hardcoding both
+                # keys) catches a caller that drops a required field from
+                # its own --json list, which a hardcoded payload would mask.
+                if "--json" not in cmd:
+                    raise AssertionError(f"gh repo view call missing --json: {cmd}")
+                json_flag_index = cmd.index("--json")
+                requested_fields = set(cmd[json_flag_index + 1].split(","))
+                full_payload = {
+                    "nameWithOwner": gh_repo_name_with_owner,
+                    "url": f"https://{gh_repo_view_host}/{gh_repo_name_with_owner}",
+                }
+                proc.stdout = json.dumps({
+                    key: value for key, value in full_payload.items() if key in requested_fields
+                })
         elif cmd[:3] == ["gh", "pr", "list"]:
             if enforce_repo_pin is not None and not _argv_carries_repo_pin(cmd, enforce_repo_pin):
                 raise AssertionError(f"gh pr list call missing --repo {enforce_repo_pin!r} pin: {cmd}")
@@ -15582,9 +15601,13 @@ def _fake_pr_cost_subprocess_run(
 
 
 def _argv_carries_repo_pin(cmd: list[str], pinned_repo: str) -> bool:
-    """True when `--repo <pinned_repo>` appears contiguously in cmd --
-    _fake_pr_cost_subprocess_run's enforce_repo_pin check."""
-    return any(cmd[i] == "--repo" and cmd[i + 1] == pinned_repo for i in range(len(cmd) - 1))
+    """True when `--repo <pinned_repo>` appears contiguously in cmd, where
+    the argv value may be the bare pin or a host-qualified `HOST/<pinned_repo>`
+    form -- _fake_pr_cost_subprocess_run's enforce_repo_pin check."""
+    return any(
+        cmd[i] == "--repo" and (cmd[i + 1] == pinned_repo or cmd[i + 1].endswith(f"/{pinned_repo}"))
+        for i in range(len(cmd) - 1)
+    )
 
 
 def _sample_pr_cost_row(**overrides) -> dict:
@@ -15592,7 +15615,7 @@ def _sample_pr_cost_row(**overrides) -> dict:
     type (str, int, float, bool) -- the base fixture for round-trip, append,
     and malformed-content tests."""
     row: dict = {
-        "repo": "owner/repo", "pr_number": 42, "machine": "ci1",
+        "host": "github.com", "repo": "owner/repo", "pr_number": 42, "machine": "ci1",
         "head_branch": "account-1/branch-1", "merged_at": "2026-01-01T00:00:00Z",
         "rate_stamp": "2026-08-02", "captured_at": "2026-01-02T00:00:00Z",
         "join_confidence": "high", "supersedes": "", "status": "ok",
@@ -15947,7 +15970,8 @@ class TestPrCostBranchRedactionJoinIntegrity:
         the join above which never sees it."""
         pr = {"number": 9, "mergedAt": "2026-01-01T00:00:00Z", "additions": 1, "deletions": 1, "changedFiles": 1}
         row = _mod._new_pr_cost_row(
-            pinned_repo="owner/repo", pr=pr, branch=self._HEXISH_BRANCH, agg=_mod._new_pr_cost_agg(),
+            host="github.com", pinned_repo="owner/repo", pr=pr, branch=self._HEXISH_BRANCH,
+            agg=_mod._new_pr_cost_agg(),
             enrichment=None, join_confidence="medium", status=_mod._PR_COST_STATUS_OK, machine="ci1",
             captured_at="2026-01-01T00:00:00Z", supersedes="",
             plan_glob=_mod._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=_mod._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
@@ -15969,7 +15993,7 @@ class TestGhDiscoverMergedPrsPagination:
             return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        _mod._gh_discover_merged_prs("owner/repo")
+        _mod._gh_discover_merged_prs("github.com", "owner/repo")
 
         argv = captured["cmd"]
         assert "--limit" in argv
@@ -16330,6 +16354,17 @@ class TestParsePrCostLedgerFileTextMalformed:
             _mod._parse_pr_cost_ledger_file_text(text)
         assert "Acme-Corp" not in str(exc_info.value)
 
+    def test_malformed_host_raises_without_leaking_raw_value(self):
+        """Same guard as the repo check above, mirrored for the host column --
+        a non-lowercase host fails the malformed-host check without the raw
+        value reaching the raised message, since host is never scrubbed at
+        rest either."""
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(host="Acme-Corp.GHE.com"))
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError, match="malformed host value") as exc_info:
+            _mod._parse_pr_cost_ledger_file_text(text)
+        assert "Acme-Corp" not in str(exc_info.value)
+
     def test_malformed_merged_at_raises(self):
         line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(merged_at="not-a-timestamp"))
         text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
@@ -16359,6 +16394,58 @@ class TestParsePrCostLedgerFileTextMalformed:
         text = bad_header + "\n" + self._valid_line() + "\n"
         with pytest.raises(_mod._PrCostLedgerParseError, match="missing or mismatched"):
             _mod._parse_pr_cost_ledger_file_text(text)
+
+
+class TestPrCostLedgerLegacyHostColumnMigration:
+    """The pre-host-column header (_PR_COST_LEDGER_LEGACY_HEADER_LINE) is
+    the one documented backward-compat exception to the parser's otherwise
+    exact header/column-count match -- every row recorded under it predates
+    GHE host-awareness, so implicitly belongs to github.com."""
+
+    def _legacy_row_line(self, **overrides) -> str:
+        # host is always _PR_COST_LEDGER_COLUMNS' first cell, so dropping it
+        # from a current-schema formatted line reproduces the legacy shape
+        # without a second column-ordering implementation to keep in sync.
+        return "\t".join(_mod._format_pr_cost_ledger_row(_sample_pr_cost_row(**overrides)).split("\t")[1:])
+
+    def test_legacy_header_row_parses_with_host_defaulted_to_github_com(self):
+        text = _mod._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + self._legacy_row_line() + "\n"
+
+        rows = _mod._parse_pr_cost_ledger_file_text(text)
+
+        assert len(rows) == 1
+        assert rows[0]["host"] == "github.com"
+
+    def test_record_against_legacy_file_upgrades_it_to_current_schema(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """A subsequent --record write against a legacy-format file rewrites
+        the whole ledger under the current header -- no separate migration
+        script needed, since the writer always renders the current schema
+        from the in-memory rows the parser already normalized."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        legacy_line = self._legacy_row_line(pr_number=7, machine="ci1")
+        ledger_path.write_text(_mod._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + legacy_line + "\n")
+
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(repo="owner/repo", merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        written_text = ledger_path.read_text()
+        assert written_text.splitlines()[0] == _mod._PR_COST_LEDGER_HEADER_LINE
+        rows = _mod._parse_pr_cost_ledger_file_text(written_text)
+        assert len(rows) == 2  # the upgraded legacy row (pr_number=7) plus the freshly recorded one (pr_number=1)
+        assert all(r["host"] == "github.com" for r in rows)
 
 
 class TestPrCostMechanicalProxies:
@@ -16489,6 +16576,16 @@ class TestClassifyGhError:
         assert _mod._classify_gh_error(stderr) == _mod._GH_ERROR_KIND_AUTH
 
     @pytest.mark.parametrize("stderr", [
+        # Verified against gh 2.97.0's own stderr for an ambient GH_HOST that
+        # doesn't match any configured git remote.
+        "none of the git remotes configured for this repository correspond to the"
+        " GH_HOST environment variable. Try adding a matching remote or unsetting"
+        " the variable\n",
+    ])
+    def test_gh_host_mismatch_stderr_classified_as_host_mismatch(self, stderr):
+        assert _mod._classify_gh_error(stderr) == _mod._GH_ERROR_KIND_HOST_MISMATCH
+
+    @pytest.mark.parametrize("stderr", [
         "API rate limit exceeded for user ID 123.\n",
         "HTTP 429: Too Many Requests\n",
         "HTTP 403: Forbidden\n",
@@ -16505,29 +16602,34 @@ class TestClassifyGhError:
         assert _mod._classify_gh_error(stderr) == _mod._GH_ERROR_KIND_NETWORK
 
 
-class TestGitRemoteOriginOwnerRepoRegex:
-    """_git_remote_origin_owner_repo / _GIT_REMOTE_OWNER_REPO_RE: every
-    github.com remote URL shape git/gh support, plus the substring-spoofing
-    attack named in the regex's own comment."""
+class TestGitRemoteOriginHostAndOwnerRepoRegex:
+    """_git_remote_origin_host_and_owner_repo / _GIT_REMOTE_HOST_OWNER_REPO_RE:
+    every github.com and GitHub Enterprise remote URL shape git/gh support,
+    plus the substring-spoofing attack named in the regex's own comment."""
 
     @pytest.mark.parametrize("remote_url,expected", [
-        ("https://github.com/owner/repo.git", "owner/repo"),
-        ("https://github.com/owner/repo", "owner/repo"),
-        ("git@github.com:owner/repo.git", "owner/repo"),
-        ("ssh://git@github.com/owner/repo.git", "owner/repo"),
+        ("https://github.com/owner/repo.git", ("github.com", "owner/repo")),
+        ("https://github.com/owner/repo", ("github.com", "owner/repo")),
+        ("git@github.com:owner/repo.git", ("github.com", "owner/repo")),
+        ("ssh://git@github.com/owner/repo.git", ("github.com", "owner/repo")),
+        ("https://acme-corp.ghe.com/owner/repo.git", ("acme-corp.ghe.com", "owner/repo")),
+        ("git@acme-corp.ghe.com:owner/repo.git", ("acme-corp.ghe.com", "owner/repo")),
+        ("https://Acme-Corp.GHE.com/owner/repo.git", ("acme-corp.ghe.com", "owner/repo")),
     ])
-    def test_recognized_remote_shapes_resolve_to_owner_repo(self, monkeypatch, remote_url, expected):
+    def test_recognized_remote_shapes_resolve_to_host_and_owner_repo(self, monkeypatch, remote_url, expected):
         monkeypatch.setattr(
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": remote_url + "\n", "stderr": ""})(),
         )
-        assert _mod._git_remote_origin_owner_repo() == expected
+        assert _mod._git_remote_origin_host_and_owner_repo() == expected
 
     def test_attacker_substring_shape_does_not_resolve(self, monkeypatch, capsys):
         """A malicious/misconfigured remote embedding "github.com/owner/repo"
         as a path segment on a different host must not spoof the real
-        identity -- the exact shape named in _GIT_REMOTE_OWNER_REPO_RE's own
-        comment."""
+        identity -- the exact shape named in _GIT_REMOTE_HOST_OWNER_REPO_RE's
+        own comment. The 4-segment shape (host/github.com/owner/repo) stays
+        unrecognized regardless of which host name appears in the spoofed
+        segment."""
         monkeypatch.setattr(
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {
@@ -16535,9 +16637,113 @@ class TestGitRemoteOriginOwnerRepoRegex:
             })(),
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod._git_remote_origin_owner_repo()
+            _mod._git_remote_origin_host_and_owner_repo()
         assert exc_info.value.code == 1
-        assert "not a recognizable github.com owner/repo URL" in capsys.readouterr().err
+        assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
+
+    def test_attacker_substring_shape_on_ghe_host_does_not_resolve(self, monkeypatch, capsys):
+        """The same 4-segment spoofing shape, but with a GHE host as the
+        spoofed segment instead of github.com. The host capture is a
+        character class with no host-specific branching, so this doesn't
+        guard a distinct failure mode from
+        test_attacker_substring_shape_does_not_resolve -- it's here to
+        confirm the anchoring invariant isn't accidentally github.com-specific."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": "https://attacker.example/acme-corp.ghe.com/owner/repo\n", "stderr": "",
+            })(),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
+
+    def test_host_with_disallowed_character_does_not_resolve(self, monkeypatch, capsys):
+        """A host segment containing a character outside the host capture's
+        `[A-Za-z0-9.-]+` class (e.g. an underscore) must not silently
+        mis-capture into a shorter, valid-looking host/owner/repo split."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": "https://internal_host/owner/repo\n", "stderr": "",
+            })(),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
+
+    def test_host_with_port_does_not_resolve(self, monkeypatch, capsys):
+        """The host capture's `[A-Za-z0-9.-]+` class has no port syntax, so a
+        port-bearing remote (a real GHE deployment shape, e.g. behind a
+        reverse proxy) fails to parse and aborts rather than mis-splitting
+        the port into the owner/repo capture groups."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": "ssh://git@acme-corp.ghe.com:2222/owner/repo\n", "stderr": "",
+            })(),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
+
+    def test_ipv6_literal_host_does_not_resolve(self, monkeypatch, capsys):
+        """The host capture's `[A-Za-z0-9.-]+` class also excludes the
+        bracket/colon syntax of a bracketed IPv6-literal remote, so it fails
+        to parse and aborts rather than mis-splitting the literal into the
+        owner/repo capture groups -- same fail-closed shape as the port gap
+        above, via an independently-necessary exclusion (brackets/colons),
+        not a restatement of the port test's coverage."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": "https://[::1]/owner/repo\n", "stderr": "",
+            })(),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
+
+
+class TestGhAuthPreflightOkHostnameScoping:
+    """_gh_auth_preflight_ok: scopes `gh auth status` to the given hostname
+    instead of running a bare aggregate-host check -- a bare check treats
+    every host gh has ever held credentials for as relevant and fails on a
+    GHE-only token merely because GH_TOKEN triggers a speculative
+    github.com check too."""
+
+    def test_passes_hostname_flag_to_gh_auth_status(self, monkeypatch):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _mod._gh_auth_preflight_ok("acme-corp.ghe.com") is True
+        assert call_log == [["gh", "auth", "status", "--hostname", "acme-corp.ghe.com"]]
+
+    def test_nonzero_exit_returns_false(self, monkeypatch):
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 1, "stdout": "", "stderr": "error\n"})(),
+        )
+        assert _mod._gh_auth_preflight_ok("github.com") is False
+
+    @pytest.mark.parametrize("raised", [
+        subprocess.TimeoutExpired(cmd=["gh", "auth", "status"], timeout=1),
+        OSError("gh not found"),
+    ])
+    def test_timeout_or_os_error_returns_false(self, monkeypatch, raised):
+        def fake_run(cmd, *a, **kw):
+            raise raised
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _mod._gh_auth_preflight_ok("github.com") is False
 
 
 class TestGhCallWithBackoffFailureClassBehavior:
@@ -16565,6 +16771,39 @@ class TestGhCallWithBackoffFailureClassBehavior:
         assert degraded == _mod._GH_CALL_DEGRADED_AUTH
         assert call_count == 1
         assert sleep_calls == []
+
+    def test_gh_host_mismatch_failure_returns_immediately_with_actionable_message(self, monkeypatch, capsys):
+        """Distinct from the generic network-failure path (which this
+        stderr shape would otherwise be misclassified into, burning the
+        full retry budget on a failure that can't self-resolve): no retry,
+        and the abort message names the actual fix (unset/correct GH_HOST)
+        without echoing gh's own raw stderr."""
+        call_count = 0
+        gh_stderr = (
+            "none of the git remotes configured for this repository correspond to the"
+            " GH_HOST environment variable. Try adding a matching remote or unsetting"
+            " the variable\n"
+        )
+
+        def fake_run(cmd, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": gh_stderr})()
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        proc, degraded = _mod._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert proc is None
+        assert degraded == _mod._GH_CALL_DEGRADED_HOST_MISMATCH
+        assert call_count == 1
+        assert sleep_calls == []
+        err = capsys.readouterr().err
+        assert "GH_HOST" in err
+        assert "unset" in err
+        assert gh_stderr.strip() not in err  # gh's own raw stderr text is never surfaced
 
     def test_rate_limit_shaped_failure_retries_before_returning_degraded(self, monkeypatch):
         call_count = 0
@@ -16720,7 +16959,7 @@ class TestPrCostPerPrEnrichmentRateLimitDegradesRowNotRun:
         assert rows[0]["status"] == _mod._PR_COST_STATUS_DEGRADED_RATE_LIMIT
 
 
-class TestPrCostPerPrEnrichmentAuthFailureFoldsToDegradedNetwork:
+class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
     def test_gh_pr_view_auth_shaped_failure_writes_degraded_network_not_degraded_auth(
         self, fake_projects, tmp_path, monkeypatch,
     ):
@@ -16753,11 +16992,68 @@ class TestPrCostPerPrEnrichmentAuthFailureFoldsToDegradedNetwork:
         assert len(rows) == 1
         assert rows[0]["status"] == _mod._PR_COST_STATUS_DEGRADED_NETWORK
 
+    def test_gh_pr_view_gh_host_mismatch_failure_writes_degraded_network_not_degraded_host_mismatch(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """Same fold as the auth-shaped case above, for the other
+        no-retry-shaped failure kind: _GH_CALL_DEGRADED_HOST_MISMATCH is
+        never a valid ledger status value either."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo="owner/repo", merged_prs=merged_prs,
+                gh_pr_view_failure_stderr=(
+                    "none of the git remotes configured for this repository correspond to the"
+                    " GH_HOST environment variable. Try adding a matching remote or unsetting"
+                    " the variable\n"
+                ),
+            ),
+        )
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        assert rows[0]["status"] == _mod._PR_COST_STATUS_DEGRADED_NETWORK
+
 
 class TestResolvePinnedGhRepoIdentity:
     """_resolve_pinned_gh_repo: refuses a genuine identity mismatch between
-    gh's own effective repo and this repo's git remote, case-folds a
-    matching identity, and never prints a raw repo value."""
+    gh's own effective repo and this repo's git remote -- on host or on
+    owner/name -- case-folds a matching identity, and never prints a raw
+    repo value."""
+
+    @pytest.mark.parametrize("corpus_host,corpus_repo", [
+        ("", "owner/repo"), ("github.com", ""), ("", ""),
+    ])
+    def test_empty_corpus_host_or_repo_raises_rather_than_silently_matching(
+        self, monkeypatch, corpus_host, corpus_repo,
+    ):
+        """Pins the invariant the mismatch check's gh_host="" fail-closed
+        default relies on: an empty corpus_host/corpus_repo must never
+        reach the comparison, where it could coincidentally equal an
+        unparseable gh_url's own empty-string fallback and skip the
+        refusal. No gh call should even be attempted -- subprocess.run is
+        stubbed to raise if called, rather than left unmocked, since a real
+        `gh` binary on PATH would otherwise run to completion and enter
+        _gh_call_with_backoff's real retry loop instead of raising."""
+        def boom(cmd, *a, **k):
+            raise AssertionError("gh must not be called when corpus_host/corpus_repo is empty")
+        monkeypatch.setattr(subprocess, "run", boom)
+
+        with pytest.raises(ValueError, match="non-empty corpus_host and corpus_repo"):
+            _mod._resolve_pinned_gh_repo(corpus_host, corpus_repo, ordinal=1)
 
     def test_mismatch_exits_2_with_neither_raw_value_in_output(self, monkeypatch, capsys):
         """The two capsys assertions below confirm the refusal message
@@ -16770,7 +17066,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_pinned_gh_repo(ordinal=1)
+            _mod._resolve_pinned_gh_repo("github.com", corpus_repo, ordinal=1)
 
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
@@ -16778,6 +17074,123 @@ class TestResolvePinnedGhRepoIdentity:
         assert corpus_repo not in err
         assert "account-1/repo-1" in err
         assert "account-1/repo-2" in err
+
+    def test_host_mismatch_with_matching_owner_repo_exits_2(self, monkeypatch, capsys):
+        """A same-named repo on a different host (e.g. an org mid-migration
+        from a GHE instance to github.com) must not false-positive as a
+        match -- gh's `nameWithOwner` alone can't tell the two apart, so the
+        check must also compare the host `gh repo view`'s own `url` field
+        resolves to."""
+        same_owner_repo = "owner/repo"
+        # _resolve_pinned_gh_repo is called directly below (not via the full
+        # _pr_cost_report orchestration), so only the `gh repo view` response
+        # this fake builds matters -- repo/host (which drive the unused
+        # `git remote get-url origin` branch) are left at their defaults.
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                gh_repo_name_with_owner=same_owner_repo, gh_repo_view_host="github.com",
+            ),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_pinned_gh_repo("acme-corp.ghe.com", same_owner_repo, ordinal=1)
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert same_owner_repo not in err
+        assert "acme-corp.ghe.com" not in err
+        assert "github.com" not in err  # the gh-side host, symmetric with the corpus-side check above
+
+    def test_gh_repo_view_url_not_matching_regex_refuses_rather_than_false_matching(self, monkeypatch, capsys):
+        """`gh repo view`'s `url` field failing to parse (a future `gh`
+        output-shape change, or a URL form _GIT_REMOTE_HOST_OWNER_REPO_RE
+        doesn't anticipate) must fail closed -- refuse the identity check --
+        rather than silently treat the unparseable host as matching."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0,
+                "stdout": json.dumps({"nameWithOwner": "owner/repo", "url": "not-a-parseable-url"}),
+                "stderr": "",
+            })(),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
+
+        assert exc_info.value.code == 2
+        assert "owner/repo" not in capsys.readouterr().err
+
+    def test_gh_repo_view_url_substring_spoof_shape_refuses_rather_than_false_matching(self, monkeypatch, capsys):
+        """Mirrors TestGitRemoteOriginHostAndOwnerRepoRegex's substring-spoof
+        cases, but at the `gh repo view` `url`-field parse site instead of
+        the local git remote parse site -- both share one compiled regex
+        object today, but nothing pinned that this site resists the same
+        attack shape until now. A malicious/misconfigured `url` embedding
+        "github.com/owner/repo" as a path segment on a different host must
+        not spoof the real identity."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0,
+                "stdout": json.dumps({
+                    "nameWithOwner": "owner/repo",
+                    "url": "https://attacker.example/github.com/owner/repo",
+                }),
+                "stderr": "",
+            })(),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "owner/repo" not in err
+        assert "attacker.example" not in err
+
+    @pytest.mark.parametrize("missing_key", ["nameWithOwner", "url"])
+    def test_gh_repo_view_payload_missing_required_key_exits_1(self, monkeypatch, capsys, missing_key):
+        """The except (JSONDecodeError, KeyError, TypeError) branch aborts
+        the whole run (exit 1, distinct from the identity-mismatch exit 2)
+        when `gh repo view`'s JSON is missing either key it now requires --
+        never letting an unhandled KeyError propagate as a raw traceback."""
+        payload = {"nameWithOwner": "owner/repo", "url": "https://github.com/owner/repo"}
+        del payload[missing_key]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": json.dumps(payload), "stderr": "",
+            })(),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
+
+        assert exc_info.value.code == 1
+        assert "unparseable JSON" in capsys.readouterr().err
+
+    def test_case_differing_host_still_matches(self, monkeypatch):
+        """Mirrors test_case_differing_match_proceeds_and_persists_the_pinned_lowercased_identity
+        below, but on the host axis instead of the repo axis -- the
+        docstring's "host or owner/name (case-folded)" claim is only
+        verified for repo casing without this test.
+
+        _resolve_pinned_gh_repo is called directly below (not via the full
+        _pr_cost_report orchestration), so only the `gh repo view` response
+        this fake builds matters -- repo/host (which drive the unused `git
+        remote get-url origin` branch) are left at their defaults."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                gh_repo_view_host="ACME-Corp.GHE.com", gh_repo_name_with_owner="owner/repo",
+            ),
+        )
+
+        gh_repo, _ = _mod._resolve_pinned_gh_repo("acme-corp.ghe.com", "owner/repo", ordinal=1)
+
+        assert gh_repo == "owner/repo"
 
     def test_mismatch_with_non_default_ordinal_labels_output_account_two(self, monkeypatch, capsys):
         """No caller in the new --all-accounts design passes a literal
@@ -16793,7 +17206,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_pinned_gh_repo(ordinal=2)
+            _mod._resolve_pinned_gh_repo("github.com", corpus_repo, ordinal=2)
 
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
@@ -16909,6 +17322,57 @@ class TestResolvePinnedGhRepoRetryExhaustion:
         assert not (tmp_path / "pr-cost-ledger.tsv").exists()
 
 
+class TestResolvePinnedGhRepoHostMismatchAbort:
+    def test_gh_host_mismatch_failure_on_gh_repo_view_exits_1_with_no_retry_no_row_written(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Distinct from a genuine identity mismatch (exit 2): a GH_HOST-
+        mismatch-shaped failure on `gh repo view` itself -- the new failure
+        kind this PR introduces at this call site -- aborts the whole run
+        (exit 1, since no row exists yet to degrade into) before ever
+        reaching the identity comparison, and without retrying (a local
+        shell-config mismatch doesn't self-resolve by waiting). Mirrors
+        TestResolvePinnedGhRepoRetryExhaustion's rate-limit-shaped case
+        above for this call site's other no-retry failure kind."""
+        gh_repo = "gh-side-owner/gh-side-repo"
+        corpus_repo = "git-side-owner/git-side-repo"
+        host_mismatch_stderr = (
+            "none of the git remotes configured for this repository correspond to the"
+            " GH_HOST environment variable. Try adding a matching remote or unsetting"
+            " the variable\n"
+        )
+        call_log: list[list[str]] = []
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo=corpus_repo, gh_repo_name_with_owner=gh_repo,
+                gh_repo_view_failure_stderr=host_mismatch_stderr, call_log=call_log,
+            ),
+        )
+        monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1  # abort, not the identity-mismatch path's exit(2)
+
+        gh_repo_view_calls = [c for c in call_log if c[:3] == ["gh", "repo", "view"]]
+        assert len(gh_repo_view_calls) == 1  # no retry -- a host mismatch doesn't self-resolve
+        assert sleep_calls == []
+
+        err = capsys.readouterr().err
+        assert gh_repo not in err
+        assert corpus_repo not in err
+        assert host_mismatch_stderr.strip() not in err  # gh's own raw stderr text is never surfaced
+        assert not (tmp_path / "pr-cost-ledger.tsv").exists()
+
+
+class TestGhHostQualifiedRepo:
+    def test_returns_host_slash_owner_repo(self):
+        assert _mod._gh_host_qualified_repo("acme-corp.ghe.com", "owner/repo") == "acme-corp.ghe.com/owner/repo"
+        assert _mod._gh_host_qualified_repo("github.com", "owner/repo") == "github.com/owner/repo"
+
+
 class TestPrCostGhCallsPinnedAfterRepoIdentityResolution:
     def test_every_post_resolution_gh_call_carries_repo_pin(self, fake_projects, tmp_path, monkeypatch):
         """Every `gh pr list`/`gh pr view` call this run makes after
@@ -16950,6 +17414,60 @@ class TestPrCostGhCallsPinnedAfterRepoIdentityResolution:
         assert len(gh_pr_view_calls) == 2
         for cmd in [*gh_pr_list_calls, *gh_pr_view_calls]:
             assert _argv_carries_repo_pin(cmd, "owner/repo")
+        # _argv_carries_repo_pin accepts a bare-or-host-qualified suffix match
+        # (needed for the GHE case below), so this exact-equality check is the
+        # one place confirming the default github.com origin is itself
+        # host-qualified to "github.com/owner/repo", not left bare.
+        for cmd in [*gh_pr_list_calls, *gh_pr_view_calls]:
+            assert cmd[cmd.index("--repo") + 1] == "github.com/owner/repo"
+
+
+class TestPrCostGheHostQualifiesGhRepoCalls:
+    def test_ghe_origin_scopes_auth_preflight_and_host_qualifies_pr_list_and_view(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """A GHE origin (acme-corp.ghe.com, not github.com) must scope `gh auth
+        status` to that host AND host-qualify every `gh pr list`/`gh pr
+        view` --repo value the same way -- gh's bare OWNER/REPO --repo form
+        always resolves against api.github.com regardless of the invoking
+        directory's own git remote, so an unqualified value here would
+        silently query the wrong host under the same owner/repo."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        call_log: list[list[str]] = []
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(
+                repo="owner/repo", host="acme-corp.ghe.com", merged_prs=merged_prs, call_log=call_log,
+            ),
+        )
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        assert ["gh", "auth", "status", "--hostname", "acme-corp.ghe.com"] in call_log
+
+        gh_pr_list_calls = [c for c in call_log if c[:3] == ["gh", "pr", "list"]]
+        gh_pr_view_calls = [c for c in call_log if c[:3] == ["gh", "pr", "view"]]
+        assert len(gh_pr_list_calls) == 1
+        assert len(gh_pr_view_calls) == 1
+        for cmd in [*gh_pr_list_calls, *gh_pr_view_calls]:
+            assert _argv_carries_repo_pin(cmd, "acme-corp.ghe.com/owner/repo")
+        # _argv_carries_repo_pin's suffix branch alone can't distinguish a
+        # correctly-qualified value from a double-qualified one (e.g. a
+        # regression producing "acme-corp.ghe.com/acme-corp.ghe.com/owner/repo"
+        # would still pass via the suffix match), so pin the exact value too --
+        # mirroring the equivalent check on the default github.com path.
+        for cmd in [*gh_pr_list_calls, *gh_pr_view_calls]:
+            assert cmd[cmd.index("--repo") + 1] == "acme-corp.ghe.com/owner/repo"
 
 
 class TestPrCostCrossRepoLedgerIsolation:
@@ -16983,6 +17501,98 @@ class TestPrCostCrossRepoLedgerIsolation:
         assert set(by_repo) == {"repo-a/x", "repo-b/y"}
         assert by_repo["repo-a/x"]["supersedes"] == ""
         assert by_repo["repo-b/y"]["supersedes"] == ""
+
+
+class TestPrCostCrossHostLedgerIsolation:
+    """(host, repo, pr_number, machine) is the ledger's own key -- a
+    same-named owner/repo on two different hosts (e.g. an org mid-migration
+    from a GHE instance to github.com, the scenario
+    TestResolvePinnedGhRepoIdentity.test_host_mismatch_with_matching_owner_repo_exits_2
+    names for the identity-resolution check) must not collide under one
+    key. Sibling coverage to TestPrCostCrossRepoLedgerIsolation above, which
+    only varies `repo` on a single host."""
+
+    def _existing_row_and_merged_prs(self, existing_host: str) -> tuple[dict, list[dict]]:
+        existing_row = _sample_pr_cost_row(host=existing_host, repo="owner/repo", pr_number=42, machine="ci1")
+        merged_prs = [{
+            "number": 42, "headRefName": "ghost-branch", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        return existing_row, merged_prs
+
+    def test_second_hosts_pr_is_recorded_not_skipped_as_already_captured(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        existing_row, merged_prs = self._existing_row_and_merged_prs("acme-corp.ghe.com")
+        _mod._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
+        )
+
+        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 2
+        by_host = {r["host"]: r for r in rows}
+        assert set(by_host) == {"acme-corp.ghe.com", "github.com"}
+
+    def test_force_does_not_supersede_the_other_hosts_row(self, fake_projects, tmp_path, monkeypatch):
+        """--force with an owner/repo match on a different host must still
+        record a fresh row, not a correction: _latest_pr_cost_row correctly
+        returns None across hosts, so there is nothing for `supersedes` to
+        reference."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        existing_row, merged_prs = self._existing_row_and_merged_prs("acme-corp.ghe.com")
+        _mod._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
+        )
+
+        args = _pr_cost_args(record=True, pr=42, machine_label="ci1", force=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 2
+        by_host = {r["host"]: r for r in rows}
+        assert by_host["github.com"]["supersedes"] == ""
+        assert by_host["acme-corp.ghe.com"]["supersedes"] == ""
+
+    def test_uncaptured_gap_listing_still_lists_second_hosts_pr(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Read mode's gap listing (_print_pr_cost_uncaptured) keys its own
+        already-captured check by host too -- a row captured on one host
+        must not hide the same-numbered PR as already captured on another."""
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        distinctive_branch = "feature-cross-host"
+        existing_row = _sample_pr_cost_row(host="acme-corp.ghe.com", repo="owner/repo", pr_number=99, machine="ci1")
+        _mod._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch=distinctive_branch),
+        ])
+        merged_prs = [{
+            "number": 99, "headRefName": distinctive_branch, "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(
+            subprocess, "run",
+            _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
+        )
+
+        _mod._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        out = capsys.readouterr().out
+        assert "PR #99" in out
+        assert "(none)" not in out
 
 
 class TestPrCostMultiRootRefusalRedaction:
