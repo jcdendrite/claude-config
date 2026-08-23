@@ -34,6 +34,29 @@ drafted rule list does not carry a standalone second-person rule — `SKILL.md`
 rule 2 (fact preservation) constrains any pronoun-scope rewrite from
 changing who a sentence addresses.
 
+This audience distinction matters because Anthropic's own guidance points
+the other way for a skill or agent body specifically. The Agent Skills
+best-practices page (`platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices`,
+"Writing effective descriptions") requires third person, but scopes that
+rule to the `description` frontmatter field — the stated reason is
+discovery reliability once descriptions are concatenated into the system
+prompt, not body-text readability:
+
+> Always write in third person. The description is injected into the
+> system prompt, and inconsistent point-of-view can cause discovery
+> problems.
+
+The same page's body examples are second-person imperative throughout
+("Copy this checklist and track your progress"), matching this repo's own
+`skill-review`/`agent-review` rule that skill and agent bodies use
+imperative second person. No Anthropic source found (checked the
+prompt-engineering best-practices reference, the Claude Code skills docs,
+and "Writing tools for agents") recommends against second person for
+prose a human reads — the constraint is scoped to that one frontmatter
+field, not to agent-directed content generally. `SKILL.md` §1 keeps
+skill/agent bodies in the second-person voice they're reviewed against for
+exactly this reason.
+
 **Conditions before instructions** (`developers.google.com/style/sentence-structure`):
 
 > If you want to tell the reader to do something, try to mention the

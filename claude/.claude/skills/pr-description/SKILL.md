@@ -19,11 +19,7 @@ Resolve the PR with `gh pr view --json number,body,title`, then take one of
 two modes. Both run the same checks; the difference is where the body comes
 from and where it goes.
 
-- **No open PR → author mode.** Draft a body per "What the body must carry"
-  below, run every check against the draft, write it to a file, and report
-  that path. Do not create the PR — the caller owns PR lifecycle. Run
-  standalone, that reported path *is* the deliverable; never no-op because
-  there is no PR to edit.
+- **No open PR → author mode.** Draft a body per "What the body must carry" below, run every check against the draft, write it to a file, and report that path. Do not create the PR — the caller owns PR lifecycle. Run standalone, that reported path *is* the deliverable; never no-op because there is no PR to edit.
 - **Open PR → sync mode.** Fetch the body, run every check against it, and
   apply the result with `gh pr edit <n> --body-file <path>`.
 
@@ -93,8 +89,11 @@ python3 "$config_dir/scripts/transcript-analysis.py" cost --this-repo --branches
 ```
 
 If `$branch` is the literal `HEAD` (detached HEAD), omit the section and say why, rather than publish a `$0.00` block for an unresolved branch. Otherwise embed stdout **verbatim** under `## Cost`, followed by the exact command — `$config_dir` left literal, unresolved, only `$branch` filled in with its real value — never recompose, round, or re-narrate the figures. Session/turn counts and per-model-ID dollars are not neutral — they signal engagement scale and model mix. That is the intended read under an account that opted in; it is not a property of the output format, and an account enabling this for one engagement should not assume the fields are harmless in another.
+
 ## Prose tightening pass
+
 Gate: resolve `config_dir` exactly as the Cost section's gate above; skip the pass if `$config_dir/pr-description-tighten-prose-optout` exists (any content, or none), else dispatch `tighten-prose` by name against the drafted body file, leaving the `## Cost` / `## Deferred review findings` blocks and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
+
 ## Checks
 
 Run every check below in both modes — against the draft in author mode,

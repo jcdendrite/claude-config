@@ -386,31 +386,26 @@ configure_machine_level_opt_ins() {
 # Schema (no surrounding whitespace around any `|` — IFS='|' read -r would
 # otherwise bake leading/trailing spaces into every field):
 #   path-template|scope|human-name|prompt-description|default-state|docs-anchor|expected-content|polarity
-# scope is one of: machine-promptable (offered by configure_machine_level_opt_ins
-# above, path-template resolved against $HOME/.claude/), machine (report-only,
-# same resolution), repo (report-only, path-template resolved against this
-# repo's own root), or account (report-only, path-template resolved against
-# $CLAUDE_CONFIG_DIR when set and absolute, else $HOME/.claude — never both;
-# see _report_account_sentinel below). prompt-description is carried only for
-# machine-promptable rows. default-state is the label printed when the
-# sentinel file is absent — "disabled" for every machine-promptable/machine/
-# repo/opt-in-account row (a kill-switch row still reads "enabled" on file
-# presence, same as every other row), but an opt-out-polarity account row
-# (see below) inverts this: absence is the row's on-by-default state, so its
-# default-state reads "enabled" instead. expected-content and polarity are
-# optional trailing fields, meaningful only for scope=account rows and
-# appended *last* so every other row's `read` fills them with empty strings
-# unchanged: expected-content empty means a presence-only check (the default
-# for every row); a non-empty value generalizes _report_account_sentinel's
-# content-mode check (compare the sentinel's trimmed, lowercased content
-# against this value, as pr-cost-disclosure does against "dollars"). polarity
-# empty or "opt-in" means the existing behavior (absent = default-state,
-# present = "ENABLED"); "opt-in" is also the fallback for any unrecognized
-# polarity value. "opt-out" inverts which state is the row's default. A
-# content-mode row (non-empty expected-content) must use default-state
-# "disabled" — its CTA is never keyed off default-state (see
-# _report_account_sentinel), so "enabled" would desync the printed state
-# from the CTA.
+# scope is one of:
+#   machine-promptable — offered by configure_machine_level_opt_ins above; resolved against $HOME/.claude/
+#   machine            — report-only; same resolution as machine-promptable
+#   repo               — report-only; resolved against this repo's own root
+#   account            — report-only; resolved against $CLAUDE_CONFIG_DIR when set and absolute, else $HOME/.claude, never both (see _report_account_sentinel)
+# prompt-description is carried only for machine-promptable rows.
+# default-state is the label printed when the sentinel file is absent — "disabled" for
+# every row except an opt-out-polarity account row (see polarity below), where absence
+# is the on-by-default state, so default-state reads "enabled" instead.
+# expected-content, polarity: optional trailing fields, meaningful only for scope=account
+# rows; appended last so every other row's `read` leaves them as empty strings.
+#   expected-content: empty = presence-only check (default for every row); non-empty =
+#     content-mode — compare the sentinel's trimmed, lowercased content against this value
+#     (e.g. pr-cost-disclosure checks against "dollars").
+#   polarity: empty or "opt-in" (also the fallback for any unrecognized value) = existing
+#     behavior (absent -> default-state, present -> "ENABLED"); "opt-out" inverts which
+#     state is the row's default.
+#   Constraint: a content-mode row (non-empty expected-content) must use default-state
+#     "disabled" — its CTA is never keyed off default-state (see _report_account_sentinel),
+#     so "enabled" would desync the printed state from the CTA.
 # Promotion criterion, machine -> machine-promptable: boolean file-presence
 # state plus an opt-into-new-capability semantic — see docs/design-decisions.md #23.
 SENTINEL_INVENTORY=(
