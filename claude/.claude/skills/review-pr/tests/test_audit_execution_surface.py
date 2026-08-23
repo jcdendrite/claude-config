@@ -103,6 +103,27 @@ class TestAuditExecutionSurfacePureFunction:
         result = audit_execution_surface([".claude/settings.json"])
         assert result["stop"] is True
 
+    def test_claude_settings_local_json_matches(self):
+        """settings.local.json carries the same hooks/permissions schema as
+        settings.json -- a malicious PR can force-add a gitignored path
+        (`git add -f`) to ship one anyway."""
+        result = audit_execution_surface([".claude/settings.local.json"])
+        assert result["stop"] is True
+
+    def test_gitmodules_matches(self):
+        """A submodule config change can fetch/checkout attacker-controlled
+        content from a URL the PR names."""
+        result = audit_execution_surface([".gitmodules"])
+        assert result["stop"] is True
+
+    def test_empty_string_path_does_not_match(self):
+        """Direct test of the `if not segments: return None` guard -- an
+        empty-string path reduces to zero segments after split and must not
+        stop, rather than relying on it never appearing in a real
+        changedFiles list."""
+        result = audit_execution_surface([""])
+        assert result == {"stop": False, "matches": []}
+
     def test_ordinary_source_files_do_not_match(self):
         result = audit_execution_surface(
             ["src/index.ts", "tests/index.test.ts", "package.json", "README.md"]
