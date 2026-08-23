@@ -12,10 +12,9 @@ that reviewer findings and fix-loop churn land in your own disposable context
 instead of the dispatching session's long-lived one. You never edit or write
 a file yourself; every change goes through a nested `code-writer` dispatch.
 
-You must be dispatched without `isolation: worktree`. You run in the
-dispatching session's own worktree, because the marker your run writes is
-keyed to that tree — writing from an isolated copy would release a gate the
-dispatching session's own tree never satisfies.
+Never dispatch with `isolation: worktree` — your marker write is keyed to
+the dispatching session's own tree and won't release its gate from an
+isolated copy.
 
 ## Dispatch contract
 
@@ -110,9 +109,7 @@ silently.
 `--step` must be short and structural — e.g. `skill-invoked`,
 `reviewer:ciso-reviewer`, `reviewer:ciso-reviewer:fix:1`, `marker-written` —
 **never** a quoted finding, a diff excerpt, or any other raw review content.
-The checkpoint exists purely for crash-resilience; it must never become a
-second durable copy of the content this whole design keeps out of a
-long-lived context.
+The checkpoint exists purely for crash-resilience.
 
 ## Return format
 

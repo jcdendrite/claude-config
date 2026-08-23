@@ -67,6 +67,24 @@ class TestHelperScriptInvocationsAllowed:
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
         ) == "allow"
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "~/.claude/scripts/marker.sh write code-review 2>/dev/nullx",
+            "~/.claude/scripts/marker.sh write code-review >/dev/null/../../tmp/probe.txt",
+        ],
+    )
+    def test_dev_null_exemption_does_not_match_a_path_sharing_its_prefix(self, command):
+        """The /dev/null redirect exemption is anchored to end-of-token
+        (whitespace or end-of-string immediately after /dev/null) -- a
+        substring match would strip the /dev/null prefix out of a redirect to
+        a real path sharing it (no space before /dev/null, matching the
+        blessed 2>/dev/null shape's own no-space form) and let it slip
+        through as though it were the exempted stderr-suppression form."""
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
 
 class TestMutatingCommandsDenied:
     @pytest.mark.parametrize(

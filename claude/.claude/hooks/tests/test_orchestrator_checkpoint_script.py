@@ -4,12 +4,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR, git_toplevel
+from helpers import SCRIPTS_DIR, build_path_without, git_toplevel
 
 ORCHESTRATOR_CHECKPOINT_SCRIPT = SCRIPTS_DIR / "orchestrator-checkpoint.sh"
 
@@ -394,3 +395,63 @@ class TestOrchestratorCheckpointRepoHashScoping:
             "a checkpoint written from the main tree must not be visible "
             "when read from a linked worktree of the same repo"
         )
+
+
+class TestOrchestratorCheckpointAdversarialFieldContent:
+    """Pins the jq -nc --arg design choice the script's own comment argues
+    for (untrusted free-form strings must not be hand-escaped) -- a
+    --step/--status value containing a JSON-special character must
+    round-trip exactly, not corrupt the JSONL store or inject extra
+    fields."""
+
+    def test_step_with_embedded_double_quote_round_trips_exactly(self, isolated_home, git_repo):
+        step = 'weird "quoted" step'
+        result = _run(_append_args(step=step), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        checkpoint = _checkpoint_path(isolated_home, git_repo)
+        record = json.loads(checkpoint.read_text().splitlines()[0])
+        assert record["step"] == step
+
+    def test_status_with_embedded_backslash_round_trips_exactly(self, isolated_home, git_repo):
+        status = r"a\b"
+        result = _run(_append_args(status=status), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        checkpoint = _checkpoint_path(isolated_home, git_repo)
+        record = json.loads(checkpoint.read_text().splitlines()[0])
+        assert record["status"] == status
+
+    def test_step_with_embedded_newline_round_trips_as_one_jsonl_line(self, isolated_home, git_repo):
+        step = "line one\nline two"
+        result = _run(_append_args(step=step), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        checkpoint = _checkpoint_path(isolated_home, git_repo)
+        lines = checkpoint.read_text().splitlines()
+        assert len(lines) == 1, f"embedded newline split the JSONL record: {lines}"
+        assert json.loads(lines[0])["step"] == step
+
+
+class TestOrchestratorCheckpointJqUnavailable:
+    def test_append_fails_closed_when_jq_is_absent(self, isolated_home, git_repo, tmp_path):
+        """Mirrors test_hook_alignment.py's test_blocks_when_jq_absent for
+        the PreToolUse gates generically -- orchestrator-checkpoint.sh has
+        its own explicit fail-closed branch (LINE empty -> abort without
+        writing) with no other test backstopping it."""
+        if not shutil.which("jq"):
+            pytest.skip("jq not on PATH in this test environment")
+        farm_dir = tmp_path / "path-without-jq"
+        farm_dir.mkdir()
+        path_without_jq = build_path_without("jq", farm_dir)
+
+        result = _run(
+            _append_args(),
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": path_without_jq},
+        )
+
+        assert result.returncode == 2
+        assert "could not build the checkpoint line" in result.stderr
+        assert not _checkpoint_path(isolated_home, git_repo).exists()

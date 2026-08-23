@@ -2619,6 +2619,8 @@ def test_append_line_locked_evicts_a_dead_pid_holder_faster_than_a_live_lock(
     result_live = _append_line_locked(target, lock, '{"a":1}', retries=5)
     elapsed_live_pid_lock = time.monotonic() - start
     assert result_live.returncode == 0, result_live.stderr
+    assert target.exists()
+    assert target.read_text() == '{"a":1}\n'
 
     assert elapsed_dead_pid_lock < elapsed_live_pid_lock, (
         f"dead-PID eviction ({elapsed_dead_pid_lock:.2f}s) should be faster "

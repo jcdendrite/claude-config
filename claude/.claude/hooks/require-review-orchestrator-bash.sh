@@ -1,15 +1,10 @@
 #!/bin/bash
 # hook-class: gate
-# Gate: restricts _LIB_BASH_MUTATION_RESTRICTED_AGENTS members' (currently
-# just review-orchestrator) Bash calls to a closed allowlist — strict
-# read-only git subcommands, the marker.sh/review-ledger.sh/
-# orchestrator-checkpoint.sh helper scripts, and this repo's own
-# CLAUDE.md-named verification commands — because Bash alone could otherwise
-# mutate the tree despite the agent lacking Edit/Write. review-orchestrator
-# also carries the Agent tool, so this Bash restriction alone doesn't stop
-# nested dispatch to an unrestricted agent — require-review-orchestrator-agent-target.sh
-# closes that gap separately. See docs/design-decisions.md §29 for the fuller
-# design rationale.
+# Gate: restricts _LIB_BASH_MUTATION_RESTRICTED_AGENTS members' Bash calls to
+# a closed read-only/verification allowlist since Bash alone could mutate the
+# tree despite no Edit/Write; require-review-orchestrator-agent-target.sh
+# closes the nested-dispatch gap this leaves open — see
+# docs/design-decisions.md §29 for the fuller rationale.
 #
 # This hook is an allowlist (deny-by-default): a standalone `export
 # VAR=value` fragment is never on the allowlist below, so it already denies
@@ -98,10 +93,13 @@ ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 # untouched while actually truncating an arbitrary tracked file. The
 # trailing `2>/dev/null` form enforce-marker-script-shape.sh itself blesses
 # is exempted by stripping every occurrence (any fd, either `>` or `>>`)
-# before testing what remains.
+# before testing what remains. The exemption is anchored to end-of-token
+# (whitespace or end-of-string immediately after `/dev/null`) rather than a
+# bare substring match, so `/dev/nullx` or a path-traversal suffix after
+# `/dev/null` is never silently exempted.
 _fragment_has_unsafe_redirect() {
   local fragment="$1" stripped
-  stripped=$(printf '%s' "$fragment" | sed -E 's/[0-9]*>>?\/dev\/null//g')
+  stripped=$(printf '%s' "$fragment" | sed -E 's/[0-9]*>>?\/dev\/null([[:space:]]|$)/\1/g')
   [[ "$stripped" == *'<'* || "$stripped" == *'>'* ]]
 }
 
